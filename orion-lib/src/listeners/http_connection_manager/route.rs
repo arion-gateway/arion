@@ -17,7 +17,7 @@
 use super::{http_modifiers, upgrades as upgrade_utils, RequestHandler, TransactionHandler};
 use crate::event_error::{EventError, EventFailure, EventKind, TryInferFrom};
 use crate::{
-    body::{body_with_metrics::BodyWithMetrics, body_with_timeout::BodyWithTimeout, response_flags::ResponseFlags},
+    body::{body_with_metrics::BodyWithMetrics, response_flags::ResponseFlags},
     clusters::{
         balancers::hash_policy::HashState,
         clusters_manager::{self, RoutingContext},
@@ -28,7 +28,7 @@ use crate::{
 };
 
 use http::{uri::Parts as UriParts, Uri};
-use hyper::{body::Incoming, Request, Response};
+use hyper::{Request, Response};
 use orion_configuration::config::network_filters::http_connection_manager::{
     route::{RouteAction, RouteMatchResult},
     RetryPolicy,
@@ -57,7 +57,7 @@ use std::net::SocketAddr;
 use tracing::debug;
 
 pub struct MatchedRequest<'a> {
-    pub request: Request<BodyWithMetrics<BodyWithTimeout<Incoming>>>,
+    pub request: Request<BodyWithMetrics<PolyBody>>,
     pub retry_policy: Option<&'a RetryPolicy>,
     pub route_name: &'a str,
     pub remote_address: SocketAddr,

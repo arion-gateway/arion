@@ -16,11 +16,15 @@
 //
 
 use super::body_with_timeout::{BodyWithTimeout, TimeoutBodyError};
+use crate::Error;
 use bytes::Bytes;
-use http_body_util::{Empty, Full};
+use http_body::Frame;
+use http_body_util::{Empty, Full, StreamBody};
 use hyper::body::{Body, Incoming};
 use orion_xds::grpc_deps::{GrpcBody, Status as GrpcError};
 use pin_project::pin_project;
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
 
 #[pin_project(project = PolyBodyProj)]
 pub enum PolyBody {
@@ -29,6 +33,7 @@ pub enum PolyBody {
     Incoming(#[pin] Incoming),
     Timeout(#[pin] BodyWithTimeout<Incoming>),
     Grpc(#[pin] GrpcBody),
+    Stream(#[pin] StreamBody<ReceiverStream<Result<Frame<Bytes>, Error>>>),
 }
 
 impl Default for PolyBody {
@@ -46,6 +51,7 @@ impl std::fmt::Debug for PolyBody {
             PolyBody::Incoming(_) => f.write_str("PolyBody::Incoming"),
             PolyBody::Timeout(body) => f.write_str(&format!("PolyBody::Timeout: {body:?}")),
             PolyBody::Grpc(_) => f.write_str("PolyBody::Grpc"),
+            PolyBody::Stream(_) => f.write_str("PolyBody::Stream"),
         }
     }
 }
@@ -88,6 +94,9 @@ impl Body for PolyBody {
             PolyBodyProj::Incoming(i) => i.poll_frame(cx).map_err(Into::into),
             PolyBodyProj::Timeout(t) => t.poll_frame(cx).map_err(Into::into),
             PolyBodyProj::Grpc(g) => g.poll_frame(cx).map_err(Into::into),
+            PolyBodyProj::Stream(s) => {
+                s.poll_frame(cx).map_err(|e| PolyBodyError::Boxed(Box::new(std::io::Error::other(e.to_string()))))
+            },
         }
     }
 }
@@ -124,5 +133,40 @@ impl From<GrpcBody> for PolyBody {
     #[inline]
     fn from(body: GrpcBody) -> Self {
         PolyBody::Grpc(body)
+    }
+}
+
+impl From<StreamBody<ReceiverStream<Result<Frame<Bytes>, Error>>>> for PolyBody {
+    #[inline]
+    fn from(body: StreamBody<ReceiverStream<Result<Frame<Bytes>, Error>>>) -> Self {
+        PolyBody::Stream(body)
+    }
+}
+
+impl PolyBody {
+    pub fn channel(buffer_size: usize) -> (Self, mpsc::Sender<Result<Frame<Bytes>, Error>>) {
+        let (tx, rx) = mpsc::channel(buffer_size);
+        let stream = ReceiverStream::new(rx);
+        let body = StreamBody::new(stream);
+        (PolyBody::Stream(body), tx)
+    }
+}
+
+pub struct BodySender {
+    sender: mpsc::Sender<Result<Frame<Bytes>, Error>>,
+}
+
+impl BodySender {
+    pub fn new(sender: mpsc::Sender<Result<Frame<Bytes>, Error>>) -> Self {
+        Self { sender }
+    }
+    pub async fn send_data(&self, chunk: Bytes) -> Result<(), mpsc::error::SendError<Result<Frame<Bytes>, Error>>> {
+        self.sender.send(Ok(Frame::data(chunk))).await
+    }
+    pub async fn send_trailers(
+        &self,
+        trailers: http::HeaderMap,
+    ) -> Result<(), mpsc::error::SendError<Result<Frame<Bytes>, Error>>> {
+        self.sender.send(Ok(Frame::trailers(trailers))).await
     }
 }
