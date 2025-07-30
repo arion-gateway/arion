@@ -443,6 +443,7 @@ mod tests {
     use crate::secrets::SecretManager;
     use orion_configuration::config::cluster::{
         http_protocol_options::Codec, Cluster as ClusterConfig, ClusterDiscoveryType, LbPolicy, OriginalDstConfig,
+        StandardLbPolicy,
     };
     use std::str::FromStr;
 
@@ -461,7 +462,7 @@ mod tests {
             cleanup_interval,
             transport_socket: None,
             bind_device: None,
-            load_balancing_policy: LbPolicy::ClusterProvided,
+            load_balancing_policy: LbPolicy::Standard(StandardLbPolicy::ClusterProvided),
             http_protocol_options: HttpProtocolOptions::default(),
             health_check: None,
             connect_timeout: None,

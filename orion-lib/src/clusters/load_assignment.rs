@@ -19,8 +19,8 @@ use std::{sync::Arc, time::Duration};
 
 use http::uri::Authority;
 use orion_configuration::config::cluster::{
-    ClusterLoadAssignment as ClusterLoadAssignmentConfig, HealthStatus, HttpProtocolOptions,
-    LbEndpoint as LbEndpointConfig, LbPolicy, LocalityLbEndpoints as LocalityLbEndpointsConfig,
+    ClusterLoadAssignment as ClusterLoadAssignmentConfig, ExtendedLbPolicy, HealthStatus, HttpProtocolOptions,
+    LbEndpoint as LbEndpointConfig, LbPolicy, LocalityLbEndpoints as LocalityLbEndpointsConfig, StandardLbPolicy,
 };
 use tracing::debug;
 use typed_builder::TypedBuilder;
@@ -446,14 +446,27 @@ impl ClusterLoadAssignmentBuilder {
             })
             .collect::<Result<Vec<_>>>()?;
 
-        let balancer = match self.lb_policy {
-            LbPolicy::Random | LbPolicy::ClusterProvided => {
+        let balancer = match &self.lb_policy {
+            LbPolicy::Standard(StandardLbPolicy::Random) | LbPolicy::Standard(StandardLbPolicy::ClusterProvided) => {
                 BalancerType::Random(DefaultBalancer::from_slice(&endpoints))
             },
-            LbPolicy::RoundRobin => BalancerType::RoundRobin(DefaultBalancer::from_slice(&endpoints)),
-            LbPolicy::LeastRequest => BalancerType::LeastRequests(DefaultBalancer::from_slice(&endpoints)),
-            LbPolicy::RingHash => BalancerType::RingHash(DefaultBalancer::from_slice(&endpoints)),
-            LbPolicy::Maglev => BalancerType::Maglev(DefaultBalancer::from_slice(&endpoints)),
+            LbPolicy::Standard(StandardLbPolicy::RoundRobin) => {
+                BalancerType::RoundRobin(DefaultBalancer::from_slice(&endpoints))
+            },
+            LbPolicy::Standard(StandardLbPolicy::LeastRequest) => {
+                BalancerType::LeastRequests(DefaultBalancer::from_slice(&endpoints))
+            },
+            LbPolicy::Standard(StandardLbPolicy::RingHash) => {
+                BalancerType::RingHash(DefaultBalancer::from_slice(&endpoints))
+            },
+            LbPolicy::Standard(StandardLbPolicy::Maglev) => {
+                BalancerType::Maglev(DefaultBalancer::from_slice(&endpoints))
+            },
+            LbPolicy::Extended(ExtendedLbPolicy::OverrideHost(_config)) => {
+                // TODO: Implement OverrideHostBalancer
+                // For now, use the fallback policy
+                BalancerType::Random(DefaultBalancer::from_slice(&endpoints))
+            },
         };
 
         Ok(ClusterLoadAssignment {

@@ -28,6 +28,8 @@ use crate::{
 };
 use http::uri::Authority;
 use orion_configuration::config::cluster::{HealthCheck, HealthStatus, LbPolicy};
+use orion_error::WithContext;
+use rustls::ClientConfig;
 use tracing::debug;
 
 #[derive(Debug, Clone)]
@@ -107,9 +109,10 @@ impl ClusterOps for StaticCluster {
     }
 
     fn get_routing_requirements(&self) -> RoutingRequirement {
-        match self.config.load_balancing_policy {
-            LbPolicy::RingHash | LbPolicy::Maglev => RoutingRequirement::Hash,
-            _ => RoutingRequirement::None,
+        if self.config.load_balancing_policy.requires_hash() {
+            RoutingRequirement::Hash
+        } else {
+            RoutingRequirement::None
         }
     }
 }

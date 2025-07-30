@@ -147,9 +147,10 @@ impl ClusterOps for DynamicCluster {
     }
 
     fn get_routing_requirements(&self) -> RoutingRequirement {
-        match self.load_balancing_policy {
-            LbPolicy::RingHash | LbPolicy::Maglev => RoutingRequirement::Hash,
-            _ => RoutingRequirement::None,
+        if self.load_balancing_policy.requires_hash() {
+            RoutingRequirement::Hash
+        } else {
+            RoutingRequirement::None
         }
     }
 }

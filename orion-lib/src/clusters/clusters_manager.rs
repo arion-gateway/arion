@@ -116,7 +116,7 @@ pub fn change_cluster_load_assignment(name: &str, cla: &PartialClusterLoadAssign
                         .with_transport_socket(dynamic_cluster.transport_socket.clone())
                         .with_cluster_name(dynamic_cluster.name)
                         .with_bind_device(dynamic_cluster.bind_device.clone())
-                        .with_lb_policy(dynamic_cluster.load_balancing_policy)
+                        .with_lb_policy(dynamic_cluster.load_balancing_policy.clone())
                         .prepare();
                     cla.build().map(|cla| dynamic_cluster.change_load_assignment(Some(cla)))?;
                     Ok(cluster.clone())
