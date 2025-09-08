@@ -16,6 +16,7 @@
 //
 
 use orion_configuration::config::common::TlvType;
+use smol_str::SmolStr;
 use std::{collections::HashMap, net::SocketAddr};
 
 #[derive(Debug, Clone)]
@@ -46,5 +47,20 @@ impl DownstreamConnectionMetadata {
             Self::FromSocket { local_address, .. } => *local_address,
             Self::FromProxyProtocol { original_destination_address, .. } => *original_destination_address,
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DownstreamMetadata {
+    pub connection: DownstreamConnectionMetadata,
+    pub server_name: Option<SmolStr>,
+}
+
+impl DownstreamMetadata {
+    pub fn new<S>(connection: DownstreamConnectionMetadata, server_name: Option<S>) -> Self
+    where
+        S: Into<SmolStr>,
+    {
+        Self { connection, server_name: server_name.map(Into::into) }
     }
 }

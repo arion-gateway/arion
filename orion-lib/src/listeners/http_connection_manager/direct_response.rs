@@ -23,12 +23,23 @@ use http_body_util::Full;
 use hyper::{body::Incoming, Request, Response};
 use orion_configuration::config::network_filters::http_connection_manager::route::DirectResponseAction;
 
-impl RequestHandler<Request<BodyWithMetrics<BodyWithTimeout<Incoming>>>> for &DirectResponseAction {
+#[cfg(feature = "access-log")]
+use {crate::listeners::access_log::AccessLogContext, orion_format::context::UpstreamContext};
+
+impl<'a> RequestHandler<(Request<BodyWithMetrics<BodyWithTimeout<Incoming>>>, &'a str)> for &DirectResponseAction {
     async fn to_response(
         self,
-        _ctx: &TransactionHandler,
-        request: Request<BodyWithMetrics<BodyWithTimeout<Incoming>>>,
+        _trans_handler: &TransactionHandler,
+        (request, _route_name): (Request<BodyWithMetrics<BodyWithTimeout<Incoming>>>, &'a str),
     ) -> Result<Response<PolyBody>> {
+        #[cfg(feature = "access-log")]
+        if let Some(ctx) = _trans_handler.access_log_ctx.as_ref() {
+            ctx.lock().loggers.with_context(&UpstreamContext {
+                authority: None,
+                cluster_name: None,
+                route_name: _route_name,
+            })
+        }
         let body = Full::new(self.body.as_ref().map(|b| bytes::Bytes::copy_from_slice(b.data())).unwrap_or_default());
         let mut resp = Response::new(body.into());
         *resp.status_mut() = self.status;
