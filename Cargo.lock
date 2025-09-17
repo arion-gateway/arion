@@ -1391,7 +1391,7 @@ dependencies = [
 [[package]]
 name = "hyper-util"
 version = "0.1.15"
-source = "git+https://github.com/awgn/hyper-util.git?branch=event-handler#c62f9ad8ef929965899209832dbac5629d14764d"
+source = "git+https://internal.invalid/hyper-util.git?branch=event-handler#c62f9ad8ef929965899209832dbac5629d14764d"
 dependencies = [
  "base64 0.22.1",
  "bytes",
