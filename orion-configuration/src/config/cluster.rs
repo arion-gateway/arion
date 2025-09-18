@@ -252,7 +252,7 @@ pub enum StandardLbPolicy {
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct OverrideHostConfig {
-    pub override_host_sources: Vec<OverrideHostSource>,
+    pub override_host_source: OverrideHostSource,
     pub fallback_policy: StandardLbPolicy,
 }
 
@@ -757,7 +757,7 @@ mod envoy_conversions {
                         .endpoints
                         .iter()
                         .flat_map(|e| e.lb_endpoints.iter().map(|e| e.address.clone().into_addr()).collect::<Vec<_>>())
-                        .filter(std::result::Result::is_err)
+                        .filter(Result::is_err)
                         .collect::<Vec<_>>()
                         .is_empty()
                     {
@@ -919,24 +919,12 @@ mod envoy_conversions {
                 HeaderName::try_from(&source.header).map(|name| OverrideHostSource::Header { name }).map_err(|e| {
                     GenericError::from_msg_with_cause(format!("Invalid header name: '{}'", source.header), e)
                 })
-            } else if let Some(metadata_key) = source.metadata {
-                let key = CompactString::from(&metadata_key.key);
-                let path = metadata_key
-                    .path
-                    .iter()
-                    .filter_map(|path_segment| {
-                        if let Some(segment) = &path_segment.segment {
-                            match segment {
-                                Segment::Key(key_str) => Some(CompactString::from(key_str)),
-                            }
-                        } else {
-                            None
-                        }
-                    })
-                    .collect::<Vec<CompactString>>();
-                Ok(OverrideHostSource::Metadata { key: MetadataKey { key, path } })
+            } else if source.metadata.is_some() {
+                Err(GenericError::from_msg("metadata source is not currently supported as override host source"))
             } else {
-                Err(GenericError::from_msg("override host source must specify either header or metadata"))
+                Err(GenericError::from_msg(
+                    "override host source must specify header source (metadata is not yet supported)",
+                ))
             }
         }
     }
@@ -946,6 +934,12 @@ mod envoy_conversions {
         fn try_from(value: EnvoyOverrideHost) -> Result<Self, Self::Error> {
             let EnvoyOverrideHost { override_host_sources, fallback_policy } = value;
             let override_host_sources = convert_vec!(override_host_sources)?;
+            if override_host_sources.is_empty() || override_host_sources.len() > 1 {
+                return Err(GenericError::from_msg(
+                    "Orion currently only supports exactly one source in override_host_sources field",
+                ));
+            }
+            let override_host_source = override_host_sources.into_iter().next().unwrap();
             let fallback_policy = fallback_policy
                 .ok_or_else(|| GenericError::from_msg("fallback_policy is required for OverrideHost"))
                 .and_then(SupportedEnvoyLoadBalancingPolicy::try_from)
@@ -959,7 +953,7 @@ mod envoy_conversions {
                         Err(GenericError::from_msg("OverrideHost cannot be used as a fallback policy for OverrideHost"))
                     },
                 })?;
-            Ok(OverrideHostConfig { override_host_sources, fallback_policy })
+            Ok(OverrideHostConfig { override_host_source, fallback_policy })
         }
     }
 
