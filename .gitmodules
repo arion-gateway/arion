@@ -1,24 +1,24 @@
 [submodule "envoy-data-plane-api/data-plane-api"]
 	path = envoy-data-plane-api/data-plane-api
-	url = https://internal.invalid/envoyproxy/data-plane-api.git
+	url = https://internal.invalid/data-plane-api.git
 [submodule "envoy-data-plane-api/xds"]
 	path = envoy-data-plane-api/xds
-	url =  https://internal.invalid/cncf/xds.git
+	url = https://internal.invalid/xds.git
 [submodule "envoy-data-plane-api/protoc-gen-validate"]
 	path = envoy-data-plane-api/protoc-gen-validate
-	url = https://internal.invalid/bufbuild/protoc-gen-validate.git
+	url = https://internal.invalid/protoc-gen-validate.git
 [submodule "envoy-data-plane-api/googleapis"]
 	path = envoy-data-plane-api/googleapis
-	url = https://internal.invalid/googleapis/googleapis.git
+	url = https://internal.invalid/googleapis.git
 [submodule "envoy-data-plane-api/opencensus-proto"]
 	path = envoy-data-plane-api/opencensus-proto
-	url = https://internal.invalid/census-instrumentation/opencensus-proto.git
+	url = https://internal.invalid/opencensus-proto.git
 [submodule "envoy-data-plane-api/opentelemetry-proto"]
 	path = envoy-data-plane-api/opentelemetry-proto
-	url = https://internal.invalid/open-telemetry/opentelemetry-proto.git
+	url = https://internal.invalid/opentelemetry-proto.git
 [submodule "envoy-data-plane-api/prometheus-client-model"]
 	path = envoy-data-plane-api/prometheus-client-model
-	url = https://internal.invalid/prometheus/client_model.git
+	url = https://internal.invalid/client_model.git
 [submodule "envoy-data-plane-api/cel-spec"]
 	path = envoy-data-plane-api/cel-spec
 	url = https://internal.invalid/cel-spec.git
