@@ -15,7 +15,7 @@
 //
 //
 use super::{http_modifiers, upgrades as upgrade_utils, RequestHandler, TransactionHandler};
-use crate::event_error::{EventError, EventKind, TryInferFrom};
+use crate::event_error::{EventError, EventFailure, EventKind, TryInferFrom};
 use crate::{
     body::{body_with_metrics::BodyWithMetrics, body_with_timeout::BodyWithTimeout, response_flags::ResponseFlags},
     clusters::{
@@ -165,7 +165,8 @@ impl<'a> RequestHandler<(MatchedRequest<'a>, &HttpConnectionManager)> for &Route
                         Ok(maybe_upgrade) => maybe_upgrade,
                         Err(upgrade_error) => {
                             debug!("Failed to upgrade to websockets {upgrade_error}");
-                            return Ok(SyntheticHttpResponse::bad_request(EventKind::UpgradeFailed).into_response(ver));
+                            return Ok(SyntheticHttpResponse::bad_request(EventFailure::UpgradeFailed.into())
+                                .into_response(ver));
                         },
                     }
                 } else {
@@ -194,7 +195,7 @@ impl<'a> RequestHandler<(MatchedRequest<'a>, &HttpConnectionManager)> for &Route
                         let err = err.into_inner();
                         let event_error = EventError::try_infer_from(&err);
                         let flags = event_error.clone().map(ResponseFlags::from).unwrap_or_default();
-                        let event_kind = event_error.map_or(EventKind::ViaUpstream, |e| EventKind::Error(e));
+                        let event_kind = event_error.map_or(EventFailure::ViaUpstream.into(), |e| EventKind::Error(e));
                         debug!(
                             "HttpConnectionManager Error processing response {:?}: {}({})",
                             err,
@@ -211,7 +212,7 @@ impl<'a> RequestHandler<(MatchedRequest<'a>, &HttpConnectionManager)> for &Route
                 let err = err.into_inner();
                 let event_error = EventError::try_infer_from(&err);
                 let flags = event_error.clone().map(ResponseFlags::from).unwrap_or_default();
-                let event_kind = event_error.map_or(EventKind::ViaUpstream, |e| EventKind::Error(e));
+                let event_kind = event_error.map_or(EventFailure::ViaUpstream.into(), |e| EventKind::Error(e));
                 debug!(
                     "Failed to get an HTTP connection: {:?}: {}({})",
                     err,

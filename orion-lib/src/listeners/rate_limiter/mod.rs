@@ -23,7 +23,7 @@ use token_bucket::TokenBucket;
 
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::local_rate_limit::LocalRateLimit as LocalRateLimitConfig;
 
-use crate::{body::response_flags::ResponseFlags, event_error::EventKind};
+use crate::{body::response_flags::ResponseFlags, event_error::EventFailure};
 use orion_format::types::ResponseFlags as FmtResponseFlags;
 
 use crate::{
@@ -45,7 +45,7 @@ impl LocalRateLimit {
                 return FilterDecision::DirectResponse(
                     SyntheticHttpResponse::custom_error(
                         status,
-                        EventKind::RateLimited,
+                        EventFailure::RateLimited.into(),
                         ResponseFlags(FmtResponseFlags::RATE_LIMITED),
                     )
                     .into_response(req.version()),

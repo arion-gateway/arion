@@ -98,14 +98,16 @@ use tracing::debug;
 use upgrades as upgrade_utils;
 
 use crate::{
-    body::body_with_metrics::BodyWithMetrics,
-    body::body_with_timeout::BodyWithTimeout,
-    body::response_flags::{BodyKind, ResponseFlags},
-    event_error::EventKind,
+    body::{
+        body_with_metrics::BodyWithMetrics,
+        body_with_timeout::BodyWithTimeout,
+        response_flags::{BodyKind, ResponseFlags},
+    },
+    event_error::{EventFailure, EventKind},
     listeners::{
         filter_state::DownstreamMetadata, rate_limiter::LocalRateLimit, synthetic_http_response::SyntheticHttpResponse,
     },
-    with_metric, ConversionContext, PolyBody, Result, RouteConfiguration, {with_client_span, with_server_span},
+    with_client_span, with_metric, with_server_span, ConversionContext, PolyBody, Result, RouteConfiguration,
 };
 
 use orion_tracing::http_tracer::HttpTracer;
@@ -821,7 +823,7 @@ impl
                 }
             } else {
                 return Ok(SyntheticHttpResponse::not_found(
-                    EventKind::RouteNotFound,
+                    EventFailure::RouteNotFound.into(),
                     ResponseFlags(FmtResponseFlags::NO_ROUTE_FOUND),
                 )
                 .into_response(request.version()));
@@ -887,7 +889,7 @@ impl
         } else {
             // We should not be here
             Ok(SyntheticHttpResponse::not_found(
-                EventKind::RouteNotFound,
+                EventFailure::RouteNotFound.into(),
                 ResponseFlags(FmtResponseFlags::NO_ROUTE_FOUND),
             )
             .into_response(request.version()))
@@ -1093,7 +1095,7 @@ impl Service<ExtendedRequest<Incoming>> for HttpRequestHandler {
             let Some(route_conf) = route_conf else {
                 // immediately return a SyntheticHttpResponse, and calcuate the first byte instant
                 let resp = SyntheticHttpResponse::not_found(
-                    EventKind::RouteNotFound,
+                    EventFailure::RouteNotFound.into(),
                     ResponseFlags(FmtResponseFlags::NO_ROUTE_FOUND),
                 )
                 .into_response(request.version());
@@ -1274,7 +1276,7 @@ fn apply_authorization_rules<B>(rbac: &HttpRbac, req: &Request<B>) -> FilterDeci
         FilterDecision::Continue
     } else {
         FilterDecision::DirectResponse(
-            SyntheticHttpResponse::forbidden(EventKind::RbacAccessDenied, "RBAC: access denied")
+            SyntheticHttpResponse::forbidden(EventFailure::RbacAccessDenied.into(), "RBAC: access denied")
                 .into_response(req.version()),
         )
     }

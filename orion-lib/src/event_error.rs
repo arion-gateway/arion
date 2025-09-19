@@ -27,8 +27,7 @@ pub enum EventError {
 }
 
 #[derive(Debug, Clone)]
-pub enum EventKind {
-    Error(EventError),
+pub enum EventFailure {
     AdminFilterResponse,
     ClusterNotFound,
     DirectResponse,
@@ -40,6 +39,26 @@ pub enum EventKind {
     RbacAccessDenied,
     RateLimited,
     ViaUpstream,
+}
+
+#[derive(Debug, Clone)]
+pub enum EventKind {
+    Error(EventError),
+    Failure(EventFailure),
+}
+
+// Implement From<EventError> for EventKind
+impl From<EventError> for EventKind {
+    fn from(error: EventError) -> Self {
+        EventKind::Error(error)
+    }
+}
+
+// Implement From<EventFailure> for EventKind
+impl From<EventFailure> for EventKind {
+    fn from(failure: EventFailure) -> Self {
+        EventKind::Failure(failure)
+    }
 }
 
 impl EventKind {
@@ -54,17 +73,19 @@ impl EventKind {
                 EventError::RefusedStream => Some(ResponseCodeDetails("http2.remote_refuse")),
                 EventError::Http3PostConnectFailure => Some(ResponseCodeDetails("http3.remote_reset")),
             },
-            EventKind::AdminFilterResponse => Some(ResponseCodeDetails("admin_filter_response")),
-            EventKind::ClusterNotFound => Some(ResponseCodeDetails("cluster_not_found")),
-            EventKind::DirectResponse => Some(ResponseCodeDetails("direct_response")),
-            EventKind::FilterChainNotFound => Some(ResponseCodeDetails("filter_chain_not_found")),
-            EventKind::InternalRedirect => Some(ResponseCodeDetails("internal_redirect")),
-            EventKind::NoHealthyUpstream => Some(ResponseCodeDetails("no_healthy_upstream")),
-            EventKind::RouteNotFound => Some(ResponseCodeDetails("route_not_found")),
-            EventKind::UpgradeFailed => Some(ResponseCodeDetails("upgrade_failed")),
-            EventKind::RbacAccessDenied => Some(ResponseCodeDetails("rbac_access_denied")),
-            EventKind::RateLimited => Some(ResponseCodeDetails("rate_limited")),
-            EventKind::ViaUpstream => Some(ResponseCodeDetails("via_upstream")),
+            EventKind::Failure(fail) => match fail {
+                EventFailure::AdminFilterResponse => Some(ResponseCodeDetails("admin_filter_response")),
+                EventFailure::ClusterNotFound => Some(ResponseCodeDetails("cluster_not_found")),
+                EventFailure::DirectResponse => Some(ResponseCodeDetails("direct_response")),
+                EventFailure::FilterChainNotFound => Some(ResponseCodeDetails("filter_chain_not_found")),
+                EventFailure::InternalRedirect => Some(ResponseCodeDetails("internal_redirect")),
+                EventFailure::NoHealthyUpstream => Some(ResponseCodeDetails("no_healthy_upstream")),
+                EventFailure::RouteNotFound => Some(ResponseCodeDetails("route_not_found")),
+                EventFailure::UpgradeFailed => Some(ResponseCodeDetails("upgrade_failed")),
+                EventFailure::RbacAccessDenied => Some(ResponseCodeDetails("rbac_access_denied")),
+                EventFailure::RateLimited => Some(ResponseCodeDetails("rate_limited")),
+                EventFailure::ViaUpstream => Some(ResponseCodeDetails("via_upstream")),
+            },
         }
     }
 
@@ -76,8 +97,12 @@ impl EventKind {
                 EventError::RouteTimeout => Some(ConnectionTerminationDetails("route timeout was reached")),
                 _ => None,
             },
-            EventKind::RbacAccessDenied => Some(ConnectionTerminationDetails("rbac_access_denied_matched_policy")),
-            _ => None,
+            EventKind::Failure(fail) => match fail {
+                EventFailure::RbacAccessDenied => {
+                    Some(ConnectionTerminationDetails("rbac_access_denied_matched_policy"))
+                },
+                _ => None,
+            },
         }
     }
 }
