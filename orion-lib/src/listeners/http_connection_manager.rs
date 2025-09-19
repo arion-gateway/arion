@@ -29,8 +29,15 @@ mod redirect;
 mod route;
 mod upgrades;
 
+#[cfg(any(feature = "tracing", feature = "access-log"))]
+use {
+    std::sync::atomic::AtomicUsize,
+};
+
 #[cfg(any(feature = "tracing", feature = "metrics"))]
-use opentelemetry::KeyValue;
+use {
+    opentelemetry::KeyValue,
+};
 
 #[cfg(feature = "tracing")]
 use {
@@ -46,6 +53,8 @@ use {
     },
 };
 
+#[cfg(feature = "access-log")]
+use crate::event_error::EventKind;
 #[cfg(any(feature = "access-log", feature = "metrics"))]
 use crate::utils::http::{request_head_size, response_head_size};
 
@@ -90,7 +99,6 @@ use route::MatchedRequest;
 use scopeguard::defer;
 use smol_str::SmolStr;
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::AtomicUsize;
 use std::thread::ThreadId;
 use std::{fmt, future::Future, result::Result as StdResult, sync::Arc};
 use tokio::sync::watch;
@@ -103,7 +111,7 @@ use crate::{
         body_with_timeout::BodyWithTimeout,
         response_flags::{BodyKind, ResponseFlags},
     },
-    event_error::{EventFailure, EventKind},
+    event_error::EventFailure,
     listeners::{
         filter_state::DownstreamMetadata, rate_limiter::LocalRateLimit, synthetic_http_response::SyntheticHttpResponse,
     },
@@ -439,7 +447,6 @@ pub struct AccessLoggersContext {
 
 #[cfg(feature = "access-log")]
 impl AccessLoggersContext {
-    #[allow(dead_code)]
     pub fn new(access_log: &[AccessLog]) -> Self {
         AccessLoggersContext {
             loggers: access_log.iter().map(|al| al.logger.local_clone()).collect::<Vec<_>>(),
@@ -451,8 +458,8 @@ impl AccessLoggersContext {
 }
 
 #[derive(Debug)]
-#[allow(dead_code)]
 pub struct TransactionHandler {
+    #[allow(dead_code)]
     start_instant: std::time::Instant,
     request_id: Option<RequestId>,
     thread_id: ThreadId,
@@ -462,27 +469,28 @@ pub struct TransactionHandler {
     trace_ctx: Option<TraceContext>,
     #[cfg(feature = "tracing")]
     span_state: Option<Arc<SpanState>>,
+    #[cfg(any(feature = "access-log", feature = "tracing"))]
     trans_state: TransactionPhases,
 }
 
 #[derive(Debug)]
-#[allow(dead_code)]
+#[cfg(any(feature = "access-log", feature = "tracing"))]
 struct TransactionPhases {
     phase: AtomicUsize,
 }
 
+#[cfg(any(feature = "access-log", feature = "tracing"))]
 impl TransactionPhases {
     fn new() -> Self {
         TransactionPhases { phase: AtomicUsize::new(0) }
     }
 
-    #[allow(dead_code)]
     fn message_complete(&self) -> TransactionComplete {
         TransactionComplete(self.phase.fetch_add(1, std::sync::atomic::Ordering::SeqCst) > 0)
     }
 }
 
-#[allow(dead_code)]
+#[cfg(any(feature = "access-log", feature = "tracing"))]
 struct TransactionComplete(bool);
 
 impl Default for TransactionHandler {
@@ -497,14 +505,15 @@ impl Default for TransactionHandler {
             trace_ctx: None,
             #[cfg(feature = "tracing")]
             span_state: None,
+            #[cfg(any(feature = "access-log", feature = "tracing"))]
             trans_state: TransactionPhases::new(),
         }
     }
 }
 
-#[allow(dead_code)]
-#[derive(Debug)]
+#[cfg(feature = "access-log")]
 struct EventInfo {
+    #[allow(dead_code)]
     body_kind: BodyKind,
     event_kind: Option<EventKind>,
     response_flags: ResponseFlags,
@@ -528,6 +537,7 @@ impl TransactionHandler {
             #[cfg(feature = "tracing")]
             span_state: server_span.map(|span| Arc::new(SpanState::new(Some(span)))),
             thread_id,
+            #[cfg(any(feature = "access-log", feature = "tracing"))]
             trans_state: TransactionPhases::new(),
         }
     }
@@ -773,6 +783,7 @@ impl
         Arc<DownstreamMetadata>,
     )> for Arc<RouteConfiguration>
 {
+    #[allow(clippy::too_many_lines)]
     async fn to_response(
         self,
         trans_handler: &TransactionHandler,
@@ -1229,7 +1240,7 @@ fn eval_http_init_context<R>(_request: &Request<R>, _trans_handler: &Transaction
 }
 
 #[allow(clippy::too_many_arguments)]
-#[allow(dead_code)]
+#[cfg(feature = "access-log")]
 fn eval_http_finish_context(
     _bytes_received: u64,
     _bytes_sent: u64,
@@ -1255,7 +1266,7 @@ fn eval_http_finish_context(
             response_code_details: event
                 .event_kind
                 .as_ref()
-                .map_or(EventKind::ViaUpstream.code_details(), EventKind::code_details)
+                .map_or(EventKind::Failure(EventFailure::ViaUpstream).code_details(), EventKind::code_details)
                 .map(|d| d.0),
             connection_termination_details: event
                 .event_kind
