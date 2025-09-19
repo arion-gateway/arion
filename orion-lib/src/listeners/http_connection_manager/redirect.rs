@@ -17,6 +17,9 @@
 
 use super::{RequestHandler, TransactionHandler};
 
+#[cfg(feature = "access-log")]
+use {crate::listeners::access_log::AccessLogContext, orion_format::context::UpstreamContext};
+
 use crate::{
     body::{body_with_metrics::BodyWithMetrics, body_with_timeout::BodyWithTimeout},
     Error, PolyBody, Result,
@@ -31,14 +34,29 @@ use orion_configuration::config::network_filters::http_connection_manager::route
     AuthorityRedirect, RedirectAction, RouteMatchResult,
 };
 use orion_error::Context;
+
 use std::str::FromStr;
 
-impl RequestHandler<(Request<BodyWithMetrics<BodyWithTimeout<Incoming>>>, RouteMatchResult)> for &RedirectAction {
+impl<'a> RequestHandler<(Request<BodyWithMetrics<BodyWithTimeout<Incoming>>>, RouteMatchResult, &'a str)>
+    for &RedirectAction
+{
     async fn to_response(
         self,
         _trans_handler: &TransactionHandler,
-        (request, route_match_result): (Request<BodyWithMetrics<BodyWithTimeout<Incoming>>>, RouteMatchResult),
+        (request, route_match_result, _route_name): (
+            Request<BodyWithMetrics<BodyWithTimeout<Incoming>>>,
+            RouteMatchResult,
+            &'a str,
+        ),
     ) -> Result<Response<PolyBody>> {
+        #[cfg(feature = "access-log")]
+        if let Some(ctx) = _trans_handler.access_log_ctx.as_ref() {
+            ctx.lock().loggers.with_context(&UpstreamContext {
+                authority: None,
+                cluster_name: None,
+                route_name: _route_name,
+            })
+        }
         let (parts, _) = request.into_parts();
         let mut rsp = Response::builder().status(StatusCode::from(self.response_code)).version(parts.version);
 

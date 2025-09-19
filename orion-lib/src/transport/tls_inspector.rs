@@ -19,12 +19,13 @@ use super::AsyncReadWrite;
 use crate::utils::rewindable_stream::RewindableHeadAsyncStream;
 
 use rustls::server::Acceptor;
+use smol_str::SmolStr;
 use std::io;
 
 #[derive(Debug)]
 pub enum InspectorResult {
     /// Handshake with valid TLS and SNI.
-    Success(String),
+    Success(SmolStr),
     /// Handshake with valid TLS, without server name indication.
     SuccessNoSni,
     /// Failed TLS Handshake (e.g. not TLS, or I/O, etc.).
@@ -36,7 +37,7 @@ pub async fn inspect_client_hello(stream: Box<dyn AsyncReadWrite>) -> (Inspector
     let acceptor = tokio_rustls::LazyConfigAcceptor::new(Acceptor::default(), &mut inspector);
     let result = match acceptor.await {
         Ok(handshake) => match handshake.client_hello().server_name() {
-            Some(server_name) => InspectorResult::Success(server_name.to_owned()),
+            Some(server_name) => InspectorResult::Success(server_name.into()),
             None => InspectorResult::SuccessNoSni,
         },
         Err(e) => InspectorResult::TlsError(e),
