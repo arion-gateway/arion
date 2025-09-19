@@ -30,14 +30,10 @@ mod route;
 mod upgrades;
 
 #[cfg(any(feature = "tracing", feature = "access-log"))]
-use {
-    std::sync::atomic::AtomicUsize,
-};
+use std::sync::atomic::AtomicUsize;
 
 #[cfg(any(feature = "tracing", feature = "metrics"))]
-use {
-    opentelemetry::KeyValue,
-};
+use opentelemetry::KeyValue;
 
 #[cfg(feature = "tracing")]
 use {
