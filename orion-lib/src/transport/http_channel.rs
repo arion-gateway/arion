@@ -102,6 +102,28 @@ impl ClientContext {
 }
 
 #[derive(Clone, Debug)]
+pub enum HttpChannels {
+    Single(HttpChannel),
+    MultiWithFailover { channel: HttpChannel, failover_channels: Vec<HttpChannel> },
+}
+
+impl HttpChannels {
+    pub fn channel(&self) -> &HttpChannel {
+        match self {
+            HttpChannels::Single(channel) | HttpChannels::MultiWithFailover { channel, .. } => channel,
+        }
+    }
+
+    pub fn upstream_authority(&self) -> &Authority {
+        &self.channel().upstream_authority
+    }
+
+    pub fn cluster_name(&self) -> &'static str {
+        self.channel().cluster_name
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct HttpChannel {
     pub client: HttpChannelClient,
     pub http_version: Codec,
@@ -323,6 +345,72 @@ fn update_upstream_stats(event: ConnectionEvent, key: &dyn Any, tag: &dyn Tag) {
             with_metric!(clusters::UPSTREAM_CX_DESTROY, add, 1, shard_id, &[KeyValue::new("cluster", cluster_name)]);
             with_metric!(clusters::UPSTREAM_CX_ACTIVE, sub, 1, shard_id, &[KeyValue::new("cluster", cluster_name)]);
         },
+    }
+}
+
+impl<'a> RequestHandler<RequestExt<'a, Request<BodyWithMetrics<PolyBody>>>> for &HttpChannels {
+    async fn to_response(
+        self,
+        trans_handler: &TransactionHandler,
+        request: RequestExt<'a, Request<BodyWithMetrics<PolyBody>>>,
+    ) -> Result<Response<crate::PolyBody>> {
+        match self {
+            HttpChannels::Single(channel) => channel.to_response(trans_handler, request).await,
+            HttpChannels::MultiWithFailover { channel, failover_channels } => {
+                let RequestExt { req, ctx } = request;
+                let RequestContext { route_timeout, .. } = ctx;
+                let (parts, body) = req.into_parts();
+                let BodyWithMetrics { inner, guard, state } = body;
+
+                let collected = inner.collect().await.map_err(Error::from)?;
+                let replay_body = http_body_util::Full::new(collected.to_bytes());
+
+                let total_attempts = 1 + failover_channels.len();
+                let mut last_error: Option<Error> = None;
+                let mut last_response: Option<Response<PolyBody>> = None;
+
+                for (attempt, channel) in std::iter::once(channel).chain(failover_channels.iter()).enumerate() {
+                    let has_more = attempt + 1 < total_attempts;
+
+                    let cloned_body = BodyWithMetrics { inner: replay_body.clone().into(), guard: guard, state: state };
+                    let rebuilt_req = Request::from_parts(parts.clone(), cloned_body);
+                    let attempt_ctx = RequestContext { route_timeout, retry_policy: None };
+                    let attempt_request = RequestExt::with_context(attempt_ctx, rebuilt_req);
+
+                    match channel.to_response(trans_handler, attempt_request).await {
+                        Ok(response) => {
+                            if has_more {
+                                debug!(
+                                    attempt,
+                                    cluster = channel.cluster_name,
+                                    upstream = %channel.upstream_authority,
+                                    "Retrying with alternative upstream endpoint"
+                                );
+                                last_response = Some(response);
+                                continue;
+                            }
+
+                            return Ok(response);
+                        },
+                        Err(err) => {
+                            debug!(
+                                attempt,
+                                cluster = channel.cluster_name,
+                                upstream = %channel.upstream_authority,
+                                error = %err,
+                                "Failed to forward request upstream"
+                            );
+                            last_error = Some(err);
+                        },
+                    }
+                }
+
+                if let Some(response) = last_response {
+                    return Ok(response);
+                }
+                Err(last_error.unwrap_or_else(|| Error::new("Failed to forward request to any upstream channel")))
+            },
+        }
     }
 }
 

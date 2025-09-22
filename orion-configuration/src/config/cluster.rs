@@ -306,9 +306,9 @@ mod envoy_conversions {
         },
         util::duration_from_envoy,
     };
-    use compact_str::CompactString;
     use http::HeaderName;
-    use ng2_data_plane_api::envoy_data_plane_api::{
+    use orion_data_plane_api::envoy_data_plane_api::prost::Message;
+    use orion_data_plane_api::envoy_data_plane_api::{
         envoy::{
             config::{
                 cluster::v3::{
@@ -344,7 +344,6 @@ mod envoy_conversions {
     };
     use smol_str::SmolStr;
 
-    use http::HeaderName;
     use std::{collections::BTreeSet, num::NonZeroU32};
 
     impl TryFrom<EnvoyCluster> for Cluster {
@@ -939,7 +938,10 @@ mod envoy_conversions {
                     "Orion currently only supports exactly one source in override_host_sources field",
                 ));
             }
-            let override_host_source = override_host_sources.into_iter().next().unwrap();
+            let override_host_source = override_host_sources
+                .into_iter()
+                .next()
+                .ok_or_else(|| GenericError::from_msg("override_host_sources should contain exactly one element"))?;
             let fallback_policy = fallback_policy
                 .ok_or_else(|| GenericError::from_msg("fallback_policy is required for OverrideHost"))
                 .and_then(SupportedEnvoyLoadBalancingPolicy::try_from)
