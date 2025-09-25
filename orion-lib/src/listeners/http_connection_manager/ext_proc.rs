@@ -2376,7 +2376,7 @@ mod tests {
         let result = ext_proc.apply_request(&mut request).await;
 
         assert!(matches!(result, FilterDecision::Continue));
-        assert_eq!(request.method(), Method::POST);
+        assert_eq!(request.method(), Method::GET);
         assert_eq!(request.headers().get("y-custom-header").unwrap(), "true");
         let body_bytes = std::mem::take(&mut request.body_mut().inner).collect().await.unwrap().to_bytes();
         assert_eq!(body_bytes, new_body.as_bytes());
