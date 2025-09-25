@@ -43,6 +43,16 @@ impl SyntheticHttpResponse {
         }
     }
 
+    pub fn internal_error_with_msg(msg: &str, event_kind: EventKind, response_flags: ResponseFlags) -> Self {
+        Self {
+            http_status: StatusCode::INTERNAL_SERVER_ERROR,
+            response_flags,
+            event_kind,
+            body: Bytes::copy_from_slice(msg.as_bytes()),
+            close_connection: true,
+        }
+    }
+
     pub fn bad_gateway(event_kind: EventKind, response_flags: ResponseFlags) -> Self {
         Self {
             http_status: StatusCode::BAD_GATEWAY,

@@ -38,6 +38,7 @@ pub enum EventFailure {
     UpgradeFailed,
     RbacAccessDenied,
     RateLimited,
+    ExtProcError,
     ViaUpstream,
 }
 
@@ -84,6 +85,7 @@ impl EventKind {
                 EventFailure::UpgradeFailed => Some(ResponseCodeDetails("upgrade_failed")),
                 EventFailure::RbacAccessDenied => Some(ResponseCodeDetails("rbac_access_denied")),
                 EventFailure::RateLimited => Some(ResponseCodeDetails("rate_limited")),
+                EventFailure::ExtProcError => Some(ResponseCodeDetails("ext_proc_error")),
                 EventFailure::ViaUpstream => Some(ResponseCodeDetails("via_upstream")),
             },
         }

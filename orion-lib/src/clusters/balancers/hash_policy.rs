@@ -18,14 +18,14 @@
 use std::{hash::Hasher, net::SocketAddr, ops::ControlFlow};
 
 use http::Request;
-use hyper::body::Incoming;
 use orion_configuration::config::network_filters::http_connection_manager::route::{HashPolicy, HashPolicyResult};
 use twox_hash::XxHash64;
 
-use crate::body::{body_with_metrics::BodyWithMetrics, body_with_timeout::BodyWithTimeout};
+use crate::body::body_with_metrics::BodyWithMetrics;
+use crate::PolyBody;
 
 #[derive(Clone, Debug)]
-pub struct HashState<'a, B = BodyWithMetrics<BodyWithTimeout<Incoming>>> {
+pub struct HashState<'a, B = BodyWithMetrics<PolyBody>> {
     policies: &'a [HashPolicy],
     req: &'a Request<B>,
     src_addr: SocketAddr,

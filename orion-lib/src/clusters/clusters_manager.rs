@@ -22,15 +22,15 @@ use super::{
     health::HealthStatus,
     load_assignment::{ClusterLoadAssignmentBuilder, PartialClusterLoadAssignment},
 };
+use crate::PolyBody;
 use crate::{
-    body::{body_with_metrics::BodyWithMetrics, body_with_timeout::BodyWithTimeout},
+    body::body_with_metrics::BodyWithMetrics,
     clusters::cluster::{ClusterOps, PartialClusterType},
     secrets::TransportSecret,
     transport::{GrpcService, HttpChannel, TcpChannelConnector},
     Result,
 };
 use http::{uri::Authority, HeaderName, HeaderValue, Request};
-use hyper::body::Incoming;
 use orion_configuration::config::cluster::{Cluster as ClusterConfig, ClusterSpecifier as ClusterSpecifierConfig};
 use orion_interner::StringInterner;
 use rand::{prelude::SliceRandom, thread_rng};
@@ -58,13 +58,13 @@ pub enum RoutingContext<'a> {
     Hash(HashState<'a>),
 }
 
-impl<'a> TryFrom<(&'a RoutingRequirement, &'a Request<BodyWithMetrics<BodyWithTimeout<Incoming>>>, HashState<'a>)>
+impl<'a> TryFrom<(&'a RoutingRequirement, &'a Request<BodyWithMetrics<PolyBody>>, HashState<'a>)>
     for RoutingContext<'a>
 {
     type Error = String;
 
     fn try_from(
-        value: (&'a RoutingRequirement, &'a Request<BodyWithMetrics<BodyWithTimeout<Incoming>>>, HashState<'a>),
+        value: (&'a RoutingRequirement, &'a Request<BodyWithMetrics<PolyBody>>, HashState<'a>),
     ) -> std::result::Result<Self, Self::Error> {
         let (routing_requirement, request, hash_state) = value;
         match routing_requirement {

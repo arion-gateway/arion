@@ -24,6 +24,8 @@
 #![allow(clippy::mutable_key_type)]
 
 mod direct_response;
+mod ext_proc;
+use ext_proc::ExternalProcessor;
 mod http_modifiers;
 mod redirect;
 mod route;
@@ -196,6 +198,7 @@ pub struct HttpFilter {
     pub name: SmolStr,
     pub disabled: bool,
     pub filter: Option<HttpFilterValue>,
+    pub base_config: Option<HttpFilterConfig>,
 }
 
 #[derive(Debug, Clone)]
@@ -204,38 +207,59 @@ pub enum HttpFilterValue {
     // while Rbac uses a configuration type - we might want to revisit this
     RateLimit(LocalRateLimit),
     Rbac(HttpRbac),
+    ExternalProcessor(ExternalProcessor),
 }
 
 impl From<HttpFilterConfig> for HttpFilter {
     fn from(value: HttpFilterConfig) -> Self {
+        let hcm_config = match &value.filter {
+            HttpFilterType::ExternalProcessor(_) => Some(value.clone()),
+            _ => None,
+        };
+
         let HttpFilterConfig { name, disabled, filter } = value;
+
         let filter = match filter {
             HttpFilterType::RateLimit(r) => HttpFilterValue::RateLimit(r.into()),
             HttpFilterType::Rbac(rbac) => HttpFilterValue::Rbac(rbac),
+            HttpFilterType::ExternalProcessor(ext_proc) => HttpFilterValue::ExternalProcessor(ext_proc.into()),
         };
-        Self { name, disabled, filter: Some(filter) }
+        Self { name, disabled, filter: Some(filter), base_config: hcm_config }
     }
 }
 
 impl HttpFilterValue {
-    pub fn apply_request<B>(&self, request: &Request<B>) -> FilterDecision {
+    pub async fn apply_request(&mut self, request: &mut Request<BodyWithMetrics<PolyBody>>) -> FilterDecision {
         match self {
             HttpFilterValue::Rbac(rbac) => apply_authorization_rules(rbac, request),
             HttpFilterValue::RateLimit(rl) => rl.run(request),
+            HttpFilterValue::ExternalProcessor(ext_proc) => ext_proc.apply_request(request).await,
         }
     }
-    pub fn apply_response(&self, _response: &mut Response<PolyBody>) -> FilterDecision {
+    pub async fn apply_response(&mut self, response: &mut Response<PolyBody>) -> FilterDecision {
         match self {
             // RBAC and RateLimit do not apply on the response path
             HttpFilterValue::Rbac(_) | HttpFilterValue::RateLimit(_) => FilterDecision::Continue,
+            HttpFilterValue::ExternalProcessor(ext_proc) => ext_proc.apply_response(response).await,
         }
     }
-    fn from_filter_override(value: &FilterOverride) -> Option<Self> {
+    fn from_filter_override(value: &FilterOverride, base_config: Option<&HttpFilterConfig>) -> Option<Self> {
         match &value.filter_settings {
             Some(filter_settings) => match filter_settings {
                 FilterConfigOverride::LocalRateLimit(rl) => Some(HttpFilterValue::RateLimit((*rl).into())),
                 FilterConfigOverride::Rbac(Some(rbac)) => Some(HttpFilterValue::Rbac(rbac.clone())),
                 FilterConfigOverride::Rbac(None) => None,
+                FilterConfigOverride::ExternalProcessor(ext_proc_per_route) => {
+                    if let Some(HttpFilterConfig { filter: HttpFilterType::ExternalProcessor(base_config), .. }) =
+                        base_config
+                    {
+                        Some(HttpFilterValue::ExternalProcessor(
+                            (base_config.clone(), Some(ext_proc_per_route.clone())).into(),
+                        ))
+                    } else {
+                        None
+                    }
+                },
             },
             None => None,
         }
@@ -254,7 +278,8 @@ fn per_route_http_filters(
                     Some(override_config) => Arc::new(HttpFilter {
                         name: hcm_filter.name.clone(),
                         disabled: override_config.disabled,
-                        filter: HttpFilterValue::from_filter_override(override_config),
+                        filter: HttpFilterValue::from_filter_override(override_config, hcm_filter.base_config.as_ref()),
+                        base_config: hcm_filter.base_config.clone(),
                     }),
                     None => Arc::clone(hcm_filter),
                 };
@@ -408,9 +433,10 @@ impl HttpConnectionManager {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 #[allow(dead_code)]
 pub enum FilterDecision {
+    #[default]
     Continue,
     Reroute,
     DirectResponse(Response<PolyBody>),
@@ -791,7 +817,8 @@ impl
     ) -> Result<Response<PolyBody>> {
         let mut processed_routes: HashSet<&RouteMatch> = HashSet::new();
         let mut cached_route = match_request_route(&request, &self);
-
+        let mut request: Request<BodyWithMetrics<PolyBody>> = request.map(BodyWithMetrics::map_into::<PolyBody>);
+        let mut active_filters: Vec<HttpFilterValue> = Vec::new();
         loop {
             if let Some(ref chosen_route) = cached_route {
                 if processed_routes.contains(&chosen_route.route.route_match) {
@@ -808,7 +835,9 @@ impl
                             continue;
                         }
                         if let Some(filter_value) = &filter.filter {
-                            let filter_res = filter_value.apply_request(&request);
+                            let mut filter_value = filter_value.clone();
+                            let filter_res = filter_value.apply_request(&mut request).await;
+                            active_filters.push(filter_value);
                             if matches!(filter_res, FilterDecision::Reroute) {
                                 // stop processing filters and re-evaluate the route
                                 is_reroute = true;
@@ -822,6 +851,7 @@ impl
                     if !is_reroute {
                         break;
                     }
+                    active_filters.clear();
                     processed_routes.insert(&chosen_route.route.route_match);
                     cached_route = match_request_route(&request, &self);
                 } else {
@@ -866,18 +896,11 @@ impl
                 },
             }?;
 
-            let guard = connection_manager.http_filters_per_route.load();
-            let route_filters = guard.get(&chosen_route.route.route_match);
-            if let Some(route_filters) = route_filters {
-                for filter in route_filters.iter().rev() {
-                    if filter.disabled {
-                        continue;
-                    }
-                    if let Some(filter_value) = &filter.filter {
-                        // we do not evaluate filter decision on the response
-                        // path since it cannot be a reroute
-                        filter_value.apply_response(&mut response);
-                    }
+            while let Some(mut filter_value) = active_filters.pop() {
+                let filter_res = filter_value.apply_response(&mut response).await;
+                if let FilterDecision::DirectResponse(direct_response) = filter_res {
+                    response = direct_response;
+                    break;
                 }
             }
 
