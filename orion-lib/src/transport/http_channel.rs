@@ -372,7 +372,11 @@ impl<'a> RequestHandler<RequestExt<'a, Request<BodyWithMetrics<PolyBody>>>> for 
                 for (attempt, channel) in std::iter::once(channel).chain(failover_channels.iter()).enumerate() {
                     let has_more = attempt + 1 < total_attempts;
 
-                    let cloned_body = BodyWithMetrics { inner: replay_body.clone().into(), guard: guard, state: state };
+                    let cloned_body = BodyWithMetrics {
+                        inner: replay_body.clone().into(),
+                        guard: guard.clone(),
+                        state: state.clone(),
+                    };
                     let rebuilt_req = Request::from_parts(parts.clone(), cloned_body);
                     let attempt_ctx = RequestContext { route_timeout, retry_policy: None };
                     let attempt_request = RequestExt::with_context(attempt_ctx, rebuilt_req);
