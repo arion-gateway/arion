@@ -1307,7 +1307,7 @@ fn apply_authorization_rules<B>(rbac: &HttpRbac, req: &Request<B>) -> FilterDeci
         FilterDecision::Continue
     } else {
         FilterDecision::DirectResponse(
-            SyntheticHttpResponse::forbidden(EventFailure::RbacAccessDenied(enforced_policy.unwrap_or(SmolStr::new_static(""))).into(), "RBAC: access denied")
+            SyntheticHttpResponse::forbidden(EventFailure::RbacAccessDenied(enforced_policy.unwrap_or(SmolStr::new_static("unknown"))).into(), "RBAC: access denied")
                 .into_response(req.version()),
         )
     }
