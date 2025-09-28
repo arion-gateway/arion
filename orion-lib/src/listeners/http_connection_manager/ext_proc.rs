@@ -8,6 +8,7 @@ use crate::{
 };
 use bytes::Bytes;
 use futures::{future::Either, StreamExt};
+use http::header::CONTENT_LENGTH;
 use http::{Request, Response};
 use http_body_util::{BodyExt, BodyStream, Empty, Full};
 use orion_configuration::config::{
@@ -70,9 +71,9 @@ impl From<(ExternalProcessorConfig, Option<ExtProcPerRoute>)> for ExternalProces
             !matches!(worker_config.processing_mode.request_header_mode, HeaderProcessingMode::Skip);
         let sending_request_body = !matches!(worker_config.processing_mode.request_body_mode, BodyProcessingMode::None);
         let sending_response_headers =
-            !matches!(worker_config.processing_mode.request_header_mode, HeaderProcessingMode::Skip);
+            !matches!(worker_config.processing_mode.response_header_mode, HeaderProcessingMode::Skip);
         let sending_response_body =
-            !matches!(worker_config.processing_mode.request_body_mode, BodyProcessingMode::None);
+            !matches!(worker_config.processing_mode.response_body_mode, BodyProcessingMode::None);
         Self {
             ext_proc_worker: None,
             worker_config: Arc::new(worker_config),
@@ -191,6 +192,7 @@ impl ExternalProcessor {
                 if let Some(body_replacement) = body_replacement {
                     //*request.method_mut() = Method::POST;
                     request.body_mut().inner = body_replacement;
+                    request.headers_mut().remove(CONTENT_LENGTH);
                 }
                 if let Some(override_value) = override_sending_response_headers {
                     self.sending_response_headers = override_value;
@@ -211,7 +213,6 @@ impl ExternalProcessor {
         if !self.sending_response_headers && !self.sending_response_body {
             return FilterDecision::Continue;
         }
-
         let (response_tx, response_rx) = oneshot::channel();
         let body: PolyBody = std::mem::take(response.body_mut());
         let processing_data = if self.sending_response_headers {
@@ -222,7 +223,6 @@ impl ExternalProcessor {
         };
         let processing_message =
             ProcessingTask { data: processing_data, reply_channel: response_tx, http_version: response.version() };
-
         let worker_channel = self.get_worker_channel();
         if worker_channel.send(processing_message).await.is_err() {
             return self.on_filter_error(
@@ -257,6 +257,7 @@ impl ExternalProcessor {
                 }
                 if let Some(body_replacement) = body_replacement {
                     *response.body_mut() = body_replacement;
+                    response.headers_mut().remove(CONTENT_LENGTH);
                 }
                 FilterDecision::Continue
             },
@@ -316,14 +317,10 @@ impl ExternalProcessor {
             let header_name = name.as_str();
             if self.should_forward_header(header_name) {
                 let header_value = if let Ok(value_str) = value.to_str() {
-                    HeaderValue {
-                        key: header_name.to_string(),
-                        value: value_str.to_string(),
-                        raw_value: Vec::default(),
-                    }
+                    HeaderValue { key: header_name.to_owned(), value: value_str.to_owned(), raw_value: Vec::default() }
                 } else {
                     HeaderValue {
-                        key: header_name.to_string(),
+                        key: header_name.to_owned(),
                         value: String::default(),
                         raw_value: value.as_bytes().to_vec(),
                     }
@@ -398,12 +395,14 @@ fn apply_header_mutations(
     Ok(())
 }
 
+#[derive(Debug)]
 struct ProcessingTask {
     data: ProcessingData,
     reply_channel: oneshot::Sender<ProcessingStatus>,
     http_version: http::Version,
 }
 
+#[derive(Debug)]
 enum ProcessingData {
     Request(HttpHeaders, PolyBody),
     RequestBody(PolyBody),
@@ -525,6 +524,7 @@ impl ExternalProcessingWorker {
 
     async fn forward_to_external_processor(&mut self, request_opt: Option<ProcessingRequest>) {
         let Some(mut request) = request_opt else {
+            self.timeout_state.active = false;
             return;
         };
         request.protocol_config = self.handshake.take();
@@ -847,6 +847,7 @@ enum ProcessingState {
     WaitingForBodyReply,
     StreamingBody,
     StreamingBodyWaitingForReply,
+    #[allow(dead_code)]
     FullDuplexStreamingBody,
     ProcessingTrailers,
     #[default]
@@ -892,6 +893,11 @@ impl BodyContext {
         }
         self.body_sender = Some(sender);
         Ok(())
+    }
+    fn finish_stream(&mut self) {
+        if let Some(sender) = self.body_sender.take() {
+            drop(sender);
+        }
     }
 }
 
@@ -969,28 +975,6 @@ impl RequestProcessing {
         self.http_version = Some(http_version);
         self.body_context.body = Some(body);
         match &self.state {
-            ProcessingState::ObservabilityMode
-                if matches!(self.body_context.body_mode, BodyProcessingMode::Streamed) =>
-            {
-                let processing_request = ProcessingRequest {
-                    request: Some(ProcessingRequestType::RequestHeaders(headers)),
-                    metadata_context: None,
-                    attributes: HashMap::default(),
-                    observability_mode: true,
-                    protocol_config: None,
-                };
-                self.body_context.start_streaming();
-                let status = ProcessingStatus::RequestIsReady {
-                    header_modifications: None,
-                    body_replacement: self.body_context.body.take(),
-                    override_sending_response_headers: None,
-                    override_sending_response_body: None,
-                    clear_route_cache: false,
-                };
-                self.state = ProcessingState::ObservabilityModeStreamingBody;
-                self.exit_with_status(status);
-                Some(processing_request)
-            },
             ProcessingState::ObservabilityMode => {
                 let processing_request = ProcessingRequest {
                     request: Some(ProcessingRequestType::RequestHeaders(headers)),
@@ -999,6 +983,12 @@ impl RequestProcessing {
                     observability_mode: true,
                     protocol_config: None,
                 };
+                if matches!(self.body_context.body_mode, BodyProcessingMode::Streamed) {
+                    self.state = ProcessingState::ObservabilityModeStreamingBody;
+                    self.body_context.start_streaming();
+                } else {
+                    self.state = ProcessingState::Idle;
+                }
                 let status = ProcessingStatus::RequestIsReady {
                     header_modifications: None,
                     body_replacement: self.body_context.body.take(),
@@ -1006,23 +996,8 @@ impl RequestProcessing {
                     override_sending_response_body: None,
                     clear_route_cache: false,
                 };
-                self.state = ProcessingState::Idle;
+
                 self.exit_with_status(status);
-                Some(processing_request)
-            },
-            ProcessingState::WaitingForHeadersInput
-                if (self.send_body_without_waiting_for_header_response
-                    && matches!(self.body_context.body_mode, BodyProcessingMode::Streamed)) =>
-            {
-                let processing_request = ProcessingRequest {
-                    request: Some(ProcessingRequestType::RequestHeaders(headers)),
-                    metadata_context: None,
-                    attributes: HashMap::default(),
-                    observability_mode: false,
-                    protocol_config: None,
-                };
-                self.body_context.start_streaming();
-                self.state = ProcessingState::StreamingBody;
                 Some(processing_request)
             },
             ProcessingState::WaitingForHeadersInput => {
@@ -1033,7 +1008,14 @@ impl RequestProcessing {
                     observability_mode: false,
                     protocol_config: None,
                 };
-                self.state = ProcessingState::WaitingForHeadersReply;
+                if self.send_body_without_waiting_for_header_response
+                    && matches!(self.body_context.body_mode, BodyProcessingMode::Streamed)
+                {
+                    self.body_context.start_streaming();
+                    self.state = ProcessingState::StreamingBody;
+                } else {
+                    self.state = ProcessingState::WaitingForHeadersReply;
+                }
                 Some(processing_request)
             },
             _ => None,
@@ -1049,12 +1031,28 @@ impl RequestProcessing {
     ) -> Option<ProcessingRequest> {
         match &self.state {
             ProcessingState::WaitingForHeadersReply | ProcessingState::StreamingBody => {
+                let mut status = ProcessingStatus::RequestIsReady {
+                    header_modifications: None,
+                    body_replacement: None,
+                    override_sending_response_headers: Some(wants_response_headers),
+                    override_sending_response_body: Some(wants_response_body),
+                    clear_route_cache: false,
+                };
                 if let Some(response_data) = response.response {
                     let should_clear_route_cache = match route_cache_action {
                         RouteCacheAction::Clear => true,
                         RouteCacheAction::Retain => false,
                         RouteCacheAction::Default => response_data.clear_route_cache,
                     };
+                    if let ProcessingStatus::RequestIsReady {
+                        ref mut header_modifications,
+                        ref mut clear_route_cache,
+                        ..
+                    } = status
+                    {
+                        *header_modifications = response_data.header_mutation;
+                        *clear_route_cache = should_clear_route_cache;
+                    }
                     let embedded_status =
                         ResponseStatus::try_from(response_data.status).unwrap_or(ResponseStatus::Continue);
                     if matches!(embedded_status, ResponseStatus::ContinueAndReplace) {
@@ -1073,54 +1071,30 @@ impl RequestProcessing {
                                     return None;
                                 },
                             };
-                        let status = ProcessingStatus::RequestIsReady {
-                            header_modifications: response_data.header_mutation,
-                            body_replacement,
-                            override_sending_response_headers: Some(wants_response_headers),
-                            override_sending_response_body: Some(wants_response_body),
-                            clear_route_cache: should_clear_route_cache,
-                        };
+                        if let ProcessingStatus::RequestIsReady { body_replacement: ref mut body, .. } = status {
+                            *body = body_replacement;
+                        }
                         if let Some(reply_channel) = self.reply_channel.take() {
                             let _ = reply_channel.send(status);
                         }
                         return None;
                     }
-                    if let Some(reply_channel) = self.reply_channel.take() {
-                        let mut status = ProcessingStatus::RequestIsReady {
-                            header_modifications: response_data.header_mutation,
-                            body_replacement: None,
-                            override_sending_response_headers: Some(wants_response_headers),
-                            override_sending_response_body: Some(wants_response_body),
-                            clear_route_cache: should_clear_route_cache,
-                        };
-                        if self.is_body_processing_planned() {
-                            self.state = ProcessingState::WaitingForBodyInput;
-                            self.partial_reply = Some(status);
-                            if let Some(body) = self.body_context.body.take() {
-                                return self.process_body(body, reply_channel, None).await;
-                            }
-                        } else {
-                            if let ProcessingStatus::RequestIsReady { ref mut body_replacement, .. } = status {
-                                *body_replacement = self.body_context.body.take();
-                            }
-                            let _ = reply_channel.send(status);
-                            return None;
+                }
+                if let Some(reply_channel) = self.reply_channel.take() {
+                    if self.is_body_processing_planned() {
+                        self.state = ProcessingState::WaitingForBodyInput;
+                        self.partial_reply = Some(status);
+                        if let Some(body) = self.body_context.body.take() {
+                            return self.process_body(body, reply_channel, None).await;
                         }
-                    }
-                    None
-                } else {
-                    let status = ProcessingStatus::RequestIsReady {
-                        header_modifications: None,
-                        body_replacement: self.body_context.body.take(),
-                        override_sending_response_headers: Some(wants_response_headers),
-                        override_sending_response_body: Some(wants_response_body),
-                        clear_route_cache: false,
-                    };
-                    if let Some(reply_channel) = self.reply_channel.take() {
+                    } else {
+                        if let ProcessingStatus::RequestIsReady { ref mut body_replacement, .. } = status {
+                            *body_replacement = self.body_context.body.take();
+                        }
                         let _ = reply_channel.send(status);
                     }
-                    None
                 }
+                None
             },
             _ => None,
         }
@@ -1165,25 +1139,8 @@ impl RequestProcessing {
                 },
                 BodyProcessingMode::Streamed | BodyProcessingMode::FullDuplexStreamed => {
                     self.body_context.body = Some(body);
-                    if matches!(self.body_context.body_mode, BodyProcessingMode::Streamed) {
-                        self.state = ProcessingState::StreamingBody;
-                    } else {
-                        self.state = ProcessingState::FullDuplexStreamingBody;
-                    }
+                    self.state = ProcessingState::StreamingBody;
                     self.body_context.start_streaming();
-                    let mut status = self.partial_reply.take().unwrap_or(ProcessingStatus::RequestIsReady {
-                        header_modifications: None,
-                        body_replacement: None,
-                        override_sending_response_headers: None,
-                        override_sending_response_body: None,
-                        clear_route_cache: false,
-                    });
-                    if let ProcessingStatus::RequestIsReady { ref mut body_replacement, .. } = status {
-                        *body_replacement = self.body_context.body.take();
-                    }
-                    if let Some(channel) = self.reply_channel.take() {
-                        let _ = channel.send(status);
-                    }
                     None
                 },
                 BodyProcessingMode::None if matches!(self.body_context.trailer_mode, TrailerProcessingMode::Send) => {
@@ -1294,6 +1251,7 @@ impl RequestProcessing {
                         {
                             let _ = reply_channel.send(status);
                             self.state = ProcessingState::Idle;
+                            self.body_context.finish_stream();
                             return None;
                         }
                         self.partial_reply = Some(status);
@@ -1304,7 +1262,7 @@ impl RequestProcessing {
                 } else {
                     let status = self.partial_reply.take().unwrap_or(ProcessingStatus::RequestIsReady {
                         header_modifications: None,
-                        body_replacement: None,
+                        body_replacement: self.body_context.body.take(),
                         override_sending_response_headers: None,
                         override_sending_response_body: None,
                         clear_route_cache: false,
@@ -1318,19 +1276,63 @@ impl RequestProcessing {
             ProcessingState::StreamingBodyWaitingForReply | ProcessingState::FullDuplexStreamingBody => {
                 if let Some(response_data) = body_response.response {
                     let body_mutation = response_data.body_mutation.and_then(|body_mutation| body_mutation.mutation);
-                    if let Some(Mutation::StreamedResponse(streamed_response)) = body_mutation {
-                        if let Some(sender) = &self.body_context.body_sender {
-                            let _ = sender.send_data(streamed_response.body.into()).await;
-                        }
-                        if streamed_response.end_of_stream {
+                    let mut end_of_stream: bool = false;
+                    match body_mutation {
+                        Some(Mutation::StreamedResponse(streamed_response)) => {
+                            if let Some(sender) = &self.body_context.body_sender {
+                                let _ = sender.send_data(streamed_response.body.into()).await;
+                            }
+                            if streamed_response.end_of_stream {
+                                if matches!(self.body_context.trailer_mode, TrailerProcessingMode::Send) {
+                                    self.state = ProcessingState::ProcessingTrailers;
+                                } else {
+                                    self.state = ProcessingState::Idle;
+                                    self.body_context.finish_stream();
+                                    end_of_stream = true;
+                                }
+                            } else if matches!(self.state, ProcessingState::StreamingBodyWaitingForReply) {
+                                self.state = ProcessingState::StreamingBody;
+                            }
+                        },
+                        Some(Mutation::Body(bytes)) => {
+                            if let Some(sender) = &self.body_context.body_sender {
+                                let _ = sender.send_data(bytes.into()).await;
+                            }
                             if matches!(self.body_context.trailer_mode, TrailerProcessingMode::Send) {
                                 self.state = ProcessingState::ProcessingTrailers;
                             } else {
                                 self.state = ProcessingState::Idle;
+                                self.body_context.finish_stream();
+                                end_of_stream = true;
                             }
-                        } else if matches!(self.state, ProcessingState::StreamingBodyWaitingForReply) {
-                            self.state = ProcessingState::StreamingBody;
+                        },
+                        Some(Mutation::ClearBody(_)) | None => {
+                            self.state = ProcessingState::Idle;
+                            self.body_context.finish_stream();
+                            end_of_stream = true;
+                        },
+                    }
+                    let mut status = self.partial_reply.take().unwrap_or(ProcessingStatus::RequestIsReady {
+                        header_modifications: None,
+                        body_replacement: None,
+                        override_sending_response_headers: None,
+                        override_sending_response_body: None,
+                        clear_route_cache: false,
+                    });
+                    if let ProcessingStatus::RequestIsReady { body_replacement: ref mut body, .. } = status {
+                        if body.is_none() {
+                            *body = self.body_context.body.take();
                         }
+                    }
+                    if end_of_stream {
+                        if let Some(reply_channel) = self.reply_channel.take() {
+                            let _ = reply_channel.send(status);
+                        }
+                    } else {
+                        self.partial_reply = Some(status);
+                        let trailers = self.body_context.trailers.take();
+                        let reply_channel = self.reply_channel.take();
+                        return self.process_trailers(trailers, reply_channel, self.http_version);
                     }
                 }
                 None
@@ -1356,14 +1358,10 @@ impl RequestProcessing {
             for (name, value) in &trailers {
                 let header_name = name.as_str();
                 let header_value = if let Ok(value_str) = value.to_str() {
-                    HeaderValue {
-                        key: header_name.to_string(),
-                        value: value_str.to_string(),
-                        raw_value: Vec::default(),
-                    }
+                    HeaderValue { key: header_name.to_owned(), value: value_str.to_owned(), raw_value: Vec::default() }
                 } else {
                     HeaderValue {
-                        key: header_name.to_string(),
+                        key: header_name.to_owned(),
                         value: String::default(),
                         raw_value: value.as_bytes().to_vec(),
                     }
@@ -1383,10 +1381,22 @@ impl RequestProcessing {
             if !matches!(self.state, ProcessingState::ObservabilityMode) {
                 self.state = ProcessingState::ProcessingTrailers;
             }
-            return Some(processing_request);
+            Some(processing_request)
+        } else {
+            if let Some(reply_channel) = self.reply_channel.take() {
+                let status = self.partial_reply.take().unwrap_or(ProcessingStatus::RequestIsReady {
+                    header_modifications: None,
+                    body_replacement: self.body_context.body.take(),
+                    override_sending_response_headers: None,
+                    override_sending_response_body: None,
+                    clear_route_cache: false,
+                });
+                let _ = reply_channel.send(status);
+                self.state = ProcessingState::Idle;
+                self.body_context.finish_stream();
+            }
+            None
         }
-        self.state = ProcessingState::Idle;
-        None
     }
 
     async fn handle_trailers_response(&mut self, trailers_response: TrailersResponse) -> Option<ProcessingRequest> {
@@ -1411,6 +1421,7 @@ impl RequestProcessing {
                         });
                         let _ = reply_channel.send(status);
                         self.state = ProcessingState::Idle;
+                        self.body_context.finish_stream();
                     }
                 },
                 ProcessingState::ObservabilityMode => {
@@ -1418,6 +1429,7 @@ impl RequestProcessing {
                         let _ = sender.send_trailers(trailers).await;
                     }
                     self.state = ProcessingState::Idle;
+                    self.body_context.finish_stream();
                 },
                 _ => {},
             }
@@ -1507,6 +1519,7 @@ struct ResponseProcessing {
     reply_channel: Option<oneshot::Sender<ProcessingStatus>>,
     header_mode: HeaderProcessingMode,
     http_version: Option<http::Version>,
+    send_body_without_waiting_for_header_response: bool,
     failure_mode_allow: bool,
 }
 
@@ -1542,6 +1555,7 @@ impl From<&ExternalProcessingWorkerConfig> for ResponseProcessing {
             reply_channel: None,
             header_mode: processing_mode.response_header_mode,
             http_version: None,
+            send_body_without_waiting_for_header_response: config.send_body_without_waiting_for_header_response,
             failure_mode_allow: config.failure_mode_allow,
         }
     }
@@ -1599,25 +1613,6 @@ impl ResponseProcessing {
         self.http_version = Some(http_version);
         self.body_context.body = Some(body);
         match &self.state {
-            ProcessingState::ObservabilityMode
-                if matches!(self.body_context.body_mode, BodyProcessingMode::Streamed) =>
-            {
-                let processing_request = ProcessingRequest {
-                    request: Some(ProcessingRequestType::ResponseHeaders(headers)),
-                    metadata_context: None,
-                    attributes: HashMap::default(),
-                    observability_mode: true,
-                    protocol_config: None,
-                };
-                self.body_context.start_streaming();
-                let status = ProcessingStatus::ResponseIsReady {
-                    header_modifications: None,
-                    body_replacement: self.body_context.body.take(),
-                };
-                self.state = ProcessingState::ObservabilityModeStreamingBody;
-                self.exit_with_status(status);
-                Some(processing_request)
-            },
             ProcessingState::ObservabilityMode => {
                 let processing_request = ProcessingRequest {
                     request: Some(ProcessingRequestType::ResponseHeaders(headers)),
@@ -1626,11 +1621,16 @@ impl ResponseProcessing {
                     observability_mode: true,
                     protocol_config: None,
                 };
+                if matches!(self.body_context.body_mode, BodyProcessingMode::Streamed) {
+                    self.state = ProcessingState::ObservabilityModeStreamingBody;
+                    self.body_context.start_streaming();
+                } else {
+                    self.state = ProcessingState::Idle;
+                }
                 let status = ProcessingStatus::ResponseIsReady {
                     header_modifications: None,
                     body_replacement: self.body_context.body.take(),
                 };
-                self.state = ProcessingState::Idle;
                 self.exit_with_status(status);
                 Some(processing_request)
             },
@@ -1642,7 +1642,14 @@ impl ResponseProcessing {
                     observability_mode: false,
                     protocol_config: None,
                 };
-                self.state = ProcessingState::WaitingForHeadersReply;
+                if self.send_body_without_waiting_for_header_response
+                    && matches!(self.body_context.body_mode, BodyProcessingMode::Streamed)
+                {
+                    self.body_context.start_streaming();
+                    self.state = ProcessingState::StreamingBody;
+                } else {
+                    self.state = ProcessingState::WaitingForHeadersReply;
+                }
                 Some(processing_request)
             },
             _ => None,
@@ -1652,7 +1659,7 @@ impl ResponseProcessing {
     async fn handle_headers_response(&mut self, response: HeadersResponse) -> Option<ProcessingRequest> {
         match &self.state {
             ProcessingState::WaitingForHeadersReply | ProcessingState::StreamingBody => {
-                if let Some(response_data) = response.response {
+                let mut status = if let Some(response_data) = response.response {
                     let embedded_status =
                         ResponseStatus::try_from(response_data.status).unwrap_or(ResponseStatus::Continue);
                     if matches!(embedded_status, ResponseStatus::ContinueAndReplace) {
@@ -1680,38 +1687,28 @@ impl ResponseProcessing {
                         }
                         return None;
                     }
-                    let mut status = ProcessingStatus::ResponseIsReady {
+                    ProcessingStatus::ResponseIsReady {
                         header_modifications: response_data.header_mutation,
                         body_replacement: None,
-                    };
+                    }
+                } else {
+                    ProcessingStatus::ResponseIsReady { header_modifications: None, body_replacement: None }
+                };
+                if let Some(reply_channel) = self.reply_channel.take() {
                     if self.is_body_processing_planned() {
                         self.state = ProcessingState::WaitingForBodyInput;
                         self.partial_reply = Some(status);
                         if let Some(body) = self.body_context.body.take() {
-                            if let Some(reply_channel) = self.reply_channel.take() {
-                                return self.process_body(body, reply_channel, None).await;
-                            }
+                            return self.process_body(body, reply_channel, None).await;
                         }
                     } else {
                         if let ProcessingStatus::ResponseIsReady { ref mut body_replacement, .. } = status {
                             *body_replacement = self.body_context.body.take();
                         }
-                        if let Some(reply_channel) = self.reply_channel.take() {
-                            let _ = reply_channel.send(status);
-                            return None;
-                        }
-                    }
-                    None
-                } else {
-                    let status = ProcessingStatus::ResponseIsReady {
-                        header_modifications: None,
-                        body_replacement: self.body_context.body.take(),
-                    };
-                    if let Some(reply_channel) = self.reply_channel.take() {
                         let _ = reply_channel.send(status);
                     }
-                    None
                 }
+                None
             },
             _ => None,
         }
@@ -1756,22 +1753,8 @@ impl ResponseProcessing {
                 },
                 BodyProcessingMode::Streamed | BodyProcessingMode::FullDuplexStreamed => {
                     self.body_context.body = Some(body);
-                    if matches!(self.body_context.body_mode, BodyProcessingMode::Streamed) {
-                        self.state = ProcessingState::StreamingBody;
-                    } else {
-                        self.state = ProcessingState::FullDuplexStreamingBody;
-                    }
+                    self.state = ProcessingState::StreamingBody;
                     self.body_context.start_streaming();
-                    let mut status = self.partial_reply.take().unwrap_or(ProcessingStatus::ResponseIsReady {
-                        header_modifications: None,
-                        body_replacement: None,
-                    });
-                    if let ProcessingStatus::ResponseIsReady { ref mut body_replacement, .. } = status {
-                        *body_replacement = self.body_context.body.take();
-                    }
-                    if let Some(channel) = self.reply_channel.take() {
-                        let _ = channel.send(status);
-                    }
                     None
                 },
                 BodyProcessingMode::None if matches!(self.body_context.trailer_mode, TrailerProcessingMode::Send) => {
@@ -1852,7 +1835,7 @@ impl ResponseProcessing {
                     };
                     let mut status = self.partial_reply.take().unwrap_or(ProcessingStatus::ResponseIsReady {
                         header_modifications: None,
-                        body_replacement: None,
+                        body_replacement: self.body_context.body.take(),
                     });
                     if let ProcessingStatus::ResponseIsReady { body_replacement: ref mut body, .. } = status {
                         *body = body_replacement;
@@ -1871,6 +1854,7 @@ impl ResponseProcessing {
                         {
                             let _ = reply_channel.send(status);
                             self.state = ProcessingState::Idle;
+                            self.body_context.finish_stream();
                             return None;
                         }
                         self.partial_reply = Some(status);
@@ -1879,12 +1863,9 @@ impl ResponseProcessing {
                     }
                     None
                 } else {
-                    let status = self.partial_reply.take().unwrap_or(ProcessingStatus::RequestIsReady {
+                    let status = self.partial_reply.take().unwrap_or(ProcessingStatus::ResponseIsReady {
                         header_modifications: None,
-                        body_replacement: None,
-                        override_sending_response_headers: None,
-                        override_sending_response_body: None,
-                        clear_route_cache: false,
+                        body_replacement: self.body_context.body.take(),
                     });
                     if let Some(reply_channel) = self.reply_channel.take() {
                         let _ = reply_channel.send(status);
@@ -1895,19 +1876,60 @@ impl ResponseProcessing {
             ProcessingState::StreamingBodyWaitingForReply | ProcessingState::FullDuplexStreamingBody => {
                 if let Some(response_data) = body_response.response {
                     let body_mutation = response_data.body_mutation.and_then(|body_mutation| body_mutation.mutation);
-                    if let Some(Mutation::StreamedResponse(streamed_response)) = body_mutation {
-                        if let Some(sender) = &self.body_context.body_sender {
-                            let _ = sender.send_data(streamed_response.body.into()).await;
-                        }
-                        if streamed_response.end_of_stream {
+                    let mut end_of_stream: bool = false;
+                    match body_mutation {
+                        Some(Mutation::StreamedResponse(streamed_response)) => {
+                            if let Some(sender) = &self.body_context.body_sender {
+                                let _ = sender.send_data(streamed_response.body.into()).await;
+                            }
+                            if streamed_response.end_of_stream {
+                                if matches!(self.body_context.trailer_mode, TrailerProcessingMode::Send) {
+                                    self.state = ProcessingState::ProcessingTrailers;
+                                } else {
+                                    self.state = ProcessingState::Idle;
+                                    self.body_context.finish_stream();
+                                    end_of_stream = true;
+                                }
+                            } else if matches!(self.state, ProcessingState::StreamingBodyWaitingForReply) {
+                                self.state = ProcessingState::StreamingBody;
+                            }
+                        },
+                        Some(Mutation::Body(bytes)) => {
+                            if let Some(sender) = &self.body_context.body_sender {
+                                let _ = sender.send_data(bytes.into()).await;
+                            }
                             if matches!(self.body_context.trailer_mode, TrailerProcessingMode::Send) {
                                 self.state = ProcessingState::ProcessingTrailers;
                             } else {
                                 self.state = ProcessingState::Idle;
+                                self.body_context.finish_stream();
+                                end_of_stream = true;
                             }
-                        } else if matches!(self.state, ProcessingState::StreamingBodyWaitingForReply) {
-                            self.state = ProcessingState::StreamingBody;
+                        },
+                        Some(Mutation::ClearBody(_)) | None => {
+                            self.state = ProcessingState::Idle;
+                            self.body_context.finish_stream();
+                            end_of_stream = true;
+                        },
+                    }
+                    let mut status = self.partial_reply.take().unwrap_or(ProcessingStatus::ResponseIsReady {
+                        header_modifications: None,
+                        body_replacement: None,
+                    });
+                    if let ProcessingStatus::ResponseIsReady { body_replacement: ref mut body, .. } = status {
+                        if body.is_none() {
+                            *body = self.body_context.body.take();
                         }
+                    }
+                    if end_of_stream {
+                        if let Some(reply_channel) = self.reply_channel.take() {
+                            let _ = reply_channel.send(status);
+                        }
+                    } else {
+                        self.partial_reply = Some(status);
+                        let trailers = self.body_context.trailers.take();
+                        let reply_channel = self.reply_channel.take();
+                        return self.process_trailers(trailers, reply_channel, self.http_version);
                     }
                 }
                 None
@@ -1933,14 +1955,10 @@ impl ResponseProcessing {
             for (name, value) in &trailers {
                 let header_name = name.as_str();
                 let header_value = if let Ok(value_str) = value.to_str() {
-                    HeaderValue {
-                        key: header_name.to_string(),
-                        value: value_str.to_string(),
-                        raw_value: Vec::default(),
-                    }
+                    HeaderValue { key: header_name.to_owned(), value: value_str.to_owned(), raw_value: Vec::default() }
                 } else {
                     HeaderValue {
-                        key: header_name.to_string(),
+                        key: header_name.to_owned(),
                         value: String::default(),
                         raw_value: value.as_bytes().to_vec(),
                     }
@@ -1962,10 +1980,19 @@ impl ResponseProcessing {
             } else {
                 self.state = ProcessingState::ProcessingTrailers;
             }
-            return Some(processing_request);
+            Some(processing_request)
+        } else {
+            if let Some(reply_channel) = self.reply_channel.take() {
+                let status = self.partial_reply.take().unwrap_or(ProcessingStatus::ResponseIsReady {
+                    header_modifications: None,
+                    body_replacement: self.body_context.body.take(),
+                });
+                let _ = reply_channel.send(status);
+                self.state = ProcessingState::Idle;
+                self.body_context.finish_stream();
+            }
+            None
         }
-        self.state = ProcessingState::Idle;
-        None
     }
 
     async fn handle_trailers_response(&mut self, trailers_response: TrailersResponse) -> Option<ProcessingRequest> {
@@ -1987,6 +2014,7 @@ impl ResponseProcessing {
                         });
                         let _ = reply_channel.send(status);
                         self.state = ProcessingState::Idle;
+                        self.body_context.finish_stream();
                     }
                 },
                 &ProcessingState::ObservabilityMode => {
@@ -1994,6 +2022,7 @@ impl ResponseProcessing {
                         let _ = sender.send_trailers(trailers).await;
                     }
                     self.state = ProcessingState::Idle;
+                    self.body_context.finish_stream();
                 },
                 _ => {},
             }
@@ -2233,8 +2262,8 @@ mod tests {
                     .into_iter()
                     .map(|(key, value)| HeaderValueOption {
                         header: Some(EnvoyHeaderValue {
-                            key: key.to_string(),
-                            value: value.to_string(),
+                            key: key.to_owned(),
+                            value: value.to_owned(),
                             raw_value: vec![],
                         }),
                         #[allow(deprecated)]
@@ -2271,8 +2300,8 @@ mod tests {
                     .into_iter()
                     .map(|(key, value)| HeaderValueOption {
                         header: Some(EnvoyHeaderValue {
-                            key: key.to_string(),
-                            value: value.to_string(),
+                            key: key.to_owned(),
+                            value: value.to_owned(),
                             raw_value: vec![],
                         }),
                         #[allow(deprecated)]
