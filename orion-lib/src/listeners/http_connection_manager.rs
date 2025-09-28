@@ -26,6 +26,10 @@
 mod direct_response;
 mod ext_proc;
 use ext_proc::ExternalProcessor;
+#[cfg(feature = "simplified-epp")]
+mod epp_minimal;
+#[cfg(feature = "simplified-epp")]
+use epp_minimal::SimplifiedEppProcessor;
 mod http_modifiers;
 mod redirect;
 mod route;
@@ -101,6 +105,8 @@ use std::thread::ThreadId;
 use std::{fmt, future::Future, result::Result as StdResult, sync::Arc};
 use tokio::sync::watch;
 use tracing::debug;
+#[cfg(feature = "simplified-epp")]
+use tracing::warn;
 use upgrades as upgrade_utils;
 
 use crate::{
@@ -207,6 +213,8 @@ pub enum HttpFilterValue {
     // while Rbac uses a configuration type - we might want to revisit this
     RateLimit(LocalRateLimit),
     Rbac(HttpRbac),
+    #[cfg(feature = "simplified-epp")]
+    SimplifiedEppProcessor(SimplifiedEppProcessor),
     ExternalProcessor(ExternalProcessor),
 }
 
@@ -222,7 +230,22 @@ impl From<HttpFilterConfig> for HttpFilter {
         let filter = match filter {
             HttpFilterType::RateLimit(r) => HttpFilterValue::RateLimit(r.into()),
             HttpFilterType::Rbac(rbac) => HttpFilterValue::Rbac(rbac),
-            HttpFilterType::ExternalProcessor(ext_proc) => HttpFilterValue::ExternalProcessor(ext_proc.into()),
+            HttpFilterType::ExternalProcessor(ext_proc) => {
+                #[cfg(feature = "simplified-epp")]
+                {
+                    match SimplifiedEppProcessor::try_from((ext_proc.clone(), None)) {
+                        Ok(processor) => HttpFilterValue::SimplifiedEppProcessor(processor),
+                        Err(error) => {
+                            warn!("Simplified EPP external processing initialization failed: {error}; falling back to full external processor");
+                            HttpFilterValue::ExternalProcessor(ext_proc.into())
+                        },
+                    }
+                }
+                #[cfg(not(feature = "simplified-epp"))]
+                {
+                    HttpFilterValue::ExternalProcessor(ext_proc.into())
+                }
+            },
         };
         Self { name, disabled, filter: Some(filter), base_config: hcm_config }
     }
@@ -233,6 +256,8 @@ impl HttpFilterValue {
         match self {
             HttpFilterValue::Rbac(rbac) => apply_authorization_rules(rbac, request),
             HttpFilterValue::RateLimit(rl) => rl.run(request),
+            #[cfg(feature = "simplified-epp")]
+            HttpFilterValue::SimplifiedEppProcessor(processor) => processor.apply_request(request).await,
             HttpFilterValue::ExternalProcessor(ext_proc) => ext_proc.apply_request(request).await,
         }
     }
@@ -240,6 +265,8 @@ impl HttpFilterValue {
         match self {
             // RBAC and RateLimit do not apply on the response path
             HttpFilterValue::Rbac(_) | HttpFilterValue::RateLimit(_) => FilterDecision::Continue,
+            #[cfg(feature = "simplified-epp")]
+            HttpFilterValue::SimplifiedEppProcessor(processor) => processor.apply_response(response).await,
             HttpFilterValue::ExternalProcessor(ext_proc) => ext_proc.apply_response(response).await,
         }
     }
@@ -253,9 +280,26 @@ impl HttpFilterValue {
                     if let Some(HttpFilterConfig { filter: HttpFilterType::ExternalProcessor(base_config), .. }) =
                         base_config
                     {
-                        Some(HttpFilterValue::ExternalProcessor(
+                        #[cfg(feature = "simplified-epp")]
+                        let filter_value = match SimplifiedEppProcessor::try_from((
+                            base_config.clone(),
+                            ext_proc_per_route.overrides.clone(),
+                        )) {
+                            Ok(processor) => HttpFilterValue::SimplifiedEppProcessor(processor),
+                            Err(error) => {
+                                warn!(
+                                    "simplified EPP initialization with override failed: {error}; falling back to external processor"
+                                );
+                                HttpFilterValue::ExternalProcessor(
+                                    (base_config.clone(), Some(ext_proc_per_route.clone())).into(),
+                                )
+                            },
+                        };
+                        #[cfg(not(feature = "simplified-epp"))]
+                        let filter_value = HttpFilterValue::ExternalProcessor(
                             (base_config.clone(), Some(ext_proc_per_route.clone())).into(),
-                        ))
+                        );
+                        Some(filter_value)
                     } else {
                         None
                     }
