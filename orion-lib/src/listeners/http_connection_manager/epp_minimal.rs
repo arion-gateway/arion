@@ -47,6 +47,7 @@ pub struct SimplifiedEppProcessor {
     failure_mode_allow: bool,
     forward_rules: Option<Arc<HeaderForwardingRules>>,
     bidi_stream: Option<ExtProcStream>,
+    skip_response_processing: bool,
 }
 
 impl SimplifiedEppProcessor {
@@ -105,7 +106,7 @@ impl SimplifiedEppProcessor {
         if let Some(ref mut bidi_stream) = self.bidi_stream {
             Ok(bidi_stream)
         } else {
-            let bidi_stream = match ExtProcStream::connect(self.cluster_id) {
+            let bidi_stream = match ExtProcStream::connect(self.cluster_id, self.skip_response_processing) {
                 Ok(stream) => stream,
                 Err(err) => {
                     let msg = format!("Failed to connect to external processor service: {err}");
@@ -165,6 +166,7 @@ impl Clone for SimplifiedEppProcessor {
             failure_mode_allow: self.failure_mode_allow,
             forward_rules: self.forward_rules.clone(),
             bidi_stream: None,
+            skip_response_processing: self.skip_response_processing,
         }
     }
 }
@@ -198,13 +200,9 @@ impl TryFrom<(ExternalProcessorConfig, Option<ExtProcOverrides>)> for Simplified
             }
         }
 
-        let headers_mode_ok = matches!(effective_processing_mode.request_header_mode, HeaderProcessingMode::Send)
-            && matches!(effective_processing_mode.response_header_mode, HeaderProcessingMode::Send);
+        let headers_mode_ok = matches!(effective_processing_mode.request_header_mode, HeaderProcessingMode::Send);
         let body_mode_ok = matches!(
             effective_processing_mode.request_body_mode,
-            BodyProcessingMode::Buffered | BodyProcessingMode::Streamed | BodyProcessingMode::FullDuplexStreamed
-        ) && matches!(
-            effective_processing_mode.response_body_mode,
             BodyProcessingMode::Buffered | BodyProcessingMode::Streamed | BodyProcessingMode::FullDuplexStreamed
         );
         if !(headers_mode_ok && body_mode_ok) {
@@ -212,6 +210,9 @@ impl TryFrom<(ExternalProcessorConfig, Option<ExtProcOverrides>)> for Simplified
                 "Simplified EPP filter only support SEND header mode, BUFFERED | STREAMED body mode",
             ));
         }
+        let skip_response_processing =
+            matches!(effective_processing_mode.response_header_mode, HeaderProcessingMode::Skip)
+                && matches!(effective_processing_mode.response_body_mode, BodyProcessingMode::None);
 
         if allow_mode_override {
             return Err(Error::from("Simplified EPP filter does not support allow_mode_override"));
@@ -236,6 +237,7 @@ impl TryFrom<(ExternalProcessorConfig, Option<ExtProcOverrides>)> for Simplified
             failure_mode_allow: effective_failure_mode_allow,
             forward_rules: forward_rules.map(Arc::new),
             bidi_stream: None,
+            skip_response_processing,
         })
     }
 }
@@ -248,7 +250,7 @@ struct ExtProcStream {
 }
 
 impl ExtProcStream {
-    fn connect(cluster_id: &'static str) -> crate::Result<Self> {
+    fn connect(cluster_id: &'static str, skip_response_processing: bool) -> crate::Result<Self> {
         let grpc_service = clusters_manager::get_grpc_connection(cluster_id, RoutingContext::None)?;
         let mut client = ExternalProcessorClient::new(grpc_service);
         let (tx_req, rx_req) = mpsc::channel::<ProcessingRequest>(8);
@@ -269,7 +271,7 @@ impl ExtProcStream {
             }
         });
 
-        Ok(Self { skipped: false, tx: tx_req, rx: rx_resp })
+        Ok(Self { skipped: skip_response_processing, tx: tx_req, rx: rx_resp })
     }
 
     fn is_skipped(&self) -> bool {
@@ -562,7 +564,7 @@ async fn handle_reply_for_request_processing(
         },
         Some(ProcessingResponseType::RequestHeaders(_)) => Ok(false),
         Some(ProcessingResponseType::RequestBody(_) | ProcessingResponseType::RequestTrailers(_)) => Ok(true),
-        _ => Err(FilterError::DirectResponse { reason: format!("Unabled to process reply from external processor") }),
+        _ => Err(FilterError::DirectResponse { reason: "Unabled to process reply from external processor".into() }),
     }
 }
 
@@ -592,7 +594,7 @@ async fn handle_reply_for_response_processing(
         },
         Some(ProcessingResponseType::RequestBody(_) | ProcessingResponseType::ResponseHeaders(_)) => Ok(false),
         Some(ProcessingResponseType::ResponseBody(_) | ProcessingResponseType::ResponseTrailers(_)) => Ok(true),
-        _ => Err(FilterError::DirectResponse { reason: format!("Unabled to process reply from external processor") }),
+        _ => Err(FilterError::DirectResponse { reason: "Unabled to process reply from external processor".into() }),
     }
 }
 
