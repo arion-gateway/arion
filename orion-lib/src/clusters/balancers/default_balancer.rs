@@ -112,9 +112,8 @@ where
     E: Debug + WeightedEndpoint,
 {
     fn next_item(&mut self, hash: Option<u64>) -> Option<Arc<E>> {
-        let priority = self.priority_level_lb.next_item(None);
+        let priority = self.priority_level_lb.next_item(None)?;
         debug!("Selecting priority {priority:?} based on {:?}", self.priority_level_lb);
-        let priority = priority?;
         let priority_info = self.priorities.get_mut(&priority)?;
         let endpoint = priority_info.balancer.next_item(hash);
         debug!("Selecting endpoint {endpoint:?} based on {priority_info:?}");

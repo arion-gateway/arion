@@ -55,7 +55,7 @@ pub enum RoutingRequirement {
 pub enum RoutingContext<'a> {
     None,
     Header(&'a HeaderValue),
-    Authority(Authority),
+    Authority(&'a Authority),
     Hash(HashState<'a>),
     OverrideHost { header: &'a HeaderValue, fallback_hash: Option<HashState<'a>> },
 }
