@@ -37,10 +37,12 @@ impl<E> LbItem<E> {
         Self { item, weight, current_weight: 0 }
     }
 
-    fn increase_curent_weight(&mut self) {
+    #[inline]
+    fn increase_current_weight(&mut self) {
         self.adjust_current_weight(i32::try_from(self.weight).unwrap_or(i32::MAX));
     }
 
+    #[inline]
     fn adjust_current_weight(&mut self, value: i32) {
         self.current_weight = self.current_weight.saturating_add(value);
     }
@@ -49,18 +51,20 @@ impl<E> LbItem<E> {
 #[derive(Debug, Clone)]
 pub struct WeightedRoundRobinBalancer<E> {
     items: Vec<LbItem<E>>,
+    total_weight: i32,
 }
 
 impl<E> WeightedRoundRobinBalancer<E> {
     pub fn new(items: impl IntoIterator<Item = LbItem<E>>) -> Self {
-        WeightedRoundRobinBalancer { items: collect_checked(items) }
+        let (items, total_weight) = collect_checked(items);
+        WeightedRoundRobinBalancer { items, total_weight: i32::try_from(total_weight).unwrap_or(i32::MAX) }
     }
 }
 
 /// Returns a valid subset of the items whose total weight fits in [u32].
-fn collect_checked<E>(items: impl IntoIterator<Item = LbItem<E>>) -> Vec<LbItem<E>> {
+fn collect_checked<E>(items: impl IntoIterator<Item = LbItem<E>>) -> (Vec<LbItem<E>>, u32) {
     let mut total = 0_u32;
-    items
+    (items
         .into_iter()
         .take_while(|item| {
             let result = total.checked_add(item.weight);
@@ -71,7 +75,7 @@ fn collect_checked<E>(items: impl IntoIterator<Item = LbItem<E>>) -> Vec<LbItem<
             }
             result.is_some()
         })
-        .collect()
+        .collect(), total)
 }
 
 impl<E: WeightedEndpoint> Default for WeightedRoundRobinBalancer<E> {
@@ -85,23 +89,20 @@ impl<T> Balancer<T> for WeightedRoundRobinBalancer<T> {
         if self.items.len() <= 1 {
             self.items.first().map(|item| &item.item).cloned()
         } else {
-            // Increase the current weight of all the endpoints
-            self.items.iter_mut().for_each(LbItem::increase_curent_weight);
-            // Calculate the total weight
-            let total: i32 = self
-                .items
-                .iter()
-                .map(|item| i32::try_from(item.weight).unwrap_or(i32::MAX))
-                .fold(0, i32::saturating_add);
             // Find the item with the highest weight
-            // Note: not using `max_by` here because it returns the last element for equal weights
+            // Note: not using `max_by` her// Increase the current weight of all the endpoints
+            self.items.iter_mut().next().map(LbItem::increase_current_weight);
+
             let best_item =
                 self.items
                     .iter_mut()
-                    .reduce(|best, item| if item.current_weight > best.current_weight { item } else { best });
+                    .reduce(|best, item| {
+                        item.increase_current_weight();
+                        if item.current_weight > best.current_weight { item } else { best }
+                    });
             // Adjust its weight and return it
             best_item.map(|item| {
-                item.adjust_current_weight(-total);
+                item.adjust_current_weight(-self.total_weight);
                 Arc::clone(&item.item)
             })
         }
