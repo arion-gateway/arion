@@ -560,7 +560,9 @@ async fn handle_reply_for_request_processing(
             }
             Ok(false)
         },
-        _ => Ok(false),
+        Some(ProcessingResponseType::RequestHeaders(_)) => Ok(false),
+        Some(ProcessingResponseType::RequestBody(_) | ProcessingResponseType::RequestTrailers(_)) => Ok(true),
+        _ => Err(FilterError::DirectResponse { reason: format!("Unabled to process reply from external processor") }),
     }
 }
 
@@ -588,7 +590,9 @@ async fn handle_reply_for_response_processing(
             }
             Ok(false)
         },
-        _ => Ok(false),
+        Some(ProcessingResponseType::RequestBody(_) | ProcessingResponseType::ResponseHeaders(_)) => Ok(false),
+        Some(ProcessingResponseType::ResponseBody(_) | ProcessingResponseType::ResponseTrailers(_)) => Ok(true),
+        _ => Err(FilterError::DirectResponse { reason: format!("Unabled to process reply from external processor") }),
     }
 }
 

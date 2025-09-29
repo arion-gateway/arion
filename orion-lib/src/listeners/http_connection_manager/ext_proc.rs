@@ -639,10 +639,14 @@ impl ExternalProcessingWorker {
                             self.forward_to_external_processor(outbound).await;
                         },
                         Ok(Some(ProcessingResponse { response: Some(ProcessingResponseType::RequestBody(body_response)), ..})) => {
+                            let empty_response = body_response.response.is_none();
                             let outbound = self
                                 .request_processing
                                 .handle_body_response(body_response, &self.config.route_cache_action).await;
                             self.forward_to_external_processor(outbound).await;
+                            if empty_response {
+                                break;
+                            }
                         },
                         Ok(Some(ProcessingResponse { response: Some(ProcessingResponseType::RequestTrailers(trailers_response)), ..})) => {
                             let outbound = self.request_processing.handle_trailers_response(trailers_response).await;
@@ -658,8 +662,12 @@ impl ExternalProcessingWorker {
                             self.forward_to_external_processor(outbound).await;
                         },
                         Ok(Some(ProcessingResponse { response: Some(ProcessingResponseType::ResponseBody(body_response)), ..})) => {
+                            let empty_response = body_response.response.is_none();
                             let outbound = self.response_processing.handle_body_response(body_response).await;
                             self.forward_to_external_processor(outbound).await;
+                            if empty_response {
+                                break;
+                            }
                         },
                         Ok(Some(ProcessingResponse { response: Some(ProcessingResponseType::ResponseTrailers(trailers_response)), ..})) => {
                             let outbound =
@@ -1200,6 +1208,21 @@ impl RequestProcessing {
         body_response: BodyResponse,
         route_cache_action: &RouteCacheAction,
     ) -> Option<ProcessingRequest> {
+        if body_response.response.is_none() {
+            let status = self.partial_reply.take().unwrap_or(ProcessingStatus::RequestIsReady {
+                header_modifications: None,
+                body_replacement: self.body_context.body.take(),
+                override_sending_response_headers: None,
+                override_sending_response_body: None,
+                clear_route_cache: false,
+            });
+            if let Some(reply_channel) = self.reply_channel.take() {
+                let _ = reply_channel.send(status);
+            }
+            self.state = ProcessingState::Idle;
+            self.body_context.finish_stream();
+            return None;
+        }
         match &self.state {
             ProcessingState::WaitingForBodyReply => {
                 if let Some(response_data) = body_response.response {
@@ -1258,20 +1281,8 @@ impl RequestProcessing {
                         let trailers = self.body_context.trailers.take();
                         return self.process_trailers(trailers, Some(reply_channel), self.http_version);
                     }
-                    None
-                } else {
-                    let status = self.partial_reply.take().unwrap_or(ProcessingStatus::RequestIsReady {
-                        header_modifications: None,
-                        body_replacement: self.body_context.body.take(),
-                        override_sending_response_headers: None,
-                        override_sending_response_body: None,
-                        clear_route_cache: false,
-                    });
-                    if let Some(reply_channel) = self.reply_channel.take() {
-                        let _ = reply_channel.send(status);
-                    }
-                    None
                 }
+                None
             },
             ProcessingState::StreamingBodyWaitingForReply | ProcessingState::FullDuplexStreamingBody => {
                 if let Some(response_data) = body_response.response {
@@ -1816,6 +1827,18 @@ impl ResponseProcessing {
     }
 
     async fn handle_body_response(&mut self, body_response: BodyResponse) -> Option<ProcessingRequest> {
+        if body_response.response.is_none() {
+            let status = self.partial_reply.take().unwrap_or(ProcessingStatus::ResponseIsReady {
+                header_modifications: None,
+                body_replacement: self.body_context.body.take(),
+            });
+            if let Some(reply_channel) = self.reply_channel.take() {
+                let _ = reply_channel.send(status);
+            }
+            self.state = ProcessingState::Idle;
+            self.body_context.finish_stream();
+            return None;
+        }
         match &self.state {
             ProcessingState::WaitingForBodyReply => {
                 if let Some(response_data) = body_response.response {
@@ -1861,17 +1884,8 @@ impl ResponseProcessing {
                         let trailers = self.body_context.trailers.take();
                         return self.process_trailers(trailers, Some(reply_channel), self.http_version);
                     }
-                    None
-                } else {
-                    let status = self.partial_reply.take().unwrap_or(ProcessingStatus::ResponseIsReady {
-                        header_modifications: None,
-                        body_replacement: self.body_context.body.take(),
-                    });
-                    if let Some(reply_channel) = self.reply_channel.take() {
-                        let _ = reply_channel.send(status);
-                    }
-                    None
                 }
+                None
             },
             ProcessingState::StreamingBodyWaitingForReply | ProcessingState::FullDuplexStreamingBody => {
                 if let Some(response_data) = body_response.response {
