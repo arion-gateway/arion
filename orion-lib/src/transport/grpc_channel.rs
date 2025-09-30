@@ -56,7 +56,7 @@ impl GrpcService {
         let (mut parts, grpc_body) = grpc_req.into_parts();
 
         // Add scheme and authority to gRPC URLs to make them valid HTTP
-        let mut uri_parts = parts.uri.clone().into_parts();
+        let mut uri_parts = parts.uri.into_parts();
         uri_parts.scheme = Some(self.scheme.clone());
         uri_parts.authority = Some(self.authority.clone());
         parts.uri = Uri::from_parts(uri_parts)?;
