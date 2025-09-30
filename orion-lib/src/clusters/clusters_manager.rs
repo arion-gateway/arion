@@ -31,7 +31,7 @@ use crate::{
     Result,
 };
 use http::{uri::Authority, HeaderName, HeaderValue, Request};
-use orion_configuration::config::cluster::{Cluster as ClusterConfig, ClusterSpecifier as ClusterSpecifierConfig};
+use orion_configuration::config::cluster::{Cluster as ClusterConfig, ClusterSpecifier};
 use orion_interner::StringInterner;
 use rand::{prelude::SliceRandom, thread_rng};
 use std::{
@@ -104,10 +104,10 @@ thread_local! {
     static CLUSTERS_MAP_CACHE : RefCell<CachedWatcher<'static, ClustersMap>> = RefCell::new(CLUSTERS_MAP.watcher());
 }
 
-pub fn resolve_cluster(selector: &ClusterSpecifierConfig) -> Option<ClusterID> {
+pub fn resolve_cluster(selector: &ClusterSpecifier) -> Option<ClusterID> {
     match selector {
-        ClusterSpecifierConfig::Cluster(cluster_name) => Some(cluster_name.to_static_str()),
-        ClusterSpecifierConfig::WeightedCluster(weighted_clusters) => weighted_clusters
+        ClusterSpecifier::Cluster(cluster_name) => Some(cluster_name.to_static_str()),
+        ClusterSpecifier::WeightedCluster(weighted_clusters) => weighted_clusters
             .choose_weighted(&mut thread_rng(), |cluster| u32::from(cluster.weight))
             .ok()
             .map(|cluster| cluster.cluster.to_static_str()),
