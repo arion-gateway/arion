@@ -30,6 +30,7 @@ use crate::{
     },
     secrets::{TlsConfigurator, WantsToBuildClient},
     thread_local::{LocalBuilder, LocalObject},
+    transport::timer::PingoraTimer,
     Error, PolyBody, Result,
 };
 use http::{
@@ -41,7 +42,7 @@ use hyper::{body::Incoming, Request, Uri};
 use hyper_rustls::{FixedServerNameResolver, HttpsConnector};
 use hyper_util::{
     client::legacy::{connect::Connect, Builder, Client},
-    rt::tokio::{TokioExecutor, TokioTimer},
+    rt::tokio::TokioExecutor,
 };
 use orion_configuration::config::{
     cluster::http_protocol_options::{Codec, HttpProtocolOptions},
@@ -255,9 +256,9 @@ impl HttpChannelBuilder {
     fn configure_hyper_client(&self) -> Builder {
         let mut client_builder = Client::builder(TokioExecutor::new());
         client_builder
-            .timer(TokioTimer::new())
+            .timer(PingoraTimer)
             .pool_idle_timeout(self.http_protocol_options.common.idle_timeout.unwrap_or(DEFAULT_IDLE_TIMEOUT))
-            .pool_timer(TokioTimer::new())
+            .pool_timer(PingoraTimer)
             .pool_max_idle_per_host(usize::MAX)
             .set_host(false);
 
