@@ -292,6 +292,7 @@ impl HttpChannelBuilder {
             client_builder.http2_initial_stream_window_size(http2_options.initial_stream_window_size());
 
             if let Some(max) = http2_options.max_concurrent_streams() {
+                client_builder.http2_initial_max_send_streams(max);
                 client_builder.http2_max_concurrent_streams(max);
             }
         }
