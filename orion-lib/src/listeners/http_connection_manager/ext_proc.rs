@@ -205,7 +205,17 @@ impl ExternalProcessor {
                 }
                 FilterDecision::Continue
             },
-            _ => self.on_filter_error("External processor failed during request processing", None, request.version()),
+            Ok(ProcessingStatus::ResponseIsReady { header_modifications: _, body_replacement: _ }) => self
+                .on_filter_error(
+                    "Unexpected response from external processor during request processing",
+                    None,
+                    request.version(),
+                ),
+            Err(e) => self.on_filter_error(
+                "External processor failed during request processing",
+                Some(e.into()),
+                request.version(),
+            ),
         }
     }
 
@@ -261,7 +271,22 @@ impl ExternalProcessor {
                 }
                 FilterDecision::Continue
             },
-            _ => self.on_filter_error("External processor failed during response processing", None, response.version()),
+            Ok(ProcessingStatus::RequestIsReady {
+                header_modifications: _,
+                body_replacement: _,
+                override_sending_response_headers: _,
+                override_sending_response_body: _,
+                clear_route_cache: _,
+            }) => self.on_filter_error(
+                "Unexpected request from external processor during response processing",
+                None,
+                response.version(),
+            ),
+            Err(e) => self.on_filter_error(
+                "External processor failed during response processing",
+                Some(e.into()),
+                response.version(),
+            ),
         }
     }
 
