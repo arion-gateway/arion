@@ -277,7 +277,6 @@ impl HttpChannelBuilder {
 
     fn configure_http2_if_needed(&self, client_builder: &mut Builder, version: Codec) {
         if matches!(version, Codec::Http2) {
-            client_builder.http2_connection_sharing(false);
             client_builder.http2_only(true);
             let http2_options = &self.http_protocol_options.http2_options;
 
@@ -291,7 +290,7 @@ impl HttpChannelBuilder {
 
             client_builder.http2_initial_connection_window_size(http2_options.initial_connection_window_size());
             client_builder.http2_initial_stream_window_size(http2_options.initial_stream_window_size());
-            client_builder.http2_connection_sharing(false);
+            client_builder.http2_connection_sharing(true);
 
             if let Some(max) = http2_options.max_concurrent_streams() {
                 client_builder.http2_initial_max_send_streams(max);
