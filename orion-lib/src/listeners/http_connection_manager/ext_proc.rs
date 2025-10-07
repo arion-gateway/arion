@@ -292,11 +292,16 @@ impl ExternalProcessor {
         if let Some(ref sender) = self.ext_proc_worker {
             sender
         } else {
-            let (sender, receiver) = mpsc::channel::<ProcessingTask>(4);
-            let worker = ExternalProcessingWorker::new(self.worker_config.clone());
-            tokio::spawn(worker.start(receiver));
-            self.ext_proc_worker.insert(sender)
+            self.build_worker_channel()
         }
+    }
+
+    #[cold]
+    fn build_worker_channel(&mut self) -> &mpsc::Sender<ProcessingTask> {
+        let (sender, receiver) = mpsc::channel::<ProcessingTask>(12); // two 4k pages
+        let worker = ExternalProcessingWorker::new(Arc::clone(&self.worker_config));
+        tokio::spawn(worker.start(receiver));
+        self.ext_proc_worker.insert(sender)
     }
 
     fn should_forward_header(&self, header_name: &str) -> bool {
@@ -312,7 +317,7 @@ impl ExternalProcessor {
     }
 
     fn build_http_headers(&self, headers: &http::HeaderMap, end_of_stream: bool) -> HttpHeaders {
-        let mut header_values = Vec::new();
+        let mut header_values = Vec::with_capacity(headers.len());
         for (name, value) in headers {
             let header_name = name.as_str();
             if self.should_forward_header(header_name) {
@@ -328,8 +333,12 @@ impl ExternalProcessor {
                 header_values.push(header_value);
             }
         }
-        let header_map = HeaderMap { headers: header_values };
-        HttpHeaders { headers: Some(header_map), attributes: HashMap::default(), end_of_stream }
+
+        HttpHeaders {
+            headers: Some(HeaderMap { headers: header_values }),
+            attributes: HashMap::default(),
+            end_of_stream,
+        }
     }
 }
 
@@ -473,7 +482,7 @@ impl ExternalProcessingWorker {
         grpc_service_specifier: &GrpcServiceSpecifier,
         first_request: ProcessingRequest,
     ) -> Result<BidiStream, Error> {
-        let (request_sender, mut request_receiver) = mpsc::channel::<ProcessingRequest>(4);
+        let (request_sender, mut request_receiver) = mpsc::channel::<ProcessingRequest>(12);
         let request_stream = async_stream::stream! {
             yield first_request;
             while let Some(message) = request_receiver.recv().await {
@@ -887,13 +896,13 @@ impl BodyContext {
     fn start_streaming(&mut self) {
         if let Some(body) = self.body.take() {
             self.body_stream = BodyStream::new(body);
-            let (new_body, sender) = PolyBody::channel(8);
+            let (new_body, sender) = PolyBody::channel(16);
             self.body = Some(new_body);
             self.body_sender = Some(BodySender::new(sender));
         }
     }
     async fn make_new_body_channel(&mut self, data: Bytes) -> Result<(), ()> {
-        let (new_body, sender) = PolyBody::channel(2);
+        let (new_body, sender) = PolyBody::channel(16);
         self.body = Some(new_body);
         let sender = BodySender::new(sender);
         if (sender.send_data(data).await).is_err() {
@@ -2200,7 +2209,7 @@ mod tests {
         ) -> Result<TonicResponse<Self::ProcessStream>, Status> {
             let mut inbound = request.into_inner();
             let state = self.state.clone();
-            let (tx, rx) = tokio::sync::mpsc::channel(4);
+            let (tx, rx) = tokio::sync::mpsc::channel(16);
             tokio::spawn(async move {
                 while let Some(_req) = inbound.message().await.unwrap_or(None) {
                     if let Some(response) = state.get_next_response() {
