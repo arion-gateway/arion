@@ -74,7 +74,7 @@ use webpki::types::ServerName;
 
 #[cfg(feature = "metrics")]
 use {
-    hyper_util::client::legacy::pool::{PoolEvent, EventHandler},
+    hyper_util::client::legacy::pool::{EventHandler, PoolEvent},
     hyper_util::client::legacy::PoolKey,
     std::any::Any,
 };
@@ -316,11 +316,29 @@ fn update_upstream_stats(event: PoolEvent, tag: &dyn Any, keys: &[&PoolKey]) {
     let num_events = keys.len() as u64;
     match event {
         PoolEvent::NewConnection => {
-            with_metric!(clusters::UPSTREAM_CX_TOTAL, add, num_events, shard_id, &[KeyValue::new("cluster", cluster_name)]);
-            with_metric!(clusters::UPSTREAM_CX_ACTIVE, add, num_events, shard_id, &[KeyValue::new("cluster", cluster_name)]);
+            with_metric!(
+                clusters::UPSTREAM_CX_TOTAL,
+                add,
+                num_events,
+                shard_id,
+                &[KeyValue::new("cluster", cluster_name)]
+            );
+            with_metric!(
+                clusters::UPSTREAM_CX_ACTIVE,
+                add,
+                num_events,
+                shard_id,
+                &[KeyValue::new("cluster", cluster_name)]
+            );
         },
         PoolEvent::IdleConnectionClosed => {
-            with_metric!(clusters::UPSTREAM_CX_DESTROY, add, num_events, shard_id, &[KeyValue::new("cluster", cluster_name)]);
+            with_metric!(
+                clusters::UPSTREAM_CX_DESTROY,
+                add,
+                num_events,
+                shard_id,
+                &[KeyValue::new("cluster", cluster_name)]
+            );
             with_metric!(
                 clusters::UPSTREAM_CX_IDLE_TIMEOUT,
                 add,
@@ -328,7 +346,13 @@ fn update_upstream_stats(event: PoolEvent, tag: &dyn Any, keys: &[&PoolKey]) {
                 shard_id,
                 &[KeyValue::new("cluster", cluster_name)]
             );
-            with_metric!(clusters::UPSTREAM_CX_ACTIVE, sub, num_events, shard_id, &[KeyValue::new("cluster", cluster_name)]);
+            with_metric!(
+                clusters::UPSTREAM_CX_ACTIVE,
+                sub,
+                num_events,
+                shard_id,
+                &[KeyValue::new("cluster", cluster_name)]
+            );
         },
         PoolEvent::ConnectionError => {
             with_metric!(
@@ -349,8 +373,20 @@ fn update_upstream_stats(event: PoolEvent, tag: &dyn Any, keys: &[&PoolKey]) {
             );
         },
         PoolEvent::ConnectionClosed => {
-            with_metric!(clusters::UPSTREAM_CX_DESTROY, add, num_events, shard_id, &[KeyValue::new("cluster", cluster_name)]);
-            with_metric!(clusters::UPSTREAM_CX_ACTIVE, sub, num_events, shard_id, &[KeyValue::new("cluster", cluster_name)]);
+            with_metric!(
+                clusters::UPSTREAM_CX_DESTROY,
+                add,
+                num_events,
+                shard_id,
+                &[KeyValue::new("cluster", cluster_name)]
+            );
+            with_metric!(
+                clusters::UPSTREAM_CX_ACTIVE,
+                sub,
+                num_events,
+                shard_id,
+                &[KeyValue::new("cluster", cluster_name)]
+            );
         },
     }
 }
