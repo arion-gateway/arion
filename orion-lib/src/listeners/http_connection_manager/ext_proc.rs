@@ -757,6 +757,11 @@ impl ExternalProcessingWorker {
                                 let outbound =
                                     self.request_processing.handle_body_chunk(buffered, true).await;
                                 self.forward_to_external_processor(outbound).await;
+                            } else {
+                                // Request body was empty, close the stream
+                                let outbound =
+                                    self.request_processing.handle_body_chunk(Bytes::new(), true).await;
+                                self.forward_to_external_processor(outbound).await;
                             }
                             if let Some(trailers) = self.request_processing.body_context.trailers.take() {
                                 let outbound =
@@ -787,11 +792,16 @@ impl ExternalProcessingWorker {
                             }
                         },
                         Some(Err(_err)) => {
-                            self.request_processing.exit_on_error("Error occured when streaming response body for external processing", self.config.failure_mode_allow);
+                            self.response_processing.exit_on_error("Error occured when streaming response body for external processing", self.config.failure_mode_allow);
                         },
                         None => {
                             if let Some(buffered) = self.response_processing.body_context.buffered_chunk.take() {
                                 let outbound = self.response_processing.handle_body_chunk(buffered, true).await;
+                                self.forward_to_external_processor(outbound).await;
+                            } else {
+                                // Request body was empty, close the stream
+                                let outbound =
+                                    self.response_processing.handle_body_chunk(Bytes::new(), true).await;
                                 self.forward_to_external_processor(outbound).await;
                             }
                             if let Some(trailers) = self.response_processing.body_context.trailers.take() {
