@@ -40,6 +40,7 @@ use orion_data_plane_api::envoy_data_plane_api::{
 };
 use orion_format::types::ResponseFlags as FmtResponseFlags;
 use pingora_timeout::fast_timeout;
+use tokio::sync::mpsc::error::SendError;
 use std::collections::HashMap;
 use std::{sync::Arc, time::Duration};
 use tokio::sync::{mpsc, oneshot};
@@ -137,8 +138,6 @@ impl ExternalProcessor {
         if !self.sending_request_headers && !self.sending_request_body {
             return FilterDecision::Continue;
         }
-
-        let (response_tx, response_rx) = oneshot::channel();
         let body: PolyBody = std::mem::take(&mut request.body_mut().inner);
         let processing_data = if self.sending_request_headers {
             let http_headers = self.build_http_headers(request.headers(), !self.sending_request_body);
@@ -146,17 +145,16 @@ impl ExternalProcessor {
         } else {
             ProcessingData::RequestBody(body)
         };
-        let processing_message =
-            ProcessingTask { data: processing_data, reply_channel: response_tx, http_version: request.version() };
 
-        let worker_channel = self.get_worker_channel();
-        if worker_channel.send(processing_message).await.is_err() {
+        let ver = request.version();
+        let Ok(response_rx) = self.send_processing_data(processing_data, ver).await else {
             return self.on_filter_error(
                 "Failed to schedule sending request data to external processor",
                 None,
-                request.version(),
+                ver,
             );
-        }
+        };
+
         match response_rx.await {
             Ok(ProcessingStatus::HaltedOnError { restore_body }) => {
                 if let Some(body) = restore_body {
@@ -190,7 +188,6 @@ impl ExternalProcessor {
                     }
                 }
                 if let Some(body_replacement) = body_replacement {
-                    //*request.method_mut() = Method::POST;
                     request.body_mut().inner = body_replacement;
                     request.headers_mut().remove(CONTENT_LENGTH);
                 }
@@ -223,7 +220,6 @@ impl ExternalProcessor {
         if !self.sending_response_headers && !self.sending_response_body {
             return FilterDecision::Continue;
         }
-        let (response_tx, response_rx) = oneshot::channel();
         let body: PolyBody = std::mem::take(response.body_mut());
         let processing_data = if self.sending_response_headers {
             let http_headers = self.build_http_headers(response.headers(), !self.sending_response_body);
@@ -231,16 +227,16 @@ impl ExternalProcessor {
         } else {
             ProcessingData::ResponseBody(body)
         };
-        let processing_message =
-            ProcessingTask { data: processing_data, reply_channel: response_tx, http_version: response.version() };
-        let worker_channel = self.get_worker_channel();
-        if worker_channel.send(processing_message).await.is_err() {
+
+        let ver = response.version();
+        let Ok(response_rx) = self.send_processing_data(processing_data, ver).await else {
             return self.on_filter_error(
-                "Failed to schedule sending response data to external processor",
+                "Failed to schedule sending request data to external processor",
                 None,
-                response.version(),
+                ver,
             );
-        }
+        };
+
         match response_rx.await {
             Ok(ProcessingStatus::HaltedOnError { restore_body }) => {
                 if let Some(body) = restore_body {
@@ -290,6 +286,15 @@ impl ExternalProcessor {
         }
     }
 
+    async fn send_processing_data(&mut self, data: ProcessingData, ver: http::Version) -> Result<oneshot::Receiver<ProcessingStatus>, SendError<ProcessingTask>> {
+        let (response_tx, response_rx) = oneshot::channel();
+        let processing_message =
+            ProcessingTask { data, reply_channel: response_tx, http_version: ver };
+
+        let worker_channel = self.get_worker_channel();
+        worker_channel.send(processing_message).await.map(|_| response_rx)
+    }
+
     fn on_filter_error(&mut self, msg: &str, error: Option<Error>, http_version: http::Version) -> FilterDecision {
         if let Some(err) = error {
             error!("{msg}: {err}");
@@ -317,18 +322,14 @@ impl ExternalProcessor {
         if let Some(ref sender) = self.ext_proc_worker {
             sender
         } else {
-            self.build_worker_channel()
+            let (sender, receiver) = mpsc::channel::<ProcessingTask>(12);
+            let worker = ExternalProcessingWorker::new(Arc::clone(&self.worker_config));
+            tokio::spawn(worker.start(receiver));
+            self.ext_proc_worker.insert(sender)
         }
     }
 
-    #[cold]
-    fn build_worker_channel(&mut self) -> &mpsc::Sender<ProcessingTask> {
-        let (sender, receiver) = mpsc::channel::<ProcessingTask>(12); // two 4k pages
-        let worker = ExternalProcessingWorker::new(Arc::clone(&self.worker_config));
-        tokio::spawn(worker.start(receiver));
-        self.ext_proc_worker.insert(sender)
-    }
-
+    #[inline]
     fn should_forward_header(&self, header_name: &str) -> bool {
         if let Some(forward_rules) = &self.forward_rules {
             if !forward_rules.disallowed_headers.is_empty() {
@@ -469,8 +470,8 @@ struct BidiStream {
 }
 
 struct TimeoutState {
-    active: bool,
     duration: Duration,
+    active: bool,
     extended: bool,
 }
 
@@ -507,7 +508,8 @@ impl ExternalProcessingWorker {
         grpc_service_specifier: &GrpcServiceSpecifier,
         first_request: ProcessingRequest,
     ) -> Result<BidiStream, Error> {
-        let (request_sender, mut request_receiver) = mpsc::channel::<ProcessingRequest>(12);
+        // Create a channel to send requests to the gRPC stream.
+        let (request_sender, mut request_receiver) = mpsc::channel::<ProcessingRequest>(4);
         let request_stream = async_stream::stream! {
             yield first_request;
             while let Some(message) = request_receiver.recv().await {
@@ -556,14 +558,17 @@ impl ExternalProcessingWorker {
         }
     }
 
-    async fn forward_to_external_processor(&mut self, request_opt: Option<ProcessingRequest>) {
-        let Some(mut request) = request_opt else {
+    async fn forward_to_external_processor(&mut self, mut request_opt: Option<ProcessingRequest>) {
+        if request_opt.is_none() {
             self.timeout_state.active = false;
             return;
-        };
-        request.protocol_config = self.handshake.take();
-        let mut outbound_request = Some(request);
-        let stream = match self.get_bidi_stream(&mut outbound_request).await {
+        }
+
+        if let Some(ref mut req) = request_opt {
+            req.protocol_config = self.handshake.take();
+        }
+
+        let stream = match self.get_bidi_stream(&mut request_opt).await {
             Err(err) => {
                 error!("Failed to establish bidi stream with external processor: {err}");
                 self.response_processing
@@ -573,7 +578,7 @@ impl ExternalProcessingWorker {
             },
             Ok(stream) => stream,
         };
-        let send_outcome = match outbound_request {
+        let send_outcome = match request_opt {
             Some(request) => Some(stream.external_sender.send(request).await),
             None => None,
         };
@@ -818,8 +823,6 @@ impl ExternalProcessingWorker {
                     self.response_processing.exit_on_timeout(self.config.failure_mode_allow);
                     break;
                 }
-
-
             }
         }
     }
@@ -927,6 +930,7 @@ impl BodyContext {
             trailers: None,
             buffered_chunk: None,
         }
+
     }
     fn start_streaming(&mut self) {
         if let Some(body) = self.body.take() {
@@ -936,6 +940,7 @@ impl BodyContext {
             self.body_sender = Some(BodySender::new(sender));
         }
     }
+
     async fn make_new_body_channel(&mut self, data: Bytes) -> Result<(), ()> {
         let (new_body, sender) = PolyBody::channel(16);
         self.body = Some(new_body);
@@ -946,6 +951,7 @@ impl BodyContext {
         self.body_sender = Some(sender);
         Ok(())
     }
+
     fn finish_stream(&mut self) {
         if let Some(sender) = self.body_sender.take() {
             drop(sender);
@@ -1247,6 +1253,7 @@ impl RequestProcessing {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn handle_body_response(
         &mut self,
         body_response: BodyResponse,
@@ -1560,6 +1567,7 @@ impl RequestProcessing {
         self.state = ProcessingState::Idle;
     }
 
+    #[inline]
     fn exit_with_status(&mut self, status: ProcessingStatus) {
         if let Some(channel) = self.reply_channel.take() {
             let _ = channel.send(status);
@@ -1870,6 +1878,7 @@ impl ResponseProcessing {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn handle_body_response(&mut self, body_response: BodyResponse) -> Option<ProcessingRequest> {
         if body_response.response.is_none() {
             let status = self.partial_reply.take().unwrap_or(ProcessingStatus::ResponseIsReady {

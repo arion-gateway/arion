@@ -30,6 +30,7 @@ use ext_proc::ExternalProcessor;
 mod epp_minimal;
 #[cfg(feature = "simplified-epp")]
 use epp_minimal::SimplifiedEppProcessor;
+use smallvec::SmallVec;
 mod http_modifiers;
 mod redirect;
 mod route;
@@ -862,7 +863,7 @@ impl
         let mut processed_routes: HashSet<&RouteMatch> = HashSet::new();
         let mut cached_route = match_request_route(&request, &self);
         let mut request: Request<BodyWithMetrics<PolyBody>> = request.map(BodyWithMetrics::map_into::<PolyBody>);
-        let mut active_filters: Vec<HttpFilterValue> = Vec::new();
+        let mut active_filters: SmallVec<[HttpFilterValue; 2]> = SmallVec::new();
         loop {
             if let Some(ref chosen_route) = cached_route {
                 if processed_routes.contains(&chosen_route.route.route_match) {

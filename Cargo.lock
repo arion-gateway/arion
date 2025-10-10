@@ -2215,6 +2215,7 @@ dependencies = [
  "scopeguard",
  "serde",
  "serde_yaml",
+ "smallvec",
  "smol_str",
  "thiserror 1.0.69",
  "thread-id",
