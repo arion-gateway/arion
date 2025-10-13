@@ -99,6 +99,17 @@ impl Body for PolyBody {
             },
         }
     }
+
+    fn is_end_stream(&self) -> bool {
+        match self {
+            PolyBody::Empty(e) => e.is_end_stream(),
+            PolyBody::Full(f) => f.is_end_stream(),
+            PolyBody::Incoming(i) => i.is_end_stream(),
+            PolyBody::Timeout(t) => t.is_end_stream(),
+            PolyBody::Grpc(g) => g.is_end_stream(),
+            PolyBody::Stream(s) => s.is_end_stream(),
+        }
+    }
 }
 
 impl From<Empty<Bytes>> for PolyBody {

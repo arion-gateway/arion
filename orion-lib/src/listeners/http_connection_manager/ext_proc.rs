@@ -10,6 +10,7 @@ use bytes::Bytes;
 use futures::{future::Either, StreamExt};
 use http::header::CONTENT_LENGTH;
 use http::{Request, Response};
+use http_body::Body;
 use http_body_util::{BodyExt, BodyStream, Empty, Full};
 use orion_configuration::config::{
     cluster::ClusterSpecifier,
@@ -40,9 +41,9 @@ use orion_data_plane_api::envoy_data_plane_api::{
 };
 use orion_format::types::ResponseFlags as FmtResponseFlags;
 use pingora_timeout::fast_timeout;
-use tokio::sync::mpsc::error::SendError;
 use std::collections::HashMap;
 use std::{sync::Arc, time::Duration};
+use tokio::sync::mpsc::error::SendError;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{error, warn};
 
@@ -139,20 +140,21 @@ impl ExternalProcessor {
             return FilterDecision::Continue;
         }
         let body: PolyBody = std::mem::take(&mut request.body_mut().inner);
+
         let processing_data = if self.sending_request_headers {
-            let http_headers = self.build_http_headers(request.headers(), !self.sending_request_body);
+            let http_headers =
+                self.build_http_headers(request.headers(), !self.sending_request_body || body.is_end_stream());
             ProcessingData::Request(http_headers, body)
         } else {
+            if body.is_end_stream() {
+                return FilterDecision::Continue;
+            }
             ProcessingData::RequestBody(body)
         };
 
         let ver = request.version();
         let Ok(response_rx) = self.send_processing_data(processing_data, ver).await else {
-            return self.on_filter_error(
-                "Failed to schedule sending request data to external processor",
-                None,
-                ver,
-            );
+            return self.on_filter_error("Failed to schedule sending request data to external processor", None, ver);
         };
 
         match response_rx.await {
@@ -222,19 +224,19 @@ impl ExternalProcessor {
         }
         let body: PolyBody = std::mem::take(response.body_mut());
         let processing_data = if self.sending_response_headers {
-            let http_headers = self.build_http_headers(response.headers(), !self.sending_response_body);
+            let http_headers =
+                self.build_http_headers(response.headers(), !self.sending_response_body || body.is_end_stream());
             ProcessingData::Response(http_headers, body)
         } else {
+            if body.is_end_stream() {
+                return FilterDecision::Continue;
+            }
             ProcessingData::ResponseBody(body)
         };
 
         let ver = response.version();
         let Ok(response_rx) = self.send_processing_data(processing_data, ver).await else {
-            return self.on_filter_error(
-                "Failed to schedule sending request data to external processor",
-                None,
-                ver,
-            );
+            return self.on_filter_error("Failed to schedule sending request data to external processor", None, ver);
         };
 
         match response_rx.await {
@@ -286,10 +288,13 @@ impl ExternalProcessor {
         }
     }
 
-    async fn send_processing_data(&mut self, data: ProcessingData, ver: http::Version) -> Result<oneshot::Receiver<ProcessingStatus>, SendError<ProcessingTask>> {
+    async fn send_processing_data(
+        &mut self,
+        data: ProcessingData,
+        ver: http::Version,
+    ) -> Result<oneshot::Receiver<ProcessingStatus>, SendError<ProcessingTask>> {
         let (response_tx, response_rx) = oneshot::channel();
-        let processing_message =
-            ProcessingTask { data, reply_channel: response_tx, http_version: ver };
+        let processing_message = ProcessingTask { data, reply_channel: response_tx, http_version: ver };
 
         let worker_channel = self.get_worker_channel();
         worker_channel.send(processing_message).await.map(|_| response_rx)
@@ -762,12 +767,8 @@ impl ExternalProcessingWorker {
                                 let outbound =
                                     self.request_processing.handle_body_chunk(buffered, true).await;
                                 self.forward_to_external_processor(outbound).await;
-                            } else {
-                                // Request body was empty, close the stream
-                                let outbound =
-                                    self.request_processing.handle_body_chunk(Bytes::new(), true).await;
-                                self.forward_to_external_processor(outbound).await;
                             }
+
                             if let Some(trailers) = self.request_processing.body_context.trailers.take() {
                                 let outbound =
                                     self.request_processing.process_trailers(Some(trailers), None, None);
@@ -803,12 +804,8 @@ impl ExternalProcessingWorker {
                             if let Some(buffered) = self.response_processing.body_context.buffered_chunk.take() {
                                 let outbound = self.response_processing.handle_body_chunk(buffered, true).await;
                                 self.forward_to_external_processor(outbound).await;
-                            } else {
-                                // Request body was empty, close the stream
-                                let outbound =
-                                    self.response_processing.handle_body_chunk(Bytes::new(), true).await;
-                                self.forward_to_external_processor(outbound).await;
                             }
+
                             if let Some(trailers) = self.response_processing.body_context.trailers.take() {
                                 let outbound =
                                     self.response_processing.process_trailers(Some(trailers), None, None);
@@ -930,7 +927,6 @@ impl BodyContext {
             trailers: None,
             buffered_chunk: None,
         }
-
     }
     fn start_streaming(&mut self) {
         if let Some(body) = self.body.take() {
@@ -1031,7 +1027,9 @@ impl RequestProcessing {
     ) -> Option<ProcessingRequest> {
         self.reply_channel = Some(reply_channel);
         self.http_version = Some(http_version);
-        self.body_context.body = Some(body);
+        if !body.is_end_stream() {
+            self.body_context.body = Some(body);
+        }
         match &self.state {
             ProcessingState::ObservabilityMode => {
                 let processing_request = ProcessingRequest {
@@ -1041,7 +1039,9 @@ impl RequestProcessing {
                     observability_mode: true,
                     protocol_config: None,
                 };
-                if matches!(self.body_context.body_mode, BodyProcessingMode::Streamed) {
+                if matches!(self.body_context.body_mode, BodyProcessingMode::Streamed)
+                    && self.body_context.body.is_some()
+                {
                     self.state = ProcessingState::ObservabilityModeStreamingBody;
                     self.body_context.start_streaming();
                 } else {
@@ -1066,8 +1066,10 @@ impl RequestProcessing {
                     observability_mode: false,
                     protocol_config: None,
                 };
+
                 if self.send_body_without_waiting_for_header_response
                     && matches!(self.body_context.body_mode, BodyProcessingMode::Streamed)
+                    && self.body_context.body.is_some()
                 {
                     self.body_context.start_streaming();
                     self.state = ProcessingState::StreamingBody;
@@ -1139,7 +1141,7 @@ impl RequestProcessing {
                     }
                 }
                 if let Some(reply_channel) = self.reply_channel.take() {
-                    if self.is_body_processing_planned() {
+                    if self.is_body_processing_planned() && self.body_context.body.is_some() {
                         self.state = ProcessingState::WaitingForBodyInput;
                         self.partial_reply = Some(status);
                         if let Some(body) = self.body_context.body.take() {
@@ -1223,9 +1225,13 @@ impl RequestProcessing {
                     }
                     None
                 },
-                BodyProcessingMode::None => None,
+                BodyProcessingMode::None => {
+                    None
+                },
             },
-            _ => None,
+            _ => {
+                None
+            },
         }
     }
 
@@ -1674,7 +1680,9 @@ impl ResponseProcessing {
     ) -> Option<ProcessingRequest> {
         self.reply_channel = Some(reply_channel);
         self.http_version = Some(http_version);
-        self.body_context.body = Some(body);
+        if !body.is_end_stream() {
+            self.body_context.body = Some(body);
+        }
         match &self.state {
             ProcessingState::ObservabilityMode => {
                 let processing_request = ProcessingRequest {
@@ -1684,7 +1692,9 @@ impl ResponseProcessing {
                     observability_mode: true,
                     protocol_config: None,
                 };
-                if matches!(self.body_context.body_mode, BodyProcessingMode::Streamed) {
+                if matches!(self.body_context.body_mode, BodyProcessingMode::Streamed)
+                    && self.body_context.body.is_some()
+                {
                     self.state = ProcessingState::ObservabilityModeStreamingBody;
                     self.body_context.start_streaming();
                 } else {
@@ -1707,6 +1717,7 @@ impl ResponseProcessing {
                 };
                 if self.send_body_without_waiting_for_header_response
                     && matches!(self.body_context.body_mode, BodyProcessingMode::Streamed)
+                    && self.body_context.body.is_some()
                 {
                     self.body_context.start_streaming();
                     self.state = ProcessingState::StreamingBody;
@@ -1758,7 +1769,7 @@ impl ResponseProcessing {
                     ProcessingStatus::ResponseIsReady { header_modifications: None, body_replacement: None }
                 };
                 if let Some(reply_channel) = self.reply_channel.take() {
-                    if self.is_body_processing_planned() {
+                    if self.is_body_processing_planned() && self.body_context.body.is_some() {
                         self.state = ProcessingState::WaitingForBodyInput;
                         self.partial_reply = Some(status);
                         if let Some(body) = self.body_context.body.take() {

@@ -55,7 +55,7 @@ where
     B: std::fmt::Debug,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TimeoutBody").field("timeout", &self.timeout).field("body", &self.body).finish_non_exhaustive()
+        f.debug_struct("BodyWithTimeout").field("timeout", &self.timeout).field("body", &self.body).finish_non_exhaustive()
     }
 }
 
@@ -102,6 +102,10 @@ where
         } else {
             this.body.poll_frame(cx).map_err(TimeoutBodyError::BodyError)
         }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.body.is_end_stream()
     }
 }
 
