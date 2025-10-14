@@ -260,7 +260,7 @@ impl RequestProcessing {
                         }
                     }
                     let body_bytes = collected_body.to_bytes();
-                    let http_body = HttpBody { body: body_bytes.to_vec(), end_of_stream: true };
+                    let http_body = HttpBody { body: body_bytes.into(), end_of_stream: true };
                     let processing_request = ProcessingRequest {
                         request: Some(ProcessingRequestType::RequestBody(http_body)),
                         metadata_context: None,
@@ -501,7 +501,7 @@ impl RequestProcessing {
                     HeaderValue {
                         key: header_name.to_owned(),
                         value: String::default(),
-                        raw_value: value.as_bytes().to_vec(),
+                        raw_value: value.as_bytes().into(),
                     }
                 };
                 header_values.push(header_value);

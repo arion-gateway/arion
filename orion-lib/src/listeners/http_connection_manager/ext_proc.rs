@@ -363,7 +363,7 @@ impl ExternalProcessor {
                     HeaderValue {
                         key: header_name.to_owned(),
                         value: String::default(),
-                        raw_value: value.as_bytes().to_vec(),
+                        raw_value: value.as_bytes().into(),
                     }
                 };
                 header_values.push(header_value);
@@ -1072,7 +1072,7 @@ mod tests {
         let mock_state = MockExternalProcessorState::new()
             .add_response(create_headers_response(vec![], ResponseStatus::Continue as i32))
             .add_response(create_body_response(
-                Some(new_body.as_bytes().to_vec()),
+                Some(new_body.as_bytes().into()),
                 vec![("y-custom-header", "true")],
                 ResponseStatus::ContinueAndReplace as i32,
             ));
@@ -1107,7 +1107,7 @@ mod tests {
                 ResponseStatus::Continue as i32,
             ))
             .add_response(create_streamed_body_response(
-                "body data from external processor".as_bytes().to_vec(),
+                "body data from external processor".as_bytes().into(),
                 true,
                 ResponseStatus::Continue as i32,
             ));
