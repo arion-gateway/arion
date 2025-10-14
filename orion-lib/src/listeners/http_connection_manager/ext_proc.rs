@@ -329,7 +329,7 @@ impl ExternalProcessor {
         } else {
             let (sender, receiver) = mpsc::channel::<ProcessingTask>(12);
             let worker = ExternalProcessingWorker::new(Arc::clone(&self.worker_config));
-            tokio::spawn(worker.start(receiver));
+            tokio::spawn(worker.ext_proc_loop(receiver));
             self.ext_proc_worker.insert(sender)
         }
     }
@@ -604,11 +604,14 @@ impl ExternalProcessingWorker {
     }
 
     #[allow(clippy::too_many_lines)]
-    async fn start(mut self, mut processing_request_channel: mpsc::Receiver<ProcessingTask>) {
+    async fn ext_proc_loop(mut self, mut processing_request_channel: mpsc::Receiver<ProcessingTask>) {
+        // The following label is not strictly necessary, but it makes it clearer what is being exited at the break point.
+        // It also makes it easier to locate subsequent exit points.
+        'transaction_loop:
         loop {
             tokio::select! {
-                processing_directive = processing_request_channel.recv() => {
-                    match processing_directive {
+                outbond_processing_task = processing_request_channel.recv() => {
+                    match outbond_processing_task {
                         Some(ProcessingTask{ data: ProcessingData::Request(headers, body), reply_channel, http_version}) => {
                             let outbound = self
                                 .request_processing
@@ -633,19 +636,19 @@ impl ExternalProcessingWorker {
                                 .process_body(body, reply_channel, Some(http_version)).await;
                             self.forward_to_external_processor(outbound).await;
                         }
-                        _ => break,
+                        _ => break 'transaction_loop,
                     }
                 },
 
-                external_processing_response = if let Some(stream) = self.stream.as_mut() {
+                indbound_processing_response = if let Some(stream) = self.stream.as_mut() {
                         Either::Left(stream.inbound_responses.message())
                     } else {
                         Either::Right(std::future::pending::<Result<Option<ProcessingResponse>, Status>>())
                     } => {
-                    match external_processing_response {
+                    match indbound_processing_response {
                         Ok(Some(ProcessingResponse { override_message_timeout: Some(extended_timeout), ..})) => {
                             if !self.handle_timeout_extension(extended_timeout) {
-                                break;
+                                break 'transaction_loop;
                             }
                         },
                         Ok(Some(ProcessingResponse { response: Some(ProcessingResponseType::ImmediateResponse(response_attempt)), ..})) => {
@@ -663,7 +666,7 @@ impl ExternalProcessingWorker {
                                     self.request_processing.exit_with_status(status);
                                 }
                             }
-                            break;
+                            break 'transaction_loop;
                         },
                         Ok(Some(ProcessingResponse { mode_override, response: Some(ProcessingResponseType::RequestHeaders(headers_response)), ..})) => {
                             if self.config.allow_mode_override {
@@ -689,7 +692,7 @@ impl ExternalProcessingWorker {
                                 .handle_body_response(body_response, &self.config.route_cache_action).await;
                             self.forward_to_external_processor(outbound).await;
                             if empty_response {
-                                break;
+                                break 'transaction_loop;
                             }
                         },
                         Ok(Some(ProcessingResponse { response: Some(ProcessingResponseType::RequestTrailers(trailers_response)), ..})) => {
@@ -710,7 +713,7 @@ impl ExternalProcessingWorker {
                             let outbound = self.response_processing.handle_body_response(body_response).await;
                             self.forward_to_external_processor(outbound).await;
                             if empty_response {
-                                break;
+                                break 'transaction_loop;
                             }
                         },
                         Ok(Some(ProcessingResponse { response: Some(ProcessingResponseType::ResponseTrailers(trailers_response)), ..})) => {
@@ -732,10 +735,10 @@ impl ExternalProcessingWorker {
                             } else {
                                 self.request_processing.exit_on_error(msg, self.config.failure_mode_allow);
                             }
-                            break;
+                            break 'transaction_loop;
                         },
                         _ => {
-                            break;
+                            break 'transaction_loop;
                         }
                     }
                 },
@@ -818,7 +821,7 @@ impl ExternalProcessingWorker {
                 () = fast_timeout::fast_sleep(self.timeout_state.duration), if self.timeout_state.active => {
                     self.request_processing.exit_on_timeout(self.config.failure_mode_allow);
                     self.response_processing.exit_on_timeout(self.config.failure_mode_allow);
-                    break;
+                    break 'exit_loop;
                 }
             }
         }
