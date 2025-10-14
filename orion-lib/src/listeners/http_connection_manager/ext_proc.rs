@@ -607,8 +607,7 @@ impl ExternalProcessingWorker {
     async fn ext_proc_loop(mut self, mut processing_request_channel: mpsc::Receiver<ProcessingTask>) {
         // The following label is not strictly necessary, but it makes it clearer what is being exited at the break point.
         // It also makes it easier to locate subsequent exit points.
-        'transaction_loop:
-        loop {
+        'transaction_loop: loop {
             tokio::select! {
                 outbond_processing_task = processing_request_channel.recv() => {
                     match outbond_processing_task {
@@ -821,7 +820,7 @@ impl ExternalProcessingWorker {
                 () = fast_timeout::fast_sleep(self.timeout_state.duration), if self.timeout_state.active => {
                     self.request_processing.exit_on_timeout(self.config.failure_mode_allow);
                     self.response_processing.exit_on_timeout(self.config.failure_mode_allow);
-                    break 'exit_loop;
+                    break 'transaction_loop;
                 }
             }
         }
@@ -1228,13 +1227,9 @@ impl RequestProcessing {
                     }
                     None
                 },
-                BodyProcessingMode::None => {
-                    None
-                },
+                BodyProcessingMode::None => None,
             },
-            _ => {
-                None
-            },
+            _ => None,
         }
     }
 

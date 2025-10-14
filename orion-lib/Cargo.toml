@@ -86,7 +86,6 @@ default   = ["aws_lc_rs"]
 metrics   = ["dep:orion-metrics"]
 tracing   = []
 access-log = []
-simplified-epp = []
 
 [lints]
 workspace = true
