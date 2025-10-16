@@ -96,6 +96,7 @@ impl From<(ExternalProcessorConfig, Option<ExtProcPerRoute>)> for ExternalProces
 impl Drop for ExternalProcessor {
     fn drop(&mut self) {
         if let Some(sender) = self.ext_proc_worker.take() {
+            debug!(target: "ext_proc", "Dropping ExternalProcessor, close sender");
             drop(sender);
         }
     }
