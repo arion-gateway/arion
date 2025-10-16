@@ -50,7 +50,7 @@ use std::collections::HashMap;
 use std::{sync::Arc, time::Duration};
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::{mpsc, oneshot};
-use tracing::{error, warn};
+use tracing::{debug, error, warn};
 
 #[derive(Debug, Clone)]
 #[allow(clippy::struct_excessive_bools)]
@@ -531,35 +531,43 @@ impl ExternalProcessingWorker {
     async fn ext_proc_loop(mut self, mut processing_request_channel: mpsc::Receiver<ProcessingTask>) {
         // The following label is not strictly necessary, but it makes it clearer what is being exited at the break point.
         // It also makes it easier to locate subsequent exit points.
+        debug!(target: "ext_proc", "--- BEGIN ---");
         'transaction_loop: loop {
             tokio::select! {
                 outbond_processing_task = processing_request_channel.recv() => {
                     match outbond_processing_task {
                         Some(ProcessingTask{ data: ProcessingData::Request(headers, body), reply_channel, http_version}) => {
+                            debug!(target: "ext_proc", "Processing new request ->");
                             let outbound = self
                                 .request_processing
                                 .process_request(headers, body, reply_channel, http_version);
                             self.forward_to_external_processor(outbound).await;
                         }
                         Some(ProcessingTask{ data: ProcessingData::RequestBody(body), reply_channel, http_version}) => {
+                            debug!(target: "ext_proc", "Processing new request (body only) ->");
                             let outbound = self
                                 .request_processing
                                 .process_body(body, reply_channel, Some(http_version)).await;
                             self.forward_to_external_processor(outbound).await;
                         }
                         Some(ProcessingTask{ data: ProcessingData::Response(headers, body), reply_channel, http_version}) => {
+                            debug!(target: "ext_proc", "Processing new response ->");
                             let outbound = self
                                 .response_processing
                                 .process_response(headers, body, reply_channel, http_version);
                             self.forward_to_external_processor(outbound).await;
                         }
                         Some(ProcessingTask{ data: ProcessingData::ResponseBody(body), reply_channel, http_version}) => {
+                            debug!(target: "ext_proc", "Processing new response (body only) ->");
                             let outbound = self
                                 .response_processing
                                 .process_body(body, reply_channel, Some(http_version)).await;
                             self.forward_to_external_processor(outbound).await;
                         }
-                        _ => break 'transaction_loop,
+                        _ => {
+                            debug!(target: "ext_proc", "Channel received closed!");
+                            break 'transaction_loop
+                        },
                     }
                 },
 
@@ -570,11 +578,13 @@ impl ExternalProcessingWorker {
                     } => {
                     match indbound_processing_response {
                         Ok(Some(ProcessingResponse { override_message_timeout: Some(extended_timeout), ..})) => {
+                            debug!(target: "ext_proc", "<- External processor requested timeout extension: {extended_timeout:?}");
                             if !self.handle_timeout_extension(extended_timeout) {
                                 break 'transaction_loop;
                             }
                         },
                         Ok(Some(ProcessingResponse { response: Some(ProcessingResponseType::ImmediateResponse(response_attempt)), ..})) => {
+                            debug!(target: "ext_proc", "<- External processor sent immediate response");
                             if self.config.disable_immediate_response {
                                 let msg = "External processor attempted to send immediate response - which is disabled by config";
                                 warn!("{msg}");
@@ -592,6 +602,7 @@ impl ExternalProcessingWorker {
                             break 'transaction_loop;
                         },
                         Ok(Some(ProcessingResponse { mode_override, response: Some(ProcessingResponseType::RequestHeaders(headers_response)), ..})) => {
+                            debug!(target: "ext_proc", "<- External processor sent request headers response");
                             if self.config.allow_mode_override {
                                 if let Some(overrides) = mode_override {
                                     self.request_processing.apply_mode_overrides(&overrides, &self.config.allowed_override_modes);
@@ -609,6 +620,7 @@ impl ExternalProcessingWorker {
                             self.forward_to_external_processor(outbound).await;
                         },
                         Ok(Some(ProcessingResponse { response: Some(ProcessingResponseType::RequestBody(body_response)), ..})) => {
+                            debug!(target: "ext_proc", "<- External processor sent request body response");
                             let empty_response = body_response.response.is_none();
                             let outbound = self
                                 .request_processing
@@ -619,10 +631,12 @@ impl ExternalProcessingWorker {
                             }
                         },
                         Ok(Some(ProcessingResponse { response: Some(ProcessingResponseType::RequestTrailers(trailers_response)), ..})) => {
+                            debug!(target: "ext_proc", "<- External processor sent request trailers response");
                             let outbound = self.request_processing.handle_trailers_response(trailers_response).await;
                             self.forward_to_external_processor(outbound).await;
                         },
                         Ok(Some(ProcessingResponse { mode_override, response: Some(ProcessingResponseType::ResponseHeaders(headers_response)), ..})) => {
+                            debug!(target: "ext_proc", "<- External processor sent response headers response");
                             if self.config.allow_mode_override {
                                 if let Some(overrides) = mode_override {
                                     self.response_processing.apply_mode_overrides(&overrides, &self.config.allowed_override_modes);
@@ -632,6 +646,7 @@ impl ExternalProcessingWorker {
                             self.forward_to_external_processor(outbound).await;
                         },
                         Ok(Some(ProcessingResponse { response: Some(ProcessingResponseType::ResponseBody(body_response)), ..})) => {
+                            debug!(target: "ext_proc", "<- External processor sent response body response");
                             let empty_response = body_response.response.is_none();
                             let outbound = self.response_processing.handle_body_response(body_response).await;
                             self.forward_to_external_processor(outbound).await;
@@ -640,11 +655,13 @@ impl ExternalProcessingWorker {
                             }
                         },
                         Ok(Some(ProcessingResponse { response: Some(ProcessingResponseType::ResponseTrailers(trailers_response)), ..})) => {
+                            debug!(target: "ext_proc", "<- External processor sent response trailers response");
                             let outbound =
                                 self.response_processing.handle_trailers_response(trailers_response).await;
                             self.forward_to_external_processor(outbound).await;
                         },
-                        Ok(Some(_)) => {
+                        Ok(Some(r)) => {
+                            debug!(target: "ext_proc", "<- External processor sent noop response {r:?}");
                             self.response_processing.handle_noop_response();
                             let wants_response_headers = self.response_processing.is_header_processing_planned();
                             let wants_response_body = self.response_processing.is_body_processing_planned();
@@ -661,6 +678,7 @@ impl ExternalProcessingWorker {
                             break 'transaction_loop;
                         },
                         _ => {
+                            debug!(target: "ext_proc", "<- External processor closed the stream");
                             break 'transaction_loop;
                         }
                     }
@@ -669,6 +687,7 @@ impl ExternalProcessingWorker {
                 request_body_frame = &mut self.request_processing.body_context.body_stream.next(), if self.request_processing.is_accepting_body_data() => {
                     match request_body_frame {
                         Some(Ok(frame)) => {
+                            debug!(target: "ext_proc", "Received request body frame ->");
                             if let Some(data) = frame.data_ref() {
                                 if let Some(buffered) = self.request_processing.body_context.buffered_chunk.take() {
                                     let outbound =
@@ -689,6 +708,7 @@ impl ExternalProcessingWorker {
                             self.request_processing.exit_on_error("Error occured when streaming request body for external processing", self.config.failure_mode_allow);
                         },
                         None => {
+                            debug!(target: "ext_proc", "Request body stream ended ->");
                             if let Some(buffered) = self.request_processing.body_context.buffered_chunk.take() {
                                 let outbound =
                                     self.request_processing.handle_body_chunk(buffered, true).await;
@@ -707,6 +727,7 @@ impl ExternalProcessingWorker {
                 response_body_frame = &mut self.response_processing.body_context.body_stream.next(), if self.response_processing.is_accepting_body_data() => {
                     match response_body_frame {
                         Some(Ok(frame)) => {
+                            debug!(target: "ext_proc", "Received response body frame ->");
                             if let Some(data) = frame.data_ref() {
                                 if let Some(buffered) = self.response_processing.body_context.buffered_chunk.take() {
                                     let outbound =
@@ -727,6 +748,7 @@ impl ExternalProcessingWorker {
                             self.response_processing.exit_on_error("Error occured when streaming response body for external processing", self.config.failure_mode_allow);
                         },
                         None => {
+                            debug!(target: "ext_proc", "Response body stream ended ->");
                             if let Some(buffered) = self.response_processing.body_context.buffered_chunk.take() {
                                 let outbound = self.response_processing.handle_body_chunk(buffered, true).await;
                                 self.forward_to_external_processor(outbound).await;
@@ -742,12 +764,15 @@ impl ExternalProcessingWorker {
                 },
 
                 () = fast_timeout::fast_sleep(self.timeout_state.duration), if self.timeout_state.active => {
+                    debug!(target: "ext_proc", "transaction timeout!");
                     self.request_processing.exit_on_timeout(self.config.failure_mode_allow);
                     self.response_processing.exit_on_timeout(self.config.failure_mode_allow);
                     break 'transaction_loop;
                 }
             }
         }
+
+        debug!(target: "ext_proc", "--- END ---");
     }
 
     #[allow(clippy::cast_sign_loss)]
