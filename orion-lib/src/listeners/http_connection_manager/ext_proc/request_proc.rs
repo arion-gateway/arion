@@ -1,6 +1,6 @@
 use crate::event_error::EventFailure;
 use crate::listeners::http_connection_manager::ext_proc::common_state::{
-    BodyContext, ProcessingState, ProcessingStatus,
+    BodyContext, ObservabilityMode, ProcessingState, ProcessingStatus,
 };
 use crate::listeners::http_connection_manager::ext_proc::mutation::apply_header_mutations;
 use crate::listeners::http_connection_manager::ext_proc::worker_config::ExternalProcessingWorkerConfig;
@@ -38,28 +38,27 @@ pub struct RequestProcessing {
 impl From<&ExternalProcessingWorkerConfig> for RequestProcessing {
     fn from(config: &ExternalProcessingWorkerConfig) -> Self {
         let processing_mode = &config.processing_mode;
-        let initial_state = match (processing_mode, config.observability_mode) {
-            (_, true) => ProcessingState::ObservabilityMode,
-            (
-                ProcessingMode {
-                    request_header_mode: HeaderProcessingMode::Default | HeaderProcessingMode::Send, ..
-                },
-                _,
-            ) => ProcessingState::WaitingForHeadersInput,
-            (
-                ProcessingMode {
-                    request_body_mode:
-                        BodyProcessingMode::Buffered
-                        | BodyProcessingMode::BufferedPartial
-                        | BodyProcessingMode::Streamed
-                        | BodyProcessingMode::FullDuplexStreamed,
-                    ..
-                }
-                | ProcessingMode { request_trailer_mode: TrailerProcessingMode::Send, .. },
-                _,
-            ) => ProcessingState::WaitingForBodyInput,
-            (_, _) => ProcessingState::Idle,
+
+        let observability_mode = if config.observability_mode { ObservabilityMode::On } else { ObservabilityMode::Off };
+
+        let initial_state = match processing_mode {
+            ProcessingMode {
+                request_header_mode: HeaderProcessingMode::Default | HeaderProcessingMode::Send, ..
+            } => ProcessingState::WaitingForHeadersInput(observability_mode),
+            ProcessingMode {
+                request_body_mode:
+                    BodyProcessingMode::Buffered
+                    | BodyProcessingMode::BufferedPartial
+                    | BodyProcessingMode::Streamed
+                    | BodyProcessingMode::FullDuplexStreamed,
+                ..
+            }
+            | ProcessingMode { request_trailer_mode: TrailerProcessingMode::Send, .. } => {
+                ProcessingState::WaitingForBodyInput(observability_mode)
+            },
+            _ => ProcessingState::Idle,
         };
+
         Self {
             state: initial_state,
             body_context: BodyContext::new(processing_mode.request_body_mode, processing_mode.request_trailer_mode),
@@ -105,7 +104,7 @@ impl RequestProcessing {
             self.body_context.body = Some(body);
         }
         match &self.state {
-            ProcessingState::ObservabilityMode => {
+            ProcessingState::WaitingForHeadersInput(ObservabilityMode::On)=> {
                 let processing_request = ProcessingRequest {
                     request: Some(ProcessingRequestType::RequestHeaders(headers)),
                     metadata_context: None,
@@ -116,7 +115,7 @@ impl RequestProcessing {
                 if matches!(self.body_context.body_mode, BodyProcessingMode::Streamed)
                     && self.body_context.body.is_some()
                 {
-                    self.state = ProcessingState::ObservabilityModeStreamingBody;
+                    self.state = ProcessingState::StreamingBody(ObservabilityMode::On);
                     self.body_context.start_streaming();
                 } else {
                     self.state = ProcessingState::Idle;
@@ -132,7 +131,7 @@ impl RequestProcessing {
                 self.exit_with_status(status);
                 Some(processing_request)
             },
-            ProcessingState::WaitingForHeadersInput => {
+            ProcessingState::WaitingForHeadersInput(ObservabilityMode::Off) => {
                 let processing_request = ProcessingRequest {
                     request: Some(ProcessingRequestType::RequestHeaders(headers)),
                     metadata_context: None,
@@ -146,7 +145,7 @@ impl RequestProcessing {
                     && self.body_context.body.is_some()
                 {
                     self.body_context.start_streaming();
-                    self.state = ProcessingState::StreamingBody;
+                    self.state = ProcessingState::StreamingBody(ObservabilityMode::Off);
                 } else {
                     self.state = ProcessingState::WaitingForHeadersReply;
                 }
@@ -163,30 +162,32 @@ impl RequestProcessing {
         wants_response_headers: bool,
         wants_response_body: bool,
     ) -> Option<ProcessingRequest> {
+
+        let observability_mode = if let ProcessingState::StreamingBody(val) = self.state.clone() {
+            val
+        } else {
+            ObservabilityMode::Off
+        };
+
         match &self.state {
-            ProcessingState::WaitingForHeadersReply | ProcessingState::StreamingBody => {
-                let mut status = ProcessingStatus::RequestIsReady {
-                    header_modifications: None,
-                    body_replacement: None,
-                    override_sending_response_headers: Some(wants_response_headers),
-                    override_sending_response_body: Some(wants_response_body),
-                    clear_route_cache: false,
-                };
+            ProcessingState::WaitingForHeadersReply | ProcessingState::StreamingBody(_) => {
+                let mut status;
+
                 if let Some(response_data) = response.response {
                     let should_clear_route_cache = match route_cache_action {
                         RouteCacheAction::Clear => true,
                         RouteCacheAction::Retain => false,
                         RouteCacheAction::Default => response_data.clear_route_cache,
                     };
-                    if let ProcessingStatus::RequestIsReady {
-                        ref mut header_modifications,
-                        ref mut clear_route_cache,
-                        ..
-                    } = status
-                    {
-                        *header_modifications = response_data.header_mutation;
-                        *clear_route_cache = should_clear_route_cache;
-                    }
+
+                    status = ProcessingStatus::RequestIsReady {
+                        header_modifications: response_data.header_mutation,
+                        body_replacement: None,
+                        override_sending_response_headers: Some(wants_response_headers),
+                        override_sending_response_body: Some(wants_response_body),
+                        clear_route_cache: should_clear_route_cache,
+                    };
+
                     let embedded_status =
                         ResponseStatus::try_from(response_data.status).unwrap_or(ResponseStatus::Continue);
                     if matches!(embedded_status, ResponseStatus::ContinueAndReplace) {
@@ -213,10 +214,20 @@ impl RequestProcessing {
                         }
                         return None;
                     }
+
+                } else {
+                    status = ProcessingStatus::RequestIsReady {
+                        header_modifications: None,
+                        body_replacement: None,
+                        override_sending_response_headers: Some(wants_response_headers),
+                        override_sending_response_body: Some(wants_response_body),
+                        clear_route_cache: false,
+                    };
                 }
+
                 if let Some(reply_channel) = self.reply_channel.take() {
                     if self.is_body_processing_planned() && self.body_context.body.is_some() {
-                        self.state = ProcessingState::WaitingForBodyInput;
+                        self.state = ProcessingState::WaitingForBodyInput(observability_mode);
                         self.partial_reply = Some(status);
                         if let Some(body) = self.body_context.body.take() {
                             return self.process_body(body, reply_channel, None).await;
@@ -245,7 +256,7 @@ impl RequestProcessing {
             self.http_version = Some(http_version);
         }
         match &self.state {
-            ProcessingState::WaitingForBodyInput => match self.body_context.body_mode {
+            ProcessingState::WaitingForBodyInput(observability_mode) => match self.body_context.body_mode {
                 BodyProcessingMode::Buffered | BodyProcessingMode::BufferedPartial => {
                     let Ok(collected_body) = body.collect().await else {
                         self.exit_on_error(
@@ -273,7 +284,7 @@ impl RequestProcessing {
                 },
                 BodyProcessingMode::Streamed | BodyProcessingMode::FullDuplexStreamed => {
                     self.body_context.body = Some(body);
-                    self.state = ProcessingState::StreamingBody;
+                    self.state = ProcessingState::StreamingBody(*observability_mode);
                     self.body_context.start_streaming();
                     None
                 },
@@ -311,17 +322,17 @@ impl RequestProcessing {
             request: Some(ProcessingRequestType::RequestBody(http_body)),
             metadata_context: None,
             attributes: HashMap::default(),
-            observability_mode: matches!(self.state, ProcessingState::ObservabilityMode),
+            observability_mode: self.state.is_observability_mode(),
             protocol_config: None,
         };
         match &self.state {
-            ProcessingState::ObservabilityMode => {
+            ProcessingState::StreamingBody(ObservabilityMode::On)=> {
                 if let Some(sender) = &self.body_context.body_sender {
                     let _ = sender.send_data(data).await;
                 }
                 Some(processing_request)
             },
-            ProcessingState::StreamingBody => {
+            ProcessingState::StreamingBody(ObservabilityMode::Off) => {
                 self.state = ProcessingState::StreamingBodyWaitingForReply;
                 Some(processing_request)
             },
@@ -422,14 +433,14 @@ impl RequestProcessing {
                             }
                             if streamed_response.end_of_stream {
                                 if matches!(self.body_context.trailer_mode, TrailerProcessingMode::Send) {
-                                    self.state = ProcessingState::ProcessingTrailers;
+                                    self.state = ProcessingState::ProcessingTrailers(ObservabilityMode::Off);
                                 } else {
                                     self.state = ProcessingState::Idle;
                                     self.body_context.finish_stream();
                                     end_of_stream = true;
                                 }
                             } else if matches!(self.state, ProcessingState::StreamingBodyWaitingForReply) {
-                                self.state = ProcessingState::StreamingBody;
+                                self.state = ProcessingState::StreamingBody(ObservabilityMode::Off);
                             }
                         },
                         Some(Mutation::Body(bytes)) => {
@@ -437,7 +448,7 @@ impl RequestProcessing {
                                 let _ = sender.send_data(bytes.into()).await;
                             }
                             if matches!(self.body_context.trailer_mode, TrailerProcessingMode::Send) {
-                                self.state = ProcessingState::ProcessingTrailers;
+                                self.state = ProcessingState::ProcessingTrailers(ObservabilityMode::Off);
                             } else {
                                 self.state = ProcessingState::Idle;
                                 self.body_context.finish_stream();
@@ -507,18 +518,22 @@ impl RequestProcessing {
                 header_values.push(header_value);
             }
             let trailers_to_send = HeaderMap { headers: header_values };
+            let observability_mode = self.state.is_observability_mode();
+
             let processing_request = ProcessingRequest {
                 request: Some(ProcessingRequestType::RequestTrailers(HttpTrailers {
                     trailers: Some(trailers_to_send),
                 })),
                 metadata_context: None,
                 attributes: HashMap::default(),
-                observability_mode: matches!(self.state, ProcessingState::ObservabilityMode),
+                observability_mode,
                 protocol_config: None,
             };
-            if !matches!(self.state, ProcessingState::ObservabilityMode) {
-                self.state = ProcessingState::ProcessingTrailers;
+
+            if !observability_mode {
+                self.state = ProcessingState::ProcessingTrailers(ObservabilityMode::Off);
             }
+
             Some(processing_request)
         } else {
             if let Some(reply_channel) = self.reply_channel.take() {
@@ -539,13 +554,11 @@ impl RequestProcessing {
 
     pub async fn handle_trailers_response(&mut self, trailers_response: TrailersResponse) -> Option<ProcessingRequest> {
         if let Some(mut trailers) = self.body_context.trailers.take() {
-            if !matches!(self.state, ProcessingState::ObservabilityMode) {
-                if let Some(trailers_updates) = trailers_response.header_mutation {
-                    let _ = apply_header_mutations(&mut trailers, &trailers_updates, None);
-                }
+            if let Some(trailers_updates) = trailers_response.header_mutation {
+                let _ = apply_header_mutations(&mut trailers, &trailers_updates, None);
             }
             match &self.state {
-                ProcessingState::ProcessingTrailers => {
+                ProcessingState::ProcessingTrailers(ObservabilityMode::Off) => {
                     if let Some(sender) = &self.body_context.body_sender {
                         let _ = sender.send_trailers(trailers).await;
                     }
@@ -562,7 +575,7 @@ impl RequestProcessing {
                         self.body_context.finish_stream();
                     }
                 },
-                ProcessingState::ObservabilityMode => {
+                ProcessingState::ProcessingTrailers(ObservabilityMode::On) => {
                     if let Some(sender) = &self.body_context.body_sender {
                         let _ = sender.send_trailers(trailers).await;
                     }
@@ -596,8 +609,7 @@ impl RequestProcessing {
     pub fn is_accepting_body_data(&self) -> bool {
         matches!(
             self.state,
-            ProcessingState::ObservabilityModeStreamingBody
-                | ProcessingState::StreamingBody
+                | ProcessingState::StreamingBody(_)
                 | ProcessingState::FullDuplexStreamingBody
         )
     }

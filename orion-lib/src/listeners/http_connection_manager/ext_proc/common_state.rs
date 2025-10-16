@@ -11,21 +11,47 @@ use orion_configuration::config::network_filters::http_connection_manager::http_
 
 use orion_data_plane_api::envoy_data_plane_api::envoy::service::ext_proc::v3::HeaderMutation;
 
+#[derive(Debug, Clone, Copy, Default)]
+pub enum ObservabilityMode {
+    #[default]
+    Off,
+    On
+}
+
 #[derive(Debug, Clone, Default)]
 pub enum ProcessingState {
-    ObservabilityMode,
-    ObservabilityModeStreamingBody,
-    WaitingForHeadersInput,
+    WaitingForHeadersInput(ObservabilityMode),
     WaitingForHeadersReply,
-    WaitingForBodyInput,
+    WaitingForBodyInput(ObservabilityMode),
     WaitingForBodyReply,
-    StreamingBody,
+    StreamingBody(ObservabilityMode),
     StreamingBodyWaitingForReply,
     #[allow(dead_code)]
     FullDuplexStreamingBody,
-    ProcessingTrailers,
+    ProcessingTrailers(ObservabilityMode),
     #[default]
     Idle,
+}
+
+impl ProcessingState {
+    pub fn observability_mode(&self) -> ObservabilityMode {
+        match self {
+            ProcessingState::WaitingForHeadersInput(mode)
+            | ProcessingState::WaitingForBodyInput(mode)
+            | ProcessingState::StreamingBody(mode)
+            | ProcessingState::ProcessingTrailers(mode) => *mode,
+            _ => ObservabilityMode::Off,
+        }
+    }
+
+    pub fn is_observability_mode(&self) -> bool {
+        matches!(
+            self,
+            ProcessingState::WaitingForHeadersInput(ObservabilityMode::On)
+                | ProcessingState::WaitingForBodyInput(ObservabilityMode::On)
+                | ProcessingState::StreamingBody(ObservabilityMode::On)
+        )
+    }
 }
 
 #[derive(Debug)]
