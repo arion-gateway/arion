@@ -82,35 +82,36 @@ impl From<&ExternalProcessingWorkerConfig> for ResponseProcessing<ObservabilityS
         if !config.observability_mode {
             panic!("Attempted to create ResponseProcessing<ObservabilityState> in non-observability mode");
         }
-        todo!()
-        // let processing_mode = &config.processing_mode;
 
-        // let initial_state = match processing_mode {
-        //     ProcessingMode {
-        //             response_header_mode: HeaderProcessingMode::Default | HeaderProcessingMode::Send, ..
-        //         } => ProcessingState::WaitingForHeadersInput(observability_mode),
-        //     ProcessingMode {
-        //         response_body_mode:
-        //             BodyProcessingMode::Buffered
-        //             | BodyProcessingMode::BufferedPartial
-        //             | BodyProcessingMode::Streamed
-        //             | BodyProcessingMode::FullDuplexStreamed,
-        //         ..
-        //     }
-        //     | ProcessingMode { response_trailer_mode: TrailerProcessingMode::Send, .. } => ProcessingState::WaitingForBodyInput(observability_mode),
-        //    _ => ProcessingState::Idle,
-        // };
+        let processing_mode = &config.processing_mode;
 
-        // Ok(Self {
-        //     state: initial_state,
-        //     body_context: BodyContext::new(processing_mode.response_body_mode, processing_mode.response_trailer_mode),
-        //     partial_reply: None,
-        //     reply_channel: None,
-        //     header_mode: processing_mode.response_header_mode,
-        //     http_version: None,
-        //     send_body_without_waiting_for_header_response: config.send_body_without_waiting_for_header_response,
-        //     failure_mode_allow: config.failure_mode_allow,
-        // })
+        let initial_state = match processing_mode {
+            ProcessingMode {
+                    response_header_mode: HeaderProcessingMode::Default | HeaderProcessingMode::Send, ..
+                } => ObservabilityState::WaitingForHeadersInput,
+            ProcessingMode {
+                // todo(fciaccia) observability mode should work only in STREAMED or NONE for the body
+                response_body_mode:
+                    BodyProcessingMode::Buffered
+                    | BodyProcessingMode::BufferedPartial
+                    | BodyProcessingMode::Streamed
+                    | BodyProcessingMode::FullDuplexStreamed,
+                ..
+            }
+            | ProcessingMode { response_trailer_mode: TrailerProcessingMode::Send, .. } => ObservabilityState::WaitingForBodyInput,
+           _ => ObservabilityState::Idle,
+        };
+
+        Self {
+            state: initial_state,
+            body_context: BodyContext::new(processing_mode.response_body_mode, processing_mode.response_trailer_mode),
+            partial_reply: None,
+            reply_channel: None,
+            header_mode: processing_mode.response_header_mode,
+            http_version: None,
+            send_body_without_waiting_for_header_response: config.send_body_without_waiting_for_header_response,
+            failure_mode_allow: config.failure_mode_allow,
+        }
     }
 }
 
@@ -575,58 +576,37 @@ impl ResponseProcessing<ObservabilityState> {
         reply_channel: oneshot::Sender<ExtProcStatus>,
         http_version: http::Version,
     ) -> Option<ProcessingRequest> {
-        todo!()
-
-        //self.reply_channel = Some(reply_channel);
-        //self.http_version = Some(http_version);
-        //if !body.is_end_stream() {
-        //    self.body_context.body = Some(body);
-        //}
-        //match &self.state {
-        //    ProcessingState::WaitingForHeadersInput(ObservabilityMode::On)=> {
-        //        let processing_request = ProcessingRequest {
-        //            request: Some(ProcessingRequestType::ResponseHeaders(headers)),
-        //            metadata_context: None,
-        //            attributes: HashMap::default(),
-        //            observability_mode: true,
-        //            protocol_config: None,
-        //        };
-        //        if matches!(self.body_context.body_mode, BodyProcessingMode::Streamed)
-        //            && self.body_context.body.is_some()
-        //        {
-        //            self.state = ProcessingState::StreamingBody(ObservabilityMode::On);
-        //            self.body_context.start_streaming();
-        //        } else {
-        //            self.state = ProcessingState::Idle;
-        //        }
-        //        let status = ExtProcStatus::ResponseIsReady {
-        //            header_modifications: None,
-        //            body_replacement: self.body_context.body.take(),
-        //        };
-        //        self.exit_with_status(status);
-        //        Some(processing_request)
-        //    },
-        //    ProcessingState::WaitingForHeadersInput(ObservabilityMode::Off) => {
-        //        let processing_request = ProcessingRequest {
-        //            request: Some(ProcessingRequestType::ResponseHeaders(headers)),
-        //            metadata_context: None,
-        //            attributes: HashMap::default(),
-        //            observability_mode: false,
-        //            protocol_config: None,
-        //        };
-        //        if self.send_body_without_waiting_for_header_response
-        //            && matches!(self.body_context.body_mode, BodyProcessingMode::Streamed)
-        //            && self.body_context.body.is_some()
-        //        {
-        //            self.body_context.start_streaming();
-        //            self.state = ProcessingState::StreamingBody(ObservabilityMode::Off);
-        //        } else {
-        //            self.state = ProcessingState::WaitingForHeadersReply;
-        //        }
-        //        Some(processing_request)
-        //    },
-        //    _ => None,
-        //}
+        self.reply_channel = Some(reply_channel);
+        self.http_version = Some(http_version);
+        if !body.is_end_stream() {
+            self.body_context.body = Some(body);
+        }
+        match &self.state {
+            ObservabilityState::WaitingForHeadersInput => {
+                let processing_request = ProcessingRequest {
+                    request: Some(ProcessingRequestType::ResponseHeaders(headers)),
+                    metadata_context: None,
+                    attributes: HashMap::default(),
+                    observability_mode: true,
+                    protocol_config: None,
+                };
+                if matches!(self.body_context.body_mode, BodyProcessingMode::Streamed)
+                    && self.body_context.body.is_some()
+                {
+                    self.state = ObservabilityState::StreamingBody;
+                    self.body_context.start_streaming();
+                } else {
+                    self.state = ObservabilityState::Idle;
+                }
+                let status = ExtProcStatus::ResponseIsReady {
+                    header_modifications: None,
+                    body_replacement: self.body_context.body.take(),
+                };
+                self.exit_with_status(status);
+                Some(processing_request)
+            },
+            _ => None,
+        }
     }
 
     pub async fn process_body(
@@ -636,6 +616,9 @@ impl ResponseProcessing<ObservabilityState> {
         http_version: Option<http::Version>,
     ) -> Option<ProcessingRequest> {
         todo!()
+
+        // todo(fciaccia) this function is heavily dependant on the way we are going to
+        // implement the ext_proc_loop for observability_mode, keeping unimplemented for now
 
         // self.reply_channel = Some(reply_channel);
         // if let Some(http_version) = http_version {
@@ -703,31 +686,29 @@ impl ResponseProcessing<ObservabilityState> {
     }
 
     pub async fn handle_body_chunk(&mut self, data: Bytes, end_of_stream: bool) -> Option<ProcessingRequest> {
-        todo!()
-
-        // let http_body = HttpBody { body: data.to_vec(), end_of_stream };
-        // let processing_request = ProcessingRequest {
-        //     request: Some(ProcessingRequestType::ResponseBody(http_body)),
-        //     metadata_context: None,
-        //     attributes: HashMap::default(),
-        //     observability_mode: self.state.is_observability_mode(),
-        //     protocol_config: None,
-        // };
-        // match &self.state {
-        //     ObservabilityState::StreamingBody => {
-        //         if let Some(sender) = &self.body_context.body_sender {
-        //             let _ = sender.send_data(data).await;
-        //             if end_of_stream {
-        //                 if let Some(trailers) = self.body_context.trailers.take() {
-        //                     let _ = sender.send_trailers(trailers).await;
-        //                 }
-        //                 self.state = ObservabilityState::Idle;
-        //             }
-        //         }
-        //         Some(processing_request)
-        //     },
-        //     _ => Some(processing_request),
-        // }
+        let http_body = HttpBody { body: data.to_vec(), end_of_stream };
+        let processing_request = ProcessingRequest {
+            request: Some(ProcessingRequestType::ResponseBody(http_body)),
+            metadata_context: None,
+            attributes: HashMap::default(),
+            observability_mode: self.state.is_observability_mode(),
+            protocol_config: None,
+        };
+        match &self.state {
+            ObservabilityState::StreamingBody => {
+                if let Some(sender) = &self.body_context.body_sender {
+                    let _ = sender.send_data(data).await;
+                    if end_of_stream {
+                        if let Some(trailers) = self.body_context.trailers.take() {
+                            let _ = sender.send_trailers(trailers).await;
+                        }
+                        self.state = ObservabilityState::Idle;
+                    }
+                }
+                Some(processing_request)
+            },
+            _ => Some(processing_request),
+        }
     }
     pub fn process_trailers(
         &mut self,
@@ -736,6 +717,9 @@ impl ResponseProcessing<ObservabilityState> {
         http_version: Option<http::Version>,
     ) -> Option<ProcessingRequest> {
         todo!()
+
+        // todo(fciaccia) this function is heavily dependant on the way we are going to
+        // implement the ext_proc_loop for observability_mode, keeping unimplemented for now
 
         // if let Some(reply_channel) = reply_channel {
         //     self.reply_channel = Some(reply_channel);
@@ -866,6 +850,7 @@ impl<S: State + Default> ResponseProcessing<S> {
         self.state = S::default();
     }
 
+    #[inline]
     pub fn exit_with_status(&mut self, status: ExtProcStatus) {
         if let Some(channel) = self.reply_channel.take() {
             let _ = channel.send(status);
