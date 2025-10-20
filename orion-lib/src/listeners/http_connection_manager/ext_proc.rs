@@ -5,7 +5,7 @@ mod response_proc;
 mod worker_config;
 
 use crate::event_error::EventFailure;
-use crate::listeners::http_connection_manager::ext_proc::common_state::ProcessingStatus;
+use crate::listeners::http_connection_manager::ext_proc::common_state::ExtProcStatus;
 use crate::listeners::http_connection_manager::ext_proc::mutation::apply_header_mutations;
 use crate::listeners::http_connection_manager::ext_proc::request_proc::RequestProcessing;
 use crate::listeners::http_connection_manager::ext_proc::response_proc::ResponseProcessing;
@@ -51,6 +51,9 @@ use std::{sync::Arc, time::Duration};
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, error, warn};
+use crate::listeners::http_connection_manager::ext_proc::common_state::State;
+
+use crate::listeners::http_connection_manager::ext_proc::common_state::{ProcessingState, ObservabilityState};
 
 #[derive(Debug, Clone)]
 #[allow(clippy::struct_excessive_bools)]
@@ -164,7 +167,7 @@ impl ExternalProcessor {
         };
 
         match response_rx.await {
-            Ok(ProcessingStatus::HaltedOnError { restore_body }) => {
+            Ok(ExtProcStatus::HaltedOnError { restore_body }) => {
                 if let Some(body) = restore_body {
                     request.body_mut().inner = body;
                 }
@@ -172,10 +175,10 @@ impl ExternalProcessor {
                 self.sending_response_body = false;
                 FilterDecision::Continue
             },
-            Ok(ProcessingStatus::EndWithDirectResponse(direct_response)) => {
+            Ok(ExtProcStatus::EndWithDirectResponse(direct_response)) => {
                 FilterDecision::DirectResponse(direct_response)
             },
-            Ok(ProcessingStatus::RequestIsReady {
+            Ok(ExtProcStatus::RequestIsReady {
                 header_modifications,
                 body_replacement,
                 override_sending_response_headers,
@@ -210,7 +213,7 @@ impl ExternalProcessor {
                 }
                 FilterDecision::Continue
             },
-            Ok(ProcessingStatus::ResponseIsReady { header_modifications: _, body_replacement: _ }) => self
+            Ok(ExtProcStatus::ResponseIsReady { header_modifications: _, body_replacement: _ }) => self
                 .on_filter_error(
                     "Unexpected response from external processor during request processing",
                     None,
@@ -246,16 +249,16 @@ impl ExternalProcessor {
         };
 
         match response_rx.await {
-            Ok(ProcessingStatus::HaltedOnError { restore_body }) => {
+            Ok(ExtProcStatus::HaltedOnError { restore_body }) => {
                 if let Some(body) = restore_body {
                     *response.body_mut() = body;
                 }
                 FilterDecision::Continue
             },
-            Ok(ProcessingStatus::EndWithDirectResponse(direct_response)) => {
+            Ok(ExtProcStatus::EndWithDirectResponse(direct_response)) => {
                 FilterDecision::DirectResponse(direct_response)
             },
-            Ok(ProcessingStatus::ResponseIsReady { header_modifications, body_replacement }) => {
+            Ok(ExtProcStatus::ResponseIsReady { header_modifications, body_replacement }) => {
                 if let Some(header_modifications) = header_modifications {
                     if let Err(e) = apply_header_mutations(
                         response.headers_mut(),
@@ -275,7 +278,7 @@ impl ExternalProcessor {
                 }
                 FilterDecision::Continue
             },
-            Ok(ProcessingStatus::RequestIsReady {
+            Ok(ExtProcStatus::RequestIsReady {
                 header_modifications: _,
                 body_replacement: _,
                 override_sending_response_headers: _,
@@ -298,7 +301,7 @@ impl ExternalProcessor {
         &mut self,
         data: ProcessingData,
         ver: http::Version,
-    ) -> Result<oneshot::Receiver<ProcessingStatus>, SendError<ProcessingTask>> {
+    ) -> Result<oneshot::Receiver<ExtProcStatus>, SendError<ProcessingTask>> {
         let (response_tx, response_rx) = oneshot::channel();
         let processing_message = ProcessingTask { data, reply_channel: response_tx, http_version: ver };
 
@@ -334,8 +337,14 @@ impl ExternalProcessor {
             sender
         } else {
             let (sender, receiver) = mpsc::channel::<ProcessingTask>(12);
-            let worker = ExternalProcessingWorker::new(Arc::clone(&self.worker_config));
-            tokio::spawn(worker.ext_proc_loop(receiver));
+            if self.worker_config.observability_mode {
+                let worker = ExternalProcessingWorker::<ObservabilityState>::new(Arc::clone(&self.worker_config));
+                tokio::spawn(worker.ext_proc_loop(receiver));
+
+            } else {
+                let worker = ExternalProcessingWorker::<ProcessingState>::new(Arc::clone(&self.worker_config));
+                tokio::spawn(worker.ext_proc_loop(receiver));
+            }
             self.ext_proc_worker.insert(sender)
         }
     }
@@ -382,7 +391,7 @@ impl ExternalProcessor {
 #[derive(Debug)]
 struct ProcessingTask {
     data: ProcessingData,
-    reply_channel: oneshot::Sender<ProcessingStatus>,
+    reply_channel: oneshot::Sender<ExtProcStatus>,
     http_version: http::Version,
 }
 
@@ -405,19 +414,19 @@ struct TimeoutState {
     extended: bool,
 }
 
-struct ExternalProcessingWorker {
+struct ExternalProcessingWorker<S : State> {
     config: Arc<ExternalProcessingWorkerConfig>,
     stream: Option<BidiStream>,
-    request_processing: RequestProcessing,
-    response_processing: ResponseProcessing,
+    request_processing: RequestProcessing<S>,
+    response_processing: ResponseProcessing<S>,
     handshake: Option<ProtocolConfiguration>,
     timeout_state: TimeoutState,
 }
 
-impl ExternalProcessingWorker {
+impl ExternalProcessingWorker<ProcessingState> {
     fn new(config: Arc<ExternalProcessingWorkerConfig>) -> Self {
-        let request_processing = RequestProcessing::from(&*config);
-        let response_processing = ResponseProcessing::from(&*config);
+        let request_processing = RequestProcessing::<ProcessingState>::from(&*config);
+        let response_processing = ResponseProcessing::<ProcessingState>::from(&*config);
         let handshake = Some(ProtocolConfiguration {
             request_body_mode: config.processing_mode.request_body_mode as i32,
             response_body_mode: config.processing_mode.response_body_mode as i32,
@@ -431,100 +440,6 @@ impl ExternalProcessingWorker {
             response_processing,
             handshake,
             timeout_state: TimeoutState { active: false, duration: message_timeout, extended: false },
-        }
-    }
-
-    async fn connect(
-        grpc_service_specifier: &GrpcServiceSpecifier,
-        first_request: ProcessingRequest,
-    ) -> Result<BidiStream, Error> {
-        // Create a channel to send requests to the gRPC stream.
-        let (request_sender, mut request_receiver) = mpsc::channel::<ProcessingRequest>(4);
-        let request_stream = async_stream::stream! {
-            yield first_request;
-            while let Some(message) = request_receiver.recv().await {
-                yield message
-            }
-        };
-        let response_stream = match grpc_service_specifier {
-            GrpcServiceSpecifier::Cluster(cluster_name) => {
-                let cluster_spec = ClusterSpecifier::Cluster(cluster_name.clone());
-                let cluster_id = clusters_manager::resolve_cluster(&cluster_spec).ok_or_else(|| {
-                    Error::from(format!("Failed to resolve cluster '{cluster_name}' for external processor"))
-                })?;
-                let grpc_service = clusters_manager::get_grpc_connection(cluster_id, RoutingContext::None)?;
-                let mut client = ExternalProcessorClient::new(grpc_service);
-                client
-                    .process(request_stream)
-                    .await
-                    .map_err(|e| Error::from(format!("Failed to establish external processor stream: {e}")))?
-                    .into_inner()
-            },
-            GrpcServiceSpecifier::GoogleGrpc(google_grpc) => {
-                let mut client =
-                    ExternalProcessorClient::connect(google_grpc.target_uri.clone()).await.map_err(|e| {
-                        Error::from(format!("Failed to connect to external processor (GoogleGrpc endpoint): {e}"))
-                    })?;
-                client
-                    .process(request_stream)
-                    .await
-                    .map_err(|e| Error::from(format!("Failed to establish external processor stream: {e}")))?
-                    .into_inner()
-            },
-        };
-
-        Ok::<_, Error>(BidiStream { external_sender: request_sender, inbound_responses: response_stream })
-    }
-
-    async fn get_bidi_stream(&mut self, pending_request: &mut Option<ProcessingRequest>) -> Result<&BidiStream, Error> {
-        if let Some(ref stream) = self.stream {
-            Ok(stream)
-        } else {
-            let first_request = pending_request.take().ok_or_else(|| {
-                Error::from("Internal error: attempted to establish bidi stream with external processor without a ProcessingRequest")
-            })?;
-            let stream = Self::connect(&self.config.grpc_service_specifier, first_request).await?;
-            Ok(self.stream.insert(stream))
-        }
-    }
-
-    async fn forward_to_external_processor(&mut self, mut request_opt: Option<ProcessingRequest>) {
-        if request_opt.is_none() {
-            self.timeout_state.active = false;
-            return;
-        }
-
-        if let Some(ref mut req) = request_opt {
-            req.protocol_config = self.handshake.take();
-        }
-
-        let stream = match self.get_bidi_stream(&mut request_opt).await {
-            Err(err) => {
-                error!("Failed to establish bidi stream with external processor: {err}");
-                self.response_processing
-                    .exit_on_error("External processor unavailable", self.config.failure_mode_allow);
-                self.request_processing.exit_on_error("External processor unavailable", self.config.failure_mode_allow);
-                return;
-            },
-            Ok(stream) => stream,
-        };
-        let send_outcome = match request_opt {
-            Some(request) => Some(stream.external_sender.send(request).await),
-            None => None,
-        };
-
-        match send_outcome {
-            Some(Err(err)) => {
-                error!("External processor is unavailable: {err}");
-                self.response_processing
-                    .exit_on_error("Lost connection to external processor", self.config.failure_mode_allow);
-                self.request_processing
-                    .exit_on_error("Lost connection to external processor", self.config.failure_mode_allow);
-                self.timeout_state.active = false;
-            },
-            _ => {
-                self.timeout_state.active = !self.config.observability_mode;
-            },
         }
     }
 
@@ -593,7 +508,7 @@ impl ExternalProcessingWorker {
                                 self.request_processing.exit_on_error(msg, self.config.failure_mode_allow);
                             } else {
                                 let response = self.build_direct_response(&response_attempt);
-                                let status = ProcessingStatus::EndWithDirectResponse(response);
+                                let status = ExtProcStatus::EndWithDirectResponse(response);
                                 if self.response_processing.is_awaiting_reply() {
                                     self.response_processing.exit_with_status(status);
                                 } else {
@@ -774,6 +689,134 @@ impl ExternalProcessingWorker {
         }
 
         debug!(target: "ext_proc", "--- END ---");
+    }
+
+}
+
+impl ExternalProcessingWorker<ObservabilityState> {
+    fn new(config: Arc<ExternalProcessingWorkerConfig>) -> Self {
+        let request_processing = RequestProcessing::<ObservabilityState>::from(&*config);
+        let response_processing = ResponseProcessing::<ObservabilityState>::from(&*config);
+
+        let handshake = Some(ProtocolConfiguration {
+            request_body_mode: config.processing_mode.request_body_mode as i32,
+            response_body_mode: config.processing_mode.response_body_mode as i32,
+            send_body_without_waiting_for_header_response: config.send_body_without_waiting_for_header_response,
+        });
+        let message_timeout = config.message_timeout;
+        Self {
+            config,
+            stream: None,
+            request_processing,
+            response_processing,
+            handshake,
+            timeout_state: TimeoutState { active: false, duration: message_timeout, extended: false },
+        }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    async fn ext_proc_loop(mut self, mut processing_request_channel: mpsc::Receiver<ProcessingTask>) {
+        todo!()
+    }
+}
+
+
+
+
+impl<S: State + Default> ExternalProcessingWorker<S> {
+
+    async fn connect(
+        grpc_service_specifier: &GrpcServiceSpecifier,
+        first_request: ProcessingRequest,
+    ) -> Result<BidiStream, Error> {
+        // Create a channel to send requests to the gRPC stream.
+        let (request_sender, mut request_receiver) = mpsc::channel::<ProcessingRequest>(4);
+        let request_stream = async_stream::stream! {
+            yield first_request;
+            while let Some(message) = request_receiver.recv().await {
+                yield message
+            }
+        };
+        let response_stream = match grpc_service_specifier {
+            GrpcServiceSpecifier::Cluster(cluster_name) => {
+                let cluster_spec = ClusterSpecifier::Cluster(cluster_name.clone());
+                let cluster_id = clusters_manager::resolve_cluster(&cluster_spec).ok_or_else(|| {
+                    Error::from(format!("Failed to resolve cluster '{cluster_name}' for external processor"))
+                })?;
+                let grpc_service = clusters_manager::get_grpc_connection(cluster_id, RoutingContext::None)?;
+                let mut client = ExternalProcessorClient::new(grpc_service);
+                client
+                    .process(request_stream)
+                    .await
+                    .map_err(|e| Error::from(format!("Failed to establish external processor stream: {e}")))?
+                    .into_inner()
+            },
+            GrpcServiceSpecifier::GoogleGrpc(google_grpc) => {
+                let mut client =
+                    ExternalProcessorClient::connect(google_grpc.target_uri.clone()).await.map_err(|e| {
+                        Error::from(format!("Failed to connect to external processor (GoogleGrpc endpoint): {e}"))
+                    })?;
+                client
+                    .process(request_stream)
+                    .await
+                    .map_err(|e| Error::from(format!("Failed to establish external processor stream: {e}")))?
+                    .into_inner()
+            },
+        };
+
+        Ok::<_, Error>(BidiStream { external_sender: request_sender, inbound_responses: response_stream })
+    }
+
+    async fn get_bidi_stream(&mut self, pending_request: &mut Option<ProcessingRequest>) -> Result<&BidiStream, Error> {
+        if let Some(ref stream) = self.stream {
+            Ok(stream)
+        } else {
+            let first_request = pending_request.take().ok_or_else(|| {
+                Error::from("Internal error: attempted to establish bidi stream with external processor without a ProcessingRequest")
+            })?;
+            let stream = Self::connect(&self.config.grpc_service_specifier, first_request).await?;
+            Ok(self.stream.insert(stream))
+        }
+    }
+
+    async fn forward_to_external_processor(&mut self, mut request_opt: Option<ProcessingRequest>) {
+        if request_opt.is_none() {
+            self.timeout_state.active = false;
+            return;
+        }
+
+        if let Some(ref mut req) = request_opt {
+            req.protocol_config = self.handshake.take();
+        }
+
+        let stream = match self.get_bidi_stream(&mut request_opt).await {
+            Err(err) => {
+                error!("Failed to establish bidi stream with external processor: {err}");
+                self.response_processing
+                    .exit_on_error("External processor unavailable", self.config.failure_mode_allow);
+                self.request_processing.exit_on_error("External processor unavailable", self.config.failure_mode_allow);
+                return;
+            },
+            Ok(stream) => stream,
+        };
+        let send_outcome = match request_opt {
+            Some(request) => Some(stream.external_sender.send(request).await),
+            None => None,
+        };
+
+        match send_outcome {
+            Some(Err(err)) => {
+                error!("External processor is unavailable: {err}");
+                self.response_processing
+                    .exit_on_error("Lost connection to external processor", self.config.failure_mode_allow);
+                self.request_processing
+                    .exit_on_error("Lost connection to external processor", self.config.failure_mode_allow);
+                self.timeout_state.active = false;
+            },
+            _ => {
+                self.timeout_state.active = !self.config.observability_mode;
+            },
+        }
     }
 
     #[allow(clippy::cast_sign_loss)]

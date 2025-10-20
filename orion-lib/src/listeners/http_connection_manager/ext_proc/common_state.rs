@@ -11,51 +11,49 @@ use orion_configuration::config::network_filters::http_connection_manager::http_
 
 use orion_data_plane_api::envoy_data_plane_api::envoy::service::ext_proc::v3::HeaderMutation;
 
-#[derive(Debug, Clone, Copy, Default)]
-pub enum ObservabilityMode {
-    #[default]
-    Off,
-    On
+pub trait State {
+    fn is_observability_mode(&self) -> bool;
 }
 
 #[derive(Debug, Clone, Default)]
-pub enum ProcessingState {
-    WaitingForHeadersInput(ObservabilityMode),
-    WaitingForHeadersReply,
-    WaitingForBodyInput(ObservabilityMode),
-    WaitingForBodyReply,
-    StreamingBody(ObservabilityMode),
-    StreamingBodyWaitingForReply,
-    #[allow(dead_code)]
-    FullDuplexStreamingBody,
-    ProcessingTrailers(ObservabilityMode),
+pub enum ObservabilityState {
+    WaitingForHeadersInput,
+    WaitingForBodyInput,
+    StreamingBody,
+    ProcessingTrailers,
     #[default]
     Idle,
 }
 
-impl ProcessingState {
-    pub fn observability_mode(&self) -> ObservabilityMode {
-        match self {
-            ProcessingState::WaitingForHeadersInput(mode)
-            | ProcessingState::WaitingForBodyInput(mode)
-            | ProcessingState::StreamingBody(mode)
-            | ProcessingState::ProcessingTrailers(mode) => *mode,
-            _ => ObservabilityMode::Off,
-        }
-    }
+#[derive(Debug, Clone, Default)]
+pub enum ProcessingState {
+    WaitingForHeadersInput,
+    WaitingForHeadersReply,
+    WaitingForBodyInput,
+    WaitingForBodyReply,
+    StreamingBody,
+    StreamingBodyWaitingForReply,
+    #[allow(dead_code)]
+    FullDuplexStreamingBody,
+    ProcessingTrailers,
+    #[default]
+    Idle,
+}
 
-    pub fn is_observability_mode(&self) -> bool {
-        matches!(
-            self,
-            ProcessingState::WaitingForHeadersInput(ObservabilityMode::On)
-                | ProcessingState::WaitingForBodyInput(ObservabilityMode::On)
-                | ProcessingState::StreamingBody(ObservabilityMode::On)
-        )
+impl State for ObservabilityState {
+    fn is_observability_mode(&self) -> bool {
+        true
+    }
+}
+
+impl State for ProcessingState {
+    fn is_observability_mode(&self) -> bool {
+        false
     }
 }
 
 #[derive(Debug)]
-pub enum ProcessingStatus {
+pub enum ExtProcStatus {
     RequestIsReady {
         header_modifications: Option<HeaderMutation>,
         body_replacement: Option<PolyBody>,
