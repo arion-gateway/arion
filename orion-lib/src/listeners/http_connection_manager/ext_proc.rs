@@ -6,6 +6,7 @@ mod worker_config;
 
 use crate::event_error::EventFailure;
 use crate::listeners::http_connection_manager::ext_proc::common_state::ExtProcStatus;
+use crate::listeners::http_connection_manager::ext_proc::common_state::State;
 use crate::listeners::http_connection_manager::ext_proc::mutation::apply_header_mutations;
 use crate::listeners::http_connection_manager::ext_proc::request_proc::RequestProcessing;
 use crate::listeners::http_connection_manager::ext_proc::response_proc::ResponseProcessing;
@@ -51,9 +52,8 @@ use std::{sync::Arc, time::Duration};
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, error, warn};
-use crate::listeners::http_connection_manager::ext_proc::common_state::State;
 
-use crate::listeners::http_connection_manager::ext_proc::common_state::{ProcessingState, ObservabilityState};
+use crate::listeners::http_connection_manager::ext_proc::common_state::{ObservabilityState, ProcessingState};
 
 #[derive(Debug, Clone)]
 #[allow(clippy::struct_excessive_bools)]
@@ -340,7 +340,6 @@ impl ExternalProcessor {
             if self.worker_config.observability_mode {
                 let worker = ExternalProcessingWorker::<ObservabilityState>::new(Arc::clone(&self.worker_config));
                 tokio::spawn(worker.ext_proc_loop(receiver));
-
             } else {
                 let worker = ExternalProcessingWorker::<ProcessingState>::new(Arc::clone(&self.worker_config));
                 tokio::spawn(worker.ext_proc_loop(receiver));
@@ -414,7 +413,7 @@ struct TimeoutState {
     extended: bool,
 }
 
-struct ExternalProcessingWorker<S : State> {
+struct ExternalProcessingWorker<S: State> {
     config: Arc<ExternalProcessingWorkerConfig>,
     stream: Option<BidiStream>,
     request_processing: RequestProcessing<S>,
@@ -690,7 +689,6 @@ impl ExternalProcessingWorker<ProcessingState> {
 
         debug!(target: "ext_proc", "--- END ---");
     }
-
 }
 
 impl ExternalProcessingWorker<ObservabilityState> {
@@ -720,11 +718,7 @@ impl ExternalProcessingWorker<ObservabilityState> {
     }
 }
 
-
-
-
 impl<S: State + Default> ExternalProcessingWorker<S> {
-
     async fn connect(
         grpc_service_specifier: &GrpcServiceSpecifier,
         first_request: ProcessingRequest,

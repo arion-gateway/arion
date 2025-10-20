@@ -1,6 +1,6 @@
 use crate::event_error::EventFailure;
 use crate::listeners::http_connection_manager::ext_proc::common_state::{
-    BodyContext, ExtProcStatus, ObservabilityState, ProcessingState, State
+    BodyContext, ExtProcStatus, ObservabilityState, ProcessingState, State,
 };
 use crate::listeners::http_connection_manager::ext_proc::mutation::apply_header_mutations;
 use crate::listeners::http_connection_manager::ext_proc::worker_config::ExternalProcessingWorkerConfig;
@@ -36,7 +36,6 @@ pub struct ResponseProcessing<S: State> {
     failure_mode_allow: bool,
 }
 
-
 impl From<&ExternalProcessingWorkerConfig> for ResponseProcessing<ProcessingState> {
     fn from(config: &ExternalProcessingWorkerConfig) -> Self {
         #[allow(clippy::panic)]
@@ -48,8 +47,8 @@ impl From<&ExternalProcessingWorkerConfig> for ResponseProcessing<ProcessingStat
 
         let initial_state = match processing_mode {
             ProcessingMode {
-                    response_header_mode: HeaderProcessingMode::Default | HeaderProcessingMode::Send, ..
-                } => ProcessingState::WaitingForHeadersInput,
+                response_header_mode: HeaderProcessingMode::Default | HeaderProcessingMode::Send, ..
+            } => ProcessingState::WaitingForHeadersInput,
             ProcessingMode {
                 response_body_mode:
                     BodyProcessingMode::Buffered
@@ -58,8 +57,10 @@ impl From<&ExternalProcessingWorkerConfig> for ResponseProcessing<ProcessingStat
                     | BodyProcessingMode::FullDuplexStreamed,
                 ..
             }
-            | ProcessingMode { response_trailer_mode: TrailerProcessingMode::Send, .. } => ProcessingState::WaitingForBodyInput,
-           _ => ProcessingState::Idle,
+            | ProcessingMode { response_trailer_mode: TrailerProcessingMode::Send, .. } => {
+                ProcessingState::WaitingForBodyInput
+            },
+            _ => ProcessingState::Idle,
         };
 
         Self {
@@ -384,8 +385,7 @@ impl ResponseProcessing<ProcessingState> {
                         *body = body_replacement;
                     }
                     if let Some(header_modifications) = response_data.header_mutation {
-                        if let ExtProcStatus::ResponseIsReady { header_modifications: ref mut headers, .. } = status
-                        {
+                        if let ExtProcStatus::ResponseIsReady { header_modifications: ref mut headers, .. } = status {
                             *headers = Some(header_modifications);
                         }
                     }
@@ -559,11 +559,7 @@ impl ResponseProcessing<ProcessingState> {
 
     #[inline]
     pub fn is_accepting_body_data(&self) -> bool {
-        matches!(
-            self.state,
-                ProcessingState::StreamingBody
-                | ProcessingState::FullDuplexStreamingBody
-        )
+        matches!(self.state, ProcessingState::StreamingBody | ProcessingState::FullDuplexStreamingBody)
     }
 }
 
@@ -572,7 +568,6 @@ impl ResponseProcessing<ProcessingState> {
 ////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 impl ResponseProcessing<ObservabilityState> {
-
     pub fn process_response(
         &mut self,
         headers: HttpHeaders,
@@ -580,7 +575,6 @@ impl ResponseProcessing<ObservabilityState> {
         reply_channel: oneshot::Sender<ExtProcStatus>,
         http_version: http::Version,
     ) -> Option<ProcessingRequest> {
-
         todo!()
 
         //self.reply_channel = Some(reply_channel);
@@ -796,7 +790,7 @@ impl ResponseProcessing<ObservabilityState> {
 
     #[inline]
     pub fn is_accepting_body_data(&self) -> bool {
-        matches!( self.state, ObservabilityState::StreamingBody )
+        matches!(self.state, ObservabilityState::StreamingBody)
     }
 }
 
@@ -805,7 +799,6 @@ impl ResponseProcessing<ObservabilityState> {
 ////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 impl<S: State + Default> ResponseProcessing<S> {
-
     pub fn handle_noop_response(&mut self) {
         if let Some(reply_channel) = self.reply_channel.take() {
             let status = self.partial_reply.take().unwrap_or(ExtProcStatus::ResponseIsReady {

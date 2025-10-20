@@ -1,6 +1,6 @@
 use crate::event_error::EventFailure;
 use crate::listeners::http_connection_manager::ext_proc::common_state::{
-    BodyContext, ObservabilityState, ProcessingState, ExtProcStatus, State
+    BodyContext, ExtProcStatus, ObservabilityState, ProcessingState, State,
 };
 use crate::listeners::http_connection_manager::ext_proc::mutation::apply_header_mutations;
 use crate::listeners::http_connection_manager::ext_proc::worker_config::ExternalProcessingWorkerConfig;
@@ -26,7 +26,7 @@ use std::panic;
 use tokio::sync::oneshot;
 use tracing::warn;
 
-pub struct RequestProcessing<S : State> {
+pub struct RequestProcessing<S: State> {
     pub state: S,
     pub body_context: BodyContext,
     partial_reply: Option<ExtProcStatus>,
@@ -74,7 +74,6 @@ impl From<&ExternalProcessingWorkerConfig> for RequestProcessing<ProcessingState
         }
     }
 }
-
 
 impl From<&ExternalProcessingWorkerConfig> for RequestProcessing<ObservabilityState> {
     #[allow(clippy::panic)]
@@ -184,7 +183,6 @@ impl RequestProcessing<ProcessingState> {
         wants_response_headers: bool,
         wants_response_body: bool,
     ) -> Option<ProcessingRequest> {
-
         match &self.state {
             ProcessingState::WaitingForHeadersReply | ProcessingState::StreamingBody => {
                 let mut status;
@@ -230,7 +228,6 @@ impl RequestProcessing<ProcessingState> {
                         }
                         return None;
                     }
-
                 } else {
                     status = ExtProcStatus::RequestIsReady {
                         header_modifications: None,
@@ -542,7 +539,6 @@ impl RequestProcessing<ProcessingState> {
 
             self.state = ProcessingState::ProcessingTrailers;
             Some(processing_request)
-
         } else {
             if let Some(reply_channel) = self.reply_channel.take() {
                 let status = self.partial_reply.take().unwrap_or(ExtProcStatus::RequestIsReady {
@@ -591,11 +587,7 @@ impl RequestProcessing<ProcessingState> {
 
     #[inline]
     pub fn is_accepting_body_data(&self) -> bool {
-        matches!(
-            self.state,
-                | ProcessingState::StreamingBody
-                | ProcessingState::FullDuplexStreamingBody
-        )
+        matches!(self.state, |ProcessingState::StreamingBody| ProcessingState::FullDuplexStreamingBody)
     }
 }
 
@@ -816,9 +808,7 @@ impl RequestProcessing<ObservabilityState> {
     }
 }
 
-
-impl<S : State + Default> RequestProcessing<S> {
-
+impl<S: State + Default> RequestProcessing<S> {
     pub fn handle_noop_response(&mut self, wants_response_headers: bool, wants_response_body: bool) {
         if let Some(reply_channel) = self.reply_channel.take() {
             let status = self.partial_reply.take().unwrap_or(ExtProcStatus::RequestIsReady {
@@ -885,5 +875,4 @@ impl<S : State + Default> RequestProcessing<S> {
             let _ = channel.send(status);
         }
     }
-
 }
