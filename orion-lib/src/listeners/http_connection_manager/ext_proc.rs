@@ -714,7 +714,130 @@ impl ExternalProcessingWorker<ObservabilityState> {
 
     #[allow(clippy::too_many_lines)]
     async fn ext_proc_loop(mut self, mut processing_request_channel: mpsc::Receiver<ProcessingTask>) {
-        todo!()
+        // The following label is not strictly necessary, but it makes it clearer what is being exited at the break point.
+        // It also makes it easier to locate subsequent exit points.
+        debug!(target: "ext_proc", "--- BEGIN ---");
+        'transaction_loop: loop {
+            tokio::select! {
+                outbond_processing_task = processing_request_channel.recv() => {
+                    match outbond_processing_task {
+                        Some(ProcessingTask{ data: ProcessingData::Request(headers, body), reply_channel, http_version}) => {
+                            debug!(target: "ext_proc", "Processing new request ->");
+                            let outbound = self
+                                .request_processing
+                                .process_request(headers, body, reply_channel, http_version);
+                            self.forward_to_external_processor(outbound).await;
+                        }
+                        Some(ProcessingTask{ data: ProcessingData::RequestBody(body), reply_channel, http_version}) => {
+                            debug!(target: "ext_proc", "Processing new request (body only) ->");
+                            let outbound = self
+                                .request_processing
+                                .process_body(body, reply_channel, Some(http_version)).await;
+                            self.forward_to_external_processor(outbound).await;
+                        }
+                        Some(ProcessingTask{ data: ProcessingData::Response(headers, body), reply_channel, http_version}) => {
+                            debug!(target: "ext_proc", "Processing new response ->");
+                            let outbound = self
+                                .response_processing
+                                .process_response(headers, body, reply_channel, http_version);
+                            self.forward_to_external_processor(outbound).await;
+                        }
+                        Some(ProcessingTask{ data: ProcessingData::ResponseBody(body), reply_channel, http_version}) => {
+                            debug!(target: "ext_proc", "Processing new response (body only) ->");
+                            let outbound = self
+                                .response_processing
+                                .process_body(body, reply_channel, Some(http_version)).await;
+                            self.forward_to_external_processor(outbound).await;
+                        }
+                        _ => {
+                            debug!(target: "ext_proc", "Channel received closed!");
+                            break 'transaction_loop
+                        },
+                    }
+                },
+
+                request_body_frame = &mut self.request_processing.body_context.body_stream.next(), if self.request_processing.is_accepting_body_data() => {
+                    match request_body_frame {
+                        Some(Ok(frame)) => {
+                            debug!(target: "ext_proc", "Received request body frame ->");
+                            if let Some(data) = frame.data_ref() {
+                                if let Some(buffered) = self.request_processing.body_context.buffered_chunk.take() {
+                                    let outbound =
+                                        self.request_processing.handle_body_chunk(buffered, false).await;
+                                    self.forward_to_external_processor(outbound).await;
+                                }
+                                self.request_processing.body_context.buffered_chunk = Some(data.clone());
+                            } else if let Some(trailers) = frame.trailers_ref() {
+                                if let Some(buffered) = self.request_processing.body_context.buffered_chunk.take() {
+                                    let outbound =
+                                        self.request_processing.handle_body_chunk(buffered, true).await;
+                                    self.forward_to_external_processor(outbound).await;
+                                }
+                                self.request_processing.body_context.trailers = Some(trailers.clone());
+                            }
+                        },
+                        Some(Err(_err)) => {
+                            self.request_processing.exit_on_error("Error occured when streaming request body for external processing", self.config.failure_mode_allow);
+                        },
+                        None => {
+                            debug!(target: "ext_proc", "Request body stream ended ->");
+                            if let Some(buffered) = self.request_processing.body_context.buffered_chunk.take() {
+                                let outbound =
+                                    self.request_processing.handle_body_chunk(buffered, true).await;
+                                self.forward_to_external_processor(outbound).await;
+                            }
+
+                            if let Some(trailers) = self.request_processing.body_context.trailers.take() {
+                                let outbound =
+                                    self.request_processing.process_trailers(Some(trailers), None, None);
+                                self.forward_to_external_processor(outbound).await;
+                            }
+                        }
+                    }
+                },
+
+                response_body_frame = &mut self.response_processing.body_context.body_stream.next(), if self.response_processing.is_accepting_body_data() => {
+                    match response_body_frame {
+                        Some(Ok(frame)) => {
+                            debug!(target: "ext_proc", "Received response body frame ->");
+                            if let Some(data) = frame.data_ref() {
+                                if let Some(buffered) = self.response_processing.body_context.buffered_chunk.take() {
+                                    let outbound =
+                                        self.response_processing.handle_body_chunk(buffered, false).await;
+                                    self.forward_to_external_processor(outbound).await;
+                                }
+                                self.response_processing.body_context.buffered_chunk = Some(data.clone());
+                            } else if let Some(trailers) = frame.trailers_ref() {
+                                if let Some(buffered) = self.response_processing.body_context.buffered_chunk.take() {
+                                    let outbound =
+                                        self.response_processing.handle_body_chunk(buffered, true).await;
+                                    self.forward_to_external_processor(outbound).await;
+                                }
+                                self.response_processing.body_context.trailers = Some(trailers.clone());
+                            }
+                        },
+                        Some(Err(_err)) => {
+                            self.response_processing.exit_on_error("Error occured when streaming response body for external processing", self.config.failure_mode_allow);
+                        },
+                        None => {
+                            debug!(target: "ext_proc", "Response body stream ended ->");
+                            if let Some(buffered) = self.response_processing.body_context.buffered_chunk.take() {
+                                let outbound = self.response_processing.handle_body_chunk(buffered, true).await;
+                                self.forward_to_external_processor(outbound).await;
+                            }
+
+                            if let Some(trailers) = self.response_processing.body_context.trailers.take() {
+                                let outbound =
+                                    self.response_processing.process_trailers(Some(trailers), None, None);
+                                self.forward_to_external_processor(outbound).await;
+                            }
+                        }
+                    }
+                },
+            }
+        }
+
+        debug!(target: "ext_proc", "--- END ---");
     }
 }
 
