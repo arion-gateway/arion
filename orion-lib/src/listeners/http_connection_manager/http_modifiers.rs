@@ -26,8 +26,10 @@ const HOP_BY_HOP_HEADERS: &[HeaderName] = &[
     header::CONNECTION,
     header::PROXY_AUTHENTICATE,
     header::PROXY_AUTHORIZATION,
-    header::TE,
-    header::TRAILER,
+    // NOTE: (nb) TE and TRAILER headers are intentionally left out as they are be needed for
+    // proper handling of certain requests (e.g., propagating chunked transfer encoding + trialers toward the upstream).
+    // header::TE,
+    // header::TRAILER,
     header::TRANSFER_ENCODING,
     header::UPGRADE,
 ];
@@ -61,6 +63,7 @@ fn filter_disallowed_requests<T>(request: &Request<T>) -> Option<Response<PolyBo
     None
 }
 
+#[inline]
 fn strip_hop_headers(headers: &mut HeaderMap) {
     for header in HOP_BY_HOP_HEADERS {
         headers.remove(header);
