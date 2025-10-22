@@ -46,10 +46,10 @@ impl Default for PolyBody {
 impl std::fmt::Debug for PolyBody {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PolyBody::Empty(_) => f.write_str("PolyBody::Empty"),
-            PolyBody::Full(body) => f.write_str(&format!("PolyBody::Full {body:?}")),
+            PolyBody::Empty(_) => f.write_str("PolyBody::Empty<Bytes>"),
+            PolyBody::Full(_) => f.write_str("PolyBody::Full<Bytes>"),
             PolyBody::Incoming(_) => f.write_str("PolyBody::Incoming"),
-            PolyBody::Timeout(body) => f.write_str(&format!("PolyBody::Timeout: {body:?}")),
+            PolyBody::Timeout(_) => f.write_str("PolyBody::Timeout<Incoming>"),
             PolyBody::Grpc(_) => f.write_str("PolyBody::Grpc"),
             PolyBody::Stream(_) => f.write_str("PolyBody::Stream"),
         }
@@ -155,7 +155,7 @@ impl From<StreamBody<ReceiverStream<Result<Frame<Bytes>, Error>>>> for PolyBody 
 }
 
 impl PolyBody {
-    pub fn channel(buffer_size: usize) -> (Self, mpsc::Sender<Result<Frame<Bytes>, Error>>) {
+    pub fn new_stream_body(buffer_size: usize) -> (Self, mpsc::Sender<Result<Frame<Bytes>, Error>>) {
         let (tx, rx) = mpsc::channel(buffer_size);
         let stream = ReceiverStream::new(rx);
         let body = StreamBody::new(stream);

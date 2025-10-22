@@ -414,7 +414,7 @@ impl ResponseProcessing<ProcessingState> {
                     let mut end_of_stream: bool = false;
                     match body_mutation {
                         Some(Mutation::StreamedResponse(streamed_response)) => {
-                            if let Some(sender) = &self.body_context.body_sender {
+                            if let Some(sender) = &self.body_context.inbound_body_sender {
                                 let _ = sender.send_data(streamed_response.body.into()).await;
                             }
                             if streamed_response.end_of_stream {
@@ -430,7 +430,7 @@ impl ResponseProcessing<ProcessingState> {
                             }
                         },
                         Some(Mutation::Body(bytes)) => {
-                            if let Some(sender) = &self.body_context.body_sender {
+                            if let Some(sender) = &self.body_context.inbound_body_sender {
                                 let _ = sender.send_data(bytes.into()).await;
                             }
                             if matches!(self.body_context.trailer_mode, TrailerProcessingMode::Send) {
@@ -539,7 +539,7 @@ impl ResponseProcessing<ProcessingState> {
             }
             match &self.state {
                 ProcessingState::ProcessingTrailers => {
-                    if let Some(sender) = &self.body_context.body_sender {
+                    if let Some(sender) = &self.body_context.inbound_body_sender {
                         let _ = sender.send_trailers(trailers).await;
                     }
                     if let Some(reply_channel) = self.reply_channel.take() {
@@ -696,7 +696,7 @@ impl ResponseProcessing<ObservabilityState> {
         };
         match &self.state {
             ObservabilityState::StreamingBody => {
-                if let Some(sender) = &self.body_context.body_sender {
+                if let Some(sender) = &self.body_context.inbound_body_sender {
                     let _ = sender.send_data(data).await;
                     if end_of_stream {
                         if let Some(trailers) = self.body_context.trailers.take() {

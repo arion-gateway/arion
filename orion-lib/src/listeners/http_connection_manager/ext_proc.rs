@@ -599,7 +599,7 @@ impl ExternalProcessingWorker<ProcessingState> {
                     }
                 },
 
-                request_body_frame = &mut self.request_processing.body_context.body_stream.next(), if self.request_processing.is_accepting_body_data() => {
+                request_body_frame = &mut self.request_processing.body_context.outbound_body_stream.next(), if self.request_processing.is_accepting_body_data() => {
                     match request_body_frame {
                         Some(Ok(frame)) => {
                             debug!(target: "ext_proc", "Received request body frame ->");
@@ -639,7 +639,7 @@ impl ExternalProcessingWorker<ProcessingState> {
                     }
                 },
 
-                response_body_frame = &mut self.response_processing.body_context.body_stream.next(), if self.response_processing.is_accepting_body_data() => {
+                response_body_frame = &mut self.response_processing.body_context.outbound_body_stream.next(), if self.response_processing.is_accepting_body_data() => {
                     match response_body_frame {
                         Some(Ok(frame)) => {
                             debug!(target: "ext_proc", "Received response body frame ->");
@@ -756,7 +756,7 @@ impl ExternalProcessingWorker<ObservabilityState> {
                     }
                 },
 
-                request_body_frame = &mut self.request_processing.body_context.body_stream.next(), if self.request_processing.is_accepting_body_data() => {
+                request_body_frame = &mut self.request_processing.body_context.outbound_body_stream.next(), if self.request_processing.is_accepting_body_data() => {
                     match request_body_frame {
                         Some(Ok(frame)) => {
                             debug!(target: "ext_proc", "Received request body frame ->");
@@ -796,7 +796,7 @@ impl ExternalProcessingWorker<ObservabilityState> {
                     }
                 },
 
-                response_body_frame = &mut self.response_processing.body_context.body_stream.next(), if self.response_processing.is_accepting_body_data() => {
+                response_body_frame = &mut self.response_processing.body_context.outbound_body_stream.next(), if self.response_processing.is_accepting_body_data() => {
                     match response_body_frame {
                         Some(Ok(frame)) => {
                             debug!(target: "ext_proc", "Received response body frame ->");

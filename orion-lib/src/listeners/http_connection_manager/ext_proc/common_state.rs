@@ -73,8 +73,8 @@ pub enum ExtProcStatus {
 
 pub struct BodyContext {
     pub body: Option<PolyBody>,
-    pub body_stream: BodyStream<PolyBody>,
-    pub body_sender: Option<BodySender>,
+    pub outbound_body_stream: BodyStream<PolyBody>,
+    pub inbound_body_sender: Option<BodySender>,
     pub body_mode: BodyProcessingMode,
     pub trailer_mode: TrailerProcessingMode,
     pub trailers: Option<http::HeaderMap>,
@@ -85,8 +85,8 @@ impl BodyContext {
     pub fn new(body_mode: BodyProcessingMode, trailer_mode: TrailerProcessingMode) -> Self {
         Self {
             body: None,
-            body_stream: BodyStream::new(PolyBody::from(Empty::<Bytes>::default())),
-            body_sender: None,
+            outbound_body_stream: BodyStream::new(PolyBody::from(Empty::<Bytes>::default())),
+            inbound_body_sender: None,
             body_mode,
             trailer_mode,
             trailers: None,
@@ -96,26 +96,26 @@ impl BodyContext {
 
     pub fn start_streaming(&mut self) {
         if let Some(body) = self.body.take() {
-            self.body_stream = BodyStream::new(body);
-            let (new_body, sender) = PolyBody::channel(16);
+            self.outbound_body_stream = BodyStream::new(body);
+            let (new_body, sender) = PolyBody::new_stream_body(16);
             self.body = Some(new_body);
-            self.body_sender = Some(BodySender::new(sender));
+            self.inbound_body_sender = Some(BodySender::new(sender));
         }
     }
 
     pub async fn make_new_body_channel(&mut self, data: Bytes) -> Result<(), ()> {
-        let (new_body, sender) = PolyBody::channel(16);
+        let (new_body, sender) = PolyBody::new_stream_body(16);
         self.body = Some(new_body);
         let sender = BodySender::new(sender);
         if (sender.send_data(data).await).is_err() {
             return Err(());
         }
-        self.body_sender = Some(sender);
+        self.inbound_body_sender = Some(sender);
         Ok(())
     }
 
     pub fn finish_stream(&mut self) {
-        if let Some(sender) = self.body_sender.take() {
+        if let Some(sender) = self.inbound_body_sender.take() {
             drop(sender);
         }
     }
