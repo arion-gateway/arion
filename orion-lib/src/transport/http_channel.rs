@@ -69,7 +69,7 @@ use std::{
     thread::ThreadId,
     time::{Duration, Instant},
 };
-use tracing::debug;
+use tracing::{debug, enabled, Level};
 use webpki::types::ServerName;
 
 #[cfg(feature = "metrics")]
@@ -554,6 +554,28 @@ impl HttpChannel {
             _ => {
                 with_metric!(clusters::UPSTREAM_RQ_TOTAL, add, 1, thread_id, &[KeyValue::new("cluster", cluster_name)]);
                 let start_time = Instant::now();
+
+                let req = if enabled!(Level::DEBUG) {
+                    use futures::StreamExt;
+
+                    let (hdr, body) = req.into_parts();
+                    let mut stream = http_body_util::BodyStream::new(body);
+
+                    let (new_body, tx) = PolyBody::new_stream_body(10);
+
+                    while let Some(frame_result) = stream.next().await {
+                        debug!("upstream frame: {:?}", frame_result);
+                        _ = tx.send(frame_result.map_err(Into::into)).await;
+                    }
+
+                    Request::from_parts(
+                        hdr,
+                        BodyWithMetrics::new(crate::body::response_flags::BodyKind::Request, new_body, |_, _, _| {}),
+                    )
+                } else {
+                    req
+                };
+
                 let resp = sender.request(req).await.map_err(Error::from);
                 (resp, start_time.elapsed())
             },
