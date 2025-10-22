@@ -572,6 +572,7 @@ impl TransactionHandler {
         self.thread_id
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn handle_transaction<RC>(
         self: Arc<Self>,
         route_conf: RC,

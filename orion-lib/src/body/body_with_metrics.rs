@@ -77,7 +77,8 @@ mod metrics_enabled {
     }
 
     impl<B> std::fmt::Debug for BodyWithMetrics<B>
-        where B: std::fmt::Debug
+    where
+        B: std::fmt::Debug,
     {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             f.write_fmt(format_args!("BodyWithMetrics<{:?}>", self.inner))
@@ -167,7 +168,8 @@ mod metrics_disabled {
     }
 
     impl<B> std::fmt::Debug for BodyWithMetrics<B>
-        where B: std::fmt::Debug
+    where
+        B: std::fmt::Debug,
     {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             f.write_fmt(format_args!("BodyWithMetrics<{:?}>", self.inner))

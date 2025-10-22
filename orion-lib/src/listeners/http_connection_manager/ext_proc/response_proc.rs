@@ -87,8 +87,8 @@ impl From<&ExternalProcessingWorkerConfig> for ResponseProcessing<ObservabilityS
 
         let initial_state = match processing_mode {
             ProcessingMode {
-                    response_header_mode: HeaderProcessingMode::Default | HeaderProcessingMode::Send, ..
-                } => ObservabilityState::WaitingForHeadersInput,
+                response_header_mode: HeaderProcessingMode::Default | HeaderProcessingMode::Send, ..
+            } => ObservabilityState::WaitingForHeadersInput,
             ProcessingMode {
                 // todo(fciaccia) observability mode should work only in STREAMED or NONE for the body
                 response_body_mode:
@@ -98,8 +98,10 @@ impl From<&ExternalProcessingWorkerConfig> for ResponseProcessing<ObservabilityS
                     | BodyProcessingMode::FullDuplexStreamed,
                 ..
             }
-            | ProcessingMode { response_trailer_mode: TrailerProcessingMode::Send, .. } => ObservabilityState::WaitingForBodyInput,
-           _ => ObservabilityState::Idle,
+            | ProcessingMode { response_trailer_mode: TrailerProcessingMode::Send, .. } => {
+                ObservabilityState::WaitingForBodyInput
+            },
+            _ => ObservabilityState::Idle,
         };
 
         Self {
@@ -566,7 +568,6 @@ impl ResponseProcessing<ProcessingState> {
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 impl ResponseProcessing<ObservabilityState> {
     pub fn process_response(
@@ -615,74 +616,68 @@ impl ResponseProcessing<ObservabilityState> {
         reply_channel: oneshot::Sender<ExtProcStatus>,
         http_version: Option<http::Version>,
     ) -> Option<ProcessingRequest> {
-        todo!()
-
-        // todo(fciaccia) this function is heavily dependant on the way we are going to
-        // implement the ext_proc_loop for observability_mode, keeping unimplemented for now
-
-        // self.reply_channel = Some(reply_channel);
-        // if let Some(http_version) = http_version {
-        //     self.http_version = Some(http_version);
-        // }
-        // match &self.state {
-        //     ProcessingState::WaitingForBodyInput(observability_mode) => match self.body_context.body_mode {
-        //         BodyProcessingMode::Buffered | BodyProcessingMode::BufferedPartial => {
-        //             let Ok(collected_body) = body.collect().await else {
-        //                 self.exit_on_error(
-        //                     "Failed to collect response body bytes for external processing",
-        //                     self.failure_mode_allow,
-        //                 );
-        //                 return None;
-        //             };
-        //             if matches!(self.body_context.trailer_mode, TrailerProcessingMode::Send) {
-        //                 if let Some(trailers) = collected_body.trailers() {
-        //                     self.body_context.trailers = Some(trailers.clone());
-        //                 }
-        //             }
-        //             let body_bytes = collected_body.to_bytes();
-        //             let http_body = HttpBody { body: body_bytes.into(), end_of_stream: true };
-        //             let processing_request = ProcessingRequest {
-        //                 request: Some(ProcessingRequestType::ResponseBody(http_body)),
-        //                 metadata_context: None,
-        //                 attributes: HashMap::default(),
-        //                 observability_mode: false,
-        //                 protocol_config: None,
-        //             };
-        //             self.state = ProcessingState::WaitingForBodyReply;
-        //             Some(processing_request)
-        //         },
-        //         BodyProcessingMode::Streamed | BodyProcessingMode::FullDuplexStreamed => {
-        //             self.body_context.body = Some(body);
-        //             self.state = ProcessingState::StreamingBody(*observability_mode);
-        //             self.body_context.start_streaming();
-        //             None
-        //         },
-        //         BodyProcessingMode::None if matches!(self.body_context.trailer_mode, TrailerProcessingMode::Send) => {
-        //             let Ok(collected_body) = body.collect().await else {
-        //                 self.exit_on_error(
-        //                     "Failed to collect response body trailers for external processing",
-        //                     self.failure_mode_allow,
-        //                 );
-        //                 return None;
-        //             };
-        //             let trailers = collected_body.trailers().cloned();
-        //             let body_bytes = collected_body.to_bytes();
-        //             if self.body_context.make_new_body_channel(body_bytes).await.is_err() {
-        //                 self.exit_on_error(
-        //                     "Failed to prepare response body trailers for external processing",
-        //                     self.failure_mode_allow,
-        //                 );
-        //                 return None;
-        //             }
-        //             if let Some(reply_channel) = self.reply_channel.take() {
-        //                 return self.process_trailers(trailers, Some(reply_channel), self.http_version);
-        //             }
-        //             None
-        //         },
-        //         BodyProcessingMode::None => None,
-        //     },
-        //     _ => None,
-        // }
+        self.reply_channel = Some(reply_channel);
+        if let Some(http_version) = http_version {
+            self.http_version = Some(http_version);
+        }
+        match &self.state {
+            ObservabilityState::WaitingForBodyInput => match self.body_context.body_mode {
+                BodyProcessingMode::Buffered | BodyProcessingMode::BufferedPartial => {
+                    let Ok(collected_body) = body.collect().await else {
+                        self.exit_on_error(
+                            "Failed to collect response body bytes for external processing",
+                            self.failure_mode_allow,
+                        );
+                        return None;
+                    };
+                    if matches!(self.body_context.trailer_mode, TrailerProcessingMode::Send) {
+                        if let Some(trailers) = collected_body.trailers() {
+                            self.body_context.trailers = Some(trailers.clone());
+                        }
+                    }
+                    let body_bytes = collected_body.to_bytes();
+                    let http_body = HttpBody { body: body_bytes.into(), end_of_stream: true };
+                    let processing_request = ProcessingRequest {
+                        request: Some(ProcessingRequestType::ResponseBody(http_body)),
+                        metadata_context: None,
+                        attributes: HashMap::default(),
+                        observability_mode: false,
+                        protocol_config: None,
+                    };
+                    Some(processing_request)
+                },
+                BodyProcessingMode::Streamed => {
+                    self.body_context.body = Some(body);
+                    self.state = ObservabilityState::StreamingBody;
+                    self.body_context.start_streaming();
+                    None
+                },
+                BodyProcessingMode::None if matches!(self.body_context.trailer_mode, TrailerProcessingMode::Send) => {
+                    let Ok(collected_body) = body.collect().await else {
+                        self.exit_on_error(
+                            "Failed to collect response body trailers for external processing",
+                            self.failure_mode_allow,
+                        );
+                        return None;
+                    };
+                    let trailers = collected_body.trailers().cloned();
+                    let body_bytes = collected_body.to_bytes();
+                    if self.body_context.make_new_body_channel(body_bytes).await.is_err() {
+                        self.exit_on_error(
+                            "Failed to prepare response body trailers for external processing",
+                            self.failure_mode_allow,
+                        );
+                        return None;
+                    }
+                    if let Some(reply_channel) = self.reply_channel.take() {
+                        return self.process_trailers(trailers, Some(reply_channel), self.http_version);
+                    }
+                    None
+                },
+                BodyProcessingMode::None | BodyProcessingMode::FullDuplexStreamed => None,
+            },
+            _ => None,
+        }
     }
 
     pub async fn handle_body_chunk(&mut self, data: Bytes, end_of_stream: bool) -> Option<ProcessingRequest> {
@@ -716,60 +711,52 @@ impl ResponseProcessing<ObservabilityState> {
         reply_channel: Option<oneshot::Sender<ExtProcStatus>>,
         http_version: Option<http::Version>,
     ) -> Option<ProcessingRequest> {
-        todo!()
+        if let Some(reply_channel) = reply_channel {
+            self.reply_channel = Some(reply_channel);
+        }
+        if let Some(http_version) = http_version {
+            self.http_version = Some(http_version);
+        }
+        if let Some(trailers) = trailers {
+            let mut header_values = Vec::new();
+            for (name, value) in &trailers {
+                let header_name = name.as_str();
+                let header_value = if let Ok(value_str) = value.to_str() {
+                    HeaderValue { key: header_name.to_owned(), value: value_str.to_owned(), raw_value: Vec::default() }
+                } else {
+                    HeaderValue {
+                        key: header_name.to_owned(),
+                        value: String::default(),
+                        raw_value: value.as_bytes().into(),
+                    }
+                };
+                header_values.push(header_value);
+            }
+            let trailers_to_send = HeaderMap { headers: header_values };
+            let processing_request = ProcessingRequest {
+                request: Some(ProcessingRequestType::ResponseTrailers(HttpTrailers {
+                    trailers: Some(trailers_to_send),
+                })),
+                metadata_context: None,
+                attributes: HashMap::default(),
+                observability_mode: self.state.is_observability_mode(),
+                protocol_config: None,
+            };
 
-        // todo(fciaccia) this function is heavily dependant on the way we are going to
-        // implement the ext_proc_loop for observability_mode, keeping unimplemented for now
-
-        // if let Some(reply_channel) = reply_channel {
-        //     self.reply_channel = Some(reply_channel);
-        // }
-        // if let Some(http_version) = http_version {
-        //     self.http_version = Some(http_version);
-        // }
-        // if let Some(trailers) = trailers {
-        //     let mut header_values = Vec::new();
-        //     for (name, value) in &trailers {
-        //         let header_name = name.as_str();
-        //         let header_value = if let Ok(value_str) = value.to_str() {
-        //             HeaderValue { key: header_name.to_owned(), value: value_str.to_owned(), raw_value: Vec::default() }
-        //         } else {
-        //             HeaderValue {
-        //                 key: header_name.to_owned(),
-        //                 value: String::default(),
-        //                 raw_value: value.as_bytes().into(),
-        //             }
-        //         };
-        //         header_values.push(header_value);
-        //     }
-        //     let trailers_to_send = HeaderMap { headers: header_values };
-        //     let processing_request = ProcessingRequest {
-        //         request: Some(ProcessingRequestType::ResponseTrailers(HttpTrailers {
-        //             trailers: Some(trailers_to_send),
-        //         })),
-        //         metadata_context: None,
-        //         attributes: HashMap::default(),
-        //         observability_mode: self.state.is_observability_mode(),
-        //         protocol_config: None,
-        //     };
-        //     if self.state.is_observability_mode() {
-        //         self.state = ProcessingState::Idle;
-        //     } else {
-        //         self.state = ProcessingState::ProcessingTrailers(ObservabilityMode::Off);
-        //     }
-        //     Some(processing_request)
-        // } else {
-        //     if let Some(reply_channel) = self.reply_channel.take() {
-        //         let status = self.partial_reply.take().unwrap_or(ExtProcStatus::ResponseIsReady {
-        //             header_modifications: None,
-        //             body_replacement: self.body_context.body.take(),
-        //         });
-        //         let _ = reply_channel.send(status);
-        //         self.state = ProcessingState::Idle;
-        //         self.body_context.finish_stream();
-        //     }
-        //     None
-        // }
+            self.state = ObservabilityState::Idle;
+            Some(processing_request)
+        } else {
+            if let Some(reply_channel) = self.reply_channel.take() {
+                let status = self.partial_reply.take().unwrap_or(ExtProcStatus::ResponseIsReady {
+                    header_modifications: None,
+                    body_replacement: self.body_context.body.take(),
+                });
+                let _ = reply_channel.send(status);
+                self.state = ObservabilityState::Idle;
+                self.body_context.finish_stream();
+            }
+            None
+        }
     }
 
     #[inline]
@@ -778,7 +765,6 @@ impl ResponseProcessing<ObservabilityState> {
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////
 

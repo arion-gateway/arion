@@ -22,7 +22,6 @@ use orion_data_plane_api::envoy_data_plane_api::envoy::{
 };
 use orion_format::types::ResponseFlags as FmtResponseFlags;
 use std::collections::HashMap;
-use std::panic;
 use tokio::sync::oneshot;
 use tracing::warn;
 
@@ -38,10 +37,7 @@ pub struct RequestProcessing<S: State> {
 
 impl From<&ExternalProcessingWorkerConfig> for RequestProcessing<ProcessingState> {
     fn from(config: &ExternalProcessingWorkerConfig) -> Self {
-        #[allow(clippy::panic)]
-        if config.observability_mode {
-            panic!("Attempted to create RequestProcessing<ProcessingState> in observability mode");
-        }
+        assert!(!config.observability_mode,"Attempted to create RequestProcessing<ProcessingState> in observability mode");
 
         let processing_mode = &config.processing_mode;
 
@@ -76,12 +72,8 @@ impl From<&ExternalProcessingWorkerConfig> for RequestProcessing<ProcessingState
 }
 
 impl From<&ExternalProcessingWorkerConfig> for RequestProcessing<ObservabilityState> {
-    #[allow(clippy::panic)]
     fn from(config: &ExternalProcessingWorkerConfig) -> Self {
-        #[allow(clippy::panic)]
-        if !config.observability_mode {
-            panic!("Attempted to create RequestProcessing<ObservabilityState> in non-observability mode");
-        }
+        assert!(config.observability_mode, "Attempted to create RequestProcessing<ObservabilityState> in non-observability mode");
 
         let processing_mode = &config.processing_mode;
 
@@ -641,7 +633,6 @@ impl RequestProcessing<ObservabilityState> {
         reply_channel: oneshot::Sender<ExtProcStatus>,
         http_version: Option<http::Version>,
     ) -> Option<ProcessingRequest> {
-
         self.reply_channel = Some(reply_channel);
         if let Some(http_version) = http_version {
             self.http_version = Some(http_version);
@@ -740,65 +731,56 @@ impl RequestProcessing<ObservabilityState> {
         reply_channel: Option<oneshot::Sender<ExtProcStatus>>,
         http_version: Option<http::Version>,
     ) -> Option<ProcessingRequest> {
-        todo!()
+        if let Some(reply_channel) = reply_channel {
+            self.reply_channel = Some(reply_channel);
+        }
+        if let Some(http_version) = http_version {
+            self.http_version = Some(http_version);
+        }
+        if let Some(trailers) = trailers {
+            let mut header_values = Vec::new();
+            for (name, value) in &trailers {
+                let header_name = name.as_str();
+                let header_value = if let Ok(value_str) = value.to_str() {
+                    HeaderValue { key: header_name.to_owned(), value: value_str.to_owned(), raw_value: Vec::default() }
+                } else {
+                    HeaderValue {
+                        key: header_name.to_owned(),
+                        value: String::default(),
+                        raw_value: value.as_bytes().into(),
+                    }
+                };
+                header_values.push(header_value);
+            }
+            let trailers_to_send = HeaderMap { headers: header_values };
+            let observability_mode = self.state.is_observability_mode();
 
-        // todo(fciaccia) this function is heavily dependant on the way we are going to
-        // implement the ext_proc_loop for observability_mode, keeping unimplemented for now
+            let processing_request = ProcessingRequest {
+                request: Some(ProcessingRequestType::RequestTrailers(HttpTrailers {
+                    trailers: Some(trailers_to_send),
+                })),
+                metadata_context: None,
+                attributes: HashMap::default(),
+                observability_mode,
+                protocol_config: None,
+            };
 
-        // if let Some(reply_channel) = reply_channel {
-        //     self.reply_channel = Some(reply_channel);
-        // }
-        // if let Some(http_version) = http_version {
-        //     self.http_version = Some(http_version);
-        // }
-        // if let Some(trailers) = trailers {
-        //     let mut header_values = Vec::new();
-        //     for (name, value) in &trailers {
-        //         let header_name = name.as_str();
-        //         let header_value = if let Ok(value_str) = value.to_str() {
-        //             HeaderValue { key: header_name.to_owned(), value: value_str.to_owned(), raw_value: Vec::default() }
-        //         } else {
-        //             HeaderValue {
-        //                 key: header_name.to_owned(),
-        //                 value: String::default(),
-        //                 raw_value: value.as_bytes().into(),
-        //             }
-        //         };
-        //         header_values.push(header_value);
-        //     }
-        //     let trailers_to_send = HeaderMap { headers: header_values };
-        //     let observability_mode = self.state.is_observability_mode();
-
-        //     let processing_request = ProcessingRequest {
-        //         request: Some(ProcessingRequestType::RequestTrailers(HttpTrailers {
-        //             trailers: Some(trailers_to_send),
-        //         })),
-        //         metadata_context: None,
-        //         attributes: HashMap::default(),
-        //         observability_mode,
-        //         protocol_config: None,
-        //     };
-
-        //     if !observability_mode {
-        //         self.state = ProcessingState::ProcessingTrailers(ObservabilityMode::Off);
-        //     }
-
-        //     Some(processing_request)
-        // } else {
-        //     if let Some(reply_channel) = self.reply_channel.take() {
-        //         let status = self.partial_reply.take().unwrap_or(ExtProcStatus::RequestIsReady {
-        //             header_modifications: None,
-        //             body_replacement: self.body_context.body.take(),
-        //             override_sending_response_headers: None,
-        //             override_sending_response_body: None,
-        //             clear_route_cache: false,
-        //         });
-        //         let _ = reply_channel.send(status);
-        //         self.state = ProcessingState::Idle;
-        //         self.body_context.finish_stream();
-        //     }
-        //     None
-        // }
+            Some(processing_request)
+        } else {
+            if let Some(reply_channel) = self.reply_channel.take() {
+                let status = self.partial_reply.take().unwrap_or(ExtProcStatus::RequestIsReady {
+                    header_modifications: None,
+                    body_replacement: self.body_context.body.take(),
+                    override_sending_response_headers: None,
+                    override_sending_response_body: None,
+                    clear_route_cache: false,
+                });
+                let _ = reply_channel.send(status);
+                self.state = ObservabilityState::Idle;
+                self.body_context.finish_stream();
+            }
+            None
+        }
     }
 
     #[inline]
