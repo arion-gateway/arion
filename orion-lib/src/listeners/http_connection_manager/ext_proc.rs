@@ -4,6 +4,7 @@ mod request_proc;
 mod response_proc;
 mod worker_config;
 
+use crate::body::collected::dup_collected;
 use crate::event_error::EventFailure;
 use crate::listeners::http_connection_manager::ext_proc::common_state::ExtProcStatus;
 use crate::listeners::http_connection_manager::ext_proc::common_state::State;
@@ -22,7 +23,9 @@ use futures::{future::Either, StreamExt};
 use http::header::CONTENT_LENGTH;
 use http::{Request, Response};
 use http_body::Body;
+use http_body_util::BodyExt;
 use http_body_util::Full;
+use orion_configuration::config::network_filters::http_connection_manager::http_filters::ext_proc::TrailerProcessingMode;
 use orion_configuration::config::{
     cluster::ClusterSpecifier,
     network_filters::http_connection_manager::http_filters::{
@@ -63,8 +66,10 @@ pub struct ExternalProcessor {
     forward_rules: Option<Arc<HeaderForwardingRules>>,
     sending_request_headers: bool,
     sending_request_body: bool,
+    sending_request_trailers: bool,
     sending_response_headers: bool,
     sending_response_body: bool,
+    sending_response_trailers: bool,
 }
 
 impl From<ExternalProcessorConfig> for ExternalProcessor {
@@ -79,11 +84,15 @@ impl From<(ExternalProcessorConfig, Option<ExtProcPerRoute>)> for ExternalProces
         let worker_config = ExternalProcessingWorkerConfig::from((initial_config, per_route_config));
         let sending_request_headers =
             !matches!(worker_config.processing_mode.request_header_mode, HeaderProcessingMode::Skip);
+        let sending_request_trailers =
+            !matches!(worker_config.processing_mode.request_trailer_mode, TrailerProcessingMode::Skip);
         let sending_request_body = !matches!(worker_config.processing_mode.request_body_mode, BodyProcessingMode::None);
         let sending_response_headers =
             !matches!(worker_config.processing_mode.response_header_mode, HeaderProcessingMode::Skip);
         let sending_response_body =
             !matches!(worker_config.processing_mode.response_body_mode, BodyProcessingMode::None);
+        let sending_response_trailers =
+            !matches!(worker_config.processing_mode.response_trailer_mode, TrailerProcessingMode::Skip);
         Self {
             ext_proc_worker: None,
             worker_config: Arc::new(worker_config),
@@ -92,6 +101,8 @@ impl From<(ExternalProcessorConfig, Option<ExtProcPerRoute>)> for ExternalProces
             sending_request_body,
             sending_response_headers,
             sending_response_body,
+            sending_request_trailers,
+            sending_response_trailers,
         }
     }
 }
@@ -148,14 +159,25 @@ impl ExternalProcessor {
         if !self.sending_request_headers && !self.sending_request_body {
             return FilterDecision::Continue;
         }
-        let body: PolyBody = std::mem::take(&mut request.body_mut().inner);
+        let mut body: PolyBody = std::mem::take(&mut request.body_mut().inner);
+        let is_empty_body = body.is_end_stream();
+        let mut body_copy = None;
+
+        if self.sending_request_body || self.sending_request_trailers {
+            let Ok(collected) = body.collect().await else {
+                return self.on_filter_error("Failed to collect request body for external processing", None, request.version());
+            };
+            let (body1, body2) = dup_collected(collected);
+            body = PolyBody::from(body1);
+            body_copy = Some(PolyBody::from(body2));
+        }
 
         let processing_data = if self.sending_request_headers {
             let http_headers =
-                self.build_http_headers(request.headers(), !self.sending_request_body || body.is_end_stream());
-            ProcessingData::Request(http_headers, body)
+                self.build_http_headers(request.headers(), !self.sending_request_body|| is_empty_body);
+            ProcessingData::Request(http_headers, body_copy)
         } else {
-            if body.is_end_stream() {
+            if is_empty_body {
                 return FilterDecision::Continue;
             }
             ProcessingData::RequestBody(body)
@@ -235,7 +257,7 @@ impl ExternalProcessor {
         let processing_data = if self.sending_response_headers {
             let http_headers =
                 self.build_http_headers(response.headers(), !self.sending_response_body || body.is_end_stream());
-            ProcessingData::Response(http_headers, body)
+            ProcessingData::Response(http_headers, Some(body))
         } else {
             if body.is_end_stream() {
                 return FilterDecision::Continue;
@@ -396,9 +418,9 @@ struct ProcessingTask {
 
 #[derive(Debug)]
 enum ProcessingData {
-    Request(HttpHeaders, PolyBody),
+    Request(HttpHeaders, Option<PolyBody>),
     RequestBody(PolyBody),
-    Response(HttpHeaders, PolyBody),
+    Response(HttpHeaders, Option<PolyBody>),
     ResponseBody(PolyBody),
 }
 

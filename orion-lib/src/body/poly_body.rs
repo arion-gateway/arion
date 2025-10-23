@@ -15,6 +15,7 @@
 //
 //
 
+use http_body_util::{combinators::WithTrailers};
 use super::body_with_timeout::{BodyWithTimeout, TimeoutBodyError};
 use crate::Error;
 use bytes::Bytes;
@@ -25,6 +26,7 @@ use orion_xds::grpc_deps::{GrpcBody, Status as GrpcError};
 use pin_project::pin_project;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
+use std::{future::Ready};
 
 #[pin_project(project = PolyBodyProj)]
 pub enum PolyBody {
@@ -34,6 +36,7 @@ pub enum PolyBody {
     Timeout(#[pin] BodyWithTimeout<Incoming>),
     Grpc(#[pin] GrpcBody),
     Stream(#[pin] StreamBody<ReceiverStream<Result<Frame<Bytes>, Error>>>),
+    WithTrailers(#[pin] WithTrailers<Full<Bytes>, Ready<super::collected::TrailersType>> )
 }
 
 impl Default for PolyBody {
@@ -52,6 +55,7 @@ impl std::fmt::Debug for PolyBody {
             PolyBody::Timeout(_) => f.write_str("PolyBody::Timeout<Incoming>"),
             PolyBody::Grpc(_) => f.write_str("PolyBody::Grpc"),
             PolyBody::Stream(_) => f.write_str("PolyBody::Stream"),
+            PolyBody::WithTrailers(_) => f.write_str("PolyBody::WithTrailers<Full<Bytes>, Ready<TrailersType>>"),
         }
     }
 }
@@ -97,6 +101,7 @@ impl Body for PolyBody {
             PolyBodyProj::Stream(s) => {
                 s.poll_frame(cx).map_err(|e| PolyBodyError::Boxed(Box::new(std::io::Error::other(e.to_string()))))
             },
+            PolyBodyProj::WithTrailers(w) => w.poll_frame(cx).map_err(Into::into),
         }
     }
 
@@ -108,6 +113,7 @@ impl Body for PolyBody {
             PolyBody::Timeout(t) => t.is_end_stream(),
             PolyBody::Grpc(g) => g.is_end_stream(),
             PolyBody::Stream(s) => s.is_end_stream(),
+            PolyBody::WithTrailers(w) => w.is_end_stream(),
         }
     }
 }
@@ -151,6 +157,13 @@ impl From<StreamBody<ReceiverStream<Result<Frame<Bytes>, Error>>>> for PolyBody 
     #[inline]
     fn from(body: StreamBody<ReceiverStream<Result<Frame<Bytes>, Error>>>) -> Self {
         PolyBody::Stream(body)
+    }
+}
+
+impl From<WithTrailers<Full<Bytes>, Ready<super::collected::TrailersType>>> for PolyBody {
+    #[inline]
+    fn from(body: WithTrailers<Full<Bytes>, Ready<super::collected::TrailersType>>) -> Self {
+        PolyBody::WithTrailers(body)
     }
 }
 

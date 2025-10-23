@@ -6,7 +6,6 @@ use crate::listeners::http_connection_manager::ext_proc::mutation::apply_header_
 use crate::listeners::http_connection_manager::ext_proc::worker_config::ExternalProcessingWorkerConfig;
 use crate::{body::response_flags::ResponseFlags, listeners::synthetic_http_response::SyntheticHttpResponse, PolyBody};
 use bytes::Bytes;
-use http_body::Body;
 use http_body_util::{BodyExt, Empty, Full};
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::ext_proc::{
     BodyProcessingMode, HeaderProcessingMode, ProcessingMode, TrailerProcessingMode,
@@ -169,15 +168,14 @@ impl ResponseProcessing<ProcessingState> {
     pub fn process_response(
         &mut self,
         headers: HttpHeaders,
-        body: PolyBody,
+        body: Option<PolyBody>,
         reply_channel: oneshot::Sender<ExtProcStatus>,
         http_version: http::Version,
     ) -> Option<ProcessingRequest> {
         self.reply_channel = Some(reply_channel);
         self.http_version = Some(http_version);
-        if !body.is_end_stream() {
-            self.body_context.body = Some(body);
-        }
+        self.body_context.body = body;
+
         match &self.state {
             ProcessingState::WaitingForHeadersInput => {
                 let processing_request = ProcessingRequest {
@@ -573,15 +571,13 @@ impl ResponseProcessing<ObservabilityState> {
     pub fn process_response(
         &mut self,
         headers: HttpHeaders,
-        body: PolyBody,
+        body: Option<PolyBody>,
         reply_channel: oneshot::Sender<ExtProcStatus>,
         http_version: http::Version,
     ) -> Option<ProcessingRequest> {
         self.reply_channel = Some(reply_channel);
         self.http_version = Some(http_version);
-        if !body.is_end_stream() {
-            self.body_context.body = Some(body);
-        }
+        self.body_context.body = body;
         match &self.state {
             ObservabilityState::WaitingForHeadersInput => {
                 let processing_request = ProcessingRequest {

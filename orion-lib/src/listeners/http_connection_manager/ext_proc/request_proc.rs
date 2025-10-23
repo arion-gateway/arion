@@ -6,7 +6,6 @@ use crate::listeners::http_connection_manager::ext_proc::mutation::apply_header_
 use crate::listeners::http_connection_manager::ext_proc::worker_config::ExternalProcessingWorkerConfig;
 use crate::{body::response_flags::ResponseFlags, listeners::synthetic_http_response::SyntheticHttpResponse, PolyBody};
 use bytes::Bytes;
-use http_body::Body;
 use http_body_util::{BodyExt, Empty, Full};
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::ext_proc::{
     BodyProcessingMode, HeaderProcessingMode, ProcessingMode, RouteCacheAction, TrailerProcessingMode,
@@ -29,7 +28,7 @@ pub struct RequestProcessing<S: State> {
     pub state: S,
     pub body_context: BodyContext,
     partial_reply: Option<ExtProcStatus>,
-    reply_channel: Option<oneshot::Sender<ExtProcStatus>>,
+    pub reply_channel: Option<oneshot::Sender<ExtProcStatus>>,
     http_version: Option<http::Version>,
     send_body_without_waiting_for_header_response: bool,
     failure_mode_allow: bool,
@@ -131,15 +130,14 @@ impl RequestProcessing<ProcessingState> {
     pub fn process_request(
         &mut self,
         headers: HttpHeaders,
-        body: PolyBody,
+        body: Option<PolyBody>,
         reply_channel: oneshot::Sender<ExtProcStatus>,
         http_version: http::Version,
     ) -> Option<ProcessingRequest> {
         self.reply_channel = Some(reply_channel);
         self.http_version = Some(http_version);
-        if !body.is_end_stream() {
-            self.body_context.body = Some(body);
-        }
+        self.body_context.body = body;
+
         match &self.state {
             ProcessingState::WaitingForHeadersInput => {
                 let processing_request = ProcessingRequest {
@@ -586,15 +584,13 @@ impl RequestProcessing<ObservabilityState> {
     pub fn process_request(
         &mut self,
         headers: HttpHeaders,
-        body: PolyBody,
+        body: Option<PolyBody>,
         reply_channel: oneshot::Sender<ExtProcStatus>,
         http_version: http::Version,
     ) -> Option<ProcessingRequest> {
         self.reply_channel = Some(reply_channel);
         self.http_version = Some(http_version);
-        if !body.is_end_stream() {
-            self.body_context.body = Some(body);
-        }
+        self.body_context.body = body;
         match &self.state {
             ObservabilityState::WaitingForHeadersInput => {
                 let processing_request = ProcessingRequest {
@@ -805,7 +801,7 @@ impl<S: State + Default> RequestProcessing<S> {
     }
 
     #[inline]
-    fn is_body_processing_planned(&self) -> bool {
+    pub fn is_body_processing_planned(&self) -> bool {
         !matches!(self.body_context.body_mode, BodyProcessingMode::None)
     }
 
