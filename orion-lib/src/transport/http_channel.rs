@@ -560,13 +560,14 @@ impl HttpChannel {
 
                     let (hdr, body) = req.into_parts();
                     let mut stream = http_body_util::BodyStream::new(body);
+                    let (new_body, tx) = PolyBody::new_stream_body(16);
 
-                    let (new_body, tx) = PolyBody::new_stream_body(10);
-
-                    while let Some(frame_result) = stream.next().await {
-                        debug!("upstream frame: {:?}", frame_result);
-                        _ = tx.send(frame_result.map_err(Into::into)).await;
-                    }
+                    tokio::spawn(async move {
+                        while let Some(chunk_result) = stream.next().await {
+                            debug!("upstream frame: {:?}", chunk_result);
+                            _ = tx.send(chunk_result.map_err(Into::into)).await;
+                        }
+                    });
 
                     Request::from_parts(
                         hdr,
