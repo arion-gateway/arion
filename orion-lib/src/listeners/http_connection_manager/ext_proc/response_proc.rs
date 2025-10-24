@@ -118,7 +118,6 @@ impl From<&ExternalProcessingWorkerConfig> for ResponseProcessing<ObservabilityS
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 impl ResponseProcessing<ProcessingState> {
     pub fn apply_mode_overrides(
@@ -213,7 +212,7 @@ impl ResponseProcessing<ProcessingState> {
                                     Some(PolyBody::from(Full::new(Bytes::copy_from_slice(&bytes))))
                                 },
                                 Some(Mutation::ClearBody(true)) => Some(PolyBody::from(Empty::<Bytes>::default())),
-                                Some(Mutation::ClearBody(false)) | None => self.body_context.body.take(),
+                                Some(Mutation::ClearBody(false)) | None => None,
                                 Some(Mutation::StreamedResponse(_)) => {
                                     self.exit_on_error(
                                     "StreamedResponse mutation not supported in response to header processing request",
@@ -369,7 +368,8 @@ impl ResponseProcessing<ProcessingState> {
                         .and_then(|body_mutation| body_mutation.mutation)
                     {
                         Some(Mutation::Body(bytes)) => Some(PolyBody::from(Full::new(Bytes::copy_from_slice(&bytes)))),
-                        Some(Mutation::ClearBody(_)) | None => Some(PolyBody::from(Empty::<Bytes>::default())),
+                        Some(Mutation::ClearBody(true)) => Some(PolyBody::from(Empty::<Bytes>::default())),
+                        Some(Mutation::ClearBody(false)) | None => None,
                         Some(Mutation::StreamedResponse(_)) => {
                             self.exit_on_error(
                                 "StreamedResponse mutation not supported in response to buffered processing request",
@@ -412,6 +412,8 @@ impl ResponseProcessing<ProcessingState> {
                 if let Some(response_data) = body_response.response {
                     let body_mutation = response_data.body_mutation.and_then(|body_mutation| body_mutation.mutation);
                     let mut end_of_stream: bool = false;
+                    let body_mutated =
+                        body_mutation.is_some() && !matches!(body_mutation, Some(Mutation::ClearBody(false)));
                     match body_mutation {
                         Some(Mutation::StreamedResponse(streamed_response)) => {
                             if let Some(sender) = &self.body_context.inbound_body_sender {
@@ -441,9 +443,12 @@ impl ResponseProcessing<ProcessingState> {
                                 end_of_stream = true;
                             }
                         },
-                        Some(Mutation::ClearBody(_)) | None => {
+                        Some(Mutation::ClearBody(true)) => {
                             self.state = ProcessingState::Idle;
                             self.body_context.finish_stream();
+                            end_of_stream = true;
+                        },
+                        Some(Mutation::ClearBody(false)) | None => {
                             end_of_stream = true;
                         },
                     }
@@ -452,7 +457,7 @@ impl ResponseProcessing<ProcessingState> {
                         body_replacement: None,
                     });
                     if let ExtProcStatus::ResponseIsReady { body_replacement: ref mut body, .. } = status {
-                        if body.is_none() {
+                        if body.is_none() && body_mutated {
                             *body = self.body_context.body.take();
                         }
                     }

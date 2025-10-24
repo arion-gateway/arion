@@ -22,7 +22,7 @@ use orion_data_plane_api::envoy_data_plane_api::envoy::{
 use orion_format::types::ResponseFlags as FmtResponseFlags;
 use std::collections::HashMap;
 use tokio::sync::oneshot;
-use tracing::warn;
+use tracing::{debug, warn};
 
 pub struct RequestProcessing<S: State> {
     pub state: S,
@@ -36,7 +36,10 @@ pub struct RequestProcessing<S: State> {
 
 impl From<&ExternalProcessingWorkerConfig> for RequestProcessing<ProcessingState> {
     fn from(config: &ExternalProcessingWorkerConfig) -> Self {
-        assert!(!config.observability_mode,"Attempted to create RequestProcessing<ProcessingState> in observability mode");
+        assert!(
+            !config.observability_mode,
+            "Attempted to create RequestProcessing<ProcessingState> in observability mode"
+        );
 
         let processing_mode = &config.processing_mode;
 
@@ -72,7 +75,10 @@ impl From<&ExternalProcessingWorkerConfig> for RequestProcessing<ProcessingState
 
 impl From<&ExternalProcessingWorkerConfig> for RequestProcessing<ObservabilityState> {
     fn from(config: &ExternalProcessingWorkerConfig) -> Self {
-        assert!(config.observability_mode, "Attempted to create RequestProcessing<ObservabilityState> in non-observability mode");
+        assert!(
+            config.observability_mode,
+            "Attempted to create RequestProcessing<ObservabilityState> in non-observability mode"
+        );
 
         let processing_mode = &config.processing_mode;
 
@@ -136,6 +142,7 @@ impl RequestProcessing<ProcessingState> {
     ) -> Option<ProcessingRequest> {
         self.reply_channel = Some(reply_channel);
         self.http_version = Some(http_version);
+        debug!(target: "ext_proc", "process_request with body {body:?}");
         self.body_context.body = body;
 
         match &self.state {
@@ -198,7 +205,7 @@ impl RequestProcessing<ProcessingState> {
                                     Some(PolyBody::from(Full::new(Bytes::copy_from_slice(&bytes))))
                                 },
                                 Some(Mutation::ClearBody(true)) => Some(PolyBody::from(Empty::<Bytes>::default())),
-                                Some(Mutation::ClearBody(false)) | None => self.body_context.body.take(),
+                                Some(Mutation::ClearBody(false)) | None => None,
                                 Some(Mutation::StreamedResponse(_)) => {
                                     self.exit_on_error(
                                     "StreamedResponse mutation not supported in response to header processing request",
@@ -211,6 +218,7 @@ impl RequestProcessing<ProcessingState> {
                             *body = body_replacement;
                         }
                         if let Some(reply_channel) = self.reply_channel.take() {
+                            debug!(target: "ext_proc", "handle_headers_response: Sending message status {status:?}");
                             let _ = reply_channel.send(status);
                         }
                         return None;
@@ -236,6 +244,7 @@ impl RequestProcessing<ProcessingState> {
                         if let ExtProcStatus::RequestIsReady { ref mut body_replacement, .. } = status {
                             *body_replacement = self.body_context.body.take();
                         }
+                        debug!(target: "ext_proc", "handles_header_response: Sending message status {status:?}");
                         let _ = reply_channel.send(status);
                     }
                 }
@@ -350,6 +359,7 @@ impl RequestProcessing<ProcessingState> {
                 clear_route_cache: false,
             });
             if let Some(reply_channel) = self.reply_channel.take() {
+                debug!(target: "ext_proc", "handle_body_response: Sending message status {status:?}");
                 let _ = reply_channel.send(status);
             }
             self.state = ProcessingState::Idle;
@@ -364,7 +374,8 @@ impl RequestProcessing<ProcessingState> {
                         .and_then(|body_mutation| body_mutation.mutation)
                     {
                         Some(Mutation::Body(bytes)) => Some(PolyBody::from(Full::new(Bytes::copy_from_slice(&bytes)))),
-                        Some(Mutation::ClearBody(_)) | None => Some(PolyBody::from(Empty::<Bytes>::default())),
+                        Some(Mutation::ClearBody(true)) => Some(PolyBody::from(Empty::<Bytes>::default())),
+                        Some(Mutation::ClearBody(false)) | None => None,
                         Some(Mutation::StreamedResponse(_)) => {
                             self.exit_on_error(
                                 "StreamedResponse mutation not supported in response to buffered processing request",
@@ -373,6 +384,7 @@ impl RequestProcessing<ProcessingState> {
                             return None;
                         },
                     };
+                    debug!(target: "ext_proc", "body_replacement => {body_replacement:?}");
                     let mut status = self.partial_reply.take().unwrap_or(ExtProcStatus::RequestIsReady {
                         header_modifications: None,
                         body_replacement: None,
@@ -405,6 +417,7 @@ impl RequestProcessing<ProcessingState> {
                         if matches!(embedded_status, ResponseStatus::ContinueAndReplace)
                             || self.body_context.trailers.is_none()
                         {
+                            debug!(target: "ext_proc", "handle_body_response: Sending message status {status:?}");
                             let _ = reply_channel.send(status);
                             self.state = ProcessingState::Idle;
                             self.body_context.finish_stream();
@@ -421,6 +434,9 @@ impl RequestProcessing<ProcessingState> {
                 if let Some(response_data) = body_response.response {
                     let body_mutation = response_data.body_mutation.and_then(|body_mutation| body_mutation.mutation);
                     let mut end_of_stream: bool = false;
+                    let body_mutated =
+                        body_mutation.is_some() && !matches!(body_mutation, Some(Mutation::ClearBody(false)));
+
                     match body_mutation {
                         Some(Mutation::StreamedResponse(streamed_response)) => {
                             if let Some(sender) = &self.body_context.inbound_body_sender {
@@ -450,9 +466,12 @@ impl RequestProcessing<ProcessingState> {
                                 end_of_stream = true;
                             }
                         },
-                        Some(Mutation::ClearBody(_)) | None => {
+                        Some(Mutation::ClearBody(true)) => {
                             self.state = ProcessingState::Idle;
                             self.body_context.finish_stream();
+                            end_of_stream = true;
+                        },
+                        Some(Mutation::ClearBody(false)) | None => {
                             end_of_stream = true;
                         },
                     }
@@ -464,12 +483,13 @@ impl RequestProcessing<ProcessingState> {
                         clear_route_cache: false,
                     });
                     if let ExtProcStatus::RequestIsReady { body_replacement: ref mut body, .. } = status {
-                        if body.is_none() {
+                        if body.is_none() && body_mutated {
                             *body = self.body_context.body.take();
                         }
                     }
                     if end_of_stream {
                         if let Some(reply_channel) = self.reply_channel.take() {
+                            debug!(target: "ext_proc", "handle_body_response: Sending message status {status:?}");
                             let _ = reply_channel.send(status);
                         }
                     } else {
@@ -535,6 +555,7 @@ impl RequestProcessing<ProcessingState> {
                     override_sending_response_body: None,
                     clear_route_cache: false,
                 });
+                debug!(target: "ext_proc", "procesing_trailers: send message status {status:?}");
                 let _ = reply_channel.send(status);
                 self.state = ProcessingState::Idle;
                 self.body_context.finish_stream();
@@ -561,6 +582,7 @@ impl RequestProcessing<ProcessingState> {
                             override_sending_response_body: None,
                             clear_route_cache: false,
                         });
+                        debug!(target: "ext_proc", "handle_trailers_response: send message status {status:?}");
                         let _ = reply_channel.send(status);
                         self.state = ProcessingState::Idle;
                         self.body_context.finish_stream();
@@ -771,6 +793,7 @@ impl RequestProcessing<ObservabilityState> {
                     override_sending_response_body: None,
                     clear_route_cache: false,
                 });
+                debug!(target: "ext_proc", "process_trailers: send message status {status:?}");
                 let _ = reply_channel.send(status);
                 self.state = ObservabilityState::Idle;
                 self.body_context.finish_stream();
@@ -795,6 +818,7 @@ impl<S: State + Default> RequestProcessing<S> {
                 override_sending_response_body: Some(wants_response_body),
                 clear_route_cache: false,
             });
+            debug!(target: "ext_proc", "noop_response: send message status {status:?}");
             let _ = reply_channel.send(status);
             self.state = S::default();
         }

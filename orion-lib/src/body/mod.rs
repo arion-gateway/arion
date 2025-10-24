@@ -33,6 +33,6 @@
 
 pub mod body_with_metrics;
 pub mod body_with_timeout;
-pub mod poly_body;
 pub mod collected;
+pub mod poly_body;
 pub(crate) mod response_flags;

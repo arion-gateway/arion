@@ -15,18 +15,18 @@
 //
 //
 
-use http_body_util::{combinators::WithTrailers};
 use super::body_with_timeout::{BodyWithTimeout, TimeoutBodyError};
 use crate::Error;
 use bytes::Bytes;
 use http_body::Frame;
+use http_body_util::combinators::WithTrailers;
 use http_body_util::{Empty, Full, StreamBody};
 use hyper::body::{Body, Incoming};
 use orion_xds::grpc_deps::{GrpcBody, Status as GrpcError};
 use pin_project::pin_project;
+use std::future::Ready;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
-use std::{future::Ready};
 
 #[pin_project(project = PolyBodyProj)]
 pub enum PolyBody {
@@ -36,7 +36,7 @@ pub enum PolyBody {
     Timeout(#[pin] BodyWithTimeout<Incoming>),
     Grpc(#[pin] GrpcBody),
     Stream(#[pin] StreamBody<ReceiverStream<Result<Frame<Bytes>, Error>>>),
-    WithTrailers(#[pin] WithTrailers<Full<Bytes>, Ready<super::collected::TrailersType>> )
+    WithTrailers(#[pin] WithTrailers<Full<Bytes>, Ready<super::collected::TrailersType>>),
 }
 
 impl Default for PolyBody {
