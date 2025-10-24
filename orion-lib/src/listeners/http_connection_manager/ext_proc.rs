@@ -6,6 +6,7 @@ mod worker_config;
 
 use crate::body::poly_body::TrailersType;
 use crate::event_error::EventFailure;
+use crate::listeners::http_connection_manager::ext_proc;
 use crate::listeners::http_connection_manager::ext_proc::common_state::ExtProcStatus;
 use crate::listeners::http_connection_manager::ext_proc::common_state::State;
 use crate::listeners::http_connection_manager::ext_proc::mutation::apply_header_mutations;
@@ -26,6 +27,7 @@ use http_body::Body;
 use http_body_util::combinators::WithTrailers;
 use http_body_util::BodyExt;
 use http_body_util::Collected;
+use http_body_util::Empty;
 use http_body_util::Full;
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::ext_proc::TrailerProcessingMode;
 use orion_configuration::config::{
@@ -168,28 +170,25 @@ impl ExternalProcessor {
         }
         let body: PolyBody = std::mem::take(&mut request.body_mut().inner);
         let is_empty_body = body.is_end_stream();
-        let mut body_copy = None;
+
+        let mut ext_proc_headers = None;
+        let mut ext_proc_body = None;
+        let mut ext_proc_trailers = None;
+
+        if self.sending_request_headers {
+            debug!(target: "ext_proc", "processing HEADERS(true)");
+            let envoy_headers = self.build_envoy_data_plane_api_header_map(request.headers(), false);
+            ext_proc_headers = Some(Self::into_http_headers(envoy_headers, body.is_end_stream()));
+        }
 
         if is_empty_body {
             debug!(target: "ext_proc", "processing no BODY and no TRAILERS");
             request.body_mut().inner = body;
         } else {
             match (self.sending_request_body, self.sending_request_trailers) {
-                (true, _) => {
-                    debug!(target: "ext_proc", "processing BODY and TRAILERS");
-                    let Ok(collected) = body.collect().await else {
-                        return self.on_filter_error(
-                            "Failed to collect request body for external processing",
-                            None,
-                            request.version(),
-                        );
-                    };
-                    let (body1, body2) = Self::dup_collected(collected);
-                    request.body_mut().inner = PolyBody::from(body1);
-                    body_copy = Some(PolyBody::from(body2));
-                },
-                (false, true) => {
-                    debug!(target: "ext_proc", "processing TRAILERS only");
+                (true, send_trl) => {
+                    debug!(target: "ext_proc", "processing BODY(true) and TRAILERS({send_trl})");
+
                     let Ok(collected) = body.collect().await else {
                         return self.on_filter_error(
                             "Failed to collect request body for external processing",
@@ -198,9 +197,28 @@ impl ExternalProcessor {
                         );
                     };
 
-                    let trailers = collected.trailers().cloned();
+                    let (orig_body, body2, trailers2) = self.dup_and_split(collected);
+                    request.body_mut().inner = PolyBody::from(orig_body);
+                    ext_proc_body = Some(PolyBody::from(body2));
+                    ext_proc_trailers = trailers2;
+                },
+                (false, true) => {
+                    debug!(target: "ext_proc", "processing TRAILERS(true) only");
+                    let Ok(collected) = body.collect().await else {
+                        return self.on_filter_error(
+                            "Failed to collect request body for external processing",
+                            None,
+                            request.version(),
+                        );
+                    };
+
+                    ext_proc_body = Some(PolyBody::from(Empty::new()));
+                    ext_proc_trailers = if let Some(trl) = collected.trailers() {
+                        Some(self.build_envoy_data_plane_api_header_map(trl, true))
+                    } else {
+                        None
+                    };
                     request.body_mut().inner = PolyBody::from(collected);
-                    body_copy = Some(PolyBody::from(Self::empty_with_trailers(trailers)));
                 },
                 (false, false) => {
                     request.body_mut().inner = body;
@@ -208,17 +226,17 @@ impl ExternalProcessor {
             }
         }
 
-        debug!(target: "ext_proc", "body_copy: {:?}", body_copy);
+        debug!(target: "ext_proc", "headers: {ext_proc_headers:?} - body: {ext_proc_body:?} - trailers: {ext_proc_trailers:?}");
 
-        let processing_data = if self.sending_request_headers {
-            let http_headers = self.build_http_headers(request.headers(), !self.sending_request_body || is_empty_body);
-            ProcessingData::Request(http_headers, body_copy)
-        } else {
-            if is_empty_body {
-                return FilterDecision::Continue;
-            }
-            ProcessingData::RequestBody(body_copy)
-        };
+        if ext_proc_headers.is_none() && ext_proc_body.is_none() && ext_proc_trailers.is_none() {
+            return FilterDecision::Continue;
+        }
+
+        let processing_data = ProcessingData::Request(
+            ext_proc_headers,
+            ext_proc_body,
+            ext_proc_trailers.map(|hm| Self::into_http_headers(hm, true)),
+        );
 
         let ver = request.version();
         let Ok(response_rx) = self.send_processing_data(processing_data, ver).await else {
@@ -288,24 +306,30 @@ impl ExternalProcessor {
     }
 
     #[inline]
-    fn dup_collected(
+    fn dup_and_split(&self,
         body: Collected<Bytes>,
-    ) -> (WithTrailers<Full<Bytes>, Ready<TrailersType>>, WithTrailers<Full<Bytes>, Ready<TrailersType>>) {
+    ) -> (WithTrailers<Full<Bytes>, Ready<TrailersType>>, Full<Bytes>, Option<HeaderMap>) {
         let trailers = body.trailers().cloned();
-        let trailers2 = body.trailers().cloned();
         let bytes = body.to_bytes();
         let bytes2 = bytes.clone();
 
+        let trailers2 = if let Some(ref tr) = trailers {
+            Some(self.build_envoy_data_plane_api_header_map(&tr, true))
+        } else {
+            None
+        };
+
         (
             Full::new(bytes).with_trailers(ready(trailers.map(Ok::<_, Infallible>))),
-            Full::new(bytes2).with_trailers(ready(trailers2.map(Ok::<_, Infallible>))),
+            Full::new(bytes2),
+            trailers2,
         )
     }
 
-    #[inline]
-    fn empty_with_trailers(trailers: Option<http::HeaderMap>) -> WithTrailers<Full<Bytes>, Ready<TrailersType>> {
-        Full::new(Bytes::new()).with_trailers(ready(trailers.map(Ok::<_, Infallible>)))
-    }
+    // #[inline]
+    // fn empty_with_trailers(trailers: Option<http::HeaderMap>) -> WithTrailers<Full<Bytes>, Ready<TrailersType>> {
+    //     Full::new(Bytes::new()).with_trailers(ready(trailers.map(Ok::<_, Infallible>)))
+    // }
 
     pub async fn apply_response(&mut self, response: &mut Response<PolyBody>) -> FilterDecision {
         if !self.sending_response_headers && !self.sending_response_body {
@@ -441,11 +465,11 @@ impl ExternalProcessor {
         true
     }
 
-    fn build_http_headers(&self, headers: &http::HeaderMap, end_of_stream: bool) -> HttpHeaders {
-        let mut header_values = Vec::with_capacity(headers.len());
+    fn build_envoy_data_plane_api_header_map(&self, headers: &http::HeaderMap, is_trailer: bool) -> HeaderMap {
+        let mut headers_vec = Vec::with_capacity(headers.len());
         for (name, value) in headers {
             let header_name = name.as_str();
-            if self.should_forward_header(header_name) {
+            if is_trailer || self.should_forward_header(header_name) {
                 let header_value = if let Ok(value_str) = value.to_str() {
                     HeaderValue { key: header_name.to_owned(), value: value_str.to_owned(), raw_value: Vec::default() }
                 } else {
@@ -455,12 +479,17 @@ impl ExternalProcessor {
                         raw_value: value.as_bytes().into(),
                     }
                 };
-                header_values.push(header_value);
+                headers_vec.push(header_value);
             }
         }
 
+        HeaderMap{ headers: headers_vec }
+    }
+
+    #[inline]
+    fn into_http_headers(headers: HeaderMap, end_of_stream: bool) -> HttpHeaders {
         HttpHeaders {
-            headers: Some(HeaderMap { headers: header_values }),
+            headers: Some(headers),
             attributes: HashMap::default(),
             end_of_stream,
         }
@@ -476,10 +505,8 @@ struct ProcessingTask {
 
 #[derive(Debug)]
 enum ProcessingData {
-    Request(HttpHeaders, Option<PolyBody>),
-    RequestBody(Option<PolyBody>),
-    Response(HttpHeaders, Option<PolyBody>),
-    ResponseBody(Option<PolyBody>),
+    Request(Option<HttpHeaders>, Option<PolyBody>, Option<HttpHeaders>),
+    Response(Option<HttpHeaders>, Option<PolyBody>, Option<HttpHeaders>),
 }
 
 struct BidiStream {
