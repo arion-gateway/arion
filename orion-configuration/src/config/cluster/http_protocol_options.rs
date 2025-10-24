@@ -75,12 +75,14 @@ enum ExplicitProtocolOptions {
 
 impl Default for ExplicitProtocolOptions {
     fn default() -> Self {
-        Self::Http1(Http1ProtocolOptions)
+        Self::Http1(Http1ProtocolOptions { enable_trailers: false })
     }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
-pub struct Http1ProtocolOptions;
+pub struct Http1ProtocolOptions {
+    pub enable_trailers: bool,
+}
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub struct Http2ProtocolOptions {
@@ -239,7 +241,7 @@ mod envoy_conversions {
                     (Codec::Http1, http1, Http2ProtocolOptions::default())
                 },
                 UpstreamHttpProtocolOptions::Explicit(ExplicitProtocolOptions::Http2(http2)) => {
-                    (Codec::Http2, Http1ProtocolOptions, http2)
+                    (Codec::Http2, Http1ProtocolOptions::default(), http2)
                 },
             };
 
@@ -302,7 +304,7 @@ mod envoy_conversions {
                 accept_http_10,
                 default_host_for_http_10,
                 header_key_format,
-                enable_trailers,
+                //enable_trailers,
                 allow_chunked_length,
                 override_stream_error_on_invalid_http_message,
                 send_fully_qualified_url,
@@ -311,7 +313,7 @@ mod envoy_conversions {
                 ignore_http_11_upgrade
             )?;
 
-            Ok(Self {})
+            Ok(Self { enable_trailers })
         }
     }
 

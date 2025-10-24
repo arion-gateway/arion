@@ -27,7 +27,7 @@ mod direct_response;
 mod ext_proc;
 use ext_proc::ExternalProcessor;
 use smallvec::SmallVec;
-mod http_modifiers;
+pub mod http_modifiers;
 mod redirect;
 mod route;
 mod upgrades;

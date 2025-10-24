@@ -18,7 +18,7 @@
 use super::upgrade_utils;
 use crate::{event_error::EventFailure, listeners::synthetic_http_response::SyntheticHttpResponse, PolyBody};
 use http::{header, HeaderMap, HeaderName, HeaderValue, Method, Request, Response};
-use orion_configuration::config::network_filters::http_connection_manager::XffSettings;
+use orion_configuration::config::{cluster::http_protocol_options::Codec, network_filters::http_connection_manager::XffSettings};
 use orion_http_header::{X_ENVOY_EXTERNAL_ADDRESS, X_ENVOY_INTERNAL, X_FORWARDED_FOR};
 use std::net::{IpAddr, SocketAddr};
 
@@ -69,6 +69,28 @@ fn strip_hop_headers(headers: &mut HeaderMap) {
         headers.remove(header);
     }
 }
+
+pub fn strip_trailers_headers(http_version: Codec, headers: &mut HeaderMap) {
+    match http_version {
+        Codec::Http1 => {
+            headers.remove(header::TE);
+            headers.remove(header::TRAILER);
+        },
+        // TE header is allowed in HTTP2 only if its value is "trailers"
+        Codec::Http2 => {
+            headers.remove(header::TRAILER);
+            match headers.get(header::TE) {
+                Some(hdr_value) => {
+                    if hdr_value != "trailers" {
+                        headers.remove(header::TE);
+                    }
+                },
+                None => ()
+            }
+        }
+    }
+}
+
 
 fn process_xff_headers<T>(request: &mut Request<T>, downstream_addr: SocketAddr, xff_settings: XffSettings) {
     let headers = request.headers_mut();

@@ -25,7 +25,7 @@ use crate::{
     clusters::retry_policy::RetryCondition,
     event_error::{EventError, EventKind, TryInferFrom},
     listeners::{
-        http_connection_manager::{RequestHandler, TransactionHandler},
+        http_connection_manager::{http_modifiers::strip_trailers_headers, RequestHandler, TransactionHandler},
         synthetic_http_response::SyntheticHttpResponse,
     },
     secrets::{TlsConfigurator, WantsToBuildClient},
@@ -128,6 +128,7 @@ impl HttpChannels {
 pub struct HttpChannel {
     pub client: HttpChannelClient,
     pub http_version: Codec,
+    pub enable_trailers: bool,
     pub upstream_authority: Authority, // upstream authority
     pub cluster_name: &'static str,
 }
@@ -201,6 +202,14 @@ impl HttpChannelBuilder {
         let authority = self.authority.clone().ok_or_else(|| Error::from("Authority is mandatory"))?;
         let client_builder = self.configure_hyper_client();
 
+        // enable_trailers is only valid for HTTP1 and the flag is used to
+        // include the TE and Trailer headers if they were missing from the
+        // original request
+        let enable_trailers = match self.http_protocol_options.codec {
+            Codec::Http1 => self.http_protocol_options.http1_options.enable_trailers,
+            Codec::Http2 => false,
+        };
+
         if let Some(tls_context) = self.tls {
             // Build TLS client inline to avoid ownership issues
             let mut builder =
@@ -232,6 +241,7 @@ impl HttpChannelBuilder {
                     Arc::new(LocalObject::new(client_builder, tls_connector)),
                 )),
                 http_version: self.http_protocol_options.codec,
+                enable_trailers,
                 upstream_authority: authority,
                 cluster_name: self.cluster_name.unwrap_or_default(),
             })
@@ -247,6 +257,7 @@ impl HttpChannelBuilder {
             Ok(HttpChannel {
                 client: HttpChannelClient::Plain(Arc::new(LocalObject::new(client_builder, connector))),
                 http_version: self.http_protocol_options.codec,
+                enable_trailers,
                 upstream_authority: authority,
                 cluster_name: self.cluster_name.unwrap_or_default(),
             })
@@ -555,7 +566,7 @@ impl HttpChannel {
                 with_metric!(clusters::UPSTREAM_RQ_TOTAL, add, 1, thread_id, &[KeyValue::new("cluster", cluster_name)]);
                 let start_time = Instant::now();
 
-                let req = if enabled!(Level::DEBUG) {
+                let mut req = if enabled!(Level::DEBUG) {
                     use futures::StreamExt;
 
                     let (hdr, body) = req.into_parts();
@@ -576,6 +587,10 @@ impl HttpChannel {
                 } else {
                     req
                 };
+
+                if !self.enable_trailers {
+                    strip_trailers_headers(self.http_version, req.headers_mut());
+                }
 
                 let resp = sender.request(req).await.map_err(Error::from);
                 (resp, start_time.elapsed())
