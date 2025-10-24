@@ -4,7 +4,7 @@ mod request_proc;
 mod response_proc;
 mod worker_config;
 
-use crate::body::collected::dup_collected;
+use crate::body::poly_body::TrailersType;
 use crate::event_error::EventFailure;
 use crate::listeners::http_connection_manager::ext_proc::common_state::ExtProcStatus;
 use crate::listeners::http_connection_manager::ext_proc::common_state::State;
@@ -23,7 +23,9 @@ use futures::{future::Either, StreamExt};
 use http::header::CONTENT_LENGTH;
 use http::{Request, Response};
 use http_body::Body;
+use http_body_util::combinators::WithTrailers;
 use http_body_util::BodyExt;
+use http_body_util::Collected;
 use http_body_util::Full;
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::ext_proc::TrailerProcessingMode;
 use orion_configuration::config::{
@@ -51,6 +53,9 @@ use orion_data_plane_api::envoy_data_plane_api::{
 use orion_format::types::ResponseFlags as FmtResponseFlags;
 use pingora_timeout::fast_timeout;
 use std::collections::HashMap;
+use std::convert::Infallible;
+use std::future::ready;
+use std::future::Ready;
 use std::{sync::Arc, time::Duration};
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::{mpsc, oneshot};
@@ -156,6 +161,7 @@ impl From<(ExternalProcessorConfig, Option<ExtProcPerRoute>)> for ExternalProces
 }
 
 impl ExternalProcessor {
+    #[allow(clippy::too_many_lines)]
     pub async fn apply_request(&mut self, request: &mut Request<BodyWithMetrics<PolyBody>>) -> FilterDecision {
         if !self.sending_request_headers && !self.sending_request_body {
             return FilterDecision::Continue;
@@ -164,19 +170,42 @@ impl ExternalProcessor {
         let is_empty_body = body.is_end_stream();
         let mut body_copy = None;
 
-        if self.sending_request_body || self.sending_request_trailers {
-            let Ok(collected) = body.collect().await else {
-                return self.on_filter_error(
-                    "Failed to collect request body for external processing",
-                    None,
-                    request.version(),
-                );
-            };
-            let (body1, body2) = dup_collected(collected);
-            request.body_mut().inner = PolyBody::from(body1);
-            body_copy = Some(PolyBody::from(body2));
-        } else {
+        if is_empty_body {
+            debug!(target: "ext_proc", "processing no BODY and no TRAILERS");
             request.body_mut().inner = body;
+        } else {
+            match (self.sending_request_body, self.sending_request_trailers) {
+                (true, _) => {
+                    debug!(target: "ext_proc", "processing BODY and TRAILERS");
+                    let Ok(collected) = body.collect().await else {
+                        return self.on_filter_error(
+                            "Failed to collect request body for external processing",
+                            None,
+                            request.version(),
+                        );
+                    };
+                    let (body1, body2) = Self::dup_collected(collected);
+                    request.body_mut().inner = PolyBody::from(body1);
+                    body_copy = Some(PolyBody::from(body2));
+                },
+                (false, true) => {
+                    debug!(target: "ext_proc", "processing TRAILERS only");
+                    let Ok(collected) = body.collect().await else {
+                        return self.on_filter_error(
+                            "Failed to collect request body for external processing",
+                            None,
+                            request.version(),
+                        );
+                    };
+
+                    let trailers = collected.trailers().cloned();
+                    request.body_mut().inner = PolyBody::from(collected);
+                    body_copy = Some(PolyBody::from(Self::empty_with_trailers(trailers)));
+                },
+                (false, false) => {
+                    request.body_mut().inner = body;
+                },
+            }
         }
 
         debug!(target: "ext_proc", "body_copy: {:?}", body_copy);
@@ -256,6 +285,26 @@ impl ExternalProcessor {
                 request.version(),
             ),
         }
+    }
+
+    #[inline]
+    fn dup_collected(
+        body: Collected<Bytes>,
+    ) -> (WithTrailers<Full<Bytes>, Ready<TrailersType>>, WithTrailers<Full<Bytes>, Ready<TrailersType>>) {
+        let trailers = body.trailers().cloned();
+        let trailers2 = body.trailers().cloned();
+        let bytes = body.to_bytes();
+        let bytes2 = bytes.clone();
+
+        (
+            Full::new(bytes).with_trailers(ready(trailers.map(Ok::<_, Infallible>))),
+            Full::new(bytes2).with_trailers(ready(trailers2.map(Ok::<_, Infallible>))),
+        )
+    }
+
+    #[inline]
+    fn empty_with_trailers(trailers: Option<http::HeaderMap>) -> WithTrailers<Full<Bytes>, Ready<TrailersType>> {
+        Full::new(Bytes::new()).with_trailers(ready(trailers.map(Ok::<_, Infallible>)))
     }
 
     pub async fn apply_response(&mut self, response: &mut Response<PolyBody>) -> FilterDecision {
