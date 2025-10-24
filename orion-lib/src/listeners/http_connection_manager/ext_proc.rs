@@ -165,29 +165,26 @@ impl From<(ExternalProcessorConfig, Option<ExtProcPerRoute>)> for ExternalProces
 impl ExternalProcessor {
     #[allow(clippy::too_many_lines)]
     pub async fn apply_request(&mut self, request: &mut Request<BodyWithMetrics<PolyBody>>) -> FilterDecision {
-        if !self.sending_request_headers && !self.sending_request_body {
+        if !self.sending_request_headers && !self.sending_request_body && !self.sending_request_trailers {
             return FilterDecision::Continue;
         }
-        let body: PolyBody = std::mem::take(&mut request.body_mut().inner);
-        let is_empty_body = body.is_end_stream();
+        let is_empty_body = request.body().is_end_stream();
 
         let mut ext_proc_headers = None;
         let mut ext_proc_body = None;
         let mut ext_proc_trailers = None;
 
         if self.sending_request_headers {
-            debug!(target: "ext_proc", "processing HEADERS(true)");
+            debug!(target: "ext_proc", "request processing HEADERS(true)");
             let envoy_headers = self.build_envoy_data_plane_api_header_map(request.headers(), false);
-            ext_proc_headers = Some(Self::into_http_headers(envoy_headers, body.is_end_stream()));
+            ext_proc_headers = Some(Self::into_http_headers(envoy_headers, is_empty_body));
         }
 
-        if is_empty_body {
-            debug!(target: "ext_proc", "processing no BODY and no TRAILERS");
-            request.body_mut().inner = body;
-        } else {
+        if !is_empty_body {
+            let body: PolyBody = std::mem::take(&mut request.body_mut().inner);
             match (self.sending_request_body, self.sending_request_trailers) {
-                (true, send_trl) => {
-                    debug!(target: "ext_proc", "processing BODY(true) and TRAILERS({send_trl})");
+                (true, send_trailers) => {
+                    debug!(target: "ext_proc", "request processing BODY(true) and TRAILERS({send_trailers})");
 
                     let Ok(collected) = body.collect().await else {
                         return self.on_filter_error(
@@ -203,7 +200,7 @@ impl ExternalProcessor {
                     ext_proc_trailers = trailers2;
                 },
                 (false, true) => {
-                    debug!(target: "ext_proc", "processing TRAILERS(true) only");
+                    debug!(target: "ext_proc", "request processing TRAILERS(true) only");
                     let Ok(collected) = body.collect().await else {
                         return self.on_filter_error(
                             "Failed to collect request body for external processing",
@@ -224,9 +221,11 @@ impl ExternalProcessor {
                     request.body_mut().inner = body;
                 },
             }
+        } else {
+            debug!(target: "ext_proc", "request processing no BODY and no TRAILERS");
         }
 
-        debug!(target: "ext_proc", "headers: {ext_proc_headers:?} - body: {ext_proc_body:?} - trailers: {ext_proc_trailers:?}");
+        debug!(target: "ext_proc", "request: headers: {ext_proc_headers:?} - body: {ext_proc_body:?} - trailers: {ext_proc_trailers:?}");
 
         if ext_proc_headers.is_none() && ext_proc_body.is_none() && ext_proc_trailers.is_none() {
             return FilterDecision::Continue;
@@ -276,7 +275,7 @@ impl ExternalProcessor {
                     }
                 }
                 if let Some(body_replacement) = body_replacement {
-                    debug!(target: "ext_proc", "replacing body with {body_replacement:?}");
+                    debug!(target: "ext_proc", "request replacing body with {body_replacement:?}");
                     request.body_mut().inner = body_replacement;
                     request.headers_mut().remove(CONTENT_LENGTH);
                 }
@@ -332,20 +331,77 @@ impl ExternalProcessor {
     // }
 
     pub async fn apply_response(&mut self, response: &mut Response<PolyBody>) -> FilterDecision {
-        if !self.sending_response_headers && !self.sending_response_body {
+        if !self.sending_response_headers && !self.sending_response_body && !self.sending_response_trailers {
             return FilterDecision::Continue;
         }
-        let body: PolyBody = std::mem::take(response.body_mut());
-        let processing_data = if self.sending_response_headers {
-            let http_headers =
-                self.build_http_headers(response.headers(), !self.sending_response_body || body.is_end_stream());
-            ProcessingData::Response(http_headers, Some(body))
-        } else {
-            if body.is_end_stream() {
-                return FilterDecision::Continue;
+        let is_empty_body = response.body().is_end_stream();
+
+        let mut ext_proc_headers = None;
+        let mut ext_proc_body = None;
+        let mut ext_proc_trailers = None;
+
+        if self.sending_response_headers {
+            debug!(target: "ext_proc", "response processing HEADERS(true)");
+            let envoy_headers = self.build_envoy_data_plane_api_header_map(response.headers(), false);
+            ext_proc_headers = Some(Self::into_http_headers(envoy_headers, is_empty_body));
+        }
+
+        if !is_empty_body {
+            let body: PolyBody = std::mem::take(response.body_mut());
+            match (self.sending_response_body, self.sending_response_trailers) {
+                (true, send_trailers) => {
+                    debug!(target: "ext_proc", "response processing BODY(true) and TRAILERS({send_trailers})");
+
+                    let Ok(collected) = body.collect().await else {
+                        return self.on_filter_error(
+                            "Failed to collect response body for external processing",
+                            None,
+                            response.version(),
+                        );
+                    };
+
+                    let (orig_body, body2, trailers2) = self.dup_and_split(collected);
+                    *response.body_mut() = PolyBody::from(orig_body);
+                    ext_proc_body = Some(PolyBody::from(body2));
+                    ext_proc_trailers = trailers2;
+                },
+                (false, true) => {
+                    debug!(target: "ext_proc", "request processing TRAILERS(true) only");
+                    let Ok(collected) = body.collect().await else {
+                        return self.on_filter_error(
+                            "Failed to collect request body for external processing",
+                            None,
+                            response.version(),
+                        );
+                    };
+
+                    ext_proc_body = Some(PolyBody::from(Empty::new()));
+                    ext_proc_trailers = if let Some(trl) = collected.trailers() {
+                        Some(self.build_envoy_data_plane_api_header_map(trl, true))
+                    } else {
+                        None
+                    };
+                    *response.body_mut() = PolyBody::from(collected);
+                },
+                (false, false) => {
+                    *response.body_mut() = body;
+                },
             }
-            ProcessingData::ResponseBody(Some(body))
-        };
+        } else {
+            debug!(target: "ext_proc", "response processing no BODY and no TRAILERS");
+        }
+
+        debug!(target: "ext_proc", "response: headers: {ext_proc_headers:?} - body: {ext_proc_body:?} - trailers: {ext_proc_trailers:?}");
+
+        if ext_proc_headers.is_none() && ext_proc_body.is_none() && ext_proc_trailers.is_none() {
+            return FilterDecision::Continue;
+        }
+
+        let processing_data = ProcessingData::Response(
+            ext_proc_headers,
+            ext_proc_body,
+            ext_proc_trailers.map(|hm| Self::into_http_headers(hm, true)),
+        );
 
         let ver = response.version();
         let Ok(response_rx) = self.send_processing_data(processing_data, ver).await else {
