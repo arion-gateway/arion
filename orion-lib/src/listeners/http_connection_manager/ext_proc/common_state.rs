@@ -3,6 +3,7 @@ use bytes::Bytes;
 use http::Response;
 use http_body_util::BodyStream;
 use http_body_util::Empty;
+use orion_data_plane_api::envoy_data_plane_api::envoy::service::ext_proc::v3::HttpHeaders;
 
 use crate::{body::poly_body::BodySender, PolyBody};
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::ext_proc::{
@@ -52,32 +53,57 @@ impl State for ProcessingState {
     }
 }
 
+
 #[derive(Debug)]
 pub enum ExtProcStatus {
-    RequestIsReady {
-        header_modifications: Option<HeaderMutation>,
-        body_replacement: Option<PolyBody>,
-        override_sending_response_headers: Option<bool>,
-        override_sending_response_body: Option<bool>,
-        clear_route_cache: bool,
-    },
-    ResponseIsReady {
-        header_modifications: Option<HeaderMutation>,
-        body_replacement: Option<PolyBody>,
-    },
-    HaltedOnError {
-        restore_body: Option<PolyBody>,
-    },
+    RequestReady(RequestReady),
+    ResponseReady(ResponseReady),
+    HaltedOnError,
     EndWithDirectResponse(Response<PolyBody>),
+}
+
+impl ExtProcStatus {
+    pub fn with_request_ready<F>(&mut self, f: F)
+        where F: FnOnce(&mut RequestReady) -> ()
+    {
+        if let ExtProcStatus::RequestReady(ref mut ready) = self {
+            f(ready);
+        }
+    }
+
+    pub fn with_response_ready<F>(&mut self, f: F)
+        where F: FnOnce(&mut ResponseReady) -> ()
+    {
+        if let ExtProcStatus::ResponseReady(ref mut ready) = self {
+            f(ready);
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct RequestReady {
+    pub headers_modifications: Option<HeaderMutation>,
+    pub body_replacement: Option<PolyBody>,
+    pub trailers_modifications: Option<HeaderMutation>,
+    pub override_sending_response_headers: Option<bool>,
+    pub override_sending_response_body: Option<bool>,
+    pub clear_route_cache: bool,
+}
+
+#[derive(Debug, Default)]
+pub struct ResponseReady {
+    pub headers_modifications: Option<HeaderMutation>,
+    pub body_replacement: Option<PolyBody>,
+    pub trailers_modifications: Option<HeaderMutation>,
 }
 
 pub struct BodyContext {
     pub body: Option<PolyBody>,
+    pub body_mode: BodyProcessingMode,
+    pub trailers: Option<http::HeaderMap>,
+    pub trailers_mode: TrailerProcessingMode,
     pub outbound_body_stream: BodyStream<PolyBody>,
     pub inbound_body_sender: Option<BodySender>,
-    pub body_mode: BodyProcessingMode,
-    pub trailer_mode: TrailerProcessingMode,
-    pub trailers: Option<http::HeaderMap>,
     pub buffered_chunk: Option<Bytes>,
 }
 
@@ -88,13 +114,14 @@ impl BodyContext {
             outbound_body_stream: BodyStream::new(PolyBody::from(Empty::<Bytes>::default())),
             inbound_body_sender: None,
             body_mode,
-            trailer_mode,
+            trailers_mode: trailer_mode,
             trailers: None,
             buffered_chunk: None,
         }
     }
 
     pub fn start_streaming(&mut self) {
+        // TODO: build the body with trailers (if any)
         if let Some(body) = self.body.take() {
             self.outbound_body_stream = BodyStream::new(body);
             let (new_body, sender) = PolyBody::new_stream_body(16);

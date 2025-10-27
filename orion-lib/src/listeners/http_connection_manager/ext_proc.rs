@@ -8,6 +8,7 @@ use crate::body::poly_body::TrailersType;
 use crate::event_error::EventFailure;
 use crate::listeners::http_connection_manager::ext_proc;
 use crate::listeners::http_connection_manager::ext_proc::common_state::ExtProcStatus;
+use crate::listeners::http_connection_manager::ext_proc::common_state::RequestReady;
 use crate::listeners::http_connection_manager::ext_proc::common_state::State;
 use crate::listeners::http_connection_manager::ext_proc::mutation::apply_header_mutations;
 use crate::listeners::http_connection_manager::ext_proc::request_proc::RequestProcessing;
@@ -40,6 +41,7 @@ use orion_configuration::config::{
         ExtProcPerRoute,
     },
 };
+use orion_data_plane_api::envoy_data_plane_api::envoy::service::ext_proc::v3::HeaderMutation;
 use orion_data_plane_api::envoy_data_plane_api::{
     envoy::{
         config::core::v3::{HeaderMap, HeaderValue},
@@ -54,6 +56,7 @@ use orion_data_plane_api::envoy_data_plane_api::{
 };
 use orion_format::types::ResponseFlags as FmtResponseFlags;
 use pingora_timeout::fast_timeout;
+use scopeguard::defer;
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::future::ready;
@@ -163,6 +166,91 @@ impl From<(ExternalProcessorConfig, Option<ExtProcPerRoute>)> for ExternalProces
 }
 
 impl ExternalProcessor {
+    fn mutate_upstream_request(
+        &mut self,
+        request: &mut Request<BodyWithMetrics<PolyBody>>,
+        headers_mutation: Option<HeaderMutation>,
+        body_replacement: Option<PolyBody>,
+        trailers_mutation: Option<HeaderMutation>,
+    ) -> Result<(), FilterDecision> {
+        // mutate request headers...
+        if let Some(headers_modifications) = headers_mutation {
+            if let Err(e) = apply_header_mutations(
+                request.headers_mut(),
+                &headers_modifications,
+                Some(&self.worker_config.mutation_rules),
+            ) {
+                return Err(self.on_filter_error(
+                    "Invalid header modifications received from external processor",
+                    Some(e),
+                    request.version(),
+                ));
+            }
+        }
+
+        match (body_replacement, trailers_mutation) {
+            (Some(body_replacement), None) => {
+                // mutate request body...
+                debug!(target: "ext_proc", "request replacing body with {body_replacement:?}");
+                request.body_mut().inner = body_replacement;
+                request.headers_mut().remove(CONTENT_LENGTH);
+            },
+            (None, Some(ref trailers_modifications)) => {
+                let mut trailers = http::HeaderMap::new();
+                if let Err(e) = apply_header_mutations(
+                    &mut trailers,
+                    trailers_modifications,
+                    Some(&self.worker_config.mutation_rules),
+                ) {
+                    return Err(self.on_filter_error(
+                        "Invalid trailer modifications received from external processor",
+                        Some(e),
+                        request.version(),
+                    ));
+                }
+
+                let body = std::mem::take(&mut request.body_mut().inner);
+                request.body_mut().inner = match body.with_trailers(trailers) {
+                    Ok(body) => body,
+                    Err(err) => {
+                        return Err(self.on_filter_error(
+                            "Failed to attach trailers to request body",
+                            Some(err.into()),
+                            request.version(),
+                        ));
+                    },
+                };
+            },
+            (Some(body_replacement), Some(ref trailers_modifications)) => {
+                let mut trailers = http::HeaderMap::new();
+                if let Err(e) = apply_header_mutations(
+                    &mut trailers,
+                    trailers_modifications,
+                    Some(&self.worker_config.mutation_rules),
+                ) {
+                    return Err(self.on_filter_error(
+                        "Invalid trailer modifications received from external processor",
+                        Some(e),
+                        request.version(),
+                    ));
+                }
+
+                request.body_mut().inner = match body_replacement.with_trailers(trailers) {
+                    Ok(body) => body,
+                    Err(err) => {
+                        return Err(self.on_filter_error(
+                            "Failed to attach trailers to request body",
+                            Some(err.into()),
+                            request.version(),
+                        ));
+                    },
+                };
+            },
+            (None, None) => (),
+        }
+        Ok(())
+    }
+
     #[allow(clippy::too_many_lines)]
     pub async fn apply_request(&mut self, request: &mut Request<BodyWithMetrics<PolyBody>>) -> FilterDecision {
         if !self.sending_request_headers && !self.sending_request_body && !self.sending_request_trailers {
@@ -176,8 +264,7 @@ impl ExternalProcessor {
 
         if self.sending_request_headers {
             debug!(target: "ext_proc", "request processing HEADERS(true)");
-            let envoy_headers = self.build_envoy_data_plane_api_header_map(request.headers(), false);
-            ext_proc_headers = Some(Self::into_http_headers(envoy_headers, is_empty_body));
+            ext_proc_headers = Some(self.filter_header_map(request.headers()));
         }
 
         if !is_empty_body {
@@ -194,10 +281,10 @@ impl ExternalProcessor {
                         );
                     };
 
-                    let (orig_body, body2, trailers2) = self.dup_and_split(collected);
-                    request.body_mut().inner = PolyBody::from(orig_body);
+                    let (body, body2, trailers2) = self.dup_and_split(collected);
                     ext_proc_body = Some(PolyBody::from(body2));
                     ext_proc_trailers = trailers2;
+                    request.body_mut().inner = PolyBody::from(body);
                 },
                 (false, true) => {
                     debug!(target: "ext_proc", "request processing TRAILERS(true) only");
@@ -210,11 +297,7 @@ impl ExternalProcessor {
                     };
 
                     ext_proc_body = Some(PolyBody::from(Empty::new()));
-                    ext_proc_trailers = if let Some(trl) = collected.trailers() {
-                        Some(self.build_envoy_data_plane_api_header_map(trl, true))
-                    } else {
-                        None
-                    };
+                    ext_proc_trailers = collected.trailers().cloned();
                     request.body_mut().inner = PolyBody::from(collected);
                 },
                 (false, false) => {
@@ -231,11 +314,7 @@ impl ExternalProcessor {
             return FilterDecision::Continue;
         }
 
-        let processing_data = ProcessingData::Request(
-            ext_proc_headers,
-            ext_proc_body,
-            ext_proc_trailers.map(|hm| Self::into_http_headers(hm, true)),
-        );
+        let processing_data = ProcessingData::Request(ext_proc_headers, ext_proc_body, ext_proc_trailers);
 
         let ver = request.version();
         let Ok(response_rx) = self.send_processing_data(processing_data, ver).await else {
@@ -243,10 +322,7 @@ impl ExternalProcessor {
         };
 
         match response_rx.await {
-            Ok(ExtProcStatus::HaltedOnError { restore_body }) => {
-                if let Some(body) = restore_body {
-                    request.body_mut().inner = body;
-                }
+            Ok(ExtProcStatus::HaltedOnError) => {
                 self.sending_response_headers = false;
                 self.sending_response_body = false;
                 FilterDecision::Continue
@@ -254,31 +330,23 @@ impl ExternalProcessor {
             Ok(ExtProcStatus::EndWithDirectResponse(direct_response)) => {
                 FilterDecision::DirectResponse(direct_response)
             },
-            Ok(ExtProcStatus::RequestIsReady {
-                header_modifications,
+            Ok(ExtProcStatus::RequestReady(RequestReady {
                 body_replacement,
                 override_sending_response_headers,
                 override_sending_response_body,
                 clear_route_cache,
-            }) => {
-                if let Some(header_modifications) = header_modifications {
-                    if let Err(e) = apply_header_mutations(
-                        request.headers_mut(),
-                        &header_modifications,
-                        Some(&self.worker_config.mutation_rules),
-                    ) {
-                        return self.on_filter_error(
-                            "Invalid header modifications received from external processor",
-                            Some(e),
-                            request.version(),
-                        );
-                    }
+                headers_modifications,
+                trailers_modifications,
+            })) => {
+                if let Err(decision) = self.mutate_upstream_request(
+                    request,
+                    headers_modifications,
+                    body_replacement,
+                    trailers_modifications,
+                ) {
+                    return decision;
                 }
-                if let Some(body_replacement) = body_replacement {
-                    debug!(target: "ext_proc", "request replacing body with {body_replacement:?}");
-                    request.body_mut().inner = body_replacement;
-                    request.headers_mut().remove(CONTENT_LENGTH);
-                }
+
                 if let Some(override_value) = override_sending_response_headers {
                     self.sending_response_headers = override_value;
                 }
@@ -290,171 +358,156 @@ impl ExternalProcessor {
                 }
                 FilterDecision::Continue
             },
-            Ok(ExtProcStatus::ResponseIsReady { header_modifications: _, body_replacement: _ }) => self
-                .on_filter_error(
-                    "Unexpected response from external processor during request processing",
-                    None,
-                    request.version(),
-                ),
+            // TODO
+            //Ok(ExtProcStatus::ResponseIsReady { header_modifications: _, body_replacement: _ }) => self
+            //    .on_filter_error(
+            //        "Unexpected response from external processor during request processing",
+            //        None,
+            //        request.version(),
+            //    ),
             Err(e) => self.on_filter_error(
                 "External processor failed during request processing",
                 Some(e.into()),
                 request.version(),
             ),
+            _ => todo!(),
         }
     }
 
     #[inline]
-    fn dup_and_split(&self,
+    fn dup_and_split(
+        &self,
         body: Collected<Bytes>,
-    ) -> (WithTrailers<Full<Bytes>, Ready<TrailersType>>, Full<Bytes>, Option<HeaderMap>) {
+    ) -> (WithTrailers<Full<Bytes>, Ready<TrailersType>>, Full<Bytes>, Option<http::HeaderMap>) {
         let trailers = body.trailers().cloned();
+        let trailers2 = trailers.clone();
         let bytes = body.to_bytes();
         let bytes2 = bytes.clone();
-
-        let trailers2 = if let Some(ref tr) = trailers {
-            Some(self.build_envoy_data_plane_api_header_map(&tr, true))
-        } else {
-            None
-        };
-
-        (
-            Full::new(bytes).with_trailers(ready(trailers.map(Ok::<_, Infallible>))),
-            Full::new(bytes2),
-            trailers2,
-        )
+        (Full::new(bytes).with_trailers(ready(trailers.map(Ok::<_, Infallible>))), Full::new(bytes2), trailers2)
     }
-
-    // #[inline]
-    // fn empty_with_trailers(trailers: Option<http::HeaderMap>) -> WithTrailers<Full<Bytes>, Ready<TrailersType>> {
-    //     Full::new(Bytes::new()).with_trailers(ready(trailers.map(Ok::<_, Infallible>)))
-    // }
 
     pub async fn apply_response(&mut self, response: &mut Response<PolyBody>) -> FilterDecision {
         if !self.sending_response_headers && !self.sending_response_body && !self.sending_response_trailers {
             return FilterDecision::Continue;
         }
-        let is_empty_body = response.body().is_end_stream();
+        todo!()
+        //let is_empty_body = response.body().is_end_stream();
 
-        let mut ext_proc_headers = None;
-        let mut ext_proc_body = None;
-        let mut ext_proc_trailers = None;
+        //let mut ext_proc_headers = None;
+        //let mut ext_proc_body = None;
+        //let mut ext_proc_trailers = None;
 
-        if self.sending_response_headers {
-            debug!(target: "ext_proc", "response processing HEADERS(true)");
-            let envoy_headers = self.build_envoy_data_plane_api_header_map(response.headers(), false);
-            ext_proc_headers = Some(Self::into_http_headers(envoy_headers, is_empty_body));
-        }
+        //if self.sending_response_headers {
+        //    debug!(target: "ext_proc", "response processing HEADERS(true)");
+        //    let envoy_headers = self.build_envoy_data_plane_api_header_map(response.headers(), false);
+        //    ext_proc_headers = Some(Self::into_http_headers(envoy_headers, is_empty_body));
+        //}
 
-        if !is_empty_body {
-            let body: PolyBody = std::mem::take(response.body_mut());
-            match (self.sending_response_body, self.sending_response_trailers) {
-                (true, send_trailers) => {
-                    debug!(target: "ext_proc", "response processing BODY(true) and TRAILERS({send_trailers})");
+        //if !is_empty_body {
+        //    let body: PolyBody = std::mem::take(response.body_mut());
+        //    match (self.sending_response_body, self.sending_response_trailers) {
+        //        (true, send_trailers) => {
+        //            debug!(target: "ext_proc", "response processing BODY(true) and TRAILERS({send_trailers})");
 
-                    let Ok(collected) = body.collect().await else {
-                        return self.on_filter_error(
-                            "Failed to collect response body for external processing",
-                            None,
-                            response.version(),
-                        );
-                    };
+        //            let Ok(collected) = body.collect().await else {
+        //                return self.on_filter_error(
+        //                    "Failed to collect response body for external processing",
+        //                    None,
+        //                    response.version(),
+        //                );
+        //            };
 
-                    let (orig_body, body2, trailers2) = self.dup_and_split(collected);
-                    *response.body_mut() = PolyBody::from(orig_body);
-                    ext_proc_body = Some(PolyBody::from(body2));
-                    ext_proc_trailers = trailers2;
-                },
-                (false, true) => {
-                    debug!(target: "ext_proc", "request processing TRAILERS(true) only");
-                    let Ok(collected) = body.collect().await else {
-                        return self.on_filter_error(
-                            "Failed to collect request body for external processing",
-                            None,
-                            response.version(),
-                        );
-                    };
+        //            let (orig_body, body2, trailers2) = self.dup_and_split(collected);
+        //            *response.body_mut() = PolyBody::from(orig_body);
+        //            ext_proc_body = Some(PolyBody::from(body2));
+        //            ext_proc_trailers = trailers2;
+        //        },
+        //        (false, true) => {
+        //            debug!(target: "ext_proc", "request processing TRAILERS(true) only");
+        //            let Ok(collected) = body.collect().await else {
+        //                return self.on_filter_error(
+        //                    "Failed to collect request body for external processing",
+        //                    None,
+        //                    response.version(),
+        //                );
+        //            };
 
-                    ext_proc_body = Some(PolyBody::from(Empty::new()));
-                    ext_proc_trailers = if let Some(trl) = collected.trailers() {
-                        Some(self.build_envoy_data_plane_api_header_map(trl, true))
-                    } else {
-                        None
-                    };
-                    *response.body_mut() = PolyBody::from(collected);
-                },
-                (false, false) => {
-                    *response.body_mut() = body;
-                },
-            }
-        } else {
-            debug!(target: "ext_proc", "response processing no BODY and no TRAILERS");
-        }
+        //            ext_proc_body = Some(PolyBody::from(Empty::new()));
+        //            ext_proc_trailers = collected.trailers().cloned();
+        //            *response.body_mut() = PolyBody::from(collected);
+        //        },
+        //        (false, false) => {
+        //            *response.body_mut() = body;
+        //        },
+        //    }
+        //} else {
+        //    debug!(target: "ext_proc", "response processing no BODY and no TRAILERS");
+        //}
 
-        debug!(target: "ext_proc", "response: headers: {ext_proc_headers:?} - body: {ext_proc_body:?} - trailers: {ext_proc_trailers:?}");
+        //debug!(target: "ext_proc", "response: headers: {ext_proc_headers:?} - body: {ext_proc_body:?} - trailers: {ext_proc_trailers:?}");
 
-        if ext_proc_headers.is_none() && ext_proc_body.is_none() && ext_proc_trailers.is_none() {
-            return FilterDecision::Continue;
-        }
+        //if ext_proc_headers.is_none() && ext_proc_body.is_none() && ext_proc_trailers.is_none() {
+        //    return FilterDecision::Continue;
+        //}
 
-        let processing_data = ProcessingData::Response(
-            ext_proc_headers,
-            ext_proc_body,
-            ext_proc_trailers.map(|hm| Self::into_http_headers(hm, true)),
-        );
+        //let processing_data = ProcessingData::Response(
+        //    ext_proc_headers,
+        //    ext_proc_body,
+        //    ext_proc_trailers.map(|hm| Self::into_http_headers(hm, true)),
+        //);
 
-        let ver = response.version();
-        let Ok(response_rx) = self.send_processing_data(processing_data, ver).await else {
-            return self.on_filter_error("Failed to schedule sending request data to external processor", None, ver);
-        };
+        //let ver = response.version();
+        //let Ok(response_rx) = self.send_processing_data(processing_data, ver).await else {
+        //    return self.on_filter_error("Failed to schedule sending request data to external processor", None, ver);
+        //};
 
-        match response_rx.await {
-            Ok(ExtProcStatus::HaltedOnError { restore_body }) => {
-                if let Some(body) = restore_body {
-                    *response.body_mut() = body;
-                }
-                FilterDecision::Continue
-            },
-            Ok(ExtProcStatus::EndWithDirectResponse(direct_response)) => {
-                FilterDecision::DirectResponse(direct_response)
-            },
-            Ok(ExtProcStatus::ResponseIsReady { header_modifications, body_replacement }) => {
-                if let Some(header_modifications) = header_modifications {
-                    if let Err(e) = apply_header_mutations(
-                        response.headers_mut(),
-                        &header_modifications,
-                        Some(&self.worker_config.mutation_rules),
-                    ) {
-                        return self.on_filter_error(
-                            "Invalid header modifications received from external processor",
-                            Some(e),
-                            response.version(),
-                        );
-                    }
-                }
-                if let Some(body_replacement) = body_replacement {
-                    *response.body_mut() = body_replacement;
-                    response.headers_mut().remove(CONTENT_LENGTH);
-                }
-                FilterDecision::Continue
-            },
-            Ok(ExtProcStatus::RequestIsReady {
-                header_modifications: _,
-                body_replacement: _,
-                override_sending_response_headers: _,
-                override_sending_response_body: _,
-                clear_route_cache: _,
-            }) => self.on_filter_error(
-                "Unexpected request from external processor during response processing",
-                None,
-                response.version(),
-            ),
-            Err(e) => self.on_filter_error(
-                "External processor failed during response processing",
-                Some(e.into()),
-                response.version(),
-            ),
-        }
+        //match response_rx.await {
+        //    Ok(ExtProcStatus::HaltedOnError { restore_body }) => {
+        //        if let Some(body) = restore_body {
+        //            *response.body_mut() = body;
+        //        }
+        //        FilterDecision::Continue
+        //    },
+        //    Ok(ExtProcStatus::EndWithDirectResponse(direct_response)) => {
+        //        FilterDecision::DirectResponse(direct_response)
+        //    },
+        //    Ok(ExtProcStatus::ResponseIsReady { header_modifications, body_replacement }) => {
+        //        if let Some(header_modifications) = header_modifications {
+        //            if let Err(e) = apply_header_mutations(
+        //                response.headers_mut(),
+        //                &header_modifications,
+        //                Some(&self.worker_config.mutation_rules),
+        //            ) {
+        //                return self.on_filter_error(
+        //                    "Invalid header modifications received from external processor",
+        //                    Some(e),
+        //                    response.version(),
+        //                );
+        //            }
+        //        }
+        //        if let Some(body_replacement) = body_replacement {
+        //            *response.body_mut() = body_replacement;
+        //            response.headers_mut().remove(CONTENT_LENGTH);
+        //        }
+        //        FilterDecision::Continue
+        //    },
+        //    Ok(ExtProcStatus::RequestIsReady {
+        //        header_modifications: _,
+        //        body_replacement: _,
+        //        override_sending_response_headers: _,
+        //        override_sending_response_body: _,
+        //        clear_route_cache: _,
+        //    }) => self.on_filter_error(
+        //        "Unexpected request from external processor during response processing",
+        //        None,
+        //        response.version(),
+        //    ),
+        //    Err(e) => self.on_filter_error(
+        //        "External processor failed during response processing",
+        //        Some(e.into()),
+        //        response.version(),
+        //    ),
+        //}
     }
 
     async fn send_processing_data(
@@ -521,11 +574,25 @@ impl ExternalProcessor {
         true
     }
 
-    fn build_envoy_data_plane_api_header_map(&self, headers: &http::HeaderMap, is_trailer: bool) -> HeaderMap {
-        let mut headers_vec = Vec::with_capacity(headers.len());
+    fn filter_header_map(&self, headers: &http::HeaderMap) -> http::HeaderMap {
+        let mut filtered_headers = http::HeaderMap::new();
         for (name, value) in headers {
             let header_name = name.as_str();
-            if is_trailer || self.should_forward_header(header_name) {
+            if self.should_forward_header(header_name) {
+                filtered_headers.append(name.clone(), value.clone());
+            }
+        }
+        filtered_headers
+    }
+}
+
+struct EnvoyHeaderMap(HeaderMap);
+impl From<http::HeaderMap> for EnvoyHeaderMap {
+    fn from(mut headers: http::HeaderMap) -> Self {
+        let mut headers_vec = Vec::with_capacity(headers.len());
+        for (name, value) in headers.drain() {
+            if let Some(name) = name {
+                let header_name = name.as_str();
                 let header_value = if let Ok(value_str) = value.to_str() {
                     HeaderValue { key: header_name.to_owned(), value: value_str.to_owned(), raw_value: Vec::default() }
                 } else {
@@ -538,17 +605,7 @@ impl ExternalProcessor {
                 headers_vec.push(header_value);
             }
         }
-
-        HeaderMap{ headers: headers_vec }
-    }
-
-    #[inline]
-    fn into_http_headers(headers: HeaderMap, end_of_stream: bool) -> HttpHeaders {
-        HttpHeaders {
-            headers: Some(headers),
-            attributes: HashMap::default(),
-            end_of_stream,
-        }
+        EnvoyHeaderMap(HeaderMap { headers: headers_vec })
     }
 }
 
@@ -561,8 +618,8 @@ struct ProcessingTask {
 
 #[derive(Debug)]
 enum ProcessingData {
-    Request(Option<HttpHeaders>, Option<PolyBody>, Option<HttpHeaders>),
-    Response(Option<HttpHeaders>, Option<PolyBody>, Option<HttpHeaders>),
+    Request(Option<http::HeaderMap>, Option<PolyBody>, Option<http::HeaderMap>),
+    Response(Option<http::HeaderMap>, Option<PolyBody>, Option<http::HeaderMap>),
 }
 
 struct BidiStream {
@@ -610,41 +667,36 @@ impl ExternalProcessingWorker<ProcessingState> {
         // The following label is not strictly necessary, but it makes it clearer what is being exited at the break point.
         // It also makes it easier to locate subsequent exit points.
         debug!(target: "ext_proc", "--- BEGIN ---");
+        let processing_response_pending = self.config.processing_mode.response_header_mode
+            != HeaderProcessingMode::Skip
+            || self.config.processing_mode.response_body_mode != BodyProcessingMode::None
+            || self.config.processing_mode.response_trailer_mode != TrailerProcessingMode::Skip;
+
         'transaction_loop: loop {
             tokio::select! {
                 outbond_processing_task = processing_request_channel.recv() => {
                     match outbond_processing_task {
-                        Some(ProcessingTask{ data: ProcessingData::Request(headers, body), reply_channel, http_version}) => {
+                        Some(ProcessingTask{ data: ProcessingData::Request(headers, body, trailers), reply_channel, http_version}) => {
                             debug!(target: "ext_proc", "Processing new request ->");
-                            let outbound = self
+                            if let Some(outbound) = self
                                 .request_processing
-                                .process_request(headers, body, reply_channel, http_version);
-                            self.forward_to_external_processor(outbound).await;
+                                .prepare_processing_request(headers, body, trailers, reply_channel, http_version, processing_response_pending).await {
+                                    self.forward_to_external_processor(outbound).await;
+                                } else {
+                                    // TODO!
+                                    self.timeout_state.active = false;
+                                }
                         }
-                        Some(ProcessingTask{ data: ProcessingData::RequestBody(body), reply_channel, http_version}) => {
-                            if let Some(body) = body {
-                                debug!(target: "ext_proc", "Processing new request (body only) ->");
-                                let outbound = self
-                                    .request_processing
-                                    .process_body(body, reply_channel, Some(http_version)).await;
-                                self.forward_to_external_processor(outbound).await;
-                            }
-                        }
-                        Some(ProcessingTask{ data: ProcessingData::Response(headers, body), reply_channel, http_version}) => {
+                        Some(ProcessingTask{ data: ProcessingData::Response(headers, body, trailers), reply_channel, http_version}) => {
                             debug!(target: "ext_proc", "Processing new response ->");
-                            let outbound = self
+                            if let Some(outbound) = self
                                 .response_processing
-                                .process_response(headers, body, reply_channel, http_version);
-                            self.forward_to_external_processor(outbound).await;
-                        }
-                        Some(ProcessingTask{ data: ProcessingData::ResponseBody(body), reply_channel, http_version}) => {
-                            if let Some(body) = body {
-                                debug!(target: "ext_proc", "Processing new response (body only) ->");
-                                let outbound = self
-                                    .response_processing
-                                    .process_body(body, reply_channel, Some(http_version)).await;
-                                self.forward_to_external_processor(outbound).await;
-                            }
+                                .process_response(headers, body, trailers, reply_channel, http_version) {
+                                    self.forward_to_external_processor(outbound).await;
+                                } else {
+                                    // TODO!
+                                    self.timeout_state.active = false;
+                                }
                         }
                         _ => {
                             debug!(target: "ext_proc", "Channel received closed!");
@@ -693,29 +745,41 @@ impl ExternalProcessingWorker<ProcessingState> {
                             }
                             let wants_response_headers = self.response_processing.is_header_processing_planned();
                             let wants_response_body = self.response_processing.is_body_processing_planned();
-                            let outbound = self.request_processing.handle_headers_response(
+                            if let Some(outbound) = self.request_processing.handle_headers_response(
                                 headers_response,
                                 &self.config.route_cache_action,
                                 wants_response_headers,
                                 wants_response_body
-                            ).await;
-                            self.forward_to_external_processor(outbound).await;
+                            ).await {
+                                self.forward_to_external_processor(outbound).await;
+                            } else {
+                                // TODO!
+                                self.timeout_state.active = false;
+                            }
                         },
                         Ok(Some(ProcessingResponse { response: Some(ProcessingResponseType::RequestBody(body_response)), ..})) => {
                             debug!(target: "ext_proc", "<- Request body response received");
                             let empty_response = body_response.response.is_none();
-                            let outbound = self
+                            if let Some(outbound) = self
                                 .request_processing
-                                .handle_body_response(body_response, &self.config.route_cache_action).await;
-                            self.forward_to_external_processor(outbound).await;
+                                .handle_body_response(body_response, &self.config.route_cache_action).await {
+                                    self.forward_to_external_processor(outbound).await;
+                                } else {
+                                    // TODO!
+                                    self.timeout_state.active = false;
+                                }
                             if empty_response {
                                 break 'transaction_loop;
                             }
                         },
                         Ok(Some(ProcessingResponse { response: Some(ProcessingResponseType::RequestTrailers(trailers_response)), ..})) => {
                             debug!(target: "ext_proc", "<- Request trailers response received");
-                            let outbound = self.request_processing.handle_trailers_response(trailers_response).await;
-                            self.forward_to_external_processor(outbound).await;
+                            if let Some(outbound) = self.request_processing.handle_trailers_response(trailers_response).await {
+                                self.forward_to_external_processor(outbound).await;
+                            } else {
+                                // TODO!
+                                self.timeout_state.active = false;
+                            }
                         },
                         Ok(Some(ProcessingResponse { mode_override, response: Some(ProcessingResponseType::ResponseHeaders(headers_response)), ..})) => {
                             debug!(target: "ext_proc", "<- Response headers response received");
@@ -724,23 +788,35 @@ impl ExternalProcessingWorker<ProcessingState> {
                                     self.response_processing.apply_mode_overrides(&overrides, &self.config.allowed_override_modes);
                                 }
                             }
-                            let outbound = self.response_processing.handle_headers_response(headers_response).await;
-                            self.forward_to_external_processor(outbound).await;
+                            if let Some(outbound) = self.response_processing.handle_headers_response(headers_response).await {
+                                self.forward_to_external_processor(outbound).await;
+                            } else {
+                                // TODO!
+                                self.timeout_state.active = false;
+                            }
                         },
                         Ok(Some(ProcessingResponse { response: Some(ProcessingResponseType::ResponseBody(body_response)), ..})) => {
                             debug!(target: "ext_proc", "<- Response body response received");
                             let empty_response = body_response.response.is_none();
-                            let outbound = self.response_processing.handle_body_response(body_response).await;
-                            self.forward_to_external_processor(outbound).await;
+                            if let Some(outbound) = self.response_processing.handle_body_response(body_response).await {
+                                self.forward_to_external_processor(outbound).await;
+                            } else {
+                                // TODO!
+                                self.timeout_state.active = false;
+                            }
                             if empty_response {
                                 break 'transaction_loop;
                             }
                         },
                         Ok(Some(ProcessingResponse { response: Some(ProcessingResponseType::ResponseTrailers(trailers_response)), ..})) => {
                             debug!(target: "ext_proc", "<- Response trailers response received");
-                            let outbound =
-                                self.response_processing.handle_trailers_response(trailers_response).await;
-                            self.forward_to_external_processor(outbound).await;
+                            if let Some(outbound) =
+                                self.response_processing.handle_trailers_response(trailers_response).await {
+                                    self.forward_to_external_processor(outbound).await;
+                                } else {
+                                    // TODO!
+                                    self.timeout_state.active = false;
+                                }
                         },
                         Ok(Some(r)) => {
                             debug!(target: "ext_proc", "<- Noop response received {r:?}");
@@ -772,16 +848,24 @@ impl ExternalProcessingWorker<ProcessingState> {
                             debug!(target: "ext_proc", "Received request body frame ->");
                             if let Some(data) = frame.data_ref() {
                                 if let Some(buffered) = self.request_processing.body_context.buffered_chunk.take() {
-                                    let outbound =
-                                        self.request_processing.handle_body_chunk(buffered, false).await;
-                                    self.forward_to_external_processor(outbound).await;
+                                    if let Some(outbound) =
+                                        self.request_processing.handle_body_chunk(buffered, false).await {
+                                            self.forward_to_external_processor(outbound).await;
+                                        } else {
+                                            // TODO!
+                                            self.timeout_state.active = false;
+                                        }
                                 }
                                 self.request_processing.body_context.buffered_chunk = Some(data.clone());
                             } else if let Some(trailers) = frame.trailers_ref() {
                                 if let Some(buffered) = self.request_processing.body_context.buffered_chunk.take() {
-                                    let outbound =
-                                        self.request_processing.handle_body_chunk(buffered, true).await;
-                                    self.forward_to_external_processor(outbound).await;
+                                    if let Some(outbound) =
+                                        self.request_processing.handle_body_chunk(buffered, true).await {
+                                            self.forward_to_external_processor(outbound).await;
+                                        } else {
+                                            // TODO!
+                                            self.timeout_state.active = false;
+                                        }
                                 }
                                 self.request_processing.body_context.trailers = Some(trailers.clone());
                             }
@@ -792,15 +876,24 @@ impl ExternalProcessingWorker<ProcessingState> {
                         None => {
                             debug!(target: "ext_proc", "Request body stream ended ->");
                             if let Some(buffered) = self.request_processing.body_context.buffered_chunk.take() {
-                                let outbound =
-                                    self.request_processing.handle_body_chunk(buffered, true).await;
-                                self.forward_to_external_processor(outbound).await;
+                                if let Some(outbound) =
+                                    self.request_processing.handle_body_chunk(buffered, true).await {
+                                        self.forward_to_external_processor(outbound).await;
+                                    } else {
+                                        // TODO!
+                                        self.timeout_state.active = false;
+                                    }
                             }
 
                             if let Some(trailers) = self.request_processing.body_context.trailers.take() {
-                                let outbound =
-                                    self.request_processing.process_trailers(Some(trailers), None, None);
-                                self.forward_to_external_processor(outbound).await;
+                                if let Some(outbound) =
+                                    self.request_processing.prepare_trailers(trailers) {
+                                        self.forward_to_external_processor(outbound).await;
+                                    }
+                                     else {
+                                         // TODO!
+                                            self.timeout_state.active = false;
+                                     }
                             }
                         }
                     }
@@ -812,16 +905,24 @@ impl ExternalProcessingWorker<ProcessingState> {
                             debug!(target: "ext_proc", "Received response body frame ->");
                             if let Some(data) = frame.data_ref() {
                                 if let Some(buffered) = self.response_processing.body_context.buffered_chunk.take() {
-                                    let outbound =
-                                        self.response_processing.handle_body_chunk(buffered, false).await;
-                                    self.forward_to_external_processor(outbound).await;
+                                    if let Some(outbound) =
+                                        self.response_processing.handle_body_chunk(buffered, false).await {
+                                            self.forward_to_external_processor(outbound).await;
+                                        } else {
+                                            // TODO!
+                                            self.timeout_state.active = false;
+                                        }
                                 }
                                 self.response_processing.body_context.buffered_chunk = Some(data.clone());
                             } else if let Some(trailers) = frame.trailers_ref() {
                                 if let Some(buffered) = self.response_processing.body_context.buffered_chunk.take() {
-                                    let outbound =
-                                        self.response_processing.handle_body_chunk(buffered, true).await;
-                                    self.forward_to_external_processor(outbound).await;
+                                    if let Some(outbound) =
+                                        self.response_processing.handle_body_chunk(buffered, true).await {
+                                            self.forward_to_external_processor(outbound).await;
+                                        } else {
+                                            // TODO!
+                                            self.timeout_state.active = false;
+                                        }
                                 }
                                 self.response_processing.body_context.trailers = Some(trailers.clone());
                             }
@@ -832,14 +933,23 @@ impl ExternalProcessingWorker<ProcessingState> {
                         None => {
                             debug!(target: "ext_proc", "Response body stream ended ->");
                             if let Some(buffered) = self.response_processing.body_context.buffered_chunk.take() {
-                                let outbound = self.response_processing.handle_body_chunk(buffered, true).await;
-                                self.forward_to_external_processor(outbound).await;
+                                if let Some(outbound) = self.response_processing.handle_body_chunk(buffered, true).await {
+                                    self.forward_to_external_processor(outbound).await;
+                                } else {
+                                    // TODO!
+                                    self.timeout_state.active = false;
+                                }
                             }
 
                             if let Some(trailers) = self.response_processing.body_context.trailers.take() {
-                                let outbound =
-                                    self.response_processing.process_trailers(Some(trailers), None, None);
-                                self.forward_to_external_processor(outbound).await;
+                                if let Some(outbound) =
+                                    self.response_processing.process_trailers(Some(trailers), None, None) {
+
+                                        self.forward_to_external_processor(outbound).await;
+                                    } else {
+                                        // TODO!
+                                        self.timeout_state.active = false;
+                                    }
                             }
                         }
                     }
@@ -881,6 +991,7 @@ impl ExternalProcessingWorker<ObservabilityState> {
 
     #[allow(clippy::too_many_lines)]
     async fn ext_proc_loop(mut self, mut processing_request_channel: mpsc::Receiver<ProcessingTask>) {
+        todo!()
         // // The following label is not strictly necessary, but it makes it clearer what is being exited at the break point.
         // // It also makes it easier to locate subsequent exit points.
         // debug!(target: "ext_proc", "--- BEGIN ---");
@@ -1076,22 +1187,16 @@ impl<S: State + Default> ExternalProcessingWorker<S> {
         }
     }
 
-    async fn forward_to_external_processor(&mut self, mut request_opt: Option<ProcessingRequest>) {
-        if request_opt.is_none() {
-            self.timeout_state.active = false;
-            debug!(target: "ext_proc", "early exit (nothing to send)");
-            return;
-        }
-
-        if let Some(ref mut req) = request_opt {
-            req.protocol_config = self.handshake.take();
-        }
+    async fn forward_to_external_processor(&mut self, mut request: ProcessingRequest) {
+        request.protocol_config = self.handshake.take();
+        let mut request_opt = Some(request);
 
         let stream = match self.get_bidi_stream(&mut request_opt).await {
             Err(err) => {
                 self.response_processing
-                    .exit_on_error("External processor unavailable", self.config.failure_mode_allow);
-                self.request_processing.exit_on_error("External processor unavailable", self.config.failure_mode_allow);
+                    .exit_on_error(format!("External processor: {err:?}").as_str(), self.config.failure_mode_allow);
+                self.request_processing
+                    .exit_on_error(format!("External processor: {err:?}").as_str(), self.config.failure_mode_allow);
                 return;
             },
             Ok(stream) => stream,

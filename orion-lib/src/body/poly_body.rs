@@ -18,14 +18,15 @@
 use super::body_with_timeout::{BodyWithTimeout, TimeoutBodyError};
 use crate::Error;
 use bytes::Bytes;
+use http::HeaderMap;
 use http_body::Frame;
 use http_body_util::combinators::WithTrailers;
-use http_body_util::{Collected, Empty, Full, StreamBody};
+use http_body_util::{BodyExt, Collected, Empty, Full, StreamBody};
 use hyper::body::{Body, Incoming};
 use orion_xds::grpc_deps::{GrpcBody, Status as GrpcError};
 use pin_project::pin_project;
 use std::convert::Infallible;
-use std::future::Ready;
+use std::future::{Future, Ready};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -40,7 +41,33 @@ pub enum PolyBody {
     Grpc(#[pin] GrpcBody),
     Stream(#[pin] StreamBody<ReceiverStream<Result<Frame<Bytes>, Error>>>),
     Collected(#[pin] Collected<Bytes>),
-    WithTrailers(#[pin] WithTrailers<Full<Bytes>, Ready<TrailersType>>),
+    FullWithTrailers(#[pin] WithTrailers<Full<Bytes>, Ready<TrailersType>>),
+    EmptyWithTrailers(#[pin] WithTrailers<Empty<Bytes>, Ready<TrailersType>>),
+    CollectedWithTrailers(#[pin] WithTrailers<Collected<Bytes>, Ready<TrailersType>>),
+}
+
+impl PolyBody {
+    pub fn with_trailers(
+        self,
+        trailers: http::HeaderMap
+    ) -> Result<Self, PolyBodyError>
+    {
+        match self {
+            PolyBody::Empty(e) => {
+                let ready = std::future::ready(Some(trailers).map(Ok::<_, Infallible>));
+                Ok(PolyBody::EmptyWithTrailers(e.with_trailers(ready)))
+            },
+            PolyBody::Full(f) => {
+                let ready = std::future::ready(Some(trailers).map(Ok::<_, Infallible>));
+                Ok(PolyBody::FullWithTrailers(f.with_trailers(ready)))
+            },
+            PolyBody::Collected(c) => {
+                let ready = std::future::ready(Some(trailers).map(Ok::<_, Infallible>));
+                Ok(PolyBody::CollectedWithTrailers(c.with_trailers(ready)))
+            },
+            _ => Err(PolyBodyError::Trailers),
+        }
+    }
 }
 
 impl Default for PolyBody {
@@ -60,7 +87,9 @@ impl std::fmt::Debug for PolyBody {
             PolyBody::Grpc(_) => f.write_str("PolyBody::Grpc"),
             PolyBody::Stream(_) => f.write_str("PolyBody::Stream"),
             PolyBody::Collected(_) => f.write_str("PolyBody::Collected"),
-            PolyBody::WithTrailers(_) => f.write_str("PolyBody::WithTrailers<Full<Bytes>, Ready<TrailersType>>"),
+            PolyBody::FullWithTrailers(_) => f.write_str("PolyBody::WithTrailers<Full<Bytes>, Ready<TrailersType>>"),
+            PolyBody::EmptyWithTrailers(_) => f.write_str("PolyBody::EmptyWithTrailers<Empty<Bytes>, Ready<TrailersType>>"),
+            PolyBody::CollectedWithTrailers(_) => f.write_str("PolyBody::CollectedWithTrailers<Empty<Bytes>, Ready<TrailersType>>"),
         }
     }
 }
@@ -77,6 +106,8 @@ pub enum PolyBodyError {
     Boxed(#[from] Box<dyn std::error::Error + std::marker::Send + std::marker::Sync>),
     #[error("data was not received within the designated timeout")]
     TimedOut,
+    #[error("could not build trailers for this body type")]
+    Trailers,
 }
 
 //hyper::Error is the error type returned by incoming
@@ -109,7 +140,9 @@ impl Body for PolyBody {
             PolyBodyProj::Collected(s) => {
                 s.poll_frame(cx).map_err(|e| PolyBodyError::Boxed(Box::new(std::io::Error::other(e.to_string()))))
             },
-            PolyBodyProj::WithTrailers(w) => w.poll_frame(cx).map_err(Into::into),
+            PolyBodyProj::FullWithTrailers(w) => w.poll_frame(cx).map_err(Into::into),
+            PolyBodyProj::EmptyWithTrailers(w) => w.poll_frame(cx).map_err(Into::into),
+            PolyBodyProj::CollectedWithTrailers(w) => w.poll_frame(cx).map_err(Into::into),
         }
     }
 
@@ -122,7 +155,9 @@ impl Body for PolyBody {
             PolyBody::Grpc(g) => g.is_end_stream(),
             PolyBody::Stream(s) => s.is_end_stream(),
             PolyBody::Collected(s) => s.is_end_stream(),
-            PolyBody::WithTrailers(w) => w.is_end_stream(),
+            PolyBody::FullWithTrailers(w) => w.is_end_stream(),
+            PolyBody::EmptyWithTrailers(w) => w.is_end_stream(),
+            PolyBody::CollectedWithTrailers(w) => w.is_end_stream(),
         }
     }
 }
@@ -179,7 +214,21 @@ impl From<StreamBody<ReceiverStream<Result<Frame<Bytes>, Error>>>> for PolyBody 
 impl From<WithTrailers<Full<Bytes>, Ready<TrailersType>>> for PolyBody {
     #[inline]
     fn from(body: WithTrailers<Full<Bytes>, Ready<TrailersType>>) -> Self {
-        PolyBody::WithTrailers(body)
+        PolyBody::FullWithTrailers(body)
+    }
+}
+
+impl From<WithTrailers<Empty<Bytes>, Ready<TrailersType>>> for PolyBody {
+    #[inline]
+    fn from(body: WithTrailers<Empty<Bytes>, Ready<TrailersType>>) -> Self {
+        PolyBody::EmptyWithTrailers(body)
+    }
+}
+
+impl From<WithTrailers<Collected<Bytes>, Ready<TrailersType>>> for PolyBody {
+    #[inline]
+    fn from(body: WithTrailers<Collected<Bytes>, Ready<TrailersType>>) -> Self {
+        PolyBody::CollectedWithTrailers(body)
     }
 }
 
