@@ -47,11 +47,7 @@ pub enum PolyBody {
 }
 
 impl PolyBody {
-    pub fn with_trailers(
-        self,
-        trailers: http::HeaderMap
-    ) -> Result<Self, PolyBodyError>
-    {
+    pub fn with_trailers(self, trailers: http::HeaderMap) -> Result<Self, PolyBodyError> {
         match self {
             PolyBody::Empty(e) => {
                 let ready = std::future::ready(Some(trailers).map(Ok::<_, Infallible>));
@@ -88,8 +84,12 @@ impl std::fmt::Debug for PolyBody {
             PolyBody::Stream(_) => f.write_str("PolyBody::Stream"),
             PolyBody::Collected(_) => f.write_str("PolyBody::Collected"),
             PolyBody::FullWithTrailers(_) => f.write_str("PolyBody::WithTrailers<Full<Bytes>, Ready<TrailersType>>"),
-            PolyBody::EmptyWithTrailers(_) => f.write_str("PolyBody::EmptyWithTrailers<Empty<Bytes>, Ready<TrailersType>>"),
-            PolyBody::CollectedWithTrailers(_) => f.write_str("PolyBody::CollectedWithTrailers<Empty<Bytes>, Ready<TrailersType>>"),
+            PolyBody::EmptyWithTrailers(_) => {
+                f.write_str("PolyBody::EmptyWithTrailers<Empty<Bytes>, Ready<TrailersType>>")
+            },
+            PolyBody::CollectedWithTrailers(_) => {
+                f.write_str("PolyBody::CollectedWithTrailers<Empty<Bytes>, Ready<TrailersType>>")
+            },
         }
     }
 }

@@ -53,7 +53,6 @@ impl State for ProcessingState {
     }
 }
 
-
 #[derive(Debug)]
 pub enum ExtProcStatus {
     RequestReady(RequestReady),
@@ -64,7 +63,8 @@ pub enum ExtProcStatus {
 
 impl ExtProcStatus {
     pub fn with_request_ready<F>(&mut self, f: F)
-        where F: FnOnce(&mut RequestReady) -> ()
+    where
+        F: FnOnce(&mut RequestReady) -> (),
     {
         if let ExtProcStatus::RequestReady(ref mut ready) = self {
             f(ready);
@@ -72,7 +72,8 @@ impl ExtProcStatus {
     }
 
     pub fn with_response_ready<F>(&mut self, f: F)
-        where F: FnOnce(&mut ResponseReady) -> ()
+    where
+        F: FnOnce(&mut ResponseReady) -> (),
     {
         if let ExtProcStatus::ResponseReady(ref mut ready) = self {
             f(ready);
