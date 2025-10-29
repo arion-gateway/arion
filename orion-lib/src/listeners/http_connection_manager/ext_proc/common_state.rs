@@ -4,6 +4,7 @@ use http::Response;
 use http_body_util::BodyStream;
 use http_body_util::Empty;
 use orion_data_plane_api::envoy_data_plane_api::envoy::service::ext_proc::v3::HttpHeaders;
+use tracing::debug;
 
 use crate::{body::poly_body::BodySender, PolyBody};
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::ext_proc::{
@@ -26,7 +27,7 @@ pub enum ObservabilityState {
     Idle,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Copy, Clone, Default)]
 pub enum ProcessingState {
     WaitingForHeadersInput,
     WaitingForHeadersReply,
@@ -53,20 +54,26 @@ impl State for ProcessingState {
     }
 }
 
+pub enum Action<P> {
+    Send(P, ProcessingState),
+    Return(ProcStatus),
+    Streaming(ProcessingState),
+}
+
 #[derive(Debug)]
-pub enum ExtProcStatus {
+pub enum ProcStatus {
     RequestReady(RequestReady),
     ResponseReady(ResponseReady),
     HaltedOnError,
     EndWithDirectResponse(Response<PolyBody>),
 }
 
-impl ExtProcStatus {
+impl ProcStatus {
     pub fn with_request_ready<F>(&mut self, f: F)
     where
         F: FnOnce(&mut RequestReady) -> (),
     {
-        if let ExtProcStatus::RequestReady(ref mut ready) = self {
+        if let ProcStatus::RequestReady(ready) = self {
             f(ready);
         }
     }
@@ -75,7 +82,7 @@ impl ExtProcStatus {
     where
         F: FnOnce(&mut ResponseReady) -> (),
     {
-        if let ExtProcStatus::ResponseReady(ref mut ready) = self {
+        if let ProcStatus::ResponseReady(ready) = self {
             f(ready);
         }
     }
@@ -131,18 +138,17 @@ impl BodyContext {
         }
     }
 
-    pub async fn make_new_body_channel(&mut self, data: Bytes) -> Result<(), ()> {
+    pub async fn make_new_body_channel(&mut self, data: Bytes) -> Result<(), orion_error::Error> {
         let (new_body, sender) = PolyBody::new_stream_body(16);
         self.body = Some(new_body);
         let sender = BodySender::new(sender);
-        if (sender.send_data(data).await).is_err() {
-            return Err(());
-        }
+        sender.send_data(data).await?;
         self.inbound_body_sender = Some(sender);
         Ok(())
     }
 
     pub fn finish_stream(&mut self) {
+        debug!(target: "ext_proc", "Finishing body stream");
         if let Some(sender) = self.inbound_body_sender.take() {
             drop(sender);
         }

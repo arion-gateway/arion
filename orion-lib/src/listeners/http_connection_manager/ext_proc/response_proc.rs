@@ -1,6 +1,6 @@
 use crate::event_error::EventFailure;
 use crate::listeners::http_connection_manager::ext_proc::common_state::{
-    BodyContext, ExtProcStatus, ObservabilityState, ProcessingState, State,
+    Action, BodyContext, ObservabilityState, ProcStatus, ProcessingState, State
 };
 use crate::listeners::http_connection_manager::ext_proc::mutation::apply_header_mutations;
 use crate::listeners::http_connection_manager::ext_proc::worker_config::ExternalProcessingWorkerConfig;
@@ -26,8 +26,8 @@ use tracing::warn;
 pub struct ResponseProcessing<S: State> {
     pub state: S,
     pub body_context: BodyContext,
-    partial_reply: Option<ExtProcStatus>,
-    reply_channel: Option<oneshot::Sender<ExtProcStatus>>,
+    partial_reply: Option<ProcStatus>,
+    pub reply_channel: Option<oneshot::Sender<ProcStatus>>,
     header_mode: HeaderProcessingMode,
     http_version: Option<http::Version>,
     send_body_without_waiting_for_header_response: bool,
@@ -168,9 +168,9 @@ impl ResponseProcessing<ProcessingState> {
         headers: Option<http::HeaderMap>,
         body: Option<PolyBody>,
         trailers: Option<http::HeaderMap>,
-        reply_channel: oneshot::Sender<ExtProcStatus>,
+        reply_channel: oneshot::Sender<ProcStatus>,
         http_version: http::Version,
-    ) -> Option<ProcessingRequest> {
+    ) -> Action<ProcessingRequest> {
         todo!()
         // self.reply_channel = Some(reply_channel);
         // self.http_version = Some(http_version);
@@ -200,7 +200,7 @@ impl ResponseProcessing<ProcessingState> {
         // }
     }
 
-    pub async fn handle_headers_response(&mut self, response: HeadersResponse) -> Option<ProcessingRequest> {
+    pub async fn handle_headers_response(&mut self, response: HeadersResponse) -> Action<ProcessingRequest> {
         todo!()
         //match &self.state {
         //    ProcessingState::WaitingForHeadersReply | ProcessingState::StreamingBody => {
@@ -262,9 +262,9 @@ impl ResponseProcessing<ProcessingState> {
     pub async fn process_body(
         &mut self,
         body: PolyBody,
-        reply_channel: oneshot::Sender<ExtProcStatus>,
+        reply_channel: oneshot::Sender<ProcStatus>,
         http_version: Option<http::Version>,
-    ) -> Option<ProcessingRequest> {
+    ) -> Action<ProcessingRequest> {
         todo!()
         // self.reply_channel = Some(reply_channel);
         // if let Some(http_version) = http_version {
@@ -331,7 +331,7 @@ impl ResponseProcessing<ProcessingState> {
         // }
     }
 
-    pub async fn handle_body_chunk(&mut self, data: Bytes, end_of_stream: bool) -> Option<ProcessingRequest> {
+    pub async fn handle_body_chunk(&mut self, data: Bytes, end_of_stream: bool) -> Action<ProcessingRequest> {
         todo!()
         // let http_body = HttpBody { body: data.to_vec(), end_of_stream };
         // let processing_request = ProcessingRequest {
@@ -351,7 +351,7 @@ impl ResponseProcessing<ProcessingState> {
     }
 
     #[allow(clippy::too_many_lines)]
-    pub async fn handle_body_response(&mut self, body_response: BodyResponse) -> Option<ProcessingRequest> {
+    pub async fn handle_body_response(&mut self, body_response: BodyResponse) -> Action<ProcessingRequest> {
         todo!()
         //if body_response.response.is_none() {
         //    let status = self.partial_reply.take().unwrap_or(ExtProcStatus::ResponseIsReady {
@@ -486,9 +486,9 @@ impl ResponseProcessing<ProcessingState> {
     pub fn process_trailers(
         &mut self,
         trailers: Option<http::HeaderMap>,
-        reply_channel: Option<oneshot::Sender<ExtProcStatus>>,
+        reply_channel: Option<oneshot::Sender<ProcStatus>>,
         http_version: Option<http::Version>,
-    ) -> Option<ProcessingRequest> {
+    ) -> Action<ProcessingRequest> {
         todo!()
         //if let Some(reply_channel) = reply_channel {
         //    self.reply_channel = Some(reply_channel);
@@ -541,7 +541,7 @@ impl ResponseProcessing<ProcessingState> {
         //}
     }
 
-    pub async fn handle_trailers_response(&mut self, trailers_response: TrailersResponse) -> Option<ProcessingRequest> {
+    pub async fn handle_trailers_response(&mut self, trailers_response: TrailersResponse) -> Action<ProcessingRequest> {
         todo!()
         //if let Some(mut trailers) = self.body_context.trailers.take() {
         //    if !self.state.is_observability_mode() {
@@ -804,7 +804,7 @@ impl<S: State + Default> ResponseProcessing<S> {
         !matches!(self.body_context.body_mode, BodyProcessingMode::None)
     }
 
-    pub fn exit_on_timeout(&mut self, failure_mode_allow: bool) {
+    pub fn status_timeout(&mut self, failure_mode_allow: bool) -> ProcStatus {
         todo!()
         //let status = if failure_mode_allow {
         //    ExtProcStatus::HaltedOnError
@@ -826,7 +826,7 @@ impl<S: State + Default> ResponseProcessing<S> {
         //self.state = S::default();
     }
 
-    pub fn exit_on_error(&mut self, msg: &str, failure_mode_allow: bool) {
+    pub fn status_error(&mut self, msg: &str, failure_mode_allow: bool) -> ProcStatus {
         todo!()
         //let status = if failure_mode_allow {
         //    ExtProcStatus::HaltedOnError
@@ -848,7 +848,7 @@ impl<S: State + Default> ResponseProcessing<S> {
     }
 
     #[inline]
-    pub fn exit_with_status(&mut self, status: ExtProcStatus) {
+    pub fn exit_with_status(&mut self, status: ProcStatus) {
         if let Some(channel) = self.reply_channel.take() {
             let _ = channel.send(status);
         }

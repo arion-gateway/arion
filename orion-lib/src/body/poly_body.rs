@@ -61,7 +61,7 @@ impl PolyBody {
                 let ready = std::future::ready(Some(trailers).map(Ok::<_, Infallible>));
                 Ok(PolyBody::CollectedWithTrailers(c.with_trailers(ready)))
             },
-            _ => Err(PolyBodyError::Trailers),
+            b => Err(PolyBodyError::Trailers(format!("{b:?}"))),
         }
     }
 }
@@ -106,8 +106,8 @@ pub enum PolyBodyError {
     Boxed(#[from] Box<dyn std::error::Error + std::marker::Send + std::marker::Sync>),
     #[error("data was not received within the designated timeout")]
     TimedOut,
-    #[error("could not build trailers for this body type")]
-    Trailers,
+    #[error("could not build trailers for {0} body type")]
+    Trailers(String),
 }
 
 //hyper::Error is the error type returned by incoming
