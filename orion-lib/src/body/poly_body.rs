@@ -76,13 +76,13 @@ impl Default for PolyBody {
 impl std::fmt::Debug for PolyBody {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PolyBody::Empty(_) => f.write_str("PolyBody::Empty<Bytes>"),
-            PolyBody::Full(_) => f.write_str("PolyBody::Full<Bytes>"),
-            PolyBody::Incoming(_) => f.write_str("PolyBody::Incoming"),
-            PolyBody::Timeout(_) => f.write_str("PolyBody::Timeout<Incoming>"),
-            PolyBody::Grpc(_) => f.write_str("PolyBody::Grpc"),
-            PolyBody::Stream(_) => f.write_str("PolyBody::Stream"),
-            PolyBody::Collected(_) => f.write_str("PolyBody::Collected"),
+            PolyBody::Empty(b) => f.write_fmt(format_args!("PolyBody::Empty<Bytes>: {b:?}")),
+            PolyBody::Full(b) => f.write_fmt(format_args!("PolyBody::Full<Bytes>: {b:?}")),
+            PolyBody::Incoming(b) => f.write_fmt(format_args!("PolyBody::Incoming: {b:?}")),
+            PolyBody::Timeout(b) => f.write_fmt(format_args!("PolyBody::Timeout<Incoming>: {b:?}")),
+            PolyBody::Grpc(b) => f.write_fmt(format_args!("PolyBody::Grpc: {b:?}")),
+            PolyBody::Stream(b) => f.write_fmt(format_args!("PolyBody::Stream: {b:?}")),
+            PolyBody::Collected(b) => f.write_fmt(format_args!("PolyBody::Collected: {b:?}")),
             PolyBody::FullWithTrailers(_) => f.write_str("PolyBody::WithTrailers<Full<Bytes>, Ready<TrailersType>>"),
             PolyBody::EmptyWithTrailers(_) => {
                 f.write_str("PolyBody::EmptyWithTrailers<Empty<Bytes>, Ready<TrailersType>>")
