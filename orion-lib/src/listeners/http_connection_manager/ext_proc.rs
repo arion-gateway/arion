@@ -167,6 +167,59 @@ impl From<(ExternalProcessorConfig, Option<ExtProcPerRoute>)> for ExternalProces
     }
 }
 
+macro_rules! run_action {
+    // $self: The 'self' instance.
+    // $processor: The specific processing struct (e.g., self.request_processing or self.response_processing).
+    // $action: The Action to process.
+    // $ctx: A string literal context for logging.
+    ($self:ident, $processor:expr, $action:expr, $ctx:expr) => {
+        match $action {
+            Action::Send(outbound, next_state, start_streaming) => {
+                debug!(target: "ext_proc", "run_action::{ctx} @{typ}: forward {outbound:?} -> next_state:{next_state:?}",
+                    ctx = $ctx,
+                    typ = stringify!($processor),
+                    outbound = outbound,
+                    next_state = next_state);
+
+                $self.forward_to_external_processor(outbound).await;
+                $processor.state = next_state;
+
+                if start_streaming {
+                    debug!(target: "ext_proc", "run_action::{ctx} @{typ}: start body streaming...",
+                        ctx = $ctx,
+                        typ = stringify!($processor),
+                    );
+                    $processor.body_context.start_streaming();
+                }
+            },
+            Action::Return(status) => {
+                debug!(target: "ext_proc", "run_action::{ctx} @{typ}: status -> {status:?}",
+                    ctx = $ctx,
+                    typ = stringify!($processor),
+                    status = status);
+
+                $self.timeout_state.active = false;
+
+                if let Some(reply_channel) = $processor.reply_channel.take() {
+                    let _ = reply_channel.send(status);
+                } else {
+                    warn!(target: "ext_proc", "run_action::{ctx} @{typ}: no reply channel available to return status",
+                        ctx = $ctx,
+                        typ = stringify!($processor),
+                    );
+                }
+            },
+            Action::Streaming(next_state) => {
+                $processor.state = next_state;
+                $processor.body_context.start_streaming();
+                debug!(target: "ext_proc", "run_action::{ctx}: start body streaming -> next_state:{next_state:?}",
+                    ctx = $ctx,
+                    next_state = next_state);
+            }
+        }
+    };
+}
+
 impl ExternalProcessor {
     fn mutate_upstream_request(
         &mut self,
@@ -197,10 +250,18 @@ impl ExternalProcessor {
             }
         }
 
+        // the assumption here is that trailers_modifcation are either send separately (for buffered body)
+        // or included in body_replacement (for streaming body)
         match (body_replacement, trailers_mutation) {
-            (Some(body_replacement), None) => {
+            (Some(body_replacement), None) if matches!(body_replacement, PolyBody::Stream(_)) => {
+                // streaming body replacement already include trailers, if any. We don't have to attach trailers separately in this case.
+                debug!(target: "ext_proc", "Replacing body of request with {body_replacement:?}");
+                request.body_mut().inner = body_replacement;
+                request.headers_mut().remove(CONTENT_LENGTH);
+            },
+            (Some(body_replacement), None) => { // BUFFERED body
                 // mutate request body...
-                debug!(target: "ext_proc", "request replacing body with {body_replacement:?}");
+                debug!(target: "ext_proc", "Replacing body of request with {body_replacement:?}");
                 request.body_mut().inner =  match orig_trailers.take() {
                     Some(trailers) =>
                         body_replacement.with_trailers(trailers).map_err(|err| {
@@ -214,7 +275,7 @@ impl ExternalProcessor {
                 };
                 request.headers_mut().remove(CONTENT_LENGTH);
             },
-            (None, Some(ref trailers_modifications)) => {
+            (None, Some(ref trailers_modifications)) => { // BUFFERED body
                 let mut trailers = orig_trailers.take().unwrap_or_default();
                 if let Err(e) = apply_header_mutations(
                     &mut trailers,
@@ -237,7 +298,7 @@ impl ExternalProcessor {
                     )
                 })?;
             },
-            (Some(body_replacement), Some(ref trailers_modifications)) => {
+            (Some(body_replacement), Some(ref trailers_modifications)) => { // BUFFERED body
                 let mut trailers = orig_trailers.take().unwrap_or_default();
                 if let Err(e) = apply_header_mutations(
                     &mut trailers,
@@ -280,7 +341,7 @@ impl ExternalProcessor {
         let mut orig_trailers = None;
 
         if self.sending_request_headers {
-            debug!(target: "ext_proc", "request processing HEADERS(true)...");
+            debug!(target: "ext_proc", "request processing HEADERS");
             ext_proc_headers = Some(self.filter_header_map(request.headers()));
         }
 
@@ -288,7 +349,7 @@ impl ExternalProcessor {
             let body: PolyBody = std::mem::take(&mut request.body_mut().inner);
             match (self.sending_request_body, self.sending_request_trailers) {
                 (true, send_trailers) => {
-                    debug!(target: "ext_proc", "request processing BODY(true) and TRAILERS({send_trailers})...");
+                    debug!(target: "ext_proc", "request processing BODY with TRAILERS:{send_trailers}");
 
                     let Ok(collected) = body.collect().await else {
                         return self.on_filter_error(
@@ -305,7 +366,7 @@ impl ExternalProcessor {
                     request.body_mut().inner = PolyBody::from(body);
                 },
                 (false, true) => {
-                    debug!(target: "ext_proc", "request processing TRAILERS(true) only...");
+                    debug!(target: "ext_proc", "request processing TRAILERS only");
                     let Ok(collected) = body.collect().await else {
                         return self.on_filter_error(
                             "Failed to collect request body for external processing",
@@ -323,7 +384,7 @@ impl ExternalProcessor {
                 },
             }
         } else {
-            debug!(target: "ext_proc", "request processing no BODY and no TRAILERS");
+            debug!(target: "ext_proc", "request processing, no BODY, no TRAILERS");
         }
 
         debug!(target: "ext_proc", "request: headers: {ext_proc_headers:?} - body: {ext_proc_body:?} - trailers: {ext_proc_trailers:?}");
@@ -382,6 +443,7 @@ impl ExternalProcessor {
                 body_replacement,
                 trailers_modifications,
             })) => {
+                // TODO!
                 todo!()
             }
             Err(e) => self.on_filter_error(
@@ -658,6 +720,7 @@ struct ExternalProcessingWorker<S: State> {
     timeout_state: TimeoutState,
 }
 
+
 impl ExternalProcessingWorker<ProcessingState> {
     fn new(config: Arc<ExternalProcessingWorkerConfig>) -> Self {
         let request_processing = RequestProcessing::<ProcessingState>::from(&*config);
@@ -683,10 +746,10 @@ impl ExternalProcessingWorker<ProcessingState> {
         // The following label is not strictly necessary, but it makes it clearer what is being exited at the break point.
         // It also makes it easier to locate subsequent exit points.
         debug!(target: "ext_proc", "--- BEGIN ---");
-        let processing_response_pending = self.config.processing_mode.response_header_mode
-            != HeaderProcessingMode::Skip
-            || self.config.processing_mode.response_body_mode != BodyProcessingMode::None
-            || self.config.processing_mode.response_trailer_mode != TrailerProcessingMode::Skip;
+        // let processing_response_pending = self.config.processing_mode.response_header_mode
+        //     != HeaderProcessingMode::Skip
+        //     || self.config.processing_mode.response_body_mode != BodyProcessingMode::None
+        //     || self.config.processing_mode.response_trailer_mode != TrailerProcessingMode::Skip;
 
         'transaction_loop: loop {
             tokio::select! {
@@ -694,17 +757,17 @@ impl ExternalProcessingWorker<ProcessingState> {
                     debug!(target: "ext_proc", "loop: OUTBOUND PROCESING TASK...");
                     match outbond_processing_task {
                         Some(ProcessingTask{ data: ProcessingData::Request(headers, body, trailers), reply_channel, http_version}) => {
-                            debug!(target: "ext_proc", "Processing new request ->");
-                            let action = self.request_processing.process_request(headers, body, trailers, reply_channel, http_version, processing_response_pending).await;
-                            self.run_request_action(action, "process_request").await;
+                            debug!(target: "ext_proc", "Processing new request");
+                            let action = self.request_processing.process_request(headers, body, trailers, reply_channel, http_version).await;
+                            run_action!(self, self.request_processing, action, "process_request");
                         }
                         Some(ProcessingTask{ data: ProcessingData::Response(headers, body, trailers), reply_channel, http_version}) => {
-                            debug!(target: "ext_proc", "Processing new response ->");
-                            let action = self .response_processing .process_response(headers, body, trailers, reply_channel, http_version);
-                            self.run_request_action(action, "process_response").await;
+                            debug!(target: "ext_proc", "Processing new response");
+                            let action = self .response_processing.process_response(headers, body, trailers, reply_channel, http_version);
+                            run_action!(self, self.response_processing, action, "process_response");
                         }
                         _ => {
-                            debug!(target: "ext_proc", "Channel received closed!");
+                            debug!(target: "ext_proc", "Worker channel closed!");
                             break 'transaction_loop
                         },
                     }
@@ -718,13 +781,13 @@ impl ExternalProcessingWorker<ProcessingState> {
                     debug!(target: "ext_proc", "loop: INBOUND PROCESSING RESPONSE...");
                     match indbound_processing_response {
                         Ok(Some(ProcessingResponse { override_message_timeout: Some(extended_timeout), ..})) => {
-                            debug!(target: "ext_proc", "<- Requested timeout extension received: {extended_timeout:?}");
+                            debug!(target: "ext_proc", "Requested timeout extension received: {extended_timeout:?}");
                             if !self.handle_timeout_extension(extended_timeout) {
                                 break 'transaction_loop;
                             }
                         },
                         Ok(Some(ProcessingResponse { response: Some(ProcessingResponseType::ImmediateResponse(response_attempt)), ..})) => {
-                            debug!(target: "ext_proc", "<- Immediate response received");
+                            debug!(target: "ext_proc", "Immediate response received");
                             if self.config.disable_immediate_response {
                                 let msg = "External processor attempted to send immediate response - which is disabled by config";
                                 warn!("{msg}");
@@ -753,7 +816,7 @@ impl ExternalProcessingWorker<ProcessingState> {
                             break 'transaction_loop;
                         },
                         Ok(Some(ProcessingResponse { mode_override, response: Some(ProcessingResponseType::RequestHeaders(headers_response)), ..})) => {
-                            debug!(target: "ext_proc", "<- Request header response received");
+                            debug!(target: "ext_proc", "Request header response received");
                             if self.config.allow_mode_override {
                                 if let Some(overrides) = mode_override {
                                     self.request_processing.apply_mode_overrides(&overrides, &self.config.allowed_override_modes);
@@ -770,41 +833,41 @@ impl ExternalProcessingWorker<ProcessingState> {
                                 wants_response_body
                             ).await;
 
-                            self.run_request_action(action, "handle_headers_response").await;
+                            run_action!(self, self.request_processing, action, "handle_headers_response");
                         },
                         Ok(Some(ProcessingResponse { response: Some(ProcessingResponseType::RequestBody(body_response)), ..})) => {
-                            debug!(target: "ext_proc", "<- Request body response received");
+                            debug!(target: "ext_proc", "Request body response received");
                             let empty_response = body_response.response.is_none();
                             let action = self
                                 .request_processing
                                 .handle_body_response(body_response, &self.config.route_cache_action).await;
 
-                            self.run_request_action(action, "body_response").await;
+                            run_action!(self, self.request_processing, action, "body_response");
 
                             if empty_response {
                                 break 'transaction_loop;
                             }
                         },
                         Ok(Some(ProcessingResponse { response: Some(ProcessingResponseType::RequestTrailers(trailers_response)), ..})) => {
-                            debug!(target: "ext_proc", "<- Request trailers response received");
+                            debug!(target: "ext_proc", "Request trailers response received");
                             let action = self.request_processing.handle_trailers_response(trailers_response).await;
-                            self.run_request_action(action, "handle_trailers_response").await;
+                            run_action!(self, self.request_processing, action, "handle_trailers_response");
                         },
                         Ok(Some(ProcessingResponse { mode_override, response: Some(ProcessingResponseType::ResponseHeaders(headers_response)), ..})) => {
-                            debug!(target: "ext_proc", "<- Response headers response received");
+                            debug!(target: "ext_proc", "Response headers response received");
                             if self.config.allow_mode_override {
                                 if let Some(overrides) = mode_override {
                                     self.response_processing.apply_mode_overrides(&overrides, &self.config.allowed_override_modes);
                                 }
                             }
                             let action = self.response_processing.handle_headers_response(headers_response).await;
-                            self.run_request_action(action, "handle_headers_response").await;
+                            run_action!(self, self.response_processing, action, "handle_headers_response");
                         },
                         Ok(Some(ProcessingResponse { response: Some(ProcessingResponseType::ResponseBody(body_response)), ..})) => {
-                            debug!(target: "ext_proc", "<- Response body response received");
+                            debug!(target: "ext_proc", "Response body response received");
                             let empty_response = body_response.response.is_none();
                             let action = self.response_processing.handle_body_response(body_response).await;
-                            self.run_request_action(action, "handle_body_response").await;
+                            run_action!(self, self.response_processing, action, "handle_body_response");
 
                             // TODO: is this required?
                             if empty_response {
@@ -812,12 +875,12 @@ impl ExternalProcessingWorker<ProcessingState> {
                             }
                         },
                         Ok(Some(ProcessingResponse { response: Some(ProcessingResponseType::ResponseTrailers(trailers_response)), ..})) => {
-                            debug!(target: "ext_proc", "<- Response trailers response received");
+                            debug!(target: "ext_proc", "Response trailers response received");
                             let action = self.response_processing.handle_trailers_response(trailers_response).await;
-                            self.run_request_action(action, "handle_trailers_response").await;
+                            run_action!(self, self.response_processing, action, "handle_trailers_response");
                         },
                         Ok(Some(r)) => {
-                            debug!(target: "ext_proc", "<- Noop response received {r:?}");
+                            debug!(target: "ext_proc", "Noop response received {r:?}");
                             self.response_processing.handle_noop_response();
                             let wants_response_headers = self.response_processing.is_header_processing_planned();
                             let wants_response_body = self.response_processing.is_body_processing_planned();
@@ -844,7 +907,7 @@ impl ExternalProcessingWorker<ProcessingState> {
                             break 'transaction_loop;
                         },
                         _ => {
-                            debug!(target: "ext_proc", "<- Stream cloced by the external processor");
+                            debug!(target: "ext_proc", "Stream closed by the external processor");
                             break 'transaction_loop;
                         }
                     }
@@ -854,17 +917,18 @@ impl ExternalProcessingWorker<ProcessingState> {
                     debug!(target: "ext_proc", "loop: REQUEST BODY FRAME...");
                     match request_body_frame {
                         Some(Ok(frame)) => {
-                            debug!(target: "ext_proc", "Received request body frame ->");
                             if let Some(data) = frame.data_ref() {
+                                debug!(target: "ext_proc", "Sending body chunk of request");
                                 if let Some(buffered) = self.request_processing.body_context.buffered_chunk.take() {
                                     let action = self.request_processing.handle_body_chunk(buffered, false).await;
-                                    self.run_request_action(action, "handle_body_chunk").await;
+                                    run_action!(self, self.request_processing, action, "handle_body_chunk");
                                 }
                                 self.request_processing.body_context.buffered_chunk = Some(data.clone());
                             } else if let Some(trailers) = frame.trailers_ref() {
+                                debug!(target: "ext_proc", "Sending trailers chunk of request");
                                 if let Some(buffered) = self.request_processing.body_context.buffered_chunk.take() {
                                     let action = self.request_processing.handle_body_chunk(buffered, true).await;
-                                    self.run_request_action(action, "handle_trailers_chunk").await;
+                                    run_action!(self, self.request_processing, action, "handle_trailers_chunk");
                                 }
                                 self.request_processing.body_context.trailers = Some(trailers.clone());
                             }
@@ -873,15 +937,16 @@ impl ExternalProcessingWorker<ProcessingState> {
                             self.request_processing.status_error("Error occured when streaming request body for external processing", self.config.failure_mode_allow);
                         },
                         None => {
-                            debug!(target: "ext_proc", "Request body stream ended ->");
                             if let Some(buffered) = self.request_processing.body_context.buffered_chunk.take() {
+                                debug!(target: "ext_proc", "Sending last body chunk of request!");
                                 let action = self.request_processing.handle_body_chunk(buffered, true).await;
-                                self.run_request_action(action, "handle_body_chunk").await;
+                                run_action!(self, self.request_processing, action, "handle_body_chunk (end)");
                             }
 
                             if let Some(trailers) = self.request_processing.body_context.trailers.as_ref() {
+                                debug!(target: "ext_proc", "Sending last trailers chunk of request!");
                                 let action = self.request_processing.prepare_trailers(trailers);
-                                self.run_request_action(action, "prepare_trailers").await;
+                                run_action!(self, self.request_processing, action, "prepare_trailers (end)");
                             }
 
                             self.request_processing.state = ProcessingState::StreamingBodyWaitingForReply;
@@ -893,17 +958,18 @@ impl ExternalProcessingWorker<ProcessingState> {
                     debug!(target: "ext_proc", "loop: RESPONSE BODY FRAME...");
                     match response_body_frame {
                         Some(Ok(frame)) => {
-                            debug!(target: "ext_proc", "Received response body frame ->");
                             if let Some(data) = frame.data_ref() {
+                                debug!(target: "ext_proc", "Sending body chunk of response");
                                 if let Some(buffered) = self.response_processing.body_context.buffered_chunk.take() {
                                     let action = self.response_processing.handle_body_chunk(buffered, false).await;
-                                    self.run_request_action(action, "handle_body_chunk").await;
+                                    run_action!(self, self.response_processing, action, "handle_body_chunk");
                                 }
                                 self.response_processing.body_context.buffered_chunk = Some(data.clone());
                             } else if let Some(trailers) = frame.trailers_ref() {
+                                debug!(target: "ext_proc", "Sending trailers chunk of response");
                                 if let Some(buffered) = self.response_processing.body_context.buffered_chunk.take() {
                                     let action = self.response_processing.handle_body_chunk(buffered, true).await;
-                                    self.run_request_action(action, "handle_trailers_chunk").await;
+                                    run_action!(self, self.response_processing, action, "handle_trailers_chunk");
                                 }
                                 self.response_processing.body_context.trailers = Some(trailers.clone());
                             }
@@ -918,16 +984,16 @@ impl ExternalProcessingWorker<ProcessingState> {
                             }
                         },
                         None => {
-                            debug!(target: "ext_proc", "Response body stream ended!");
-
                             if let Some(buffered) = self.response_processing.body_context.buffered_chunk.take() {
+                                debug!(target: "ext_proc", "Sending last body chunk of response!");
                                 let action = self.response_processing.handle_body_chunk(buffered, true).await;
-                                self.run_request_action(action, "handle_body_chunk").await;
+                                run_action!(self, self.response_processing, action, "handle_body_chunk (end)");
                             }
 
                             if let Some(trailers) = self.response_processing.body_context.trailers.take() {
+                                debug!(target: "ext_proc", "Sending trailers chunk of response!");
                                 let action = self.response_processing.process_trailers(Some(trailers), None, None);
-                                self.run_request_action(action, "process_trailers").await;
+                                run_action!(self, self.response_processing, action, "process_trailers (end)");
                             }
                         }
                     }
@@ -955,30 +1021,8 @@ impl ExternalProcessingWorker<ProcessingState> {
 
         debug!(target: "ext_proc", "--- END ---");
     }
-
-    async fn run_request_action(&mut self, action: Action<ProcessingRequest>, ctx: &str) {
-        match action {
-            Action::Send(outbound, next_state) => {
-                debug!(target: "ext_proc", "run_request_action::{ctx}: sending processing request ({outbound:?}) to external processor -> next_state:{next_state:?}");
-                self.forward_to_external_processor(outbound).await;
-                self.request_processing.state = next_state;
-            },
-            Action::Return(status) => {
-                debug!(target: "ext_proc", "run_request_action::{ctx}: returning status -> {status:?}");
-                self.timeout_state.active = false;
-                if let Some(reply_channel) = self.request_processing.reply_channel.take() {
-                    let _ = reply_channel.send(status);
-                } else {
-                    warn!(target: "ext_proc", "run_request_action::{ctx}: no reply channel available to return status (request)");
-                }
-            },
-            Action::Streaming(next_state) => {
-                self.request_processing.state = next_state;
-                debug!(target: "ext_proc", "run_request_action::{ctx}: body streaming (request) -> next_state:{next_state:?}");
-            }
-        }
-    }
 }
+
 
 impl ExternalProcessingWorker<ObservabilityState> {
     fn new(config: Arc<ExternalProcessingWorkerConfig>) -> Self {

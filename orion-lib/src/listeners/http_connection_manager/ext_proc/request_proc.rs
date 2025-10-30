@@ -141,14 +141,13 @@ impl RequestProcessing<ProcessingState> {
         trailers: Option<http::HeaderMap>,
         reply_channel: oneshot::Sender<ProcStatus>,
         http_version: http::Version,
-        processing_response_pending: bool,
     ) -> Action<ProcessingRequest> {
         self.reply_channel = Some(reply_channel);
         self.http_version = Some(http_version);
         if let Some(headers) = headers {
             self.body_context.body = body;
             self.body_context.trailers = trailers;
-            self.prepare_headers(headers, processing_response_pending)
+            self.prepare_headers(headers)
         } else if let Some(body) = body {
             self.body_context.trailers = trailers;
             self.prepare_body(body).await
@@ -164,12 +163,9 @@ impl RequestProcessing<ProcessingState> {
     fn prepare_headers(
         &mut self,
         headers: http::HeaderMap,
-        processing_response_pending: bool,
     ) -> Action<ProcessingRequest> {
         debug!(target: "ext_proc", "process_request headers {headers:?}");
-        let end_of_stream = !processing_response_pending
-            && !self.is_body_processing_planned()
-            && !self.is_trailers_processing_planned();
+        let end_of_stream = !self.is_body_processing_planned() && !self.is_trailers_processing_planned();
 
         let envmap: EnvoyHeaderMap = (&headers).into();
         let processing_request = ProcessingRequest {
@@ -184,23 +180,22 @@ impl RequestProcessing<ProcessingState> {
             protocol_config: None,
         };
 
-        let next_state = if self.send_body_without_waiting_for_header_response
+        let (next_state, start_streaming) = if self.send_body_without_waiting_for_header_response
             && matches!(self.body_context.body_mode, BodyProcessingMode::Streamed)
             && self.body_context.body.is_some()
         {
-            self.body_context.start_streaming();
-            ProcessingState::StreamingBody
+            (ProcessingState::StreamingBody, true)
         } else {
-            ProcessingState::WaitingForHeadersReply
+            (ProcessingState::WaitingForHeadersReply, false)
         };
 
-        Action::Send(processing_request, next_state)
+        Action::Send(processing_request, next_state, start_streaming)
     }
 
     pub async fn prepare_body(&mut self, body: PolyBody) -> Action<ProcessingRequest> {
-        debug!(target: "ext_proc", "prepare_body: current body mode {:?}", self.body_context.body_mode);
         match self.body_context.body_mode {
             BodyProcessingMode::Buffered | BodyProcessingMode::BufferedPartial => {
+                debug!(target: "ext_proc", "prepare_body: Buffered/BufferedPartial body configured!");
                 let body_bytes: Bytes = match body {
                     PolyBody::Full(body) => body.collect().await.unwrap().to_bytes(),
                     PolyBody::Collected(collected) => collected.to_bytes(),
@@ -221,12 +216,11 @@ impl RequestProcessing<ProcessingState> {
                     observability_mode: false,
                     protocol_config: None,
                 };
-                Action::Send(processing_request, ProcessingState::WaitingForBodyReply)
+                Action::Send(processing_request, ProcessingState::WaitingForBodyReply, false)
             },
             BodyProcessingMode::Streamed | BodyProcessingMode::FullDuplexStreamed => {
                 debug!(target: "ext_proc", "prepare_body: Streamed body configured!");
                 self.body_context.body = Some(body);
-                self.body_context.start_streaming();
                 Action::Streaming(ProcessingState::StreamingBody)
             },
             mode => {
@@ -248,7 +242,7 @@ impl RequestProcessing<ProcessingState> {
             protocol_config: None,
         };
 
-        Action::Send(processing_request, ProcessingState::ProcessingTrailers)
+        Action::Send(processing_request, ProcessingState::ProcessingTrailers, false)
 
         //if let Some(trailers) = trailers {
         //    let mut header_values = Vec::new();
@@ -537,7 +531,7 @@ impl RequestProcessing<ProcessingState> {
                     }
 
                     if end_of_stream {
-                        debug!(target: "ext_proc", "handle_body_response: end_of_stream reached, sending status {status:?}");
+                        debug!(target: "ext_proc", "handle_body_response: end_of_stream reached!");
                         return Action::Return(status);
                     } else {
                         self.partial_status = Some(status);
@@ -575,9 +569,9 @@ impl RequestProcessing<ProcessingState> {
         };
 
         if matches!(self.state, ProcessingState::StreamingBody) {
-            Action::Send(processing_request, ProcessingState::StreamingBodyWaitingForReply)
+            Action::Send(processing_request, ProcessingState::StreamingBodyWaitingForReply, false)
         } else {
-            Action::Send(processing_request, self.state)
+            Action::Send(processing_request, self.state, false)
         }
     }
 

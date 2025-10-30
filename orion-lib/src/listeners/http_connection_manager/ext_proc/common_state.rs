@@ -54,8 +54,10 @@ impl State for ProcessingState {
     }
 }
 
+type StartStreaming = bool;
+
 pub enum Action<P> {
-    Send(P, ProcessingState),
+    Send(P, ProcessingState, StartStreaming),
     Return(ProcStatus),
     Streaming(ProcessingState),
 }
@@ -148,7 +150,7 @@ impl BodyContext {
     }
 
     pub fn finish_stream(&mut self) {
-        debug!(target: "ext_proc", "Finishing body stream");
+        debug!(target: "ext_proc", "Terminating body stream (dropping sender channel)");
         if let Some(sender) = self.inbound_body_sender.take() {
             drop(sender);
         }
