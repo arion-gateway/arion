@@ -175,7 +175,7 @@ macro_rules! run_action {
     ($self:ident, $processor:expr, $action:expr, $ctx:expr) => {
         match $action {
             Action::Send(outbound, next_state, start_streaming) => {
-                debug!(target: "ext_proc", "run_action::{ctx} @{typ}: forward {outbound:?} -> next_state:{next_state:?}",
+                debug!(target: "ext_proc", "{ctx} @{typ}: forward {outbound:?} -> next_state:{next_state:?}",
                     ctx = $ctx,
                     typ = stringify!($processor),
                     outbound = outbound,
@@ -185,7 +185,7 @@ macro_rules! run_action {
                 $processor.state = next_state;
 
                 if start_streaming {
-                    debug!(target: "ext_proc", "run_action::{ctx} @{typ}: start body streaming...",
+                    debug!(target: "ext_proc", "{ctx} @{typ}: start body streaming",
                         ctx = $ctx,
                         typ = stringify!($processor),
                     );
@@ -193,7 +193,7 @@ macro_rules! run_action {
                 }
             },
             Action::Return(status) => {
-                debug!(target: "ext_proc", "run_action::{ctx} @{typ}: status -> {status:?}",
+                debug!(target: "ext_proc", "{ctx} @{typ}: status -> {status:?}",
                     ctx = $ctx,
                     typ = stringify!($processor),
                     status = status);
@@ -203,7 +203,7 @@ macro_rules! run_action {
                 if let Some(reply_channel) = $processor.reply_channel.take() {
                     let _ = reply_channel.send(status);
                 } else {
-                    warn!(target: "ext_proc", "run_action::{ctx} @{typ}: no reply channel available to return status",
+                    warn!(target: "ext_proc", "{ctx} @{typ}: no reply channel available to return status",
                         ctx = $ctx,
                         typ = stringify!($processor),
                     );
@@ -212,8 +212,9 @@ macro_rules! run_action {
             Action::Streaming(next_state) => {
                 $processor.state = next_state;
                 $processor.body_context.start_streaming();
-                debug!(target: "ext_proc", "run_action::{ctx}: start body streaming -> next_state:{next_state:?}",
+                debug!(target: "ext_proc", "{ctx} @{typ}: start body streaming -> next_state:{next_state:?}",
                     ctx = $ctx,
+                    typ = stringify!($processor),
                     next_state = next_state);
             }
         }
@@ -229,11 +230,10 @@ impl ExternalProcessor {
         body_replacement: Option<PolyBody>,
         trailers_mutation: Option<HeaderMutation>,
     ) -> Result<(), FilterDecision> {
-
-        debug!(target: "ext_proc", "mutate_upstream_request: headers_mutations -> {headers_mutation:?}");
-        debug!(target: "ext_proc", "mutate_upstream_request: body_replacement  -> {body_replacement:?}");
-        debug!(target: "ext_proc", "mutate_upstream_request: trailers_mutation -> {trailers_mutation:?}");
-        debug!(target: "ext_proc", "mutate_upstream_request: orig_trailers     -> {orig_trailers:?}");
+        debug!(target: "ext_proc", "mutate_upstream_request: headers_mutations -> {headers_mutation:#?}");
+        debug!(target: "ext_proc", "mutate_upstream_request: body_replacement  -> {body_replacement:#?}");
+        debug!(target: "ext_proc", "mutate_upstream_request: trailers_mutation -> {trailers_mutation:#?}");
+        debug!(target: "ext_proc", "mutate_upstream_request: orig_trailers     -> {orig_trailers:#?}");
 
         // mutate request headers...
         if let Some(headers_modifications) = headers_mutation {
@@ -254,28 +254,29 @@ impl ExternalProcessor {
         // or included in body_replacement (for streaming body)
         match (body_replacement, trailers_mutation) {
             (Some(body_replacement), None) if matches!(body_replacement, PolyBody::Stream(_)) => {
-                // streaming body replacement already include trailers, if any. We don't have to attach trailers separately in this case.
+                // STRAMED body replacement already include trailers, if any. We don't have to attach trailers separately in this case.
                 debug!(target: "ext_proc", "Replacing body of request with {body_replacement:?}");
                 request.body_mut().inner = body_replacement;
                 request.headers_mut().remove(CONTENT_LENGTH);
             },
-            (Some(body_replacement), None) => { // BUFFERED body
+            (Some(body_replacement), None) => {
+                // BUFFERED body
                 // mutate request body...
                 debug!(target: "ext_proc", "Replacing body of request with {body_replacement:?}");
-                request.body_mut().inner =  match orig_trailers.take() {
-                    Some(trailers) =>
-                        body_replacement.with_trailers(trailers).map_err(|err| {
-                            self.on_filter_error(
-                                "Failed to attach trailers to request body",
-                                Some(err.into()),
-                                request.version(),
-                            )
-                        })?,
+                request.body_mut().inner = match orig_trailers.take() {
+                    Some(trailers) => body_replacement.with_trailers(trailers).map_err(|err| {
+                        self.on_filter_error(
+                            "Failed to attach trailers to request body",
+                            Some(err.into()),
+                            request.version(),
+                        )
+                    })?,
                     None => body_replacement,
                 };
                 request.headers_mut().remove(CONTENT_LENGTH);
             },
-            (None, Some(ref trailers_modifications)) => { // BUFFERED body
+            (None, Some(ref trailers_modifications)) => {
+                // BUFFERED body
                 let mut trailers = orig_trailers.take().unwrap_or_default();
                 if let Err(e) = apply_header_mutations(
                     &mut trailers,
@@ -291,14 +292,15 @@ impl ExternalProcessor {
 
                 let body = std::mem::take(&mut request.body_mut().inner);
                 request.body_mut().inner = body.with_trailers(trailers).map_err(|err| {
-                   self.on_filter_error(
+                    self.on_filter_error(
                         "Failed to attach trailers to request body",
                         Some(err.into()),
                         request.version(),
                     )
                 })?;
             },
-            (Some(body_replacement), Some(ref trailers_modifications)) => { // BUFFERED body
+            (Some(body_replacement), Some(ref trailers_modifications)) => {
+                // BUFFERED body
                 let mut trailers = orig_trailers.take().unwrap_or_default();
                 if let Err(e) = apply_header_mutations(
                     &mut trailers,
@@ -375,7 +377,6 @@ impl ExternalProcessor {
                         );
                     };
 
-                    ext_proc_body = Some(PolyBody::from(Empty::new()));
                     ext_proc_trailers = collected.trailers().cloned();
                     request.body_mut().inner = PolyBody::from(collected);
                 },
@@ -387,7 +388,9 @@ impl ExternalProcessor {
             debug!(target: "ext_proc", "request processing, no BODY, no TRAILERS");
         }
 
-        debug!(target: "ext_proc", "request: headers: {ext_proc_headers:?} - body: {ext_proc_body:?} - trailers: {ext_proc_trailers:?}");
+        debug!(target: "ext_proc", "request headers: {ext_proc_headers:?}");
+        debug!(target: "ext_proc", "request body: {ext_proc_body:?}");
+        debug!(target: "ext_proc", "request trailers: {ext_proc_trailers:?}");
 
         if ext_proc_headers.is_none() && ext_proc_body.is_none() && ext_proc_trailers.is_none() {
             return FilterDecision::Continue;
@@ -406,9 +409,7 @@ impl ExternalProcessor {
                 self.sending_response_body = false;
                 FilterDecision::Continue
             },
-            Ok(ProcStatus::EndWithDirectResponse(direct_response)) => {
-                FilterDecision::DirectResponse(direct_response)
-            },
+            Ok(ProcStatus::EndWithDirectResponse(direct_response)) => FilterDecision::DirectResponse(direct_response),
             Ok(ProcStatus::RequestReady(RequestReady {
                 body_replacement,
                 override_sending_response_headers,
@@ -443,14 +444,13 @@ impl ExternalProcessor {
                 body_replacement,
                 trailers_modifications,
             })) => {
-                // TODO!
                 todo!()
-            }
+            },
             Err(e) => self.on_filter_error(
                 format!("External processor request processing: {e:?}").as_str(),
                 Some(e.into()),
                 request.version(),
-            )
+            ),
         }
     }
 
@@ -720,7 +720,6 @@ struct ExternalProcessingWorker<S: State> {
     timeout_state: TimeoutState,
 }
 
-
 impl ExternalProcessingWorker<ProcessingState> {
     fn new(config: Arc<ExternalProcessingWorkerConfig>) -> Self {
         let request_processing = RequestProcessing::<ProcessingState>::from(&*config);
@@ -746,10 +745,6 @@ impl ExternalProcessingWorker<ProcessingState> {
         // The following label is not strictly necessary, but it makes it clearer what is being exited at the break point.
         // It also makes it easier to locate subsequent exit points.
         debug!(target: "ext_proc", "--- BEGIN ---");
-        // let processing_response_pending = self.config.processing_mode.response_header_mode
-        //     != HeaderProcessingMode::Skip
-        //     || self.config.processing_mode.response_body_mode != BodyProcessingMode::None
-        //     || self.config.processing_mode.response_trailer_mode != TrailerProcessingMode::Skip;
 
         'transaction_loop: loop {
             tokio::select! {
@@ -798,6 +793,7 @@ impl ExternalProcessingWorker<ProcessingState> {
                                 if let Some(reply_channel) = self.response_processing.reply_channel.take() {
                                     let _ = reply_channel.send(ProcStatus::HaltedOnError);
                                 }
+                                // TODO
                                 //self.response_processing.exit_on_error(msg, self.config.failure_mode_allow);
                                 //self.request_processing.status_error(msg, self.config.failure_mode_allow);
                             } else {
@@ -1005,15 +1001,11 @@ impl ExternalProcessingWorker<ProcessingState> {
                     let status = self.request_processing.status_timeout(self.config.failure_mode_allow);
                     if let Some(reply_channel) = self.request_processing.reply_channel.take() {
                         let _ = reply_channel.send(status);
-                    } else {
-                        warn!(target: "ext_proc", "loop: no reply channel available to return timeout status");
                     }
 
                     let status = self.response_processing.status_timeout(self.config.failure_mode_allow);
                     if let Some(reply_channel) = self.response_processing.reply_channel.take() {
                         let _ = reply_channel.send(status);
-                    } else {
-                        warn!(target: "ext_proc", "loop: no reply channel available to return timeout status");
                     }
                 }
             }
@@ -1022,7 +1014,6 @@ impl ExternalProcessingWorker<ProcessingState> {
         debug!(target: "ext_proc", "--- END ---");
     }
 }
-
 
 impl ExternalProcessingWorker<ObservabilityState> {
     fn new(config: Arc<ExternalProcessingWorkerConfig>) -> Self {
@@ -1267,8 +1258,9 @@ impl<S: State + Default> ExternalProcessingWorker<S> {
                 error!(target: "ext_proc", "External processor is unavailable: {err}");
                 if let Some(reply_channel) = self.response_processing.reply_channel.take() {
                     let _ = reply_channel.send(
-                         self.response_processing
-                            .status_error("Lost connection to external processor", self.config.failure_mode_allow));
+                        self.response_processing
+                            .status_error("Lost connection to external processor", self.config.failure_mode_allow),
+                    );
                 } else {
                     warn!(target: "ext_proc", "forward_to_external_processor: no reply channel available to return status (response)");
                 }
@@ -1276,7 +1268,8 @@ impl<S: State + Default> ExternalProcessingWorker<S> {
                 if let Some(reply_channel) = self.request_processing.reply_channel.take() {
                     let _ = reply_channel.send(
                         self.request_processing
-                            .status_error("Lost connection to external processor", self.config.failure_mode_allow));
+                            .status_error("Lost connection to external processor", self.config.failure_mode_allow),
+                    );
                 } else {
                     warn!(target: "ext_proc", "forward_to_external_processor: no reply channel available to return status (request)");
                 }
@@ -1294,15 +1287,13 @@ impl<S: State + Default> ExternalProcessingWorker<S> {
         if self.timeout_state.extended {
             let msg = "External processor attempted multiple timeout extensions";
             if let Some(reply_channel) = self.response_processing.reply_channel.take() {
-                let _ = reply_channel.send(
-                    self.response_processing.status_error(msg, self.config.failure_mode_allow));
+                let _ = reply_channel.send(self.response_processing.status_error(msg, self.config.failure_mode_allow));
             } else {
                 warn!(target: "ext_proc", "handle_timeout_extension: no reply channel available to return status (response)");
             }
 
             if let Some(reply_channel) = self.request_processing.reply_channel.take() {
-                let _ = reply_channel.send(
-                    self.request_processing.status_error(msg, self.config.failure_mode_allow));
+                let _ = reply_channel.send(self.request_processing.status_error(msg, self.config.failure_mode_allow));
             } else {
                 warn!(target: "ext_proc", "handle_timeout_extension: no reply channel available to return status (request)");
             }

@@ -1,6 +1,6 @@
 use crate::event_error::EventFailure;
 use crate::listeners::http_connection_manager::ext_proc::common_state::{
-    Action, BodyContext, ObservabilityState, ProcStatus, ProcessingState, State
+    Action, BodyContext, ObservabilityState, ProcStatus, ProcessingState, State,
 };
 use crate::listeners::http_connection_manager::ext_proc::mutation::apply_header_mutations;
 use crate::listeners::http_connection_manager::ext_proc::worker_config::ExternalProcessingWorkerConfig;
@@ -43,26 +43,8 @@ impl From<&ExternalProcessingWorkerConfig> for ResponseProcessing<ProcessingStat
 
         let processing_mode = &config.processing_mode;
 
-        let initial_state = match processing_mode {
-            ProcessingMode {
-                response_header_mode: HeaderProcessingMode::Default | HeaderProcessingMode::Send, ..
-            } => ProcessingState::WaitingForHeadersInput,
-            ProcessingMode {
-                response_body_mode:
-                    BodyProcessingMode::Buffered
-                    | BodyProcessingMode::BufferedPartial
-                    | BodyProcessingMode::Streamed
-                    | BodyProcessingMode::FullDuplexStreamed,
-                ..
-            }
-            | ProcessingMode { response_trailer_mode: TrailerProcessingMode::Send, .. } => {
-                ProcessingState::WaitingForBodyInput
-            },
-            _ => ProcessingState::Idle,
-        };
-
         Self {
-            state: initial_state,
+            state: ProcessingState::default(),
             body_context: BodyContext::new(processing_mode.response_body_mode, processing_mode.response_trailer_mode),
             partial_reply: None,
             reply_channel: None,
@@ -83,27 +65,8 @@ impl From<&ExternalProcessingWorkerConfig> for ResponseProcessing<ObservabilityS
 
         let processing_mode = &config.processing_mode;
 
-        let initial_state = match processing_mode {
-            ProcessingMode {
-                response_header_mode: HeaderProcessingMode::Default | HeaderProcessingMode::Send, ..
-            } => ObservabilityState::WaitingForHeadersInput,
-            ProcessingMode {
-                // todo(fciaccia) observability mode should work only in STREAMED or NONE for the body
-                response_body_mode:
-                    BodyProcessingMode::Buffered
-                    | BodyProcessingMode::BufferedPartial
-                    | BodyProcessingMode::Streamed
-                    | BodyProcessingMode::FullDuplexStreamed,
-                ..
-            }
-            | ProcessingMode { response_trailer_mode: TrailerProcessingMode::Send, .. } => {
-                ObservabilityState::WaitingForBodyInput
-            },
-            _ => ObservabilityState::Idle,
-        };
-
         Self {
-            state: initial_state,
+            state: ObservabilityState::default(),
             body_context: BodyContext::new(processing_mode.response_body_mode, processing_mode.response_trailer_mode),
             partial_reply: None,
             reply_channel: None,
@@ -124,10 +87,8 @@ impl ResponseProcessing<ProcessingState> {
         envoy_mode: &EnvoyProcessingMode,
         allowed_override_modes: &[ProcessingMode],
     ) {
-        let inactive_state = matches!(
-            self.state,
-            ProcessingState::WaitingForHeadersInput | ProcessingState::WaitingForBodyInput | ProcessingState::Idle
-        );
+        let inactive_state =
+            matches!(self.state, ProcessingState::WaitingForHeadersInput | ProcessingState::WaitingForBodyInput);
         if inactive_state {
             if let Ok(mode) = HeaderProcessingMode::try_from(envoy_mode.response_header_mode) {
                 if mode != HeaderProcessingMode::Default
@@ -805,25 +766,20 @@ impl<S: State + Default> ResponseProcessing<S> {
     }
 
     pub fn status_timeout(&mut self, failure_mode_allow: bool) -> ProcStatus {
-        todo!()
-        //let status = if failure_mode_allow {
-        //    ExtProcStatus::HaltedOnError
-        //} else {
-        //    let http_version = self.http_version.unwrap_or(http::Version::HTTP_11);
-        //    ExtProcStatus::EndWithDirectResponse(
-        //        SyntheticHttpResponse::gateway_timeout(
-        //            EventFailure::ExtProcError.into(),
-        //            ResponseFlags(FmtResponseFlags::UPSTREAM_CONNECTION_FAILURE),
-        //        )
-        //        .into_response(http_version),
-        //    )
-        //};
-        //if let Some(channel) = self.reply_channel.take() {
-        //    let _ = channel.send(status);
-        //} else {
-        //    warn!("Response processing has timed out waiting on reply from external processor, but filter has already continued");
-        //}
-        //self.state = S::default();
+        let status = if failure_mode_allow {
+            ProcStatus::HaltedOnError
+        } else {
+            let http_version = self.http_version.unwrap_or(http::Version::HTTP_11);
+            ProcStatus::EndWithDirectResponse(
+                SyntheticHttpResponse::gateway_timeout(
+                    EventFailure::ExtProcError.into(),
+                    ResponseFlags(FmtResponseFlags::UPSTREAM_REQUEST_TIMEOUT),
+                )
+                .into_response(http_version),
+            )
+        };
+        self.state = S::default();
+        status
     }
 
     pub fn status_error(&mut self, msg: &str, failure_mode_allow: bool) -> ProcStatus {

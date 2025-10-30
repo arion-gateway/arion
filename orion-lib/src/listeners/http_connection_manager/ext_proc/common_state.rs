@@ -19,27 +19,22 @@ pub trait State {
 
 #[derive(Debug, Clone, Default)]
 pub enum ObservabilityState {
+    #[default]
     WaitingForHeadersInput,
     WaitingForBodyInput,
     StreamingBody,
-    ProcessingTrailers,
-    #[default]
-    Idle,
 }
 
 #[derive(Debug, Copy, Clone, Default)]
 pub enum ProcessingState {
+    #[default]
     WaitingForHeadersInput,
     WaitingForHeadersReply,
     WaitingForBodyInput,
     WaitingForBodyReply,
     StreamingBody,
     StreamingBodyWaitingForReply,
-    #[allow(dead_code)]
     FullDuplexStreamingBody,
-    ProcessingTrailers,
-    #[default]
-    Idle,
 }
 
 impl State for ObservabilityState {
@@ -132,11 +127,14 @@ impl BodyContext {
 
     pub fn start_streaming(&mut self) {
         // TODO: build the body with trailers (if any)
+        debug!(target: "ext_proc", "Starting body streaming...");
         if let Some(body) = self.body.take() {
             self.outbound_body_stream = BodyStream::new(body);
             let (new_body, sender) = PolyBody::new_stream_body(16);
             self.body = Some(new_body);
             self.inbound_body_sender = Some(BodySender::new(sender));
+        } else {
+            debug!(target: "ext_proc", "Could not start body streaming: no body present!");
         }
     }
 
@@ -150,7 +148,7 @@ impl BodyContext {
     }
 
     pub fn finish_stream(&mut self) {
-        debug!(target: "ext_proc", "Terminating body stream (dropping sender channel)");
+        debug!(target: "ext_proc", "Terminating body streaming (sender channel dropped)");
         if let Some(sender) = self.inbound_body_sender.take() {
             drop(sender);
         }
