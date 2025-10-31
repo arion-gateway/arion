@@ -1,20 +1,17 @@
 mod common_state;
 mod mutation;
-mod request_proc;
-mod response_proc;
+mod processing;
 mod worker_config;
 
 use crate::body::poly_body::TrailersType;
 use crate::event_error::EventFailure;
-use crate::listeners::http_connection_manager::ext_proc;
 use crate::listeners::http_connection_manager::ext_proc::common_state::Action;
-use crate::listeners::http_connection_manager::ext_proc::common_state::ProcStatus;
-use crate::listeners::http_connection_manager::ext_proc::common_state::RequestReady;
-use crate::listeners::http_connection_manager::ext_proc::common_state::ResponseReady;
+use crate::listeners::http_connection_manager::ext_proc::common_state::ProcessingStatus;
+use crate::listeners::http_connection_manager::ext_proc::common_state::ReadyStatus;
 use crate::listeners::http_connection_manager::ext_proc::common_state::State;
 use crate::listeners::http_connection_manager::ext_proc::mutation::apply_header_mutations;
-use crate::listeners::http_connection_manager::ext_proc::request_proc::RequestProcessing;
-use crate::listeners::http_connection_manager::ext_proc::response_proc::ResponseProcessing;
+use crate::listeners::http_connection_manager::ext_proc::processing::RequestProcessing;
+use crate::listeners::http_connection_manager::ext_proc::processing::ResponseProcessing;
 use crate::listeners::http_connection_manager::ext_proc::worker_config::ExternalProcessingWorkerConfig;
 use crate::{
     body::{body_with_metrics::BodyWithMetrics, response_flags::ResponseFlags},
@@ -30,7 +27,6 @@ use http_body::Body;
 use http_body_util::combinators::WithTrailers;
 use http_body_util::BodyExt;
 use http_body_util::Collected;
-use http_body_util::Empty;
 use http_body_util::Full;
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::ext_proc::TrailerProcessingMode;
 use orion_configuration::config::{
@@ -49,7 +45,7 @@ use orion_data_plane_api::envoy_data_plane_api::{
         config::core::v3::{HeaderMap, HeaderValue},
         service::ext_proc::v3::{
             external_processor_client::ExternalProcessorClient,
-            processing_response::Response as ProcessingResponseType, HttpHeaders, ImmediateResponse, ProcessingRequest,
+            processing_response::Response as ProcessingResponseType, ImmediateResponse, ProcessingRequest,
             ProcessingResponse, ProtocolConfiguration,
         },
     },
@@ -58,15 +54,12 @@ use orion_data_plane_api::envoy_data_plane_api::{
 };
 use orion_format::types::ResponseFlags as FmtResponseFlags;
 use pingora_timeout::fast_timeout;
-use scopeguard::defer;
-use std::collections::HashMap;
 use std::convert::Infallible;
 use std::future::ready;
 use std::future::Ready;
 use std::{sync::Arc, time::Duration};
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::{mpsc, oneshot};
-use tracing::info;
 use tracing::{debug, error, warn};
 
 use crate::listeners::http_connection_manager::ext_proc::common_state::{ObservabilityState, ProcessingState};
@@ -404,13 +397,13 @@ impl ExternalProcessor {
         };
 
         match response_rx.await {
-            Ok(ProcStatus::HaltedOnError) => {
+            Ok(ProcessingStatus::HaltedOnError) => {
                 self.sending_response_headers = false;
                 self.sending_response_body = false;
                 FilterDecision::Continue
             },
-            Ok(ProcStatus::EndWithDirectResponse(direct_response)) => FilterDecision::DirectResponse(direct_response),
-            Ok(ProcStatus::RequestReady(RequestReady {
+            Ok(ProcessingStatus::EndWithDirectResponse(direct_response)) => FilterDecision::DirectResponse(direct_response),
+            Ok(ProcessingStatus::RequestReady(ReadyStatus {
                 body_replacement,
                 override_sending_response_headers,
                 override_sending_response_body,
@@ -439,10 +432,13 @@ impl ExternalProcessor {
                 }
                 FilterDecision::Continue
             },
-            Ok(ProcStatus::ResponseReady(ResponseReady {
+            Ok(ProcessingStatus::ResponseReady(ReadyStatus {
                 headers_modifications,
                 body_replacement,
                 trailers_modifications,
+                override_sending_response_headers,
+                override_sending_response_body,
+                clear_route_cache,
             })) => {
                 todo!()
             },
@@ -594,7 +590,7 @@ impl ExternalProcessor {
         &mut self,
         data: ProcessingData,
         ver: http::Version,
-    ) -> Result<oneshot::Receiver<ProcStatus>, SendError<ProcessingTask>> {
+    ) -> Result<oneshot::Receiver<ProcessingStatus>, SendError<ProcessingTask>> {
         let (response_tx, response_rx) = oneshot::channel();
         let processing_message = ProcessingTask { data, reply_channel: response_tx, http_version: ver };
 
@@ -690,7 +686,7 @@ impl From<&http::HeaderMap> for EnvoyHeaderMap {
 #[derive(Debug)]
 struct ProcessingTask {
     data: ProcessingData,
-    reply_channel: oneshot::Sender<ProcStatus>,
+    reply_channel: oneshot::Sender<ProcessingStatus>,
     http_version: http::Version,
 }
 
@@ -753,12 +749,12 @@ impl ExternalProcessingWorker<ProcessingState> {
                     match outbond_processing_task {
                         Some(ProcessingTask{ data: ProcessingData::Request(headers, body, trailers), reply_channel, http_version}) => {
                             debug!(target: "ext_proc", "Processing new request");
-                            let action = self.request_processing.process_request(headers, body, trailers, reply_channel, http_version).await;
+                            let action = self.request_processing.process(headers, body, trailers, reply_channel, http_version).await;
                             run_action!(self, self.request_processing, action, "process_request");
                         }
                         Some(ProcessingTask{ data: ProcessingData::Response(headers, body, trailers), reply_channel, http_version}) => {
                             debug!(target: "ext_proc", "Processing new response");
-                            let action = self .response_processing.process_response(headers, body, trailers, reply_channel, http_version);
+                            let action = self .response_processing.process(headers, body, trailers, reply_channel, http_version).await;
                             run_action!(self, self.response_processing, action, "process_response");
                         }
                         _ => {
@@ -788,17 +784,17 @@ impl ExternalProcessingWorker<ProcessingState> {
                                 warn!("{msg}");
 
                                 if let Some(reply_channel) = self.request_processing.reply_channel.take() {
-                                    let _ = reply_channel.send(ProcStatus::HaltedOnError);
+                                    let _ = reply_channel.send(ProcessingStatus::HaltedOnError);
                                 }
                                 if let Some(reply_channel) = self.response_processing.reply_channel.take() {
-                                    let _ = reply_channel.send(ProcStatus::HaltedOnError);
+                                    let _ = reply_channel.send(ProcessingStatus::HaltedOnError);
                                 }
                                 // TODO
                                 //self.response_processing.exit_on_error(msg, self.config.failure_mode_allow);
                                 //self.request_processing.status_error(msg, self.config.failure_mode_allow);
                             } else {
                                 let response = self.build_direct_response(&response_attempt);
-                                let status = ProcStatus::EndWithDirectResponse(response);
+                                let status = ProcessingStatus::EndWithDirectResponse(response);
                                 if self.response_processing.is_awaiting_reply() {
                                     if let Some(reply_channel) = self.response_processing.reply_channel.take() {
                                         let _ = reply_channel.send(status);
@@ -819,7 +815,7 @@ impl ExternalProcessingWorker<ProcessingState> {
                                     self.response_processing.apply_mode_overrides(&overrides, &self.config.allowed_override_modes);
                                 }
                             }
-                            let wants_response_headers = self.response_processing.is_header_processing_planned();
+                            let wants_response_headers = self.response_processing.is_headers_processing_planned();
                             let wants_response_body = self.response_processing.is_body_processing_planned();
 
                             let action = self.request_processing.handle_headers_response(
@@ -836,7 +832,7 @@ impl ExternalProcessingWorker<ProcessingState> {
                             let empty_response = body_response.response.is_none();
                             let action = self
                                 .request_processing
-                                .handle_body_response(body_response, &self.config.route_cache_action).await;
+                                .handle_body_response(body_response, Some(&self.config.route_cache_action)).await;
 
                             run_action!(self, self.request_processing, action, "body_response");
 
@@ -856,13 +852,21 @@ impl ExternalProcessingWorker<ProcessingState> {
                                     self.response_processing.apply_mode_overrides(&overrides, &self.config.allowed_override_modes);
                                 }
                             }
-                            let action = self.response_processing.handle_headers_response(headers_response).await;
+                            let wants_response_headers = self.response_processing.is_headers_processing_planned();
+                            let wants_response_body = self.response_processing.is_body_processing_planned();
+
+                            let action = self.response_processing.handle_headers_response(
+                                headers_response,
+                                &self.config.route_cache_action,
+                                wants_response_headers,
+                                wants_response_body
+                            ).await;
                             run_action!(self, self.response_processing, action, "handle_headers_response");
                         },
                         Ok(Some(ProcessingResponse { response: Some(ProcessingResponseType::ResponseBody(body_response)), ..})) => {
                             debug!(target: "ext_proc", "Response body response received");
                             let empty_response = body_response.response.is_none();
-                            let action = self.response_processing.handle_body_response(body_response).await;
+                            let action = self.response_processing.handle_body_response(body_response, None).await;
                             run_action!(self, self.response_processing, action, "handle_body_response");
 
                             // TODO: is this required?
@@ -877,10 +881,12 @@ impl ExternalProcessingWorker<ProcessingState> {
                         },
                         Ok(Some(r)) => {
                             debug!(target: "ext_proc", "Noop response received {r:?}");
-                            self.response_processing.handle_noop_response();
-                            let wants_response_headers = self.response_processing.is_header_processing_planned();
+                            let action = self.response_processing.handle_noop_response(ProcessingStatus::ResponseReady, None, None);
+                            run_action!(self, self.response_processing, action, "handle_noop_response");
+                            let wants_response_headers = self.response_processing.is_headers_processing_planned();
                             let wants_response_body = self.response_processing.is_body_processing_planned();
-                            self.request_processing.noop_response(wants_response_headers, wants_response_body);
+                            let action = self.request_processing.handle_noop_response(ProcessingStatus::RequestReady, Some(wants_response_headers), Some(wants_response_body));
+                            run_action!(self, self.request_processing, action, "handle_noop_response");
                         }
                         Err(e) => {
                             let msg = "External processor gRPC error";
@@ -986,9 +992,9 @@ impl ExternalProcessingWorker<ProcessingState> {
                                 run_action!(self, self.response_processing, action, "handle_body_chunk (end)");
                             }
 
-                            if let Some(trailers) = self.response_processing.body_context.trailers.take() {
+                            if let Some(trailers) = self.response_processing.body_context.trailers.as_ref() {
                                 debug!(target: "ext_proc", "Sending trailers chunk of response!");
-                                let action = self.response_processing.process_trailers(Some(trailers), None, None);
+                                let action = self.response_processing.prepare_trailers(trailers);
                                 run_action!(self, self.response_processing, action, "process_trailers (end)");
                             }
                         }

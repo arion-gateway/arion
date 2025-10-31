@@ -18,7 +18,6 @@
 use super::body_with_timeout::{BodyWithTimeout, TimeoutBodyError};
 use crate::Error;
 use bytes::Bytes;
-use http::HeaderMap;
 use http_body::Frame;
 use http_body_util::combinators::WithTrailers;
 use http_body_util::{BodyExt, Collected, Empty, Full, StreamBody};
@@ -26,7 +25,7 @@ use hyper::body::{Body, Incoming};
 use orion_xds::grpc_deps::{GrpcBody, Status as GrpcError};
 use pin_project::pin_project;
 use std::convert::Infallible;
-use std::future::{Future, Ready};
+use std::future::{Ready};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -241,7 +240,7 @@ impl TryFrom<PolyBody> for Empty<Bytes> {
     fn try_from(value: PolyBody) -> Result<Self, Self::Error> {
         match value {
             PolyBody::Empty(e) => Ok(e),
-            b => Err(PolyBodyError::BadVariant),
+            _ => Err(PolyBodyError::BadVariant),
         }
     }
 }
@@ -251,7 +250,7 @@ impl TryFrom<PolyBody> for Full<Bytes> {
     fn try_from(value: PolyBody) -> Result<Self, Self::Error> {
         match value {
             PolyBody::Full(f) => Ok(f),
-            b => Err(PolyBodyError::BadVariant),
+            _ => Err(PolyBodyError::BadVariant),
         }
     }
 }
@@ -261,7 +260,7 @@ impl TryFrom<PolyBody> for Incoming {
     fn try_from(value: PolyBody) -> Result<Self, Self::Error> {
         match value {
             PolyBody::Incoming(i) => Ok(i),
-            b => Err(PolyBodyError::BadVariant),
+            _ => Err(PolyBodyError::BadVariant),
         }
     }
 }
@@ -271,7 +270,7 @@ impl TryFrom<PolyBody> for GrpcBody {
     fn try_from(value: PolyBody) -> Result<Self, Self::Error> {
         match value {
             PolyBody::Grpc(g) => Ok(g),
-            b => Err(PolyBodyError::BadVariant),
+            _ => Err(PolyBodyError::BadVariant),
         }
     }
 }
@@ -281,7 +280,7 @@ impl TryFrom<PolyBody> for Collected<Bytes> {
     fn try_from(value: PolyBody) -> Result<Self, Self::Error> {
         match value {
             PolyBody::Collected(c) => Ok(c),
-            b => Err(PolyBodyError::BadVariant),
+            _ => Err(PolyBodyError::BadVariant),
         }
     }
 }
@@ -291,7 +290,7 @@ impl TryFrom<PolyBody> for StreamBody<ReceiverStream<Result<Frame<Bytes>, Error>
     fn try_from(value: PolyBody) -> Result<Self, Self::Error> {
         match value {
             PolyBody::Stream(s) => Ok(s),
-            b => Err(PolyBodyError::BadVariant),
+            _ => Err(PolyBodyError::BadVariant),
         }
     }
 }
@@ -301,7 +300,7 @@ impl TryFrom<PolyBody> for BodyWithTimeout<Incoming> {
     fn try_from(value: PolyBody) -> Result<Self, Self::Error> {
         match value {
             PolyBody::Timeout(t) => Ok(t),
-            b => Err(PolyBodyError::BadVariant),
+            _ => Err(PolyBodyError::BadVariant),
         }
     }
 }
@@ -311,7 +310,7 @@ impl TryFrom<PolyBody> for WithTrailers<Full<Bytes>, Ready<TrailersType>> {
     fn try_from(value: PolyBody) -> Result<Self, Self::Error> {
         match value {
             PolyBody::FullWithTrailers(w) => Ok(w),
-            b => Err(PolyBodyError::BadVariant),
+            _ => Err(PolyBodyError::BadVariant),
         }
     }
 }
@@ -321,7 +320,7 @@ impl TryFrom<PolyBody> for WithTrailers<Empty<Bytes>, Ready<TrailersType>> {
     fn try_from(value: PolyBody) -> Result<Self, Self::Error> {
         match value {
             PolyBody::EmptyWithTrailers(w) => Ok(w),
-            b => Err(PolyBodyError::BadVariant),
+            _ => Err(PolyBodyError::BadVariant),
         }
     }
 }
@@ -331,7 +330,7 @@ impl TryFrom<PolyBody> for WithTrailers<Collected<Bytes>, Ready<TrailersType>> {
     fn try_from(value: PolyBody) -> Result<Self, Self::Error> {
         match value {
             PolyBody::CollectedWithTrailers(w) => Ok(w),
-            b => Err(PolyBodyError::BadVariant),
+            _ => Err(PolyBodyError::BadVariant),
         }
     }
 }

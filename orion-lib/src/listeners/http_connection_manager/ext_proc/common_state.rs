@@ -3,7 +3,6 @@ use bytes::Bytes;
 use http::Response;
 use http_body_util::BodyStream;
 use http_body_util::Empty;
-use orion_data_plane_api::envoy_data_plane_api::envoy::service::ext_proc::v3::HttpHeaders;
 use tracing::debug;
 
 use crate::{body::poly_body::BodySender, PolyBody};
@@ -53,53 +52,46 @@ type StartStreaming = bool;
 
 pub enum Action<P> {
     Send(P, ProcessingState, StartStreaming),
-    Return(ProcStatus),
+    Return(ProcessingStatus),
     Streaming(ProcessingState),
 }
 
 #[derive(Debug)]
-pub enum ProcStatus {
-    RequestReady(RequestReady),
-    ResponseReady(ResponseReady),
+pub enum ProcessingStatus {
+    RequestReady(ReadyStatus),
+    ResponseReady(ReadyStatus),
     HaltedOnError,
     EndWithDirectResponse(Response<PolyBody>),
 }
 
-impl ProcStatus {
+impl ProcessingStatus {
     pub fn with_request_ready<F>(&mut self, f: F)
     where
-        F: FnOnce(&mut RequestReady) -> (),
+        F: FnOnce(&mut ReadyStatus) -> (),
     {
-        if let ProcStatus::RequestReady(ready) = self {
+        if let ProcessingStatus::RequestReady(ready) = self {
             f(ready);
         }
     }
 
     pub fn with_response_ready<F>(&mut self, f: F)
     where
-        F: FnOnce(&mut ResponseReady) -> (),
+        F: FnOnce(&mut ReadyStatus) -> (),
     {
-        if let ProcStatus::ResponseReady(ready) = self {
+        if let ProcessingStatus::ResponseReady(ready) = self {
             f(ready);
         }
     }
 }
 
 #[derive(Debug, Default)]
-pub struct RequestReady {
+pub struct ReadyStatus {
     pub headers_modifications: Option<HeaderMutation>,
     pub body_replacement: Option<PolyBody>,
     pub trailers_modifications: Option<HeaderMutation>,
     pub override_sending_response_headers: Option<bool>,
     pub override_sending_response_body: Option<bool>,
     pub clear_route_cache: bool,
-}
-
-#[derive(Debug, Default)]
-pub struct ResponseReady {
-    pub headers_modifications: Option<HeaderMutation>,
-    pub body_replacement: Option<PolyBody>,
-    pub trailers_modifications: Option<HeaderMutation>,
 }
 
 pub struct BodyContext {
