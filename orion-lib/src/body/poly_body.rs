@@ -108,6 +108,8 @@ pub enum PolyBodyError {
     TimedOut,
     #[error("could not build trailers for {0} body type")]
     Trailers(String),
+    #[error("No valid variant to convert to")]
+    BadVariant,
 }
 
 //hyper::Error is the error type returned by incoming
@@ -161,6 +163,8 @@ impl Body for PolyBody {
         }
     }
 }
+
+
 
 impl From<Empty<Bytes>> for PolyBody {
     #[inline]
@@ -231,6 +235,107 @@ impl From<WithTrailers<Collected<Bytes>, Ready<TrailersType>>> for PolyBody {
         PolyBody::CollectedWithTrailers(body)
     }
 }
+
+impl TryFrom<PolyBody> for Empty<Bytes> {
+    type Error = PolyBodyError;
+    fn try_from(value: PolyBody) -> Result<Self, Self::Error> {
+        match value {
+            PolyBody::Empty(e) => Ok(e),
+            b => Err(PolyBodyError::BadVariant),
+        }
+    }
+}
+
+impl TryFrom<PolyBody> for Full<Bytes> {
+    type Error = PolyBodyError;
+    fn try_from(value: PolyBody) -> Result<Self, Self::Error> {
+        match value {
+            PolyBody::Full(f) => Ok(f),
+            b => Err(PolyBodyError::BadVariant),
+        }
+    }
+}
+
+impl TryFrom<PolyBody> for Incoming {
+    type Error = PolyBodyError;
+    fn try_from(value: PolyBody) -> Result<Self, Self::Error> {
+        match value {
+            PolyBody::Incoming(i) => Ok(i),
+            b => Err(PolyBodyError::BadVariant),
+        }
+    }
+}
+
+impl TryFrom<PolyBody> for GrpcBody {
+    type Error = PolyBodyError;
+    fn try_from(value: PolyBody) -> Result<Self, Self::Error> {
+        match value {
+            PolyBody::Grpc(g) => Ok(g),
+            b => Err(PolyBodyError::BadVariant),
+        }
+    }
+}
+
+impl TryFrom<PolyBody> for Collected<Bytes> {
+    type Error = PolyBodyError;
+    fn try_from(value: PolyBody) -> Result<Self, Self::Error> {
+        match value {
+            PolyBody::Collected(c) => Ok(c),
+            b => Err(PolyBodyError::BadVariant),
+        }
+    }
+}
+
+impl TryFrom<PolyBody> for StreamBody<ReceiverStream<Result<Frame<Bytes>, Error>>> {
+    type Error = PolyBodyError;
+    fn try_from(value: PolyBody) -> Result<Self, Self::Error> {
+        match value {
+            PolyBody::Stream(s) => Ok(s),
+            b => Err(PolyBodyError::BadVariant),
+        }
+    }
+}
+
+impl TryFrom<PolyBody> for BodyWithTimeout<Incoming> {
+    type Error = PolyBodyError;
+    fn try_from(value: PolyBody) -> Result<Self, Self::Error> {
+        match value {
+            PolyBody::Timeout(t) => Ok(t),
+            b => Err(PolyBodyError::BadVariant),
+        }
+    }
+}
+
+impl TryFrom<PolyBody> for WithTrailers<Full<Bytes>, Ready<TrailersType>> {
+    type Error = PolyBodyError;
+    fn try_from(value: PolyBody) -> Result<Self, Self::Error> {
+        match value {
+            PolyBody::FullWithTrailers(w) => Ok(w),
+            b => Err(PolyBodyError::BadVariant),
+        }
+    }
+}
+
+impl TryFrom<PolyBody> for WithTrailers<Empty<Bytes>, Ready<TrailersType>> {
+    type Error = PolyBodyError;
+    fn try_from(value: PolyBody) -> Result<Self, Self::Error> {
+        match value {
+            PolyBody::EmptyWithTrailers(w) => Ok(w),
+            b => Err(PolyBodyError::BadVariant),
+        }
+    }
+}
+
+impl TryFrom<PolyBody> for WithTrailers<Collected<Bytes>, Ready<TrailersType>> {
+    type Error = PolyBodyError;
+    fn try_from(value: PolyBody) -> Result<Self, Self::Error> {
+        match value {
+            PolyBody::CollectedWithTrailers(w) => Ok(w),
+            b => Err(PolyBodyError::BadVariant),
+        }
+    }
+}
+
 
 impl PolyBody {
     pub fn new_stream_body(buffer_size: usize) -> (Self, mpsc::Sender<Result<Frame<Bytes>, Error>>) {

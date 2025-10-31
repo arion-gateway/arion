@@ -97,6 +97,7 @@ impl From<(&'_ PolyBodyError, BodyKind)> for ResponseFlags {
             PolyBodyError::Infallible(_)
             | PolyBodyError::Grpc(_)
             | PolyBodyError::Boxed(_)
+            | PolyBodyError::BadVariant
             | PolyBodyError::Trailers(_) => ResponseFlags(FmtResponseFlags::empty()),
             PolyBodyError::TimedOut => match kind {
                 BodyKind::Request => ResponseFlags(FmtResponseFlags::UPSTREAM_REQUEST_TIMEOUT),
