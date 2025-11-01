@@ -9,18 +9,18 @@ use tokio_stream::wrappers::ReceiverStream;
 
 /// A wrapper for any Body that allows observing and modifying frames in real-time.
 ///
-pub struct MutableBody {
+pub struct ChannelBody {
     stream_body: StreamBody<ReceiverStream<Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>>>,
 }
 
-impl MutableBody {
-    /// Creates a new MutableBody wrapping an existing body.
+impl ChannelBody {
+    /// Creates a new ChannelBody wrapping an existing body.
     ///
-    /// Returns a tuple of (MutableBody, FrameObserver). FrameObserver must be used
-    /// to inject frames (either manually or via `complete()`), otherwise the MutableBody
+    /// Returns a tuple of (ChannelBody, FrameBridge). FrameBridge must be used
+    /// to inject frames (either manually or via `complete()`), otherwise the ChannelBody
     /// will never produce any frames.
 
-    pub fn new<B>(body: B) -> (Self, FrameObserver<B>)
+    pub fn new<B>(body: B) -> (Self, FrameBridge)
     where
         B: Body<Data = Bytes> + Send + 'static,
         B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
@@ -31,14 +31,20 @@ impl MutableBody {
         // Convert the receiver into a StreamBody
         let stream_body = StreamBody::new(ReceiverStream::new(rx));
 
-        // Create the observer with the original body
-        let observer = FrameObserver::new(body, tx);
+        // Create the bridge with the original body
+        let bridge = FrameBridge::new(body, tx);
 
-        (MutableBody { stream_body }, observer)
+        (ChannelBody { stream_body }, bridge)
     }
 }
 
-impl Body for MutableBody {
+impl std::fmt::Debug for ChannelBody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ChannelBody").field("stream_body", &self.stream_body).finish()
+    }
+}
+
+impl Body for ChannelBody {
     type Data = Bytes;
     type Error = Box<dyn std::error::Error + Send + Sync>;
 
@@ -59,28 +65,31 @@ impl Body for MutableBody {
 }
 
 /// A stream that allows observing frames from a body and simultaneously
-/// injecting them into the MutableBody.
+/// injecting them into the ChannelBody.
 ///
-/// The FrameObserver acts as a bridge between the original body and the MutableBody.
-/// Frames read from the original body must be injected into the MutableBody for it
+/// The FrameBridge acts as a bridge between the original body and the ChannelBody.
+/// Frames read from the original body must be injected into the ChannelBody for it
 /// to produce any output.
-pub struct FrameObserver<B>
-where
-    B: Body<Data = Bytes>,
-{
-    body_stream: Pin<Box<dyn Stream<Item = Result<Frame<Bytes>, B::Error>> + Send>>,
+pub struct FrameBridge {
+    body_stream: Pin<Box<dyn Stream<Item = Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>> + Send>>,
     injector: Option<mpsc::Sender<Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>>>,
 }
 
-impl<B> FrameObserver<B>
-where
-    B: Body<Data = Bytes> + Send + 'static,
-    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
-{
-    fn new(body: B, injector: mpsc::Sender<Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>>) -> Self {
-        // Convert the body into a stream using http_body_util
-        let body_stream: Pin<Box<dyn Stream<Item = Result<Frame<Bytes>, B::Error>> + Send>> =
-            Box::pin(http_body_util::BodyStream::new(body));
+impl std::fmt::Debug for FrameBridge {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FrameBridge").finish()
+    }
+}
+
+impl FrameBridge {
+    fn new<B>(body: B, injector: mpsc::Sender<Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>>) -> Self
+    where
+        B: Body<Data = Bytes> + Send + 'static,
+        B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    {
+        // Convert the body into a stream using http_body_util and map errors to Box
+        let body_stream: Pin<Box<dyn Stream<Item = Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>> + Send>> =
+            Box::pin(http_body_util::BodyStream::new(body).map(|result| result.map_err(|e| e.into())));
 
         Self {
             body_stream,
@@ -88,29 +97,28 @@ where
         }
     }
 
-    /// Close the FrameObserver to prevent further frame injections.
+    /// Close the FrameBridge to prevent further frame injections.
     ///
-    pub async fn close(mut self) {
+    pub async fn close(&mut self) {
         self.injector.take();
     }
 
-    /// Consumes the entire original body, injecting each frame into the MutableBody.
+    /// Consumes the entire original body, injecting each frame into the ChannelBody.
     ///
     pub async fn complete(mut self) {
         while let Some(frame_result) = self.body_stream.next().await {
-            let converted = frame_result.map_err(|e| e.into());
             let Some(injector) = &mut self.injector else {
                 break;
             };
             // If sending fails, it means the receiver has been dropped
-            if injector.send(converted).await.is_err() {
+            if injector.send(frame_result).await.is_err() {
                 break;
             }
         }
     }
 
     /// Consumes the entire original body by applying a transformation function
-    /// to each frame before injecting it into the MutableBody.
+    /// to each frame before injecting it into the ChannelBody.
     ///
     pub async fn complete_with<F>(mut self, mut transform: F)
     where
@@ -120,7 +128,7 @@ where
             let Some(injector) = &mut self.injector else {
                 break;
             };
-            let transformed = frame_result.map(&mut transform).map_err(|e| e.into());
+            let transformed = frame_result.map(&mut transform);
             if injector.send(transformed).await.is_err() {
                 break;
             }
@@ -132,12 +140,12 @@ where
     /// Returns None when the body is completely consumed.
     ///
     pub async fn next_frame(&mut self) -> Option<Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>> {
-        self.body_stream.as_mut().next().await.map(|result| result.map_err(|e| e.into()))
+        self.body_stream.as_mut().next().await
     }
 
-    /// Injects a frame into the MutableBody.
+    /// Injects a frame into the ChannelBody.
     ///
-    /// Returns an error if the receiver has been dropped (i.e., the MutableBody
+    /// Returns an error if the receiver has been dropped (i.e., the ChannelBody
     /// has been consumed or dropped).
     ///
     pub async fn inject_frame(
@@ -150,12 +158,12 @@ where
         injector.send(frame).await
     }
 
-    /// Observes the next frame and automatically injects it into the MutableBody.
+    /// Observes the next frame and automatically injects it into the ChannelBody.
     ///
     /// Returns a copy of the frame to allow observation, None when the body is completely consumed.
     ///
     pub async fn observe_and_inject(&mut self) -> Option<Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>> {
-        let frame = self.body_stream.as_mut().next().await?.map_err(|e| e.into());
+        let frame = self.body_stream.as_mut().next().await?;
 
         // Clone the frame to be able to return it
         let cloned = match &frame {
@@ -182,17 +190,11 @@ where
     }
 }
 
-impl<B> Stream for FrameObserver<B>
-where
-    B: Body<Data = Bytes>,
-    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
-{
+impl Stream for FrameBridge {
     type Item = Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        self.body_stream.as_mut().poll_next(cx).map(|opt| {
-            opt.map(|result| result.map_err(|e| e.into()))
-        })
+        self.body_stream.as_mut().poll_next(cx)
     }
 }
 
@@ -205,15 +207,15 @@ mod tests {
     #[tokio::test]
     async fn test_complete() {
         let body = Full::new(Bytes::from("Hello, World!"));
-        let (mut mutable_body, observer) = MutableBody::new(body);
+        let (mut channel_body, bridge) = ChannelBody::new(body);
 
-        // Spawn observer task
-        let observer_handle = tokio::spawn(async move {
-            observer.complete().await;
+        // Spawn bridge task
+        let bridge_handle = tokio::spawn(async move {
+            bridge.complete().await;
         });
 
-        // Consume the mutable body
-        let frame = future::poll_fn(|cx| Pin::new(&mut mutable_body).poll_frame(cx))
+        // Consume the channel body
+        let frame = future::poll_fn(|cx| Pin::new(&mut channel_body).poll_frame(cx))
             .await
             .unwrap()
             .unwrap();
@@ -224,17 +226,17 @@ mod tests {
             panic!("Expected data frame");
         }
 
-        observer_handle.await.unwrap();
+        bridge_handle.await.unwrap();
     }
 
     #[tokio::test]
     async fn test_manual_injection() {
         let body = Full::new(Bytes::from("Test"));
-        let (mut mutable_body, mut observer) = MutableBody::new(body);
+        let (mut channel_body, mut bridge) = ChannelBody::new(body);
 
-        // Spawn a task that consumes the MutableBody
+        // Spawn a task that consumes the ChannelBody
         let consumer_handle = tokio::spawn(async move {
-            let frame = future::poll_fn(|cx| Pin::new(&mut mutable_body).poll_frame(cx))
+            let frame = future::poll_fn(|cx| Pin::new(&mut channel_body).poll_frame(cx))
                 .await
                 .unwrap()
                 .unwrap();
@@ -247,12 +249,12 @@ mod tests {
         });
 
         // Manually observe and inject the frame
-        if let Some(frame) = observer.next_frame().await {
-            observer.inject_frame(frame).await.unwrap();
+        if let Some(frame) = bridge.next_frame().await {
+            bridge.inject_frame(frame).await.unwrap();
         }
 
-        // Complete the observer
-        drop(observer);
+        // Complete the bridge
+        drop(bridge);
 
         // Verify that the consumer received the data
         let result = consumer_handle.await.unwrap();

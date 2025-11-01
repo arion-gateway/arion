@@ -17,6 +17,7 @@
 
 use super::body_with_timeout::{BodyWithTimeout, TimeoutBodyError};
 use crate::Error;
+use crate::body::channel_body::ChannelBody;
 use bytes::Bytes;
 use http_body::Frame;
 use http_body_util::combinators::WithTrailers;
@@ -39,6 +40,7 @@ pub enum PolyBody {
     Timeout(#[pin] BodyWithTimeout<Incoming>),
     Grpc(#[pin] GrpcBody),
     Stream(#[pin] StreamBody<ReceiverStream<Result<Frame<Bytes>, Error>>>),
+    ChannelBody(#[pin] ChannelBody),
     Collected(#[pin] Collected<Bytes>),
     FullWithTrailers(#[pin] WithTrailers<Full<Bytes>, Ready<TrailersType>>),
     EmptyWithTrailers(#[pin] WithTrailers<Empty<Bytes>, Ready<TrailersType>>),
@@ -81,6 +83,7 @@ impl std::fmt::Debug for PolyBody {
             PolyBody::Timeout(b) => f.write_fmt(format_args!("PolyBody::Timeout<Incoming>: {b:?}")),
             PolyBody::Grpc(b) => f.write_fmt(format_args!("PolyBody::Grpc: {b:?}")),
             PolyBody::Stream(b) => f.write_fmt(format_args!("PolyBody::Stream: {b:?}")),
+            PolyBody::ChannelBody(b) => f.write_fmt(format_args!("PolyBody::ChannelBody: {b:?}")),
             PolyBody::Collected(b) => f.write_fmt(format_args!("PolyBody::Collected: {b:?}")),
             PolyBody::FullWithTrailers(_) => f.write_str("PolyBody::WithTrailers<Full<Bytes>, Ready<TrailersType>>"),
             PolyBody::EmptyWithTrailers(_) => {
@@ -138,6 +141,9 @@ impl Body for PolyBody {
             PolyBodyProj::Stream(s) => {
                 s.poll_frame(cx).map_err(|e| PolyBodyError::Boxed(Box::new(std::io::Error::other(e.to_string()))))
             },
+            PolyBodyProj::ChannelBody(m) => {
+                m.poll_frame(cx).map_err(|e| PolyBodyError::Boxed(Box::new(std::io::Error::other(e.to_string()))))
+            },
             PolyBodyProj::Collected(s) => {
                 s.poll_frame(cx).map_err(|e| PolyBodyError::Boxed(Box::new(std::io::Error::other(e.to_string()))))
             },
@@ -155,6 +161,7 @@ impl Body for PolyBody {
             PolyBody::Timeout(t) => t.is_end_stream(),
             PolyBody::Grpc(g) => g.is_end_stream(),
             PolyBody::Stream(s) => s.is_end_stream(),
+            PolyBody::ChannelBody(m) => m.is_end_stream(),
             PolyBody::Collected(s) => s.is_end_stream(),
             PolyBody::FullWithTrailers(w) => w.is_end_stream(),
             PolyBody::EmptyWithTrailers(w) => w.is_end_stream(),
@@ -211,6 +218,13 @@ impl From<StreamBody<ReceiverStream<Result<Frame<Bytes>, Error>>>> for PolyBody 
     #[inline]
     fn from(body: StreamBody<ReceiverStream<Result<Frame<Bytes>, Error>>>) -> Self {
         PolyBody::Stream(body)
+    }
+}
+
+impl From<ChannelBody> for PolyBody {
+    #[inline]
+    fn from(body: ChannelBody) -> Self {
+        PolyBody::ChannelBody(body)
     }
 }
 
@@ -290,6 +304,16 @@ impl TryFrom<PolyBody> for StreamBody<ReceiverStream<Result<Frame<Bytes>, Error>
     fn try_from(value: PolyBody) -> Result<Self, Self::Error> {
         match value {
             PolyBody::Stream(s) => Ok(s),
+            _ => Err(PolyBodyError::BadVariant),
+        }
+    }
+}
+
+impl TryFrom<PolyBody> for ChannelBody {
+    type Error = PolyBodyError;
+    fn try_from(value: PolyBody) -> Result<Self, Self::Error> {
+        match value {
+            PolyBody::ChannelBody(s) => Ok(s),
             _ => Err(PolyBodyError::BadVariant),
         }
     }

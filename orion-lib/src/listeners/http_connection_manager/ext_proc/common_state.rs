@@ -5,6 +5,7 @@ use http_body_util::BodyStream;
 use http_body_util::Empty;
 use tracing::debug;
 
+use crate::body::channel_body::FrameBridge;
 use crate::{body::poly_body::BodySender, PolyBody};
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::ext_proc::{
     BodyProcessingMode, TrailerProcessingMode,
@@ -30,10 +31,10 @@ pub enum ProcessingState {
     WaitingForHeadersInput,
     WaitingForHeadersReply,
     WaitingForBodyInput,
-    WaitingForBodyReply,
     StreamingBody,
-    StreamingBodyWaitingForReply,
-    FullDuplexStreamingBody,
+    WaitingForBodyReply,
+    //StreamingBodyWaitingForReply,
+    //FullDuplexStreamingBody,
 }
 
 impl State for ObservabilityState {
@@ -48,12 +49,9 @@ impl State for ProcessingState {
     }
 }
 
-type StartStreaming = bool;
-
 pub enum Action<P> {
-    Send(P, ProcessingState, StartStreaming),
+    Send(P, ProcessingState),
     Return(ProcessingStatus),
-    Streaming(ProcessingState),
 }
 
 #[derive(Debug)]
@@ -87,29 +85,25 @@ impl ProcessingStatus {
 #[derive(Debug, Default)]
 pub struct ReadyStatus {
     pub headers_modifications: Option<HeaderMutation>,
-    pub body_replacement: Option<PolyBody>,
-    pub trailers_modifications: Option<HeaderMutation>,
+    // pub body_replacement: Option<PolyBody>,
+    // pub trailers_modifications: Option<HeaderMutation>,
     pub override_sending_response_headers: Option<bool>,
     pub override_sending_response_body: Option<bool>,
     pub clear_route_cache: bool,
 }
 
 pub struct BodyContext {
-    pub body: Option<PolyBody>,
+    pub frame_bridge: Option<FrameBridge>,
     pub body_mode: BodyProcessingMode,
     pub trailers: Option<http::HeaderMap>,
     pub trailers_mode: TrailerProcessingMode,
-    pub outbound_body_stream: BodyStream<PolyBody>,
-    pub inbound_body_sender: Option<BodySender>,
     pub buffered_chunk: Option<Bytes>,
 }
 
 impl BodyContext {
     pub fn new(body_mode: BodyProcessingMode, trailer_mode: TrailerProcessingMode) -> Self {
         Self {
-            body: None,
-            outbound_body_stream: BodyStream::new(PolyBody::from(Empty::<Bytes>::default())),
-            inbound_body_sender: None,
+            frame_bridge: None,
             body_mode,
             trailers_mode: trailer_mode,
             trailers: None,
@@ -117,32 +111,31 @@ impl BodyContext {
         }
     }
 
-    pub fn start_streaming(&mut self) {
-        // TODO: build the body with trailers (if any)
-        debug!(target: "ext_proc", "Starting body streaming...");
-        if let Some(body) = self.body.take() {
-            self.outbound_body_stream = BodyStream::new(body);
-            let (new_body, sender) = PolyBody::new_stream_body(16);
-            self.body = Some(new_body);
-            self.inbound_body_sender = Some(BodySender::new(sender));
-        } else {
-            debug!(target: "ext_proc", "Could not start body streaming: no body present!");
-        }
-    }
+    //pub fn start_streaming(&mut self) {
+    //    debug!(target: "ext_proc", "Starting body streaming...");
+    //    if let Some(body) = self.body.take() {
+    //        self.outbound_body_stream = BodyStream::new(body);
+    //        let (new_body, sender) = PolyBody::new_stream_body(16);
+    //        self.body = Some(new_body);
+    //        self.inbound_body_sender = Some(BodySender::new(sender));
+    //    } else {
+    //        debug!(target: "ext_proc", "Could not start body streaming: no body present!");
+    //    }
+    //}
 
-    pub async fn make_new_body_channel(&mut self, data: Bytes) -> Result<(), orion_error::Error> {
-        let (new_body, sender) = PolyBody::new_stream_body(16);
-        self.body = Some(new_body);
-        let sender = BodySender::new(sender);
-        sender.send_data(data).await?;
-        self.inbound_body_sender = Some(sender);
-        Ok(())
-    }
+    //pub async fn make_new_body_channel(&mut self, data: Bytes) -> Result<(), orion_error::Error> {
+    //    let (new_body, sender) = PolyBody::new_stream_body(16);
+    //    self.body = Some(new_body);
+    //    let sender = BodySender::new(sender);
+    //    sender.send_data(data).await?;
+    //    self.inbound_body_sender = Some(sender);
+    //    Ok(())
+    //}
 
-    pub fn finish_stream(&mut self) {
-        debug!(target: "ext_proc", "Terminating body streaming (sender channel dropped)");
-        if let Some(sender) = self.inbound_body_sender.take() {
-            drop(sender);
-        }
-    }
+    //pub fn finish_stream(&mut self) {
+    //    debug!(target: "ext_proc", "Terminating body streaming (sender channel dropped)");
+    //    if let Some(sender) = self.inbound_body_sender.take() {
+    //        drop(sender);
+    //    }
+    //}
 }
