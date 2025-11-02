@@ -216,7 +216,7 @@ mod tests {
     #[tokio::test]
     async fn test_complete() {
         let body = Full::new(Bytes::from("Hello, World!"));
-        let (mut channel_body, bridge) = ChannelBody::new(body);
+        let (mut channel_body, mut bridge) = ChannelBody::new(body);
 
         // Spawn bridge task
         let bridge_handle = tokio::spawn(async move {

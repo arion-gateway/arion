@@ -32,7 +32,7 @@ pub enum ProcessingState {
     WaitingForHeadersReply,
     WaitingForBodyInput,
     StreamingBody,
-    WaitingForBodyReply,
+    // WaitingForBodyReply,
     //StreamingBodyWaitingForReply,
     //FullDuplexStreamingBody,
 }
@@ -85,7 +85,6 @@ impl ProcessingStatus {
 #[derive(Debug, Default)]
 pub struct ReadyStatus {
     pub headers_modifications: Option<HeaderMutation>,
-    // pub trailers_modifications: Option<HeaderMutation>,
     pub override_sending_response_headers: Option<bool>,
     pub override_sending_response_body: Option<bool>,
     pub clear_route_cache: bool,
