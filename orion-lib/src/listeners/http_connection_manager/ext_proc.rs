@@ -323,78 +323,71 @@ impl ExternalProcessor {
             return FilterDecision::Continue;
         }
 
-        let is_empty_body = request.body().is_end_stream();
         let mut ext_proc_headers = None;
-        let mut ext_proc_frame_bridge = None;
 
         if self.sending_request_headers {
             debug!(target: "ext_proc", "request processing headers");
             ext_proc_headers = Some(self.filter_header_map(request.headers()));
         }
 
-        if !is_empty_body {
-            let body: PolyBody = std::mem::take(&mut request.body_mut().inner);
-            match (
-                self.worker_config.processing_mode.request_body_mode,
-                self.worker_config.processing_mode.request_trailer_mode,
-            ) {
-                (BodyProcessingMode::None, TrailerProcessingMode::Skip) => {
-                    debug!(target: "ext_proc", "procesing no body and no trailers");
-                    request.body_mut().inner = body;
-                },
-                (BodyProcessingMode::None, TrailerProcessingMode::Send) => {
-                    debug!(target: "ext_proc", "request processing trailers only");
-                    let Ok(incoming) = Incoming::try_from(body) else {
-                        return self.on_filter_error(
-                            "Failed to extract Incoming body for external processing",
-                            None,
-                            request.version(),
-                        );
-                    };
+        let body: PolyBody = std::mem::take(&mut request.body_mut().inner);
 
-                    let (new_body, bridge) = ChannelBody::new(incoming);
-                    request.body_mut().inner = PolyBody::from(new_body);
-                    ext_proc_frame_bridge = Some(bridge);
-                },
-                (BodyProcessingMode::Streamed | BodyProcessingMode::FullDuplexStreamed, trailers_mode) => {
-                    debug!(target: "ext_proc", "request processing body(Streamed) and trailers:{trailers_mode:?}");
-                    let Ok(incoming) = Incoming::try_from(body) else {
-                        return self.on_filter_error(
-                            "Failed to extract Incoming body for external processing",
-                            None,
-                            request.version(),
-                        );
-                    };
+        let ext_proc_frame_bridge = match (
+            self.worker_config.processing_mode.request_body_mode,
+            self.worker_config.processing_mode.request_trailer_mode,
+        ) {
+            (BodyProcessingMode::None, trailers_mode) => {
+                // event though body processing is None and trailers processing is Skip, we have to
+                // create the bridge, to allow ext_proc mutate the body with ContinueAndReplace action.
+                debug!(target: "ext_proc", "request processing body(Streamed) and trailers:{trailers_mode:?} => {body:?}");
+                //let Ok(incoming) = Incoming::try_from(body) else {
+                //    return self.on_filter_error(
+                //        "Failed to extract Incoming body for external processing: {:?}",
+                //        None,
+                //        request.version(),
+                //    );
+                //};
 
-                    let (new_body, bridge) = ChannelBody::new(incoming);
-                    request.body_mut().inner = PolyBody::from(new_body);
-                    ext_proc_frame_bridge = Some(bridge);
-                },
-                (BodyProcessingMode::Buffered | BodyProcessingMode::BufferedPartial, trailers_mode) => {
-                    debug!(target: "ext_proc", "request processing body(Buffered) with trailers:{trailers_mode:?}");
-                    let Ok(incoming) = Incoming::try_from(body) else {
-                        return self.on_filter_error(
-                            "Failed to extract Incoming body for external processing",
-                            None,
-                            request.version(),
-                        );
-                    };
+                let (new_body, bridge) = ChannelBody::new(body);
+                request.body_mut().inner = PolyBody::from(new_body);
+                bridge
+            },
+            (BodyProcessingMode::Streamed | BodyProcessingMode::FullDuplexStreamed, trailers_mode) => {
+                debug!(target: "ext_proc", "request processing body(Streamed) and trailers:{trailers_mode:?} => {body:?}");
+                let Ok(incoming) = Incoming::try_from(body) else {
+                    return self.on_filter_error(
+                        "Failed to extract Incoming body for external processing",
+                        None,
+                        request.version(),
+                    );
+                };
 
-                    let Ok(collected) = incoming.collect().await else {
-                        return self.on_filter_error(
-                            "Failed to collect request body for external processing",
-                            None,
-                            request.version(),
-                        );
-                    };
+                let (new_body, bridge) = ChannelBody::new(incoming);
+                request.body_mut().inner = PolyBody::from(new_body);
+                bridge
+            },
+            (BodyProcessingMode::Buffered | BodyProcessingMode::BufferedPartial, trailers_mode) => {
+                debug!(target: "ext_proc", "request processing body(Buffered) with trailers:{trailers_mode:?} => {body:?}");
+                let Ok(incoming) = Incoming::try_from(body) else {
+                    return self.on_filter_error(
+                        "Failed to extract Incoming body for external processing",
+                        None,
+                        request.version(),
+                    );
+                };
 
-                    let (new_body, observer) = ChannelBody::new(collected);
-                    request.body_mut().inner = PolyBody::from(new_body);
-                    ext_proc_frame_bridge = Some(observer);
-                },
-            }
-        } else {
-            debug!(target: "ext_proc", "request processing, no BODY, no TRAILERS");
+                let Ok(collected) = incoming.collect().await else {
+                    return self.on_filter_error(
+                        "Failed to collect request body for external processing",
+                        None,
+                        request.version(),
+                    );
+                };
+
+                let (new_body, bridge) = ChannelBody::new(collected);
+                request.body_mut().inner = PolyBody::from(new_body);
+                bridge
+            },
         };
 
         debug!(target: "ext_proc", "request headers: {ext_proc_headers:?}");
@@ -437,6 +430,11 @@ impl ExternalProcessor {
                         );
                     }
                 }
+
+                // at this point it's hard to know if body replacement is being requested or not.
+                // So we just remove the content-length header to be safe.
+
+                request.headers_mut().remove(CONTENT_LENGTH);
 
                 if let Some(override_value) = override_sending_response_headers {
                     self.sending_response_headers = override_value;
@@ -700,6 +698,35 @@ impl From<&http::HeaderMap> for EnvoyHeaderMap {
     }
 }
 
+impl From<EnvoyHeaderMap> for http::HeaderMap {
+    fn from(envoy_headers: EnvoyHeaderMap) -> Self {
+        let mut headers = http::HeaderMap::with_capacity(envoy_headers.0.headers.len());
+
+        for header in envoy_headers.0.headers {
+            let header_name = match http::header::HeaderName::from_bytes(header.key.as_bytes()) {
+                Ok(name) => name,
+                Err(_) => continue,
+            };
+
+            let header_value = if !header.value.is_empty() {
+                match http::header::HeaderValue::from_maybe_shared(header.value) {
+                    Ok(value) => value,
+                    Err(_) => continue,
+                }
+            } else {
+                match http::header::HeaderValue::from_maybe_shared(header.raw_value) {
+                    Ok(value) => value,
+                    Err(_) => continue,
+                }
+            };
+
+            headers.append(header_name, header_value);
+        }
+
+        headers
+    }
+}
+
 #[derive(Debug)]
 struct ProcessingTask {
     data: ProcessingData,
@@ -709,8 +736,8 @@ struct ProcessingTask {
 
 #[derive(Debug)]
 enum ProcessingData {
-    Request(Option<http::HeaderMap>, Option<FrameBridge>),
-    Response(Option<http::HeaderMap>, Option<FrameBridge>),
+    Request(Option<http::HeaderMap>, FrameBridge),
+    Response(Option<http::HeaderMap>, FrameBridge),
 }
 
 struct BidiStream {

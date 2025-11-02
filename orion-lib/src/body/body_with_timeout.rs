@@ -38,6 +38,7 @@ use std::{
     task::{ready, Context, Poll},
     time::Duration,
 };
+use std::any::type_name;
 
 pub type Timeout = PingoraTimeout<Pending<()>, FastTimeout>;
 
@@ -55,7 +56,7 @@ where
     B: std::fmt::Debug,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("BodyWithTimeout")
+        f.debug_struct(type_name::<BodyWithTimeout::<B>>())
             .field("timeout", &self.timeout)
             .field("body", &self.body)
             .finish_non_exhaustive()

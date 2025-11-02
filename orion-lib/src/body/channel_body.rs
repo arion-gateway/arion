@@ -81,6 +81,15 @@ impl std::fmt::Debug for FrameBridge {
     }
 }
 
+impl Default for FrameBridge {
+    fn default() -> Self {
+        Self {
+            body_stream: Box::pin(futures::stream::empty()),
+            injector: None,
+        }
+    }
+}
+
 impl FrameBridge {
     fn new<B>(body: B, injector: mpsc::Sender<Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>>) -> Self
     where
@@ -105,7 +114,7 @@ impl FrameBridge {
 
     /// Consumes the entire original body, injecting each frame into the ChannelBody.
     ///
-    pub async fn complete(mut self) {
+    pub async fn complete(&mut self) {
         while let Some(frame_result) = self.body_stream.next().await {
             let Some(injector) = &mut self.injector else {
                 break;

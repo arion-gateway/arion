@@ -66,7 +66,7 @@ pub struct Processing<S: State> {
     trailers_mode: TrailerProcessingMode,
 
     http_headers: Option<http::HeaderMap>,
-    pub frame_bridge: Option<FrameBridge>,
+    pub frame_bridge: FrameBridge,
     pub trailers: Option<http::HeaderMap>,
     pub buffered_chunk: Option<Bytes>,
 
@@ -111,7 +111,7 @@ impl<S: State + Default> From<(&ExternalProcessingWorkerConfig, ProcessingKind)>
             failure_mode_allow: config.failure_mode_allow,
 
             http_headers: None,
-            frame_bridge: None,
+            frame_bridge: FrameBridge::default(),
             trailers: None,
             buffered_chunk: None,
             partial_status: None,
@@ -160,7 +160,7 @@ impl Processing<ProcessingState> {
     pub async fn process(
         &mut self,
         headers: Option<http::HeaderMap>,
-        frame_bridge: Option<FrameBridge>,
+        frame_bridge: FrameBridge,
         reply_channel: oneshot::Sender<ProcessingStatus>,
         http_version: http::Version,
     ) -> Action<ProcessingRequest>
@@ -217,8 +217,7 @@ impl Processing<ProcessingState> {
         };
 
         let next_state = if self.send_body_without_waiting_for_header_response
-            // && matches!(self.body_context.body_mode, BodyProcessingMode::Streamed)
-            && self.frame_bridge.is_some()
+            && !matches!(self.body_mode, BodyProcessingMode::None)
         {
             ProcessingState::StreamingBody
         } else {
@@ -332,20 +331,25 @@ impl Processing<ProcessingState> {
                                 },
                             };
 
+                        // replace body if specified
                         if let Some(new_body) = body_replacement {
                             debug!(target: "ext_proc", "handle_headers_response: Body replacement requested: {new_body:?}");
-                            if let Some(bridge) = self.frame_bridge.as_mut() {
-                               _ = bridge.inject_frame(Ok(new_body)).await;
-                               bridge.close().await;
-                            }
-                        } else {
-                            debug!(target: "ext_proc", "handle_headers_response: No body replacement requested");
-                            if let Some(bridge) = self.frame_bridge.as_mut() {
-                                bridge.close().await;
-                            }
+                            _ = self.frame_bridge.inject_frame(Ok(new_body)).await;
                         }
+
+                        // replace trailers if specified
+                        if let Some(trailers) = response_data.trailers {
+                            debug!(target: "ext_proc", "handle_headers_response: Trailers replacement requested: {trailers:?}");
+                            let new_trailers : http::HeaderMap = EnvoyHeaderMap(trailers).into();
+                            _ = self.frame_bridge.inject_frame(Ok(Frame::trailers(new_trailers))).await;
+                        }
+
                     } else {
                         debug!(target: "ext_proc", "handle_headers_response: ResponseStatus:Continue: headers processed");
+                        if !self.should_process_body() && !self.should_process_trailers() {
+                            self.frame_bridge.complete().await;
+                            self.frame_bridge.close().await;
+                        }
                     }
 
                 } else {
