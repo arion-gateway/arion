@@ -73,84 +73,49 @@ pub struct ExternalProcessor {
     ext_proc_worker: Option<mpsc::Sender<ProcessingTask>>,
     worker_config: Arc<ExternalProcessingWorkerConfig>,
     forward_rules: Option<Arc<HeaderForwardingRules>>,
-}
-
-impl ExternalProcessor {
-    #[inline]
-    pub fn sending_request_headers(&self) -> bool {
-        let mode = self.worker_config.override_sending_request.headers.load(Ordering::Relaxed);
-        match mode {
-            worker_config::SendingFlag::Empty =>  self.worker_config.processing_mode.request_header_mode != HeaderProcessingMode::Skip,
-            worker_config::SendingFlag::True => true,
-            worker_config::SendingFlag::False => false,
-        }
-    }
-
-    #[inline]
-    pub fn sending_request_trailers(&self) -> bool {
-        let mode = self.worker_config.override_sending_request.trailers.load(Ordering::Relaxed);
-        match mode {
-            worker_config::SendingFlag::Empty =>  self.worker_config.processing_mode.request_trailer_mode != TrailerProcessingMode::Skip,
-            worker_config::SendingFlag::True => true,
-            worker_config::SendingFlag::False => false,
-        }
-    }
-
-    #[inline]
-    pub fn sending_request_body(&self) -> bool {
-        let mode = self.worker_config.override_sending_request.body.load(Ordering::Relaxed);
-        match mode {
-            worker_config::SendingFlag::Empty =>  self.worker_config.processing_mode.request_body_mode != BodyProcessingMode::None,
-            worker_config::SendingFlag::True => true,
-            worker_config::SendingFlag::False => false,
-        }
-    }
-
-    #[inline]
-    pub fn sending_response_headers(&self) -> bool {
-        let mode = self.worker_config.override_sending_response.headers.load(Ordering::Relaxed);
-        match mode {
-            worker_config::SendingFlag::Empty =>  self.worker_config.processing_mode.response_header_mode != HeaderProcessingMode::Skip,
-            worker_config::SendingFlag::True => true,
-            worker_config::SendingFlag::False => false,
-        }
-    }
-
-    #[inline]
-    pub fn sending_response_trailers(&self) -> bool {
-        let mode = self.worker_config.override_sending_response.trailers.load(Ordering::Relaxed);
-        match mode {
-            worker_config::SendingFlag::Empty =>  self.worker_config.processing_mode.response_trailer_mode != TrailerProcessingMode::Skip,
-            worker_config::SendingFlag::True => true,
-            worker_config::SendingFlag::False => false,
-        }
-    }
-
-    #[inline]
-    pub fn sending_response_body(&self) -> bool {
-        let mode = self.worker_config.override_sending_response.body.load(Ordering::Relaxed);
-        match mode {
-            worker_config::SendingFlag::Empty =>  self.worker_config.processing_mode.response_body_mode != BodyProcessingMode::None,
-            worker_config::SendingFlag::True => true,
-            worker_config::SendingFlag::False => false,
-        }
-    }
+    sending_request_headers: bool,
+    sending_request_body: bool,
+    sending_request_trailers: bool,
+    sending_response_headers: bool,
+    sending_response_body: bool,
+    sending_response_trailers: bool,
 }
 
 impl From<ExternalProcessorConfig> for ExternalProcessor {
     fn from(initial_config: ExternalProcessorConfig) -> Self {
+        debug!(target: "ext_proc", "From<ExternalProcessorConfig> for ExternalProcessor");
         Self::from((initial_config, None))
     }
 }
 
 impl From<(ExternalProcessorConfig, Option<ExtProcPerRoute>)> for ExternalProcessor {
     fn from((initial_config, per_route_config): (ExternalProcessorConfig, Option<ExtProcPerRoute>)) -> Self {
+        debug!(target: "ext_proc", "From<ExternalProcessorConfig, ExtProcPerRoute> for ExternalProcessor");
         let forward_rules = initial_config.forward_rules.clone().map(Arc::new);
         let worker_config = ExternalProcessingWorkerConfig::from((initial_config, per_route_config));
+
+        let sending_request_headers =
+            !matches!(worker_config.processing_mode.request_header_mode, HeaderProcessingMode::Skip);
+        let sending_request_body = !matches!(worker_config.processing_mode.request_body_mode, BodyProcessingMode::None);
+        let sending_request_trailers =
+            !matches!(worker_config.processing_mode.request_trailer_mode, TrailerProcessingMode::Skip);
+
+        let sending_response_headers =
+            !matches!(worker_config.processing_mode.response_header_mode, HeaderProcessingMode::Skip);
+        let sending_response_body = !matches!(worker_config.processing_mode.response_body_mode, BodyProcessingMode::None);
+        let sending_response_trailers =
+            !matches!(worker_config.processing_mode.response_trailer_mode, TrailerProcessingMode::Skip);
+
         Self {
             ext_proc_worker: None,
             worker_config: Arc::new(worker_config),
             forward_rules,
+            sending_request_headers,
+            sending_request_body,
+            sending_request_trailers,
+            sending_response_headers,
+            sending_response_body,
+            sending_response_trailers,
         }
     }
 }
@@ -166,6 +131,7 @@ impl Drop for ExternalProcessor {
 
 impl From<(ExternalProcessorConfig, Option<ExtProcPerRoute>)> for ExternalProcessingWorkerConfig {
     fn from((config, per_route_config): (ExternalProcessorConfig, Option<ExtProcPerRoute>)) -> Self {
+        debug!(target: "ext_proc", "From<(ExternalProcessorConfig, Option<ExtProcPerRoute>)> for ExternalProcessingWorkerConfig");
         let mut processing_mode = config.processing_mode.clone().unwrap_or(ProcessingMode::default());
         let mut grpc_service = config.grpc_service;
         let mut failure_mode_allow = config.failure_mode_allow;
@@ -353,7 +319,7 @@ impl ExternalProcessor {
 
     #[allow(clippy::too_many_lines)]
     pub async fn apply_request(&mut self, request: &mut Request<BodyWithMetrics<PolyBody>>) -> FilterDecision {
-        if !self.sending_request_headers() && !self.sending_request_body() && !self.sending_request_trailers() {
+        if !self.sending_request_headers && !self.sending_request_body && !self.sending_request_trailers {
             return FilterDecision::Continue;
         }
 
@@ -361,8 +327,8 @@ impl ExternalProcessor {
         let mut ext_proc_headers = None;
         let mut ext_proc_frame_bridge = None;
 
-        if self.sending_request_headers() {
-            debug!(target: "ext_proc", "request processing HEADERS");
+        if self.sending_request_headers {
+            debug!(target: "ext_proc", "request processing headers");
             ext_proc_headers = Some(self.filter_header_map(request.headers()));
         }
 
@@ -373,10 +339,11 @@ impl ExternalProcessor {
                 self.worker_config.processing_mode.request_trailer_mode,
             ) {
                 (BodyProcessingMode::None, TrailerProcessingMode::Skip) => {
+                    debug!(target: "ext_proc", "procesing no body and no trailers");
                     request.body_mut().inner = body;
                 },
                 (BodyProcessingMode::None, TrailerProcessingMode::Send) => {
-                    debug!(target: "ext_proc", "request processing TRAILERS only");
+                    debug!(target: "ext_proc", "request processing trailers only");
                     let Ok(incoming) = Incoming::try_from(body) else {
                         return self.on_filter_error(
                             "Failed to extract Incoming body for external processing",
@@ -390,7 +357,7 @@ impl ExternalProcessor {
                     ext_proc_frame_bridge = Some(bridge);
                 },
                 (BodyProcessingMode::Streamed | BodyProcessingMode::FullDuplexStreamed, trailers_mode) => {
-                    debug!(target: "ext_proc", "request processing BODY(Streamed) with TRAILERS:{trailers_mode:?}");
+                    debug!(target: "ext_proc", "request processing body(Streamed) and trailers:{trailers_mode:?}");
                     let Ok(incoming) = Incoming::try_from(body) else {
                         return self.on_filter_error(
                             "Failed to extract Incoming body for external processing",
@@ -404,7 +371,7 @@ impl ExternalProcessor {
                     ext_proc_frame_bridge = Some(bridge);
                 },
                 (BodyProcessingMode::Buffered | BodyProcessingMode::BufferedPartial, trailers_mode) => {
-                    debug!(target: "ext_proc", "request processing BODY(Buffered) with TRAILERS:{trailers_mode:?}");
+                    debug!(target: "ext_proc", "request processing body(Buffered) with trailers:{trailers_mode:?}");
                     let Ok(incoming) = Incoming::try_from(body) else {
                         return self.on_filter_error(
                             "Failed to extract Incoming body for external processing",
@@ -456,26 +423,30 @@ impl ExternalProcessor {
                 clear_route_cache,
                 headers_modifications,
             })) => {
-                // TODO!
-                //if let Err(decision) = self.mutate_upstream_request(
-                //    request,
-                //    orig_trailers,
-                //    headers_modifications,
-                //    body_replacement,
-                //    trailers_modifications,
-                //) {
-                //    return decision;
-                //}
+                if let Some(headers_modifications) = headers_modifications {
+                    debug!(target: "ext_proc", "applying headers mutation...");
+                    if let Err(e) = apply_header_mutations(
+                        request.headers_mut(),
+                        &headers_modifications,
+                        Some(&self.worker_config.mutation_rules),
+                    ) {
+                        return self.on_filter_error(
+                            "Invalid header modifications received from external processor",
+                            Some(e),
+                            request.version(),
+                        );
+                    }
+                }
 
-                //if let Some(override_value) = override_sending_response_headers {
-                //    self.sending_response_headers = override_value;
-                //}
-                //if let Some(override_value) = override_sending_response_body {
-                //    self.sending_response_body = override_value;
-                //}
-                //if clear_route_cache {
-                //    return FilterDecision::Reroute;
-                //}
+                if let Some(override_value) = override_sending_response_headers {
+                    self.sending_response_headers = override_value;
+                }
+                if let Some(override_value) = override_sending_response_body {
+                    self.sending_response_body = override_value;
+                }
+                if clear_route_cache {
+                    return FilterDecision::Reroute;
+                }
                 FilterDecision::Continue
             },
             Ok(ProcessingStatus::ResponseReady(ReadyStatus {
@@ -507,7 +478,7 @@ impl ExternalProcessor {
     }
 
     pub async fn apply_response(&mut self, response: &mut Response<PolyBody>) -> FilterDecision {
-        if !self.sending_response_headers() && !self.sending_response_body() && !self.sending_response_trailers() {
+        if !self.sending_response_headers && !self.sending_response_body && !self.sending_response_trailers {
             return FilterDecision::Continue;
         }
         todo!()
@@ -862,8 +833,8 @@ impl ExternalProcessingWorker<ProcessingState> {
                                     self.response_processing.apply_mode_overrides(&overrides, &self.config.allowed_override_modes);
                                 }
                             }
-                            let wants_response_headers = self.response_processing.is_headers_processing_planned();
-                            let wants_response_body = self.response_processing.is_body_processing_planned();
+                            let wants_response_headers = self.response_processing.should_process_headers();
+                            let wants_response_body = self.response_processing.should_process_body();
 
                             let action = self.request_processing.handle_headers_response(
                                 headers_response,
@@ -899,8 +870,8 @@ impl ExternalProcessingWorker<ProcessingState> {
                                     self.response_processing.apply_mode_overrides(&overrides, &self.config.allowed_override_modes);
                                 }
                             }
-                            let wants_response_headers = self.response_processing.is_headers_processing_planned();
-                            let wants_response_body = self.response_processing.is_body_processing_planned();
+                            let wants_response_headers = self.response_processing.should_process_headers();
+                            let wants_response_body = self.response_processing.should_process_body();
 
                             let action = self.response_processing.handle_headers_response(
                                 headers_response,
@@ -930,8 +901,8 @@ impl ExternalProcessingWorker<ProcessingState> {
                             debug!(target: "ext_proc", "Noop response received {r:?}");
                             let action = self.response_processing.handle_noop_response(ProcessingStatus::ResponseReady, None, None);
                             run_action!(self, self.response_processing, action, "handle_noop_response");
-                            let wants_response_headers = self.response_processing.is_headers_processing_planned();
-                            let wants_response_body = self.response_processing.is_body_processing_planned();
+                            let wants_response_headers = self.response_processing.should_process_headers();
+                            let wants_response_body = self.response_processing.should_process_body();
                             let action = self.request_processing.handle_noop_response(ProcessingStatus::RequestReady, Some(wants_response_headers), Some(wants_response_body));
                             run_action!(self, self.request_processing, action, "handle_noop_response");
                         }

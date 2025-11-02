@@ -92,24 +92,24 @@ pub struct ReadyStatus {
     pub clear_route_cache: bool,
 }
 
-pub struct BodyContext {
-    pub frame_bridge: Option<FrameBridge>,
-    pub body_mode: BodyProcessingMode,
-    pub trailers: Option<http::HeaderMap>,
-    pub trailers_mode: TrailerProcessingMode,
-    pub buffered_chunk: Option<Bytes>,
-}
+// pub struct BodyContext {
+//     pub frame_bridge: Option<FrameBridge>,
+//     pub body_mode: BodyProcessingMode,
+//     pub trailers: Option<http::HeaderMap>,
+//     pub trailers_mode: TrailerProcessingMode,
+//     pub buffered_chunk: Option<Bytes>,
+// }
 
-impl BodyContext {
-    pub fn new(body_mode: BodyProcessingMode, trailer_mode: TrailerProcessingMode) -> Self {
-        Self {
-            frame_bridge: None,
-            body_mode,
-            trailers_mode: trailer_mode,
-            trailers: None,
-            buffered_chunk: None,
-        }
-    }
+//impl BodyContext {
+//    pub fn new(body_mode: BodyProcessingMode, trailer_mode: TrailerProcessingMode) -> Self {
+//        Self {
+//            frame_bridge: None,
+//            body_mode,
+//            trailers_mode: trailer_mode,
+//            trailers: None,
+//            buffered_chunk: None,
+//        }
+//    }
 
     //pub fn start_streaming(&mut self) {
     //    debug!(target: "ext_proc", "Starting body streaming...");
@@ -138,4 +138,4 @@ impl BodyContext {
     //        drop(sender);
     //    }
     //}
-}
+// }

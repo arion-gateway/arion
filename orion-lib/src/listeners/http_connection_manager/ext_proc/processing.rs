@@ -1,7 +1,7 @@
 use crate::body::channel_body::FrameBridge;
 use crate::event_error::EventFailure;
 use crate::listeners::http_connection_manager::ext_proc::common_state::{
-    Action, BodyContext, ProcessingStatus, ProcessingState, ReadyStatus, State,
+    Action, ProcessingStatus, ProcessingState, ReadyStatus, State,
 };
 use crate::listeners::http_connection_manager::ext_proc::mutation::apply_header_mutations;
 use crate::listeners::http_connection_manager::ext_proc::worker_config::ExternalProcessingWorkerConfig;
@@ -60,9 +60,16 @@ impl<S: State> DerefMut for ResponseProcessing<S> {
 
 pub struct Processing<S: State> {
     pub state: S,
+
     headers_mode: HeaderProcessingMode,
+    body_mode: BodyProcessingMode,
+    trailers_mode: TrailerProcessingMode,
+
     http_headers: Option<http::HeaderMap>,
-    pub body_context: BodyContext,
+    pub frame_bridge: Option<FrameBridge>,
+    pub trailers: Option<http::HeaderMap>,
+    pub buffered_chunk: Option<Bytes>,
+
     partial_status: Option<ProcessingStatus>,
     pub reply_channel: Option<oneshot::Sender<ProcessingStatus>>,
     http_version: Option<http::Version>,
@@ -70,8 +77,14 @@ pub struct Processing<S: State> {
     failure_mode_allow: bool,
 }
 
-impl<S: State + Default> From<&ExternalProcessingWorkerConfig> for Processing<S> {
-    fn from(config: &ExternalProcessingWorkerConfig) -> Self {
+enum ProcessingKind {
+    Request,
+    Response,
+}
+
+impl<S: State + Default> From<(&ExternalProcessingWorkerConfig, ProcessingKind)> for Processing<S> {
+    fn from((config, kind): (&ExternalProcessingWorkerConfig, ProcessingKind)) -> Self {
+        debug!(target: "ext_proc", "From<&ExternalProcessingWorkerConfig for Processing<>");
         assert!(
             !config.observability_mode,
             "Attempted to create RequestProcessing<ProcessingState> in observability mode"
@@ -81,27 +94,44 @@ impl<S: State + Default> From<&ExternalProcessingWorkerConfig> for Processing<S>
 
         Self{
             state: S::default(),
+            headers_mode: match kind {
+                ProcessingKind::Request => processing_mode.request_header_mode,
+                ProcessingKind::Response => processing_mode.response_header_mode,
+            },
+            body_mode: match kind {
+                ProcessingKind::Request => processing_mode.request_body_mode,
+                ProcessingKind::Response => processing_mode.response_body_mode,
+            },
+            trailers_mode: match kind {
+                ProcessingKind::Request => processing_mode.request_trailer_mode,
+                ProcessingKind::Response => processing_mode.response_trailer_mode,
+            },
+
+            send_body_without_waiting_for_header_response: config.send_body_without_waiting_for_header_response,
+            failure_mode_allow: config.failure_mode_allow,
+
             http_headers: None,
-            headers_mode: processing_mode.request_header_mode,
-            body_context: BodyContext::new(processing_mode.request_body_mode, processing_mode.request_trailer_mode),
+            frame_bridge: None,
+            trailers: None,
+            buffered_chunk: None,
             partial_status: None,
             reply_channel: None,
             http_version: None,
-            send_body_without_waiting_for_header_response: config.send_body_without_waiting_for_header_response,
-            failure_mode_allow: config.failure_mode_allow,
         }
     }
 }
 
 impl<S: State + Default> From<&ExternalProcessingWorkerConfig> for RequestProcessing<S> {
     fn from(value: &ExternalProcessingWorkerConfig) -> Self {
-        Self(Processing::<S>::from(value))
+        debug!(target: "ext_proc", "From<&ExternalProcessingWorkerConfig for RequestProcessing<>");
+        Self(Processing::<S>::from((value, ProcessingKind::Request)))
     }
 }
 
 impl<S: State + Default> From<&ExternalProcessingWorkerConfig> for ResponseProcessing<S> {
     fn from(value: &ExternalProcessingWorkerConfig) -> Self {
-        Self(Processing::<S>::from(value))
+        debug!(target: "ext_proc", "From<&ExternalProcessingWorkerConfig for ResponseProcessing<>");
+        Self(Processing::<S>::from((value, ProcessingKind::Response)))
     }
 }
 
@@ -115,12 +145,12 @@ impl Processing<ProcessingState> {
         if matches!(self.state, ProcessingState::WaitingForHeadersReply) {
             if let Ok(mode) = BodyProcessingMode::try_from(envoy_mode.request_body_mode) {
                 if allowed_override_modes.iter().any(|allowed| allowed.request_body_mode == mode) {
-                    self.body_context.body_mode = mode;
+                    self.body_mode = mode;
                 }
             }
             if let Ok(mode) = TrailerProcessingMode::try_from(envoy_mode.request_trailer_mode) {
                 if allowed_override_modes.iter().any(|allowed| allowed.request_trailer_mode == mode) {
-                    self.body_context.trailers_mode = mode;
+                    self.trailers_mode = mode;
                 }
             }
         }
@@ -138,7 +168,7 @@ impl Processing<ProcessingState> {
         self.reply_channel = Some(reply_channel);
         self.http_version = Some(http_version);
         self.http_headers = headers;
-        self.body_context.frame_bridge = frame_bridge;
+        self.frame_bridge = frame_bridge;
 
         if self.http_headers.is_some() {
             return self.process_headers();
@@ -171,7 +201,7 @@ impl Processing<ProcessingState> {
             );
         };
 
-        let end_of_stream = !self.is_body_processing_planned() && !self.is_trailers_processing_planned();
+        let end_of_stream = !self.should_process_body() && !self.should_process_trailers();
 
         let envmap: EnvoyHeaderMap = headers.into();
         let processing_request = ProcessingRequest {
@@ -188,7 +218,7 @@ impl Processing<ProcessingState> {
 
         let next_state = if self.send_body_without_waiting_for_header_response
             // && matches!(self.body_context.body_mode, BodyProcessingMode::Streamed)
-            && self.body_context.frame_bridge.is_some()
+            && self.frame_bridge.is_some()
         {
             ProcessingState::StreamingBody
         } else {
@@ -264,7 +294,7 @@ impl Processing<ProcessingState> {
     ) -> Action<ProcessingRequest> {
         match self.state {
             ProcessingState::WaitingForHeadersReply | ProcessingState::StreamingBody => {
-                let mut status;
+                let status;
 
                 if let Some(response_data) = response.response {
                     let should_clear_route_cache = match route_cache_action {
@@ -304,15 +334,20 @@ impl Processing<ProcessingState> {
 
                         if let Some(new_body) = body_replacement {
                             debug!(target: "ext_proc", "handle_headers_response: Body replacement requested: {new_body:?}");
-                            if let Some(bridge) = self.body_context.frame_bridge.as_mut() {
-                               bridge.inject_frame(Ok(new_body));
-                               bridge.close();
+                            if let Some(bridge) = self.frame_bridge.as_mut() {
+                               _ = bridge.inject_frame(Ok(new_body)).await;
+                               bridge.close().await;
+                            }
+                        } else {
+                            debug!(target: "ext_proc", "handle_headers_response: No body replacement requested");
+                            if let Some(bridge) = self.frame_bridge.as_mut() {
+                                bridge.close().await;
                             }
                         }
-
-                        debug!(target: "ext_proc", "handle_headers_response: Sending message status {status:?}");
-                        return Action::Return(status);
+                    } else {
+                        debug!(target: "ext_proc", "handle_headers_response: ResponseStatus:Continue: headers processed");
                     }
+
                 } else {
                     status = ProcessingStatus::RequestReady(ReadyStatus {
                         headers_modifications: None,
@@ -320,9 +355,9 @@ impl Processing<ProcessingState> {
                         override_sending_response_body: Some(wants_response_body),
                         clear_route_cache: false,
                     });
-                    debug!(target: "ext_proc", "handle_headers_response: prepared Status: {status:?}");
                 }
 
+                debug!(target: "ext_proc", "handle_headers_response: Sending message status {status:?}");
                 Action::Return(status)
             },
             s => {
@@ -591,18 +626,18 @@ impl Processing<ProcessingState> {
 impl<S: State + Default> Processing<S> {
 
     #[inline]
-    pub fn is_headers_processing_planned(&self) -> bool {
+    pub fn should_process_headers(&self) -> bool {
         matches!(self.headers_mode, HeaderProcessingMode::Send)
     }
 
     #[inline]
-    pub fn is_body_processing_planned(&self) -> bool {
-        !matches!(self.body_context.body_mode, BodyProcessingMode::None)
+    pub fn should_process_body(&self) -> bool {
+        !matches!(self.body_mode, BodyProcessingMode::None)
     }
 
     #[inline]
-    pub fn is_trailers_processing_planned(&self) -> bool {
-        matches!(self.body_context.trailers_mode, TrailerProcessingMode::Send)
+    pub fn should_process_trailers(&self) -> bool {
+        matches!(self.trailers_mode, TrailerProcessingMode::Send)
     }
 
 
