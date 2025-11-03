@@ -13,7 +13,9 @@ use crate::listeners::http_connection_manager::ext_proc::common_state::State;
 use crate::listeners::http_connection_manager::ext_proc::mutation::apply_header_mutations;
 use crate::listeners::http_connection_manager::ext_proc::processing::RequestProcessing;
 use crate::listeners::http_connection_manager::ext_proc::processing::ResponseProcessing;
-use crate::listeners::http_connection_manager::ext_proc::worker_config::{ExternalProcessingWorkerConfig, OverrideSendingFlags};
+use crate::listeners::http_connection_manager::ext_proc::worker_config::{
+    ExternalProcessingWorkerConfig, OverrideSendingFlags,
+};
 use crate::{
     body::{body_with_metrics::BodyWithMetrics, response_flags::ResponseFlags},
     clusters::clusters_manager::{self, RoutingContext},
@@ -103,7 +105,8 @@ impl From<(ExternalProcessorConfig, Option<ExtProcPerRoute>)> for ExternalProces
 
         let sending_response_headers =
             !matches!(worker_config.processing_mode.response_header_mode, HeaderProcessingMode::Skip);
-        let sending_response_body = !matches!(worker_config.processing_mode.response_body_mode, BodyProcessingMode::None);
+        let sending_response_body =
+            !matches!(worker_config.processing_mode.response_body_mode, BodyProcessingMode::None);
         let sending_response_trailers =
             !matches!(worker_config.processing_mode.response_trailer_mode, TrailerProcessingMode::Skip);
 
@@ -376,9 +379,18 @@ impl ExternalProcessor {
 
         match response_rx.await {
             Ok(ProcessingStatus::HaltedOnError) => {
-                self.worker_config.override_sending_response.headers.store(worker_config::SendingFlag::False, Ordering::Relaxed);
-                self.worker_config.override_sending_response.body.store(worker_config::SendingFlag::False, Ordering::Relaxed);
-                self.worker_config.override_sending_response.trailers.store(worker_config::SendingFlag::False, Ordering::Relaxed);
+                self.worker_config
+                    .override_sending_response
+                    .headers
+                    .store(worker_config::SendingFlag::False, Ordering::Relaxed);
+                self.worker_config
+                    .override_sending_response
+                    .body
+                    .store(worker_config::SendingFlag::False, Ordering::Relaxed);
+                self.worker_config
+                    .override_sending_response
+                    .trailers
+                    .store(worker_config::SendingFlag::False, Ordering::Relaxed);
                 FilterDecision::Continue
             },
             Ok(ProcessingStatus::EndWithDirectResponse(direct_response)) => {
@@ -437,21 +449,16 @@ impl ExternalProcessor {
         }
     }
 
-    async fn collect_to_single_chunk(
-        original: Collected<Bytes>
-    ) -> Collected<Bytes> {
+    async fn collect_to_single_chunk(original: Collected<Bytes>) -> Collected<Bytes> {
         let trailers = original.trailers().cloned();
         let aggregated_bytes = original.to_bytes();
         let new_body = Full::new(aggregated_bytes);
 
-        let trailer_future = async move {
-            trailers.map(Ok::<_, Infallible>)
-        };
+        let trailer_future = async move { trailers.map(Ok::<_, Infallible>) };
 
         let body_with_trailers = new_body.with_trailers(trailer_future);
         body_with_trailers.collect().await.unwrap()
     }
-
 
     #[inline]
     fn dup_and_split(
@@ -608,11 +615,26 @@ impl ExternalProcessor {
             error!(target: "ext_proc", "{msg}");
         }
         if self.worker_config.failure_mode_allow {
-            self.worker_config.override_sending_request.body.store(worker_config::SendingFlag::False, Ordering::Relaxed);
-            self.worker_config.override_sending_request.trailers.store(worker_config::SendingFlag::False, Ordering::Relaxed);
-            self.worker_config.override_sending_response.headers.store(worker_config::SendingFlag::False, Ordering::Relaxed);
-            self.worker_config.override_sending_response.body.store(worker_config::SendingFlag::False, Ordering::Relaxed);
-            self.worker_config.override_sending_response.trailers.store(worker_config::SendingFlag::False, Ordering::Relaxed);
+            self.worker_config
+                .override_sending_request
+                .body
+                .store(worker_config::SendingFlag::False, Ordering::Relaxed);
+            self.worker_config
+                .override_sending_request
+                .trailers
+                .store(worker_config::SendingFlag::False, Ordering::Relaxed);
+            self.worker_config
+                .override_sending_response
+                .headers
+                .store(worker_config::SendingFlag::False, Ordering::Relaxed);
+            self.worker_config
+                .override_sending_response
+                .body
+                .store(worker_config::SendingFlag::False, Ordering::Relaxed);
+            self.worker_config
+                .override_sending_response
+                .trailers
+                .store(worker_config::SendingFlag::False, Ordering::Relaxed);
             FilterDecision::Continue
         } else {
             FilterDecision::DirectResponse(
