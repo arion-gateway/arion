@@ -399,6 +399,7 @@ impl ExternalProcessor {
             Ok(ProcessingStatus::RequestReady(ReadyStatus {
                 override_sending_response_headers,
                 override_sending_response_body,
+                override_sending_response_trailers,
                 clear_route_cache,
                 headers_modifications,
             })) => {
@@ -428,6 +429,10 @@ impl ExternalProcessor {
                 if let Some(override_value) = override_sending_response_body {
                     self.sending_response_body = override_value;
                 }
+                if let Some(override_value) = override_sending_response_trailers {
+                    self.sending_response_trailers = override_value;
+                }
+
                 if clear_route_cache {
                     return FilterDecision::Reroute;
                 }
@@ -437,6 +442,7 @@ impl ExternalProcessor {
                 headers_modifications,
                 override_sending_response_headers,
                 override_sending_response_body,
+                override_sending_response_trailers,
                 clear_route_cache,
             })) => {
                 todo!()
@@ -889,12 +895,14 @@ impl ExternalProcessingWorker<ProcessingState> {
                             }
                             let wants_response_headers = self.response_processing.should_process_headers();
                             let wants_response_body = self.response_processing.should_process_body();
+                            let wants_response_trailers = self.response_processing.should_process_trailers();
 
                             let action = self.request_processing.handle_headers_response(
                                 headers_response,
                                 &self.config.route_cache_action,
                                 wants_response_headers,
-                                wants_response_body
+                                wants_response_body,
+                                wants_response_trailers
                             ).await;
 
                             run_action!(self, self.request_processing, action, "handle_headers_response");
@@ -923,12 +931,14 @@ impl ExternalProcessingWorker<ProcessingState> {
                             }
                             let wants_response_headers = self.response_processing.should_process_headers();
                             let wants_response_body = self.response_processing.should_process_body();
+                            let wants_response_trailers = self.response_processing.should_process_trailers();
 
                             let action = self.response_processing.handle_headers_response(
                                 headers_response,
                                 &self.config.route_cache_action,
                                 wants_response_headers,
-                                wants_response_body
+                                wants_response_body,
+                                wants_response_trailers,
                             ).await;
                             run_action!(self, self.response_processing, action, "handle_headers_response");
                         },

@@ -288,6 +288,7 @@ impl Processing<ProcessingState> {
         route_cache_action: &RouteCacheAction,
         wants_response_headers: bool,
         wants_response_body: bool,
+        wants_response_trailers: bool,
     ) -> Action<ProcessingRequest> {
         match self.state {
             ProcessingState::WaitingForHeadersReply | ProcessingState::StreamingBody => {
@@ -304,6 +305,7 @@ impl Processing<ProcessingState> {
                         headers_modifications: response_data.header_mutation,
                         override_sending_response_headers: Some(wants_response_headers),
                         override_sending_response_body: Some(wants_response_body),
+                        override_sending_response_trailers: Some(wants_response_trailers),
                         clear_route_cache: should_clear_route_cache,
                     });
 
@@ -357,6 +359,7 @@ impl Processing<ProcessingState> {
                         headers_modifications: None,
                         override_sending_response_headers: Some(wants_response_headers),
                         override_sending_response_body: Some(wants_response_body),
+                        override_sending_response_trailers: Some(wants_response_trailers),
                         clear_route_cache: false,
                     });
 
@@ -442,7 +445,6 @@ impl Processing<ProcessingState> {
             if matches!(embedded_status, ResponseStatus::ContinueAndReplace) {
                 debug!(target: "ext_proc", "handle_body_response: CONTINUE_AND_REPLACE: Sending message status {status:?}");
                 self.streaming_body_enabled = false;
-                debug!(target: "ext_proc", "frame brige closed!");
                 self.frame_bridge.close().await;
                 return Action::Return(status);
             }
@@ -450,7 +452,6 @@ impl Processing<ProcessingState> {
             if self.end_of_stream && sent_frames.is_empty() {
                 debug!(target: "ext_proc", "handle_body_response: end_of_stream reached, closing frame bridge");
                 self.streaming_body_enabled = false;
-                debug!(target: "ext_proc", "frame brige closed!");
                 self.frame_bridge.close().await;
             }
 
