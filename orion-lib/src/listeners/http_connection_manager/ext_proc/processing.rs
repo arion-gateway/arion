@@ -180,19 +180,10 @@ impl Processing<ProcessingState> {
             return self.process_headers();
         }
 
-        //if let Some(body) = self.body_context.body_buffered.take() {
-        //    self.state = ProcessingState::WaitingForBodyInput;
-        //    return self.prepare_body(body).await;
-        //}
+        self.streaming_body_enabled = true;
 
-        //if let Some(trailers) = self.body_context.trailers.as_ref() {
-        //    self.state = ProcessingState::WaitingForBodyInput;
-        //    return self.prepare_trailers(trailers);
-        //}
-
-        Action::Return(
-            self.status_error("No headers, body, or trailers provided to process_request", self.failure_mode_allow),
-        )
+        let status = ProcessingStatus::RequestReady(ReadyStatus::default());
+        Action::Return(status)
     }
 
     #[must_use = "must handle the returned Action"]
