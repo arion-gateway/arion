@@ -1659,6 +1659,54 @@ mod tests {
         }
     }
 
+    static HEADER_PROCESSING_MODE: [HeaderProcessingMode; 3] =
+        [HeaderProcessingMode::Default, HeaderProcessingMode::Send, HeaderProcessingMode::Skip];
+    static BODY_PROCESSING_MODE: [BodyProcessingMode; 5] = [
+        BodyProcessingMode::None,
+        BodyProcessingMode::Streamed,
+        BodyProcessingMode::Buffered,
+        BodyProcessingMode::BufferedPartial,
+        BodyProcessingMode::FullDuplexStreamed,
+    ];
+    static TRAILER_PROCESSING_MODE: [TrailerProcessingMode; 2] =
+        [TrailerProcessingMode::Skip, TrailerProcessingMode::Send];
+
+    fn generate_all_request_processing_mode_configurations() -> Vec<ProcessingMode> {
+        HEADER_PROCESSING_MODE
+            .iter()
+            .flat_map(|&header_mode| {
+                BODY_PROCESSING_MODE.iter().flat_map(move |&body_mode| {
+                    TRAILER_PROCESSING_MODE.iter().map(move |&trailer_mode| ProcessingMode {
+                        request_header_mode: header_mode,
+                        request_body_mode: body_mode,
+                        request_trailer_mode: trailer_mode,
+                        response_header_mode: HeaderProcessingMode::Skip,
+                        response_body_mode: BodyProcessingMode::None,
+                        response_trailer_mode: TrailerProcessingMode::Skip,
+                    })
+                })
+            })
+            .collect()
+    }
+
+    fn generate_all_response_processing_mode_configurations() -> Vec<ProcessingMode> {
+        HEADER_PROCESSING_MODE
+            .iter()
+            .flat_map(|&header_mode| {
+                BODY_PROCESSING_MODE.iter().flat_map(move |&body_mode| {
+                    TRAILER_PROCESSING_MODE.iter().map(move |&trailer_mode| ProcessingMode {
+                        request_header_mode: HeaderProcessingMode::Skip,
+                        request_body_mode: BodyProcessingMode::None,
+                        request_trailer_mode: TrailerProcessingMode::Skip,
+                        response_header_mode: header_mode,
+                        response_body_mode: body_mode,
+                        response_trailer_mode: trailer_mode,
+                    })
+                })
+            })
+            .collect()
+    }
+
     #[tokio::test]
     async fn test_header_mutation() {
         let mock_state = MockExternalProcessorState::new().add_response(create_headers_response(
