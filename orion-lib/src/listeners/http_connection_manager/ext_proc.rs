@@ -852,6 +852,7 @@ impl ExternalProcessingWorker<ProcessingState> {
                         Ok(Some(ProcessingResponse { override_message_timeout: Some(extended_timeout), ..})) => {
                             debug!(target: "ext_proc", "<- Requested timeout extension received: {extended_timeout:?}");
                             if !self.handle_timeout_extension(extended_timeout) {
+                                debug!(target: "ext_proc", "Invalid timeout extension - closing stream");
                                 break 'transaction_loop;
                             }
                         },
@@ -883,6 +884,7 @@ impl ExternalProcessingWorker<ProcessingState> {
                                     }
                                 }
                             }
+                            debug!(target: "ext_proc", "Immediate response processed - closing stream");
                             break 'transaction_loop;
                         },
                         Ok(Some(ProcessingResponse { mode_override, response: Some(ProcessingResponseType::RequestHeaders(headers_response)), ..})) => {
@@ -949,6 +951,7 @@ impl ExternalProcessingWorker<ProcessingState> {
                             run_action!(self, self.response_processing, action, "handle_body_response");
 
                             if empty_response {
+                                debug!(target: "ext_proc", "Response body response contained no response - closing stream");
                                 break 'transaction_loop;
                             }
                         },
@@ -980,10 +983,11 @@ impl ExternalProcessingWorker<ProcessingState> {
                                     let _ = reply_channel.send(status);
                                 }
                             }
+                            debug!(target: "ext_proc", "gRPC error processed - closing stream");
                             break 'transaction_loop;
                         },
                         _ => {
-                            debug!(target: "ext_proc", "Stream closed by the external processor");
+                            debug!(target: "ext_proc", "Stream closed by the external processor - closing stream");
                             break 'transaction_loop;
                         }
                     }
@@ -1028,7 +1032,6 @@ impl ExternalProcessingWorker<ProcessingState> {
                                 debug!(target: "ext_proc", "Sending last body chunk of request (stubbed)!");
                                 let action = self.request_processing.handle_body_chunk(clone_frame(&current_frame), true).await;
                                 run_action!(self, self.request_processing, action, "handle_body_chunk (end)");
-
                                 sent_frames.push(current_frame);
                             }
 

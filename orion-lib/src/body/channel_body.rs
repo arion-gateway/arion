@@ -212,6 +212,7 @@ mod tests {
     use super::*;
     use futures::future;
     use http_body_util::Full;
+    use std::task::{Context, Poll, Waker};
 
     #[tokio::test]
     async fn test_complete() {
@@ -268,5 +269,31 @@ mod tests {
         // Verify that the consumer received the data
         let result = consumer_handle.await.unwrap();
         assert_eq!(result, Bytes::from("Test"));
+    }
+
+    fn dummy_context() -> Context<'static> {
+        // Waker::noop() creates a waker that does nothing when woken.
+        // This has been stable since Rust 1.58.
+        let waker = Waker::noop();
+        Context::from_waker(&waker)
+    }
+
+    #[tokio::test]
+    async fn test_channel_body_debug() {
+        let body = Full::new(Bytes::from("Debug Test"));
+        let (mut channel_body, mut bridge) = ChannelBody::new(body);
+        assert!(!channel_body.is_end_stream());
+        let mut ctx = dummy_context();
+        assert!(matches!(Pin::new(&mut channel_body).poll_frame(&mut ctx), Poll::Pending));
+
+        let bridge_handle = tokio::spawn(async move {
+            bridge.complete().await;
+        });
+        bridge_handle.await.unwrap();
+
+        assert!(matches!(Pin::new(&mut channel_body).poll_frame(&mut ctx), Poll::Ready(Some(Ok(_)))));
+        assert!(matches!(Pin::new(&mut channel_body).poll_frame(&mut ctx), Poll::Ready(None)));
+
+        println!("{:?}", channel_body);
     }
 }

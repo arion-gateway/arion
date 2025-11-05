@@ -854,6 +854,7 @@ impl
                     if !is_reroute {
                         break;
                     }
+                    debug!("rerouting enabled; active_filters dropped!");
                     active_filters.clear();
                     processed_routes.insert(&chosen_route.route.route_match);
                     cached_route = match_request_route(&request, &self);
@@ -899,12 +900,21 @@ impl
                 },
             }?;
 
-            while let Some(mut filter_value) = active_filters.pop() {
-                let filter_res = filter_value.apply_response(&mut response).await;
+            // Process filters on response...
+            //
+            for filter in active_filters.iter_mut() {
+                let filter_res = filter.apply_response(&mut response).await;
                 if let FilterDecision::DirectResponse(direct_response) = filter_res {
                     response = direct_response;
                     break;
                 }
+            }
+
+            // Extend the lifetime of active_filters to the response.
+            // This is needed for filters to survive until the Response is completely streamed.
+            //
+            if !active_filters.is_empty() {
+                response.extensions_mut().insert(active_filters);
             }
 
             let resp_headers = response.headers_mut();
