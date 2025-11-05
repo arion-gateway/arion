@@ -16,8 +16,8 @@
 //
 
 use super::body_with_timeout::{BodyWithTimeout, TimeoutBodyError};
-use crate::Error;
 use crate::body::channel_body::ChannelBody;
+use crate::Error;
 use bytes::Bytes;
 use http_body::Frame;
 use http_body_util::combinators::WithTrailers;
@@ -26,7 +26,7 @@ use hyper::body::{Body, Incoming};
 use orion_xds::grpc_deps::{GrpcBody, Status as GrpcError};
 use pin_project::pin_project;
 use std::convert::Infallible;
-use std::future::{Ready};
+use std::future::Ready;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -169,8 +169,6 @@ impl Body for PolyBody {
         }
     }
 }
-
-
 
 impl From<Empty<Bytes>> for PolyBody {
     #[inline]
@@ -358,7 +356,6 @@ impl TryFrom<PolyBody> for WithTrailers<Collected<Bytes>, Ready<TrailersType>> {
         }
     }
 }
-
 
 impl PolyBody {
     pub fn new_stream_body(buffer_size: usize) -> (Self, mpsc::Sender<Result<Frame<Bytes>, Error>>) {

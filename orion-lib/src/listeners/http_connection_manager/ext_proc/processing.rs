@@ -1,19 +1,19 @@
 use crate::body::channel_body::FrameBridge;
 use crate::event_error::EventFailure;
 use crate::listeners::http_connection_manager::ext_proc::common_state::{
-    Action, ProcessingStatus, ProcessingState, ReadyStatus, State,
+    Action, ProcessingState, ProcessingStatus, ReadyStatus, State,
 };
 use crate::listeners::http_connection_manager::ext_proc::mutation::apply_header_mutations;
 use crate::listeners::http_connection_manager::ext_proc::worker_config::ExternalProcessingWorkerConfig;
 use crate::listeners::http_connection_manager::ext_proc::EnvoyHeaderMap;
 use crate::{body::response_flags::ResponseFlags, listeners::synthetic_http_response::SyntheticHttpResponse};
 use bytes::Bytes;
-use http_body::{Frame};
+use http_body::Frame;
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::ext_proc::{
     BodyProcessingMode, HeaderProcessingMode, ProcessingMode, RouteCacheAction, TrailerProcessingMode,
 };
-use orion_data_plane_api::envoy_data_plane_api::envoy::service::ext_proc::v3::HttpTrailers;
 use orion_data_plane_api::envoy_data_plane_api::envoy::service::ext_proc::v3::common_response::ResponseStatus;
+use orion_data_plane_api::envoy_data_plane_api::envoy::service::ext_proc::v3::HttpTrailers;
 use orion_data_plane_api::envoy_data_plane_api::envoy::{
     extensions::filters::http::ext_proc::v3::ProcessingMode as EnvoyProcessingMode,
     service::ext_proc::v3::{
@@ -58,7 +58,6 @@ impl<S: State> DerefMut for ResponseProcessing<S> {
     }
 }
 
-
 pub struct Processing<S: State> {
     pub state: S,
 
@@ -68,11 +67,8 @@ pub struct Processing<S: State> {
 
     http_headers: Option<http::HeaderMap>,
     pub trailers: Option<http::HeaderMap>,
-
     pub frame_bridge: FrameBridge,
-    pub buffered_chunk: Option<Bytes>,
 
-    partial_status: Option<ProcessingStatus>,
     pub reply_channel: Option<oneshot::Sender<ProcessingStatus>>,
     http_version: Option<http::Version>,
     send_body_without_waiting_for_header_response: bool,
@@ -96,7 +92,7 @@ impl<S: State + Default> From<(&ExternalProcessingWorkerConfig, ProcessingKind)>
 
         let processing_mode = &config.processing_mode;
 
-        Self{
+        Self {
             state: S::default(),
             headers_mode: match kind {
                 ProcessingKind::Request => processing_mode.request_header_mode,
@@ -117,8 +113,6 @@ impl<S: State + Default> From<(&ExternalProcessingWorkerConfig, ProcessingKind)>
             http_headers: None,
             frame_bridge: FrameBridge::default(),
             trailers: None,
-            buffered_chunk: None,
-            partial_status: None,
             reply_channel: None,
             http_version: None,
             streaming_body_enabled: false,
@@ -140,7 +134,6 @@ impl<S: State + Default> From<&ExternalProcessingWorkerConfig> for ResponseProce
         Self(Processing::<S>::from((value, ProcessingKind::Response)))
     }
 }
-
 
 impl Processing<ProcessingState> {
     pub fn apply_mode_overrides(
@@ -169,8 +162,7 @@ impl Processing<ProcessingState> {
         frame_bridge: FrameBridge,
         reply_channel: oneshot::Sender<ProcessingStatus>,
         http_version: http::Version,
-    ) -> Action<ProcessingRequest>
-    {
+    ) -> Action<ProcessingRequest> {
         self.reply_channel = Some(reply_channel);
         self.http_version = Some(http_version);
         self.http_headers = headers;
@@ -190,12 +182,10 @@ impl Processing<ProcessingState> {
     fn process_headers(&mut self) -> Action<ProcessingRequest> {
         debug!(target: "ext_proc", "process_request headers {:?}", self.http_headers);
         let Some(headers) = &self.http_headers else {
-            return Action::Return(
-                self.status_error(
-                    format!("process_request: Unexpected headers provided: {:?}", self.http_headers).as_str(),
-                    self.failure_mode_allow,
-                ),
-            );
+            return Action::Return(self.status_error(
+                format!("process_request: Unexpected headers provided: {:?}", self.http_headers).as_str(),
+                self.failure_mode_allow,
+            ));
         };
 
         let end_of_stream = !self.should_process_body() && !self.should_process_trailers();
@@ -286,9 +276,6 @@ impl Processing<ProcessingState> {
         &mut self,
         response: HeadersResponse,
         route_cache_action: &RouteCacheAction,
-        wants_response_headers: bool,
-        wants_response_body: bool,
-        wants_response_trailers: bool,
     ) -> Action<ProcessingRequest> {
         match self.state {
             ProcessingState::WaitingForHeadersReply | ProcessingState::StreamingBody => {
@@ -303,9 +290,6 @@ impl Processing<ProcessingState> {
 
                     status = ProcessingStatus::RequestReady(ReadyStatus {
                         headers_modifications: response_data.header_mutation,
-                        override_sending_response_headers: Some(wants_response_headers),
-                        override_sending_response_body: Some(wants_response_body),
-                        override_sending_response_trailers: Some(wants_response_trailers),
                         clear_route_cache: should_clear_route_cache,
                     });
 
@@ -316,9 +300,7 @@ impl Processing<ProcessingState> {
                         debug!(target: "ext_proc", "handle_headers_response: ResponseStatus:ContinueAndReplace");
                         let body_replacement =
                             match response_data.body_mutation.and_then(|body_mutation| body_mutation.mutation) {
-                                Some(Mutation::Body(bytes)) => {
-                                    Some(Frame::data(bytes.into()))
-                                },
+                                Some(Mutation::Body(bytes)) => Some(Frame::data(bytes.into())),
                                 Some(Mutation::ClearBody(true)) => Some(Frame::data(Bytes::new())),
                                 Some(Mutation::ClearBody(false)) | None => None,
                                 Some(Mutation::StreamedResponse(_)) => {
@@ -338,10 +320,9 @@ impl Processing<ProcessingState> {
                         // replace trailers if specified
                         if let Some(trailers) = response_data.trailers {
                             debug!(target: "ext_proc", "handle_headers_response: Trailers replacement requested: {trailers:?}");
-                            let new_trailers : http::HeaderMap = EnvoyHeaderMap(trailers).into();
+                            let new_trailers: http::HeaderMap = EnvoyHeaderMap(trailers).into();
                             _ = self.frame_bridge.inject_frame(Ok(Frame::trailers(new_trailers))).await;
                         }
-
                     } else {
                         debug!(target: "ext_proc", "handle_headers_response: ResponseStatus:Continue: headers processed");
                         if !self.should_process_body() && !self.should_process_trailers() {
@@ -357,9 +338,6 @@ impl Processing<ProcessingState> {
                 } else {
                     status = ProcessingStatus::RequestReady(ReadyStatus {
                         headers_modifications: None,
-                        override_sending_response_headers: Some(wants_response_headers),
-                        override_sending_response_body: Some(wants_response_body),
-                        override_sending_response_trailers: Some(wants_response_trailers),
                         clear_route_cache: false,
                     });
 
@@ -389,21 +367,15 @@ impl Processing<ProcessingState> {
         debug!(target: "ext_proc", "handle_body_response: pending frames => {sent_frames:?}");
 
         if let Some(response_data) = body_response.response {
-            let chunk_replacement = match response_data
-                .body_mutation
-                .and_then(|body_mutation| body_mutation.mutation)
-            {
+            let chunk_replacement = match response_data.body_mutation.and_then(|body_mutation| body_mutation.mutation) {
                 Some(Mutation::Body(bytes)) => Some(Frame::data(bytes.into())),
                 Some(Mutation::ClearBody(true)) => Some(Frame::data(Bytes::new())),
                 Some(Mutation::ClearBody(false)) | None => None,
-                Some(Mutation::StreamedResponse(chunk)) => {
-                    Some(Frame::data(chunk.body.into()))
-                },
+                Some(Mutation::StreamedResponse(chunk)) => Some(Frame::data(chunk.body.into())),
             };
             debug!(target: "ext_proc", "chunk_replacement => {chunk_replacement:?}");
 
-            let mut status =
-                self.partial_status.take().unwrap_or_else(|| ProcessingStatus::RequestReady(ReadyStatus::default()));
+            let mut status = ProcessingStatus::RequestReady(ReadyStatus::default());
 
             match chunk_replacement {
                 Some(new_chunk) => {
@@ -434,8 +406,7 @@ impl Processing<ProcessingState> {
                 }
             }
 
-            let embedded_status =
-                ResponseStatus::try_from(response_data.status).unwrap_or(ResponseStatus::Continue);
+            let embedded_status = ResponseStatus::try_from(response_data.status).unwrap_or(ResponseStatus::Continue);
 
             if matches!(embedded_status, ResponseStatus::ContinueAndReplace) {
                 debug!(target: "ext_proc", "handle_body_response: CONTINUE_AND_REPLACE: Sending message status {status:?}");
@@ -452,19 +423,23 @@ impl Processing<ProcessingState> {
 
             return Action::Return(status);
         } else {
-            return Action::Return(self.status_error(
-                "handle_body_response: No response data in body response",
-                self.failure_mode_allow,
-            ));
+            return Action::Return(
+                self.status_error("handle_body_response: No response data in body response", self.failure_mode_allow),
+            );
         }
     }
 
     #[must_use = "must handle the returned Action"]
-    pub async fn handle_body_chunk(&mut self, mut chunk: Frame<Bytes>, end_of_stream: bool) -> Action<ProcessingRequest> {
+    pub async fn handle_body_chunk(
+        &mut self,
+        mut chunk: Frame<Bytes>,
+        end_of_stream: bool,
+    ) -> Action<ProcessingRequest> {
         debug!(target: "ext_proc", "handle_body_chunk: sending data frame: {}, end_of_stream: {end_of_stream}",
             if chunk.is_data() { "DATA" } else if chunk.is_trailers() { "TRAILERS" } else { "OTHER" });
 
-        let processing_request = if let Some(bytes) = chunk.data_mut() { // DATA
+        let processing_request = if let Some(bytes) = chunk.data_mut() {
+            // DATA
             let data = std::mem::take(bytes);
 
             let http_body = HttpBody { body: data.into(), end_of_stream };
@@ -475,8 +450,8 @@ impl Processing<ProcessingState> {
                 observability_mode: self.state.is_observability_mode(),
                 protocol_config: None,
             }
-
-        } else if let Some(traiers) = chunk.trailers_mut() { // TRAILERS
+        } else if let Some(traiers) = chunk.trailers_mut() {
+            // TRAILERS
             let data = std::mem::take(traiers);
 
             // store trailers for potential update later
@@ -493,14 +468,10 @@ impl Processing<ProcessingState> {
                 observability_mode: self.state.is_observability_mode(),
                 protocol_config: None,
             }
-
         } else {
             let msg = "handle_body_chunk: unexpected non-data frame to send";
             debug!(target: "ext_proc", msg);
-            return Action::Return(self.status_error(
-                msg,
-                self.failure_mode_allow,
-            ));
+            return Action::Return(self.status_error(msg, self.failure_mode_allow));
         };
 
         debug!(target: "ext_proc", "handle_body_chunk: prepared processing_request: {:?}", processing_request);
@@ -536,7 +507,10 @@ impl Processing<ProcessingState> {
     }
 
     #[must_use = "must handle the returned Action"]
-    pub fn handle_noop_response(&mut self, ctor: fn(ReadyStatus) -> ProcessingStatus, wants_response_body: Option<bool>, wants_response_headers: Option<bool>) -> Action<ProcessingRequest> {
+    pub fn handle_noop_response(
+        &mut self,
+        ctor: fn(ReadyStatus) -> ProcessingStatus,
+    ) -> Action<ProcessingRequest> {
         todo!("Implement handle_noop_response");
         //self.state = ProcessingState::default();
         //let status = self.partial_status.take().unwrap_or_else(|| ctor(ReadyStatus {
@@ -553,7 +527,6 @@ impl Processing<ProcessingState> {
 }
 
 impl<S: State + Default> Processing<S> {
-
     #[inline]
     pub fn should_process_headers(&self) -> bool {
         matches!(self.headers_mode, HeaderProcessingMode::Send)
@@ -568,7 +541,6 @@ impl<S: State + Default> Processing<S> {
     pub fn should_process_trailers(&self) -> bool {
         matches!(self.trailers_mode, TrailerProcessingMode::Send)
     }
-
 
     #[inline]
     pub fn is_awaiting_reply(&self) -> bool {

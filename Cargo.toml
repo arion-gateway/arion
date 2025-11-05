@@ -53,6 +53,7 @@ num_cpus            = "1"
 ppp                 = "2.3"
 prost               = "0.13"
 prost-build         = "^0.13"
+atomic_enum         = "0.3.0"
 prost-reflect       = { version = "0.14", features = ["derive", "serde"] }
 regex               = "1.10.2"
 serde               = { version = "1", features = ["derive", "rc"] }

@@ -1,5 +1,6 @@
 mod common_state;
 mod mutation;
+mod override_mode;
 mod processing;
 mod worker_config;
 
@@ -11,11 +12,10 @@ use crate::listeners::http_connection_manager::ext_proc::common_state::Processin
 use crate::listeners::http_connection_manager::ext_proc::common_state::ReadyStatus;
 use crate::listeners::http_connection_manager::ext_proc::common_state::State;
 use crate::listeners::http_connection_manager::ext_proc::mutation::apply_header_mutations;
+use crate::listeners::http_connection_manager::ext_proc::override_mode::{OverridableBodyMode, OverridableGlobalModes};
 use crate::listeners::http_connection_manager::ext_proc::processing::RequestProcessing;
 use crate::listeners::http_connection_manager::ext_proc::processing::ResponseProcessing;
-use crate::listeners::http_connection_manager::ext_proc::worker_config::{
-    ExternalProcessingWorkerConfig, OverrideSendingFlags,
-};
+use crate::listeners::http_connection_manager::ext_proc::worker_config::ExternalProcessingWorkerConfig;
 use crate::{
     body::{body_with_metrics::BodyWithMetrics, response_flags::ResponseFlags},
     clusters::clusters_manager::{self, RoutingContext},
@@ -62,7 +62,6 @@ use smallvec::SmallVec;
 use std::convert::Infallible;
 use std::future::ready;
 use std::future::Ready;
-use std::sync::atomic::Ordering;
 use std::{sync::Arc, time::Duration};
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::{mpsc, oneshot};
@@ -76,12 +75,13 @@ pub struct ExternalProcessor {
     ext_proc_worker: Option<mpsc::Sender<ProcessingTask>>,
     worker_config: Arc<ExternalProcessingWorkerConfig>,
     forward_rules: Option<Arc<HeaderForwardingRules>>,
-    sending_request_headers: bool,
-    sending_request_body: bool,
-    sending_request_trailers: bool,
-    sending_response_headers: bool,
-    sending_response_body: bool,
-    sending_response_trailers: bool,
+    overridable_modes: Arc<OverridableGlobalModes>,
+    //sending_request_headers: bool,
+    //sending_request_body: bool,
+    //sending_request_trailers: bool,
+    //sending_response_headers: bool,
+    //sending_response_body: bool,
+    //sending_response_trailers: bool,
 }
 
 impl From<ExternalProcessorConfig> for ExternalProcessor {
@@ -97,29 +97,26 @@ impl From<(ExternalProcessorConfig, Option<ExtProcPerRoute>)> for ExternalProces
         let forward_rules = initial_config.forward_rules.clone().map(Arc::new);
         let worker_config = ExternalProcessingWorkerConfig::from((initial_config, per_route_config));
 
-        let sending_request_headers =
-            !matches!(worker_config.processing_mode.request_header_mode, HeaderProcessingMode::Skip);
-        let sending_request_body = !matches!(worker_config.processing_mode.request_body_mode, BodyProcessingMode::None);
-        let sending_request_trailers =
-            !matches!(worker_config.processing_mode.request_trailer_mode, TrailerProcessingMode::Skip);
+        //let sending_request_headers =
+        //    !matches!(worker_config.processing_mode.request_header_mode, HeaderProcessingMode::Skip);
+        //let sending_request_body = !matches!(worker_config.processing_mode.request_body_mode, BodyProcessingMode::None);
+        //let sending_request_trailers =
+        //    !matches!(worker_config.processing_mode.request_trailer_mode, TrailerProcessingMode::Skip);
 
-        let sending_response_headers =
-            !matches!(worker_config.processing_mode.response_header_mode, HeaderProcessingMode::Skip);
-        let sending_response_body =
-            !matches!(worker_config.processing_mode.response_body_mode, BodyProcessingMode::None);
-        let sending_response_trailers =
-            !matches!(worker_config.processing_mode.response_trailer_mode, TrailerProcessingMode::Skip);
+        //let sending_response_headers =
+        //    !matches!(worker_config.processing_mode.response_header_mode, HeaderProcessingMode::Skip);
+        //let sending_response_body =
+        //    !matches!(worker_config.processing_mode.response_body_mode, BodyProcessingMode::None);
+        //let sending_response_trailers =
+        //    !matches!(worker_config.processing_mode.response_trailer_mode, TrailerProcessingMode::Skip);
+
+        let overridable_global_modes = Arc::new(OverridableGlobalModes::from(&worker_config));
 
         Self {
             ext_proc_worker: None,
             worker_config: Arc::new(worker_config),
             forward_rules,
-            sending_request_headers,
-            sending_request_body,
-            sending_request_trailers,
-            sending_response_headers,
-            sending_response_body,
-            sending_response_trailers,
+            overridable_modes: overridable_global_modes,
         }
     }
 }
@@ -168,8 +165,6 @@ impl From<(ExternalProcessorConfig, Option<ExtProcPerRoute>)> for ExternalProces
             allow_mode_override: config.allow_mode_override,
             route_cache_action: config.route_cache_action,
             send_body_without_waiting_for_header_response: config.send_body_without_waiting_for_header_response,
-            override_sending_request: OverrideSendingFlags::default(),
-            override_sending_response: OverrideSendingFlags::default(),
         }
     }
 }
@@ -208,123 +203,18 @@ macro_rules! run_action {
 }
 
 impl ExternalProcessor {
-    fn mutate_upstream_request(
-        &mut self,
-        request: &mut Request<BodyWithMetrics<PolyBody>>,
-        mut orig_trailers: Option<http::HeaderMap>,
-        headers_mutation: Option<HeaderMutation>,
-        body_replacement: Option<PolyBody>,
-        trailers_mutation: Option<HeaderMutation>,
-    ) -> Result<(), FilterDecision> {
-        debug!(target: "ext_proc", "mutate_upstream_request: headers_mutations -> {headers_mutation:#?}");
-        debug!(target: "ext_proc", "mutate_upstream_request: body_replacement  -> {body_replacement:#?}");
-        debug!(target: "ext_proc", "mutate_upstream_request: trailers_mutation -> {trailers_mutation:#?}");
-        debug!(target: "ext_proc", "mutate_upstream_request: orig_trailers     -> {orig_trailers:#?}");
-
-        // mutate request headers...
-        if let Some(headers_modifications) = headers_mutation {
-            if let Err(e) = apply_header_mutations(
-                request.headers_mut(),
-                &headers_modifications,
-                Some(&self.worker_config.mutation_rules),
-            ) {
-                return Err(self.on_filter_error(
-                    "Invalid header modifications received from external processor",
-                    Some(e),
-                    request.version(),
-                ));
-            }
-        }
-
-        // the assumption here is that trailers_modifcation are either send separately (for buffered body)
-        // or included in body_replacement (for streaming body)
-        match (body_replacement, trailers_mutation) {
-            (Some(body_replacement), None) if matches!(body_replacement, PolyBody::Stream(_)) => {
-                // STRAMED body replacement already include trailers, if any. We don't have to attach trailers separately in this case.
-                debug!(target: "ext_proc", "Replacing body of request with {body_replacement:?}");
-                request.body_mut().inner = body_replacement;
-                request.headers_mut().remove(CONTENT_LENGTH);
-            },
-            (Some(body_replacement), None) => {
-                // BUFFERED body
-                // mutate request body...
-                debug!(target: "ext_proc", "Replacing body of request with {body_replacement:?}");
-                request.body_mut().inner = match orig_trailers.take() {
-                    Some(trailers) => body_replacement.with_trailers(trailers).map_err(|err| {
-                        self.on_filter_error(
-                            "Failed to attach trailers to request body",
-                            Some(err.into()),
-                            request.version(),
-                        )
-                    })?,
-                    None => body_replacement,
-                };
-                request.headers_mut().remove(CONTENT_LENGTH);
-            },
-            (None, Some(ref trailers_modifications)) => {
-                // BUFFERED body
-                let mut trailers = orig_trailers.take().unwrap_or_default();
-                if let Err(e) = apply_header_mutations(
-                    &mut trailers,
-                    trailers_modifications,
-                    Some(&self.worker_config.mutation_rules),
-                ) {
-                    return Err(self.on_filter_error(
-                        "Invalid trailer modifications received from external processor",
-                        Some(e),
-                        request.version(),
-                    ));
-                }
-
-                let body = std::mem::take(&mut request.body_mut().inner);
-                request.body_mut().inner = body.with_trailers(trailers).map_err(|err| {
-                    self.on_filter_error(
-                        "Failed to attach trailers to request body",
-                        Some(err.into()),
-                        request.version(),
-                    )
-                })?;
-            },
-            (Some(body_replacement), Some(ref trailers_modifications)) => {
-                // BUFFERED body
-                let mut trailers = orig_trailers.take().unwrap_or_default();
-                if let Err(e) = apply_header_mutations(
-                    &mut trailers,
-                    trailers_modifications,
-                    Some(&self.worker_config.mutation_rules),
-                ) {
-                    return Err(self.on_filter_error(
-                        "Invalid trailer modifications received from external processor",
-                        Some(e),
-                        request.version(),
-                    ));
-                }
-
-                request.body_mut().inner = match body_replacement.with_trailers(trailers) {
-                    Ok(body) => body,
-                    Err(err) => {
-                        return Err(self.on_filter_error(
-                            "Failed to attach trailers to request body",
-                            Some(err.into()),
-                            request.version(),
-                        ));
-                    },
-                };
-            },
-            (None, None) => (),
-        }
-        Ok(())
-    }
-
     #[allow(clippy::too_many_lines)]
     pub async fn apply_request(&mut self, request: &mut Request<BodyWithMetrics<PolyBody>>) -> FilterDecision {
-        if !self.sending_request_headers && !self.sending_request_body && !self.sending_request_trailers {
+        if !self.overridable_modes.request.should_process_headers()
+            && !self.overridable_modes.request.should_process_body()
+            && !self.overridable_modes.request.should_process_trailers()
+        {
             return FilterDecision::Continue;
         }
 
         let mut ext_proc_headers = None;
 
-        if self.sending_request_headers {
+        if self.overridable_modes.request.should_process_headers() {
             debug!(target: "ext_proc", "request processing headers");
             ext_proc_headers = Some(self.filter_header_map(request.headers()));
         }
@@ -332,10 +222,10 @@ impl ExternalProcessor {
         let body: PolyBody = std::mem::take(&mut request.body_mut().inner);
 
         let ext_proc_frame_bridge = match (
-            self.worker_config.processing_mode.request_body_mode,
-            self.worker_config.processing_mode.request_trailer_mode,
+            self.overridable_modes.request.body_mode(),
+            self.overridable_modes.request.trailers_mode(),
         ) {
-            (BodyProcessingMode::None, trailers_mode) => {
+            (OverridableBodyMode::None, trailers_mode) => {
                 // event though body processing is None and trailers processing is Skip, we have to
                 // create the bridge, to allow ext_proc mutate the body with ContinueAndReplace action.
                 debug!(target: "ext_proc", "request processing body(Streamed) and trailers:{trailers_mode:?} => {body:?}");
@@ -343,13 +233,13 @@ impl ExternalProcessor {
                 request.body_mut().inner = PolyBody::from(new_body);
                 bridge
             },
-            (BodyProcessingMode::Streamed | BodyProcessingMode::FullDuplexStreamed, trailers_mode) => {
+            (OverridableBodyMode::Streamed | OverridableBodyMode::FullDuplexStreamed, trailers_mode) => {
                 debug!(target: "ext_proc", "request processing body(Streamed) and trailers:{trailers_mode:?} => {body:?}");
                 let (new_body, bridge) = ChannelBody::new(body);
                 request.body_mut().inner = PolyBody::from(new_body);
                 bridge
             },
-            (BodyProcessingMode::Buffered | BodyProcessingMode::BufferedPartial, trailers_mode) => {
+            (OverridableBodyMode::Buffered | OverridableBodyMode::BufferedPartial, trailers_mode) => {
                 debug!(target: "ext_proc", "request processing body(Buffered) with trailers:{trailers_mode:?} => {body:?}");
                 let Ok(collected) = body.collect().await else {
                     return self.on_filter_error(
@@ -378,31 +268,11 @@ impl ExternalProcessor {
         };
 
         match response_rx.await {
-            Ok(ProcessingStatus::HaltedOnError) => {
-                self.worker_config
-                    .override_sending_response
-                    .headers
-                    .store(worker_config::SendingFlag::False, Ordering::Relaxed);
-                self.worker_config
-                    .override_sending_response
-                    .body
-                    .store(worker_config::SendingFlag::False, Ordering::Relaxed);
-                self.worker_config
-                    .override_sending_response
-                    .trailers
-                    .store(worker_config::SendingFlag::False, Ordering::Relaxed);
-                FilterDecision::Continue
-            },
+            Ok(ProcessingStatus::HaltedOnError) => FilterDecision::Continue,
             Ok(ProcessingStatus::EndWithDirectResponse(direct_response)) => {
                 FilterDecision::DirectResponse(direct_response)
             },
-            Ok(ProcessingStatus::RequestReady(ReadyStatus {
-                override_sending_response_headers,
-                override_sending_response_body,
-                override_sending_response_trailers,
-                clear_route_cache,
-                headers_modifications,
-            })) => {
+            Ok(ProcessingStatus::RequestReady(ReadyStatus { clear_route_cache, headers_modifications })) => {
                 if let Some(headers_modifications) = headers_modifications {
                     debug!(target: "ext_proc", "applying headers mutation...");
                     if let Err(e) = apply_header_mutations(
@@ -423,28 +293,12 @@ impl ExternalProcessor {
 
                 request.headers_mut().remove(CONTENT_LENGTH);
 
-                if let Some(override_value) = override_sending_response_headers {
-                    self.sending_response_headers = override_value;
-                }
-                if let Some(override_value) = override_sending_response_body {
-                    self.sending_response_body = override_value;
-                }
-                if let Some(override_value) = override_sending_response_trailers {
-                    self.sending_response_trailers = override_value;
-                }
-
                 if clear_route_cache {
                     return FilterDecision::Reroute;
                 }
                 FilterDecision::Continue
             },
-            Ok(ProcessingStatus::ResponseReady(ReadyStatus {
-                headers_modifications,
-                override_sending_response_headers,
-                override_sending_response_body,
-                override_sending_response_trailers,
-                clear_route_cache,
-            })) => {
+            Ok(ProcessingStatus::ResponseReady(ReadyStatus { headers_modifications, clear_route_cache })) => {
                 todo!()
             },
             Err(e) => self.on_filter_error(
@@ -479,9 +333,13 @@ impl ExternalProcessor {
     }
 
     pub async fn apply_response(&mut self, response: &mut Response<PolyBody>) -> FilterDecision {
-        if !self.sending_response_headers && !self.sending_response_body && !self.sending_response_trailers {
+        if !self.overridable_modes.response.should_process_headers()
+            && !self.overridable_modes.response.should_process_body()
+            && !self.overridable_modes.response.should_process_trailers()
+        {
             return FilterDecision::Continue;
         }
+
         todo!()
         //let is_empty_body = response.body().is_end_stream();
 
@@ -621,26 +479,6 @@ impl ExternalProcessor {
             error!(target: "ext_proc", "{msg}");
         }
         if self.worker_config.failure_mode_allow {
-            self.worker_config
-                .override_sending_request
-                .body
-                .store(worker_config::SendingFlag::False, Ordering::Relaxed);
-            self.worker_config
-                .override_sending_request
-                .trailers
-                .store(worker_config::SendingFlag::False, Ordering::Relaxed);
-            self.worker_config
-                .override_sending_response
-                .headers
-                .store(worker_config::SendingFlag::False, Ordering::Relaxed);
-            self.worker_config
-                .override_sending_response
-                .body
-                .store(worker_config::SendingFlag::False, Ordering::Relaxed);
-            self.worker_config
-                .override_sending_response
-                .trailers
-                .store(worker_config::SendingFlag::False, Ordering::Relaxed);
             FilterDecision::Continue
         } else {
             FilterDecision::DirectResponse(
@@ -659,11 +497,24 @@ impl ExternalProcessor {
             sender
         } else {
             let (sender, receiver) = mpsc::channel::<ProcessingTask>(12);
+
+            // replace the internal overridable modes blueprint with a new spawned instance for the worker
+            //
+
+            let overridable_modes = Arc::new(self.overridable_modes.spawn());
+            self.overridable_modes = Arc::clone(&overridable_modes);
+
             if self.worker_config.observability_mode {
-                let worker = ExternalProcessingWorker::<ObservabilityState>::new(Arc::clone(&self.worker_config));
+                let worker = ExternalProcessingWorker::<ObservabilityState>::new(
+                    Arc::clone(&self.worker_config),
+                    overridable_modes,
+                );
                 tokio::spawn(worker.ext_proc_loop(receiver));
             } else {
-                let worker = ExternalProcessingWorker::<ProcessingState>::new(Arc::clone(&self.worker_config));
+                let worker = ExternalProcessingWorker::<ProcessingState>::new(
+                    Arc::clone(&self.worker_config),
+                    overridable_modes,
+                );
                 tokio::spawn(worker.ext_proc_loop(receiver));
             }
             self.ext_proc_worker.insert(sender)
@@ -776,6 +627,7 @@ struct ExternalProcessingWorker<S: State> {
     response_processing: ResponseProcessing<S>,
     handshake: Option<ProtocolConfiguration>,
     timeout_state: TimeoutState,
+    overridable_global_modes: Arc<OverridableGlobalModes>,
 }
 
 fn clone_frame(frame: &Frame<Bytes>) -> Frame<Bytes> {
@@ -790,7 +642,7 @@ fn clone_frame(frame: &Frame<Bytes>) -> Frame<Bytes> {
 }
 
 impl ExternalProcessingWorker<ProcessingState> {
-    fn new(config: Arc<ExternalProcessingWorkerConfig>) -> Self {
+    fn new(config: Arc<ExternalProcessingWorkerConfig>, overridable_global_modes: Arc<OverridableGlobalModes>) -> Self {
         let request_processing = RequestProcessing::<ProcessingState>::from(&*config);
         let response_processing = ResponseProcessing::<ProcessingState>::from(&*config);
         let handshake = Some(ProtocolConfiguration {
@@ -806,6 +658,7 @@ impl ExternalProcessingWorker<ProcessingState> {
             response_processing,
             handshake,
             timeout_state: TimeoutState { active: false, duration: message_timeout, extended: false },
+            overridable_global_modes,
         }
     }
 
@@ -895,16 +748,10 @@ impl ExternalProcessingWorker<ProcessingState> {
                                     self.response_processing.apply_mode_overrides(&overrides, &self.config.allowed_override_modes);
                                 }
                             }
-                            let wants_response_headers = self.response_processing.should_process_headers();
-                            let wants_response_body = self.response_processing.should_process_body();
-                            let wants_response_trailers = self.response_processing.should_process_trailers();
 
                             let action = self.request_processing.handle_headers_response(
                                 headers_response,
                                 &self.config.route_cache_action,
-                                wants_response_headers,
-                                wants_response_body,
-                                wants_response_trailers
                             ).await;
 
                             run_action!(self, self.request_processing, action, "handle_headers_response");
@@ -931,16 +778,10 @@ impl ExternalProcessingWorker<ProcessingState> {
                                     self.response_processing.apply_mode_overrides(&overrides, &self.config.allowed_override_modes);
                                 }
                             }
-                            let wants_response_headers = self.response_processing.should_process_headers();
-                            let wants_response_body = self.response_processing.should_process_body();
-                            let wants_response_trailers = self.response_processing.should_process_trailers();
 
                             let action = self.response_processing.handle_headers_response(
                                 headers_response,
                                 &self.config.route_cache_action,
-                                wants_response_headers,
-                                wants_response_body,
-                                wants_response_trailers,
                             ).await;
                             run_action!(self, self.response_processing, action, "handle_headers_response");
                         },
@@ -962,11 +803,9 @@ impl ExternalProcessingWorker<ProcessingState> {
                         },
                         Ok(Some(r)) => {
                             debug!(target: "ext_proc", "<- Noop response received {r:?}");
-                            let action = self.response_processing.handle_noop_response(ProcessingStatus::ResponseReady, None, None);
+                            let action = self.response_processing.handle_noop_response(ProcessingStatus::ResponseReady);
                             run_action!(self, self.response_processing, action, "handle_noop_response");
-                            let wants_response_headers = self.response_processing.should_process_headers();
-                            let wants_response_body = self.response_processing.should_process_body();
-                            let action = self.request_processing.handle_noop_response(ProcessingStatus::RequestReady, Some(wants_response_headers), Some(wants_response_body));
+                            let action = self.request_processing.handle_noop_response(ProcessingStatus::RequestReady);
                             run_action!(self, self.request_processing, action, "handle_noop_response");
                         }
                         Err(e) => {
@@ -1067,7 +906,7 @@ impl ExternalProcessingWorker<ProcessingState> {
 }
 
 impl ExternalProcessingWorker<ObservabilityState> {
-    fn new(config: Arc<ExternalProcessingWorkerConfig>) -> Self {
+    fn new(config: Arc<ExternalProcessingWorkerConfig>, overridable_global_modes: Arc<OverridableGlobalModes>) -> Self {
         let request_processing = RequestProcessing::<ObservabilityState>::from(&*config);
         let response_processing = ResponseProcessing::<ObservabilityState>::from(&*config);
 
@@ -1084,6 +923,7 @@ impl ExternalProcessingWorker<ObservabilityState> {
             response_processing,
             handshake,
             timeout_state: TimeoutState { active: false, duration: message_timeout, extended: false },
+            overridable_global_modes,
         }
     }
 

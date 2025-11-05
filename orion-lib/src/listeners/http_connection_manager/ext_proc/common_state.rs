@@ -1,5 +1,4 @@
-use http::Response;
-use crate::{PolyBody};
+use crate::PolyBody;
 
 use orion_data_plane_api::envoy_data_plane_api::envoy::service::ext_proc::v3::HeaderMutation;
 
@@ -49,7 +48,7 @@ pub enum ProcessingStatus {
     RequestReady(ReadyStatus),
     ResponseReady(ReadyStatus),
     HaltedOnError,
-    EndWithDirectResponse(Response<PolyBody>),
+    EndWithDirectResponse(http::Response<PolyBody>),
 }
 
 impl ProcessingStatus {
@@ -75,8 +74,5 @@ impl ProcessingStatus {
 #[derive(Debug, Default)]
 pub struct ReadyStatus {
     pub headers_modifications: Option<HeaderMutation>,
-    pub override_sending_response_headers: Option<bool>,
-    pub override_sending_response_body: Option<bool>,
-    pub override_sending_response_trailers: Option<bool>,
     pub clear_route_cache: bool,
 }

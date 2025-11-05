@@ -114,6 +114,7 @@ pub enum BodyProcessingMode {
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum TrailerProcessingMode {
     #[default]
+    Default,
     Skip,
     Send,
 }
@@ -443,7 +444,8 @@ mod envoy_conversions {
         fn try_from(value: i32) -> Result<Self, Self::Error> {
             match EnvoyHeaderSendMode::try_from(value) {
                 Ok(EnvoyHeaderSendMode::Send) => Ok(Self::Send),
-                Ok(EnvoyHeaderSendMode::Default | EnvoyHeaderSendMode::Skip) => Ok(Self::Skip),
+                Ok(EnvoyHeaderSendMode::Default) => Ok(Self::Default),
+                Ok(EnvoyHeaderSendMode::Skip) => Ok(Self::Skip),
                 Err(_) => Err(GenericError::from_msg(format!("unknown trailer send mode: {value}"))),
             }
         }

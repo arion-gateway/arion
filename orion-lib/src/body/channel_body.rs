@@ -83,10 +83,7 @@ impl std::fmt::Debug for FrameBridge {
 
 impl Default for FrameBridge {
     fn default() -> Self {
-        Self {
-            body_stream: Box::pin(futures::stream::empty()),
-            injector: None,
-        }
+        Self { body_stream: Box::pin(futures::stream::empty()), injector: None }
     }
 }
 
@@ -97,13 +94,11 @@ impl FrameBridge {
         B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
     {
         // Convert the body into a stream using http_body_util and map errors to Box
-        let body_stream: Pin<Box<dyn Stream<Item = Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>> + Send>> =
-            Box::pin(http_body_util::BodyStream::new(body).map(|result| result.map_err(|e| e.into())));
+        let body_stream: Pin<
+            Box<dyn Stream<Item = Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>> + Send>,
+        > = Box::pin(http_body_util::BodyStream::new(body).map(|result| result.map_err(|e| e.into())));
 
-        Self {
-            body_stream,
-            injector: Some(injector),
-        }
+        Self { body_stream, injector: Some(injector) }
     }
 
     /// Close the FrameBridge to prevent further frame injections.
@@ -171,7 +166,9 @@ impl FrameBridge {
     ///
     /// Returns a copy of the frame to allow observation, None when the body is completely consumed.
     ///
-    pub async fn observe_and_inject(&mut self) -> Option<Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>> {
+    pub async fn observe_and_inject(
+        &mut self,
+    ) -> Option<Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>> {
         let frame = self.body_stream.as_mut().next().await?;
 
         // Clone the frame to be able to return it
@@ -186,7 +183,7 @@ impl FrameBridge {
                     return Some(frame);
                 };
                 Ok(cloned_frame)
-            }
+            },
             Err(e) => Err(e.to_string().into()),
         };
 
@@ -225,10 +222,7 @@ mod tests {
         });
 
         // Consume the channel body
-        let frame = future::poll_fn(|cx| Pin::new(&mut channel_body).poll_frame(cx))
-            .await
-            .unwrap()
-            .unwrap();
+        let frame = future::poll_fn(|cx| Pin::new(&mut channel_body).poll_frame(cx)).await.unwrap().unwrap();
 
         if let Some(data) = frame.into_data().ok() {
             assert_eq!(data, Bytes::from("Hello, World!"));
@@ -246,10 +240,7 @@ mod tests {
 
         // Spawn a task that consumes the ChannelBody
         let consumer_handle = tokio::spawn(async move {
-            let frame = future::poll_fn(|cx| Pin::new(&mut channel_body).poll_frame(cx))
-                .await
-                .unwrap()
-                .unwrap();
+            let frame = future::poll_fn(|cx| Pin::new(&mut channel_body).poll_frame(cx)).await.unwrap().unwrap();
 
             if let Ok(data) = frame.into_data() {
                 data
