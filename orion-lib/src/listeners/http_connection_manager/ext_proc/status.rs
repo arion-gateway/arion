@@ -2,44 +2,8 @@ use crate::PolyBody;
 
 use orion_data_plane_api::envoy_data_plane_api::envoy::service::ext_proc::v3::HeaderMutation;
 
-pub trait State {
-    fn is_observability_mode(&self) -> bool;
-}
-
-#[derive(Debug, Clone, Default)]
-pub enum ObservabilityState {
-    #[default]
-    WaitingForHeadersInput,
-    WaitingForBodyInput,
-    StreamingBody,
-}
-
-#[derive(Debug, Copy, Clone, Default)]
-pub enum ProcessingState {
-    #[default]
-    WaitingForHeadersInput,
-    WaitingForHeadersReply,
-    WaitingForBodyInput,
-    StreamingBody,
-    // WaitingForBodyReply,
-    //StreamingBodyWaitingForReply,
-    //FullDuplexStreamingBody,
-}
-
-impl State for ObservabilityState {
-    fn is_observability_mode(&self) -> bool {
-        true
-    }
-}
-
-impl State for ProcessingState {
-    fn is_observability_mode(&self) -> bool {
-        false
-    }
-}
-
 pub enum Action<P> {
-    Send(P, ProcessingState),
+    Send(P),
     Return(ProcessingStatus),
 }
 

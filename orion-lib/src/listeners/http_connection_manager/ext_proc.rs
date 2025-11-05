@@ -1,18 +1,18 @@
-mod common_state;
+mod status;
+mod kind;
 mod mutation;
-mod override_mode;
+mod r#override;
 mod processing;
 mod worker_config;
 
 use crate::body::channel_body::{ChannelBody, FrameBridge};
 use crate::body::poly_body::TrailersType;
 use crate::event_error::EventFailure;
-use crate::listeners::http_connection_manager::ext_proc::common_state::Action;
-use crate::listeners::http_connection_manager::ext_proc::common_state::ProcessingStatus;
-use crate::listeners::http_connection_manager::ext_proc::common_state::ReadyStatus;
-use crate::listeners::http_connection_manager::ext_proc::common_state::State;
+use crate::listeners::http_connection_manager::ext_proc::status::Action;
+use crate::listeners::http_connection_manager::ext_proc::status::ProcessingStatus;
+use crate::listeners::http_connection_manager::ext_proc::status::ReadyStatus;
 use crate::listeners::http_connection_manager::ext_proc::mutation::apply_header_mutations;
-use crate::listeners::http_connection_manager::ext_proc::override_mode::{OverridableBodyMode, OverridableGlobalModes};
+use crate::listeners::http_connection_manager::ext_proc::r#override::{OverridableBodyMode, OverridableGlobalModes};
 use crate::listeners::http_connection_manager::ext_proc::processing::RequestProcessing;
 use crate::listeners::http_connection_manager::ext_proc::processing::ResponseProcessing;
 use crate::listeners::http_connection_manager::ext_proc::worker_config::ExternalProcessingWorkerConfig;
@@ -66,8 +66,6 @@ use std::{sync::Arc, time::Duration};
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, error, warn};
-
-use crate::listeners::http_connection_manager::ext_proc::common_state::{ObservabilityState, ProcessingState};
 
 #[derive(Debug, Clone)]
 #[allow(clippy::struct_excessive_bools)]
@@ -176,15 +174,13 @@ macro_rules! run_action {
     // $ctx: A string literal context for logging.
     ($self:ident, $processor:expr, $action:expr, $ctx:expr) => {
         match $action {
-            Action::Send(outbound, next_state) => {
-                debug!(target: "ext_proc", "{ctx} @{typ}: forward {outbound:?} -> next_state:{next_state:?}",
+            Action::Send(outbound) => {
+                debug!(target: "ext_proc", "{ctx} @{typ}: forward {outbound:?}",
                     ctx = $ctx,
                     typ = stringify!($processor),
-                    outbound = outbound,
-                    next_state = next_state);
+                    outbound = outbound);
 
                 $self.forward_to_external_processor(outbound).await;
-                $processor.state = next_state;
             },
             Action::Return(status) => {
                 $self.timeout_state.active = false;
@@ -505,16 +501,14 @@ impl ExternalProcessor {
             self.overridable_modes = Arc::clone(&overridable_modes);
 
             if self.worker_config.observability_mode {
-                let worker = ExternalProcessingWorker::<ObservabilityState>::new(
+                let worker = ExternalProcessingWorker::<kind::Observability>::new(
                     Arc::clone(&self.worker_config),
                     overridable_modes,
                 );
                 tokio::spawn(worker.ext_proc_loop(receiver));
             } else {
-                let worker = ExternalProcessingWorker::<ProcessingState>::new(
-                    Arc::clone(&self.worker_config),
-                    overridable_modes,
-                );
+                let worker =
+                    ExternalProcessingWorker::<kind::Processing>::new(Arc::clone(&self.worker_config), overridable_modes);
                 tokio::spawn(worker.ext_proc_loop(receiver));
             }
             self.ext_proc_worker.insert(sender)
@@ -620,14 +614,14 @@ struct TimeoutState {
     extended: bool,
 }
 
-struct ExternalProcessingWorker<S: State> {
+struct ExternalProcessingWorker<S: kind::Mode> {
     config: Arc<ExternalProcessingWorkerConfig>,
     bidi_stream: Option<BidiStream>,
     request_processing: RequestProcessing<S>,
     response_processing: ResponseProcessing<S>,
     handshake: Option<ProtocolConfiguration>,
     timeout_state: TimeoutState,
-    overridable_global_modes: Arc<OverridableGlobalModes>,
+    overridable_modes: Arc<OverridableGlobalModes>,
 }
 
 fn clone_frame(frame: &Frame<Bytes>) -> Frame<Bytes> {
@@ -641,10 +635,10 @@ fn clone_frame(frame: &Frame<Bytes>) -> Frame<Bytes> {
     }
 }
 
-impl ExternalProcessingWorker<ProcessingState> {
+impl ExternalProcessingWorker<kind::Processing> {
     fn new(config: Arc<ExternalProcessingWorkerConfig>, overridable_global_modes: Arc<OverridableGlobalModes>) -> Self {
-        let request_processing = RequestProcessing::<ProcessingState>::from(&*config);
-        let response_processing = ResponseProcessing::<ProcessingState>::from(&*config);
+        let request_processing = RequestProcessing::<kind::Processing>::from(&*config);
+        let response_processing = ResponseProcessing::<kind::Processing>::from(&*config);
         let handshake = Some(ProtocolConfiguration {
             request_body_mode: config.processing_mode.request_body_mode as i32,
             response_body_mode: config.processing_mode.response_body_mode as i32,
@@ -658,7 +652,7 @@ impl ExternalProcessingWorker<ProcessingState> {
             response_processing,
             handshake,
             timeout_state: TimeoutState { active: false, duration: message_timeout, extended: false },
-            overridable_global_modes,
+            overridable_modes: overridable_global_modes,
         }
     }
 
@@ -679,7 +673,7 @@ impl ExternalProcessingWorker<ProcessingState> {
                         Some(ProcessingTask{ data: ProcessingData::Request(headers, frame_bridge), reply_channel, http_version}) => {
                             debug!(target: "ext_proc", "Processing new request");
 
-                            let action = self.request_processing.process(headers, frame_bridge, reply_channel, http_version).await;
+                            let action = self.request_processing.process(headers, frame_bridge, reply_channel, http_version, &self.overridable_modes).await;
                             run_action!(self, self.request_processing, action, "process_request");
                         }
                         // Some(ProcessingTask{ data: ProcessingData::Response(headers, body, trailers), reply_channel, http_version}) => {
@@ -744,14 +738,15 @@ impl ExternalProcessingWorker<ProcessingState> {
                             debug!(target: "ext_proc", "<- Request header response received");
                             if self.config.allow_mode_override {
                                 if let Some(overrides) = mode_override {
-                                    self.request_processing.apply_mode_overrides(&overrides, &self.config.allowed_override_modes);
-                                    self.response_processing.apply_mode_overrides(&overrides, &self.config.allowed_override_modes);
+                                    self.request_processing.apply_mode_overrides(&overrides, &self.config.allowed_override_modes, &self.overridable_modes);
+                                    self.response_processing.apply_mode_overrides(&overrides, &self.config.allowed_override_modes, &self.overridable_modes);
                                 }
                             }
 
                             let action = self.request_processing.handle_headers_response(
                                 headers_response,
                                 &self.config.route_cache_action,
+                                &self.overridable_modes,
                             ).await;
 
                             run_action!(self, self.request_processing, action, "handle_headers_response");
@@ -775,13 +770,14 @@ impl ExternalProcessingWorker<ProcessingState> {
                             debug!(target: "ext_proc", "<- Response headers response received");
                             if self.config.allow_mode_override {
                                 if let Some(overrides) = mode_override {
-                                    self.response_processing.apply_mode_overrides(&overrides, &self.config.allowed_override_modes);
+                                    self.response_processing.apply_mode_overrides(&overrides, &self.config.allowed_override_modes, &self.overridable_modes);
                                 }
                             }
 
                             let action = self.response_processing.handle_headers_response(
                                 headers_response,
                                 &self.config.route_cache_action,
+                                &self.overridable_modes,
                             ).await;
                             run_action!(self, self.response_processing, action, "handle_headers_response");
                         },
@@ -905,10 +901,10 @@ impl ExternalProcessingWorker<ProcessingState> {
     }
 }
 
-impl ExternalProcessingWorker<ObservabilityState> {
+impl ExternalProcessingWorker<kind::Observability> {
     fn new(config: Arc<ExternalProcessingWorkerConfig>, overridable_global_modes: Arc<OverridableGlobalModes>) -> Self {
-        let request_processing = RequestProcessing::<ObservabilityState>::from(&*config);
-        let response_processing = ResponseProcessing::<ObservabilityState>::from(&*config);
+        let request_processing = RequestProcessing::<kind::Observability>::from(&*config);
+        let response_processing = ResponseProcessing::<kind::Observability>::from(&*config);
 
         let handshake = Some(ProtocolConfiguration {
             request_body_mode: config.processing_mode.request_body_mode as i32,
@@ -923,7 +919,7 @@ impl ExternalProcessingWorker<ObservabilityState> {
             response_processing,
             handshake,
             timeout_state: TimeoutState { active: false, duration: message_timeout, extended: false },
-            overridable_global_modes,
+            overridable_modes: overridable_global_modes,
         }
     }
 
@@ -1070,7 +1066,7 @@ impl ExternalProcessingWorker<ObservabilityState> {
     }
 }
 
-impl<S: State + Default> ExternalProcessingWorker<S> {
+impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
     async fn connect(
         grpc_service_specifier: &GrpcServiceSpecifier,
         first_request: ProcessingRequest,
