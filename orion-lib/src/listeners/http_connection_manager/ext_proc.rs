@@ -1425,8 +1425,8 @@ mod tests {
     }
 
     fn create_headers_response(
-        body_data: Option<Vec<u8>>,
         headers: Vec<(&str, &str)>,
+        body_data: Option<Vec<u8>>,
         status: i32,
         end_of_stream: Option<bool>,
     ) -> ProcessingResponse {
@@ -1449,8 +1449,8 @@ mod tests {
     }
 
     fn create_body_response(
-        body_data: Option<Vec<u8>>,
         headers: Vec<(&str, &str)>,
+        body_data: Option<Vec<u8>>,
         status: i32,
         end_of_stream: Option<bool>,
     ) -> ProcessingResponse {
@@ -1535,8 +1535,8 @@ mod tests {
     #[tokio::test]
     async fn test_header_mutation() {
         let mock_state = MockExternalProcessorState::new().add_response(create_headers_response(
-            None,
             vec![("x-processed", "true"), ("x-custom-header", "custom-value")],
+            None,
             ResponseStatus::Continue as i32,
             None,
         ));
@@ -1563,11 +1563,15 @@ mod tests {
     }
 
     #[tokio::test]
+    #[test_log::test]
     async fn test_trailer_mutation() {
-        let mock_state = MockExternalProcessorState::new().add_response(create_trailers_response(vec![
-            ("x-processed", "true"),
-            ("x-custom-trailer", "modified-value"),
-        ]));
+        let mock_state = MockExternalProcessorState::new()
+            .add_response(create_headers_response(vec![], None, ResponseStatus::Continue as i32, None))
+            .add_response(create_body_response(vec![], None, ResponseStatus::Continue as i32, None))
+            .add_response(create_trailers_response(vec![
+                ("x-processed", "true"),
+                ("x-custom-trailer", "modified-value"),
+            ]));
         let server_addr = start_mock_server(mock_state).await;
         let processing_mode = ProcessingMode {
             request_header_mode: HeaderProcessingMode::Send,
@@ -1583,27 +1587,30 @@ mod tests {
 
         let mut request = create_test_request(
             vec![("content-type", "application/json")],
-            "",
+            "body",
             vec![("x-custom-trailer", "original-value")],
         );
 
         let result = ext_proc.apply_request(&mut request).await;
-        let trailers =
-            std::mem::take(&mut request.body_mut().inner).collect().await.unwrap().trailers().map(|t| t.clone());
+        let body = std::mem::take(&mut request.body_mut().inner).collect().await.unwrap();
+        let trailers = body.trailers().cloned();
 
         assert!(trailers.is_some());
+        let trailers = trailers.unwrap();
         assert!(matches!(result, FilterDecision::Continue));
-        assert_eq!(request.headers().get("x-processed").unwrap(), "true");
-        assert_eq!(trailers.unwrap().get("x-custom-trailer").unwrap(), "modified-value");
         assert_eq!(request.headers().get("content-type").unwrap(), "application/json");
+        assert_eq!(body.to_bytes(), "body");
+        assert_eq!(trailers.get("x-processed").unwrap(), "true");
+        assert_eq!(trailers.get("x-custom-trailer").unwrap(), "modified-value");
     }
 
     #[tokio::test]
+    #[test_log::test]
     async fn test_body_buffered_continue_and_replace_on_headers_response() {
         let new_body = "modified body content";
         let mock_state = MockExternalProcessorState::new().add_response(create_headers_response(
-            Some(new_body.as_bytes().into()),
             vec![("y-custom-header", "true")],
+            Some(new_body.as_bytes().into()),
             ResponseStatus::ContinueAndReplace as i32,
             None,
         ));
@@ -1631,13 +1638,14 @@ mod tests {
     }
 
     #[tokio::test]
+    #[test_log::test]
     async fn test_body_buffered_continue_and_replace_on_body_response() {
         let new_body = "modified body content";
         let mock_state = MockExternalProcessorState::new()
-            .add_response(create_headers_response(None, vec![], ResponseStatus::Continue as i32, None))
+            .add_response(create_headers_response(vec![], None, ResponseStatus::Continue as i32, None))
             .add_response(create_body_response(
-                Some(new_body.as_bytes().into()),
                 vec![("y-custom-header", "true")],
+                Some(new_body.as_bytes().into()),
                 ResponseStatus::ContinueAndReplace as i32,
                 None,
             ));
@@ -1668,21 +1676,21 @@ mod tests {
     async fn test_body_buffered_mode() {
         let mock_state = MockExternalProcessorState::new()
             .add_response(create_headers_response(
-                None,
                 vec![("x-stream-processed", "true"), ("y-custom-header", "true")],
+                None,
                 ResponseStatus::Continue as i32,
                 None,
             ))
             .add_response(create_body_response(
-                Some("body data from external processor".as_bytes().into()),
                 vec![],
+                Some("body data from external processor".as_bytes().into()),
                 ResponseStatus::Continue as i32,
                 None,
             ));
         let server_addr = start_mock_server(mock_state).await;
         let processing_mode = ProcessingMode {
-            request_header_mode: HeaderProcessingMode::Skip,
-            request_body_mode: BodyProcessingMode::None,
+            request_header_mode: HeaderProcessingMode::Send,
+            request_body_mode: BodyProcessingMode::Buffered,
             request_trailer_mode: TrailerProcessingMode::Skip,
             response_header_mode: HeaderProcessingMode::Skip,
             response_body_mode: BodyProcessingMode::None,
@@ -1705,18 +1713,20 @@ mod tests {
     async fn test_body_streaming_mode() {
         let mock_state = MockExternalProcessorState::new()
             .add_response(create_headers_response(
-                None,
                 vec![("x-stream-processed", "true"), ("y-custom-header", "true")],
+                None,
                 ResponseStatus::Continue as i32,
                 // even though we will stream the body, no body modification is
                 // performed in the headers response so no need to set the flag
                 None,
             ))
             .add_response(create_body_response(
-                Some("body data from external processor".as_bytes().into()),
                 vec![],
+                Some("body data from external processor".as_bytes().into()),
                 ResponseStatus::Continue as i32,
-                Some(true),
+                // the response for the streaming body is still just a normal Body
+                // no need to set end_of_stream, which is only for FULL_DUPLEX_STREAMED
+                None,
             ));
         let server_addr = start_mock_server(mock_state).await;
         let processing_mode = ProcessingMode {
@@ -1732,14 +1742,11 @@ mod tests {
         let mut ext_proc = ExternalProcessor::from(config);
 
         let mut request = create_test_request(vec![], "streaming body data", vec![]);
-        println!("request before filter: {request:?}");
         let result = ext_proc.apply_request(&mut request).await;
-        println!("request after filter: {request:?}");
 
         assert!(matches!(result, FilterDecision::Continue));
         assert_eq!(request.headers().get("x-stream-processed").unwrap(), "true");
         let body_bytes = std::mem::take(&mut request.body_mut().inner).collect().await.unwrap().to_bytes();
-        println!("body_bytes: {body_bytes:?}");
         assert_eq!(body_bytes, "body data from external processor".as_bytes());
     }
 

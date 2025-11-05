@@ -79,6 +79,7 @@ atomic_enum.workspace = true
 orion-data-plane-api.workspace = true
 serde_yaml.workspace           = true
 tracing-test.workspace         = true
+test-log                       = { version = "0.2.18", features = ["trace"] }
 
 [features]
 # making sure we are not using pure ring
