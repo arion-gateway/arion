@@ -396,13 +396,8 @@ impl Processing<ProcessingState> {
                 Some(Mutation::Body(bytes)) => Some(Frame::data(bytes.into())),
                 Some(Mutation::ClearBody(true)) => Some(Frame::data(Bytes::new())),
                 Some(Mutation::ClearBody(false)) | None => None,
-                Some(Mutation::StreamedResponse(_)) => {
-                    debug!(target: "ext_proc", "frame brige closed!");
-                    self.frame_bridge.close().await;
-                    return Action::Return(self.status_error(
-                        "StreamedResponse mutation not supported",
-                        self.failure_mode_allow,
-                    ));
+                Some(Mutation::StreamedResponse(chunk)) => {
+                    Some(Frame::data(chunk.body.into()))
                 },
             };
             debug!(target: "ext_proc", "chunk_replacement => {chunk_replacement:?}");
