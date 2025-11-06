@@ -78,6 +78,7 @@ pub struct OverridableModes<K: kind::Message> {
 
 impl<K: kind::Message> OverridableModes<K> {
     #[inline]
+    #[allow(dead_code)]
     pub fn header_mode(&self) -> OverridableHeaderMode {
         self.header_mode.load(Ordering::Relaxed)
     }
@@ -169,46 +170,55 @@ pub struct OverridableGlobalModes {
 
 impl OverridableGlobalModes {
     #[inline]
+    #[allow(dead_code)]
     pub fn should_process_headers<K: OverridableModeSelector>(&self) -> bool {
         K::get(self).should_process_headers()
     }
 
     #[inline]
+    #[allow(dead_code)]
     pub fn should_process_body<K: OverridableModeSelector>(&self) -> bool {
         K::get(self).should_process_body()
     }
 
     #[inline]
+    #[allow(dead_code)]
     pub fn should_process_trailers<K: OverridableModeSelector>(&self) -> bool {
         K::get(self).should_process_trailers()
     }
 
     #[inline]
+    #[allow(dead_code)]
     pub fn set_header_mode<K: OverridableModeSelector>(&self, mode: HeaderProcessingMode) {
         K::get(self).set_header_mode(mode);
     }
 
     #[inline]
+    #[allow(dead_code)]
     pub fn set_body_mode<K: OverridableModeSelector>(&self, mode: BodyProcessingMode) {
         K::get(self).set_body_mode(mode);
     }
 
     #[inline]
+    #[allow(dead_code)]
     pub fn set_trailer_mode<K: OverridableModeSelector>(&self, mode: TrailerProcessingMode) {
         K::get(self).set_trailer_mode(mode);
     }
 
     #[inline]
+    #[allow(dead_code)]
     pub fn header_mode<K: OverridableModeSelector>(&self) -> OverridableHeaderMode {
         K::get(self).header_mode()
     }
 
     #[inline]
+    #[allow(dead_code)]
     pub fn body_mode<K: OverridableModeSelector>(&self) -> OverridableBodyMode {
         K::get(self).body_mode()
     }
 
     #[inline]
+    #[allow(dead_code)]
     pub fn trailer_mode<K: OverridableModeSelector>(&self) -> OverridableTrailerMode {
         K::get(self).trailer_mode()
     }

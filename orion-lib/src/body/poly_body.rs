@@ -365,22 +365,3 @@ impl PolyBody {
         (PolyBody::Stream(body), tx)
     }
 }
-
-pub struct BodySender {
-    sender: mpsc::Sender<Result<Frame<Bytes>, Error>>,
-}
-
-impl BodySender {
-    pub fn new(sender: mpsc::Sender<Result<Frame<Bytes>, Error>>) -> Self {
-        Self { sender }
-    }
-    pub async fn send_data(&self, chunk: Bytes) -> Result<(), mpsc::error::SendError<Result<Frame<Bytes>, Error>>> {
-        self.sender.send(Ok(Frame::data(chunk))).await
-    }
-    pub async fn send_trailers(
-        &self,
-        trailers: http::HeaderMap,
-    ) -> Result<(), mpsc::error::SendError<Result<Frame<Bytes>, Error>>> {
-        self.sender.send(Ok(Frame::trailers(trailers))).await
-    }
-}

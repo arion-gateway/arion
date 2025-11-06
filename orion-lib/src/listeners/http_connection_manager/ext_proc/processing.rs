@@ -239,62 +239,6 @@ impl<MsgType: kind::Message + OverridableModeSelector> Processing<kind::Processi
         Action::Send(processing_request)
     }
 
-    // #[must_use = "must handle the returned Action"]
-    // pub async fn prepare_body(&mut self, body: FrameBridge) -> Action<ProcessingRequest> {
-    //     match self.body_context.body_mode {
-    //         BodyProcessingMode::Buffered | BodyProcessingMode::BufferedPartial => {
-    //             debug!(target: "ext_proc", "prepare_body: Buffered/BufferedPartial body configured!");
-    //             let body_bytes: Bytes = match body {
-    //                 PolyBody::Full(body) => body.collect().await.unwrap().to_bytes(),
-    //                 PolyBody::Collected(collected) => collected.to_bytes(),
-    //                 _ => {
-    //                     debug!(target: "ext_proc", "prepare_body: Unexpected {:?}, wanted PolyBody Full or Collected!", body);
-    //                     return Action::Return(self.status_error(
-    //                         format!("prepare_body: Unexpected {:?}, wanted PolyBody Full or Collected!", body).as_str(),
-    //                         self.failure_mode_allow,
-    //                     ));
-    //                 },
-    //             };
-
-    //             let http_body =
-    //                 HttpBody { body: body_bytes.into(), end_of_stream: !self.is_trailers_processing_planned() };
-    //             let processing_request = ProcessingRequest {
-    //                 request: Some(ProcessingRequestType::RequestBody(http_body)),
-    //                 metadata_context: None,
-    //                 attributes: HashMap::default(),
-    //                 observability_mode: false,
-    //                 protocol_config: None,
-    //             };
-    //             Action::Send(processing_request, ProcessingState::WaitingForBodyReply, false)
-    //         },
-    //         BodyProcessingMode::Streamed | BodyProcessingMode::FullDuplexStreamed => {
-    //             debug!(target: "ext_proc", "prepare_body: Streamed body configured!");
-    //             self.body_context.body = Some(body);
-    //             Action::Streaming(ProcessingState::StreamingBody)
-    //         },
-    //         mode => {
-    //             return Action::Return(
-    //                 self.status_error(format!("prepare_body: Unexpected {mode:?}!").as_str(), self.failure_mode_allow),
-    //             )
-    //         },
-    //     }
-    // }
-
-    // #[must_use = "must handle the returned Action"]
-    // pub fn prepare_trailers(&self, trailers: &http::HeaderMap) -> Action<ProcessingRequest> {
-    //     let trailers_to_send: EnvoyHeaderMap = trailers.into();
-
-    //     let processing_request = ProcessingRequest {
-    //         request: Some(ProcessingRequestType::RequestTrailers(HttpTrailers { trailers: Some(trailers_to_send.0) })),
-    //         metadata_context: None,
-    //         attributes: HashMap::default(),
-    //         observability_mode: false,
-    //         protocol_config: None,
-    //     };
-
-    //     Action::Send(processing_request, self.state, false)
-    // }
-
     #[must_use = "must handle the returned Action"]
     pub async fn handle_headers_response(
         &mut self,
@@ -386,7 +330,7 @@ impl<MsgType: kind::Message + OverridableModeSelector> Processing<kind::Processi
     #[must_use = "must handle the returned Action"]
     pub async fn handle_body_response(
         &mut self,
-        sent_frames: &mut SmallVec<[Frame<Bytes>; 2]>,
+        sent_frames: &mut SmallVec<[Frame<Bytes>; 4]>,
         body_response: BodyResponse,
         route_cache_action: Option<&RouteCacheAction>,
     ) -> Action<ProcessingRequest> {
@@ -429,10 +373,17 @@ impl<MsgType: kind::Message + OverridableModeSelector> Processing<kind::Processi
                         RouteCacheAction::Default => response_data.clear_route_cache,
                     };
 
-                    status.with_request_ready(|req_ready| {
-                        req_ready.headers_modifications = Some(header_modifications);
-                        req_ready.clear_route_cache = should_clear_route_cache;
-                    });
+                    if MsgType::IS_REQUEST {
+                        status.with_request_ready(|req_ready| {
+                            req_ready.headers_modifications = Some(header_modifications);
+                            req_ready.clear_route_cache = should_clear_route_cache;
+                        });
+                    } else {
+                        status.with_response_ready(|resp_ready| {
+                            resp_ready.headers_modifications = Some(header_modifications);
+                            resp_ready.clear_route_cache = should_clear_route_cache;
+                        });
+                    }
                 }
             }
 
