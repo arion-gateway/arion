@@ -195,7 +195,12 @@ impl<MsgType: kind::Message + OverridableModeSelector> Processing<kind::Processi
 
         self.streaming_body_enabled = true;
 
-        let status = ProcessingStatus::RequestReady(ReadyStatus::default());
+        let status = if MsgType::IS_REQUEST {
+            ProcessingStatus::RequestReady(ReadyStatus::default())
+        } else {
+            ProcessingStatus::ResponseReady(ReadyStatus::default())
+        };
+
         Action::Return(status)
     }
 
@@ -306,10 +311,16 @@ impl<MsgType: kind::Message + OverridableModeSelector> Processing<kind::Processi
                 RouteCacheAction::Default => response_data.clear_route_cache,
             };
 
-            status = ProcessingStatus::RequestReady(ReadyStatus {
+            status = if MsgType::IS_REQUEST {
+                ProcessingStatus::RequestReady(ReadyStatus {
                 headers_modifications: response_data.header_mutation,
                 clear_route_cache: should_clear_route_cache,
-            });
+            }) } else {
+                ProcessingStatus::ResponseReady(ReadyStatus {
+                    headers_modifications: response_data.header_mutation,
+                    clear_route_cache: should_clear_route_cache,
+                })
+            };
 
             let embedded_status = ResponseStatus::try_from(response_data.status).unwrap_or(ResponseStatus::Continue);
 
@@ -330,16 +341,20 @@ impl<MsgType: kind::Message + OverridableModeSelector> Processing<kind::Processi
 
                 // replace body if specified
                 if let Some(new_body) = body_replacement {
-                    debug!(target: "ext_proc", "handle_headers_response: Body replacement requested: {new_body:?}");
+                    debug!(target: "ext_proc", "handle_headers_response: body replacement requested: {new_body:?}");
                     _ = self.frame_bridge.inject_frame(Ok(new_body)).await;
                 }
 
                 // replace trailers if specified
                 if let Some(trailers) = response_data.trailers {
-                    debug!(target: "ext_proc", "handle_headers_response: Trailers replacement requested: {trailers:?}");
+                    debug!(target: "ext_proc", "handle_headers_response: trailers replacement requested: {trailers:?}");
                     let new_trailers: http::HeaderMap = EnvoyHeaderMap(trailers).into();
                     _ = self.frame_bridge.inject_frame(Ok(Frame::trailers(new_trailers))).await;
                 }
+
+                debug!(target: "ext_proc", "frame brige closed!");
+                self.frame_bridge.close().await;
+
             } else {
                 debug!(target: "ext_proc", "handle_headers_response: ResponseStatus:Continue: headers processed");
                 if !override_mode.should_process_body::<MsgType>()
@@ -355,8 +370,11 @@ impl<MsgType: kind::Message + OverridableModeSelector> Processing<kind::Processi
                 }
             }
         } else {
-            status =
-                ProcessingStatus::RequestReady(ReadyStatus { headers_modifications: None, clear_route_cache: false });
+            status = if MsgType::IS_REQUEST {
+                ProcessingStatus::RequestReady(ReadyStatus { headers_modifications: None, clear_route_cache: false })
+            } else {
+                ProcessingStatus::ResponseReady(ReadyStatus { headers_modifications: None, clear_route_cache: false })
+            };
 
             self.streaming_body_enabled = true;
         }
@@ -383,7 +401,11 @@ impl<MsgType: kind::Message + OverridableModeSelector> Processing<kind::Processi
             };
             debug!(target: "ext_proc", "chunk_replacement => {chunk_replacement:?}");
 
-            let mut status = ProcessingStatus::RequestReady(ReadyStatus::default());
+            let mut status = if MsgType::IS_REQUEST {
+                ProcessingStatus::RequestReady(ReadyStatus::default())
+            } else {
+                ProcessingStatus::ResponseReady(ReadyStatus::default())
+            };
 
             match chunk_replacement {
                 Some(new_chunk) => {
@@ -417,7 +439,7 @@ impl<MsgType: kind::Message + OverridableModeSelector> Processing<kind::Processi
             let embedded_status = ResponseStatus::try_from(response_data.status).unwrap_or(ResponseStatus::Continue);
 
             if matches!(embedded_status, ResponseStatus::ContinueAndReplace) {
-                debug!(target: "ext_proc", "handle_body_response: CONTINUE_AND_REPLACE: Sending message status {status:?}");
+                debug!(target: "ext_proc", "handle_body_response: CONTINUE_AND_REPLACE: sending message status {status:?}");
                 self.streaming_body_enabled = false;
                 self.frame_bridge.close().await;
                 return Action::Return(status);
@@ -499,7 +521,12 @@ impl<MsgType: kind::Message + OverridableModeSelector> Processing<kind::Processi
             self.frame_bridge.close().await;
             self.end_of_stream = true;
 
-            let status = ProcessingStatus::RequestReady(ReadyStatus::default());
+            let status = if MsgType::IS_REQUEST {
+                ProcessingStatus::RequestReady(ReadyStatus::default())
+            } else {
+                ProcessingStatus::ResponseReady(ReadyStatus::default())
+            };
+
             return Action::Return(status);
         } else {
             debug!(target: "ext_proc", "frame brige closed!");
