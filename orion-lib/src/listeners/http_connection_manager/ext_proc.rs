@@ -836,25 +836,34 @@ impl ExternalProcessingWorker<kind::Processing> {
                         Some(Ok(current_frame)) => {
                             debug!(target: "ext_proc", "Sending body chunk of request ({})",  if current_frame.is_data() { "DATA" } else { "TRAILERS" });
 
-                            // send previous parked frame...
+                            // 1. send previous parked frame...
+                            //
                             if let Some(prev_frame) = parked_frame.take() {
                                 let action = self.request_processing.handle_body_chunk(clone_frame(&prev_frame), false).await;
                                 run_action!(self, self.request_processing, action, "handle_body_chunk (parked)");
-
-                                // save a cpy of the frame to inject into the body bridge later
+                                // save a copy of the frame to inject into the body bridge later
                                 sent_frames.push(prev_frame);
                             }
 
+                            // 2. process the current frame...
+                            //
                             if current_frame.is_data() {
-                                // This is a DATA, let's park it.
-                                parked_frame = Some(current_frame);
+                                // This is a DATA, let's park it if is supposed to be streamed
+                                if self.overridable_modes.request.should_process_body() {
+                                    parked_frame = Some(current_frame);
+                                    debug!(target: "ext_proc", "Parking body chunk of request (streamed)!");
+                                } else {
+                                    _ = self.request_processing.frame_bridge.inject_frame(Ok(current_frame)).await;
+                                }
+
                             } else {
                                 // This is TRAILERS. it is the last frame.
-                                let action = self.request_processing.handle_body_chunk(clone_frame(&current_frame), true).await;
-                                run_action!(self, self.request_processing, action, "handle_body_chunk (parked)");
-
-                                // save a cpy of the frame to inject into the body bridge later
-                                sent_frames.push(current_frame);
+                                if self.overridable_modes.request.should_process_trailers() {
+                                    parked_frame = Some(current_frame);
+                                    debug!(target: "ext_proc", "Parking body chunk of request (streamed)!");
+                                } else {
+                                    _ = self.request_processing.frame_bridge.inject_frame(Ok(current_frame)).await;
+                                }
                             }
                         },
                         Some(Err(_err)) => {
