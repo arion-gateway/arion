@@ -70,16 +70,16 @@ impl From<TrailerProcessingMode> for OverridableTrailerMode {
 //
 
 pub struct OverridableModes<K: kind::Message> {
-    headers_mode: AtomicOverridableHeaderMode,
+    header_mode: AtomicOverridableHeaderMode,
     body_mode: AtomicOverridableBodyMode,
-    trailers_mode: AtomicOverridableTrailerMode,
+    trailer_mode: AtomicOverridableTrailerMode,
     _kind: std::marker::PhantomData<K>,
 }
 
 impl<K: kind::Message> OverridableModes<K> {
     #[inline]
-    pub fn headers_mode(&self) -> OverridableHeaderMode {
-        self.headers_mode.load(Ordering::Relaxed)
+    pub fn header_mode(&self) -> OverridableHeaderMode {
+        self.header_mode.load(Ordering::Relaxed)
     }
 
     #[inline]
@@ -88,13 +88,13 @@ impl<K: kind::Message> OverridableModes<K> {
     }
 
     #[inline]
-    pub fn trailers_mode(&self) -> OverridableTrailerMode {
-        self.trailers_mode.load(Ordering::Relaxed)
+    pub fn trailer_mode(&self) -> OverridableTrailerMode {
+        self.trailer_mode.load(Ordering::Relaxed)
     }
 
     #[inline]
-    pub fn set_headers_mode(&self, mode: HeaderProcessingMode) {
-        self.headers_mode.store(mode.into(), Ordering::Relaxed);
+    pub fn set_header_mode(&self, mode: HeaderProcessingMode) {
+        self.header_mode.store(mode.into(), Ordering::Relaxed);
     }
 
     #[inline]
@@ -103,21 +103,21 @@ impl<K: kind::Message> OverridableModes<K> {
     }
 
     #[inline]
-    pub fn set_trailers_mode(&self, mode: TrailerProcessingMode) {
-        self.trailers_mode.store(mode.into(), Ordering::Relaxed);
+    pub fn set_trailer_mode(&self, mode: TrailerProcessingMode) {
+        self.trailer_mode.store(mode.into(), Ordering::Relaxed);
     }
 
     pub fn spawn(&self) -> Self {
         Self {
-            headers_mode: AtomicOverridableHeaderMode::new(self.headers_mode.load(Ordering::Relaxed)),
+            header_mode: AtomicOverridableHeaderMode::new(self.header_mode.load(Ordering::Relaxed)),
             body_mode: AtomicOverridableBodyMode::new(self.body_mode.load(Ordering::Relaxed)),
-            trailers_mode: AtomicOverridableTrailerMode::new(self.trailers_mode.load(Ordering::Relaxed)),
+            trailer_mode: AtomicOverridableTrailerMode::new(self.trailer_mode.load(Ordering::Relaxed)),
             _kind: std::marker::PhantomData,
         }
     }
 
     pub fn should_process_headers(&self) -> bool {
-        match self.headers_mode.load(Ordering::Relaxed) {
+        match self.header_mode.load(Ordering::Relaxed) {
             OverridableHeaderMode::Default => true,
             OverridableHeaderMode::Send => true,
             OverridableHeaderMode::Skip => false,
@@ -132,7 +132,7 @@ impl<K: kind::Message> OverridableModes<K> {
     }
 
     pub fn should_process_trailers(&self) -> bool {
-        match self.trailers_mode.load(Ordering::Relaxed) {
+        match self.trailer_mode.load(Ordering::Relaxed) {
             OverridableTrailerMode::Default => false,
             OverridableTrailerMode::Send => true,
             OverridableTrailerMode::Skip => false,
@@ -143,9 +143,9 @@ impl<K: kind::Message> OverridableModes<K> {
 impl<K: kind::Message> Default for OverridableModes<K> {
     fn default() -> Self {
         Self {
-            headers_mode: AtomicOverridableHeaderMode::new(OverridableHeaderMode::Default),
+            header_mode: AtomicOverridableHeaderMode::new(OverridableHeaderMode::Default),
             body_mode: AtomicOverridableBodyMode::new(OverridableBodyMode::None),
-            trailers_mode: AtomicOverridableTrailerMode::new(OverridableTrailerMode::Default),
+            trailer_mode: AtomicOverridableTrailerMode::new(OverridableTrailerMode::Default),
             _kind: std::marker::PhantomData,
         }
     }
@@ -154,9 +154,9 @@ impl<K: kind::Message> Default for OverridableModes<K> {
 impl<K: kind::Message> std::fmt::Debug for OverridableModes<K> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct(format!("OverridableModes<{}>", std::any::type_name::<K>()).as_str())
-            .field("headers_mode", &self.headers_mode)
+            .field("header_mode", &self.header_mode)
             .field("body_mode", &self.body_mode)
-            .field("trailers_mode", &self.trailers_mode)
+            .field("trailer_mode", &self.trailer_mode)
             .finish()
     }
 }
@@ -184,8 +184,8 @@ impl OverridableGlobalModes {
     }
 
     #[inline]
-    pub fn set_headers_mode<K: OverridableModeSelector>(&self, mode: HeaderProcessingMode) {
-        K::get(self).set_headers_mode(mode);
+    pub fn set_header_mode<K: OverridableModeSelector>(&self, mode: HeaderProcessingMode) {
+        K::get(self).set_header_mode(mode);
     }
 
     #[inline]
@@ -194,13 +194,13 @@ impl OverridableGlobalModes {
     }
 
     #[inline]
-    pub fn set_trailers_mode<K: OverridableModeSelector>(&self, mode: TrailerProcessingMode) {
-        K::get(self).set_trailers_mode(mode);
+    pub fn set_trailer_mode<K: OverridableModeSelector>(&self, mode: TrailerProcessingMode) {
+        K::get(self).set_trailer_mode(mode);
     }
 
     #[inline]
-    pub fn headers_mode<K: OverridableModeSelector>(&self) -> OverridableHeaderMode {
-        K::get(self).headers_mode()
+    pub fn header_mode<K: OverridableModeSelector>(&self) -> OverridableHeaderMode {
+        K::get(self).header_mode()
     }
 
     #[inline]
@@ -209,8 +209,8 @@ impl OverridableGlobalModes {
     }
 
     #[inline]
-    pub fn trailers_mode<K: OverridableModeSelector>(&self) -> OverridableTrailerMode {
-        K::get(self).trailers_mode()
+    pub fn trailer_mode<K: OverridableModeSelector>(&self) -> OverridableTrailerMode {
+        K::get(self).trailer_mode()
     }
 
     pub fn spawn(&self) -> Self {
@@ -238,15 +238,15 @@ impl From<&ExternalProcessingWorkerConfig> for OverridableGlobalModes {
     fn from(config: &ExternalProcessingWorkerConfig) -> Self {
         Self {
             request: OverridableModes {
-                headers_mode: AtomicOverridableHeaderMode::new(config.processing_mode.request_header_mode.into()),
+                header_mode: AtomicOverridableHeaderMode::new(config.processing_mode.request_header_mode.into()),
                 body_mode: AtomicOverridableBodyMode::new(config.processing_mode.request_body_mode.into()),
-                trailers_mode: AtomicOverridableTrailerMode::new(config.processing_mode.request_trailer_mode.into()),
+                trailer_mode: AtomicOverridableTrailerMode::new(config.processing_mode.request_trailer_mode.into()),
                 _kind: std::marker::PhantomData,
             },
             response: OverridableModes {
-                headers_mode: AtomicOverridableHeaderMode::new(config.processing_mode.response_header_mode.into()),
+                header_mode: AtomicOverridableHeaderMode::new(config.processing_mode.response_header_mode.into()),
                 body_mode: AtomicOverridableBodyMode::new(config.processing_mode.response_body_mode.into()),
-                trailers_mode: AtomicOverridableTrailerMode::new(config.processing_mode.response_trailer_mode.into()),
+                trailer_mode: AtomicOverridableTrailerMode::new(config.processing_mode.response_trailer_mode.into()),
                 _kind: std::marker::PhantomData,
             },
         }

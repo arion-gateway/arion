@@ -11,7 +11,7 @@ use crate::{body::response_flags::ResponseFlags, listeners::synthetic_http_respo
 use bytes::Bytes;
 use http_body::Frame;
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::ext_proc::{
-    BodyProcessingMode, ProcessingMode, RouteCacheAction, TrailerProcessingMode,
+    BodyProcessingMode, HeaderProcessingMode, ProcessingMode, RouteCacheAction, TrailerProcessingMode
 };
 use orion_data_plane_api::envoy_data_plane_api::envoy::service::ext_proc::v3::common_response::ResponseStatus;
 use orion_data_plane_api::envoy_data_plane_api::envoy::service::ext_proc::v3::HttpTrailers;
@@ -115,24 +115,65 @@ impl<M: kind::Mode + Default> From<&ExternalProcessingWorkerConfig> for Response
     }
 }
 
-impl<MsgType: kind::Message + OverridableModeSelector> Processing<kind::Processing, MsgType> {
+
+impl Processing<kind::Processing, kind::Request> {
     pub fn apply_mode_overrides(
         &mut self,
         envoy_mode: &EnvoyProcessingMode,
         allowed_override_modes: &[ProcessingMode],
         override_mode: &OverridableGlobalModes,
     ) {
+        // --- Body Mode Override ---
         if let Ok(mode) = BodyProcessingMode::try_from(envoy_mode.request_body_mode) {
             if allowed_override_modes.iter().any(|allowed| allowed.request_body_mode == mode) {
-                override_mode.set_body_mode::<MsgType>(mode);
+                override_mode.set_body_mode::<kind::Request>(mode);
             }
         }
+
+        // --- Trailer Mode Override ---
         if let Ok(mode) = TrailerProcessingMode::try_from(envoy_mode.request_trailer_mode) {
-            if allowed_override_modes.iter().any(|allowed| allowed.request_trailer_mode == mode) {
-                override_mode.set_trailers_mode::<MsgType>(mode);
+            if mode != TrailerProcessingMode::Default
+                && allowed_override_modes.iter().any(|allowed| allowed.request_trailer_mode == mode) {
+                override_mode.set_trailer_mode::<kind::Request>(mode);
             }
         }
     }
+}
+
+impl Processing<kind::Processing, kind::Response> {
+    pub fn apply_mode_overrides(
+        &mut self,
+        envoy_mode: &EnvoyProcessingMode,
+        allowed_override_modes: &[ProcessingMode],
+        override_mode: &OverridableGlobalModes,
+    ) {
+        // --- Header Mode Override ---
+        if let Ok(mode) = HeaderProcessingMode::try_from(envoy_mode.response_header_mode) {
+            if mode != HeaderProcessingMode::Default
+                && allowed_override_modes.iter().any(|allowed| allowed.response_header_mode == mode)
+            {
+                override_mode.set_header_mode::<kind::Response>(mode);
+            }
+        }
+
+        // --- Body Mode Override ---
+        if let Ok(mode) = BodyProcessingMode::try_from(envoy_mode.response_body_mode) {
+            if allowed_override_modes.iter().any(|allowed| allowed.response_body_mode == mode) {
+                override_mode.set_body_mode::<kind::Response>(mode);
+            }
+        }
+
+        // --- Trailer Mode Override ---
+        if let Ok(mode) = TrailerProcessingMode::try_from(envoy_mode.response_trailer_mode) {
+            if mode != TrailerProcessingMode::Default
+                && allowed_override_modes.iter().any(|allowed| allowed.response_trailer_mode == mode) {
+                override_mode.set_trailer_mode::<kind::Response>(mode);
+            }
+        }
+    }
+}
+
+impl<MsgType: kind::Message + OverridableModeSelector> Processing<kind::Processing, MsgType> {
 
     #[must_use = "must handle the returned Action"]
     pub async fn process(

@@ -219,7 +219,7 @@ impl ExternalProcessor {
 
         let ext_proc_frame_bridge = match (
             self.overridable_modes.request.body_mode(),
-            self.overridable_modes.request.trailers_mode(),
+            self.overridable_modes.request.trailer_mode(),
         ) {
             (OverridableBodyMode::None, trailers_mode) => {
                 // event though body processing is None and trailers processing is Skip, we have to
