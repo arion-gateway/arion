@@ -110,15 +110,38 @@ impl FrameBridge {
     /// Consumes the entire original body, injecting each frame into the ChannelBody.
     ///
     pub async fn complete(&mut self) {
+        let Some(injector) = &mut self.injector else {
+            return;
+        };
         while let Some(frame_result) = self.body_stream.next().await {
-            let Some(injector) = &mut self.injector else {
-                break;
-            };
             // If sending fails, it means the receiver has been dropped
             if injector.send(frame_result).await.is_err() {
                 break;
             }
         }
+    }
+
+    /// Consumes the DATA frame of the entire original body, injecting each frame into the ChannelBody,
+    /// and returns when a non-DATA frame is encountered.
+    ///
+    pub async fn complete_data(&mut self) -> Option<Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync + 'static>>> {
+        let Some(injector) = &mut self.injector else {
+            return None;
+        };
+        while let Some(frame_result) = self.body_stream.next().await {
+            match &frame_result {
+                Ok(frame) if frame.is_data() => {
+                    // If sending fails, it means the receiver has been dropped
+                    if injector.send(frame_result).await.is_err() {
+                        break;
+                    }
+                }
+                _ => {
+                    return Some(frame_result);
+                }
+            }
+        }
+        None
     }
 
     /// Consumes the entire original body by applying a transformation function
