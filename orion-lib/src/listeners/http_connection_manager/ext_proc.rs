@@ -259,7 +259,7 @@ impl ExternalProcessor {
         let processing_data = ProcessingData::Request(ext_proc_headers, ext_proc_frame_bridge);
 
         let ver = request.version();
-        let Ok(response_rx) = self.send_processing_data(processing_data, ver).await else {
+        let Ok(response_rx) = self.send_processing_data::<kind::Request>(processing_data, ver).await else {
             return self.on_filter_error("Failed to schedule sending request data to external processor", None, ver);
         };
 
@@ -456,7 +456,7 @@ impl ExternalProcessor {
         //}
     }
 
-    async fn send_processing_data(
+    async fn send_processing_data<MsgType: kind::Message + 'static>(
         &mut self,
         data: ProcessingData,
         ver: http::Version,
@@ -464,7 +464,7 @@ impl ExternalProcessor {
         let (response_tx, response_rx) = oneshot::channel();
         let processing_message = ProcessingTask { data, reply_channel: response_tx, http_version: ver };
 
-        let worker_channel = self.get_worker_channel();
+        let worker_channel = self.get_worker_channel::<MsgType>();
         worker_channel.send(processing_message).await.map(|_| response_rx)
     }
 
@@ -488,7 +488,7 @@ impl ExternalProcessor {
         }
     }
 
-    fn get_worker_channel(&mut self) -> &mpsc::Sender<ProcessingTask> {
+    fn get_worker_channel<MsgType: kind::Message + 'static>(&mut self) -> &mpsc::Sender<ProcessingTask> {
         if let Some(ref sender) = self.ext_proc_worker {
             sender
         } else {
@@ -509,7 +509,7 @@ impl ExternalProcessor {
             } else {
                 let worker =
                     ExternalProcessingWorker::<kind::Processing>::new(Arc::clone(&self.worker_config), overridable_modes);
-                tokio::spawn(worker.ext_proc_loop(receiver));
+                tokio::spawn(worker.ext_proc_loop::<MsgType>(receiver));
             }
             self.ext_proc_worker.insert(sender)
         }
@@ -657,10 +657,10 @@ impl ExternalProcessingWorker<kind::Processing> {
     }
 
     #[allow(clippy::too_many_lines)]
-    async fn ext_proc_loop(mut self, mut processing_request_channel: mpsc::Receiver<ProcessingTask>) {
+    async fn ext_proc_loop<MsgType: kind::Message>(mut self, mut processing_request_channel: mpsc::Receiver<ProcessingTask>) {
         // The following label is not strictly necessary, but it makes it clearer what is being exited at the break point.
         // It also makes it easier to locate subsequent exit points.
-        debug!(target: "ext_proc", "--- BEGIN ---");
+        debug!(target: "ext_proc", "--- BEGIN {} ---", std::any::type_name::<MsgType>());
 
         let mut parked_frame: Option<Frame<Bytes>> = None;
         let mut sent_frames: SmallVec<[Frame<Bytes>; 2]> = SmallVec::new();
@@ -734,7 +734,7 @@ impl ExternalProcessingWorker<kind::Processing> {
                             debug!(target: "ext_proc", "Immediate response processed - closing stream");
                             break 'transaction_loop;
                         },
-                        Ok(Some(ProcessingResponse { mode_override, response: Some(ProcessingResponseType::RequestHeaders(headers_response)), ..})) => {
+                        Ok(Some(ProcessingResponse { mode_override, response: Some(ProcessingResponseType::RequestHeaders(headers_response)), ..})) if MsgType::IS_REQUEST => {
                             debug!(target: "ext_proc", "<- Request header response received");
                             if self.config.allow_mode_override {
                                 if let Some(overrides) = mode_override {
@@ -751,7 +751,7 @@ impl ExternalProcessingWorker<kind::Processing> {
 
                             run_action!(self, self.request_processing, action, "handle_headers_response");
                         },
-                        Ok(Some(ProcessingResponse { response: Some(ProcessingResponseType::RequestBody(body_response)), ..})) => {
+                        Ok(Some(ProcessingResponse { response: Some(ProcessingResponseType::RequestBody(body_response)), ..})) if MsgType::IS_REQUEST =>{
                             debug!(target: "ext_proc", "<- Request body response received");
 
                             let action = self
@@ -761,12 +761,12 @@ impl ExternalProcessingWorker<kind::Processing> {
                             run_action!(self, self.request_processing, action, "body_response");
 
                         },
-                        Ok(Some(ProcessingResponse { response: Some(ProcessingResponseType::RequestTrailers(trailers_response)), ..})) => {
+                        Ok(Some(ProcessingResponse { response: Some(ProcessingResponseType::RequestTrailers(trailers_response)), ..})) if MsgType::IS_REQUEST => {
                             debug!(target: "ext_proc", "<- Request trailers response received");
                             let action = self.request_processing.handle_trailers_response(trailers_response).await;
                             run_action!(self, self.request_processing, action, "handle_trailers_response");
                         },
-                        Ok(Some(ProcessingResponse { mode_override, response: Some(ProcessingResponseType::ResponseHeaders(headers_response)), ..})) => {
+                        Ok(Some(ProcessingResponse { mode_override, response: Some(ProcessingResponseType::ResponseHeaders(headers_response)), ..})) if MsgType::IS_RESPONSE => {
                             debug!(target: "ext_proc", "<- Response headers response received");
                             if self.config.allow_mode_override {
                                 if let Some(overrides) = mode_override {
@@ -781,7 +781,7 @@ impl ExternalProcessingWorker<kind::Processing> {
                             ).await;
                             run_action!(self, self.response_processing, action, "handle_headers_response");
                         },
-                        Ok(Some(ProcessingResponse { response: Some(ProcessingResponseType::ResponseBody(body_response)), ..})) => {
+                        Ok(Some(ProcessingResponse { response: Some(ProcessingResponseType::ResponseBody(body_response)), ..})) if MsgType::IS_RESPONSE => {
                             debug!(target: "ext_proc", "<- Response body response received");
                             let empty_response = body_response.response.is_none();
                             let action = self.response_processing.handle_body_response(&mut sent_frames, body_response, None).await;
@@ -792,17 +792,20 @@ impl ExternalProcessingWorker<kind::Processing> {
                                 break 'transaction_loop;
                             }
                         },
-                        Ok(Some(ProcessingResponse { response: Some(ProcessingResponseType::ResponseTrailers(trailers_response)), ..})) => {
+                        Ok(Some(ProcessingResponse { response: Some(ProcessingResponseType::ResponseTrailers(trailers_response)), ..})) if MsgType::IS_RESPONSE => {
                             debug!(target: "ext_proc", "<- Response trailers response received");
                             let action = self.response_processing.handle_trailers_response(trailers_response).await;
                             run_action!(self, self.response_processing, action, "handle_trailers_response");
                         },
                         Ok(Some(r)) => {
-                            debug!(target: "ext_proc", "<- Noop response received {r:?}");
-                            let action = self.response_processing.handle_noop_response(ProcessingStatus::ResponseReady);
-                            run_action!(self, self.response_processing, action, "handle_noop_response");
-                            let action = self.request_processing.handle_noop_response(ProcessingStatus::RequestReady);
-                            run_action!(self, self.request_processing, action, "handle_noop_response");
+                            debug!(target: "ext_proc", "<- Unsupported response received (noop) {r:?}");
+                            if MsgType::IS_REQUEST {
+                                let action = self.request_processing.handle_noop_response(ProcessingStatus::RequestReady);
+                                run_action!(self, self.request_processing, action, "handle_noop_response");
+                            } else {
+                                let action = self.response_processing.handle_noop_response(ProcessingStatus::ResponseReady);
+                                run_action!(self, self.response_processing, action, "handle_noop_response");
+                            }
                         }
                         Err(e) => {
                             let msg = "external processor gRPC error";

@@ -507,18 +507,8 @@ impl<MsgType: kind::Message + OverridableModeSelector> Processing<kind::Processi
 
     #[must_use = "must handle the returned Action"]
     pub fn handle_noop_response(&mut self, ctor: fn(ReadyStatus) -> ProcessingStatus) -> Action<ProcessingRequest> {
-        todo!("Implement handle_noop_response");
-        //self.state = ProcessingState::default();
-        //let status = self.partial_status.take().unwrap_or_else(|| ctor(ReadyStatus {
-        //    body_replacement: self.body_context.body.take(),
-        //    override_sending_response_headers: wants_response_headers,
-        //    override_sending_response_body: wants_response_body,
-        //    clear_route_cache: false,
-        //    headers_modifications: None,
-        //    trailers_modifications: None,
-        //}));
-
-        //Action::Return(status)
+        let status = ctor(ReadyStatus::default());
+        Action::Return(status)
     }
 }
 

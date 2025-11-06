@@ -5,21 +5,15 @@ pub struct Observability {}
 pub struct Processing {}
 
 pub trait Mode {
-    fn is_observability(&self) -> bool;
+    const OBSERVABILITY : bool;
 }
 
 impl Mode for Observability {
-    #[inline]
-    fn is_observability(&self) -> bool {
-        true
-    }
+    const OBSERVABILITY : bool = true;
 }
 
 impl Mode for Processing {
-    #[inline]
-    fn is_observability(&self) -> bool {
-        false
-    }
+    const OBSERVABILITY : bool = false;
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -27,6 +21,17 @@ pub struct Request;
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Response;
 
-pub trait Message {}
-impl Message for Request {}
-impl Message for Response {}
+pub trait Message {
+    const IS_REQUEST: bool;
+    const IS_RESPONSE: bool;
+}
+
+impl Message for Request {
+    const IS_REQUEST: bool = true;
+    const IS_RESPONSE: bool = false;
+}
+
+impl Message for Response {
+    const IS_REQUEST: bool = false;
+    const IS_RESPONSE: bool = true;
+}
