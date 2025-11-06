@@ -1,20 +1,20 @@
-mod status;
 mod kind;
 mod mutation;
 mod r#override;
 mod processing;
+mod status;
 mod worker_config;
 
 use crate::body::channel_body::{ChannelBody, FrameBridge};
 use crate::body::poly_body::TrailersType;
 use crate::event_error::EventFailure;
+use crate::listeners::http_connection_manager::ext_proc::mutation::apply_header_mutations;
+use crate::listeners::http_connection_manager::ext_proc::processing::RequestProcessing;
+use crate::listeners::http_connection_manager::ext_proc::processing::ResponseProcessing;
+use crate::listeners::http_connection_manager::ext_proc::r#override::{OverridableBodyMode, OverridableGlobalModes};
 use crate::listeners::http_connection_manager::ext_proc::status::Action;
 use crate::listeners::http_connection_manager::ext_proc::status::ProcessingStatus;
 use crate::listeners::http_connection_manager::ext_proc::status::ReadyStatus;
-use crate::listeners::http_connection_manager::ext_proc::mutation::apply_header_mutations;
-use crate::listeners::http_connection_manager::ext_proc::r#override::{OverridableBodyMode, OverridableGlobalModes};
-use crate::listeners::http_connection_manager::ext_proc::processing::RequestProcessing;
-use crate::listeners::http_connection_manager::ext_proc::processing::ResponseProcessing;
 use crate::listeners::http_connection_manager::ext_proc::worker_config::ExternalProcessingWorkerConfig;
 use crate::{
     body::{body_with_metrics::BodyWithMetrics, response_flags::ResponseFlags},
@@ -26,24 +26,20 @@ use bytes::Bytes;
 use futures::{future::Either, StreamExt};
 use http::header::CONTENT_LENGTH;
 use http::{Request, Response};
-use http_body::{Body, Frame};
+use http_body::Frame;
 use http_body_util::combinators::WithTrailers;
 use http_body_util::BodyExt;
 use http_body_util::Collected;
 use http_body_util::Full;
-use hyper::body::Incoming;
-use orion_configuration::config::network_filters::http_connection_manager::http_filters::ext_proc::TrailerProcessingMode;
 use orion_configuration::config::{
     cluster::ClusterSpecifier,
     network_filters::http_connection_manager::http_filters::{
         ext_proc::{
-            BodyProcessingMode, ExternalProcessor as ExternalProcessorConfig, GrpcServiceSpecifier,
-            HeaderForwardingRules, HeaderProcessingMode, ProcessingMode,
+            ExternalProcessor as ExternalProcessorConfig, GrpcServiceSpecifier, HeaderForwardingRules, ProcessingMode,
         },
         ExtProcPerRoute,
     },
 };
-use orion_data_plane_api::envoy_data_plane_api::envoy::service::ext_proc::v3::HeaderMutation;
 use orion_data_plane_api::envoy_data_plane_api::{
     envoy::{
         config::core::v3::{HeaderMap, HeaderValue},
@@ -74,12 +70,6 @@ pub struct ExternalProcessor {
     worker_config: Arc<ExternalProcessingWorkerConfig>,
     forward_rules: Option<Arc<HeaderForwardingRules>>,
     overridable_modes: Arc<OverridableGlobalModes>,
-    //sending_request_headers: bool,
-    //sending_request_body: bool,
-    //sending_request_trailers: bool,
-    //sending_response_headers: bool,
-    //sending_response_body: bool,
-    //sending_response_trailers: bool,
 }
 
 impl From<ExternalProcessorConfig> for ExternalProcessor {
@@ -94,19 +84,6 @@ impl From<(ExternalProcessorConfig, Option<ExtProcPerRoute>)> for ExternalProces
         debug!(target: "ext_proc", "From<ExternalProcessorConfig, ExtProcPerRoute> for ExternalProcessor");
         let forward_rules = initial_config.forward_rules.clone().map(Arc::new);
         let worker_config = ExternalProcessingWorkerConfig::from((initial_config, per_route_config));
-
-        //let sending_request_headers =
-        //    !matches!(worker_config.processing_mode.request_header_mode, HeaderProcessingMode::Skip);
-        //let sending_request_body = !matches!(worker_config.processing_mode.request_body_mode, BodyProcessingMode::None);
-        //let sending_request_trailers =
-        //    !matches!(worker_config.processing_mode.request_trailer_mode, TrailerProcessingMode::Skip);
-
-        //let sending_response_headers =
-        //    !matches!(worker_config.processing_mode.response_header_mode, HeaderProcessingMode::Skip);
-        //let sending_response_body =
-        //    !matches!(worker_config.processing_mode.response_body_mode, BodyProcessingMode::None);
-        //let sending_response_trailers =
-        //    !matches!(worker_config.processing_mode.response_trailer_mode, TrailerProcessingMode::Skip);
 
         let overridable_global_modes = Arc::new(OverridableGlobalModes::from(&worker_config));
 
@@ -505,11 +482,13 @@ impl ExternalProcessor {
                     Arc::clone(&self.worker_config),
                     overridable_modes,
                 );
-                tokio::spawn(worker.ext_proc_loop(receiver));
+                tokio::spawn(worker.observability_loop(receiver));
             } else {
-                let worker =
-                    ExternalProcessingWorker::<kind::Processing>::new(Arc::clone(&self.worker_config), overridable_modes);
-                tokio::spawn(worker.ext_proc_loop::<MsgType>(receiver));
+                let worker = ExternalProcessingWorker::<kind::Processing>::new(
+                    Arc::clone(&self.worker_config),
+                    overridable_modes,
+                );
+                tokio::spawn(worker.processing_loop::<MsgType>(receiver));
             }
             self.ext_proc_worker.insert(sender)
         }
@@ -657,7 +636,10 @@ impl ExternalProcessingWorker<kind::Processing> {
     }
 
     #[allow(clippy::too_many_lines)]
-    async fn ext_proc_loop<MsgType: kind::Message>(mut self, mut processing_request_channel: mpsc::Receiver<ProcessingTask>) {
+    async fn processing_loop<MsgType: kind::Message>(
+        mut self,
+        mut processing_request_channel: mpsc::Receiver<ProcessingTask>,
+    ) {
         // The following label is not strictly necessary, but it makes it clearer what is being exited at the break point.
         // It also makes it easier to locate subsequent exit points.
         debug!(target: "ext_proc", "--- BEGIN {} ---", std::any::type_name::<MsgType>());
@@ -831,11 +813,11 @@ impl ExternalProcessingWorker<kind::Processing> {
                     }
                 },
 
-                outbout_request_body_frame =
+                outbout_body_frame =
                     async { self.request_processing.frame_bridge.next().await }, if self.request_processing.streaming_body_enabled => {
 
                     debug!(target: "ext_proc", "OUTBOUND REQUEST BODY FRAME:");
-                    match outbout_request_body_frame {
+                    match outbout_body_frame {
                         Some(Ok(current_frame)) => {
                             debug!(target: "ext_proc", "Sending body chunk of request ({})",  if current_frame.is_data() { "DATA" } else { "TRAILERS" });
 
@@ -894,16 +876,18 @@ impl ExternalProcessingWorker<kind::Processing> {
                 },
 
                 () = fast_timeout::fast_sleep(self.timeout_state.duration), if self.timeout_state.active => {
-                    debug!(target: "ext_proc", "loop: FAST TIMEOUT..");
+                    debug!(target: "ext_proc", "loop: message timeout!");
 
-                    let status = self.request_processing.status_timeout(self.config.failure_mode_allow);
-                    if let Some(reply_channel) = self.request_processing.reply_channel.take() {
-                        let _ = reply_channel.send(status);
-                    }
-
-                    let status = self.response_processing.status_timeout(self.config.failure_mode_allow);
-                    if let Some(reply_channel) = self.response_processing.reply_channel.take() {
-                        let _ = reply_channel.send(status);
+                    if MsgType::IS_REQUEST {
+                        let status = self.request_processing.status_timeout(self.config.failure_mode_allow);
+                        if let Some(reply_channel) = self.request_processing.reply_channel.take() {
+                            let _ = reply_channel.send(status);
+                        }
+                    } else {
+                        let status = self.response_processing.status_timeout(self.config.failure_mode_allow);
+                        if let Some(reply_channel) = self.response_processing.reply_channel.take() {
+                            let _ = reply_channel.send(status);
+                        }
                     }
                 }
             }
@@ -936,7 +920,7 @@ impl ExternalProcessingWorker<kind::Observability> {
     }
 
     #[allow(clippy::too_many_lines)]
-    async fn ext_proc_loop(mut self, mut processing_request_channel: mpsc::Receiver<ProcessingTask>) {
+    async fn observability_loop(mut self, mut processing_request_channel: mpsc::Receiver<ProcessingTask>) {
         todo!()
         // // The following label is not strictly necessary, but it makes it clearer what is being exited at the break point.
         // // It also makes it easier to locate subsequent exit points.
@@ -1172,6 +1156,7 @@ impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
                 self.timeout_state.active = false;
             },
             _ => {
+                // enable timeout, if not in observability mode
                 self.timeout_state.active = !self.config.observability_mode;
             },
         }

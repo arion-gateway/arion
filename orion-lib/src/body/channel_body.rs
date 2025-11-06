@@ -124,7 +124,9 @@ impl FrameBridge {
     /// Consumes the DATA frame of the entire original body, injecting each frame into the ChannelBody,
     /// and returns when a non-DATA frame is encountered.
     ///
-    pub async fn complete_data(&mut self) -> Option<Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync + 'static>>> {
+    pub async fn complete_data(
+        &mut self,
+    ) -> Option<Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync + 'static>>> {
         let Some(injector) = &mut self.injector else {
             return None;
         };
@@ -135,10 +137,10 @@ impl FrameBridge {
                     if injector.send(frame_result).await.is_err() {
                         break;
                     }
-                }
+                },
                 _ => {
                     return Some(frame_result);
-                }
+                },
             }
         }
         None

@@ -1,5 +1,5 @@
-use crate::listeners::http_connection_manager::ext_proc::{worker_config::ExternalProcessingWorkerConfig};
 use crate::listeners::http_connection_manager::ext_proc::kind;
+use crate::listeners::http_connection_manager::ext_proc::worker_config::ExternalProcessingWorkerConfig;
 
 use atomic_enum::atomic_enum;
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::ext_proc::{

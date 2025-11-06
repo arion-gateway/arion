@@ -1,6 +1,5 @@
-use std::{sync::atomic::Ordering, time::Duration};
+use std::time::Duration;
 
-use atomic_enum::atomic_enum;
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::ext_proc::{
     GrpcServiceSpecifier, HeaderMutationRules, ProcessingMode, RouteCacheAction,
 };

@@ -1,17 +1,18 @@
 use crate::body::channel_body::FrameBridge;
 use crate::event_error::EventFailure;
-use crate::listeners::http_connection_manager::ext_proc::status::{
-    Action, ProcessingStatus, ReadyStatus,
-};
+use crate::listeners::http_connection_manager::ext_proc::kind;
 use crate::listeners::http_connection_manager::ext_proc::mutation::apply_header_mutations;
-use crate::listeners::http_connection_manager::ext_proc::r#override::{OverridableBodyMode, OverridableGlobalModes, OverridableModeSelector};
+use crate::listeners::http_connection_manager::ext_proc::r#override::{
+    OverridableBodyMode, OverridableGlobalModes, OverridableModeSelector,
+};
+use crate::listeners::http_connection_manager::ext_proc::status::{Action, ProcessingStatus, ReadyStatus};
 use crate::listeners::http_connection_manager::ext_proc::worker_config::ExternalProcessingWorkerConfig;
 use crate::listeners::http_connection_manager::ext_proc::EnvoyHeaderMap;
 use crate::{body::response_flags::ResponseFlags, listeners::synthetic_http_response::SyntheticHttpResponse};
 use bytes::Bytes;
 use http_body::Frame;
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::ext_proc::{
-    BodyProcessingMode, HeaderProcessingMode, ProcessingMode, RouteCacheAction, TrailerProcessingMode
+    BodyProcessingMode, HeaderProcessingMode, ProcessingMode, RouteCacheAction, TrailerProcessingMode,
 };
 use orion_data_plane_api::envoy_data_plane_api::envoy::service::ext_proc::v3::common_response::ResponseStatus;
 use orion_data_plane_api::envoy_data_plane_api::envoy::service::ext_proc::v3::HttpTrailers;
@@ -22,7 +23,6 @@ use orion_data_plane_api::envoy_data_plane_api::envoy::{
         HttpBody, HttpHeaders, ProcessingRequest, TrailersResponse,
     },
 };
-use crate::listeners::http_connection_manager::ext_proc::kind;
 
 use orion_format::types::ResponseFlags as FmtResponseFlags;
 use smallvec::SmallVec;
@@ -76,8 +76,8 @@ pub struct Processing<M: kind::Mode, MsgType: kind::Message> {
     _msg: std::marker::PhantomData<MsgType>,
 }
 
-impl<M: kind::Mode + Default, MsgType: kind::Message> From<(&ExternalProcessingWorkerConfig, MsgType)> for Processing<M, MsgType> {
-    fn from((config, _): (&ExternalProcessingWorkerConfig, MsgType)) -> Self {
+impl<M: kind::Mode + Default, MsgType: kind::Message> From<&ExternalProcessingWorkerConfig> for Processing<M, MsgType> {
+    fn from(config: &ExternalProcessingWorkerConfig) -> Self {
         debug!(target: "ext_proc", "From<&ExternalProcessingWorkerConfig for Processing<>");
         assert!(
             !config.observability_mode,
@@ -104,17 +104,16 @@ impl<M: kind::Mode + Default, MsgType: kind::Message> From<(&ExternalProcessingW
 impl<M: kind::Mode + Default> From<&ExternalProcessingWorkerConfig> for RequestProcessing<M> {
     fn from(value: &ExternalProcessingWorkerConfig) -> Self {
         debug!(target: "ext_proc", "From<&ExternalProcessingWorkerConfig for RequestProcessing<{}>", std::any::type_name::<M>());
-        Self(Processing::<M, kind::Request>::from((value, kind::Request)))
+        Self(Processing::<M, kind::Request>::from(value))
     }
 }
 
 impl<M: kind::Mode + Default> From<&ExternalProcessingWorkerConfig> for ResponseProcessing<M> {
     fn from(value: &ExternalProcessingWorkerConfig) -> Self {
         debug!(target: "ext_proc", "From<&ExternalProcessingWorkerConfig for ResponseProcessing<{}>", std::any::type_name::<M>());
-        Self(Processing::<M, kind::Response>::from((value, kind::Response)))
+        Self(Processing::<M, kind::Response>::from(value))
     }
 }
-
 
 impl Processing<kind::Processing, kind::Request> {
     pub fn apply_mode_overrides(
@@ -133,7 +132,8 @@ impl Processing<kind::Processing, kind::Request> {
         // --- Trailer Mode Override ---
         if let Ok(mode) = TrailerProcessingMode::try_from(envoy_mode.request_trailer_mode) {
             if mode != TrailerProcessingMode::Default
-                && allowed_override_modes.iter().any(|allowed| allowed.request_trailer_mode == mode) {
+                && allowed_override_modes.iter().any(|allowed| allowed.request_trailer_mode == mode)
+            {
                 override_mode.set_trailer_mode::<kind::Request>(mode);
             }
         }
@@ -166,7 +166,8 @@ impl Processing<kind::Processing, kind::Response> {
         // --- Trailer Mode Override ---
         if let Ok(mode) = TrailerProcessingMode::try_from(envoy_mode.response_trailer_mode) {
             if mode != TrailerProcessingMode::Default
-                && allowed_override_modes.iter().any(|allowed| allowed.response_trailer_mode == mode) {
+                && allowed_override_modes.iter().any(|allowed| allowed.response_trailer_mode == mode)
+            {
                 override_mode.set_trailer_mode::<kind::Response>(mode);
             }
         }
@@ -174,7 +175,6 @@ impl Processing<kind::Processing, kind::Response> {
 }
 
 impl<MsgType: kind::Message + OverridableModeSelector> Processing<kind::Processing, MsgType> {
-
     #[must_use = "must handle the returned Action"]
     pub async fn process(
         &mut self,
@@ -182,7 +182,7 @@ impl<MsgType: kind::Message + OverridableModeSelector> Processing<kind::Processi
         frame_bridge: FrameBridge,
         reply_channel: oneshot::Sender<ProcessingStatus>,
         http_version: http::Version,
-        override_mode: &OverridableGlobalModes
+        override_mode: &OverridableGlobalModes,
     ) -> Action<ProcessingRequest> {
         self.reply_channel = Some(reply_channel);
         self.http_version = Some(http_version);
@@ -209,7 +209,8 @@ impl<MsgType: kind::Message + OverridableModeSelector> Processing<kind::Processi
             ));
         };
 
-        let end_of_stream = !override_mode.should_process_body::<MsgType>() && !override_mode.should_process_trailers::<MsgType>();
+        let end_of_stream =
+            !override_mode.should_process_body::<MsgType>() && !override_mode.should_process_trailers::<MsgType>();
 
         let envmap: EnvoyHeaderMap = headers.into();
         let processing_request = ProcessingRequest {
@@ -224,7 +225,9 @@ impl<MsgType: kind::Message + OverridableModeSelector> Processing<kind::Processi
             protocol_config: None,
         };
 
-        if self.send_body_without_waiting_for_header_response && !matches!(override_mode.body_mode::<MsgType>(), OverridableBodyMode::None) {
+        if self.send_body_without_waiting_for_header_response
+            && !matches!(override_mode.body_mode::<MsgType>(), OverridableBodyMode::None)
+        {
             self.streaming_body_enabled = true;
         }
 
@@ -292,7 +295,7 @@ impl<MsgType: kind::Message + OverridableModeSelector> Processing<kind::Processi
         &mut self,
         response: HeadersResponse,
         route_cache_action: &RouteCacheAction,
-        override_mode: &OverridableGlobalModes
+        override_mode: &OverridableGlobalModes,
     ) -> Action<ProcessingRequest> {
         let status;
 
@@ -339,7 +342,9 @@ impl<MsgType: kind::Message + OverridableModeSelector> Processing<kind::Processi
                 }
             } else {
                 debug!(target: "ext_proc", "handle_headers_response: ResponseStatus:Continue: headers processed");
-                if !override_mode.should_process_body::<MsgType>() && !override_mode.should_process_trailers::<MsgType>() {
+                if !override_mode.should_process_body::<MsgType>()
+                    && !override_mode.should_process_trailers::<MsgType>()
+                {
                     debug!(target: "ext_proc", "handle_headers_response: complete to stream original body and close!");
                     self.frame_bridge.complete().await;
                     debug!(target: "ext_proc", "frame brige closed!");
@@ -513,7 +518,6 @@ impl<MsgType: kind::Message + OverridableModeSelector> Processing<kind::Processi
 }
 
 impl<M: kind::Mode + Default, MsgType: kind::Message> Processing<M, MsgType> {
-
     #[inline]
     pub fn is_awaiting_reply(&self) -> bool {
         self.reply_channel.is_some()

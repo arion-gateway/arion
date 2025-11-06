@@ -5,21 +5,19 @@ pub struct Observability {}
 pub struct Processing {}
 
 pub trait Mode {
-    const OBSERVABILITY : bool;
+    const OBSERVABILITY: bool;
 }
 
 impl Mode for Observability {
-    const OBSERVABILITY : bool = true;
+    const OBSERVABILITY: bool = true;
 }
 
 impl Mode for Processing {
-    const OBSERVABILITY : bool = false;
+    const OBSERVABILITY: bool = false;
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-pub struct Request;
-#[derive(Debug, Clone, Copy, Default)]
-pub struct Response;
+pub type Request = http::Request<()>;
+pub type Response = http::Response<()>;
 
 pub trait Message {
     const IS_REQUEST: bool;
