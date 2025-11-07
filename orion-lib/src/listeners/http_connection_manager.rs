@@ -910,16 +910,6 @@ impl
                 }
             }
 
-            // Extend the lifetime of active_filters to the response.
-            // This is needed for filters to survive until the Response is completely streamed.
-            //
-
-            debug!(target: "ext_proc", "extending the lifetime of active filters...") ;
-
-            if !active_filters.is_empty() {
-                response.extensions_mut().insert(active_filters);
-            }
-
             let resp_headers = response.headers_mut();
             if self.most_specific_header_mutations_wins {
                 self.response_header_modifier.modify(resp_headers);
