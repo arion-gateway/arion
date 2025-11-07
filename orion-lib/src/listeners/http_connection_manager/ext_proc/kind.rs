@@ -19,17 +19,17 @@ impl Mode for Processing {
 pub type Request = http::Request<()>;
 pub type Response = http::Response<()>;
 
-pub trait Message {
+pub trait Phase {
     const IS_REQUEST: bool;
     const IS_RESPONSE: bool;
 }
 
-impl Message for Request {
+impl Phase for Request {
     const IS_REQUEST: bool = true;
     const IS_RESPONSE: bool = false;
 }
 
-impl Message for Response {
+impl Phase for Response {
     const IS_REQUEST: bool = false;
     const IS_RESPONSE: bool = true;
 }
