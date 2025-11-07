@@ -273,9 +273,10 @@ impl<Phase: kind::Phase + OverridableModeSelector> Processing<kind::Processing, 
 
             status = if Phase::IS_REQUEST {
                 ProcessingStatus::RequestReady(ReadyStatus {
-                headers_modifications: response_data.header_mutation,
-                clear_route_cache: should_clear_route_cache,
-            }) } else {
+                    headers_modifications: response_data.header_mutation,
+                    clear_route_cache: should_clear_route_cache,
+                })
+            } else {
                 ProcessingStatus::ResponseReady(ReadyStatus {
                     headers_modifications: response_data.header_mutation,
                     clear_route_cache: should_clear_route_cache,
@@ -315,12 +316,9 @@ impl<Phase: kind::Phase + OverridableModeSelector> Processing<kind::Processing, 
                 debug!(target: "ext_proc", "frame brige closed!");
                 self.streaming_body_enabled = false;
                 self.frame_bridge.close().await;
-
             } else {
                 debug!(target: "ext_proc", "handle_headers_response: ResponseStatus:Continue: headers processed");
-                if !override_mode.should_process_body::<Phase>()
-                    && !override_mode.should_process_trailers::<Phase>()
-                {
+                if !override_mode.should_process_body::<Phase>() && !override_mode.should_process_trailers::<Phase>() {
                     debug!(target: "ext_proc", "handle_headers_response: complete to stream original body and close!");
                     self.frame_bridge.complete().await;
                     debug!(target: "ext_proc", "frame brige closed!");
@@ -371,7 +369,7 @@ impl<Phase: kind::Phase + OverridableModeSelector> Processing<kind::Processing, 
 
             match chunk_replacement {
                 Some(new_chunk) => {
-                    debug!(target: "ext_proc", "handle_body_response: chunk replacement requested: {new_chunk:?}");
+                    debug!(target: "ext_proc", "handle_body_response: chunk replacement -> {new_chunk:?}");
                     _ = self.frame_bridge.inject_frame(Ok(new_chunk)).await;
                     sent_frames.drain(0..1);
                 },
@@ -415,7 +413,7 @@ impl<Phase: kind::Phase + OverridableModeSelector> Processing<kind::Processing, 
             }
 
             if self.end_of_stream && sent_frames.is_empty() {
-                debug!(target: "ext_proc", "handle_body_response: end_of_stream reached, closing frame bridge");
+                debug!(target: "ext_proc", "handle_body_response: end_of_stream (closing the frame bridge)");
                 self.streaming_body_enabled = false;
                 self.frame_bridge.close().await;
             }
@@ -489,7 +487,6 @@ impl<Phase: kind::Phase + OverridableModeSelector> Processing<kind::Processing, 
                     protocol_config: None,
                 }
             }
-
         } else {
             let msg = "handle_body_chunk: unexpected non-data frame to send";
             debug!(target: "ext_proc", msg);
