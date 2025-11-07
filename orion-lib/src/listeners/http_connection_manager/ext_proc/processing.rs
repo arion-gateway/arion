@@ -193,6 +193,7 @@ impl<Phase: kind::Phase + OverridableModeSelector> Processing<kind::Processing, 
             return self.process_headers(override_mode);
         }
 
+        debug!(target: "ext_proc", "process: turning streaming_body_enabled -> true");
         self.streaming_body_enabled = true;
 
         let status = if Phase::IS_REQUEST {
@@ -312,6 +313,7 @@ impl<Phase: kind::Phase + OverridableModeSelector> Processing<kind::Processing, 
                 }
 
                 debug!(target: "ext_proc", "frame brige closed!");
+                self.streaming_body_enabled = false;
                 self.frame_bridge.close().await;
 
             } else {
@@ -322,6 +324,7 @@ impl<Phase: kind::Phase + OverridableModeSelector> Processing<kind::Processing, 
                     debug!(target: "ext_proc", "handle_headers_response: complete to stream original body and close!");
                     self.frame_bridge.complete().await;
                     debug!(target: "ext_proc", "frame brige closed!");
+                    self.streaming_body_enabled = false;
                     self.frame_bridge.close().await;
                 } else {
                     debug!(target: "ext_proc", "handle_headers_response: streaming body enabled...");
@@ -345,7 +348,7 @@ impl<Phase: kind::Phase + OverridableModeSelector> Processing<kind::Processing, 
     #[must_use = "must handle the returned Action"]
     pub async fn handle_body_response(
         &mut self,
-        sent_frames: &mut SmallVec<[Frame<Bytes>; 4]>,
+        sent_frames: &mut SmallVec<[Frame<Bytes>; 2]>,
         body_response: BodyResponse,
         route_cache_action: Option<&RouteCacheAction>,
     ) -> Action<ProcessingRequest> {
@@ -507,8 +510,9 @@ impl<Phase: kind::Phase + OverridableModeSelector> Processing<kind::Processing, 
             }
 
             _ = self.frame_bridge.inject_frame(Ok(Frame::trailers(trailers))).await;
-            self.frame_bridge.close().await;
             self.end_of_stream = true;
+            self.streaming_body_enabled = false;
+            self.frame_bridge.close().await;
 
             let status = if Phase::IS_REQUEST {
                 ProcessingStatus::RequestReady(ReadyStatus::default())
@@ -519,6 +523,7 @@ impl<Phase: kind::Phase + OverridableModeSelector> Processing<kind::Processing, 
             return Action::Return(status);
         } else {
             debug!(target: "ext_proc", "frame brige closed!");
+            self.streaming_body_enabled = false;
             self.frame_bridge.close().await;
             return Action::Return(
                 self.status_error("handle_trailers_response: No trailers to process", self.failure_mode_allow),

@@ -648,13 +648,17 @@ impl ExternalProcessingWorker<kind::Processing> {
         debug!(target: "ext_proc", "--- BEGIN ---");
 
         let mut parked_frame: Option<Frame<Bytes>> = None;
-        let mut sent_frames: SmallVec<[Frame<Bytes>; 4]> = SmallVec::new();
+        let mut sent_frames: SmallVec<[Frame<Bytes>; 2]> = SmallVec::new();
+        let mut request_body_to_ext_proc_complete = false;
+        let mut response_body_to_ext_proc_complete = false;
 
         'transaction_loop: loop {
-            debug!(target: "ext_proc", ">> waiting for a future to become ready...");
+            let streaming_enabled = self.request_processing.streaming_body_enabled || self.response_processing.streaming_body_enabled;
+
+            debug!(target: "ext_proc", ">> loop: waiting for a future, streaming_body_enabled {streaming_enabled}");
 
             tokio::select! {
-                outbound_processing_request = processing_request_channel.recv() => {
+                outbound_processing_request = processing_request_channel.recv(), if !streaming_enabled => {
                     debug!(target: "ext_proc", ">> processing task {outbound_processing_request:?}...");
                     match outbound_processing_request {
                         Some(ProcessingTask{ data: ProcessingData::Request(headers, frame_bridge), reply_channel, http_version}) => {
@@ -815,7 +819,7 @@ impl ExternalProcessingWorker<kind::Processing> {
                 },
 
                 outbound_request_body_frame =
-                    async { self.request_processing.frame_bridge.next().await }, if self.request_processing.streaming_body_enabled => {
+                    async { self.request_processing.frame_bridge.next().await }, if self.request_processing.streaming_body_enabled && !request_body_to_ext_proc_complete => {
 
                     debug!(target: "ext_proc", "outbound request body frame: {outbound_request_body_frame:?}");
                     match outbound_request_body_frame {
@@ -853,10 +857,12 @@ impl ExternalProcessingWorker<kind::Processing> {
                             }
                         },
                         Some(Err(_err)) => {
+                            request_body_to_ext_proc_complete = true;
                             debug!(target: "ext_proc", "error occured when streaming request body to external processing");
                             self.request_processing.status_error("error occured when streaming request body to external processing", self.config.failure_mode_allow);
                         },
                         None => {
+                            request_body_to_ext_proc_complete = true;
                             debug!(target: "ext_proc", "request body stream ended!");
                             if let Some(current_frame) = parked_frame.take() {
                                 debug!(target: "ext_proc", "sending last body chunk of request (stubbed)!");
@@ -866,10 +872,10 @@ impl ExternalProcessingWorker<kind::Processing> {
                             }
 
                             self.request_processing.end_of_stream = true;
-                            self.request_processing.streaming_body_enabled = false;
 
                             if sent_frames.is_empty() {
                                 debug!(target: "ext_proc", "frame brige closed!");
+                                self.request_processing.streaming_body_enabled = false;
                                 self.request_processing.frame_bridge.close().await;
                             }
                         }
@@ -877,7 +883,7 @@ impl ExternalProcessingWorker<kind::Processing> {
                 },
 
                 outbound_response_body_frame =
-                    async { self.response_processing.frame_bridge.next().await }, if self.response_processing.streaming_body_enabled => {
+                    async { self.response_processing.frame_bridge.next().await }, if self.response_processing.streaming_body_enabled && !response_body_to_ext_proc_complete => {
 
                     debug!(target: "ext_proc", "outbound response body frame: {outbound_response_body_frame:?}");
                     match outbound_response_body_frame {
@@ -915,10 +921,12 @@ impl ExternalProcessingWorker<kind::Processing> {
                             }
                         },
                         Some(Err(_err)) => {
+                            response_body_to_ext_proc_complete = true;
                             debug!(target: "ext_proc", "error occured when streaming response body to external processing");
                             self.response_processing.status_error("error occured when streaming response body to external processing", self.config.failure_mode_allow);
                         },
                         None => {
+                            response_body_to_ext_proc_complete = true;
                             debug!(target: "ext_proc", "response body stream ended!");
                             if let Some(current_frame) = parked_frame.take() {
                                 debug!(target: "ext_proc", "sending last body chunk of response (stubbed)!");
@@ -928,10 +936,10 @@ impl ExternalProcessingWorker<kind::Processing> {
                             }
 
                             self.response_processing.end_of_stream = true;
-                            self.response_processing.streaming_body_enabled = false;
 
                             if sent_frames.is_empty() {
                                 debug!(target: "ext_proc", "frame brige closed!");
+                                self.request_processing.streaming_body_enabled = false;
                                 self.response_processing.frame_bridge.close().await;
                             }
                         }
