@@ -248,6 +248,8 @@ impl<Phase: kind::Phase + OverridableModeSelector> Processing<kind::Processing, 
 
         if self.send_body_without_waiting_for_header_response
             && !matches!(override_mode.body_mode::<Phase>(), OverridableBodyMode::None)
+            // todo(nicola): this match condition might be wrong since we might want to enable
+            // body streaming in case we need to send trailers.
         {
             self.streaming_body_enabled = true;
         }
@@ -330,6 +332,7 @@ impl<Phase: kind::Phase + OverridableModeSelector> Processing<kind::Processing, 
                 }
             }
         } else {
+            // todo(Nicola): this is UB; we are not sure what to do if response.response is None
             status = if Phase::IS_REQUEST {
                 ProcessingStatus::RequestReady(ReadyStatus { headers_modifications: None, clear_route_cache: false })
             } else {
