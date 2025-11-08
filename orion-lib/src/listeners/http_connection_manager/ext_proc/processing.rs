@@ -29,6 +29,7 @@ use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 use tokio::sync::oneshot;
+use tower::timeout;
 use tracing::debug;
 
 pub struct RequestProcessing<M: kind::Mode>(Processing<M, kind::Request>);
@@ -248,8 +249,8 @@ impl<Phase: kind::Phase + OverridableModeSelector> Processing<kind::Processing, 
 
         if self.send_body_without_waiting_for_header_response
             && !matches!(override_mode.body_mode::<Phase>(), OverridableBodyMode::None)
-            // todo(nicola): this match condition might be wrong since we might want to enable
-            // body streaming in case we need to send trailers.
+        // todo(nicola): this match condition might be wrong since we might want to enable
+        // body streaming in case we need to send trailers.
         {
             self.streaming_body_enabled = true;
         }
@@ -263,6 +264,7 @@ impl<Phase: kind::Phase + OverridableModeSelector> Processing<kind::Processing, 
         response: HeadersResponse,
         route_cache_action: &RouteCacheAction,
         override_mode: &OverridableGlobalModes,
+        timeout_active: &mut bool,
     ) -> Action<ProcessingRequest> {
         let status;
 
@@ -315,16 +317,18 @@ impl<Phase: kind::Phase + OverridableModeSelector> Processing<kind::Processing, 
                     _ = self.frame_bridge.inject_frame(Ok(Frame::trailers(new_trailers))).await;
                 }
 
-                debug!(target: "ext_proc", "frame brige closed!");
+                debug!(target: "ext_proc", "frame bridge closed (handle header response)!");
                 self.streaming_body_enabled = false;
+                *timeout_active = false;
                 self.frame_bridge.close().await;
             } else {
                 debug!(target: "ext_proc", "handle_headers_response: ResponseStatus:Continue: headers processed");
                 if !override_mode.should_process_body::<Phase>() && !override_mode.should_process_trailers::<Phase>() {
                     debug!(target: "ext_proc", "handle_headers_response: complete to stream original body and close!");
                     self.frame_bridge.complete().await;
-                    debug!(target: "ext_proc", "frame brige closed!");
+                    debug!(target: "ext_proc", "frame bridge closed (handle header response)!");
                     self.streaming_body_enabled = false;
+                    *timeout_active = false;
                     self.frame_bridge.close().await;
                 } else {
                     debug!(target: "ext_proc", "handle_headers_response: streaming body enabled...");
@@ -352,6 +356,7 @@ impl<Phase: kind::Phase + OverridableModeSelector> Processing<kind::Processing, 
         sent_frames: &mut SmallVec<[Frame<Bytes>; 2]>,
         body_response: BodyResponse,
         route_cache_action: Option<&RouteCacheAction>,
+        timeout_active: &mut bool,
     ) -> Action<ProcessingRequest> {
         debug!(target: "ext_proc", "handle_body_response: pending frames => {sent_frames:?}");
 
@@ -411,12 +416,14 @@ impl<Phase: kind::Phase + OverridableModeSelector> Processing<kind::Processing, 
             if matches!(embedded_status, ResponseStatus::ContinueAndReplace) {
                 debug!(target: "ext_proc", "handle_body_response: CONTINUE_AND_REPLACE: sending message status {status:?}");
                 self.streaming_body_enabled = false;
+                *timeout_active = false;
                 self.frame_bridge.close().await;
                 return Action::Return(status);
             }
 
             if self.end_of_stream && sent_frames.is_empty() {
-                debug!(target: "ext_proc", "handle_body_response: end_of_stream (closing the frame bridge)");
+                debug!(target: "ext_proc", "handle_body_response: end_of_stream (closing the frame bridge)!");
+                *timeout_active = false;
                 self.streaming_body_enabled = false;
                 self.frame_bridge.close().await;
             }
@@ -501,7 +508,11 @@ impl<Phase: kind::Phase + OverridableModeSelector> Processing<kind::Processing, 
     }
 
     #[must_use = "must handle the returned Action"]
-    pub async fn handle_trailers_response(&mut self, trailers_response: TrailersResponse) -> Action<ProcessingRequest> {
+    pub async fn handle_trailers_response(
+        &mut self,
+        trailers_response: TrailersResponse,
+        timeout_active: &mut bool,
+    ) -> Action<ProcessingRequest> {
         if let Some(mut trailers) = self.trailers.take() {
             // update the local version of trailers, if required if let Some(trailers) = self.body_context.trailers.as_mut() {
             debug!(target: "ext_proc", "handle_trailers_response: mutating trailers...");
@@ -512,6 +523,7 @@ impl<Phase: kind::Phase + OverridableModeSelector> Processing<kind::Processing, 
             _ = self.frame_bridge.inject_frame(Ok(Frame::trailers(trailers))).await;
             self.end_of_stream = true;
             self.streaming_body_enabled = false;
+            *timeout_active = false;
             self.frame_bridge.close().await;
 
             let status = if Phase::IS_REQUEST {
@@ -522,7 +534,8 @@ impl<Phase: kind::Phase + OverridableModeSelector> Processing<kind::Processing, 
 
             return Action::Return(status);
         } else {
-            debug!(target: "ext_proc", "frame brige closed!");
+            debug!(target: "ext_proc", "frame bridge closed (handle trailers response)!");
+            *timeout_active = false;
             self.streaming_body_enabled = false;
             self.frame_bridge.close().await;
             return Action::Return(

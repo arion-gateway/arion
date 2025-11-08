@@ -53,6 +53,7 @@ use orion_data_plane_api::envoy_data_plane_api::{
 };
 use orion_format::types::ResponseFlags as FmtResponseFlags;
 use pingora_timeout::fast_timeout;
+use scopeguard::defer;
 use smallvec::SmallVec;
 use std::convert::Infallible;
 use std::future::Future;
@@ -158,7 +159,6 @@ macro_rules! run_action {
                 $self.forward_to_external_processor(outbound).await;
             },
             Action::Return(status) => {
-                $self.timeout_state.active = false;
 
                 if let Some(reply_channel) = $processor.reply_channel.take() {
                     debug!(target: "ext_proc", "{ctx} @{typ}: status -> {status:?}",
@@ -208,7 +208,7 @@ impl ExternalProcessor {
             (OverridableBodyMode::None, trailers_mode) => {
                 // event though body processing is None and trailers processing is Skip, we have to
                 // create the bridge, to allow ext_proc mutate the body with ContinueAndReplace action.
-                debug!(target: "ext_proc", "request processing body(Streamed) and trailers:{trailers_mode:?} => {body:?}");
+                debug!(target: "ext_proc", "request processing body(None) and trailers:{trailers_mode:?} => {body:?}");
                 let (new_body, bridge) = ChannelBody::new(body);
                 request.body_mut().inner = PolyBody::from(new_body);
                 bridge
@@ -325,7 +325,7 @@ impl ExternalProcessor {
             (OverridableBodyMode::None, trailers_mode) => {
                 // event though body processing is None and trailers processing is Skip, we have to
                 // create the bridge, to allow ext_proc mutate the body with ContinueAndReplace action.
-                debug!(target: "ext_proc", "response processing body(Streamed) and trailers:{trailers_mode:?} => {body:?}");
+                debug!(target: "ext_proc", "response processing body(None) and trailers:{trailers_mode:?} => {body:?}");
                 let (new_body, bridge) = ChannelBody::new(body);
                 *response.body_mut() = PolyBody::from(new_body);
                 bridge
@@ -628,9 +628,11 @@ impl ExternalProcessingWorker<kind::Processing> {
 
     #[allow(clippy::too_many_lines)]
     async fn processing_loop(mut self, mut processing_request_channel: mpsc::Receiver<ProcessingTask>) {
-        // The following label is not strictly necessary, but it makes it clearer what is being exited at the break point.
-        // It also makes it easier to locate subsequent exit points.
-        debug!(target: "ext_proc", "--- BEGIN ---");
+        debug!(target: "ext_proc", "===== BEGIN =====");
+
+        defer! {
+            debug!(target: "ext_proc", "===== END =====");
+        }
 
         let mut parked_frame: Option<Frame<Bytes>> = None;
         let mut sent_frames: SmallVec<[Frame<Bytes>; 2]> = SmallVec::new();
@@ -640,20 +642,23 @@ impl ExternalProcessingWorker<kind::Processing> {
         'transaction_loop: loop {
             let streaming_enabled =
                 self.request_processing.streaming_body_enabled || self.response_processing.streaming_body_enabled;
+            let outbound_req_enabled =
+                self.request_processing.streaming_body_enabled && !request_body_to_ext_proc_complete;
+            let outbound_resp_enabled =
+                self.response_processing.streaming_body_enabled && !response_body_to_ext_proc_complete;
 
-            debug!(target: "ext_proc", ">> loop: waiting for a future, streaming_body_enabled {streaming_enabled}");
+            debug!(target: "ext_proc", "----- select! [ process_task:{} inbound:true outbound_req:{outbound_req_enabled} outbound_resp:{outbound_resp_enabled} timout:{} ] -----",
+                !streaming_enabled, self.timeout_state.active);
 
             tokio::select! {
                 outbound_processing_request = processing_request_channel.recv(), if !streaming_enabled => {
-                    debug!(target: "ext_proc", ">> processing {outbound_processing_request:?}...");
+                    debug!(target: "ext_proc", "processing {outbound_processing_request:?}...");
                     match outbound_processing_request {
                         Some(ProcessingTask{ data: ProcessingData::Request(headers, frame_bridge), reply_channel, http_version}) => {
-                            debug!(target: "ext_proc", ">> processing Request...");
                             let action = self.request_processing.process(headers, frame_bridge, reply_channel, http_version, &self.overridable_modes).await;
                             run_action!(self, self.request_processing, action, "process_request");
                         }
                         Some(ProcessingTask{ data: ProcessingData::Response(headers, frame_bridge), reply_channel, http_version}) => {
-                            debug!(target: "ext_proc", ">> processing Response...");
                             let action = self.response_processing.process(headers, frame_bridge, reply_channel, http_version, &self.overridable_modes).await;
                             run_action!(self, self.response_processing, action, "process_response");
                         }
@@ -723,6 +728,7 @@ impl ExternalProcessingWorker<kind::Processing> {
                                 headers_response,
                                 &self.config.route_cache_action,
                                 &self.overridable_modes,
+                                &mut self.timeout_state.active,
                             ).await;
 
                             run_action!(self, self.request_processing, action, "handle_headers_response");
@@ -732,14 +738,14 @@ impl ExternalProcessingWorker<kind::Processing> {
 
                             let action = self
                                 .request_processing
-                                .handle_body_response(&mut sent_frames, body_response, Some(&self.config.route_cache_action)).await;
+                                .handle_body_response(&mut sent_frames, body_response, Some(&self.config.route_cache_action), &mut self.timeout_state.active).await;
 
                             run_action!(self, self.request_processing, action, "body_response");
 
                         },
                         Ok(Some(ProcessingResponse { response: Some(ProcessingResponseType::RequestTrailers(trailers_response)), ..})) => {
                             debug!(target: "ext_proc", "<- RequestTrailers response received");
-                            let action = self.request_processing.handle_trailers_response(trailers_response).await;
+                            let action = self.request_processing.handle_trailers_response(trailers_response, &mut self.timeout_state.active).await;
                             run_action!(self, self.request_processing, action, "handle_trailers_response");
                         },
                         Ok(Some(ProcessingResponse { mode_override, response: Some(ProcessingResponseType::ResponseHeaders(headers_response)), ..})) => {
@@ -754,13 +760,14 @@ impl ExternalProcessingWorker<kind::Processing> {
                                 headers_response,
                                 &self.config.route_cache_action,
                                 &self.overridable_modes,
+                                &mut self.timeout_state.active,
                             ).await;
                             run_action!(self, self.response_processing, action, "handle_headers_response");
                         },
                         Ok(Some(ProcessingResponse { response: Some(ProcessingResponseType::ResponseBody(body_response)), ..})) => {
                             debug!(target: "ext_proc", "<- ResponseBody response received");
                             let empty_response = body_response.response.is_none();
-                            let action = self.response_processing.handle_body_response(&mut sent_frames, body_response, None).await;
+                            let action = self.response_processing.handle_body_response(&mut sent_frames, body_response, None, &mut self.timeout_state.active).await;
                             run_action!(self, self.response_processing, action, "handle_body_response");
 
                             if empty_response {
@@ -770,7 +777,7 @@ impl ExternalProcessingWorker<kind::Processing> {
                         },
                         Ok(Some(ProcessingResponse { response: Some(ProcessingResponseType::ResponseTrailers(trailers_response)), ..})) => {
                             debug!(target: "ext_proc", "<- ResponseTrailers response received");
-                            let action = self.response_processing.handle_trailers_response(trailers_response).await;
+                            let action = self.response_processing.handle_trailers_response(trailers_response, &mut self.timeout_state.active).await;
                             run_action!(self, self.response_processing, action, "handle_trailers_response");
                         },
                         Ok(Some(r)) => {
@@ -805,7 +812,7 @@ impl ExternalProcessingWorker<kind::Processing> {
                 },
 
                 outbound_request_body_frame =
-                    async { self.request_processing.frame_bridge.next().await }, if self.request_processing.streaming_body_enabled && !request_body_to_ext_proc_complete => {
+                    async { self.request_processing.frame_bridge.next().await }, if outbound_req_enabled => {
 
                     debug!(target: "ext_proc", "outbound request body frame: {outbound_request_body_frame:?}");
                     match outbound_request_body_frame {
@@ -827,17 +834,20 @@ impl ExternalProcessingWorker<kind::Processing> {
                                 // This is a DATA, let's park it if is supposed to be streamed
                                 if self.overridable_modes.request.should_process_body() {
                                     parked_frame = Some(current_frame);
-                                    debug!(target: "ext_proc", "parking body chunk of request (streamed)!");
+                                    debug!(target: "ext_proc", "parking body chunk of request (DATA)");
                                 } else {
+                                    debug!(target: "ext_proc", "DATA is injected directly into frame bridge!");
                                     _ = self.request_processing.frame_bridge.inject_frame(Ok(current_frame)).await;
                                 }
 
                             } else {
                                 // This is TRAILERS. it is the last frame.
+                                debug!(target: "ext_proc", "processing_request: sending trailers to external processor...");
                                 if self.overridable_modes.request.should_process_trailers() {
                                     parked_frame = Some(current_frame);
-                                    debug!(target: "ext_proc", "parking body chunk of request (streamed)!");
+                                    debug!(target: "ext_proc", "parking body chunk of request (TRAILERS)");
                                 } else {
+                                    debug!(target: "ext_proc", "TRAILERS are injected directly into frame bridge!");
                                     _ = self.request_processing.frame_bridge.inject_frame(Ok(current_frame)).await;
                                 }
                             }
@@ -860,7 +870,8 @@ impl ExternalProcessingWorker<kind::Processing> {
                             self.request_processing.end_of_stream = true;
 
                             if sent_frames.is_empty() {
-                                debug!(target: "ext_proc", "frame brige closed!");
+                                debug!(target: "ext_proc", "frame bridge closed (request body)!");
+                                self.timeout_state.active = false;
                                 self.request_processing.streaming_body_enabled = false;
                                 self.request_processing.frame_bridge.close().await;
                             }
@@ -869,7 +880,7 @@ impl ExternalProcessingWorker<kind::Processing> {
                 },
 
                 outbound_response_body_frame =
-                    async { self.response_processing.frame_bridge.next().await }, if self.response_processing.streaming_body_enabled && !response_body_to_ext_proc_complete => {
+                    async { self.response_processing.frame_bridge.next().await }, if outbound_resp_enabled => {
 
                     debug!(target: "ext_proc", "outbound response body frame: {outbound_response_body_frame:?}");
                     match outbound_response_body_frame {
@@ -891,17 +902,20 @@ impl ExternalProcessingWorker<kind::Processing> {
                                 // This is a DATA, let's park it if is supposed to be streamed
                                 if self.overridable_modes.response.should_process_body() {
                                     parked_frame = Some(current_frame);
-                                    debug!(target: "ext_proc", "parking body chunk of response (streamed)!");
+                                    debug!(target: "ext_proc", "parking body chunk of response (DATA)");
                                 } else {
+                                    debug!(target: "ext_proc", "DATA is injected directly into frame bridge!");
                                     _ = self.response_processing.frame_bridge.inject_frame(Ok(current_frame)).await;
                                 }
 
                             } else {
                                 // This is TRAILERS. it is the last frame.
+                                debug!(target: "ext_proc", "processing_request: sending trailers to external processor...");
                                 if self.overridable_modes.response.should_process_trailers() {
                                     parked_frame = Some(current_frame);
-                                    debug!(target: "ext_proc", "parking body chunk of response (streamed)!");
+                                    debug!(target: "ext_proc", "parking body chunk of response (TRAILERS)");
                                 } else {
+                                    debug!(target: "ext_proc", "TRAILERS are injected directly into frame bridge");
                                     _ = self.response_processing.frame_bridge.inject_frame(Ok(current_frame)).await;
                                 }
                             }
@@ -924,8 +938,9 @@ impl ExternalProcessingWorker<kind::Processing> {
                             self.response_processing.end_of_stream = true;
 
                             if sent_frames.is_empty() {
-                                debug!(target: "ext_proc", "frame brige closed!");
-                                self.request_processing.streaming_body_enabled = false;
+                                debug!(target: "ext_proc", "frame bridge closed (response body)!");
+                                self.timeout_state.active = false;
+                                self.response_processing.streaming_body_enabled = false;
                                 self.response_processing.frame_bridge.close().await;
                             }
                         }
@@ -947,8 +962,6 @@ impl ExternalProcessingWorker<kind::Processing> {
                 }
             }
         }
-
-        debug!(target: "ext_proc", "--- END ---");
     }
 }
 
