@@ -29,7 +29,6 @@ use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 use tokio::sync::oneshot;
-use tower::timeout;
 use tracing::debug;
 
 pub struct RequestProcessing<M: kind::Mode>(Processing<M, kind::Request>);
@@ -73,6 +72,8 @@ pub struct Processing<M: kind::Mode, Phase: kind::Phase> {
     pub failure_mode_allow: bool,
     pub streaming_body_enabled: bool,
     pub end_of_stream: bool,
+    pub parked_frame: Option<Frame<Bytes>>,
+    pub inflight_frames: SmallVec<[Frame<Bytes>; 2]>,
     _mode: std::marker::PhantomData<M>,
     _msg: std::marker::PhantomData<Phase>,
 }
@@ -96,6 +97,8 @@ impl<M: kind::Mode + Default, Phase: kind::Phase> From<&ExternalProcessingWorker
             http_version: None,
             streaming_body_enabled: false,
             end_of_stream: false,
+            parked_frame: None,
+            inflight_frames: SmallVec::new(),
             _mode: std::marker::PhantomData,
             _msg: std::marker::PhantomData,
         }
@@ -349,12 +352,11 @@ impl<Phase: kind::Phase + OverridableModeSelector> Processing<kind::Processing, 
     #[must_use = "must handle the returned Action"]
     pub async fn handle_body_response(
         &mut self,
-        sent_frames: &mut SmallVec<[Frame<Bytes>; 2]>,
         body_response: BodyResponse,
         route_cache_action: Option<&RouteCacheAction>,
         timeout_active: &mut bool,
     ) -> Action<ProcessingRequest> {
-        debug!(target: "ext_proc", "handle_body_response: pending frames => {sent_frames:?}");
+        debug!(target: "ext_proc", "handle_body_response: pending frames => {:?}", self.inflight_frames);
 
         if let Some(response_data) = body_response.response {
             let chunk_replacement = match response_data.body_mutation.and_then(|body_mutation| body_mutation.mutation) {
@@ -375,11 +377,11 @@ impl<Phase: kind::Phase + OverridableModeSelector> Processing<kind::Processing, 
                 Some(new_chunk) => {
                     debug!(target: "ext_proc", "handle_body_response: chunk replacement -> {new_chunk:?}");
                     _ = self.frame_bridge.inject_frame(Ok(new_chunk)).await;
-                    sent_frames.drain(0..1);
+                    self.inflight_frames.drain(0..1);
                 },
                 None => {
                     debug!(target: "ext_proc", "handle_body_response: no chunk replacement requested");
-                    if let Some(frame) = sent_frames.drain(0..1).next() {
+                    if let Some(frame) = self.inflight_frames.drain(0..1).next() {
                         _ = self.frame_bridge.inject_frame(Ok(frame)).await;
                     }
                 },
@@ -415,7 +417,7 @@ impl<Phase: kind::Phase + OverridableModeSelector> Processing<kind::Processing, 
                 return Action::Return(status);
             }
 
-            if self.end_of_stream && sent_frames.is_empty() {
+            if self.end_of_stream && self.inflight_frames.is_empty() {
                 debug!(target: "ext_proc", "handle_body_response: end_of_stream (closing the frame bridge)!");
                 self.frame_bridge_close(timeout_active).await;
             }
@@ -429,7 +431,7 @@ impl<Phase: kind::Phase + OverridableModeSelector> Processing<kind::Processing, 
     }
 
     #[must_use = "must handle the returned Action"]
-    pub async fn handle_body_chunk(
+    pub async fn handle_outgoing_body_chunk(
         &mut self,
         mut chunk: Frame<Bytes>,
         end_of_stream: bool,
@@ -544,6 +546,30 @@ impl<Phase: kind::Phase + OverridableModeSelector> Processing<kind::Processing, 
         *timeout_active = false;
         self.streaming_body_enabled = false;
         self.frame_bridge.close().await;
+    }
+
+    pub async fn park_or_inject_frame(&mut self, frame: Frame<Bytes>, override_mode: &OverridableGlobalModes) {
+        if frame.is_data() {
+            // This is a DATA, let's park it if is supposed to be streamed
+            if override_mode.should_process_body::<Phase>() {
+                self.parked_frame = Some(frame);
+                debug!(target: "ext_proc", "parking body chunk of response (DATA)");
+            } else {
+                debug!(target: "ext_proc", "DATA is injected directly into frame bridge!");
+                _ = self.frame_bridge.inject_frame(Ok(frame)).await;
+            }
+
+        } else {
+            // This is TRAILERS. it is the last frame.
+            debug!(target: "ext_proc", "processing_request: sending trailers to external processor...");
+            if override_mode.should_process_trailers::<Phase>() {
+                self.parked_frame = Some(frame);
+                debug!(target: "ext_proc", "parking body chunk of response (TRAILERS)");
+            } else {
+                debug!(target: "ext_proc", "TRAILERS are injected directly into frame bridge");
+                _ = self.frame_bridge.inject_frame(Ok(frame)).await;
+            }
+        }
     }
 }
 

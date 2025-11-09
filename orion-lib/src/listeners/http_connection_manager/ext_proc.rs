@@ -54,7 +54,6 @@ use orion_data_plane_api::envoy_data_plane_api::{
 use orion_format::types::ResponseFlags as FmtResponseFlags;
 use pingora_timeout::fast_timeout;
 use scopeguard::defer;
-use smallvec::SmallVec;
 use std::convert::Infallible;
 use std::future::Future;
 use std::{sync::Arc, time::Duration};
@@ -634,8 +633,6 @@ impl ExternalProcessingWorker<kind::Processing> {
             debug!(target: "ext_proc", "===== END =====");
         }
 
-        let mut parked_frame: Option<Frame<Bytes>> = None;
-        let mut sent_frames: SmallVec<[Frame<Bytes>; 2]> = SmallVec::new();
         let mut request_body_to_ext_proc_complete = false;
         let mut response_body_to_ext_proc_complete = false;
 
@@ -738,7 +735,7 @@ impl ExternalProcessingWorker<kind::Processing> {
 
                             let action = self
                                 .request_processing
-                                .handle_body_response(&mut sent_frames, body_response, Some(&self.config.route_cache_action), &mut self.timeout_state.active).await;
+                                .handle_body_response(body_response, Some(&self.config.route_cache_action), &mut self.timeout_state.active).await;
 
                             run_action!(self, self.request_processing, action, "body_response");
 
@@ -767,7 +764,7 @@ impl ExternalProcessingWorker<kind::Processing> {
                         Ok(Some(ProcessingResponse { response: Some(ProcessingResponseType::ResponseBody(body_response)), ..})) => {
                             debug!(target: "ext_proc", "<- ResponseBody response received");
                             let empty_response = body_response.response.is_none();
-                            let action = self.response_processing.handle_body_response(&mut sent_frames, body_response, None, &mut self.timeout_state.active).await;
+                            let action = self.response_processing.handle_body_response(body_response, None, &mut self.timeout_state.active).await;
                             run_action!(self, self.response_processing, action, "handle_body_response");
 
                             if empty_response {
@@ -817,40 +814,20 @@ impl ExternalProcessingWorker<kind::Processing> {
                     debug!(target: "ext_proc", "outbound request body frame: {outbound_request_body_frame:?}");
                     match outbound_request_body_frame {
                         Some(Ok(current_frame)) => {
-                            debug!(target: "ext_proc", "sending body chunk of request ({})",  if current_frame.is_data() { "DATA" } else { "TRAILERS" });
 
-                            // 1. send previous parked frame...
+                            // 1. send previously parked frame...
                             //
-                            if let Some(prev_frame) = parked_frame.take() {
-                                let action = self.request_processing.handle_body_chunk(clone_frame(&prev_frame), false).await;
+                            if let Some(prev_frame) = self.request_processing.parked_frame.take() {
+                                debug!(target: "ext_proc", "sending body chunk of request ({})",  if prev_frame.is_data() { "DATA" } else { "TRAILERS" });
+                                let action = self.request_processing.handle_outgoing_body_chunk(clone_frame(&prev_frame), false).await;
                                 run_action!(self, self.request_processing, action, "handle_body_chunk (parked)");
                                 // save a copy of the frame to inject into the body bridge later
-                                sent_frames.push(prev_frame);
+                                self.request_processing.inflight_frames.push(prev_frame);
                             }
 
-                            // 2. process the current frame...
+                            // 2. park this frame for delayed transmission or inject it directly into the body bridge...
                             //
-                            if current_frame.is_data() {
-                                // This is a DATA, let's park it if is supposed to be streamed
-                                if self.overridable_modes.request.should_process_body() {
-                                    parked_frame = Some(current_frame);
-                                    debug!(target: "ext_proc", "parking body chunk of request (DATA)");
-                                } else {
-                                    debug!(target: "ext_proc", "DATA is injected directly into frame bridge!");
-                                    _ = self.request_processing.frame_bridge.inject_frame(Ok(current_frame)).await;
-                                }
-
-                            } else {
-                                // This is TRAILERS. it is the last frame.
-                                debug!(target: "ext_proc", "processing_request: sending trailers to external processor...");
-                                if self.overridable_modes.request.should_process_trailers() {
-                                    parked_frame = Some(current_frame);
-                                    debug!(target: "ext_proc", "parking body chunk of request (TRAILERS)");
-                                } else {
-                                    debug!(target: "ext_proc", "TRAILERS are injected directly into frame bridge!");
-                                    _ = self.request_processing.frame_bridge.inject_frame(Ok(current_frame)).await;
-                                }
-                            }
+                            self.request_processing.park_or_inject_frame(current_frame, &self.overridable_modes).await;
                         },
                         Some(Err(_err)) => {
                             request_body_to_ext_proc_complete = true;
@@ -860,16 +837,16 @@ impl ExternalProcessingWorker<kind::Processing> {
                         None => {
                             request_body_to_ext_proc_complete = true;
                             debug!(target: "ext_proc", "request body stream ended!");
-                            if let Some(current_frame) = parked_frame.take() {
-                                debug!(target: "ext_proc", "sending last body chunk of request (stubbed)!");
-                                let action = self.request_processing.handle_body_chunk(clone_frame(&current_frame), true).await;
+                            if let Some(current_frame) = self.request_processing.parked_frame.take() {
+                                debug!(target: "ext_proc", "sending last body chunk of request!");
+                                let action = self.request_processing.handle_outgoing_body_chunk(clone_frame(&current_frame), true).await;
                                 run_action!(self, self.request_processing, action, "handle_body_chunk (end)");
-                                sent_frames.push(current_frame);
+                                self.request_processing.inflight_frames.push(current_frame);
                             }
 
                             self.request_processing.end_of_stream = true;
 
-                            if sent_frames.is_empty() {
+                            if self.request_processing.inflight_frames.is_empty() {
                                 debug!(target: "ext_proc", "frame bridge closed (request body)!");
                                 self.request_processing.frame_bridge_close(&mut self.timeout_state.active).await;
                             }
@@ -883,40 +860,21 @@ impl ExternalProcessingWorker<kind::Processing> {
                     debug!(target: "ext_proc", "outbound response body frame: {outbound_response_body_frame:?}");
                     match outbound_response_body_frame {
                         Some(Ok(current_frame)) => {
-                            debug!(target: "ext_proc", "sending body chunk of response ({})",  if current_frame.is_data() { "DATA" } else { "TRAILERS" });
 
-                            // 1. send previous parked frame...
+                            // 1. send previously parked frame...
                             //
-                            if let Some(prev_frame) = parked_frame.take() {
-                                let action = self.response_processing.handle_body_chunk(clone_frame(&prev_frame), false).await;
+                            if let Some(prev_frame) = self.response_processing.parked_frame.take() {
+                                debug!(target: "ext_proc", "sending body chunk of response ({})",  if prev_frame.is_data() { "DATA" } else { "TRAILERS" });
+                                let action = self.response_processing.handle_outgoing_body_chunk(clone_frame(&prev_frame), false).await;
                                 run_action!(self, self.response_processing, action, "handle_body_chunk (parked)");
                                 // save a copy of the frame to inject into the body bridge later
-                                sent_frames.push(prev_frame);
+                                self.response_processing.inflight_frames.push(prev_frame);
                             }
 
-                            // 2. process the current frame...
+                            // 2. park this frame for delayed transmission or inject it directly into the body bridge...
                             //
-                            if current_frame.is_data() {
-                                // This is a DATA, let's park it if is supposed to be streamed
-                                if self.overridable_modes.response.should_process_body() {
-                                    parked_frame = Some(current_frame);
-                                    debug!(target: "ext_proc", "parking body chunk of response (DATA)");
-                                } else {
-                                    debug!(target: "ext_proc", "DATA is injected directly into frame bridge!");
-                                    _ = self.response_processing.frame_bridge.inject_frame(Ok(current_frame)).await;
-                                }
+                            self.response_processing.park_or_inject_frame(current_frame, &self.overridable_modes).await;
 
-                            } else {
-                                // This is TRAILERS. it is the last frame.
-                                debug!(target: "ext_proc", "processing_request: sending trailers to external processor...");
-                                if self.overridable_modes.response.should_process_trailers() {
-                                    parked_frame = Some(current_frame);
-                                    debug!(target: "ext_proc", "parking body chunk of response (TRAILERS)");
-                                } else {
-                                    debug!(target: "ext_proc", "TRAILERS are injected directly into frame bridge");
-                                    _ = self.response_processing.frame_bridge.inject_frame(Ok(current_frame)).await;
-                                }
-                            }
                         },
                         Some(Err(_err)) => {
                             response_body_to_ext_proc_complete = true;
@@ -926,16 +884,16 @@ impl ExternalProcessingWorker<kind::Processing> {
                         None => {
                             response_body_to_ext_proc_complete = true;
                             debug!(target: "ext_proc", "response body stream ended!");
-                            if let Some(current_frame) = parked_frame.take() {
-                                debug!(target: "ext_proc", "sending last body chunk of response (stubbed)!");
-                                let action = self.response_processing.handle_body_chunk(clone_frame(&current_frame), true).await;
+                            if let Some(current_frame) = self.response_processing.parked_frame.take() {
+                                debug!(target: "ext_proc", "sending last body chunk of response!");
+                                let action = self.response_processing.handle_outgoing_body_chunk(clone_frame(&current_frame), true).await;
                                 run_action!(self, self.response_processing, action, "handle_body_chunk (end)");
-                                sent_frames.push(current_frame);
+                                self.response_processing.inflight_frames.push(current_frame);
                             }
 
                             self.response_processing.end_of_stream = true;
 
-                            if sent_frames.is_empty() {
+                            if self.response_processing.inflight_frames.is_empty() {
                                 debug!(target: "ext_proc", "frame bridge closed (response body)!");
                                 self.response_processing.frame_bridge_close(&mut self.timeout_state.active).await;
                             }
