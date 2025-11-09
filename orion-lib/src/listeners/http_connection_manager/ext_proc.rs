@@ -871,9 +871,7 @@ impl ExternalProcessingWorker<kind::Processing> {
 
                             if sent_frames.is_empty() {
                                 debug!(target: "ext_proc", "frame bridge closed (request body)!");
-                                self.timeout_state.active = false;
-                                self.request_processing.streaming_body_enabled = false;
-                                self.request_processing.frame_bridge.close().await;
+                                self.request_processing.frame_bridge_close(&mut self.timeout_state.active).await;
                             }
                         }
                     }
@@ -939,9 +937,7 @@ impl ExternalProcessingWorker<kind::Processing> {
 
                             if sent_frames.is_empty() {
                                 debug!(target: "ext_proc", "frame bridge closed (response body)!");
-                                self.timeout_state.active = false;
-                                self.response_processing.streaming_body_enabled = false;
-                                self.response_processing.frame_bridge.close().await;
+                                self.response_processing.frame_bridge_close(&mut self.timeout_state.active).await;
                             }
                         }
                     }

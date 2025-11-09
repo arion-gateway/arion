@@ -318,18 +318,14 @@ impl<Phase: kind::Phase + OverridableModeSelector> Processing<kind::Processing, 
                 }
 
                 debug!(target: "ext_proc", "frame bridge closed (handle header response)!");
-                self.streaming_body_enabled = false;
-                *timeout_active = false;
-                self.frame_bridge.close().await;
+                self.frame_bridge_close(timeout_active).await;
             } else {
                 debug!(target: "ext_proc", "handle_headers_response: ResponseStatus:Continue: headers processed");
                 if !override_mode.should_process_body::<Phase>() && !override_mode.should_process_trailers::<Phase>() {
                     debug!(target: "ext_proc", "handle_headers_response: complete to stream original body and close!");
                     self.frame_bridge.complete().await;
                     debug!(target: "ext_proc", "frame bridge closed (handle header response)!");
-                    self.streaming_body_enabled = false;
-                    *timeout_active = false;
-                    self.frame_bridge.close().await;
+                    self.frame_bridge_close(timeout_active).await;
                 } else {
                     debug!(target: "ext_proc", "handle_headers_response: streaming body enabled...");
                     self.streaming_body_enabled = true;
@@ -415,17 +411,13 @@ impl<Phase: kind::Phase + OverridableModeSelector> Processing<kind::Processing, 
 
             if matches!(embedded_status, ResponseStatus::ContinueAndReplace) {
                 debug!(target: "ext_proc", "handle_body_response: CONTINUE_AND_REPLACE: sending message status {status:?}");
-                self.streaming_body_enabled = false;
-                *timeout_active = false;
-                self.frame_bridge.close().await;
+                self.frame_bridge_close(timeout_active).await;
                 return Action::Return(status);
             }
 
             if self.end_of_stream && sent_frames.is_empty() {
                 debug!(target: "ext_proc", "handle_body_response: end_of_stream (closing the frame bridge)!");
-                *timeout_active = false;
-                self.streaming_body_enabled = false;
-                self.frame_bridge.close().await;
+                self.frame_bridge_close(timeout_active).await;
             }
 
             return Action::Return(status);
@@ -521,10 +513,9 @@ impl<Phase: kind::Phase + OverridableModeSelector> Processing<kind::Processing, 
             }
 
             _ = self.frame_bridge.inject_frame(Ok(Frame::trailers(trailers))).await;
+
             self.end_of_stream = true;
-            self.streaming_body_enabled = false;
-            *timeout_active = false;
-            self.frame_bridge.close().await;
+            self.frame_bridge_close(timeout_active).await;
 
             let status = if Phase::IS_REQUEST {
                 ProcessingStatus::RequestReady(ReadyStatus::default())
@@ -535,9 +526,8 @@ impl<Phase: kind::Phase + OverridableModeSelector> Processing<kind::Processing, 
             return Action::Return(status);
         } else {
             debug!(target: "ext_proc", "frame bridge closed (handle trailers response)!");
-            *timeout_active = false;
-            self.streaming_body_enabled = false;
-            self.frame_bridge.close().await;
+            self.frame_bridge_close(timeout_active).await;
+
             return Action::Return(
                 self.status_error("handle_trailers_response: No trailers to process", self.failure_mode_allow),
             );
@@ -548,6 +538,12 @@ impl<Phase: kind::Phase + OverridableModeSelector> Processing<kind::Processing, 
     pub fn handle_noop_response(&mut self, ctor: fn(ReadyStatus) -> ProcessingStatus) -> Action<ProcessingRequest> {
         let status = ctor(ReadyStatus::default());
         Action::Return(status)
+    }
+
+    pub async fn frame_bridge_close(&mut self, timeout_active : &mut bool) {
+        *timeout_active = false;
+        self.streaming_body_enabled = false;
+        self.frame_bridge.close().await;
     }
 }
 
