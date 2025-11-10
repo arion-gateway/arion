@@ -299,12 +299,7 @@ impl<Phase: kind::Phase + OverridableModeSelector> Processing<kind::Processing, 
                         Some(Mutation::Body(bytes)) => Some(Frame::data(bytes.into())),
                         Some(Mutation::ClearBody(true)) => Some(Frame::data(Bytes::new())),
                         Some(Mutation::ClearBody(false)) | None => None,
-                        Some(Mutation::StreamedResponse(_)) => {
-                            return Action::Return(self.status_error(
-                                "StreamedResponse mutation not supported in response to header processing request",
-                                self.failure_mode_allow,
-                            ));
-                        },
+                        Some(Mutation::StreamedResponse(chunk)) =>  Some(Frame::data(chunk.body.into())),
                     };
 
                 // replace body if specified
@@ -345,6 +340,7 @@ impl<Phase: kind::Phase + OverridableModeSelector> Processing<kind::Processing, 
             self.streaming_body_enabled = true;
         }
 
+        *timeout_active = false;
         Action::Return(status)
     }
 

@@ -814,7 +814,6 @@ impl ExternalProcessingWorker<kind::Processing> {
                     debug!(target: "ext_proc", "outbound request body frame: {outbound_request_body_frame:?}");
                     match outbound_request_body_frame {
                         Some(Ok(current_frame)) => {
-
                             // 1. send previously parked frame...
                             //
                             if let Some(prev_frame) = self.request_processing.parked_frame.take() {
@@ -824,7 +823,6 @@ impl ExternalProcessingWorker<kind::Processing> {
                                 // save a copy of the frame to inject into the body bridge later
                                 self.request_processing.inflight_frames.push(prev_frame);
                             }
-
                             // 2. park this frame for delayed transmission or inject it directly into the body bridge...
                             //
                             self.request_processing.park_or_inject_frame(current_frame, &self.overridable_modes).await;
