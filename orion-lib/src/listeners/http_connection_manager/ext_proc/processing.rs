@@ -418,7 +418,7 @@ impl<Phase: kind::Phase + OverridableModeSelector> Processing<kind::Processing, 
             }
 
             if self.end_of_stream && self.inflight_frames.is_empty() {
-                debug!(target: "ext_proc", "handle_body_response: end_of_stream (closing the frame bridge)!");
+                debug!(target: "ext_proc", "handle_body_response: end_of_stream (closing frame bridge)!");
                 self.frame_bridge_close(timeout_active).await;
             }
 
