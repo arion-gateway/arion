@@ -21,6 +21,7 @@ pub type Response = http::Response<()>;
 
 pub trait Phase {
     const IS_REQUEST: bool;
+    #[allow(dead_code)]
     const IS_RESPONSE: bool;
 }
 

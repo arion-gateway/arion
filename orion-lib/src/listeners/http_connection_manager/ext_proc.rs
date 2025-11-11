@@ -296,7 +296,7 @@ impl ExternalProcessor {
             ),
         };
 
-        debug!(target: "ext_proc", "apply_request completed: {res:?}!");
+        debug!(target: "ext_proc", "apply_request: complete ({res:?})!");
         res
     }
 
@@ -651,7 +651,7 @@ impl ExternalProcessingWorker<kind::Processing> {
             let outbound_resp_enabled =
                 self.response_processing.streaming_body_enabled && !response_body_to_ext_proc_complete;
 
-            debug!(target: "ext_proc", "----- select! [ process_task:{} inbound:true outbound_req:{outbound_req_enabled} outbound_resp:{outbound_resp_enabled} timout:{} ] -----",
+            debug!(target: "ext_proc", "----- select! [ process_task:{} inbound:true outbound_req:{outbound_req_enabled} outbound_resp:{outbound_resp_enabled} timeout:{} ] -----",
                 !streaming_enabled, self.timeout_state.active);
 
             tokio::select! {
@@ -836,8 +836,8 @@ impl ExternalProcessingWorker<kind::Processing> {
                         },
                         Some(Err(_err)) => {
                             request_body_to_ext_proc_complete = true;
-                            debug!(target: "ext_proc", "error occured when streaming request body to external processing");
-                            self.request_processing.status_error("error occured when streaming request body to external processing", self.config.failure_mode_allow);
+                            debug!(target: "ext_proc", "error occurred when streaming request body to external processing");
+                            self.request_processing.status_error("error occurred when streaming request body to external processing", self.config.failure_mode_allow);
                         },
                         None => {
                             request_body_to_ext_proc_complete = true;
@@ -883,8 +883,8 @@ impl ExternalProcessingWorker<kind::Processing> {
                         },
                         Some(Err(_err)) => {
                             response_body_to_ext_proc_complete = true;
-                            debug!(target: "ext_proc", "error occured when streaming response body to external processing");
-                            self.response_processing.status_error("error occured when streaming response body to external processing", self.config.failure_mode_allow);
+                            debug!(target: "ext_proc", "error occurred when streaming response body to external processing");
+                            self.response_processing.status_error("error occurred when streaming response body to external processing", self.config.failure_mode_allow);
                         },
                         None => {
                             response_body_to_ext_proc_complete = true;
@@ -948,7 +948,105 @@ impl ExternalProcessingWorker<kind::Observability> {
 
     #[allow(clippy::too_many_lines)]
     async fn observability_loop(mut self, mut processing_request_channel: mpsc::Receiver<ProcessingTask>) {
-        todo!()
+        debug!(target: "ext_proc", "===== Observability BEGIN =====");
+        defer! {
+            debug!(target: "ext_proc", "===== Observability END =====");
+        }
+
+        let mut request_body_to_ext_proc_complete = false;
+        let mut response_body_to_ext_proc_complete = false;
+
+        'transaction_loop: loop {
+            let streaming_enabled =
+                self.request_processing.streaming_body_enabled || self.response_processing.streaming_body_enabled;
+            let outbound_req_enabled =
+                self.request_processing.streaming_body_enabled && !request_body_to_ext_proc_complete;
+            let outbound_resp_enabled =
+                self.response_processing.streaming_body_enabled && !response_body_to_ext_proc_complete;
+
+            debug!(target: "ext_proc", "----- select! [ process_task:{} inbound:true outbound_req:{outbound_req_enabled} outbound_resp:{outbound_resp_enabled} timeout:{} ] -----",
+                !streaming_enabled, self.timeout_state.active);
+
+            tokio::select! {
+                outbound_processing_request = processing_request_channel.recv(), if !streaming_enabled => {
+                    debug!(target: "ext_proc", "processing {outbound_processing_request:?}...");
+                    match outbound_processing_request {
+                        Some(ProcessingTask{ data: ProcessingData::Request(headers, frame_bridge), reply_channel, http_version}) => {
+                            let action = self.request_processing.process(headers, frame_bridge, reply_channel, http_version, &self.overridable_modes).await;
+                            run_action!(self, self.request_processing, action, "process_request");
+                        }
+                        Some(ProcessingTask{ data: ProcessingData::Response(headers, frame_bridge), reply_channel, http_version}) => {
+                            let action = self.response_processing.process(headers, frame_bridge, reply_channel, http_version, &self.overridable_modes).await;
+                            run_action!(self, self.response_processing, action, "process_response");
+                        }
+                        _ => {
+                            debug!(target: "ext_proc", ">> worker channel closed!");
+                            break 'transaction_loop
+                        },
+                    }
+                },
+
+                outbound_request_body_frame =
+                    async { self.request_processing.frame_bridge.next().await }, if outbound_req_enabled => {
+
+                    debug!(target: "ext_proc", "outbound request body frame: {outbound_request_body_frame:?}");
+                    match outbound_request_body_frame {
+                        Some(Ok(frame)) => {
+                            // send the current frame and inject back into the body bridge...
+                            debug!(target: "ext_proc", "sending body chunk of request ({})",  if frame.is_data() { "DATA" } else { "TRAILERS" });
+                            let action = self.request_processing.handle_outgoing_body_chunk(clone_frame(&frame), false).await;
+                            run_action!(self, self.request_processing, action, "handle_body_chunk");
+                            _ = self.request_processing.frame_bridge.inject_frame(Ok(frame)).await;
+                            let action = Action::Return(ProcessingStatus::RequestReady(ReadyStatus::default()));
+                            run_action!(self, self.request_processing, action, "handle_body_chunk (end)");
+                        },
+                        Some(Err(_err)) => {
+                            request_body_to_ext_proc_complete = true;
+                            debug!(target: "ext_proc", "error occurred when streaming request body to external processing");
+                            self.request_processing.status_error("error occurred when streaming request body to external processing", self.config.failure_mode_allow);
+                        },
+                        None => {
+                            debug!(target: "ext_proc", "request body stream ended!");
+                            request_body_to_ext_proc_complete = true;
+                            self.request_processing.end_of_stream = true;
+                            self.request_processing.frame_bridge_close(&mut self.timeout_state.active).await;
+                            let action = Action::Return(ProcessingStatus::RequestReady(ReadyStatus::default()));
+                            run_action!(self, self.request_processing, action, "handle_body_chunk (end)");
+                        }
+                    }
+                },
+
+                outbound_response_body_frame =
+                    async { self.response_processing.frame_bridge.next().await }, if outbound_resp_enabled => {
+
+                    debug!(target: "ext_proc", "outbound response body frame: {outbound_response_body_frame:?}");
+                    match outbound_response_body_frame {
+                        Some(Ok(frame)) => {
+                            // send the current frame and inject back into the body bridge...
+                            debug!(target: "ext_proc", "sending body chunk of request ({})",  if frame.is_data() { "DATA" } else { "TRAILERS" });
+                            let action = self.response_processing.handle_outgoing_body_chunk(clone_frame(&frame), false).await;
+                            run_action!(self, self.response_processing, action, "handle_body_chunk");
+                            _ = self.response_processing.frame_bridge.inject_frame(Ok(frame)).await;
+                            let action = Action::Return(ProcessingStatus::RequestReady(ReadyStatus::default()));
+                            run_action!(self, self.request_processing, action, "handle_body_chunk (end)");
+                        },
+                        Some(Err(_err)) => {
+                            response_body_to_ext_proc_complete = true;
+                            debug!(target: "ext_proc", "error occurred when streaming response body to external processing");
+                            self.response_processing.status_error("error occurred when streaming response body to external processing", self.config.failure_mode_allow);
+                        },
+                        None => {
+                            debug!(target: "ext_proc", "request body stream ended!");
+                            request_body_to_ext_proc_complete = true;
+                            self.response_processing.end_of_stream = true;
+                            self.response_processing.frame_bridge_close(&mut self.timeout_state.active).await;
+                            let action = Action::Return(ProcessingStatus::ResponseReady(ReadyStatus::default()));
+                            run_action!(self, self.response_processing, action, "handle_body_chunk (end)");
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

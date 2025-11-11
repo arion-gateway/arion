@@ -3,7 +3,7 @@ use crate::event_error::EventFailure;
 use crate::listeners::http_connection_manager::ext_proc::kind;
 use crate::listeners::http_connection_manager::ext_proc::mutation::apply_header_mutations;
 use crate::listeners::http_connection_manager::ext_proc::r#override::{
-    OverridableBodyMode, OverridableGlobalModes, OverridableModeSelector,
+    OverridableGlobalModes, OverridableModeSelector,
 };
 use crate::listeners::http_connection_manager::ext_proc::status::{Action, ProcessingStatus, ReadyStatus};
 use crate::listeners::http_connection_manager::ext_proc::worker_config::ExternalProcessingWorkerConfig;
@@ -81,10 +81,6 @@ pub struct Processing<M: kind::Mode, Phase: kind::Phase> {
 impl<M: kind::Mode + Default, Phase: kind::Phase> From<&ExternalProcessingWorkerConfig> for Processing<M, Phase> {
     fn from(config: &ExternalProcessingWorkerConfig) -> Self {
         debug!(target: "ext_proc", "From<&ExternalProcessingWorkerConfig for Processing<>");
-        assert!(
-            !config.observability_mode,
-            "Attempted to create RequestProcessing<ProcessingState> in observability mode"
-        );
 
         Self {
             send_body_without_waiting_for_header_response: config.send_body_without_waiting_for_header_response,
@@ -180,88 +176,6 @@ impl Processing<kind::Processing, kind::Response> {
 
 impl<Phase: kind::Phase + OverridableModeSelector> Processing<kind::Processing, Phase> {
     #[must_use = "must handle the returned Action"]
-    pub async fn process(
-        &mut self,
-        headers: Option<http::HeaderMap>,
-        frame_bridge: FrameBridge,
-        reply_channel: oneshot::Sender<ProcessingStatus>,
-        http_version: http::Version,
-        override_mode: &OverridableGlobalModes,
-    ) -> Action<ProcessingRequest> {
-        self.reply_channel = Some(reply_channel);
-        self.http_version = Some(http_version);
-        self.http_headers = headers;
-        self.frame_bridge = frame_bridge;
-
-        if self.http_headers.is_some() {
-            return self.process_headers(override_mode);
-        }
-
-        debug!(target: "ext_proc", "process: turning streaming_body_enabled -> true");
-        self.streaming_body_enabled = true;
-
-        let status = if Phase::IS_REQUEST {
-            ProcessingStatus::RequestReady(ReadyStatus::default())
-        } else {
-            ProcessingStatus::ResponseReady(ReadyStatus::default())
-        };
-
-        Action::Return(status)
-    }
-
-    #[must_use = "must handle the returned Action"]
-    fn process_headers(&mut self, override_mode: &OverridableGlobalModes) -> Action<ProcessingRequest> {
-        debug!(target: "ext_proc", "process_request headers {:?}", self.http_headers);
-        let Some(headers) = &self.http_headers else {
-            return Action::Return(self.status_error(
-                format!("process_request: Unexpected headers provided: {:?}", self.http_headers).as_str(),
-                self.failure_mode_allow,
-            ));
-        };
-
-        let end_of_stream =
-            !override_mode.should_process_body::<Phase>() && !override_mode.should_process_trailers::<Phase>();
-
-        let envmap: EnvoyHeaderMap = headers.into();
-
-        let processing_request = if Phase::IS_REQUEST {
-            ProcessingRequest {
-                request: Some(ProcessingRequestType::RequestHeaders(HttpHeaders {
-                    headers: Some(envmap.0),
-                    attributes: HashMap::default(),
-                    end_of_stream,
-                })),
-                metadata_context: None,
-                attributes: HashMap::default(),
-                observability_mode: false,
-                protocol_config: None,
-            }
-        } else {
-            ProcessingRequest {
-                request: Some(ProcessingRequestType::ResponseHeaders(HttpHeaders {
-                    headers: Some(envmap.0),
-                    attributes: HashMap::default(),
-                    end_of_stream,
-                })),
-                metadata_context: None,
-                attributes: HashMap::default(),
-                observability_mode: false,
-                protocol_config: None,
-            }
-        };
-
-        if self.send_body_without_waiting_for_header_response
-            && !matches!(override_mode.body_mode::<Phase>(), OverridableBodyMode::None)
-        // todo(nicola): this match condition might be wrong since we might want to enable
-        // body streaming in case we need to send trailers.
-        {
-            self.streaming_body_enabled = true;
-        }
-
-        Action::Send(processing_request)
-    }
-
-    #[must_use = "must handle the returned Action"]
     pub async fn handle_headers_response(
         &mut self,
         response: HeadersResponse,
@@ -299,7 +213,7 @@ impl<Phase: kind::Phase + OverridableModeSelector> Processing<kind::Processing, 
                         Some(Mutation::Body(bytes)) => Some(Frame::data(bytes.into())),
                         Some(Mutation::ClearBody(true)) => Some(Frame::data(Bytes::new())),
                         Some(Mutation::ClearBody(false)) | None => None,
-                        Some(Mutation::StreamedResponse(chunk)) =>  Some(Frame::data(chunk.body.into())),
+                        Some(Mutation::StreamedResponse(chunk)) => Some(Frame::data(chunk.body.into())),
                     };
 
                 // replace body if specified
@@ -427,77 +341,6 @@ impl<Phase: kind::Phase + OverridableModeSelector> Processing<kind::Processing, 
     }
 
     #[must_use = "must handle the returned Action"]
-    pub async fn handle_outgoing_body_chunk(
-        &mut self,
-        mut chunk: Frame<Bytes>,
-        end_of_stream: bool,
-    ) -> Action<ProcessingRequest> {
-        debug!(target: "ext_proc", "handle_body_chunk: sending data frame: {}, end_of_stream: {end_of_stream}",
-            if chunk.is_data() { "DATA" } else if chunk.is_trailers() { "TRAILERS" } else { "OTHER" });
-
-        let processing_request = if let Some(bytes) = chunk.data_mut() {
-            // DATA
-            let data = std::mem::take(bytes);
-
-            let http_body = HttpBody { body: data.into(), end_of_stream };
-            if Phase::IS_REQUEST {
-                ProcessingRequest {
-                    request: Some(ProcessingRequestType::RequestBody(http_body)),
-                    metadata_context: None,
-                    attributes: HashMap::default(),
-                    observability_mode: false,
-                    protocol_config: None,
-                }
-            } else {
-                ProcessingRequest {
-                    request: Some(ProcessingRequestType::ResponseBody(http_body)),
-                    metadata_context: None,
-                    attributes: HashMap::default(),
-                    observability_mode: false,
-                    protocol_config: None,
-                }
-            }
-        } else if let Some(traiers) = chunk.trailers_mut() {
-            // TRAILERS
-            let data = std::mem::take(traiers);
-
-            // store trailers for potential update later
-            self.trailers = Some(data.clone());
-
-            let envoy_trailers: EnvoyHeaderMap = (&data).into();
-
-            if Phase::IS_REQUEST {
-                ProcessingRequest {
-                    request: Some(ProcessingRequestType::RequestTrailers(HttpTrailers {
-                        trailers: Some(envoy_trailers.0),
-                    })),
-                    metadata_context: None,
-                    attributes: HashMap::default(),
-                    observability_mode: false,
-                    protocol_config: None,
-                }
-            } else {
-                ProcessingRequest {
-                    request: Some(ProcessingRequestType::ResponseTrailers(HttpTrailers {
-                        trailers: Some(envoy_trailers.0),
-                    })),
-                    metadata_context: None,
-                    attributes: HashMap::default(),
-                    observability_mode: false,
-                    protocol_config: None,
-                }
-            }
-        } else {
-            let msg = "handle_body_chunk: unexpected non-data frame to send";
-            debug!(target: "ext_proc", msg);
-            return Action::Return(self.status_error(msg, self.failure_mode_allow));
-        };
-
-        debug!(target: "ext_proc", "handle_body_chunk: prepared processing_request: {:?}", processing_request);
-        Action::Send(processing_request)
-    }
-
-    #[must_use = "must handle the returned Action"]
     pub async fn handle_trailers_response(
         &mut self,
         trailers_response: TrailersResponse,
@@ -537,39 +380,161 @@ impl<Phase: kind::Phase + OverridableModeSelector> Processing<kind::Processing, 
         let status = ctor(ReadyStatus::default());
         Action::Return(status)
     }
-
-    pub async fn frame_bridge_close(&mut self, timeout_active : &mut bool) {
-        *timeout_active = false;
-        self.streaming_body_enabled = false;
-        self.frame_bridge.close().await;
-    }
-
-    pub async fn park_or_inject_frame(&mut self, frame: Frame<Bytes>, override_mode: &OverridableGlobalModes) {
-        if frame.is_data() {
-            // This is a DATA, let's park it if is supposed to be streamed
-            if override_mode.should_process_body::<Phase>() {
-                self.parked_frame = Some(frame);
-                debug!(target: "ext_proc", "parking body chunk of response (DATA)");
-            } else {
-                debug!(target: "ext_proc", "DATA is injected directly into frame bridge!");
-                _ = self.frame_bridge.inject_frame(Ok(frame)).await;
-            }
-
-        } else {
-            // This is TRAILERS. it is the last frame.
-            debug!(target: "ext_proc", "processing_request: sending trailers to external processor...");
-            if override_mode.should_process_trailers::<Phase>() {
-                self.parked_frame = Some(frame);
-                debug!(target: "ext_proc", "parking body chunk of response (TRAILERS)");
-            } else {
-                debug!(target: "ext_proc", "TRAILERS are injected directly into frame bridge");
-                _ = self.frame_bridge.inject_frame(Ok(frame)).await;
-            }
-        }
-    }
 }
 
-impl<M: kind::Mode + Default, Phase: kind::Phase> Processing<M, Phase> {
+impl<M: kind::Mode + Default, Phase: kind::Phase + OverridableModeSelector> Processing<M, Phase> {
+    #[must_use = "must handle the returned Action"]
+    pub async fn process(
+        &mut self,
+        headers: Option<http::HeaderMap>,
+        frame_bridge: FrameBridge,
+        reply_channel: oneshot::Sender<ProcessingStatus>,
+        http_version: http::Version,
+        override_mode: &OverridableGlobalModes,
+    ) -> Action<ProcessingRequest> {
+        self.reply_channel = Some(reply_channel);
+        self.http_version = Some(http_version);
+        self.http_headers = headers;
+        self.frame_bridge = frame_bridge;
+
+        if self.http_headers.is_some() {
+            return self.process_headers(override_mode);
+        }
+
+        debug!(target: "ext_proc", "process: turning streaming_body_enabled -> true");
+        self.streaming_body_enabled = true;
+
+        let status = if Phase::IS_REQUEST {
+            ProcessingStatus::RequestReady(ReadyStatus::default())
+        } else {
+            ProcessingStatus::ResponseReady(ReadyStatus::default())
+        };
+
+        Action::Return(status)
+    }
+
+    #[must_use = "must handle the returned Action"]
+    fn process_headers(&mut self, override_mode: &OverridableGlobalModes) -> Action<ProcessingRequest> {
+        debug!(target: "ext_proc", "process_request headers {:?}", self.http_headers);
+        let Some(headers) = &self.http_headers else {
+            return Action::Return(self.status_error(
+                format!("process_request: Unexpected headers provided: {:?}", self.http_headers).as_str(),
+                self.failure_mode_allow,
+            ));
+        };
+
+        let end_of_stream =
+            !override_mode.should_process_body::<Phase>() && !override_mode.should_process_trailers::<Phase>();
+
+        let envmap: EnvoyHeaderMap = headers.into();
+
+        let processing_request = if Phase::IS_REQUEST {
+            ProcessingRequest {
+                request: Some(ProcessingRequestType::RequestHeaders(HttpHeaders {
+                    headers: Some(envmap.0),
+                    attributes: HashMap::default(),
+                    end_of_stream,
+                })),
+                metadata_context: None,
+                attributes: HashMap::default(),
+                observability_mode: M::OBSERVABILITY,
+                protocol_config: None,
+            }
+        } else {
+            ProcessingRequest {
+                request: Some(ProcessingRequestType::ResponseHeaders(HttpHeaders {
+                    headers: Some(envmap.0),
+                    attributes: HashMap::default(),
+                    end_of_stream,
+                })),
+                metadata_context: None,
+                attributes: HashMap::default(),
+                observability_mode: M::OBSERVABILITY,
+                protocol_config: None,
+            }
+        };
+
+        let send_body_or_trailers =
+            override_mode.should_process_body::<Phase>() || override_mode.should_process_trailers::<Phase>();
+
+        if M::OBSERVABILITY || (self.send_body_without_waiting_for_header_response && send_body_or_trailers) {
+            self.streaming_body_enabled = true;
+        }
+
+        Action::Send(processing_request)
+    }
+
+    #[must_use = "must handle the returned Action"]
+    pub async fn handle_outgoing_body_chunk(
+        &mut self,
+        mut chunk: Frame<Bytes>,
+        end_of_stream: bool,
+    ) -> Action<ProcessingRequest> {
+        debug!(target: "ext_proc", "handle_body_chunk: sending data frame: {}, end_of_stream: {end_of_stream}",
+            if chunk.is_data() { "DATA" } else if chunk.is_trailers() { "TRAILERS" } else { "OTHER" });
+
+        let processing_request = if let Some(bytes) = chunk.data_mut() {
+            // DATA
+            let data = std::mem::take(bytes);
+
+            let http_body = HttpBody { body: data.into(), end_of_stream };
+            if Phase::IS_REQUEST {
+                ProcessingRequest {
+                    request: Some(ProcessingRequestType::RequestBody(http_body)),
+                    metadata_context: None,
+                    attributes: HashMap::default(),
+                    observability_mode: M::OBSERVABILITY,
+                    protocol_config: None,
+                }
+            } else {
+                ProcessingRequest {
+                    request: Some(ProcessingRequestType::ResponseBody(http_body)),
+                    metadata_context: None,
+                    attributes: HashMap::default(),
+                    observability_mode: M::OBSERVABILITY,
+                    protocol_config: None,
+                }
+            }
+        } else if let Some(traiers) = chunk.trailers_mut() {
+            // TRAILERS
+            let data = std::mem::take(traiers);
+
+            // store trailers for potential update later
+            self.trailers = Some(data.clone());
+
+            let envoy_trailers: EnvoyHeaderMap = (&data).into();
+
+            if Phase::IS_REQUEST {
+                ProcessingRequest {
+                    request: Some(ProcessingRequestType::RequestTrailers(HttpTrailers {
+                        trailers: Some(envoy_trailers.0),
+                    })),
+                    metadata_context: None,
+                    attributes: HashMap::default(),
+                    observability_mode: M::OBSERVABILITY,
+                    protocol_config: None,
+                }
+            } else {
+                ProcessingRequest {
+                    request: Some(ProcessingRequestType::ResponseTrailers(HttpTrailers {
+                        trailers: Some(envoy_trailers.0),
+                    })),
+                    metadata_context: None,
+                    attributes: HashMap::default(),
+                    observability_mode: M::OBSERVABILITY,
+                    protocol_config: None,
+                }
+            }
+        } else {
+            let msg = "handle_body_chunk: unexpected non-data frame to send";
+            debug!(target: "ext_proc", msg);
+            return Action::Return(self.status_error(msg, self.failure_mode_allow));
+        };
+
+        debug!(target: "ext_proc", "handle_body_chunk: prepared processing_request: {:?}", processing_request);
+        Action::Send(processing_request)
+    }
+
     #[inline]
     pub fn is_awaiting_reply(&self) -> bool {
         self.reply_channel.is_some()
@@ -606,5 +571,34 @@ impl<M: kind::Mode + Default, Phase: kind::Phase> Processing<M, Phase> {
             )
         };
         status
+    }
+
+    pub async fn frame_bridge_close(&mut self, timeout_active: &mut bool) {
+        *timeout_active = false;
+        self.streaming_body_enabled = false;
+        self.frame_bridge.close().await;
+    }
+
+    pub async fn park_or_inject_frame(&mut self, frame: Frame<Bytes>, override_mode: &OverridableGlobalModes) {
+        if frame.is_data() {
+            // This is a DATA, let's park it if is supposed to be streamed
+            if override_mode.should_process_body::<Phase>() {
+                self.parked_frame = Some(frame);
+                debug!(target: "ext_proc", "parking body chunk of response (DATA)");
+            } else {
+                debug!(target: "ext_proc", "DATA is injected directly into frame bridge!");
+                _ = self.frame_bridge.inject_frame(Ok(frame)).await;
+            }
+        } else {
+            // This is TRAILERS. it is the last frame.
+            debug!(target: "ext_proc", "processing_request: sending trailers to external processor...");
+            if override_mode.should_process_trailers::<Phase>() {
+                self.parked_frame = Some(frame);
+                debug!(target: "ext_proc", "parking body chunk of response (TRAILERS)");
+            } else {
+                debug!(target: "ext_proc", "TRAILERS are injected directly into frame bridge");
+                _ = self.frame_bridge.inject_frame(Ok(frame)).await;
+            }
+        }
     }
 }

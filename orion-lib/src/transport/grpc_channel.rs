@@ -20,8 +20,8 @@ use http::{
     uri::{Authority, Scheme},
     Request, Uri,
 };
-use tracing::debug;
 use std::{iter::Cycle, sync::Arc, vec::IntoIter};
+use tracing::debug;
 
 use orion_xds::grpc_deps::{to_grpc_body, GrpcBody};
 use tower::Service;
