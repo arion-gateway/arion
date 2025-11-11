@@ -1,7 +1,7 @@
 use bytes::Bytes;
+use futures::stream::Peekable;
 use futures::{Stream, StreamExt};
-use http_body::{Body, Frame};
-use http_body_util::StreamBody;
+use http_body::{Body, Frame, SizeHint};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::sync::mpsc;
@@ -10,7 +10,7 @@ use tokio_stream::wrappers::ReceiverStream;
 /// A wrapper for any Body that allows observing and modifying frames in real-time.
 ///
 pub struct ChannelBody {
-    stream_body: StreamBody<ReceiverStream<Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>>>,
+    peekable_stream: Peekable<ReceiverStream<Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>>>,
 }
 
 impl ChannelBody {
@@ -29,18 +29,25 @@ impl ChannelBody {
         let (tx, rx) = mpsc::channel(32);
 
         // Convert the receiver into a StreamBody
-        let stream_body = StreamBody::new(ReceiverStream::new(rx));
+        let stream_of_body = ReceiverStream::new(rx).peekable();
 
         // Create the bridge with the original body
         let bridge = FrameBridge::new(body, tx);
 
-        (ChannelBody { stream_body }, bridge)
+        (ChannelBody { peekable_stream: stream_of_body }, bridge)
+    }
+
+    /// Asynchronously waits until a frame is available in the body.
+    ///
+    /// This method does not consume the frame.
+    pub async fn wait_frame(&mut self) {
+        let _ = Pin::new(&mut self.peekable_stream).peek().await;
     }
 }
 
 impl std::fmt::Debug for ChannelBody {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ChannelBody").field("stream_body", &self.stream_body).finish()
+        f.debug_struct("ChannelBody").field("stream_body", &self.peekable_stream).finish()
     }
 }
 
@@ -52,15 +59,15 @@ impl Body for ChannelBody {
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        Pin::new(&mut self.stream_body).poll_frame(cx)
+        Pin::new(&mut self.peekable_stream).poll_next(cx)
     }
 
     fn is_end_stream(&self) -> bool {
-        self.stream_body.is_end_stream()
+        false
     }
 
-    fn size_hint(&self) -> http_body::SizeHint {
-        Body::size_hint(&self.stream_body)
+    fn size_hint(&self) -> SizeHint {
+        SizeHint::default()
     }
 }
 

@@ -65,6 +65,16 @@ impl PolyBody {
             b => Err(PolyBodyError::Trailers(format!("{b:?}"))),
         }
     }
+
+    pub async fn wait_frame(&mut self) {
+        match self {
+            PolyBody::ChannelBody(m) => {
+                m.wait_frame().await;
+            },
+            _ => { // No-op for other body types
+            },
+        }
+    }
 }
 
 impl Default for PolyBody {

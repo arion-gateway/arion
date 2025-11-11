@@ -97,7 +97,7 @@ impl From<(ExternalProcessorConfig, Option<ExtProcPerRoute>)> for ExternalProces
 impl Drop for ExternalProcessor {
     fn drop(&mut self) {
         if let Some(sender) = self.ext_proc_worker.take() {
-            debug!(target: "ext_proc", "ExternalProcessor::drop (clossing sender)");
+            debug!(target: "ext_proc", "ExternalProcessor::drop (closing sender)");
             drop(sender);
         }
     }
@@ -150,7 +150,7 @@ macro_rules! run_action {
     ($self:ident, $processor:expr, $action:expr, $ctx:literal) => {
         match $action {
             Action::Send(outbound) => {
-                debug!(target: "ext_proc", "{ctx} @{typ}: forward {outbound:?}",
+                debug!(target: "ext_proc", "{ctx} @{typ}: action -> forward {outbound:?}",
                     ctx = $ctx,
                     typ = stringify!($processor),
                     outbound = outbound);
@@ -158,9 +158,8 @@ macro_rules! run_action {
                 $self.forward_to_external_processor(outbound).await;
             },
             Action::Return(status) => {
-
                 if let Some(reply_channel) = $processor.reply_channel.take() {
-                    debug!(target: "ext_proc", "{ctx} @{typ}: status -> {status:?}",
+                    debug!(target: "ext_proc", "{ctx} @{typ}: action -> return {status:?}",
                         ctx = $ctx,
                         typ = stringify!($processor),
                         status = status);
@@ -412,7 +411,15 @@ impl ExternalProcessor {
         };
 
         debug!(target: "ext_proc", "apply_response completed: {res:?}!");
-        // tokio::time::sleep(Duration::from_secs(1)).await;
+
+        // Delay sending the response until the first frame is ready. This ensures
+        // better performance when streaming bodies from the external processor.
+        // It works around a limitation in Tokio and Hyper, which perform poorly
+        // when the response body is not immediately available. By waiting for
+        // the first frame, single-frame responses avoid unnecessary polling
+        // cycles.
+
+        response.body_mut().wait_frame().await;
         res
     }
 
@@ -1604,7 +1611,7 @@ mod tests {
                 vec![("x-stream-processed", "true"), ("y-custom-header", "true")],
                 ResponseStatus::Continue as i32,
                 // even though we will stream the body, no body modification is
-                // perfomed in the headers response so no need to set the flag
+                // performed in the headers response so no need to set the flag
                 None,
             ))
             .add_response(create_body_response(
