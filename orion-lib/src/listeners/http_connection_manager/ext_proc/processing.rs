@@ -287,12 +287,16 @@ impl<Phase: kind::Phase + OverridableModeSelector> Processing<kind::Processing, 
                 Some(new_chunk) => {
                     debug!(target: "ext_proc", "handle_body_response: chunk replacement -> {new_chunk:?}");
                     _ = self.frame_bridge.inject_frame(Ok(new_chunk)).await;
-                    self.inflight_frames.drain(0..1);
+                    if !self.inflight_frames.is_empty() {
+                        self.inflight_frames.drain(0..1);
+                    }
                 },
                 None => {
                     debug!(target: "ext_proc", "handle_body_response: no chunk replacement requested");
-                    if let Some(frame) = self.inflight_frames.drain(0..1).next() {
-                        _ = self.frame_bridge.inject_frame(Ok(frame)).await;
+                    if !self.inflight_frames.is_empty() {
+                        if let Some(frame) = self.inflight_frames.drain(0..1).next() {
+                            _ = self.frame_bridge.inject_frame(Ok(frame)).await;
+                        }
                     }
                 },
             }
