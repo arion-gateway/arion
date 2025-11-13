@@ -230,14 +230,14 @@ impl<Msg: kind::MsgType + OverridableModeSelector> Processing<kind::Processing, 
                 }
 
                 debug!(target: "ext_proc", "frame bridge closed (handle header response)!");
-                self.frame_bridge_close(timeout_active).await;
+                self.frame_bridge_close(timeout_active);
             } else {
                 debug!(target: "ext_proc", "handle_headers_response: ResponseStatus:Continue: headers processed");
                 if !override_mode.should_process_body::<Msg>() && !override_mode.should_process_trailers::<Msg>() {
                     debug!(target: "ext_proc", "handle_headers_response: complete to stream original body and close!");
                     self.frame_bridge.complete().await;
                     debug!(target: "ext_proc", "frame bridge closed (handle header response)!");
-                    self.frame_bridge_close(timeout_active).await;
+                    self.frame_bridge_close(timeout_active);
                 } else {
                     debug!(target: "ext_proc", "handle_headers_response: streaming body enabled...");
                     self.streaming_body_enabled = true;
@@ -327,13 +327,13 @@ impl<Msg: kind::MsgType + OverridableModeSelector> Processing<kind::Processing, 
 
             if matches!(embedded_status, ResponseStatus::ContinueAndReplace) {
                 debug!(target: "ext_proc", "handle_body_response: CONTINUE_AND_REPLACE: sending message status {status:?}");
-                self.frame_bridge_close(timeout_active).await;
+                self.frame_bridge_close(timeout_active);
                 return Action::Return(status);
             }
 
             if self.end_of_stream && self.inflight_frames.is_empty() {
                 debug!(target: "ext_proc", "handle_body_response: end_of_stream (closing frame bridge)!");
-                self.frame_bridge_close(timeout_active).await;
+                self.frame_bridge_close(timeout_active);
             }
 
             return Action::Return(status);
@@ -360,7 +360,7 @@ impl<Msg: kind::MsgType + OverridableModeSelector> Processing<kind::Processing, 
             _ = self.frame_bridge.inject_frame(Ok(Frame::trailers(trailers))).await;
 
             self.end_of_stream = true;
-            self.frame_bridge_close(timeout_active).await;
+            self.frame_bridge_close(timeout_active);
 
             let status = if Msg::IS_REQUEST {
                 ProcessingStatus::RequestReady(ReadyStatus::default())
@@ -371,7 +371,7 @@ impl<Msg: kind::MsgType + OverridableModeSelector> Processing<kind::Processing, 
             return Action::Return(status);
         } else {
             debug!(target: "ext_proc", "frame bridge closed (handle trailers response)!");
-            self.frame_bridge_close(timeout_active).await;
+            self.frame_bridge_close(timeout_active);
 
             return Action::Return(
                 self.status_error("handle_trailers_response: No trailers to process", self.failure_mode_allow),
@@ -388,7 +388,7 @@ impl<Msg: kind::MsgType + OverridableModeSelector> Processing<kind::Processing, 
 
 impl<M: kind::Mode + Default, Msg: kind::MsgType + OverridableModeSelector> Processing<M, Msg> {
     #[must_use = "must handle the returned Action"]
-    pub async fn process(
+    pub fn process(
         &mut self,
         headers: Option<http::HeaderMap>,
         frame_bridge: FrameBridge,
@@ -469,7 +469,7 @@ impl<M: kind::Mode + Default, Msg: kind::MsgType + OverridableModeSelector> Proc
     }
 
     #[must_use = "must handle the returned Action"]
-    pub async fn handle_outgoing_body_chunk(
+    pub fn handle_outgoing_body_chunk(
         &mut self,
         mut chunk: Frame<Bytes>,
         end_of_stream: bool,
@@ -577,10 +577,10 @@ impl<M: kind::Mode + Default, Msg: kind::MsgType + OverridableModeSelector> Proc
         status
     }
 
-    pub async fn frame_bridge_close(&mut self, timeout_active: &mut bool) {
+    pub fn frame_bridge_close(&mut self, timeout_active: &mut bool) {
         *timeout_active = false;
         self.streaming_body_enabled = false;
-        self.frame_bridge.close().await;
+        self.frame_bridge.close();
     }
 
     pub async fn park_or_inject_frame(&mut self, frame: Frame<Bytes>, override_mode: &OverridableGlobalModes) {

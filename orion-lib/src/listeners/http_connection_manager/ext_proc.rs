@@ -659,11 +659,11 @@ impl ExternalProcessingWorker<kind::Processing> {
                     debug!(target: "ext_proc", "processing {outbound_processing_request:?}...");
                     match outbound_processing_request {
                         Some(ProcessingTask{ data: ProcessingData::Request(headers, frame_bridge), reply_channel, http_version}) => {
-                            let action = self.request_processing.process(headers, frame_bridge, reply_channel, http_version, &self.overridable_modes).await;
+                            let action = self.request_processing.process(headers, frame_bridge, reply_channel, http_version, &self.overridable_modes);
                             run_action!(self, self.request_processing, action, "process_request");
                         }
                         Some(ProcessingTask{ data: ProcessingData::Response(headers, frame_bridge), reply_channel, http_version}) => {
-                            let action = self.response_processing.process(headers, frame_bridge, reply_channel, http_version, &self.overridable_modes).await;
+                            let action = self.response_processing.process(headers, frame_bridge, reply_channel, http_version, &self.overridable_modes);
                             run_action!(self, self.response_processing, action, "process_response");
                         }
                         _ => {
@@ -825,7 +825,7 @@ impl ExternalProcessingWorker<kind::Processing> {
                             //
                             if let Some(prev_frame) = self.request_processing.parked_frame.take() {
                                 debug!(target: "ext_proc", "sending body chunk of request ({})",  if prev_frame.is_data() { "DATA" } else { "TRAILERS" });
-                                let action = self.request_processing.handle_outgoing_body_chunk(clone_frame(&prev_frame), false).await;
+                                let action = self.request_processing.handle_outgoing_body_chunk(clone_frame(&prev_frame), false);
                                 run_action!(self, self.request_processing, action, "handle_body_chunk (parked)");
                                 // save a copy of the frame to inject into the body bridge later
                                 self.request_processing.inflight_frames.push(prev_frame);
@@ -844,7 +844,7 @@ impl ExternalProcessingWorker<kind::Processing> {
                             debug!(target: "ext_proc", "request body stream ended!");
                             if let Some(current_frame) = self.request_processing.parked_frame.take() {
                                 debug!(target: "ext_proc", "sending last body chunk of request!");
-                                let action = self.request_processing.handle_outgoing_body_chunk(clone_frame(&current_frame), true).await;
+                                let action = self.request_processing.handle_outgoing_body_chunk(clone_frame(&current_frame), true);
                                 run_action!(self, self.request_processing, action, "handle_body_chunk (end)");
                                 self.request_processing.inflight_frames.push(current_frame);
                             }
@@ -853,7 +853,7 @@ impl ExternalProcessingWorker<kind::Processing> {
 
                             if self.request_processing.inflight_frames.is_empty() {
                                 debug!(target: "ext_proc", "frame bridge closed (request body)!");
-                                self.request_processing.frame_bridge_close(&mut self.timeout_state.active).await;
+                                self.request_processing.frame_bridge_close(&mut self.timeout_state.active);
                             }
                         }
                     }
@@ -870,7 +870,7 @@ impl ExternalProcessingWorker<kind::Processing> {
                             //
                             if let Some(prev_frame) = self.response_processing.parked_frame.take() {
                                 debug!(target: "ext_proc", "sending body chunk of response ({})",  if prev_frame.is_data() { "DATA" } else { "TRAILERS" });
-                                let action = self.response_processing.handle_outgoing_body_chunk(clone_frame(&prev_frame), false).await;
+                                let action = self.response_processing.handle_outgoing_body_chunk(clone_frame(&prev_frame), false);
                                 run_action!(self, self.response_processing, action, "handle_body_chunk (parked)");
                                 // save a copy of the frame to inject into the body bridge later
                                 self.response_processing.inflight_frames.push(prev_frame);
@@ -891,7 +891,7 @@ impl ExternalProcessingWorker<kind::Processing> {
                             debug!(target: "ext_proc", "response body stream ended!");
                             if let Some(current_frame) = self.response_processing.parked_frame.take() {
                                 debug!(target: "ext_proc", "sending last body chunk of response!");
-                                let action = self.response_processing.handle_outgoing_body_chunk(clone_frame(&current_frame), true).await;
+                                let action = self.response_processing.handle_outgoing_body_chunk(clone_frame(&current_frame), true);
                                 run_action!(self, self.response_processing, action, "handle_body_chunk (end)");
                                 self.response_processing.inflight_frames.push(current_frame);
                             }
@@ -900,7 +900,7 @@ impl ExternalProcessingWorker<kind::Processing> {
 
                             if self.response_processing.inflight_frames.is_empty() {
                                 debug!(target: "ext_proc", "frame bridge closed (response body)!");
-                                self.response_processing.frame_bridge_close(&mut self.timeout_state.active).await;
+                                self.response_processing.frame_bridge_close(&mut self.timeout_state.active);
                             }
                         }
                     }
@@ -972,11 +972,11 @@ impl ExternalProcessingWorker<kind::Observability> {
                     debug!(target: "ext_proc", "processing {outbound_processing_request:?}...");
                     match outbound_processing_request {
                         Some(ProcessingTask{ data: ProcessingData::Request(headers, frame_bridge), reply_channel, http_version}) => {
-                            let action = self.request_processing.process(headers, frame_bridge, reply_channel, http_version, &self.overridable_modes).await;
+                            let action = self.request_processing.process(headers, frame_bridge, reply_channel, http_version, &self.overridable_modes);
                             run_action!(self, self.request_processing, action, "process_request");
                         }
                         Some(ProcessingTask{ data: ProcessingData::Response(headers, frame_bridge), reply_channel, http_version}) => {
-                            let action = self.response_processing.process(headers, frame_bridge, reply_channel, http_version, &self.overridable_modes).await;
+                            let action = self.response_processing.process(headers, frame_bridge, reply_channel, http_version, &self.overridable_modes);
                             run_action!(self, self.response_processing, action, "process_response");
                         }
                         _ => {
@@ -994,7 +994,7 @@ impl ExternalProcessingWorker<kind::Observability> {
                         Some(Ok(frame)) => {
                             // send the current frame and inject back into the body bridge...
                             debug!(target: "ext_proc", "sending body chunk of request ({})",  if frame.is_data() { "DATA" } else { "TRAILERS" });
-                            let action = self.request_processing.handle_outgoing_body_chunk(clone_frame(&frame), false).await;
+                            let action = self.request_processing.handle_outgoing_body_chunk(clone_frame(&frame), false);
                             run_action!(self, self.request_processing, action, "handle_body_chunk");
                             _ = self.request_processing.frame_bridge.inject_frame(Ok(frame)).await;
                             let action = Action::Return(ProcessingStatus::RequestReady(ReadyStatus::default()));
@@ -1009,7 +1009,7 @@ impl ExternalProcessingWorker<kind::Observability> {
                             debug!(target: "ext_proc", "request body stream ended!");
                             request_body_to_ext_proc_complete = true;
                             self.request_processing.end_of_stream = true;
-                            self.request_processing.frame_bridge_close(&mut self.timeout_state.active).await;
+                            self.request_processing.frame_bridge_close(&mut self.timeout_state.active);
                             let action = Action::Return(ProcessingStatus::RequestReady(ReadyStatus::default()));
                             run_action!(self, self.request_processing, action, "handle_body_chunk (end)");
                         }
@@ -1024,7 +1024,7 @@ impl ExternalProcessingWorker<kind::Observability> {
                         Some(Ok(frame)) => {
                             // send the current frame and inject back into the body bridge...
                             debug!(target: "ext_proc", "sending body chunk of request ({})",  if frame.is_data() { "DATA" } else { "TRAILERS" });
-                            let action = self.response_processing.handle_outgoing_body_chunk(clone_frame(&frame), false).await;
+                            let action = self.response_processing.handle_outgoing_body_chunk(clone_frame(&frame), false);
                             run_action!(self, self.response_processing, action, "handle_body_chunk");
                             _ = self.response_processing.frame_bridge.inject_frame(Ok(frame)).await;
                             let action = Action::Return(ProcessingStatus::RequestReady(ReadyStatus::default()));
@@ -1039,7 +1039,7 @@ impl ExternalProcessingWorker<kind::Observability> {
                             debug!(target: "ext_proc", "request body stream ended!");
                             request_body_to_ext_proc_complete = true;
                             self.response_processing.end_of_stream = true;
-                            self.response_processing.frame_bridge_close(&mut self.timeout_state.active).await;
+                            self.response_processing.frame_bridge_close(&mut self.timeout_state.active);
                             let action = Action::Return(ProcessingStatus::ResponseReady(ReadyStatus::default()));
                             run_action!(self, self.response_processing, action, "handle_body_chunk (end)");
                         }
@@ -1811,7 +1811,7 @@ mod tests {
         true
     }
 
-    async fn assert_result<M>(
+    fn assert_result<M>(
         test_case_num: i32,
         mock: &Mock<M>,
         headers: http::HeaderMap,
@@ -1944,8 +1944,7 @@ mod tests {
                             mock_state,
                             processing_mode,
                             status,
-                        )
-                        .await;
+                        );
                         test_case_num += 1;
                     }
                 }
@@ -1999,8 +1998,7 @@ mod tests {
                             mock_state,
                             processing_mode,
                             status,
-                        )
-                        .await;
+                        );
                         test_case_num += 1;
                     }
                 }

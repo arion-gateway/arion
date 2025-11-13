@@ -18,7 +18,9 @@
 use super::upgrade_utils;
 use crate::{event_error::EventFailure, listeners::synthetic_http_response::SyntheticHttpResponse, PolyBody};
 use http::{header, HeaderMap, HeaderName, HeaderValue, Method, Request, Response};
-use orion_configuration::config::{cluster::http_protocol_options::Codec, network_filters::http_connection_manager::XffSettings};
+use orion_configuration::config::{
+    cluster::http_protocol_options::Codec, network_filters::http_connection_manager::XffSettings,
+};
 use orion_http_header::{X_ENVOY_EXTERNAL_ADDRESS, X_ENVOY_INTERNAL, X_FORWARDED_FOR};
 use std::net::{IpAddr, SocketAddr};
 
@@ -85,12 +87,11 @@ pub fn strip_trailers_headers(http_version: Codec, headers: &mut HeaderMap) {
                         headers.remove(header::TE);
                     }
                 },
-                None => ()
+                None => (),
             }
-        }
+        },
     }
 }
-
 
 fn process_xff_headers<T>(request: &mut Request<T>, downstream_addr: SocketAddr, xff_settings: XffSettings) {
     let headers = request.headers_mut();

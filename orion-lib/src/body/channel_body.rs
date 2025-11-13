@@ -110,7 +110,7 @@ impl FrameBridge {
 
     /// Close the FrameBridge to prevent further frame injections.
     ///
-    pub async fn close(&mut self) {
+    pub fn close(&mut self) {
         self.injector.take();
     }
 
