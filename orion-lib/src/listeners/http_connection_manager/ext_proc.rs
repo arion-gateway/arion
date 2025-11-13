@@ -317,7 +317,7 @@ impl ExternalProcessor {
             ext_proc_headers = Some(self.filter_header_map(response.headers()));
         }
 
-        let body: PolyBody = std::mem::take(&mut response.body_mut());
+        let body: PolyBody = std::mem::take(response.body_mut());
 
         let ext_proc_frame_bridge = match (modes.body_mode(), modes.trailer_mode()) {
             (OverridableBodyMode::None, trailers_mode) => {
@@ -432,7 +432,7 @@ impl ExternalProcessor {
         let processing_message = ProcessingTask { data, reply_channel: response_tx, http_version: ver };
 
         let worker_channel = self.get_worker_channel();
-        worker_channel.send(processing_message).await.map(|_| response_rx)
+        worker_channel.send(processing_message).await.map(|()| response_rx)
     }
 
     fn on_filter_error(&mut self, msg: &str, error: Option<Error>, http_version: http::Version) -> FilterDecision {
@@ -542,18 +542,15 @@ impl From<EnvoyHeaderMap> for http::HeaderMap {
         let mut headers = http::HeaderMap::with_capacity(envoy_headers.0.headers.len());
 
         for header in envoy_headers.0.headers {
-            let header_name = match http::header::HeaderName::from_bytes(header.key.as_bytes()) {
-                Ok(name) => name,
-                Err(_) => continue,
-            };
+            let Ok(header_name) = http::header::HeaderName::from_bytes(header.key.as_bytes()) else { continue };
 
-            let header_value = if !header.value.is_empty() {
-                match http::header::HeaderValue::from_maybe_shared(header.value) {
+            let header_value = if header.value.is_empty() {
+                match http::header::HeaderValue::from_maybe_shared(header.raw_value) {
                     Ok(value) => value,
                     Err(_) => continue,
                 }
             } else {
-                match http::header::HeaderValue::from_maybe_shared(header.raw_value) {
+                match http::header::HeaderValue::from_maybe_shared(header.value) {
                     Ok(value) => value,
                     Err(_) => continue,
                 }
@@ -710,10 +707,8 @@ impl ExternalProcessingWorker<kind::Processing> {
                                     if let Some(reply_channel) = self.response_processing.reply_channel.take() {
                                         let _ = reply_channel.send(status);
                                     }
-                                } else {
-                                    if let Some(reply_channel) = self.request_processing.reply_channel.take() {
+                                } else if let Some(reply_channel) = self.request_processing.reply_channel.take() {
                                         let _ = reply_channel.send(status);
-                                    }
                                 }
                             }
                             debug!(target: "ext_proc", "immediate response processed - closing stream");

@@ -119,24 +119,19 @@ impl<K: kind::MsgType> OverridableModes<K> {
 
     pub fn should_process_headers(&self) -> bool {
         match self.header_mode.load(Ordering::Relaxed) {
-            OverridableHeaderMode::Default => true,
-            OverridableHeaderMode::Send => true,
+            OverridableHeaderMode::Default | OverridableHeaderMode::Send => true,
             OverridableHeaderMode::Skip => false,
         }
     }
 
     pub fn should_process_body(&self) -> bool {
-        match self.body_mode.load(Ordering::Relaxed) {
-            OverridableBodyMode::None => false,
-            _ => true,
-        }
+        !matches!(self.body_mode.load(Ordering::Relaxed), OverridableBodyMode::None)
     }
 
     pub fn should_process_trailers(&self) -> bool {
         match self.trailer_mode.load(Ordering::Relaxed) {
-            OverridableTrailerMode::Default => false,
+            OverridableTrailerMode::Default | OverridableTrailerMode::Skip => false,
             OverridableTrailerMode::Send => true,
-            OverridableTrailerMode::Skip => false,
         }
     }
 }
@@ -270,7 +265,7 @@ impl ModeSelector for kind::ResponseMsg {
 }
 
 pub trait OverridableModeSelector: Sized + kind::MsgType {
-    fn get<'a>(global_mode: &'a OverridableGlobalModes) -> &'a OverridableModes<Self>;
+    fn get(global_mode: &OverridableGlobalModes) -> &OverridableModes<Self>;
 }
 
 impl OverridableModeSelector for kind::RequestMsg {

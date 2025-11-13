@@ -2,11 +2,13 @@ use crate::PolyBody;
 
 use orion_data_plane_api::envoy_data_plane_api::envoy::service::ext_proc::v3::HeaderMutation;
 
+#[allow(clippy::large_enum_variant)]
 pub enum Action<P> {
     Send(P),
     Return(ProcessingStatus),
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum ProcessingStatus {
     RequestReady(ReadyStatus),
@@ -18,7 +20,7 @@ pub enum ProcessingStatus {
 impl ProcessingStatus {
     pub fn with_request_ready<F>(&mut self, f: F)
     where
-        F: FnOnce(&mut ReadyStatus) -> (),
+        F: FnOnce(&mut ReadyStatus),
     {
         if let ProcessingStatus::RequestReady(ready) = self {
             f(ready);
@@ -27,7 +29,7 @@ impl ProcessingStatus {
 
     pub fn with_response_ready<F>(&mut self, f: F)
     where
-        F: FnOnce(&mut ReadyStatus) -> (),
+        F: FnOnce(&mut ReadyStatus),
     {
         if let ProcessingStatus::ResponseReady(ready) = self {
             f(ready);

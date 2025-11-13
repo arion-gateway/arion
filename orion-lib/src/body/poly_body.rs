@@ -51,15 +51,15 @@ impl PolyBody {
     pub fn with_trailers(self, trailers: http::HeaderMap) -> Result<Self, PolyBodyError> {
         match self {
             PolyBody::Empty(e) => {
-                let ready = std::future::ready(Some(trailers).map(Ok::<_, Infallible>));
+                let ready = std::future::ready(Some(Ok::<_, Infallible>(trailers)));
                 Ok(PolyBody::EmptyWithTrailers(e.with_trailers(ready)))
             },
             PolyBody::Full(f) => {
-                let ready = std::future::ready(Some(trailers).map(Ok::<_, Infallible>));
+                let ready = std::future::ready(Some(Ok::<_, Infallible>(trailers)));
                 Ok(PolyBody::FullWithTrailers(f.with_trailers(ready)))
             },
             PolyBody::Collected(c) => {
-                let ready = std::future::ready(Some(trailers).map(Ok::<_, Infallible>));
+                let ready = std::future::ready(Some(Ok::<_, Infallible>(trailers)));
                 Ok(PolyBody::CollectedWithTrailers(c.with_trailers(ready)))
             },
             b => Err(PolyBodyError::Trailers(format!("{b:?}"))),
@@ -67,12 +67,9 @@ impl PolyBody {
     }
 
     pub async fn wait_frame(&mut self) {
-        match self {
-            PolyBody::ChannelBody(m) => {
-                m.wait_frame().await;
-            },
-            _ => { // No-op for other body types
-            },
+        if let PolyBody::ChannelBody(m) = self {
+            m.wait_frame().await;
+        } else { // No-op for other body types
         }
     }
 }
@@ -113,7 +110,7 @@ pub enum PolyBodyError {
     #[error(transparent)]
     Infallible(#[from] std::convert::Infallible),
     #[error(transparent)]
-    Grpc(#[from] GrpcError),
+    Grpc(#[from] Box<GrpcError>),
     #[error(transparent)]
     Boxed(#[from] Box<dyn std::error::Error + std::marker::Send + std::marker::Sync>),
     #[error("data was not received within the designated timeout")]
@@ -147,7 +144,7 @@ impl Body for PolyBody {
             PolyBodyProj::Full(f) => f.poll_frame(cx).map_err(Into::into),
             PolyBodyProj::Incoming(i) => i.poll_frame(cx).map_err(Into::into),
             PolyBodyProj::Timeout(t) => t.poll_frame(cx).map_err(Into::into),
-            PolyBodyProj::Grpc(g) => g.poll_frame(cx).map_err(Into::into),
+            PolyBodyProj::Grpc(g) => g.poll_frame(cx).map_err(|e| Into::into(Box::new(e))),
             PolyBodyProj::Stream(s) => {
                 s.poll_frame(cx).map_err(|e| PolyBodyError::Boxed(Box::new(std::io::Error::other(e.to_string()))))
             },

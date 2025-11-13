@@ -7,19 +7,19 @@ use std::task::{Context, Poll};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
+type ReciverFrameStream = ReceiverStream<Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>>;
+
 /// A wrapper for any Body that allows observing and modifying frames in real-time.
-///
 pub struct ChannelBody {
-    peekable_stream: Peekable<ReceiverStream<Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>>>,
+    peekable_stream: Peekable<ReciverFrameStream>,
 }
 
 impl ChannelBody {
-    /// Creates a new ChannelBody wrapping an existing body.
+    /// Creates a new `ChannelBody` wrapping an existing body.
     ///
-    /// Returns a tuple of (ChannelBody, FrameBridge). FrameBridge must be used
-    /// to inject frames (either manually or via `complete()`), otherwise the ChannelBody
+    /// Returns a tuple of (`ChannelBody`, `FrameBridge`). `FrameBridge` must be used
+    /// to inject frames (either manually or via `complete()`), otherwise the `ChannelBody`
     /// will never produce any frames.
-
     pub fn new<B>(body: B) -> (Self, FrameBridge)
     where
         B: Body<Data = Bytes> + Send + 'static,
@@ -71,15 +71,17 @@ impl Body for ChannelBody {
     }
 }
 
+type FrameResult = Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>;
+
 /// A stream that allows observing frames from a body and simultaneously
-/// injecting them into the ChannelBody.
+/// injecting them into the `ChannelBody`.
 ///
-/// The FrameBridge acts as a bridge between the original body and the ChannelBody.
-/// Frames read from the original body must be injected into the ChannelBody for it
+/// The `FrameBridge` acts as a bridge between the original body and the `ChannelBody`.
+/// Frames read from the original body must be injected into the `ChannelBody` for it
 /// to produce any output.
 pub struct FrameBridge {
-    body_stream: Pin<Box<dyn Stream<Item = Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>> + Send>>,
-    injector: Option<mpsc::Sender<Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>>>,
+    body_stream: Pin<Box<dyn Stream<Item = FrameResult> + Send>>,
+    injector: Option<mpsc::Sender<FrameResult>>,
 }
 
 impl std::fmt::Debug for FrameBridge {
@@ -101,21 +103,18 @@ impl FrameBridge {
         B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
     {
         // Convert the body into a stream using http_body_util and map errors to Box
-        let body_stream: Pin<
-            Box<dyn Stream<Item = Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>> + Send>,
-        > = Box::pin(http_body_util::BodyStream::new(body).map(|result| result.map_err(|e| e.into())));
+        let body_stream: Pin<Box<dyn Stream<Item = FrameResult> + Send>> =
+            Box::pin(http_body_util::BodyStream::new(body).map(|result| result.map_err(Into::into)));
 
         Self { body_stream, injector: Some(injector) }
     }
 
-    /// Close the FrameBridge to prevent further frame injections.
-    ///
+    /// Close the `FrameBridge` to prevent further frame injections.
     pub fn close(&mut self) {
         self.injector.take();
     }
 
-    /// Consumes the entire original body, injecting each frame into the ChannelBody.
-    ///
+    /// Consumes the entire original body, injecting each frame into the `ChannelBody`.
     pub async fn complete(&mut self) {
         let Some(injector) = &mut self.injector else {
             return;
@@ -128,9 +127,8 @@ impl FrameBridge {
         }
     }
 
-    /// Consumes the DATA frame of the entire original body, injecting each frame into the ChannelBody,
+    /// Consumes the DATA frame of the entire original body, injecting each frame into the `ChannelBody`,
     /// and returns when a non-DATA frame is encountered.
-    ///
     pub async fn complete_data(
         &mut self,
     ) -> Option<Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync + 'static>>> {
@@ -154,8 +152,7 @@ impl FrameBridge {
     }
 
     /// Consumes the entire original body by applying a transformation function
-    /// to each frame before injecting it into the ChannelBody.
-    ///
+    /// to each frame before injecting it into the `ChannelBody`.
     pub async fn complete_with<F>(mut self, mut transform: F)
     where
         F: FnMut(Frame<Bytes>) -> Frame<Bytes>,
@@ -174,16 +171,14 @@ impl FrameBridge {
     /// Gets the next frame from the original body stream.
     ///
     /// Returns None when the body is completely consumed.
-    ///
     pub async fn next_frame(&mut self) -> Option<Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>> {
         self.body_stream.as_mut().next().await
     }
 
-    /// Injects a frame into the ChannelBody.
+    /// Injects a frame into the `ChannelBody`.
     ///
-    /// Returns an error if the receiver has been dropped (i.e., the ChannelBody
+    /// Returns an error if the receiver has been dropped (i.e., the `ChannelBody`
     /// has been consumed or dropped).
-    ///
     pub async fn inject_frame(
         &mut self,
         frame: Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>,
@@ -194,10 +189,9 @@ impl FrameBridge {
         injector.send(frame).await
     }
 
-    /// Observes the next frame and automatically injects it into the ChannelBody.
+    /// Observes the next frame and automatically injects it into the `ChannelBody`.
     ///
     /// Returns a copy of the frame to allow observation, None when the body is completely consumed.
-    ///
     pub async fn observe_and_inject(
         &mut self,
     ) -> Option<Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>> {
@@ -256,7 +250,7 @@ mod tests {
         // Consume the channel body
         let frame = future::poll_fn(|cx| Pin::new(&mut channel_body).poll_frame(cx)).await.unwrap().unwrap();
 
-        if let Some(data) = frame.into_data().ok() {
+        if let Ok(data) = frame.into_data() {
             assert_eq!(data, Bytes::from("Hello, World!"));
         } else {
             panic!("Expected data frame");
@@ -298,7 +292,7 @@ mod tests {
         // Waker::noop() creates a waker that does nothing when woken.
         // This has been stable since Rust 1.58.
         let waker = Waker::noop();
-        Context::from_waker(&waker)
+        Context::from_waker(waker)
     }
 
     #[tokio::test]
@@ -317,6 +311,6 @@ mod tests {
         assert!(matches!(Pin::new(&mut channel_body).poll_frame(&mut ctx), Poll::Ready(Some(Ok(_)))));
         assert!(matches!(Pin::new(&mut channel_body).poll_frame(&mut ctx), Poll::Ready(None)));
 
-        println!("{:?}", channel_body);
+        println!("{channel_body:?}");
     }
 }

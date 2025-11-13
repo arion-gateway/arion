@@ -61,11 +61,11 @@ impl<M: kind::Mode> DerefMut for ResponseProcessing<M> {
     }
 }
 
+#[allow(clippy::struct_excessive_bools)]
 pub struct Processing<M: kind::Mode, Msg: kind::MsgType> {
     http_headers: Option<http::HeaderMap>,
     pub trailers: Option<http::HeaderMap>,
     pub frame_bridge: FrameBridge,
-
     pub reply_channel: Option<oneshot::Sender<ProcessingStatus>>,
     http_version: Option<http::Version>,
     send_body_without_waiting_for_header_response: bool,
@@ -116,8 +116,9 @@ impl<M: kind::Mode + Default> From<&ExternalProcessingWorkerConfig> for Response
 }
 
 impl Processing<kind::Processing, kind::RequestMsg> {
+    #[allow(clippy::unused_self)]
     pub fn apply_mode_overrides(
-        &mut self,
+        &self,
         envoy_mode: &EnvoyProcessingMode,
         allowed_override_modes: &[ProcessingMode],
         override_mode: &OverridableGlobalModes,
@@ -141,8 +142,9 @@ impl Processing<kind::Processing, kind::RequestMsg> {
 }
 
 impl Processing<kind::Processing, kind::ResponseMsg> {
+    #[allow(clippy::unused_self)]
     pub fn apply_mode_overrides(
-        &mut self,
+        &self,
         envoy_mode: &EnvoyProcessingMode,
         allowed_override_modes: &[ProcessingMode],
         override_mode: &OverridableGlobalModes,
@@ -283,22 +285,19 @@ impl<Msg: kind::MsgType + OverridableModeSelector> Processing<kind::Processing, 
                 ProcessingStatus::ResponseReady(ReadyStatus::default())
             };
 
-            match chunk_replacement {
-                Some(new_chunk) => {
-                    debug!(target: "ext_proc", "handle_body_response: chunk replacement -> {new_chunk:?}");
-                    _ = self.frame_bridge.inject_frame(Ok(new_chunk)).await;
-                    if !self.inflight_frames.is_empty() {
-                        self.inflight_frames.drain(0..1);
+            if let Some(new_chunk) = chunk_replacement {
+                debug!(target: "ext_proc", "handle_body_response: chunk replacement -> {new_chunk:?}");
+                _ = self.frame_bridge.inject_frame(Ok(new_chunk)).await;
+                if !self.inflight_frames.is_empty() {
+                    self.inflight_frames.drain(0..1);
+                }
+            } else {
+                debug!(target: "ext_proc", "handle_body_response: no chunk replacement requested");
+                if !self.inflight_frames.is_empty() {
+                    if let Some(frame) = self.inflight_frames.drain(0..1).next() {
+                        _ = self.frame_bridge.inject_frame(Ok(frame)).await;
                     }
-                },
-                None => {
-                    debug!(target: "ext_proc", "handle_body_response: no chunk replacement requested");
-                    if !self.inflight_frames.is_empty() {
-                        if let Some(frame) = self.inflight_frames.drain(0..1).next() {
-                            _ = self.frame_bridge.inject_frame(Ok(frame)).await;
-                        }
-                    }
-                },
+                }
             }
 
             if let Some(route_cache_action) = route_cache_action {
@@ -336,11 +335,11 @@ impl<Msg: kind::MsgType + OverridableModeSelector> Processing<kind::Processing, 
                 self.frame_bridge_close(timeout_active);
             }
 
-            return Action::Return(status);
+            Action::Return(status)
         } else {
-            return Action::Return(
+            Action::Return(
                 self.status_error("handle_body_response: No response data in body response", self.failure_mode_allow),
-            );
+            )
         }
     }
 
@@ -368,19 +367,19 @@ impl<Msg: kind::MsgType + OverridableModeSelector> Processing<kind::Processing, 
                 ProcessingStatus::ResponseReady(ReadyStatus::default())
             };
 
-            return Action::Return(status);
+            Action::Return(status)
         } else {
             debug!(target: "ext_proc", "frame bridge closed (handle trailers response)!");
             self.frame_bridge_close(timeout_active);
-
-            return Action::Return(
+            Action::Return(
                 self.status_error("handle_trailers_response: No trailers to process", self.failure_mode_allow),
-            );
+            )
         }
     }
 
     #[must_use = "must handle the returned Action"]
-    pub fn handle_noop_response(&mut self, ctor: fn(ReadyStatus) -> ProcessingStatus) -> Action<ProcessingRequest> {
+    #[allow(clippy::unused_self)]
+    pub fn handle_noop_response(&self, ctor: fn(ReadyStatus) -> ProcessingStatus) -> Action<ProcessingRequest> {
         let status = ctor(ReadyStatus::default());
         Action::Return(status)
     }
@@ -388,6 +387,7 @@ impl<Msg: kind::MsgType + OverridableModeSelector> Processing<kind::Processing, 
 
 impl<M: kind::Mode + Default, Msg: kind::MsgType + OverridableModeSelector> Processing<M, Msg> {
     #[must_use = "must handle the returned Action"]
+    #[allow(clippy::too_many_arguments)]
     pub fn process(
         &mut self,
         headers: Option<http::HeaderMap>,
@@ -545,7 +545,7 @@ impl<M: kind::Mode + Default, Msg: kind::MsgType + OverridableModeSelector> Proc
     }
 
     pub fn status_timeout(&mut self, failure_mode_allow: bool) -> ProcessingStatus {
-        let status = if failure_mode_allow {
+        if failure_mode_allow {
             ProcessingStatus::HaltedOnError
         } else {
             let http_version = self.http_version.unwrap_or(http::Version::HTTP_11);
@@ -556,12 +556,11 @@ impl<M: kind::Mode + Default, Msg: kind::MsgType + OverridableModeSelector> Proc
                 )
                 .into_response(http_version),
             )
-        };
-        status
+        }
     }
 
     pub fn status_error(&mut self, msg: &str, failure_mode_allow: bool) -> ProcessingStatus {
-        let status = if failure_mode_allow {
+        if failure_mode_allow {
             ProcessingStatus::HaltedOnError
         } else {
             let http_version = self.http_version.unwrap_or(http::Version::HTTP_11);
@@ -573,8 +572,7 @@ impl<M: kind::Mode + Default, Msg: kind::MsgType + OverridableModeSelector> Proc
                 )
                 .into_response(http_version),
             )
-        };
-        status
+        }
     }
 
     pub fn frame_bridge_close(&mut self, timeout_active: &mut bool) {
