@@ -1472,7 +1472,7 @@ mod tests {
             },
             processing_mode: Some(processing_mode),
             observability_mode,
-            failure_mode_allow: true,
+            failure_mode_allow: false,
             disable_immediate_response: false,
             forward_rules: None,
             mutation_rules: None,
@@ -1821,7 +1821,6 @@ mod tests {
         trailers: &http::HeaderMap,
         mock_state: &MockExternalProcessorState,
         processing_mode: &ProcessingMode,
-        _status: ResponseStatus,
     ) where
         M: std::fmt::Debug + MsgType + ModeSelector,
     {
@@ -1906,6 +1905,7 @@ mod tests {
     async fn test_request_combinatorial_modes_continue() {
         let status = ResponseStatus::Continue;
         let is_response = false;
+        let observability_mode = false;
         let mut test_case_num = 0;
 
         let mock_states = generate_mock_external_processors_states(status, is_response);
@@ -1918,11 +1918,13 @@ mod tests {
                     if validate_mock_server_configuration(mock_request, processing_mode, mock_state) {
                         debug!(target: "ext_proc_tests", "Test case #: {test_case_num}");
                         let (server_addr, server_handle) = start_mock_server(mock_state.clone()).await;
-                        let config = create_config_for_ext_proc_filter(server_addr, processing_mode.clone(), false);
+                        let config =
+                            create_config_for_ext_proc_filter(server_addr, processing_mode.clone(), observability_mode);
                         let mut ext_proc = ExternalProcessor::from(config);
                         let mut request = build_request_from_mock(mock_request);
-                        let _result = ext_proc.apply_request(&mut request).await;
+                        let result = ext_proc.apply_request(&mut request).await;
                         server_handle.abort();
+                        assert!(matches!(result, FilterDecision::Continue));
 
                         let (parts, body) = request.into_parts();
                         let request_headers = parts.headers;
@@ -1945,7 +1947,6 @@ mod tests {
                             &request_trailers,
                             mock_state,
                             processing_mode,
-                            status,
                         );
                         test_case_num += 1;
                     }
@@ -1960,6 +1961,7 @@ mod tests {
     async fn test_response_combinatorial_modes_continue() {
         let status = ResponseStatus::Continue;
         let is_response = true;
+        let observability_mode = false;
         let mut test_case_num = 0;
 
         let mock_states = generate_mock_external_processors_states(status, is_response);
@@ -1972,11 +1974,13 @@ mod tests {
                     if validate_mock_server_configuration(mock_response, processing_mode, mock_state) {
                         debug!(target: "ext_proc_tests", "Test case #: {test_case_num}");
                         let (server_addr, server_handle) = start_mock_server(mock_state.clone()).await;
-                        let config = create_config_for_ext_proc_filter(server_addr, processing_mode.clone(), false);
+                        let config =
+                            create_config_for_ext_proc_filter(server_addr, processing_mode.clone(), observability_mode);
                         let mut ext_proc = ExternalProcessor::from(config);
                         let mut response = build_response_from_mock(mock_response);
-                        let _result = ext_proc.apply_response(&mut response).await;
+                        let result = ext_proc.apply_response(&mut response).await;
                         server_handle.abort();
+                        assert!(matches!(result, FilterDecision::Continue));
 
                         let (parts, body) = response.into_parts();
                         let response_headers = parts.headers;
@@ -1999,10 +2003,115 @@ mod tests {
                             &response_trailers,
                             mock_state,
                             processing_mode,
-                            status,
                         );
                         test_case_num += 1;
                     }
+                }
+            }
+        }
+        println!("Total test cases executed: {test_case_num}");
+    }
+
+    #[tokio::test]
+    #[test_log::test]
+    async fn test_request_combinatorial_modes_observability() {
+        let is_response = false;
+        let observability_mode = true;
+        let mut test_case_num = 0;
+
+        let mock_state = MockExternalProcessorState::new();
+        let processing_modes = generate_processing_mode_configurations(is_response);
+        let mock_requests = generate_mock_messages::<RequestMsg>();
+
+        for processing_mode in &processing_modes {
+            for mock_request in &mock_requests {
+                if validate_mock_server_configuration(mock_request, processing_mode, &mock_state) {
+                    debug!(target: "ext_proc_tests", "Test case #: {test_case_num}");
+                    let (server_addr, server_handle) = start_mock_server(mock_state.clone()).await;
+                    let config =
+                        create_config_for_ext_proc_filter(server_addr, processing_mode.clone(), observability_mode);
+                    let mut ext_proc = ExternalProcessor::from(config);
+                    let mut request = build_request_from_mock(mock_request);
+                    let result = ext_proc.apply_request(&mut request).await;
+                    server_handle.abort();
+                    assert!(matches!(result, FilterDecision::Continue));
+
+                    let (parts, body) = request.into_parts();
+                    let request_headers = parts.headers;
+                    let collected = body.collect().await.unwrap();
+                    let request_trailers = if let Some(trailers) = collected.trailers() {
+                        trailers.clone()
+                    } else {
+                        http::HeaderMap::default()
+                    };
+                    let request_body = match collected.to_bytes() {
+                        b if b.is_empty() => None,
+                        b => Some(b),
+                    };
+
+                    assert_result(
+                        test_case_num,
+                        mock_request,
+                        &request_headers,
+                        request_body.as_ref(),
+                        &request_trailers,
+                        &mock_state,
+                        processing_mode,
+                    );
+                    test_case_num += 1;
+                }
+            }
+        }
+        println!("Total test cases executed: {test_case_num}");
+    }
+
+    #[tokio::test]
+    #[test_log::test]
+    async fn test_response_combinatorial_modes_observability() {
+        let is_response = true;
+        let observability_mode = true;
+        let mut test_case_num = 0;
+
+        let mock_state = MockExternalProcessorState::new();
+        let processing_modes = generate_processing_mode_configurations(is_response);
+        let mock_responses = generate_mock_messages::<ResponseMsg>();
+
+        for processing_mode in &processing_modes {
+            for mock_response in &mock_responses {
+                if validate_mock_server_configuration(mock_response, processing_mode, &mock_state) {
+                    debug!(target: "ext_proc_tests", "Test case #: {test_case_num}");
+                    let (server_addr, server_handle) = start_mock_server(mock_state.clone()).await;
+                    let config =
+                        create_config_for_ext_proc_filter(server_addr, processing_mode.clone(), observability_mode);
+                    let mut ext_proc = ExternalProcessor::from(config);
+                    let mut response = build_response_from_mock(mock_response);
+                    let result = ext_proc.apply_response(&mut response).await;
+                    server_handle.abort();
+                    assert!(matches!(result, FilterDecision::Continue));
+
+                    let (parts, body) = response.into_parts();
+                    let response_headers = parts.headers;
+                    let collected = body.collect().await.unwrap();
+                    let response_trailers = if let Some(trailers) = collected.trailers() {
+                        trailers.clone()
+                    } else {
+                        http::HeaderMap::default()
+                    };
+                    let response_body = match collected.to_bytes() {
+                        b if b.is_empty() => None,
+                        b => Some(b),
+                    };
+
+                    assert_result(
+                        test_case_num,
+                        mock_response,
+                        &response_headers,
+                        response_body.as_ref(),
+                        &response_trailers,
+                        &mock_state,
+                        processing_mode,
+                    );
+                    test_case_num += 1;
                 }
             }
         }
@@ -2315,5 +2424,31 @@ mod tests {
         assert_eq!(response.headers().get("x-stream-processed").unwrap(), "true");
         let body_bytes = &mut response.body_mut().collect().await.unwrap().to_bytes();
         assert_eq!(body_bytes, "body data from external processor".as_bytes());
+    }
+
+    #[tokio::test]
+    #[test_log::test]
+    async fn test_response_body_streaming_mode_observability() {
+        let mock_state = MockExternalProcessorState::new();
+        let (server_addr, _) = start_mock_server(mock_state).await;
+        let processing_mode = ProcessingMode {
+            request_header_mode: HeaderProcessingMode::Skip,
+            request_body_mode: BodyProcessingMode::None,
+            request_trailer_mode: TrailerProcessingMode::Skip,
+            response_header_mode: HeaderProcessingMode::Send,
+            response_body_mode: BodyProcessingMode::Streamed,
+            response_trailer_mode: TrailerProcessingMode::Skip,
+        };
+
+        let config = create_config_for_ext_proc_filter(server_addr, processing_mode, true);
+        let mut ext_proc = ExternalProcessor::from(config);
+
+        let mut response =
+            build_response_from_mock(&Mock::<ResponseMsg>::new(vec![], Some("streaming body data"), vec![]));
+        let result = ext_proc.apply_response(&mut response).await;
+
+        assert!(matches!(result, FilterDecision::Continue));
+        let body_bytes = &mut response.body_mut().collect().await.unwrap().to_bytes();
+        assert_eq!(body_bytes, "streaming body data".as_bytes());
     }
 }

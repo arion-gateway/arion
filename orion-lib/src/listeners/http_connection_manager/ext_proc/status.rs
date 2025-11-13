@@ -3,6 +3,7 @@ use crate::PolyBody;
 use orion_data_plane_api::envoy_data_plane_api::envoy::service::ext_proc::v3::HeaderMutation;
 
 #[allow(clippy::large_enum_variant)]
+#[derive(Debug)]
 pub enum Action<P> {
     Send(P),
     Return(ProcessingStatus),
