@@ -1209,6 +1209,7 @@ mod tests {
     use super::*;
     use crate::{body::{body_with_metrics::BodyWithMetrics, response_flags::BodyKind}, listeners::http_connection_manager::ext_proc::{kind::{MsgType, RequestMsg, ResponseMsg}, r#override::ModeSelector}};
     use http::{Method, Version};
+    use http_body::Body;
     use http_body_util::{BodyExt, Empty, Full};
     use orion_configuration::config::network_filters::http_connection_manager::http_filters::ext_proc::{
         BodyProcessingMode, ExternalProcessor as ExternalProcessorConfig, GoogleGrpc, GrpcService,
@@ -1665,12 +1666,12 @@ mod tests {
     static REQUEST_BODIES: [Option<&str>; 2] = [None, Some("original body")];
     static REQUEST_TRAILERS: [Option<(&str, &str)>; 2] = [None, Some(("x-custom-trailer", "original trailer value"))];
 
-    fn generate_mock_requests() -> Vec<Mock<RequestMsg>> {
+    fn generate_mock_messages<M : MsgType>() -> Vec<Mock<M>> {
         REQUEST_HEADERS
             .iter()
             .flat_map(|&headers| {
                 REQUEST_BODIES.iter().flat_map(move |&body| {
-                    REQUEST_TRAILERS.iter().map(move |&trailers| Mock::<RequestMsg> {
+                    REQUEST_TRAILERS.iter().map(move |&trailers| Mock::<M> {
                         headers: vec![headers],
                         body,
                         trailers: vec![trailers],
@@ -1801,15 +1802,19 @@ mod tests {
         true
     }
 
-    async fn assert_request_result<M: std::fmt::Debug + MsgType + ModeSelector>(
+
+    async fn assert_request_result<M>(
         test_case_num: i32,
         mock: &Mock<M>,
-        request: Request<BodyWithMetrics<PolyBody>>,
+        headers: http::HeaderMap,
+        body: Option<Bytes>,
+        trailers: http::HeaderMap,
         mock_state: &MockExternalProcessorState,
         processing_mode: &ProcessingMode,
         _status: ResponseStatus,
-        _is_response: bool,
-    ) {
+    )
+        where M: std::fmt::Debug + MsgType + ModeSelector,
+    {
         // ProcessingMode predicates
         let has_headers = transform(mock.headers.clone()).is_some();
         let has_body = mock.body.is_some();
@@ -1848,31 +1853,20 @@ mod tests {
             }
         }
 
-        // Extract parts from modified request
-        let (parts, body) = request.into_parts();
-        let request_headers = parts.headers;
-        let collected = body.collect().await.unwrap();
-        let request_trailers =
-            if let Some(trailers) = collected.trailers() { trailers.clone() } else { http::HeaderMap::default() };
-        let request_body = match collected.to_bytes() {
-            b if b.is_empty() => None,
-            b => Some(b),
-        };
-
         assert_eq!(
-            request_headers, expected_headers,
-            "test_case #: {}, original request {:#?}, ext_proc server conf: {:#?}, ext_proc_filter processing mode: {:#?}",
-            test_case_num, mock, mock_state, processing_mode
+            headers, expected_headers,
+            "test_case #: {}, original {} {:#?}, ext_proc server conf: {:#?}, ext_proc_filter processing mode: {:#?}",
+            test_case_num, <M as MsgType>::NAME, mock, mock_state, processing_mode
         );
         assert_eq!(
-            request_body, expected_body,
-            "test_case #: {}, original request {:#?}, ext_proc server conf: {:#?}, ext_proc_filter processing mode: {:#?}",
-            test_case_num, mock, mock_state, processing_mode
+            body, expected_body,
+            "test_case #: {}, original {} {:#?}, ext_proc server conf: {:#?}, ext_proc_filter processing mode: {:#?}",
+            test_case_num, <M as MsgType>::NAME, mock, mock_state, processing_mode
         );
         assert_eq!(
-            request_trailers, expected_trailers,
-            "test_case #: {}, original request {:#?}, ext_proc server conf: {:#?}, ext_proc_filter processing mode: {:#?}",
-            test_case_num, mock, mock_state, processing_mode
+            trailers, expected_trailers,
+            "test_case #: {}, original {} {:#?}, ext_proc server conf: {:#?}, ext_proc_filter processing mode: {:#?}",
+            test_case_num, <M as MsgType>::NAME, mock, mock_state, processing_mode
         );
     }
 
@@ -1885,7 +1879,7 @@ mod tests {
 
         let mock_states = generate_mock_external_processors_states(status, is_response);
         let processing_modes = generate_processing_mode_configurations(is_response);
-        let mock_requests = generate_mock_requests();
+        let mock_requests = generate_mock_messages::<RequestMsg>();
 
         for mock_state in &mock_states {
             for processing_mode in &processing_modes {
@@ -1899,14 +1893,79 @@ mod tests {
                         let mut request = build_request_from_mock(mock_request);
                         let _result = ext_proc.apply_request(&mut request).await;
                         server_handle.abort();
+
+                        let (parts, body) = request.into_parts();
+                        let request_headers = parts.headers;
+                        let collected = body.collect().await.unwrap();
+                        let request_trailers =
+                            if let Some(trailers) = collected.trailers() { trailers.clone() } else { http::HeaderMap::default() };
+                        let request_body = match collected.to_bytes() {
+                            b if b.is_empty() => None,
+                            b => Some(b),
+                        };
+
                         assert_request_result(
                             test_case_num,
                             mock_request,
-                            request,
+                            request_headers,
+                            request_body,
+                            request_trailers,
                             mock_state,
                             processing_mode,
                             status,
-                            is_response,
+                        )
+                        .await;
+                        test_case_num += 1;
+                    }
+                }
+            }
+        }
+        println!("Total test cases executed: {test_case_num}");
+    }
+
+    #[tokio::test]
+    #[test_log::test]
+    async fn test_response_combinatorial_modes_continue() {
+        let status = ResponseStatus::Continue;
+        let is_response = true;
+        let mut test_case_num = 0;
+
+        let mock_states = generate_mock_external_processors_states(status, is_response);
+        let processing_modes = generate_processing_mode_configurations(is_response);
+        let mock_responses = generate_mock_messages::<ResponseMsg>();
+
+        for mock_state in &mock_states {
+            for processing_mode in &processing_modes {
+                for mock_response in &mock_responses {
+                    if validate_mock_server_configuration(&mock_response, processing_mode, mock_state) {
+                        debug!(target: "ext_proc_tests", "Test case #: {test_case_num}");
+                        let (server_addr, server_handle) = start_mock_server(mock_state.clone()).await;
+                        let config =
+                            create_config_for_ext_proc_filter(server_addr, processing_mode.clone(), is_response);
+                        let mut ext_proc = ExternalProcessor::from(config);
+                        let mut response = build_response_from_mock(mock_response);
+                        let _result = ext_proc.apply_response(&mut response).await;
+                        server_handle.abort();
+
+                        let (parts, body) = response.into_parts();
+                        let response_headers = parts.headers;
+                        let collected = body.collect().await.unwrap();
+                        let response_trailers =
+                            if let Some(trailers) = collected.trailers() { trailers.clone() } else { http::HeaderMap::default() };
+                        let response_body = match collected.to_bytes() {
+                            b if b.is_empty() => None,
+                            b => Some(b),
+                        };
+
+                        assert_request_result(
+                            test_case_num,
+                            mock_response,
+                            response_headers,
+                            response_body,
+                            response_trailers,
+                            mock_state,
+                            processing_mode,
+                            status,
                         )
                         .await;
                         test_case_num += 1;

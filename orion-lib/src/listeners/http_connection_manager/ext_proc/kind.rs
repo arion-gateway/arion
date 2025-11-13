@@ -24,15 +24,19 @@ pub struct ResponseMsg {}
 pub trait MsgType {
     const IS_REQUEST: bool;
     #[allow(dead_code)]
-    const IS_RESPONSE: bool;
+    const IS_RESPONSE: bool = !Self::IS_REQUEST;
+    #[allow(dead_code)]
+    const NAME: &'static str = if Self::IS_REQUEST {
+        "request"
+    } else {
+        "response"
+    };
 }
 
 impl MsgType for RequestMsg {
     const IS_REQUEST: bool = true;
-    const IS_RESPONSE: bool = false;
 }
 
 impl MsgType for ResponseMsg {
     const IS_REQUEST: bool = false;
-    const IS_RESPONSE: bool = true;
 }
