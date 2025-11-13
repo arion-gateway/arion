@@ -282,24 +282,28 @@ impl ExternalProcessor {
                 FilterDecision::Continue
             },
             Ok(ProcessingStatus::ResponseReady(ReadyStatus { .. })) => {
-                debug!(target: "ext_proc", "apply_request: unexpected ResponseReady...");
+                error!(target: "ext_proc", "apply_request: unexpected ResponseReady...");
                 return self.on_filter_error(
                     "Unexpected ResponseReady status received during request processing",
                     None,
                     request.version(),
                 );
             },
-            Err(e) => self.on_filter_error(
-                format!("External processor request processing: {e:?}").as_str(),
-                Some(e.into()),
-                request.version(),
-            ),
+            Err(e) => {
+                error!(target: "ext_proc", "{e}");
+                self.on_filter_error(
+                    format!("External processor request processing: {e:?}").as_str(),
+                    Some(e.into()),
+                    request.version(),
+                )
+            },
         };
 
         debug!(target: "ext_proc", "apply_request: complete ({res:?})!");
         res
     }
 
+    #[allow(clippy::too_many_lines)]
     pub async fn apply_response(&mut self, response: &mut Response<PolyBody>) -> FilterDecision {
         let modes = &self.overridable_modes.response;
         let process_headers = modes.should_process_headers();
@@ -396,18 +400,21 @@ impl ExternalProcessor {
                 FilterDecision::Continue
             },
             Ok(ProcessingStatus::RequestReady(ReadyStatus { .. })) => {
-                debug!(target: "ext_proc", "apply_response: unexpected RequestReady...");
+                error!(target: "ext_proc", "apply_response: unexpected RequestReady...");
                 return self.on_filter_error(
                     "Unexpected RequestReady status received during response processing",
                     None,
                     response.version(),
                 );
             },
-            Err(e) => self.on_filter_error(
-                format!("External processor response processing: {e:?}").as_str(),
-                Some(e.into()),
-                response.version(),
-            ),
+            Err(e) => {
+                error!(target: "ext_proc", "{e}");
+                self.on_filter_error(
+                    format!("External processor response processing: {e:?}").as_str(),
+                    Some(e.into()),
+                    response.version(),
+                )
+            },
         };
 
         debug!(target: "ext_proc", "apply_response completed: {res:?}!");
