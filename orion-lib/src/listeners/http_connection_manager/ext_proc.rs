@@ -1000,7 +1000,7 @@ impl ExternalProcessingWorker<kind::Observability> {
                             run_action!(self, self.request_processing, action, "handle_body_chunk");
                             _ = self.request_processing.frame_bridge.inject_frame(Ok(frame)).await;
                             let action = Action::Return(ProcessingStatus::RequestReady(ReadyStatus::default()));
-                            run_action!(self, self.request_processing, action, "handle_body_chunk (end)");
+                            run_action!(self, self.request_processing, action, "handle_body_chunk (returning after first chunk)");
                         },
                         Some(Err(_err)) => {
                             request_body_to_ext_proc_complete = true;
@@ -1029,8 +1029,8 @@ impl ExternalProcessingWorker<kind::Observability> {
                             let action = self.response_processing.handle_outgoing_body_chunk(clone_frame(&frame), false);
                             run_action!(self, self.response_processing, action, "handle_body_chunk");
                             _ = self.response_processing.frame_bridge.inject_frame(Ok(frame)).await;
-                            let action = Action::Return(ProcessingStatus::RequestReady(ReadyStatus::default()));
-                            run_action!(self, self.request_processing, action, "handle_body_chunk (end)");
+                            let action = Action::Return(ProcessingStatus::ResponseReady(ReadyStatus::default()));
+                            run_action!(self, self.response_processing, action, "handle_body_chunk (returning after first chunk)");
                         },
                         Some(Err(_err)) => {
                             response_body_to_ext_proc_complete = true;
@@ -1039,7 +1039,7 @@ impl ExternalProcessingWorker<kind::Observability> {
                         },
                         None => {
                             debug!(target: "ext_proc", "request body stream ended!");
-                            request_body_to_ext_proc_complete = true;
+                            response_body_to_ext_proc_complete = true;
                             self.response_processing.end_of_stream = true;
                             self.response_processing.frame_bridge_close(&mut self.timeout_state.active);
                             let action = Action::Return(ProcessingStatus::ResponseReady(ReadyStatus::default()));
