@@ -1,7 +1,7 @@
 use http::Response;
 use orion_format::types::ResponseFlags as FmtResponseFlags;
 use orion_interner::StringInterner;
-use smol_str::{SmolStr};
+use smol_str::SmolStr;
 use std::error::Error as ErrorTrait;
 use std::io;
 use tokio::time::error::Elapsed;
@@ -85,7 +85,9 @@ impl EventKind {
                 EventFailure::NoHealthyUpstream => Some(ResponseCodeDetails("no_healthy_upstream")),
                 EventFailure::RouteNotFound => Some(ResponseCodeDetails("route_not_found")),
                 EventFailure::UpgradeFailed => Some(ResponseCodeDetails("upgrade_failed")),
-                EventFailure::RbacAccessDenied(id) => Some(ResponseCodeDetails(format!("rbac_access_denied[{id}]").to_static_str())),
+                EventFailure::RbacAccessDenied(id) => {
+                    Some(ResponseCodeDetails(format!("rbac_access_denied[{id}]").to_static_str()))
+                },
                 EventFailure::RateLimited => Some(ResponseCodeDetails("rate_limited")),
                 EventFailure::ExtProcError => Some(ResponseCodeDetails("ext_proc_error")),
                 EventFailure::ViaUpstream => Some(ResponseCodeDetails("via_upstream")),
@@ -102,9 +104,9 @@ impl EventKind {
                 _ => None,
             },
             EventKind::Failure(fail) => match fail {
-                EventFailure::RbacAccessDenied(id) => {
-                    Some(ConnectionTerminationDetails(format!("rbac_access_denied_matched_policy[{id}]").to_static_str()))
-                },
+                EventFailure::RbacAccessDenied(id) => Some(ConnectionTerminationDetails(
+                    format!("rbac_access_denied_matched_policy[{id}]").to_static_str(),
+                )),
                 _ => None,
             },
         }
