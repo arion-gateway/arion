@@ -34,7 +34,8 @@ use crate::{
     },
     secrets::{TlsConfigurator, TransportSecret, WantsToBuildClient},
     transport::{
-        GrpcService, HttpChannel, HttpChannelBuilder, TcpChannelConnector, UpstreamTransportSocketConfigurator,
+        GrpcService, HttpChannel, HttpChannelBuilder, HttpChannels, TcpChannelConnector,
+        UpstreamTransportSocketConfigurator,
     },
     Result,
 };
@@ -165,10 +166,14 @@ impl ClusterOps for OriginalDstCluster {
         // ORIGINAL_DST clusters do not support health checks
     }
 
-    fn get_http_connection(&mut self, context: RoutingContext) -> Result<HttpChannel> {
+    fn get_http_connection(&mut self, context: RoutingContext) -> Result<HttpChannels> {
         match context {
-            RoutingContext::Authority(authority) => self.get_http_connection_by_authority(authority),
-            RoutingContext::Header(header_value) => self.get_http_connection_by_header(header_value),
+            RoutingContext::Authority(authority) => {
+                self.get_http_connection_by_authority(authority).map(HttpChannels::Single)
+            },
+            RoutingContext::Header(header_value) => {
+                self.get_http_connection_by_header(header_value).map(HttpChannels::Single)
+            },
             _ => Err(format!("ORIGINAL_DST cluster {} requires authority or header routing context", self.name).into()),
         }
     }
@@ -443,6 +448,7 @@ mod tests {
     use crate::secrets::SecretManager;
     use orion_configuration::config::cluster::{
         http_protocol_options::Codec, Cluster as ClusterConfig, ClusterDiscoveryType, LbPolicy, OriginalDstConfig,
+        StandardLbPolicy,
     };
     use std::str::FromStr;
 
@@ -461,7 +467,7 @@ mod tests {
             cleanup_interval,
             transport_socket: None,
             bind_device: None,
-            load_balancing_policy: LbPolicy::ClusterProvided,
+            load_balancing_policy: LbPolicy::Standard(StandardLbPolicy::ClusterProvided),
             http_protocol_options: HttpProtocolOptions::default(),
             health_check: None,
             connect_timeout: None,
@@ -483,8 +489,8 @@ mod tests {
         let mut cluster = build_original_dst_cluster(config);
 
         let authority = Authority::from_str("localhost:52000").unwrap();
-        let channel1 = cluster.get_http_connection(RoutingContext::Authority(authority.clone())).unwrap();
-        let channel2 = cluster.get_http_connection(RoutingContext::Authority(authority)).unwrap();
+        let channel1 = cluster.get_http_connection_by_authority(authority.clone()).unwrap();
+        let channel2 = cluster.get_http_connection_by_authority(authority).unwrap();
         assert_eq!(channel1.upstream_authority, channel2.upstream_authority);
         assert_eq!(cluster.endpoints.len(), 1);
 
@@ -501,7 +507,7 @@ mod tests {
         );
 
         let header_value = HeaderValue::from_str("localhost:52000").unwrap();
-        let channel = cluster.get_http_connection(RoutingContext::Header(&header_value)).unwrap();
+        let channel = cluster.get_http_connection_by_header(&header_value).unwrap();
         assert_eq!(channel.upstream_authority.as_str(), "localhost:50001");
 
         let http_no_dest = cluster.get_http_connection(RoutingContext::None);

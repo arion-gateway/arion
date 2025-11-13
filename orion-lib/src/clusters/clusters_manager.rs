@@ -27,7 +27,7 @@ use crate::{
     body::body_with_metrics::BodyWithMetrics,
     clusters::cluster::{ClusterOps, PartialClusterType},
     secrets::TransportSecret,
-    transport::{GrpcService, HttpChannel, TcpChannelConnector},
+    transport::{GrpcService, HttpChannel, HttpChannels, TcpChannelConnector},
     Result,
 };
 use http::{uri::Authority, HeaderName, HeaderValue, Request};
@@ -49,6 +49,7 @@ pub enum RoutingRequirement {
     Header(HeaderName),
     Authority,
     Hash,
+    OverrideHost { header: HeaderName, fallback_requires_hash: bool },
 }
 
 pub enum RoutingContext<'a> {
@@ -56,6 +57,7 @@ pub enum RoutingContext<'a> {
     Header(&'a HeaderValue),
     Authority(Authority),
     Hash(HashState<'a>),
+    OverrideHost { header: &'a HeaderValue, fallback_hash: Option<HashState<'a>> },
 }
 
 impl<'a> TryFrom<(&'a RoutingRequirement, &'a Request<BodyWithMetrics<PolyBody>>, HashState<'a>)>
@@ -68,6 +70,16 @@ impl<'a> TryFrom<(&'a RoutingRequirement, &'a Request<BodyWithMetrics<PolyBody>>
     ) -> std::result::Result<Self, Self::Error> {
         let (routing_requirement, request, hash_state) = value;
         match routing_requirement {
+            RoutingRequirement::OverrideHost { header, fallback_requires_hash } => {
+                if let Some(header_value) = request.headers().get(header) {
+                    let fallback_hash = fallback_requires_hash.then_some(hash_state);
+                    Ok(RoutingContext::OverrideHost { header: header_value, fallback_hash })
+                } else if *fallback_requires_hash {
+                    Ok(RoutingContext::Hash(hash_state))
+                } else {
+                    Ok(RoutingContext::None)
+                }
+            },
             RoutingRequirement::Header(header_name) => {
                 let header_value = request
                     .headers()
@@ -116,7 +128,7 @@ pub fn change_cluster_load_assignment(name: &str, cla: &PartialClusterLoadAssign
                         .with_transport_socket(dynamic_cluster.transport_socket.clone())
                         .with_cluster_name(dynamic_cluster.name)
                         .with_bind_device(dynamic_cluster.bind_device.clone())
-                        .with_lb_policy(dynamic_cluster.load_balancing_policy)
+                        .with_lb_policy(dynamic_cluster.load_balancing_policy.clone())
                         .prepare();
                     cla.build().map(|cla| dynamic_cluster.change_load_assignment(Some(cla)))?;
                     Ok(cluster.clone())
@@ -211,7 +223,7 @@ pub fn get_all_clusters() -> Vec<ClusterConfig> {
     CLUSTERS_MAP.get_clone().0.values().by_ref().filter_map(|cluster| ClusterConfig::try_from(cluster).ok()).collect()
 }
 
-pub fn get_http_connection(cluster_id: ClusterID, context: RoutingContext) -> Result<HttpChannel> {
+pub fn get_http_connection(cluster_id: ClusterID, context: RoutingContext) -> Result<HttpChannels> {
     with_cluster(cluster_id, |cluster| cluster.get_http_connection(context))
 }
 
