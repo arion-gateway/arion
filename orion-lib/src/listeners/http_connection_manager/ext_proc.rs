@@ -1207,8 +1207,8 @@ impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::body::{body_with_metrics::BodyWithMetrics, response_flags::BodyKind};
-    use http::{Method, Request, Version};
+    use crate::{body::{body_with_metrics::BodyWithMetrics, response_flags::BodyKind}, listeners::http_connection_manager::ext_proc::{kind::{MsgType, RequestMsg, ResponseMsg}, r#override::ModeSelector}};
+    use http::{Method, Version};
     use http_body_util::{BodyExt, Empty, Full};
     use orion_configuration::config::network_filters::http_connection_manager::http_filters::ext_proc::{
         BodyProcessingMode, ExternalProcessor as ExternalProcessorConfig, GoogleGrpc, GrpcService,
@@ -1304,14 +1304,27 @@ mod tests {
         (socket_addr, server_handle)
     }
 
-    #[derive(Debug)]
-    struct MockRequest {
+    #[derive(Debug, Default)]
+    struct Mock<M: MsgType> {
         headers: Vec<Option<(&'static str, &'static str)>>,
         body: Option<&'static str>,
         trailers: Vec<Option<(&'static str, &'static str)>>,
+        _marker: std::marker::PhantomData<M>,
     }
 
-    impl MockRequest {
+    impl<M: MsgType> Mock<M> {
+        fn new(headers: Vec<Option<(&'static str, &'static str)>>, body: Option<&'static str>, trailers: Vec<Option<(&'static str, &'static str)>>) -> Self {
+            Self { headers, body, trailers, _marker: std::marker::PhantomData}
+        }
+
+        fn orig_headers_map(&self) -> http::HeaderMap {
+            self.apply_header_mutation(None)
+        }
+
+        fn orig_trailers_map(&self) -> http::HeaderMap {
+            self.apply_trailer_mutation(None)
+        }
+
         fn apply_header_mutation(&self, header_mutation: Option<&HeaderMutation>) -> http::HeaderMap {
             let mut header_map = http::HeaderMap::with_capacity(self.headers.len());
             for header in self.headers.iter() {
@@ -1324,6 +1337,7 @@ mod tests {
             }
             header_map
         }
+
         fn apply_body_mutation(&self, body_mutation: Option<&Mutation>) -> Option<Bytes> {
             let body_replacement: Option<Bytes> = match body_mutation {
                 Some(Mutation::Body(bytes)) => Some(bytes.clone().into()),
@@ -1333,6 +1347,7 @@ mod tests {
             };
             body_replacement.or(self.body.map(Into::into))
         }
+
         fn apply_trailer_mutation(&self, trailer_mutation: Option<&HeaderMutation>) -> http::HeaderMap {
             let mut trailer_map = http::HeaderMap::with_capacity(self.trailers.len());
             for trailer in self.trailers.iter() {
@@ -1345,15 +1360,9 @@ mod tests {
             }
             trailer_map
         }
-        fn headers_to_header_map(&self) -> http::HeaderMap {
-            self.apply_header_mutation(None)
-        }
-        fn trailers_to_header_map(&self) -> http::HeaderMap {
-            self.apply_trailer_mutation(None)
-        }
     }
 
-    fn create_test_request_from_mock(mock_request: &MockRequest) -> Request<BodyWithMetrics<PolyBody>> {
+    fn build_request_from_mock(mock_request: &Mock<RequestMsg>) -> Request<BodyWithMetrics<PolyBody>> {
         let mut req = Request::builder().method(Method::GET).uri("http://example.com/test").version(Version::HTTP_11);
 
         if let Some(headers) = transform(mock_request.headers.clone()) {
@@ -1362,7 +1371,7 @@ mod tests {
             }
         }
 
-        let mut trailers_map = http::HeaderMap::default();
+        let mut trailers_map = http::HeaderMap::with_capacity(mock_request.trailers.len());
         if let Some(trailers) = transform(mock_request.trailers.clone()) {
             trailers_map = if !trailers.is_empty() {
                 let mut map = http::header::HeaderMap::new();
@@ -1393,21 +1402,17 @@ mod tests {
         req.body(BodyWithMetrics::new(BodyKind::Request, body, |_, _, _| {})).unwrap()
     }
 
-    fn create_test_response(
-        headers: Vec<Option<(&str, &str)>>,
-        body: Option<&str>,
-        trailers: Vec<Option<(&str, &str)>>,
-    ) -> Response<PolyBody> {
+    fn build_response_from_mock(mock_response: &Mock<ResponseMsg> ) -> Response<PolyBody> {
         let mut resp = Response::builder().header("x-response-header", "response").version(Version::HTTP_11);
 
-        if let Some(headers) = transform(headers) {
+        if let Some(headers) = transform(mock_response.headers.clone()) {
             for (name, value) in headers {
                 resp = resp.header(name, value);
             }
         }
 
-        let mut trailers_map = http::HeaderMap::default();
-        if let Some(trailers) = transform(trailers) {
+        let mut trailers_map = http::HeaderMap::with_capacity(mock_response.trailers.len());
+        if let Some(trailers) = transform(mock_response.trailers.clone()) {
             trailers_map = if !trailers.is_empty() {
                 let mut map = http::header::HeaderMap::new();
                 for (name, value) in trailers {
@@ -1422,7 +1427,7 @@ mod tests {
             };
         }
 
-        let body = match body {
+        let body = match mock_response.body {
             None if !trailers_map.is_empty() => PolyBody::from(
                 Empty::<bytes::Bytes>::new().with_trailers(ready(Some(trailers_map).map(Ok::<_, Infallible>))),
             ),
@@ -1434,7 +1439,6 @@ mod tests {
             Some(b) => PolyBody::from(Full::new(bytes::Bytes::from(b.to_string()))),
         };
 
-        //resp.body(BodyWithMetrics::new(BodyKind::Request, body, |_, _, _| {})).unwrap()
         resp.body(body).unwrap()
     }
 
@@ -1510,7 +1514,8 @@ mod tests {
         create_header_mutation(trailers)
     }
 
-    fn convert_trailers_to_header_map(trailers: Vec<(&str, &str)>) -> HeaderMap {
+    #[inline]
+    fn convert_trailers_to_envoy_header_map(trailers: Vec<(&str, &str)>) -> HeaderMap {
         HeaderMap {
             headers: trailers
                 .into_iter()
@@ -1536,7 +1541,7 @@ mod tests {
         let mut trailers_new = None;
         if status == ResponseStatus::ContinueAndReplace as i32 {
             if let Some(trailers) = transform(trailers) {
-                trailers_new = Some(convert_trailers_to_header_map(trailers));
+                trailers_new = Some(convert_trailers_to_envoy_header_map(trailers));
             }
         }
 
@@ -1572,7 +1577,7 @@ mod tests {
         let mut trailers_new = None;
         if status == ResponseStatus::ContinueAndReplace as i32 {
             if let Some(trailers) = transform(trailers) {
-                trailers_new = Some(convert_trailers_to_header_map(trailers));
+                trailers_new = Some(convert_trailers_to_envoy_header_map(trailers));
             }
         }
 
@@ -1655,20 +1660,21 @@ mod tests {
         }
     }
 
-    // we alway include extra headers in the generated request
+    // we always include extra headers in the generated request
     static REQUEST_HEADERS: [Option<(&str, &str)>; 2] = [None, Some(("x-custom-header", "original header value"))];
     static REQUEST_BODIES: [Option<&str>; 2] = [None, Some("original body")];
     static REQUEST_TRAILERS: [Option<(&str, &str)>; 2] = [None, Some(("x-custom-trailer", "original trailer value"))];
 
-    fn generate_mock_requests() -> Vec<MockRequest> {
+    fn generate_mock_requests() -> Vec<Mock<RequestMsg>> {
         REQUEST_HEADERS
             .iter()
             .flat_map(|&headers| {
                 REQUEST_BODIES.iter().flat_map(move |&body| {
-                    REQUEST_TRAILERS.iter().map(move |&trailers| MockRequest {
+                    REQUEST_TRAILERS.iter().map(move |&trailers| Mock::<RequestMsg> {
                         headers: vec![headers],
                         body,
                         trailers: vec![trailers],
+                        _marker: std::marker::PhantomData,
                     })
                 })
             })
@@ -1755,34 +1761,34 @@ mod tests {
         mock_ext_proc_state
     }
 
-    fn validate_mock_server_configuration_for_request(
-        mock_request: &MockRequest,
+    fn validate_mock_server_configuration<M: MsgType + ModeSelector>(
+        mock_msg: &Mock<M>,
         processing_mode: &ProcessingMode,
         mock_ext_proc_state: &MockExternalProcessorState,
     ) -> bool {
-        let has_headers = transform(mock_request.headers.clone()).is_some();
-        let has_body = mock_request.body.is_some();
-        let has_trailers = transform(mock_request.trailers.clone()).is_some();
+        let has_headers = transform(mock_msg.headers.clone()).is_some();
+        let has_body = mock_msg.body.is_some();
+        let has_trailers = transform(mock_msg.trailers.clone()).is_some();
 
         let should_send_headers =
-            has_headers && !matches!(processing_mode.request_header_mode, HeaderProcessingMode::Skip);
-        let should_send_body = has_body && !matches!(processing_mode.request_body_mode, BodyProcessingMode::None);
+            has_headers && !matches!(<M as ModeSelector>::header_mode(&processing_mode), HeaderProcessingMode::Skip);
+        let should_send_body = has_body && !matches!(<M as ModeSelector>::body_mode(&processing_mode), BodyProcessingMode::None);
         let should_send_trailers =
-            has_trailers && matches!(processing_mode.request_trailer_mode, TrailerProcessingMode::Send);
+            has_trailers && matches!(<M as ModeSelector>::trailer_mode(&processing_mode), TrailerProcessingMode::Send);
 
         for response in mock_ext_proc_state.responses.iter() {
             match response.response.as_ref().unwrap() {
-                ProcessingResponseType::RequestHeaders(_) => {
+                ProcessingResponseType::RequestHeaders(_) | ProcessingResponseType::ResponseHeaders(_) => {
                     if !should_send_headers {
                         return false;
                     }
                 },
-                ProcessingResponseType::RequestBody(_) => {
+                ProcessingResponseType::RequestBody(_) | ProcessingResponseType::ResponseBody(_) => {
                     if !should_send_body {
                         return false;
                     }
                 },
-                ProcessingResponseType::RequestTrailers(_) => {
+                ProcessingResponseType::RequestTrailers(_) | ProcessingResponseType::ResponseTrailers(_)=> {
                     if !should_send_trailers {
                         return false;
                     }
@@ -1795,9 +1801,9 @@ mod tests {
         true
     }
 
-    async fn assert_request_result(
+    async fn assert_request_result<M: std::fmt::Debug + MsgType + ModeSelector>(
         test_case_num: i32,
-        mock_request: &MockRequest,
+        mock: &Mock<M>,
         request: Request<BodyWithMetrics<PolyBody>>,
         mock_state: &MockExternalProcessorState,
         processing_mode: &ProcessingMode,
@@ -1805,36 +1811,37 @@ mod tests {
         _is_response: bool,
     ) {
         // ProcessingMode predicates
-        let has_headers = transform(mock_request.headers.clone()).is_some();
-        let has_body = mock_request.body.is_some();
-        let has_trailers = transform(mock_request.trailers.clone()).is_some();
+        let has_headers = transform(mock.headers.clone()).is_some();
+        let has_body = mock.body.is_some();
+        let has_trailers = transform(mock.trailers.clone()).is_some();
+
         let should_send_headers =
-            has_headers && !matches!(processing_mode.request_header_mode, HeaderProcessingMode::Skip);
-        let should_send_body = has_body && !matches!(processing_mode.request_body_mode, BodyProcessingMode::None);
+            has_headers && !matches!(<M as ModeSelector>::header_mode(&processing_mode), HeaderProcessingMode::Skip);
+        let should_send_body = has_body && !matches!(<M as ModeSelector>::body_mode(&processing_mode), BodyProcessingMode::None);
         let should_send_trailers =
-            has_trailers && matches!(processing_mode.request_trailer_mode, TrailerProcessingMode::Send);
+            has_trailers && matches!(<M as ModeSelector>::trailer_mode(&processing_mode), TrailerProcessingMode::Send);
 
         // Compute expected values to assert over modified request
-        let mut expected_headers = mock_request.headers_to_header_map();
-        let mut expected_body = mock_request.body.map(Into::into);
-        let mut expected_trailers = mock_request.trailers_to_header_map();
+        let mut expected_headers = mock.orig_headers_map();
+        let mut expected_body = mock.body.map(Into::into);
+        let mut expected_trailers = mock.orig_trailers_map();
         for response_opt in &mock_state.responses {
             if let Some(response) = response_opt.response.as_ref() {
                 match response {
                     ProcessingResponseType::RequestHeaders(HeadersResponse { response: Some(common_response) }) => {
                         let mutation =
                             should_send_headers.then_some(common_response.header_mutation.as_ref()).flatten();
-                        expected_headers = mock_request.apply_header_mutation(mutation);
+                        expected_headers = mock.apply_header_mutation(mutation);
                     },
                     ProcessingResponseType::RequestBody(BodyResponse {
                         response: Some(CommonResponse { body_mutation: Some(BodyMutation { mutation }), .. }),
                     }) => {
                         let mutation = should_send_body.then_some(mutation.as_ref()).flatten();
-                        expected_body = mock_request.apply_body_mutation(mutation);
+                        expected_body = mock.apply_body_mutation(mutation);
                     },
                     ProcessingResponseType::RequestTrailers(TrailersResponse { header_mutation }) => {
                         let mutation = should_send_trailers.then_some(header_mutation.as_ref()).flatten();
-                        expected_trailers = mock_request.apply_trailer_mutation(mutation);
+                        expected_trailers = mock.apply_trailer_mutation(mutation);
                     },
                     _ => (),
                 }
@@ -1855,23 +1862,23 @@ mod tests {
         assert_eq!(
             request_headers, expected_headers,
             "test_case #: {}, original request {:#?}, ext_proc server conf: {:#?}, ext_proc_filter processing mode: {:#?}",
-            test_case_num, mock_request, mock_state, processing_mode
+            test_case_num, mock, mock_state, processing_mode
         );
         assert_eq!(
             request_body, expected_body,
             "test_case #: {}, original request {:#?}, ext_proc server conf: {:#?}, ext_proc_filter processing mode: {:#?}",
-            test_case_num, mock_request, mock_state, processing_mode
+            test_case_num, mock, mock_state, processing_mode
         );
         assert_eq!(
             request_trailers, expected_trailers,
             "test_case #: {}, original request {:#?}, ext_proc server conf: {:#?}, ext_proc_filter processing mode: {:#?}",
-            test_case_num, mock_request, mock_state, processing_mode
+            test_case_num, mock, mock_state, processing_mode
         );
     }
 
     #[tokio::test]
     #[test_log::test]
-    async fn test_request_standard_processing_modes_continue() {
+    async fn test_request_combinatorial_modes_continue() {
         let status = ResponseStatus::Continue;
         let is_response = false;
         let mut test_case_num = 0;
@@ -1883,13 +1890,13 @@ mod tests {
         for mock_state in &mock_states {
             for processing_mode in &processing_modes {
                 for mock_request in &mock_requests {
-                    if validate_mock_server_configuration_for_request(&mock_request, processing_mode, mock_state) {
+                    if validate_mock_server_configuration(&mock_request, processing_mode, mock_state) {
                         debug!(target: "ext_proc_tests", "Test case #: {test_case_num}");
                         let (server_addr, server_handle) = start_mock_server(mock_state.clone()).await;
                         let config =
                             create_config_for_ext_proc_filter(server_addr, processing_mode.clone(), is_response);
                         let mut ext_proc = ExternalProcessor::from(config);
-                        let mut request = create_test_request_from_mock(mock_request);
+                        let mut request = build_request_from_mock(mock_request);
                         let _result = ext_proc.apply_request(&mut request).await;
                         server_handle.abort();
                         assert_request_result(
@@ -1934,10 +1941,11 @@ mod tests {
         let config = create_config_for_ext_proc_filter(server_addr, processing_mode, false);
         let mut ext_proc = ExternalProcessor::from(config);
 
-        let mut request = create_test_request_from_mock(&MockRequest {
+        let mut request = build_request_from_mock(&Mock::<RequestMsg> {
             headers: vec![Some(("content-type", "application/json"))],
             body: None,
             trailers: vec![],
+            _marker: std::marker::PhantomData,
         });
         let result = ext_proc.apply_request(&mut request).await;
 
@@ -1970,10 +1978,11 @@ mod tests {
         let config = create_config_for_ext_proc_filter(server_addr, processing_mode, false);
         let mut ext_proc = ExternalProcessor::from(config);
 
-        let mut request = create_test_request_from_mock(&MockRequest {
+        let mut request = build_request_from_mock(&Mock::<RequestMsg> {
             headers: vec![Some(("content-type", "application/json"))],
             body: Some("body"),
             trailers: vec![Some(("x-custom-trailer", "original-value"))],
+            _marker: std::marker::PhantomData,
         });
 
         let result = ext_proc.apply_request(&mut request).await;
@@ -2014,10 +2023,11 @@ mod tests {
         let config = create_config_for_ext_proc_filter(server_addr, processing_mode, false);
         let mut ext_proc = ExternalProcessor::from(config);
 
-        let mut request = create_test_request_from_mock(&MockRequest {
+        let mut request = build_request_from_mock(&Mock::<RequestMsg> {
             headers: vec![],
             body: Some("original body"),
             trailers: vec![],
+            _marker: std::marker::PhantomData,
         });
         let result = ext_proc.apply_request(&mut request).await;
 
@@ -2057,10 +2067,11 @@ mod tests {
         let config = create_config_for_ext_proc_filter(server_addr, processing_mode, false);
         let mut ext_proc = ExternalProcessor::from(config);
 
-        let mut request = create_test_request_from_mock(&MockRequest {
+        let mut request = build_request_from_mock(&Mock::<RequestMsg> {
             headers: vec![],
             body: Some("original body"),
             trailers: vec![],
+            _marker: std::marker::PhantomData,
         });
         let result = ext_proc.apply_request(&mut request).await;
 
@@ -2103,10 +2114,11 @@ mod tests {
         let config = create_config_for_ext_proc_filter(server_addr, processing_mode, false);
         let mut ext_proc = ExternalProcessor::from(config);
 
-        let mut request = create_test_request_from_mock(&MockRequest {
+        let mut request = build_request_from_mock(&Mock::<RequestMsg> {
             headers: vec![],
             body: Some("buffered body data"),
             trailers: vec![],
+            _marker: std::marker::PhantomData,
         });
         let result = ext_proc.apply_request(&mut request).await;
 
@@ -2152,10 +2164,11 @@ mod tests {
         let config = create_config_for_ext_proc_filter(server_addr, processing_mode, false);
         let mut ext_proc = ExternalProcessor::from(config);
 
-        let mut request = create_test_request_from_mock(&MockRequest {
+        let mut request = build_request_from_mock(&Mock::<RequestMsg> {
             headers: vec![],
             body: Some("streaming body data"),
             trailers: vec![],
+            _marker: std::marker::PhantomData,
         });
         let result = ext_proc.apply_request(&mut request).await;
 
@@ -2175,7 +2188,7 @@ mod tests {
                 vec![],
                 ResponseStatus::Continue as i32,
                 // even though we will stream the body, no body modification is
-                // perfomed in the headers response so no need to set the flag
+                // performed in the headers response so no need to set the flag
                 None,
                 true,
             ))
@@ -2202,7 +2215,7 @@ mod tests {
         let config = create_config_for_ext_proc_filter(server_addr, processing_mode, false);
         let mut ext_proc = ExternalProcessor::from(config);
 
-        let mut response = create_test_response(vec![], Some("streaming body data"), vec![]);
+        let mut response = build_response_from_mock(&Mock::<ResponseMsg>::new(vec![], Some("streaming body data"), vec![]));
         let result = ext_proc.apply_response(&mut response).await;
 
         assert!(matches!(result, FilterDecision::Continue));

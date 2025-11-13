@@ -16,21 +16,23 @@ impl Mode for Processing {
     const OBSERVABILITY: bool = false;
 }
 
-pub type Request = http::Request<()>;
-pub type Response = http::Response<()>;
+#[derive(Debug, Clone, Default)]
+pub struct RequestMsg {}
+#[derive(Debug, Clone, Default)]
+pub struct ResponseMsg {}
 
-pub trait Phase {
+pub trait MsgType {
     const IS_REQUEST: bool;
     #[allow(dead_code)]
     const IS_RESPONSE: bool;
 }
 
-impl Phase for Request {
+impl MsgType for RequestMsg {
     const IS_REQUEST: bool = true;
     const IS_RESPONSE: bool = false;
 }
 
-impl Phase for Response {
+impl MsgType for ResponseMsg {
     const IS_REQUEST: bool = false;
     const IS_RESPONSE: bool = true;
 }

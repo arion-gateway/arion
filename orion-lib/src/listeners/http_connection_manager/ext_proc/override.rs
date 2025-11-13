@@ -3,7 +3,7 @@ use crate::listeners::http_connection_manager::ext_proc::worker_config::External
 
 use atomic_enum::atomic_enum;
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::ext_proc::{
-    BodyProcessingMode, HeaderProcessingMode, TrailerProcessingMode,
+    BodyProcessingMode, HeaderProcessingMode, ProcessingMode, TrailerProcessingMode
 };
 use std::sync::atomic::Ordering;
 
@@ -69,14 +69,14 @@ impl From<TrailerProcessingMode> for OverridableTrailerMode {
 // The following code is inspired by Haskell DataKind/TypeFamilies and TypeApplications
 //
 
-pub struct OverridableModes<K: kind::Phase> {
+pub struct OverridableModes<K: kind::MsgType> {
     header_mode: AtomicOverridableHeaderMode,
     body_mode: AtomicOverridableBodyMode,
     trailer_mode: AtomicOverridableTrailerMode,
     _kind: std::marker::PhantomData<K>,
 }
 
-impl<K: kind::Phase> OverridableModes<K> {
+impl<K: kind::MsgType> OverridableModes<K> {
     #[inline]
     #[allow(dead_code)]
     pub fn header_mode(&self) -> OverridableHeaderMode {
@@ -141,7 +141,7 @@ impl<K: kind::Phase> OverridableModes<K> {
     }
 }
 
-impl<K: kind::Phase> Default for OverridableModes<K> {
+impl<K: kind::MsgType> Default for OverridableModes<K> {
     fn default() -> Self {
         Self {
             header_mode: AtomicOverridableHeaderMode::new(OverridableHeaderMode::Default),
@@ -152,7 +152,7 @@ impl<K: kind::Phase> Default for OverridableModes<K> {
     }
 }
 
-impl<K: kind::Phase> std::fmt::Debug for OverridableModes<K> {
+impl<K: kind::MsgType> std::fmt::Debug for OverridableModes<K> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct(format!("OverridableModes<{}>", std::any::type_name::<K>()).as_str())
             .field("header_mode", &self.header_mode)
@@ -164,8 +164,8 @@ impl<K: kind::Phase> std::fmt::Debug for OverridableModes<K> {
 
 #[derive(Debug, Default)]
 pub struct OverridableGlobalModes {
-    pub request: OverridableModes<kind::Request>,
-    pub response: OverridableModes<kind::Response>,
+    pub request: OverridableModes<kind::RequestMsg>,
+    pub response: OverridableModes<kind::ResponseMsg>,
 }
 
 impl OverridableGlobalModes {
@@ -228,17 +228,58 @@ impl OverridableGlobalModes {
     }
 }
 
-pub trait OverridableModeSelector: Sized + kind::Phase {
+pub trait ModeSelector: Sized + kind::MsgType {
+    fn header_mode(mode: &ProcessingMode) -> HeaderProcessingMode;
+    fn body_mode(mode: &ProcessingMode) -> BodyProcessingMode;
+    fn trailer_mode(mode: &ProcessingMode) -> TrailerProcessingMode;
+}
+
+impl ModeSelector for kind::RequestMsg {
+    #[inline]
+    fn header_mode(mode: &ProcessingMode) -> HeaderProcessingMode {
+        mode.request_header_mode
+    }
+
+    #[inline]
+    fn body_mode(mode: &ProcessingMode) -> BodyProcessingMode {
+        mode.request_body_mode
+    }
+
+    #[inline]
+    fn trailer_mode(mode: &ProcessingMode) -> TrailerProcessingMode {
+        mode.request_trailer_mode
+    }
+}
+
+impl ModeSelector for kind::ResponseMsg {
+    #[inline]
+    fn header_mode(mode: &ProcessingMode) -> HeaderProcessingMode {
+        mode.response_header_mode
+    }
+
+    #[inline]
+    fn body_mode(mode: &ProcessingMode) -> BodyProcessingMode {
+        mode.response_body_mode
+    }
+
+    #[inline]
+    fn trailer_mode(mode: &ProcessingMode) -> TrailerProcessingMode {
+        mode.response_trailer_mode
+    }
+}
+
+
+pub trait OverridableModeSelector: Sized + kind::MsgType {
     fn get<'a>(global_mode: &'a OverridableGlobalModes) -> &'a OverridableModes<Self>;
 }
 
-impl OverridableModeSelector for kind::Request {
+impl OverridableModeSelector for kind::RequestMsg {
     fn get(global_mode: &OverridableGlobalModes) -> &OverridableModes<Self> {
         &global_mode.request
     }
 }
 
-impl OverridableModeSelector for kind::Response {
+impl OverridableModeSelector for kind::ResponseMsg {
     fn get(global_mode: &OverridableGlobalModes) -> &OverridableModes<Self> {
         &global_mode.response
     }

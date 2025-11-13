@@ -31,10 +31,10 @@ use std::ops::{Deref, DerefMut};
 use tokio::sync::oneshot;
 use tracing::debug;
 
-pub struct RequestProcessing<M: kind::Mode>(Processing<M, kind::Request>);
+pub struct RequestProcessing<M: kind::Mode>(Processing<M, kind::RequestMsg>);
 
 impl<M: kind::Mode> Deref for RequestProcessing<M> {
-    type Target = Processing<M, kind::Request>;
+    type Target = Processing<M, kind::RequestMsg>;
     fn deref(&self) -> &Self::Target {
         &self.0
     }
@@ -46,10 +46,10 @@ impl<M: kind::Mode> DerefMut for RequestProcessing<M> {
     }
 }
 
-pub struct ResponseProcessing<M: kind::Mode>(Processing<M, kind::Response>);
+pub struct ResponseProcessing<M: kind::Mode>(Processing<M, kind::ResponseMsg>);
 
 impl<M: kind::Mode> Deref for ResponseProcessing<M> {
-    type Target = Processing<M, kind::Response>;
+    type Target = Processing<M, kind::ResponseMsg>;
     fn deref(&self) -> &Self::Target {
         &self.0
     }
@@ -61,7 +61,7 @@ impl<M: kind::Mode> DerefMut for ResponseProcessing<M> {
     }
 }
 
-pub struct Processing<M: kind::Mode, Phase: kind::Phase> {
+pub struct Processing<M: kind::Mode, Msg: kind::MsgType> {
     http_headers: Option<http::HeaderMap>,
     pub trailers: Option<http::HeaderMap>,
     pub frame_bridge: FrameBridge,
@@ -75,10 +75,10 @@ pub struct Processing<M: kind::Mode, Phase: kind::Phase> {
     pub parked_frame: Option<Frame<Bytes>>,
     pub inflight_frames: SmallVec<[Frame<Bytes>; 2]>,
     _mode: std::marker::PhantomData<M>,
-    _msg: std::marker::PhantomData<Phase>,
+    _msg: std::marker::PhantomData<Msg>,
 }
 
-impl<M: kind::Mode + Default, Phase: kind::Phase> From<&ExternalProcessingWorkerConfig> for Processing<M, Phase> {
+impl<M: kind::Mode + Default, Msg: kind::MsgType> From<&ExternalProcessingWorkerConfig> for Processing<M, Msg> {
     fn from(config: &ExternalProcessingWorkerConfig) -> Self {
         debug!(target: "ext_proc", "From<&ExternalProcessingWorkerConfig for Processing<>");
 
@@ -104,18 +104,18 @@ impl<M: kind::Mode + Default, Phase: kind::Phase> From<&ExternalProcessingWorker
 impl<M: kind::Mode + Default> From<&ExternalProcessingWorkerConfig> for RequestProcessing<M> {
     fn from(value: &ExternalProcessingWorkerConfig) -> Self {
         debug!(target: "ext_proc", "From<&ExternalProcessingWorkerConfig for RequestProcessing<{}>", std::any::type_name::<M>());
-        Self(Processing::<M, kind::Request>::from(value))
+        Self(Processing::<M, kind::RequestMsg>::from(value))
     }
 }
 
 impl<M: kind::Mode + Default> From<&ExternalProcessingWorkerConfig> for ResponseProcessing<M> {
     fn from(value: &ExternalProcessingWorkerConfig) -> Self {
         debug!(target: "ext_proc", "From<&ExternalProcessingWorkerConfig for ResponseProcessing<{}>", std::any::type_name::<M>());
-        Self(Processing::<M, kind::Response>::from(value))
+        Self(Processing::<M, kind::ResponseMsg>::from(value))
     }
 }
 
-impl Processing<kind::Processing, kind::Request> {
+impl Processing<kind::Processing, kind::RequestMsg> {
     pub fn apply_mode_overrides(
         &mut self,
         envoy_mode: &EnvoyProcessingMode,
@@ -125,7 +125,7 @@ impl Processing<kind::Processing, kind::Request> {
         // --- Body Mode Override ---
         if let Ok(mode) = BodyProcessingMode::try_from(envoy_mode.request_body_mode) {
             if allowed_override_modes.iter().any(|allowed| allowed.request_body_mode == mode) {
-                override_mode.set_body_mode::<kind::Request>(mode);
+                override_mode.set_body_mode::<kind::RequestMsg>(mode);
             }
         }
 
@@ -134,13 +134,13 @@ impl Processing<kind::Processing, kind::Request> {
             if mode != TrailerProcessingMode::Default
                 && allowed_override_modes.iter().any(|allowed| allowed.request_trailer_mode == mode)
             {
-                override_mode.set_trailer_mode::<kind::Request>(mode);
+                override_mode.set_trailer_mode::<kind::RequestMsg>(mode);
             }
         }
     }
 }
 
-impl Processing<kind::Processing, kind::Response> {
+impl Processing<kind::Processing, kind::ResponseMsg> {
     pub fn apply_mode_overrides(
         &mut self,
         envoy_mode: &EnvoyProcessingMode,
@@ -152,14 +152,14 @@ impl Processing<kind::Processing, kind::Response> {
             if mode != HeaderProcessingMode::Default
                 && allowed_override_modes.iter().any(|allowed| allowed.response_header_mode == mode)
             {
-                override_mode.set_header_mode::<kind::Response>(mode);
+                override_mode.set_header_mode::<kind::ResponseMsg>(mode);
             }
         }
 
         // --- Body Mode Override ---
         if let Ok(mode) = BodyProcessingMode::try_from(envoy_mode.response_body_mode) {
             if allowed_override_modes.iter().any(|allowed| allowed.response_body_mode == mode) {
-                override_mode.set_body_mode::<kind::Response>(mode);
+                override_mode.set_body_mode::<kind::ResponseMsg>(mode);
             }
         }
 
@@ -168,13 +168,13 @@ impl Processing<kind::Processing, kind::Response> {
             if mode != TrailerProcessingMode::Default
                 && allowed_override_modes.iter().any(|allowed| allowed.response_trailer_mode == mode)
             {
-                override_mode.set_trailer_mode::<kind::Response>(mode);
+                override_mode.set_trailer_mode::<kind::ResponseMsg>(mode);
             }
         }
     }
 }
 
-impl<Phase: kind::Phase + OverridableModeSelector> Processing<kind::Processing, Phase> {
+impl<Msg: kind::MsgType + OverridableModeSelector> Processing<kind::Processing, Msg> {
     #[must_use = "must handle the returned Action"]
     pub async fn handle_headers_response(
         &mut self,
@@ -192,7 +192,7 @@ impl<Phase: kind::Phase + OverridableModeSelector> Processing<kind::Processing, 
                 RouteCacheAction::Default => response_data.clear_route_cache,
             };
 
-            status = if Phase::IS_REQUEST {
+            status = if Msg::IS_REQUEST {
                 ProcessingStatus::RequestReady(ReadyStatus {
                     headers_modifications: response_data.header_mutation,
                     clear_route_cache: should_clear_route_cache,
@@ -233,7 +233,7 @@ impl<Phase: kind::Phase + OverridableModeSelector> Processing<kind::Processing, 
                 self.frame_bridge_close(timeout_active).await;
             } else {
                 debug!(target: "ext_proc", "handle_headers_response: ResponseStatus:Continue: headers processed");
-                if !override_mode.should_process_body::<Phase>() && !override_mode.should_process_trailers::<Phase>() {
+                if !override_mode.should_process_body::<Msg>() && !override_mode.should_process_trailers::<Msg>() {
                     debug!(target: "ext_proc", "handle_headers_response: complete to stream original body and close!");
                     self.frame_bridge.complete().await;
                     debug!(target: "ext_proc", "frame bridge closed (handle header response)!");
@@ -245,7 +245,7 @@ impl<Phase: kind::Phase + OverridableModeSelector> Processing<kind::Processing, 
             }
         } else {
             // todo(Nicola): this is UB; we are not sure what to do if response.response is None
-            status = if Phase::IS_REQUEST {
+            status = if Msg::IS_REQUEST {
                 ProcessingStatus::RequestReady(ReadyStatus { headers_modifications: None, clear_route_cache: false })
             } else {
                 ProcessingStatus::ResponseReady(ReadyStatus { headers_modifications: None, clear_route_cache: false })
@@ -277,7 +277,7 @@ impl<Phase: kind::Phase + OverridableModeSelector> Processing<kind::Processing, 
             };
             debug!(target: "ext_proc", "chunk_replacement => {chunk_replacement:?}");
 
-            let mut status = if Phase::IS_REQUEST {
+            let mut status = if Msg::IS_REQUEST {
                 ProcessingStatus::RequestReady(ReadyStatus::default())
             } else {
                 ProcessingStatus::ResponseReady(ReadyStatus::default())
@@ -309,7 +309,7 @@ impl<Phase: kind::Phase + OverridableModeSelector> Processing<kind::Processing, 
                         RouteCacheAction::Default => response_data.clear_route_cache,
                     };
 
-                    if Phase::IS_REQUEST {
+                    if Msg::IS_REQUEST {
                         status.with_request_ready(|req_ready| {
                             req_ready.headers_modifications = Some(header_modifications);
                             req_ready.clear_route_cache = should_clear_route_cache;
@@ -362,7 +362,7 @@ impl<Phase: kind::Phase + OverridableModeSelector> Processing<kind::Processing, 
             self.end_of_stream = true;
             self.frame_bridge_close(timeout_active).await;
 
-            let status = if Phase::IS_REQUEST {
+            let status = if Msg::IS_REQUEST {
                 ProcessingStatus::RequestReady(ReadyStatus::default())
             } else {
                 ProcessingStatus::ResponseReady(ReadyStatus::default())
@@ -386,7 +386,7 @@ impl<Phase: kind::Phase + OverridableModeSelector> Processing<kind::Processing, 
     }
 }
 
-impl<M: kind::Mode + Default, Phase: kind::Phase + OverridableModeSelector> Processing<M, Phase> {
+impl<M: kind::Mode + Default, Msg: kind::MsgType + OverridableModeSelector> Processing<M, Msg> {
     #[must_use = "must handle the returned Action"]
     pub async fn process(
         &mut self,
@@ -408,7 +408,7 @@ impl<M: kind::Mode + Default, Phase: kind::Phase + OverridableModeSelector> Proc
         debug!(target: "ext_proc", "process: turning streaming_body_enabled -> true");
         self.streaming_body_enabled = true;
 
-        let status = if Phase::IS_REQUEST {
+        let status = if Msg::IS_REQUEST {
             ProcessingStatus::RequestReady(ReadyStatus::default())
         } else {
             ProcessingStatus::ResponseReady(ReadyStatus::default())
@@ -428,11 +428,11 @@ impl<M: kind::Mode + Default, Phase: kind::Phase + OverridableModeSelector> Proc
         };
 
         let end_of_stream =
-            !override_mode.should_process_body::<Phase>() && !override_mode.should_process_trailers::<Phase>();
+            !override_mode.should_process_body::<Msg>() && !override_mode.should_process_trailers::<Msg>();
 
         let envmap: EnvoyHeaderMap = headers.into();
 
-        let processing_request = if Phase::IS_REQUEST {
+        let processing_request = if Msg::IS_REQUEST {
             ProcessingRequest {
                 request: Some(ProcessingRequestType::RequestHeaders(HttpHeaders {
                     headers: Some(envmap.0),
@@ -459,7 +459,7 @@ impl<M: kind::Mode + Default, Phase: kind::Phase + OverridableModeSelector> Proc
         };
 
         let send_body_or_trailers =
-            override_mode.should_process_body::<Phase>() || override_mode.should_process_trailers::<Phase>();
+            override_mode.should_process_body::<Msg>() || override_mode.should_process_trailers::<Msg>();
 
         if M::OBSERVABILITY || (self.send_body_without_waiting_for_header_response && send_body_or_trailers) {
             self.streaming_body_enabled = true;
@@ -482,7 +482,7 @@ impl<M: kind::Mode + Default, Phase: kind::Phase + OverridableModeSelector> Proc
             let data = std::mem::take(bytes);
 
             let http_body = HttpBody { body: data.into(), end_of_stream };
-            if Phase::IS_REQUEST {
+            if Msg::IS_REQUEST {
                 ProcessingRequest {
                     request: Some(ProcessingRequestType::RequestBody(http_body)),
                     metadata_context: None,
@@ -508,7 +508,7 @@ impl<M: kind::Mode + Default, Phase: kind::Phase + OverridableModeSelector> Proc
 
             let envoy_trailers: EnvoyHeaderMap = (&data).into();
 
-            if Phase::IS_REQUEST {
+            if Msg::IS_REQUEST {
                 ProcessingRequest {
                     request: Some(ProcessingRequestType::RequestTrailers(HttpTrailers {
                         trailers: Some(envoy_trailers.0),
@@ -586,7 +586,7 @@ impl<M: kind::Mode + Default, Phase: kind::Phase + OverridableModeSelector> Proc
     pub async fn park_or_inject_frame(&mut self, frame: Frame<Bytes>, override_mode: &OverridableGlobalModes) {
         if frame.is_data() {
             // This is a DATA, let's park it if is supposed to be streamed
-            if override_mode.should_process_body::<Phase>() {
+            if override_mode.should_process_body::<Msg>() {
                 self.parked_frame = Some(frame);
                 debug!(target: "ext_proc", "parking body chunk of response (DATA)");
             } else {
@@ -596,7 +596,7 @@ impl<M: kind::Mode + Default, Phase: kind::Phase + OverridableModeSelector> Proc
         } else {
             // This is TRAILERS. it is the last frame.
             debug!(target: "ext_proc", "processing_request: sending trailers to external processor...");
-            if override_mode.should_process_trailers::<Phase>() {
+            if override_mode.should_process_trailers::<Msg>() {
                 self.parked_frame = Some(frame);
                 debug!(target: "ext_proc", "parking body chunk of response (TRAILERS)");
             } else {
