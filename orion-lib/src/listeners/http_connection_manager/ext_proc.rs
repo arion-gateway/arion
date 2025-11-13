@@ -1337,10 +1337,8 @@ mod tests {
 
         fn apply_header_mutation(&self, header_mutation: Option<&HeaderMutation>) -> http::HeaderMap {
             let mut header_map = http::HeaderMap::with_capacity(self.headers.len());
-            for header in self.headers.iter() {
-                if let Some((key, value)) = header {
-                    header_map.insert(http::HeaderName::from_static(key), http::HeaderValue::from_static(value));
-                }
+            for (key, value) in self.headers.iter().flatten() {
+                header_map.insert(http::HeaderName::from_static(key), http::HeaderValue::from_static(value));
             }
             if let Some(mutation) = header_mutation.as_ref() {
                 apply_header_mutations(&mut header_map, mutation, None).unwrap();
@@ -1360,10 +1358,8 @@ mod tests {
 
         fn apply_trailer_mutation(&self, trailer_mutation: Option<&HeaderMutation>) -> http::HeaderMap {
             let mut trailer_map = http::HeaderMap::with_capacity(self.trailers.len());
-            for trailer in self.trailers.iter() {
-                if let Some((key, value)) = trailer {
-                    trailer_map.insert(http::HeaderName::from_static(key), http::HeaderValue::from_static(value));
-                }
+            for (key, value) in self.trailers.iter().flatten() {
+                trailer_map.insert(http::HeaderName::from_static(key), http::HeaderValue::from_static(value));
             }
             if let Some(mutation) = trailer_mutation.as_ref() {
                 apply_header_mutations(&mut trailer_map, mutation, None).unwrap();
@@ -1383,7 +1379,9 @@ mod tests {
 
         let mut trailers_map = http::HeaderMap::with_capacity(mock_request.trailers.len());
         if let Some(trailers) = transform(mock_request.trailers.clone()) {
-            trailers_map = if !trailers.is_empty() {
+            trailers_map = if trailers.is_empty() {
+                http::HeaderMap::default()
+            } else {
                 let mut map = http::header::HeaderMap::new();
                 for (name, value) in trailers {
                     map.append(
@@ -1392,21 +1390,23 @@ mod tests {
                     );
                 }
                 map
-            } else {
-                http::HeaderMap::default()
             };
         }
 
         let body = match mock_request.body {
             None if !trailers_map.is_empty() => PolyBody::from(
-                Empty::<bytes::Bytes>::new().with_trailers(ready(Some(trailers_map).map(Ok::<_, Infallible>))),
+                Empty::<bytes::Bytes>::new().with_trailers(ready(Some(Ok::<_, Infallible>(trailers_map)))),
             ),
-            Some(b) if !trailers_map.is_empty() => PolyBody::from(
-                Full::new(bytes::Bytes::from(b.to_string()))
-                    .with_trailers(ready(Some(trailers_map).map(Ok::<_, Infallible>))),
-            ),
+            Some(b) if !trailers_map.is_empty() => {
+                PolyBody::from(Full::new(bytes::Bytes::from(b.to_owned())).with_trailers(ready(Some(Ok::<
+                    _,
+                    Infallible,
+                >(
+                    trailers_map
+                )))))
+            },
             None => PolyBody::from(Empty::<bytes::Bytes>::new()),
-            Some(b) => PolyBody::from(Full::new(bytes::Bytes::from(b.to_string()))),
+            Some(b) => PolyBody::from(Full::new(bytes::Bytes::from(b.to_owned()))),
         };
 
         req.body(BodyWithMetrics::new(BodyKind::Request, body, |_, _, _| {})).unwrap()
@@ -1423,7 +1423,9 @@ mod tests {
 
         let mut trailers_map = http::HeaderMap::with_capacity(mock_response.trailers.len());
         if let Some(trailers) = transform(mock_response.trailers.clone()) {
-            trailers_map = if !trailers.is_empty() {
+            trailers_map = if trailers.is_empty() {
+                http::HeaderMap::default()
+            } else {
                 let mut map = http::header::HeaderMap::new();
                 for (name, value) in trailers {
                     map.append(
@@ -1432,21 +1434,23 @@ mod tests {
                     );
                 }
                 map
-            } else {
-                http::HeaderMap::default()
             };
         }
 
         let body = match mock_response.body {
             None if !trailers_map.is_empty() => PolyBody::from(
-                Empty::<bytes::Bytes>::new().with_trailers(ready(Some(trailers_map).map(Ok::<_, Infallible>))),
+                Empty::<bytes::Bytes>::new().with_trailers(ready(Some(Ok::<_, Infallible>(trailers_map)))),
             ),
-            Some(b) if !trailers_map.is_empty() => PolyBody::from(
-                Full::new(bytes::Bytes::from(b.to_string()))
-                    .with_trailers(ready(Some(trailers_map).map(Ok::<_, Infallible>))),
-            ),
+            Some(b) if !trailers_map.is_empty() => {
+                PolyBody::from(Full::new(bytes::Bytes::from(b.to_owned())).with_trailers(ready(Some(Ok::<
+                    _,
+                    Infallible,
+                >(
+                    trailers_map
+                )))))
+            },
             None => PolyBody::from(Empty::<bytes::Bytes>::new()),
-            Some(b) => PolyBody::from(Full::new(bytes::Bytes::from(b.to_string()))),
+            Some(b) => PolyBody::from(Full::new(bytes::Bytes::from(b.to_owned()))),
         };
 
         resp.body(body).unwrap()
@@ -1506,16 +1510,11 @@ mod tests {
     }
 
     #[inline]
-    fn create_body_mutation(body: Vec<u8>, end_of_stream: Option<bool>) -> Option<BodyMutation> {
-        if end_of_stream.is_some() {
-            Some(BodyMutation {
-                mutation: Some(Mutation::StreamedResponse(StreamedBodyResponse {
-                    body,
-                    end_of_stream: end_of_stream.unwrap(),
-                })),
-            })
+    fn create_body_mutation(body: Vec<u8>, end_of_stream: Option<bool>) -> BodyMutation {
+        if let Some(end_of_stream) = end_of_stream {
+            BodyMutation { mutation: Some(Mutation::StreamedResponse(StreamedBodyResponse { body, end_of_stream })) }
         } else {
-            Some(BodyMutation { mutation: Some(Mutation::Body(body)) })
+            BodyMutation { mutation: Some(Mutation::Body(body)) }
         }
     }
 
@@ -1538,6 +1537,7 @@ mod tests {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn create_headers_response(
         headers: Vec<Option<(&str, &str)>>,
         body_data: Option<Vec<u8>>,
@@ -1547,7 +1547,7 @@ mod tests {
         is_response: bool,
     ) -> ProcessingResponse {
         let header_mutation = transform(headers).and_then(|hdrs| create_header_mutation(hdrs));
-        let body_mutation = body_data.and_then(|body| create_body_mutation(body, end_of_stream));
+        let body_mutation = body_data.map(|body| create_body_mutation(body, end_of_stream));
         let mut trailers_new = None;
         if status == ResponseStatus::ContinueAndReplace as i32 {
             if let Some(trailers) = transform(trailers) {
@@ -1574,6 +1574,7 @@ mod tests {
         ProcessingResponse { response, mode_override: None, dynamic_metadata: None, override_message_timeout: None }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn create_body_response(
         headers: Vec<Option<(&str, &str)>>,
         body_data: Option<Vec<u8>>,
@@ -1583,7 +1584,7 @@ mod tests {
         is_response: bool,
     ) -> ProcessingResponse {
         let header_mutation = transform(headers).and_then(|hdrs| create_header_mutation(hdrs));
-        let body_mutation = body_data.and_then(|body| create_body_mutation(body, end_of_stream));
+        let body_mutation = body_data.map(|body| create_body_mutation(body, end_of_stream));
         let mut trailers_new = None;
         if status == ResponseStatus::ContinueAndReplace as i32 {
             if let Some(trailers) = transform(trailers) {
@@ -1635,23 +1636,7 @@ mod tests {
         [TrailerProcessingMode::Default, TrailerProcessingMode::Skip, TrailerProcessingMode::Send];
 
     fn generate_processing_mode_configurations(is_response: bool) -> Vec<ProcessingMode> {
-        if !is_response {
-            HEADER_PROCESSING_MODE
-                .iter()
-                .flat_map(|&header_mode| {
-                    BODY_PROCESSING_MODE.iter().flat_map(move |&body_mode| {
-                        TRAILER_PROCESSING_MODE.iter().map(move |&trailer_mode| ProcessingMode {
-                            request_header_mode: header_mode,
-                            request_body_mode: body_mode,
-                            request_trailer_mode: trailer_mode,
-                            response_header_mode: HeaderProcessingMode::Skip,
-                            response_body_mode: BodyProcessingMode::None,
-                            response_trailer_mode: TrailerProcessingMode::Skip,
-                        })
-                    })
-                })
-                .collect()
-        } else {
+        if is_response {
             HEADER_PROCESSING_MODE
                 .iter()
                 .flat_map(|&header_mode| {
@@ -1663,6 +1648,22 @@ mod tests {
                             response_header_mode: header_mode,
                             response_body_mode: body_mode,
                             response_trailer_mode: trailer_mode,
+                        })
+                    })
+                })
+                .collect()
+        } else {
+            HEADER_PROCESSING_MODE
+                .iter()
+                .flat_map(|&header_mode| {
+                    BODY_PROCESSING_MODE.iter().flat_map(move |&body_mode| {
+                        TRAILER_PROCESSING_MODE.iter().map(move |&trailer_mode| ProcessingMode {
+                            request_header_mode: header_mode,
+                            request_body_mode: body_mode,
+                            request_trailer_mode: trailer_mode,
+                            response_header_mode: HeaderProcessingMode::Skip,
+                            response_body_mode: BodyProcessingMode::None,
+                            response_trailer_mode: TrailerProcessingMode::Skip,
                         })
                     })
                 })
@@ -1780,13 +1781,13 @@ mod tests {
         let has_trailers = transform(mock_msg.trailers.clone()).is_some();
 
         let should_send_headers =
-            has_headers && !matches!(<M as ModeSelector>::header_mode(&processing_mode), HeaderProcessingMode::Skip);
+            has_headers && !matches!(<M as ModeSelector>::header_mode(processing_mode), HeaderProcessingMode::Skip);
         let should_send_body =
-            has_body && !matches!(<M as ModeSelector>::body_mode(&processing_mode), BodyProcessingMode::None);
+            has_body && !matches!(<M as ModeSelector>::body_mode(processing_mode), BodyProcessingMode::None);
         let should_send_trailers =
-            has_trailers && matches!(<M as ModeSelector>::trailer_mode(&processing_mode), TrailerProcessingMode::Send);
+            has_trailers && matches!(<M as ModeSelector>::trailer_mode(processing_mode), TrailerProcessingMode::Send);
 
-        for response in mock_ext_proc_state.responses.iter() {
+        for response in &mock_ext_proc_state.responses {
             match response.response.as_ref().unwrap() {
                 ProcessingResponseType::RequestHeaders(_) | ProcessingResponseType::ResponseHeaders(_) => {
                     if !should_send_headers {
@@ -1803,20 +1804,19 @@ mod tests {
                         return false;
                     }
                 },
-                _ => {
-                    return false;
-                },
+                ProcessingResponseType::ImmediateResponse(_) => return false,
             }
         }
         true
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn assert_result<M>(
         test_case_num: i32,
         mock: &Mock<M>,
-        headers: http::HeaderMap,
-        body: Option<Bytes>,
-        trailers: http::HeaderMap,
+        headers: &http::HeaderMap,
+        body: Option<&Bytes>,
+        trailers: &http::HeaderMap,
         mock_state: &MockExternalProcessorState,
         processing_mode: &ProcessingMode,
         _status: ResponseStatus,
@@ -1829,11 +1829,11 @@ mod tests {
         let has_trailers = transform(mock.trailers.clone()).is_some();
 
         let should_send_headers =
-            has_headers && !matches!(<M as ModeSelector>::header_mode(&processing_mode), HeaderProcessingMode::Skip);
+            has_headers && !matches!(<M as ModeSelector>::header_mode(processing_mode), HeaderProcessingMode::Skip);
         let should_send_body =
-            has_body && !matches!(<M as ModeSelector>::body_mode(&processing_mode), BodyProcessingMode::None);
+            has_body && !matches!(<M as ModeSelector>::body_mode(processing_mode), BodyProcessingMode::None);
         let should_send_trailers =
-            has_trailers && matches!(<M as ModeSelector>::trailer_mode(&processing_mode), TrailerProcessingMode::Send);
+            has_trailers && matches!(<M as ModeSelector>::trailer_mode(processing_mode), TrailerProcessingMode::Send);
 
         // Compute expected values to assert over modified request
         let mut expected_headers = mock.orig_headers_map();
@@ -1868,7 +1868,7 @@ mod tests {
         }
 
         assert_eq!(
-            headers,
+            *headers,
             expected_headers,
             "test_case #: {}, asserting headers, original {} {:#?}, ext_proc server conf: {:#?}, ext_proc_filter processing mode: {:#?}",
             test_case_num,
@@ -1879,7 +1879,7 @@ mod tests {
         );
         assert_eq!(
             body,
-            expected_body,
+            expected_body.as_ref(),
             "test_case #: {}, asserting body, original {} {:#?}, ext_proc server conf: {:#?}, ext_proc_filter processing mode: {:#?}",
             test_case_num,
             <M as MsgType>::NAME,
@@ -1888,7 +1888,7 @@ mod tests {
             processing_mode
         );
         assert_eq!(
-            trailers,
+            *trailers,
             expected_trailers,
             "test_case #: {}, asserting trailers, original {} {:#?}, ext_proc server conf: {:#?}, ext_proc_filter processing mode: {:#?}",
             test_case_num,
@@ -1913,7 +1913,7 @@ mod tests {
         for mock_state in &mock_states {
             for processing_mode in &processing_modes {
                 for mock_request in &mock_requests {
-                    if validate_mock_server_configuration(&mock_request, processing_mode, mock_state) {
+                    if validate_mock_server_configuration(mock_request, processing_mode, mock_state) {
                         debug!(target: "ext_proc_tests", "Test case #: {test_case_num}");
                         let (server_addr, server_handle) = start_mock_server(mock_state.clone()).await;
                         let config = create_config_for_ext_proc_filter(server_addr, processing_mode.clone(), false);
@@ -1938,9 +1938,9 @@ mod tests {
                         assert_result(
                             test_case_num,
                             mock_request,
-                            request_headers,
-                            request_body,
-                            request_trailers,
+                            &request_headers,
+                            request_body.as_ref(),
+                            &request_trailers,
                             mock_state,
                             processing_mode,
                             status,
@@ -1967,7 +1967,7 @@ mod tests {
         for mock_state in &mock_states {
             for processing_mode in &processing_modes {
                 for mock_response in &mock_responses {
-                    if validate_mock_server_configuration(&mock_response, processing_mode, mock_state) {
+                    if validate_mock_server_configuration(mock_response, processing_mode, mock_state) {
                         debug!(target: "ext_proc_tests", "Test case #: {test_case_num}");
                         let (server_addr, server_handle) = start_mock_server(mock_state.clone()).await;
                         let config = create_config_for_ext_proc_filter(server_addr, processing_mode.clone(), false);
@@ -1992,9 +1992,9 @@ mod tests {
                         assert_result(
                             test_case_num,
                             mock_response,
-                            response_headers,
-                            response_body,
-                            response_trailers,
+                            &response_headers,
+                            response_body.as_ref(),
+                            &response_trailers,
                             mock_state,
                             processing_mode,
                             status,
