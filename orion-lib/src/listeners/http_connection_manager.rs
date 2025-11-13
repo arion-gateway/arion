@@ -1302,12 +1302,16 @@ fn eval_http_finish_context(
 
 fn apply_authorization_rules<B>(rbac: &HttpRbac, req: &Request<B>) -> FilterDecision {
     debug!("Applying authorization rules {rbac:?} {:?}", &req.headers());
-    if rbac.is_permitted(req) {
+    let (permitted, enforced_policy) = rbac.is_permitted(req);
+    if permitted {
         FilterDecision::Continue
     } else {
         FilterDecision::DirectResponse(
-            SyntheticHttpResponse::forbidden(EventFailure::RbacAccessDenied.into(), "RBAC: access denied")
-                .into_response(req.version()),
+            SyntheticHttpResponse::forbidden(
+                EventFailure::RbacAccessDenied(enforced_policy.unwrap_or(SmolStr::new_static("unknown"))).into(),
+                "RBAC: access denied",
+            )
+            .into_response(req.version()),
         )
     }
 }
