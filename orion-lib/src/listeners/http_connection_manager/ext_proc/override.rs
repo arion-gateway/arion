@@ -228,6 +228,7 @@ impl OverridableGlobalModes {
     }
 }
 
+#[allow(dead_code)]
 pub trait ModeSelector: Sized + kind::MsgType {
     fn header_mode(mode: &ProcessingMode) -> HeaderProcessingMode;
     fn body_mode(mode: &ProcessingMode) -> BodyProcessingMode;
