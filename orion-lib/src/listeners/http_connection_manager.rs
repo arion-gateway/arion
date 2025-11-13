@@ -902,7 +902,7 @@ impl
 
             // Process filters on response...
             //
-            for filter in active_filters.iter_mut() {
+            for filter in &mut active_filters {
                 let filter_res = filter.apply_response(&mut response).await;
                 if let FilterDecision::DirectResponse(direct_response) = filter_res {
                     response = direct_response;

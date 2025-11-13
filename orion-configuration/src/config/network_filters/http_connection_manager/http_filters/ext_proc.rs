@@ -494,14 +494,10 @@ mod envoy_conversions {
                     allow_system: !disallow_system,
                 }
             };
-            let overrides = if allow_expression.is_some() || disallow_expression.is_some() {
-                Some(PatternOverrides {
-                    allow: allow_expression.into_iter().collect(),
-                    deny: disallow_expression.into_iter().collect(),
-                })
-            } else {
-                None
-            };
+            let overrides = (allow_expression.is_some() || disallow_expression.is_some()).then(|| PatternOverrides {
+                allow: allow_expression.into_iter().collect(),
+                deny: disallow_expression.into_iter().collect(),
+            });
 
             Ok(Self { policy, overrides, disallow_is_error })
         }
