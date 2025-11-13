@@ -3,7 +3,7 @@ use crate::listeners::http_connection_manager::ext_proc::worker_config::External
 
 use atomic_enum::atomic_enum;
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::ext_proc::{
-    BodyProcessingMode, HeaderProcessingMode, ProcessingMode, TrailerProcessingMode
+    BodyProcessingMode, HeaderProcessingMode, ProcessingMode, TrailerProcessingMode,
 };
 use std::sync::atomic::Ordering;
 
@@ -267,7 +267,6 @@ impl ModeSelector for kind::ResponseMsg {
         mode.response_trailer_mode
     }
 }
-
 
 pub trait OverridableModeSelector: Sized + kind::MsgType {
     fn get<'a>(global_mode: &'a OverridableGlobalModes) -> &'a OverridableModes<Self>;

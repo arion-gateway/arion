@@ -26,11 +26,7 @@ pub trait MsgType {
     #[allow(dead_code)]
     const IS_RESPONSE: bool = !Self::IS_REQUEST;
     #[allow(dead_code)]
-    const NAME: &'static str = if Self::IS_REQUEST {
-        "request"
-    } else {
-        "response"
-    };
+    const NAME: &'static str = if Self::IS_REQUEST { "request" } else { "response" };
 }
 
 impl MsgType for RequestMsg {
