@@ -18,7 +18,9 @@
 use super::upgrade_utils;
 use crate::{event_error::EventFailure, listeners::synthetic_http_response::SyntheticHttpResponse, PolyBody};
 use http::{header, HeaderMap, HeaderName, HeaderValue, Method, Request, Response};
-use orion_configuration::config::network_filters::http_connection_manager::XffSettings;
+use orion_configuration::config::{
+    cluster::http_protocol_options::Codec, network_filters::http_connection_manager::XffSettings,
+};
 use orion_http_header::{X_ENVOY_EXTERNAL_ADDRESS, X_ENVOY_INTERNAL, X_FORWARDED_FOR};
 use std::net::{IpAddr, SocketAddr};
 
@@ -26,8 +28,10 @@ const HOP_BY_HOP_HEADERS: &[HeaderName] = &[
     header::CONNECTION,
     header::PROXY_AUTHENTICATE,
     header::PROXY_AUTHORIZATION,
-    header::TE,
-    header::TRAILER,
+    // NOTE: (nb) TE and TRAILER headers are intentionally left out as they are be needed for
+    // proper handling of certain requests (e.g., propagating chunked transfer encoding + trialers toward the upstream).
+    // header::TE,
+    // header::TRAILER,
     header::TRANSFER_ENCODING,
     header::UPGRADE,
 ];
@@ -61,9 +65,31 @@ fn filter_disallowed_requests<T>(request: &Request<T>) -> Option<Response<PolyBo
     None
 }
 
+#[inline]
 fn strip_hop_headers(headers: &mut HeaderMap) {
     for header in HOP_BY_HOP_HEADERS {
         headers.remove(header);
+    }
+}
+
+pub fn strip_trailers_headers(http_version: Codec, headers: &mut HeaderMap) {
+    match http_version {
+        Codec::Http1 => {
+            headers.remove(header::TE);
+            headers.remove(header::TRAILER);
+        },
+        // TE header is allowed in HTTP2 only if its value is "trailers"
+        Codec::Http2 => {
+            headers.remove(header::TRAILER);
+            match headers.get(header::TE) {
+                Some(hdr_value) => {
+                    if hdr_value != "trailers" {
+                        headers.remove(header::TE);
+                    }
+                },
+                None => (),
+            }
+        },
     }
 }
 

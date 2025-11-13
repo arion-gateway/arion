@@ -25,7 +25,7 @@ rust-version = "1.86"
 version      = "0.1.0"
 
 [patch.crates-io]
-hyper-util   = { git = "https://internal.invalid/hyper-util.git", branch = "event-handler" }
+hyper-util   = { git = "https://internal.invalid/hyper-util.git", rev = "76db6ec" }
 
 [workspace.dependencies]
 envoy-data-plane-api = { path = "envoy-data-plane-api" }
@@ -53,6 +53,7 @@ num_cpus            = "1"
 ppp                 = "2.3"
 prost               = "0.13"
 prost-build         = "^0.13"
+atomic_enum         = "0.3.0"
 prost-reflect       = { version = "0.14", features = ["derive", "serde"] }
 regex               = "1.10.2"
 serde               = { version = "1", features = ["derive", "rc"] }

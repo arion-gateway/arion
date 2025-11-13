@@ -204,7 +204,7 @@ impl<'a> RequestHandler<(MatchedRequest<'a>, &HttpConnectionManager)> for &Route
                         );
                         Ok(SyntheticHttpResponse::bad_gateway(event_kind, flags).into_response(ver))
                     },
-                    Ok(resp) => Ok(resp),
+                    resp => resp,
                 }
             },
             // http connection not avaiable from cluster...

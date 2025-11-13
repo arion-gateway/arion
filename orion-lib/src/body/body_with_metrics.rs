@@ -76,6 +76,15 @@ mod metrics_enabled {
         pub guard: DropGuard,
     }
 
+    impl<B> std::fmt::Debug for BodyWithMetrics<B>
+    where
+        B: std::fmt::Debug,
+    {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_fmt(format_args!("BodyWithMetrics<{:?}>", self.inner))
+        }
+    }
+
     impl<B> BodyWithMetrics<B> {
         pub fn new<F>(kind: BodyKind, inner: B, on_complete: F) -> Self
         where
@@ -156,6 +165,15 @@ mod metrics_disabled {
         pub inner: B,
         pub guard: (),
         pub state: (),
+    }
+
+    impl<B> std::fmt::Debug for BodyWithMetrics<B>
+    where
+        B: std::fmt::Debug,
+    {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_fmt(format_args!("BodyWithMetrics<{:?}>", self.inner))
+        }
     }
 
     impl<B> BodyWithMetrics<B> {

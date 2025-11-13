@@ -21,6 +21,7 @@ use http::{
     Request, Uri,
 };
 use std::{iter::Cycle, sync::Arc, vec::IntoIter};
+use tracing::debug;
 
 use orion_xds::grpc_deps::{to_grpc_body, GrpcBody};
 use tower::Service;
@@ -56,7 +57,7 @@ impl GrpcService {
         let (mut parts, grpc_body) = grpc_req.into_parts();
 
         // Add scheme and authority to gRPC URLs to make them valid HTTP
-        let mut uri_parts = parts.uri.clone().into_parts();
+        let mut uri_parts = parts.uri.into_parts();
         uri_parts.scheme = Some(self.scheme.clone());
         uri_parts.authority = Some(self.authority.clone());
         parts.uri = Uri::from_parts(uri_parts)?;
@@ -64,7 +65,7 @@ impl GrpcService {
         let http_req = Request::from_parts(
             parts,
             BodyWithMetrics::new(BodyKind::Request, grpc_body.into(), |_bytes, _event_error, _flags| {
-                println!("gRPC request body finalized")
+                debug!("gRPC request body finalized");
             }),
         );
 

@@ -15,10 +15,16 @@
 //
 //
 
-use std::time::Duration;
+use std::{
+    borrow::{Borrow, Cow},
+    time::Duration,
+};
 
 use lru_time_cache::LruCache;
+use ref_cast::RefCast;
 use rustls::ClientConfig;
+
+use orion_error::Context;
 
 use orion_configuration::config::{
     cluster::{ClusterDiscoveryType, HealthCheck, OriginalDstRoutingMethod},
@@ -198,73 +204,95 @@ impl ClusterOps for OriginalDstCluster {
 }
 
 impl OriginalDstCluster {
-    fn apply_port_override(&self, authority: Authority) -> Result<Authority> {
+    fn apply_port_override<'a>(&self, authority: &'a Authority) -> Result<Cow<'a, Authority>> {
         match self.upstream_port_override {
             Some(port_override) => {
                 let host = authority.host();
-                format!("{host}:{port_override}").parse::<Authority>().map_err(|e| {
-                    format!("Failed to apply port override {} for cluster {}: {}", port_override, self.name, e).into()
-                })
+                let upd_auth = format!("{host}:{port_override}").parse::<Authority>().with_context_msg(format!(
+                    "Failed to apply port override {port_override} for cluster {}",
+                    self.name
+                ))?;
+
+                Ok(Cow::Owned(upd_auth))
             },
-            None => Ok(authority),
+            None => Ok(Cow::Borrowed(authority)),
         }
     }
 
-    pub fn get_grpc_connection_by_authority(&mut self, authority: Authority) -> Result<GrpcService> {
+    pub fn get_grpc_connection_by_authority(&mut self, authority: &Authority) -> Result<GrpcService> {
         let authority = self.apply_port_override(authority)?;
-
-        let endpoint_addr = EndpointAddress(authority.clone());
-        if let Some(endpoint) = self.endpoints.get(&endpoint_addr) {
+        let endpoint_addr = EndpointAddress::ref_cast(authority.as_ref());
+        if let Some(endpoint) = self.endpoints.get(endpoint_addr) {
             return endpoint.grpc_service();
         }
 
-        let endpoint =
-            Endpoint::try_new(&authority, &self.http_config, self.bind_device.clone(), self.transport_socket.clone())?;
+        let endpoint = Endpoint::try_new(
+            &endpoint_addr.0,
+            &self.http_config,
+            self.bind_device.clone(),
+            self.transport_socket.clone(),
+        )?;
 
         let grpc_service = endpoint.grpc_service()?;
-        self.endpoints.insert(endpoint_addr, endpoint);
+        self.endpoints.insert(endpoint_addr.clone(), endpoint);
         Ok(grpc_service)
     }
 
-    pub fn get_tcp_connection_by_authority(&mut self, authority: Authority) -> Result<TcpChannelConnector> {
+    pub fn get_tcp_connection_by_authority(&mut self, authority: &Authority) -> Result<TcpChannelConnector> {
         let authority = self.apply_port_override(authority)?;
-
-        let endpoint_addr = EndpointAddress(authority.clone());
-        if let Some(endpoint) = self.endpoints.get(&endpoint_addr) {
+        let endpoint_addr = EndpointAddress::ref_cast(authority.as_ref());
+        if let Some(endpoint) = self.endpoints.get(endpoint_addr) {
             return Ok(endpoint.tcp_channel.clone());
         }
 
-        let endpoint =
-            Endpoint::try_new(&authority, &self.http_config, self.bind_device.clone(), self.transport_socket.clone())?;
+        let endpoint = Endpoint::try_new(
+            &endpoint_addr.0,
+            &self.http_config,
+            self.bind_device.clone(),
+            self.transport_socket.clone(),
+        )?;
+
         let tcp_connector = endpoint.tcp_channel.clone();
-        self.endpoints.insert(endpoint_addr, endpoint);
+        self.endpoints.insert(endpoint_addr.clone(), endpoint);
         Ok(tcp_connector)
     }
 
     pub fn get_http_connection_by_header(&mut self, header_value: &HeaderValue) -> Result<HttpChannel> {
         let authority = Authority::try_from(header_value.as_bytes())
             .map_err(|_| format!("Invalid authority in header for ORIGINAL_DST cluster {}", self.name))?;
-        self.get_http_connection_by_authority(authority)
+        self.get_http_connection_by_authority(&authority)
     }
 
-    pub fn get_http_connection_by_authority(&mut self, authority: Authority) -> Result<HttpChannel> {
+    pub fn get_http_connection_by_authority(&mut self, authority: &Authority) -> Result<HttpChannel> {
         let authority = self.apply_port_override(authority)?;
-
-        let endpoint_addr = EndpointAddress(authority.clone());
-        if let Some(endpoint) = self.endpoints.get(&endpoint_addr) {
+        let endpoint_addr = EndpointAddress::ref_cast(authority.as_ref());
+        if let Some(endpoint) = self.endpoints.get(endpoint_addr) {
             return Ok(endpoint.http_channel.clone());
         }
 
-        let endpoint =
-            Endpoint::try_new(&authority, &self.http_config, self.bind_device.clone(), self.transport_socket.clone())?;
+        let endpoint = Endpoint::try_new(
+            &endpoint_addr.0,
+            &self.http_config,
+            self.bind_device.clone(),
+            self.transport_socket.clone(),
+        )?;
+
         let http_channel = endpoint.http_channel.clone();
-        self.endpoints.insert(endpoint_addr, endpoint);
+        self.endpoints.insert(endpoint_addr.clone(), endpoint);
         Ok(http_channel)
     }
 }
 
+#[derive(RefCast)]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[repr(transparent)]
 struct EndpointAddress(Authority);
+
+impl Borrow<Authority> for EndpointAddress {
+    fn borrow(&self) -> &Authority {
+        &self.0
+    }
+}
 
 impl PartialOrd for EndpointAddress {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
@@ -489,8 +517,8 @@ mod tests {
         let mut cluster = build_original_dst_cluster(config);
 
         let authority = Authority::from_str("localhost:52000").unwrap();
-        let channel1 = cluster.get_http_connection_by_authority(authority.clone()).unwrap();
-        let channel2 = cluster.get_http_connection_by_authority(authority).unwrap();
+        let channel1 = cluster.get_http_connection_by_authority(&authority).unwrap();
+        let channel2 = cluster.get_http_connection_by_authority(&authority).unwrap();
         assert_eq!(channel1.upstream_authority, channel2.upstream_authority);
         assert_eq!(cluster.endpoints.len(), 1);
 
@@ -520,7 +548,7 @@ mod tests {
         let mut cluster = build_original_dst_cluster(config);
 
         let authority = Authority::from_str("localhost:52000").unwrap();
-        let _tcp_future = cluster.get_tcp_connection(RoutingContext::Authority(authority)).unwrap();
+        let _tcp_future = cluster.get_tcp_connection(RoutingContext::Authority(&authority)).unwrap();
 
         let endpoints = cluster.all_tcp_channels();
         assert_eq!(endpoints.len(), 1);
@@ -537,9 +565,9 @@ mod tests {
         let mut cluster = build_original_dst_cluster(config);
 
         let auth1 = Authority::from_str("localhost:5100").unwrap();
-        let auth1_context = RoutingContext::Authority(auth1);
+        let auth1_context = RoutingContext::Authority(&auth1);
         let auth2 = Authority::from_str("localhost:5101").unwrap();
-        let auth2_context = RoutingContext::Authority(auth2);
+        let auth2_context = RoutingContext::Authority(&auth2);
 
         let _grpc1 = cluster.get_grpc_connection(auth1_context).unwrap();
         let _grpc2 = cluster.get_grpc_connection(auth2_context).unwrap();

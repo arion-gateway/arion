@@ -25,11 +25,12 @@ use crate::{
     clusters::retry_policy::RetryCondition,
     event_error::{EventError, EventKind, TryInferFrom},
     listeners::{
-        http_connection_manager::{RequestHandler, TransactionHandler},
+        http_connection_manager::{http_modifiers::strip_trailers_headers, RequestHandler, TransactionHandler},
         synthetic_http_response::SyntheticHttpResponse,
     },
     secrets::{TlsConfigurator, WantsToBuildClient},
     thread_local::{LocalBuilder, LocalObject},
+    transport::timer::PingoraTimer,
     Error, PolyBody, Result,
 };
 use http::{
@@ -41,7 +42,7 @@ use hyper::{body::Incoming, Request, Uri};
 use hyper_rustls::{FixedServerNameResolver, HttpsConnector};
 use hyper_util::{
     client::legacy::{connect::Connect, Builder, Client},
-    rt::tokio::{TokioExecutor, TokioTimer},
+    rt::tokio::TokioExecutor,
 };
 use orion_configuration::config::{
     cluster::http_protocol_options::{Codec, HttpProtocolOptions},
@@ -68,12 +69,12 @@ use std::{
     thread::ThreadId,
     time::{Duration, Instant},
 };
-use tracing::debug;
+use tracing::{debug, enabled, Level};
 use webpki::types::ServerName;
 
 #[cfg(feature = "metrics")]
 use {
-    hyper_util::client::legacy::pool::{ConnectionEvent, EventHandler, Tag},
+    hyper_util::client::legacy::pool::{EventHandler, PoolEvent},
     hyper_util::client::legacy::PoolKey,
     std::any::Any,
 };
@@ -127,6 +128,7 @@ impl HttpChannels {
 pub struct HttpChannel {
     pub client: HttpChannelClient,
     pub http_version: Codec,
+    pub enable_trailers: bool,
     pub upstream_authority: Authority, // upstream authority
     pub cluster_name: &'static str,
 }
@@ -200,6 +202,14 @@ impl HttpChannelBuilder {
         let authority = self.authority.clone().ok_or_else(|| Error::from("Authority is mandatory"))?;
         let client_builder = self.configure_hyper_client();
 
+        // enable_trailers is only valid for HTTP1 and the flag is used to
+        // include the TE and Trailer headers if they were missing from the
+        // original request
+        let enable_trailers = match self.http_protocol_options.codec {
+            Codec::Http1 => self.http_protocol_options.http1_options.enable_trailers,
+            Codec::Http2 => false,
+        };
+
         if let Some(tls_context) = self.tls {
             // Build TLS client inline to avoid ownership issues
             let mut builder =
@@ -231,6 +241,7 @@ impl HttpChannelBuilder {
                     Arc::new(LocalObject::new(client_builder, tls_connector)),
                 )),
                 http_version: self.http_protocol_options.codec,
+                enable_trailers,
                 upstream_authority: authority,
                 cluster_name: self.cluster_name.unwrap_or_default(),
             })
@@ -246,6 +257,7 @@ impl HttpChannelBuilder {
             Ok(HttpChannel {
                 client: HttpChannelClient::Plain(Arc::new(LocalObject::new(client_builder, connector))),
                 http_version: self.http_protocol_options.codec,
+                enable_trailers,
                 upstream_authority: authority,
                 cluster_name: self.cluster_name.unwrap_or_default(),
             })
@@ -255,9 +267,9 @@ impl HttpChannelBuilder {
     fn configure_hyper_client(&self) -> Builder {
         let mut client_builder = Client::builder(TokioExecutor::new());
         client_builder
-            .timer(TokioTimer::new())
+            .timer(PingoraTimer)
             .pool_idle_timeout(self.http_protocol_options.common.idle_timeout.unwrap_or(DEFAULT_IDLE_TIMEOUT))
-            .pool_timer(TokioTimer::new())
+            .pool_timer(PingoraTimer)
             .pool_max_idle_per_host(usize::MAX)
             .set_host(false);
 
@@ -268,7 +280,7 @@ impl HttpChannelBuilder {
         #[cfg(feature = "metrics")]
         {
             let cluster_name = self.cluster_name.unwrap_or_default();
-            client_builder.event_handler(EventHandler::new(update_upstream_stats, cluster_name));
+            client_builder.pool_event_handler(EventHandler::new(update_upstream_stats, cluster_name));
         }
 
         client_builder
@@ -289,9 +301,13 @@ impl HttpChannelBuilder {
 
             client_builder.http2_initial_connection_window_size(http2_options.initial_connection_window_size());
             client_builder.http2_initial_stream_window_size(http2_options.initial_stream_window_size());
+            client_builder.http2_connection_sharing(true);
 
             if let Some(max) = http2_options.max_concurrent_streams() {
-                client_builder.http2_max_concurrent_reset_streams(max);
+                client_builder.http2_initial_max_send_streams(max);
+                if let Ok(max) = u32::try_from(max) {
+                    client_builder.http2_max_concurrent_streams(max);
+                }
             }
         }
     }
@@ -299,51 +315,89 @@ impl HttpChannelBuilder {
 
 #[cfg(feature = "metrics")]
 #[allow(clippy::needless_pass_by_value)]
-fn update_upstream_stats(event: ConnectionEvent, key: &dyn Any, tag: &dyn Tag) {
+fn update_upstream_stats(event: PoolEvent, tag: &dyn Any, keys: &[&PoolKey]) {
     use tracing::debug;
-    let cluster_name = *(tag.as_any().downcast_ref::<&str>().unwrap_or(&""));
+    let cluster_name = *(tag.downcast_ref::<&str>().unwrap_or(&""));
     let shard_id = std::thread::current().id();
-    if let Some(pk) = key.downcast_ref::<PoolKey>() {
-        debug!("HttpClient: {:?} for cluster {:?} (pool_key: {:?})", event, cluster_name, pk);
+
+    for key in keys {
+        debug!("HttpClient: {:?} for cluster {:?} (pool_key: {:?})", event, cluster_name, key);
     }
 
+    let num_events = keys.len() as u64;
     match event {
-        ConnectionEvent::NewConnection => {
-            with_metric!(clusters::UPSTREAM_CX_TOTAL, add, 1, shard_id, &[KeyValue::new("cluster", cluster_name)]);
-            with_metric!(clusters::UPSTREAM_CX_ACTIVE, add, 1, shard_id, &[KeyValue::new("cluster", cluster_name)]);
+        PoolEvent::NewConnection => {
+            with_metric!(
+                clusters::UPSTREAM_CX_TOTAL,
+                add,
+                num_events,
+                shard_id,
+                &[KeyValue::new("cluster", cluster_name)]
+            );
+            with_metric!(
+                clusters::UPSTREAM_CX_ACTIVE,
+                add,
+                num_events,
+                shard_id,
+                &[KeyValue::new("cluster", cluster_name)]
+            );
         },
-        ConnectionEvent::IdleConnectionClosed => {
-            with_metric!(clusters::UPSTREAM_CX_DESTROY, add, 1, shard_id, &[KeyValue::new("cluster", cluster_name)]);
+        PoolEvent::IdleConnectionClosed => {
+            with_metric!(
+                clusters::UPSTREAM_CX_DESTROY,
+                add,
+                num_events,
+                shard_id,
+                &[KeyValue::new("cluster", cluster_name)]
+            );
             with_metric!(
                 clusters::UPSTREAM_CX_IDLE_TIMEOUT,
                 add,
-                1,
+                num_events,
                 shard_id,
                 &[KeyValue::new("cluster", cluster_name)]
             );
-            with_metric!(clusters::UPSTREAM_CX_ACTIVE, sub, 1, shard_id, &[KeyValue::new("cluster", cluster_name)]);
+            with_metric!(
+                clusters::UPSTREAM_CX_ACTIVE,
+                sub,
+                num_events,
+                shard_id,
+                &[KeyValue::new("cluster", cluster_name)]
+            );
         },
-        ConnectionEvent::ConnectionError => {
+        PoolEvent::ConnectionError => {
             with_metric!(
                 clusters::UPSTREAM_CX_CONNECT_FAIL,
                 add,
-                1,
+                num_events,
                 shard_id,
                 &[KeyValue::new("cluster", cluster_name)]
             );
         },
-        ConnectionEvent::ConnectionTimeout => {
+        PoolEvent::ConnectionTimeout => {
             with_metric!(
                 clusters::UPSTREAM_CX_CONNECT_TIMEOUT,
                 add,
-                1,
+                num_events,
                 shard_id,
                 &[KeyValue::new("cluster", cluster_name)]
             );
         },
-        ConnectionEvent::ConnectionClosed => {
-            with_metric!(clusters::UPSTREAM_CX_DESTROY, add, 1, shard_id, &[KeyValue::new("cluster", cluster_name)]);
-            with_metric!(clusters::UPSTREAM_CX_ACTIVE, sub, 1, shard_id, &[KeyValue::new("cluster", cluster_name)]);
+        PoolEvent::ConnectionClosed => {
+            with_metric!(
+                clusters::UPSTREAM_CX_DESTROY,
+                add,
+                num_events,
+                shard_id,
+                &[KeyValue::new("cluster", cluster_name)]
+            );
+            with_metric!(
+                clusters::UPSTREAM_CX_ACTIVE,
+                sub,
+                num_events,
+                shard_id,
+                &[KeyValue::new("cluster", cluster_name)]
+            );
         },
     }
 }
@@ -511,6 +565,33 @@ impl HttpChannel {
             _ => {
                 with_metric!(clusters::UPSTREAM_RQ_TOTAL, add, 1, thread_id, &[KeyValue::new("cluster", cluster_name)]);
                 let start_time = Instant::now();
+
+                let mut req = if enabled!(Level::DEBUG) {
+                    use futures::StreamExt;
+
+                    let (hdr, body) = req.into_parts();
+                    let mut stream = http_body_util::BodyStream::new(body);
+                    let (new_body, tx) = PolyBody::new_stream_body(16);
+
+                    tokio::spawn(async move {
+                        while let Some(chunk_result) = stream.next().await {
+                            debug!("upstream frame: {:?}", chunk_result);
+                            _ = tx.send(chunk_result.map_err(Into::into)).await;
+                        }
+                    });
+
+                    Request::from_parts(
+                        hdr,
+                        BodyWithMetrics::new(crate::body::response_flags::BodyKind::Request, new_body, |_, _, _| {}),
+                    )
+                } else {
+                    req
+                };
+
+                if !self.enable_trailers {
+                    strip_trailers_headers(self.http_version, req.headers_mut());
+                }
+
                 let resp = sender.request(req).await.map_err(Error::from);
                 (resp, start_time.elapsed())
             },
