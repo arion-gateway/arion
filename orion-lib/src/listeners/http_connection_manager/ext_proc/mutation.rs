@@ -17,6 +17,23 @@ const PSEUDO_HEADER_AUTHORITY: &str = ":authority";
 const PSEUDO_HEADER_PATH: &str = ":path";
 const PSEUDO_HEADER_STATUS: &str = ":status";
 
+/// Extracts the string value from a `HeaderValueOption`.
+/// Returns:
+/// - None if the header is not present
+/// - Some(Ok(s)) if the value was successfully extracted as a string
+/// - Some(Err(())) if `raw_value` contains invalid UTF-8
+fn try_extract_header_value_as_str(opt: &HeaderValueOption) -> Option<Result<&str, ()>> {
+    match opt.header.as_ref() {
+        Some(h) if !h.raw_value.is_empty() => {
+            Some(std::str::from_utf8(&h.raw_value).map_err(|_| ()))
+        },
+        Some(h) => {
+            Some(Ok(h.value.as_str()))
+        },
+        None => None,
+    }
+}
+
 /// Holds the pseudo-headers that need to be applied to a request
 struct PseudoHeaders<'a> {
     method: Option<&'a HeaderValueOption>,
@@ -69,26 +86,18 @@ pub fn apply_request_header_mutations<B>(
     // Apply pseudo-headers
     if !pseudo_headers.is_empty() {
         // Handle :method separately as it's not part of URI
-        if let Some(method_str) = pseudo_headers.method {
+        if let Some(method_opt) = pseudo_headers.method {
             if mutation_rules.map(|r| r.is_modification_permitted(PSEUDO_HEADER_METHOD)).unwrap_or(true) {
-                match method_str.header.as_ref() {
-                    Some(h) if !h.raw_value.is_empty() => {
-                        if let Ok(method) = std::str::from_utf8(&h.raw_value) {
-                            if let Ok(new_method) = http::Method::from_bytes(method.as_bytes()) {
-                                *req.method_mut() = new_method;
-                            } else {
-                                warn!(target: "ext_proc", "Invalid method in request mutation: {}", method);
-                            }
-                        } else {
-                            warn!(target: "ext_proc", "Invalid UTF-8 method in request mutation");
-                        }
-                    },
-                    Some(h) => {
-                        if let Ok(new_method) = http::Method::from_bytes(h.value.as_str().as_bytes()) {
+                match try_extract_header_value_as_str(method_opt) {
+                    Some(Ok(method)) => {
+                        if let Ok(new_method) = http::Method::from_bytes(method.as_bytes()) {
                             *req.method_mut() = new_method;
                         } else {
-                            warn!(target: "ext_proc", "Invalid method in request mutation: {}", h.value);
+                            warn!(target: "ext_proc", "Invalid method in request mutation: {}", method);
                         }
+                    },
+                    Some(Err(())) => {
+                        warn!(target: "ext_proc", "Invalid UTF-8 in method mutation");
                     },
                     None => {},
                 }
@@ -99,82 +108,54 @@ pub fn apply_request_header_mutations<B>(
         if pseudo_headers.scheme.is_some() || pseudo_headers.authority.is_some() || pseudo_headers.path.is_some() {
             let mut parts = req.uri().clone().into_parts();
 
-            if let Some(scheme_str) = pseudo_headers.scheme {
-                if mutation_rules.map(|r| r.is_modification_permitted(PSEUDO_HEADER_SCHEME)).unwrap_or(true)
-                {
-                    match scheme_str.header.as_ref() {
-                        Some(h) if !h.raw_value.is_empty() => {
-                            if let Ok(scheme) = std::str::from_utf8(&h.raw_value) {
-                                if let Ok(scheme) = Scheme::try_from(scheme) {
-                                    parts.scheme = Some(scheme);
-                                } else {
-                                    warn!(target: "ext_proc", "Invalid scheme in request mutation: {}", scheme);
-                                }
-                            } else {
-                                warn!(target: "ext_proc", "Invalid UTF-8 scheme in request mutation");
-                            }
-                        },
-                        Some(h) => {
-                            if let Ok(scheme) = Scheme::try_from(h.value.as_str()) {
+            if let Some(scheme_opt) = pseudo_headers.scheme {
+                if mutation_rules.map(|r| r.is_modification_permitted(PSEUDO_HEADER_SCHEME)).unwrap_or(true) {
+                    match try_extract_header_value_as_str(scheme_opt) {
+                        Some(Ok(scheme)) => {
+                            if let Ok(scheme) = Scheme::try_from(scheme) {
                                 parts.scheme = Some(scheme);
                             } else {
-                                warn!(target: "ext_proc", "Invalid scheme in request mutation: {}", h.value);
+                                warn!(target: "ext_proc", "Invalid scheme in request mutation: {}", scheme);
                             }
+                        },
+                        Some(Err(())) => {
+                            warn!(target: "ext_proc", "Invalid UTF-8 in scheme mutation");
                         },
                         None => {},
                     }
                 }
             }
 
-            if let Some(authority_str) = pseudo_headers.authority {
-                if mutation_rules
-                    .map(|r| r.is_modification_permitted(PSEUDO_HEADER_AUTHORITY))
-                    .unwrap_or(true)
-                {
-                    match authority_str.header.as_ref() {
-                        Some(h) if !h.raw_value.is_empty() => {
-                            if let Ok(authority) = std::str::from_utf8(&h.raw_value) {
-                                if let Ok(authority) = Authority::try_from(authority) {
-                                    parts.authority = Some(authority);
-                                } else {
-                                    warn!(target: "ext_proc", "Invalid authority in request mutation: {}", authority);
-                                }
-                            } else {
-                                warn!(target: "ext_proc", "Invalid UTF-8 authority in request mutation");
-                            }
-                        },
-                        Some(h) => {
-                            if let Ok(authority) = Authority::try_from(h.value.as_str()) {
+            if let Some(authority_opt) = pseudo_headers.authority {
+                if mutation_rules.map(|r| r.is_modification_permitted(PSEUDO_HEADER_AUTHORITY)).unwrap_or(true) {
+                    match try_extract_header_value_as_str(authority_opt) {
+                        Some(Ok(authority)) => {
+                            if let Ok(authority) = Authority::try_from(authority) {
                                 parts.authority = Some(authority);
                             } else {
-                                warn!(target: "ext_proc", "Invalid authority in request mutation: {}", h.value);
+                                warn!(target: "ext_proc", "Invalid authority in request mutation: {}", authority);
                             }
+                        },
+                        Some(Err(())) => {
+                            warn!(target: "ext_proc", "Invalid UTF-8 in authority mutation");
                         },
                         None => {},
                     }
                 }
             }
 
-            if let Some(path_str) = pseudo_headers.path {
+            if let Some(path_opt) = pseudo_headers.path {
                 if mutation_rules.map(|r| r.is_modification_permitted(PSEUDO_HEADER_PATH)).unwrap_or(true) {
-                    match path_str.header.as_ref() {
-                        Some(h) if !h.raw_value.is_empty() => {
-                            if let Ok(path) = std::str::from_utf8(&h.raw_value) {
-                                if let Ok(path_and_query) = PathAndQuery::try_from(path) {
-                                    parts.path_and_query = Some(path_and_query);
-                                } else {
-                                    warn!(target: "ext_proc", "Invalid path in request mutation: {}", path);
-                                }
-                            } else {
-                                warn!(target: "ext_proc", "Invalid UTF-8 path in request mutation");
-                            }
-                        },
-                        Some(h) => {
-                            if let Ok(path_and_query) = PathAndQuery::try_from(h.value.as_str()) {
+                    match try_extract_header_value_as_str(path_opt) {
+                        Some(Ok(path)) => {
+                            if let Ok(path_and_query) = PathAndQuery::try_from(path) {
                                 parts.path_and_query = Some(path_and_query);
                             } else {
-                                warn!(target: "ext_proc", "Invalid path in request mutation: {}", h.value);
+                                warn!(target: "ext_proc", "Invalid path in request mutation: {}", path);
                             }
+                        },
+                        Some(Err(())) => {
+                            warn!(target: "ext_proc", "Invalid UTF-8 in path mutation");
                         },
                         None => {},
                     }
@@ -187,7 +168,7 @@ pub fn apply_request_header_mutations<B>(
         }
     }
 
-    // Handle regular headers with the split mutation
+    // Handle regular headers
     apply_header_mutations(req.headers_mut(), mutation, mutation_rules)
 }
 
@@ -199,32 +180,22 @@ pub fn apply_response_header_mutations<B>(
     let pseudo_headers = PseudoHeaders::from(mutation);
 
     // Handle :status pseudo-header
-    if let Some(status_str) = pseudo_headers.status {
+    if let Some(status_opt) = pseudo_headers.status {
         if mutation_rules.map(|r| r.is_modification_permitted(PSEUDO_HEADER_STATUS)).unwrap_or(true) {
-            match status_str.header.as_ref() {
-                Some(h) if !h.raw_value.is_empty() => {
-                    if let Ok(status_bytes) = std::str::from_utf8(&h.raw_value) {
-                        if let Ok(status_code) = status_bytes.parse::<u16>() {
-                            if let Ok(new_code) = http::StatusCode::from_u16(status_code) {
-                                *resp.status_mut() = new_code;
-                            } else {
-                                warn!(target: "ext_proc", "Invalid status code in response mutation: {}", status_code);
-                            }
-                        }
-                    } else {
-                        warn!(target: "ext_proc", "Invalid UTF-8 status code in response mutation");
-                    }
-                },
-                Some(h) => {
-                    if let Ok(status_code) = h.value.as_str().parse::<u16>() {
+            match try_extract_header_value_as_str(status_opt) {
+                Some(Ok(status_str)) => {
+                    if let Ok(status_code) = status_str.parse::<u16>() {
                         if let Ok(new_code) = http::StatusCode::from_u16(status_code) {
                             *resp.status_mut() = new_code;
                         } else {
                             warn!(target: "ext_proc", "Invalid status code in response mutation: {}", status_code);
                         }
                     } else {
-                        warn!(target: "ext_proc", "Invalid status code in response mutation: {}", h.value);
+                        warn!(target: "ext_proc", "Failed to parse status code: {}", status_str);
                     }
+                },
+                Some(Err(())) => {
+                    warn!(target: "ext_proc", "Invalid UTF-8 in status code mutation");
                 },
                 None => {},
             }
