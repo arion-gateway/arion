@@ -1,9 +1,248 @@
+use http::{
+    uri::{Authority, PathAndQuery, Scheme, Uri},
+    Request, Response,
+};
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::ext_proc::HeaderMutationRules;
 use orion_data_plane_api::envoy_data_plane_api::envoy::{
-    config::core::v3::header_value_option::HeaderAppendAction, service::ext_proc::v3::HeaderMutation,
+    config::core::v3::{header_value_option::HeaderAppendAction, HeaderValueOption},
+    service::ext_proc::v3::HeaderMutation,
 };
+use tracing::warn;
 
 use crate::Error;
+
+const PSEUDO_HEADER_METHOD: &str = ":method";
+const PSEUDO_HEADER_SCHEME: &str = ":scheme";
+const PSEUDO_HEADER_AUTHORITY: &str = ":authority";
+const PSEUDO_HEADER_PATH: &str = ":path";
+const PSEUDO_HEADER_STATUS: &str = ":status";
+
+/// Holds the pseudo-headers that need to be applied to a request
+struct PseudoHeaders<'a> {
+    method: Option<&'a HeaderValueOption>,
+    scheme: Option<&'a HeaderValueOption>,
+    authority: Option<&'a HeaderValueOption>,
+    path: Option<&'a HeaderValueOption>,
+    status: Option<&'a HeaderValueOption>,
+}
+
+impl<'a> PseudoHeaders<'a> {
+    fn new() -> Self {
+        PseudoHeaders { method: None, scheme: None, authority: None, path: None, status: None }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.method.is_none() && self.scheme.is_none() && self.authority.is_none() && self.path.is_none()
+    }
+}
+
+impl<'a> From<&'a HeaderMutation> for PseudoHeaders<'a> {
+    fn from(mutation: &'a HeaderMutation) -> Self {
+        let mut pseudo_headers: PseudoHeaders<'a> = PseudoHeaders::new();
+
+        for header_to_set in &mutation.set_headers {
+            let Some(header) = &header_to_set.header else { continue };
+
+            match header.key.as_str() {
+                PSEUDO_HEADER_METHOD => pseudo_headers.method = Some(header_to_set),
+                PSEUDO_HEADER_SCHEME => pseudo_headers.scheme = Some(header_to_set),
+                PSEUDO_HEADER_AUTHORITY => pseudo_headers.authority = Some(header_to_set),
+                PSEUDO_HEADER_PATH => pseudo_headers.path = Some(header_to_set),
+                PSEUDO_HEADER_STATUS => pseudo_headers.status = Some(header_to_set),
+                _ => {},
+            }
+        }
+
+        pseudo_headers
+    }
+}
+
+#[allow(clippy::str_to_string)]
+#[allow(clippy::unnecessary_to_owned)]
+pub fn apply_request_header_mutations<B>(
+    req: &mut Request<B>,
+    mutation: &HeaderMutation,
+    mutation_rules: Option<&HeaderMutationRules>,
+) -> Result<(), Error> {
+    let pseudo_headers = PseudoHeaders::from(mutation);
+
+    // Apply pseudo-headers
+    if !pseudo_headers.is_empty() {
+        // Handle :method separately as it's not part of URI
+        if let Some(method_str) = pseudo_headers.method {
+            if mutation_rules.map(|r| r.is_modification_permitted(PSEUDO_HEADER_METHOD)).unwrap_or(true) {
+                match method_str.header.as_ref() {
+                    Some(h) if !h.raw_value.is_empty() => {
+                        if let Ok(method) = std::str::from_utf8(&h.raw_value) {
+                            if let Ok(new_method) = http::Method::from_bytes(method.as_bytes()) {
+                                *req.method_mut() = new_method;
+                            } else {
+                                warn!(target: "ext_proc", "Invalid method in request mutation: {}", method);
+                            }
+                        } else {
+                            warn!(target: "ext_proc", "Invalid UTF-8 method in request mutation");
+                        }
+                    },
+                    Some(h) => {
+                        if let Ok(new_method) = http::Method::from_bytes(h.value.as_str().as_bytes()) {
+                            *req.method_mut() = new_method;
+                        } else {
+                            warn!(target: "ext_proc", "Invalid method in request mutation: {}", h.value);
+                        }
+                    },
+                    None => {},
+                }
+            }
+        }
+
+        // Handle URI-related pseudo-headers in a single pass
+        if pseudo_headers.scheme.is_some() || pseudo_headers.authority.is_some() || pseudo_headers.path.is_some() {
+            let mut parts = req.uri().clone().into_parts();
+
+            if let Some(scheme_str) = pseudo_headers.scheme {
+                if mutation_rules.map(|r| r.is_modification_permitted(PSEUDO_HEADER_SCHEME)).unwrap_or(true)
+                {
+                    match scheme_str.header.as_ref() {
+                        Some(h) if !h.raw_value.is_empty() => {
+                            if let Ok(scheme) = std::str::from_utf8(&h.raw_value) {
+                                if let Ok(scheme) = Scheme::try_from(scheme) {
+                                    parts.scheme = Some(scheme);
+                                } else {
+                                    warn!(target: "ext_proc", "Invalid scheme in request mutation: {}", scheme);
+                                }
+                            } else {
+                                warn!(target: "ext_proc", "Invalid UTF-8 scheme in request mutation");
+                            }
+                        },
+                        Some(h) => {
+                            if let Ok(scheme) = Scheme::try_from(h.value.as_str()) {
+                                parts.scheme = Some(scheme);
+                            } else {
+                                warn!(target: "ext_proc", "Invalid scheme in request mutation: {}", h.value);
+                            }
+                        },
+                        None => {},
+                    }
+                }
+            }
+
+            if let Some(authority_str) = pseudo_headers.authority {
+                if mutation_rules
+                    .map(|r| r.is_modification_permitted(PSEUDO_HEADER_AUTHORITY))
+                    .unwrap_or(true)
+                {
+                    match authority_str.header.as_ref() {
+                        Some(h) if !h.raw_value.is_empty() => {
+                            if let Ok(authority) = std::str::from_utf8(&h.raw_value) {
+                                if let Ok(authority) = Authority::try_from(authority) {
+                                    parts.authority = Some(authority);
+                                } else {
+                                    warn!(target: "ext_proc", "Invalid authority in request mutation: {}", authority);
+                                }
+                            } else {
+                                warn!(target: "ext_proc", "Invalid UTF-8 authority in request mutation");
+                            }
+                        },
+                        Some(h) => {
+                            if let Ok(authority) = Authority::try_from(h.value.as_str()) {
+                                parts.authority = Some(authority);
+                            } else {
+                                warn!(target: "ext_proc", "Invalid authority in request mutation: {}", h.value);
+                            }
+                        },
+                        None => {},
+                    }
+                }
+            }
+
+            if let Some(path_str) = pseudo_headers.path {
+                if mutation_rules.map(|r| r.is_modification_permitted(PSEUDO_HEADER_PATH)).unwrap_or(true) {
+                    match path_str.header.as_ref() {
+                        Some(h) if !h.raw_value.is_empty() => {
+                            if let Ok(path) = std::str::from_utf8(&h.raw_value) {
+                                if let Ok(path_and_query) = PathAndQuery::try_from(path) {
+                                    parts.path_and_query = Some(path_and_query);
+                                } else {
+                                    warn!(target: "ext_proc", "Invalid path in request mutation: {}", path);
+                                }
+                            } else {
+                                warn!(target: "ext_proc", "Invalid UTF-8 path in request mutation");
+                            }
+                        },
+                        Some(h) => {
+                            if let Ok(path_and_query) = PathAndQuery::try_from(h.value.as_str()) {
+                                parts.path_and_query = Some(path_and_query);
+                            } else {
+                                warn!(target: "ext_proc", "Invalid path in request mutation: {}", h.value);
+                            }
+                        },
+                        None => {},
+                    }
+                }
+            }
+
+            if let Ok(new_uri) = Uri::from_parts(parts) {
+                *req.uri_mut() = new_uri;
+            }
+        }
+    }
+
+    // Handle regular headers with the split mutation
+    apply_header_mutations(req.headers_mut(), mutation, mutation_rules)
+}
+
+pub fn apply_response_header_mutations<B>(
+    resp: &mut Response<B>,
+    mutation: &HeaderMutation,
+    mutation_rules: Option<&HeaderMutationRules>,
+) -> Result<(), Error> {
+    let pseudo_headers = PseudoHeaders::from(mutation);
+
+    // Handle :status pseudo-header
+    if let Some(status_str) = pseudo_headers.status {
+        if mutation_rules.map(|r| r.is_modification_permitted(PSEUDO_HEADER_STATUS)).unwrap_or(true) {
+            match status_str.header.as_ref() {
+                Some(h) if !h.raw_value.is_empty() => {
+                    if let Ok(status_bytes) = std::str::from_utf8(&h.raw_value) {
+                        if let Ok(status_code) = status_bytes.parse::<u16>() {
+                            if let Ok(new_code) = http::StatusCode::from_u16(status_code) {
+                                *resp.status_mut() = new_code;
+                            } else {
+                                warn!(target: "ext_proc", "Invalid status code in response mutation: {}", status_code);
+                            }
+                        }
+                    } else {
+                        warn!(target: "ext_proc", "Invalid UTF-8 status code in response mutation");
+                    }
+                },
+                Some(h) => {
+                    if let Ok(status_code) = h.value.as_str().parse::<u16>() {
+                        if let Ok(new_code) = http::StatusCode::from_u16(status_code) {
+                            *resp.status_mut() = new_code;
+                        } else {
+                            warn!(target: "ext_proc", "Invalid status code in response mutation: {}", status_code);
+                        }
+                    } else {
+                        warn!(target: "ext_proc", "Invalid status code in response mutation: {}", h.value);
+                    }
+                },
+                None => {},
+            }
+        }
+    }
+
+    // Handle regular headers
+    apply_header_mutations(resp.headers_mut(), mutation, mutation_rules)
+}
+
+#[inline]
+pub fn apply_trailer_mutations(
+    trailers: &mut http::HeaderMap,
+    mutation: &HeaderMutation,
+    mutation_rules: Option<&HeaderMutationRules>,
+) -> Result<(), Error> {
+    apply_header_mutations(trailers, mutation, mutation_rules)
+}
 
 pub fn apply_header_mutations(
     headers: &mut http::HeaderMap,

@@ -1,7 +1,7 @@
 use crate::body::channel_body::FrameBridge;
 use crate::event_error::EventFailure;
 use crate::listeners::http_connection_manager::ext_proc::kind;
-use crate::listeners::http_connection_manager::ext_proc::mutation::apply_header_mutations;
+use crate::listeners::http_connection_manager::ext_proc::mutation::apply_trailer_mutations;
 use crate::listeners::http_connection_manager::ext_proc::r#override::{
     OverridableGlobalModes, OverridableModeSelector,
 };
@@ -353,7 +353,7 @@ impl<Msg: kind::MsgType + OverridableModeSelector> Processing<kind::Processing, 
             // update the local version of trailers, if required if let Some(trailers) = self.body_context.trailers.as_mut() {
             debug!(target: "ext_proc", "handle_trailers_response: mutating trailers...");
             if let Some(ref trailers_updates) = trailers_response.header_mutation {
-                let _ = apply_header_mutations(&mut trailers, trailers_updates, None);
+                let _ = apply_trailer_mutations(&mut trailers, trailers_updates, None);
             }
 
             _ = self.frame_bridge.inject_frame(Ok(Frame::trailers(trailers))).await;

@@ -7,7 +7,7 @@ mod worker_config;
 
 use crate::body::channel_body::{ChannelBody, FrameBridge};
 use crate::event_error::EventFailure;
-use crate::listeners::http_connection_manager::ext_proc::mutation::apply_header_mutations;
+use crate::listeners::http_connection_manager::ext_proc::mutation::{apply_request_header_mutations, apply_response_header_mutations};
 use crate::listeners::http_connection_manager::ext_proc::processing::RequestProcessing;
 use crate::listeners::http_connection_manager::ext_proc::processing::ResponseProcessing;
 use crate::listeners::http_connection_manager::ext_proc::r#override::{OverridableBodyMode, OverridableGlobalModes};
@@ -258,8 +258,8 @@ impl ExternalProcessor {
                 debug!(target: "ext_proc", "apply_request: RequestReady...");
                 if let Some(headers_modifications) = headers_modifications {
                     debug!(target: "ext_proc", "applying headers mutation...");
-                    if let Err(e) = apply_header_mutations(
-                        request.headers_mut(),
+                    if let Err(e) = apply_request_header_mutations(
+                        request,
                         &headers_modifications,
                         Some(&self.worker_config.mutation_rules),
                     ) {
@@ -379,8 +379,7 @@ impl ExternalProcessor {
                 debug!(target: "ext_proc", "apply_response: ResponseReady...");
                 if let Some(headers_modifications) = headers_modifications {
                     debug!(target: "ext_proc", "applying headers mutation...");
-                    if let Err(e) = apply_header_mutations(
-                        response.headers_mut(),
+                    if let Err(e) = apply_response_header_mutations(response,
                         &headers_modifications,
                         Some(&self.worker_config.mutation_rules),
                     ) {
@@ -1195,7 +1194,7 @@ impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
         let mut response = Response::new(crate::PolyBody::from(body));
         *response.status_mut() = status;
         if let Some(header_mutation) = &response_attempt.headers {
-            let _ = apply_header_mutations(response.headers_mut(), header_mutation, Some(&self.config.mutation_rules));
+            let _ = apply_response_header_mutations(&mut response, header_mutation, Some(&self.config.mutation_rules));
         }
         if let Some(grpc_status) = &response_attempt.grpc_status {
             if let Ok(status_value) = http::HeaderValue::from_str(&grpc_status.status.to_string()) {
@@ -1216,6 +1215,7 @@ mod tests {
             r#override::ModeSelector,
         },
     };
+    use crate::listeners::http_connection_manager::ext_proc::mutation::apply_header_mutations;
     use http::{Method, Version};
     use http_body_util::{BodyExt, Empty, Full};
     use orion_configuration::config::network_filters::http_connection_manager::http_filters::ext_proc::{
