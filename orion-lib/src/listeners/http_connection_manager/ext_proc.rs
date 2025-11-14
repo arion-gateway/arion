@@ -1240,7 +1240,7 @@ mod tests {
             r#override::ModeSelector,
         },
     };
-    use http::{Method, Version};
+    use http::{Method, StatusCode, Version};
     use http_body_util::{BodyExt, Empty, Full};
     use orion_configuration::config::network_filters::http_connection_manager::http_filters::ext_proc::{
         BodyProcessingMode, ExternalProcessor as ExternalProcessorConfig, GoogleGrpc, GrpcService,
@@ -1251,6 +1251,7 @@ mod tests {
             config::core::v3::{
                 header_value_option::HeaderAppendAction, HeaderValue as EnvoyHeaderValue, HeaderValueOption,
             },
+            r#type::v3::HttpStatus as EnvoyHttpStatus,
             service::ext_proc::v3::{
                 body_mutation::Mutation,
                 common_response::ResponseStatus,
@@ -1482,11 +1483,9 @@ mod tests {
         resp.body(body).unwrap()
     }
 
-    fn create_config_for_ext_proc_filter(
+    fn create_default_config_for_ext_proc_filter(
         server_addr: SocketAddr,
         processing_mode: ProcessingMode,
-        observability_mode: bool,
-        failure_mode_allow: bool,
     ) -> ExternalProcessorConfig {
         ExternalProcessorConfig {
             grpc_service: GrpcService {
@@ -1496,8 +1495,8 @@ mod tests {
                 timeout: Some(Duration::from_secs(1)),
             },
             processing_mode: Some(processing_mode),
-            observability_mode,
-            failure_mode_allow,
+            observability_mode: false,
+            failure_mode_allow: false,
             disable_immediate_response: false,
             forward_rules: None,
             mutation_rules: None,
@@ -1561,6 +1560,30 @@ mod tests {
                     raw_value: vec![],
                 })
                 .collect(),
+        }
+    }
+
+    fn create_immediate_response(
+        headers: Vec<Option<(&str, &str)>>,
+        body_data: Option<Vec<u8>>,
+        status: i32,
+    ) -> ProcessingResponse {
+        let response_headers = transform(headers).and_then(|hdrs| create_header_mutation(hdrs));
+        let response_body = body_data.unwrap_or_default();
+
+        let immediate_response = ImmediateResponse {
+            status: Some(EnvoyHttpStatus { code: status }),
+            headers: response_headers,
+            body: response_body,
+            grpc_status: None,
+            details: "immediate_response".to_string(),
+        };
+
+        ProcessingResponse {
+            response: Some(ProcessingResponseType::ImmediateResponse(immediate_response)),
+            mode_override: None,
+            dynamic_metadata: None,
+            override_message_timeout: None,
         }
     }
 
@@ -1930,8 +1953,6 @@ mod tests {
     async fn test_request_combinatorial_modes_continue() {
         let status = ResponseStatus::Continue;
         let is_response = false;
-        let observability_mode = false;
-        let failure_mode_allow = false;
         let mut test_case_num = 0;
 
         let mock_states = generate_mock_external_processors_states(status, is_response);
@@ -1944,12 +1965,10 @@ mod tests {
                     if validate_mock_server_configuration(mock_request, processing_mode, mock_state) {
                         debug!(target: "ext_proc_tests", "Test case #: {test_case_num}");
                         let (server_addr, server_handle) = start_mock_server(mock_state.clone()).await;
-                        let config = create_config_for_ext_proc_filter(
-                            server_addr,
-                            processing_mode.clone(),
-                            observability_mode,
-                            failure_mode_allow,
-                        );
+                        let mut config =
+                            create_default_config_for_ext_proc_filter(server_addr, processing_mode.clone());
+                        config.observability_mode = false;
+                        config.failure_mode_allow = false;
                         let mut ext_proc = ExternalProcessor::from(config);
                         let mut request = build_request_from_mock(mock_request);
                         let result = ext_proc.apply_request(&mut request).await;
@@ -1991,8 +2010,6 @@ mod tests {
     async fn test_response_combinatorial_modes_continue() {
         let status = ResponseStatus::Continue;
         let is_response = true;
-        let observability_mode = false;
-        let failure_mode_allow = false;
         let mut test_case_num = 0;
 
         let mock_states = generate_mock_external_processors_states(status, is_response);
@@ -2005,12 +2022,10 @@ mod tests {
                     if validate_mock_server_configuration(mock_response, processing_mode, mock_state) {
                         debug!(target: "ext_proc_tests", "Test case #: {test_case_num}");
                         let (server_addr, server_handle) = start_mock_server(mock_state.clone()).await;
-                        let config = create_config_for_ext_proc_filter(
-                            server_addr,
-                            processing_mode.clone(),
-                            observability_mode,
-                            failure_mode_allow,
-                        );
+                        let mut config =
+                            create_default_config_for_ext_proc_filter(server_addr, processing_mode.clone());
+                        config.observability_mode = false;
+                        config.failure_mode_allow = false;
                         let mut ext_proc = ExternalProcessor::from(config);
                         let mut response = build_response_from_mock(mock_response);
                         let result = ext_proc.apply_response(&mut response).await;
@@ -2051,8 +2066,6 @@ mod tests {
     #[test_log::test]
     async fn test_request_combinatorial_modes_observability() {
         let is_response = false;
-        let observability_mode = true;
-        let failure_mode_allow = false;
         let mut test_case_num = 0;
 
         let mock_state = MockExternalProcessorState::new();
@@ -2064,12 +2077,9 @@ mod tests {
                 if validate_mock_server_configuration(mock_request, processing_mode, &mock_state) {
                     debug!(target: "ext_proc_tests", "Test case #: {test_case_num}");
                     let (server_addr, server_handle) = start_mock_server(mock_state.clone()).await;
-                    let config = create_config_for_ext_proc_filter(
-                        server_addr,
-                        processing_mode.clone(),
-                        observability_mode,
-                        failure_mode_allow,
-                    );
+                    let mut config = create_default_config_for_ext_proc_filter(server_addr, processing_mode.clone());
+                    config.observability_mode = true;
+                    config.failure_mode_allow = false;
                     let mut ext_proc = ExternalProcessor::from(config);
                     let mut request = build_request_from_mock(mock_request);
                     let result = ext_proc.apply_request(&mut request).await;
@@ -2109,8 +2119,6 @@ mod tests {
     #[test_log::test]
     async fn test_response_combinatorial_modes_observability() {
         let is_response = true;
-        let observability_mode = true;
-        let failure_mode_allow = false;
         let mut test_case_num = 0;
 
         let mock_state = MockExternalProcessorState::new();
@@ -2122,12 +2130,9 @@ mod tests {
                 if validate_mock_server_configuration(mock_response, processing_mode, &mock_state) {
                     debug!(target: "ext_proc_tests", "Test case #: {test_case_num}");
                     let (server_addr, server_handle) = start_mock_server(mock_state.clone()).await;
-                    let config = create_config_for_ext_proc_filter(
-                        server_addr,
-                        processing_mode.clone(),
-                        observability_mode,
-                        failure_mode_allow,
-                    );
+                    let mut config = create_default_config_for_ext_proc_filter(server_addr, processing_mode.clone());
+                    config.observability_mode = true;
+                    config.failure_mode_allow = false;
                     let mut ext_proc = ExternalProcessor::from(config);
                     let mut response = build_response_from_mock(mock_response);
                     let result = ext_proc.apply_response(&mut response).await;
@@ -2166,8 +2171,6 @@ mod tests {
     #[tokio::test]
     #[test_log::test]
     async fn test_request_header_mutation() {
-        let observability_mode = false;
-        let failure_mode_allow = false;
         let mock_state = MockExternalProcessorState::new().add_response(create_headers_response(
             vec![Some(("x-processed", "true")), Some(("x-custom-header", "custom-value"))],
             None,
@@ -2186,8 +2189,9 @@ mod tests {
             response_trailer_mode: TrailerProcessingMode::Skip,
         };
 
-        let config =
-            create_config_for_ext_proc_filter(server_addr, processing_mode, observability_mode, failure_mode_allow);
+        let mut config = create_default_config_for_ext_proc_filter(server_addr, processing_mode);
+        config.observability_mode = false;
+        config.failure_mode_allow = false;
         let mut ext_proc = ExternalProcessor::from(config);
 
         let mut request = build_request_from_mock(&Mock::<RequestMsg> {
@@ -2207,8 +2211,6 @@ mod tests {
     #[tokio::test]
     #[test_log::test]
     async fn test_request_header_mutation_pseudo_headers() {
-        let observability_mode = false;
-        let failure_mode_allow = false;
         let mock_state = MockExternalProcessorState::new().add_response(create_headers_response(
             vec![
                 Some((":method", "POST")),
@@ -2232,8 +2234,9 @@ mod tests {
             response_trailer_mode: TrailerProcessingMode::Skip,
         };
 
-        let config =
-            create_config_for_ext_proc_filter(server_addr, processing_mode, observability_mode, failure_mode_allow);
+        let mut config = create_default_config_for_ext_proc_filter(server_addr, processing_mode.clone());
+        config.observability_mode = false;
+        config.failure_mode_allow = false;
         let mut ext_proc = ExternalProcessor::from(config);
 
         let mut request = build_request_from_mock(&Mock::<RequestMsg> {
@@ -2255,8 +2258,6 @@ mod tests {
     #[tokio::test]
     #[test_log::test]
     async fn test_request_trailer_mutation() {
-        let observability_mode = false;
-        let failure_mode_allow = false;
         let mock_state = MockExternalProcessorState::new()
             .add_response(create_headers_response(vec![], None, vec![], ResponseStatus::Continue as i32, None, false))
             .add_response(create_body_response(vec![], None, vec![], ResponseStatus::Continue as i32, None, false))
@@ -2274,8 +2275,9 @@ mod tests {
             response_trailer_mode: TrailerProcessingMode::Skip,
         };
 
-        let config =
-            create_config_for_ext_proc_filter(server_addr, processing_mode, observability_mode, failure_mode_allow);
+        let mut config = create_default_config_for_ext_proc_filter(server_addr, processing_mode);
+        config.observability_mode = false;
+        config.failure_mode_allow = false;
         let mut ext_proc = ExternalProcessor::from(config);
 
         let mut request = build_request_from_mock(&Mock::<RequestMsg> {
@@ -2301,8 +2303,6 @@ mod tests {
     #[tokio::test]
     #[test_log::test]
     async fn test_request_body_buffered_continue_and_replace_on_headers_response() {
-        let observability_mode = false;
-        let failure_mode_allow = false;
         let new_body = "modified body content";
         let mock_state = MockExternalProcessorState::new().add_response(create_headers_response(
             vec![Some(("y-custom-header", "true"))],
@@ -2322,8 +2322,9 @@ mod tests {
             response_trailer_mode: TrailerProcessingMode::Skip,
         };
 
-        let config =
-            create_config_for_ext_proc_filter(server_addr, processing_mode, observability_mode, failure_mode_allow);
+        let mut config = create_default_config_for_ext_proc_filter(server_addr, processing_mode);
+        config.observability_mode = false;
+        config.failure_mode_allow = false;
         let mut ext_proc = ExternalProcessor::from(config);
 
         let mut request = build_request_from_mock(&Mock::<RequestMsg> {
@@ -2344,8 +2345,6 @@ mod tests {
     #[tokio::test]
     #[test_log::test]
     async fn test_request_body_buffered_continue_and_replace_on_body_response() {
-        let observability_mode = false;
-        let failure_mode_allow = false;
         let new_body = "modified body content";
         let mock_state = MockExternalProcessorState::new()
             .add_response(create_headers_response(vec![], None, vec![], ResponseStatus::Continue as i32, None, false))
@@ -2369,8 +2368,9 @@ mod tests {
             response_trailer_mode: TrailerProcessingMode::Skip,
         };
 
-        let config =
-            create_config_for_ext_proc_filter(server_addr, processing_mode, observability_mode, failure_mode_allow);
+        let mut config = create_default_config_for_ext_proc_filter(server_addr, processing_mode);
+        config.observability_mode = false;
+        config.failure_mode_allow = false;
         let mut ext_proc = ExternalProcessor::from(config);
 
         let mut request = build_request_from_mock(&Mock::<RequestMsg> {
@@ -2390,8 +2390,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_request_body_buffered_mode() {
-        let observability_mode = false;
-        let failure_mode_allow = false;
         let mock_state = MockExternalProcessorState::new()
             .add_response(create_headers_response(
                 vec![Some(("x-stream-processed", "true")), Some(("y-custom-header", "true"))],
@@ -2419,8 +2417,9 @@ mod tests {
             response_trailer_mode: TrailerProcessingMode::Skip,
         };
 
-        let config =
-            create_config_for_ext_proc_filter(server_addr, processing_mode, observability_mode, failure_mode_allow);
+        let mut config = create_default_config_for_ext_proc_filter(server_addr, processing_mode);
+        config.observability_mode = false;
+        config.failure_mode_allow = false;
         let mut ext_proc = ExternalProcessor::from(config);
 
         let mut request = build_request_from_mock(&Mock::<RequestMsg> {
@@ -2439,8 +2438,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_request_body_streaming_mode() {
-        let observability_mode = false;
-        let failure_mode_allow = false;
         let mock_state = MockExternalProcessorState::new()
             .add_response(create_headers_response(
                 vec![Some(("x-stream-processed", "true")), Some(("y-custom-header", "true"))],
@@ -2472,8 +2469,9 @@ mod tests {
             response_trailer_mode: TrailerProcessingMode::Skip,
         };
 
-        let config =
-            create_config_for_ext_proc_filter(server_addr, processing_mode, observability_mode, failure_mode_allow);
+        let mut config = create_default_config_for_ext_proc_filter(server_addr, processing_mode);
+        config.observability_mode = false;
+        config.failure_mode_allow = false;
         let mut ext_proc = ExternalProcessor::from(config);
 
         let mut request = build_request_from_mock(&Mock::<RequestMsg> {
@@ -2493,8 +2491,6 @@ mod tests {
     #[tokio::test]
     #[test_log::test]
     async fn test_response_header_mutation_pseudo_headers() {
-        let observability_mode = false;
-        let failure_mode_allow = false;
         let mock_state = MockExternalProcessorState::new().add_response(create_headers_response(
             vec![Some((":status", "404"))],
             None,
@@ -2513,8 +2509,9 @@ mod tests {
             response_trailer_mode: TrailerProcessingMode::Skip,
         };
 
-        let config =
-            create_config_for_ext_proc_filter(server_addr, processing_mode, observability_mode, failure_mode_allow);
+        let mut config = create_default_config_for_ext_proc_filter(server_addr, processing_mode);
+        config.observability_mode = false;
+        config.failure_mode_allow = false;
         let mut ext_proc = ExternalProcessor::from(config);
 
         let mut response = build_response_from_mock(&Mock::<ResponseMsg> {
@@ -2533,8 +2530,6 @@ mod tests {
     #[tokio::test]
     #[test_log::test]
     async fn test_response_body_streaming_mode() {
-        let observability_mode = false;
-        let failure_mode_allow = false;
         let mock_state = MockExternalProcessorState::new()
             .add_response(create_headers_response(
                 vec![Some(("x-stream-processed", "true")), Some(("y-custom-header", "true"))],
@@ -2566,8 +2561,9 @@ mod tests {
             response_trailer_mode: TrailerProcessingMode::Skip,
         };
 
-        let config =
-            create_config_for_ext_proc_filter(server_addr, processing_mode, observability_mode, failure_mode_allow);
+        let mut config = create_default_config_for_ext_proc_filter(server_addr, processing_mode);
+        config.observability_mode = false;
+        config.failure_mode_allow = false;
         let mut ext_proc = ExternalProcessor::from(config);
 
         let mut response =
@@ -2583,8 +2579,6 @@ mod tests {
     #[tokio::test]
     #[test_log::test]
     async fn test_response_body_streaming_mode_observability() {
-        let observability_mode = true;
-        let failure_mode_allow = false;
         let mock_state = MockExternalProcessorState::new();
         let (server_addr, _) = start_mock_server(mock_state).await;
         let processing_mode = ProcessingMode {
@@ -2596,8 +2590,9 @@ mod tests {
             response_trailer_mode: TrailerProcessingMode::Skip,
         };
 
-        let config =
-            create_config_for_ext_proc_filter(server_addr, processing_mode, observability_mode, failure_mode_allow);
+        let mut config = create_default_config_for_ext_proc_filter(server_addr, processing_mode);
+        config.observability_mode = true;
+        config.failure_mode_allow = false;
         let mut ext_proc = ExternalProcessor::from(config);
 
         let mut response =
@@ -2612,8 +2607,6 @@ mod tests {
     #[tokio::test]
     #[test_log::test]
     async fn test_request_header_timeout() {
-        let observability_mode = false;
-        let failure_mode_allow = false;
         let mock_state = MockExternalProcessorState::new();
         let (server_addr, _) = start_mock_server(mock_state).await;
         let processing_mode = ProcessingMode {
@@ -2625,8 +2618,9 @@ mod tests {
             response_trailer_mode: TrailerProcessingMode::Skip,
         };
 
-        let config =
-            create_config_for_ext_proc_filter(server_addr, processing_mode, observability_mode, failure_mode_allow);
+        let mut config = create_default_config_for_ext_proc_filter(server_addr, processing_mode);
+        config.observability_mode = false;
+        config.failure_mode_allow = false;
         let mut ext_proc = ExternalProcessor::from(config);
 
         let mut request =
@@ -2641,8 +2635,6 @@ mod tests {
     #[tokio::test]
     #[test_log::test]
     async fn test_request_header_timeout_failure_mode_allow_true() {
-        let observability_mode = false;
-        let failure_mode_allow = true;
         let mock_state = MockExternalProcessorState::new();
         let (server_addr, _) = start_mock_server(mock_state).await;
         let processing_mode = ProcessingMode {
@@ -2654,8 +2646,9 @@ mod tests {
             response_trailer_mode: TrailerProcessingMode::Skip,
         };
 
-        let config =
-            create_config_for_ext_proc_filter(server_addr, processing_mode, observability_mode, failure_mode_allow);
+        let mut config = create_default_config_for_ext_proc_filter(server_addr, processing_mode);
+        config.observability_mode = false;
+        config.failure_mode_allow = true;
         let mut ext_proc = ExternalProcessor::from(config);
 
         let mut request =
@@ -2675,8 +2668,6 @@ mod tests {
     #[tokio::test]
     #[test_log::test]
     async fn test_request_body_timeout_failure_mode_allow_false() {
-        let observability_mode = false;
-        let failure_mode_allow = false;
         let mock_state = MockExternalProcessorState::new();
         let (server_addr, _) = start_mock_server(mock_state).await;
         let processing_mode = ProcessingMode {
@@ -2688,8 +2679,9 @@ mod tests {
             response_trailer_mode: TrailerProcessingMode::Skip,
         };
 
-        let config =
-            create_config_for_ext_proc_filter(server_addr, processing_mode, observability_mode, failure_mode_allow);
+        let mut config = create_default_config_for_ext_proc_filter(server_addr, processing_mode);
+        config.observability_mode = false;
+        config.failure_mode_allow = false;
         let mut ext_proc = ExternalProcessor::from(config);
 
         let mut request =
@@ -2704,8 +2696,6 @@ mod tests {
     #[tokio::test]
     #[test_log::test]
     async fn test_request_body_timeout_failure_mode_allow_true() {
-        let observability_mode = false;
-        let failure_mode_allow = true;
         let mock_state = MockExternalProcessorState::new();
         let (server_addr, _) = start_mock_server(mock_state).await;
         let processing_mode = ProcessingMode {
@@ -2717,8 +2707,9 @@ mod tests {
             response_trailer_mode: TrailerProcessingMode::Skip,
         };
 
-        let config =
-            create_config_for_ext_proc_filter(server_addr, processing_mode, observability_mode, failure_mode_allow);
+        let mut config = create_default_config_for_ext_proc_filter(server_addr, processing_mode);
+        config.observability_mode = false;
+        config.failure_mode_allow = true;
         let mut ext_proc = ExternalProcessor::from(config);
 
         let mut request =
@@ -2738,8 +2729,6 @@ mod tests {
     #[tokio::test]
     #[test_log::test]
     async fn test_response_header_timeout() {
-        let observability_mode = false;
-        let failure_mode_allow = false;
         let mock_state = MockExternalProcessorState::new();
         let (server_addr, _) = start_mock_server(mock_state).await;
         let processing_mode = ProcessingMode {
@@ -2751,8 +2740,9 @@ mod tests {
             response_trailer_mode: TrailerProcessingMode::Skip,
         };
 
-        let config =
-            create_config_for_ext_proc_filter(server_addr, processing_mode, observability_mode, failure_mode_allow);
+        let mut config = create_default_config_for_ext_proc_filter(server_addr, processing_mode);
+        config.observability_mode = false;
+        config.failure_mode_allow = false;
         let mut ext_proc = ExternalProcessor::from(config);
 
         let mut response =
@@ -2767,8 +2757,6 @@ mod tests {
     #[tokio::test]
     #[test_log::test]
     async fn test_response_header_timeout_failure_mode_allow_true() {
-        let observability_mode = false;
-        let failure_mode_allow = true;
         let mock_state = MockExternalProcessorState::new();
         let (server_addr, _) = start_mock_server(mock_state).await;
         let processing_mode = ProcessingMode {
@@ -2780,8 +2768,9 @@ mod tests {
             response_trailer_mode: TrailerProcessingMode::Skip,
         };
 
-        let config =
-            create_config_for_ext_proc_filter(server_addr, processing_mode, observability_mode, failure_mode_allow);
+        let mut config = create_default_config_for_ext_proc_filter(server_addr, processing_mode);
+        config.observability_mode = false;
+        config.failure_mode_allow = true;
         let mut ext_proc = ExternalProcessor::from(config);
 
         let mut response =
@@ -2801,8 +2790,6 @@ mod tests {
     #[tokio::test]
     #[test_log::test]
     async fn test_response_body_timeout_failure_mode_allow_false() {
-        let observability_mode = false;
-        let failure_mode_allow = false;
         let mock_state = MockExternalProcessorState::new();
         let (server_addr, _) = start_mock_server(mock_state).await;
         let processing_mode = ProcessingMode {
@@ -2814,8 +2801,9 @@ mod tests {
             response_trailer_mode: TrailerProcessingMode::Skip,
         };
 
-        let config =
-            create_config_for_ext_proc_filter(server_addr, processing_mode, observability_mode, failure_mode_allow);
+        let mut config = create_default_config_for_ext_proc_filter(server_addr, processing_mode);
+        config.observability_mode = false;
+        config.failure_mode_allow = false;
         let mut ext_proc = ExternalProcessor::from(config);
 
         let mut response =
@@ -2830,8 +2818,6 @@ mod tests {
     #[tokio::test]
     #[test_log::test]
     async fn test_response_body_timeout_failure_mode_allow_true() {
-        let observability_mode = false;
-        let failure_mode_allow = true;
         let mock_state = MockExternalProcessorState::new();
         let (server_addr, _) = start_mock_server(mock_state).await;
         let processing_mode = ProcessingMode {
@@ -2843,8 +2829,9 @@ mod tests {
             response_trailer_mode: TrailerProcessingMode::Skip,
         };
 
-        let config =
-            create_config_for_ext_proc_filter(server_addr, processing_mode, observability_mode, failure_mode_allow);
+        let mut config = create_default_config_for_ext_proc_filter(server_addr, processing_mode);
+        config.observability_mode = false;
+        config.failure_mode_allow = true;
         let mut ext_proc = ExternalProcessor::from(config);
 
         let mut response =
@@ -2855,6 +2842,117 @@ mod tests {
         let (_, body) = response.into_parts();
         let body_bytes = body.collect().await;
 
+        assert!(body_bytes.is_ok());
+        if let Ok(bytes) = body_bytes {
+            assert_eq!(bytes.to_bytes(), "streaming body data".as_bytes());
+        }
+    }
+
+    #[tokio::test]
+    #[test_log::test]
+    async fn test_immediate_response_request_header() {
+        let mock_state = MockExternalProcessorState::new().add_response(create_immediate_response(
+            vec![Some(("x-immediate-header", "immediate value"))],
+            Some("immediate body".as_bytes().into()),
+            302,
+        ));
+        let (server_addr, _) = start_mock_server(mock_state).await;
+        let processing_mode = ProcessingMode {
+            request_header_mode: HeaderProcessingMode::Send,
+            request_body_mode: BodyProcessingMode::None,
+            request_trailer_mode: TrailerProcessingMode::Skip,
+            response_header_mode: HeaderProcessingMode::Skip,
+            response_body_mode: BodyProcessingMode::None,
+            response_trailer_mode: TrailerProcessingMode::Skip,
+        };
+
+        let mut config = create_default_config_for_ext_proc_filter(server_addr, processing_mode);
+        config.disable_immediate_response = false;
+        let mut ext_proc = ExternalProcessor::from(config);
+
+        let mut request =
+            build_request_from_mock(&Mock::<RequestMsg>::new(vec![], Some("streaming body data"), vec![]));
+        let result = ext_proc.apply_request(&mut request).await;
+        assert!(matches!(result, FilterDecision::DirectResponse(_)));
+        if let FilterDecision::DirectResponse(dr) = result {
+            assert_eq!(dr.status(), StatusCode::from_u16(302).unwrap());
+            assert_eq!(dr.headers().get("x-immediate-header").unwrap(), "immediate value");
+            let (_, body) = dr.into_parts();
+            let body_bytes = body.collect().await.unwrap().to_bytes();
+            assert_eq!(body_bytes, "immediate body".as_bytes());
+        }
+    }
+
+    #[tokio::test]
+    #[test_log::test]
+    async fn test_immediate_response_request_header_disable_immediate_response() {
+        let mock_state = MockExternalProcessorState::new().add_response(create_immediate_response(
+            vec![Some(("x-immediate-header", "immediate value"))],
+            Some("immediate body".as_bytes().into()),
+            302,
+        ));
+        let (server_addr, _) = start_mock_server(mock_state).await;
+        let processing_mode = ProcessingMode {
+            request_header_mode: HeaderProcessingMode::Send,
+            request_body_mode: BodyProcessingMode::None,
+            request_trailer_mode: TrailerProcessingMode::Skip,
+            response_header_mode: HeaderProcessingMode::Skip,
+            response_body_mode: BodyProcessingMode::None,
+            response_trailer_mode: TrailerProcessingMode::Skip,
+        };
+
+        let mut config = create_default_config_for_ext_proc_filter(server_addr, processing_mode);
+        config.failure_mode_allow = false;
+        config.disable_immediate_response = true;
+        let mut ext_proc = ExternalProcessor::from(config);
+
+        let mut request = build_request_from_mock(&Mock::<RequestMsg>::new(
+            vec![Some(("x-test-header", "original value"))],
+            Some("streaming body data"),
+            vec![],
+        ));
+        let result = ext_proc.apply_request(&mut request).await;
+
+        assert!(matches!(result, FilterDecision::DirectResponse(_)));
+        if let FilterDecision::DirectResponse(dr) = result {
+            assert_eq!(dr.status(), StatusCode::from_u16(500).unwrap());
+        }
+    }
+
+    #[tokio::test]
+    #[test_log::test]
+    async fn test_immediate_response_request_header_disable_immediate_response_failure_allow_mode() {
+        let mock_state = MockExternalProcessorState::new().add_response(create_immediate_response(
+            vec![Some(("x-immediate-header", "immediate value"))],
+            Some("immediate body".as_bytes().into()),
+            302,
+        ));
+        let (server_addr, _) = start_mock_server(mock_state).await;
+        let processing_mode = ProcessingMode {
+            request_header_mode: HeaderProcessingMode::Send,
+            request_body_mode: BodyProcessingMode::None,
+            request_trailer_mode: TrailerProcessingMode::Skip,
+            response_header_mode: HeaderProcessingMode::Skip,
+            response_body_mode: BodyProcessingMode::None,
+            response_trailer_mode: TrailerProcessingMode::Skip,
+        };
+
+        let mut config = create_default_config_for_ext_proc_filter(server_addr, processing_mode);
+        config.failure_mode_allow = true;
+        config.disable_immediate_response = true;
+        let mut ext_proc = ExternalProcessor::from(config);
+
+        let mut request = build_request_from_mock(&Mock::<RequestMsg>::new(
+            vec![Some(("x-test-header", "original value"))],
+            Some("streaming body data"),
+            vec![],
+        ));
+        let result = ext_proc.apply_request(&mut request).await;
+
+        assert!(matches!(result, FilterDecision::Continue));
+        let (parts, body) = request.into_parts();
+        assert_eq!(parts.headers.get("x-test-header").unwrap(), "original value");
+        let body_bytes = body.collect().await;
         assert!(body_bytes.is_ok());
         if let Ok(bytes) = body_bytes {
             assert_eq!(bytes.to_bytes(), "streaming body data".as_bytes());
