@@ -1293,11 +1293,12 @@ mod tests {
     #[derive(Debug)]
     pub struct MockExternalProcessor {
         state: MockExternalProcessorState,
+        delay: Option<Duration>,
     }
 
     impl MockExternalProcessor {
-        pub fn new(state: MockExternalProcessorState) -> Self {
-            Self { state }
+        pub fn new(state: MockExternalProcessorState, delay: Option<Duration>) -> Self {
+            Self { state, delay }
         }
     }
 
@@ -1311,10 +1312,14 @@ mod tests {
         ) -> Result<TonicResponse<Self::ProcessStream>, Status> {
             let mut inbound = request.into_inner();
             let mut state = self.state.clone();
+            let delay = self.delay.clone();
             let (tx, rx) = tokio::sync::mpsc::channel(16);
             tokio::spawn(async move {
                 while let Some(_req) = inbound.message().await.unwrap_or(None) {
                     if let Some(response) = state.get_next_response() {
+                        if let Some(delay) = delay {
+                            tokio::time::sleep(delay).await;
+                        }
                         if tx.send(Ok(response)).await.is_err() {
                             break;
                         }
@@ -1330,7 +1335,21 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let socket_addr = listener.local_addr().unwrap();
         let incoming = TcpListenerStream::new(listener);
-        let mock_service = MockExternalProcessor::new(state);
+        let mock_service = MockExternalProcessor::new(state, None);
+        let server =
+            Server::builder().add_service(ExternalProcessorServer::new(mock_service)).serve_with_incoming(incoming);
+        let server_handle = tokio::spawn(server);
+        (socket_addr, server_handle)
+    }
+
+    async fn start_mock_server_with_delay(
+        state: MockExternalProcessorState,
+        delay: Duration,
+    ) -> (SocketAddr, JoinHandle<Result<(), TonicError>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let socket_addr = listener.local_addr().unwrap();
+        let incoming = TcpListenerStream::new(listener);
+        let mock_service = MockExternalProcessor::new(state, Some(delay));
         let server =
             Server::builder().add_service(ExternalProcessorServer::new(mock_service)).serve_with_incoming(incoming);
         let server_handle = tokio::spawn(server);
@@ -2389,6 +2408,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[test_log::test]
     async fn test_request_body_buffered_mode() {
         let mock_state = MockExternalProcessorState::new()
             .add_response(create_headers_response(
@@ -2407,7 +2427,9 @@ mod tests {
                 None,
                 false,
             ));
-        let (server_addr, _) = start_mock_server(mock_state).await;
+        // starting mock with delay to compare output with the test that sets
+        // send_body_without_waiting_for_header_response to true
+        let (server_addr, _) = start_mock_server_with_delay(mock_state, Duration::from_millis(1)).await;
         let processing_mode = ProcessingMode {
             request_header_mode: HeaderProcessingMode::Send,
             request_body_mode: BodyProcessingMode::Buffered,
@@ -2420,6 +2442,56 @@ mod tests {
         let mut config = create_default_config_for_ext_proc_filter(server_addr, processing_mode);
         config.observability_mode = false;
         config.failure_mode_allow = false;
+        let mut ext_proc = ExternalProcessor::from(config);
+
+        let mut request = build_request_from_mock(&Mock::<RequestMsg> {
+            headers: vec![],
+            body: Some("buffered body data"),
+            trailers: vec![],
+            _marker: std::marker::PhantomData,
+        });
+        let result = ext_proc.apply_request(&mut request).await;
+
+        assert!(matches!(result, FilterDecision::Continue));
+        assert_eq!(request.headers().get("x-stream-processed").unwrap(), "true");
+        let body_bytes = std::mem::take(&mut request.body_mut().inner).collect().await.unwrap().to_bytes();
+        assert_eq!(body_bytes, "body data from external processor".as_bytes());
+    }
+
+    #[tokio::test]
+    #[test_log::test]
+    async fn test_request_body_buffered_mode_send_body_without_waiting_for_header_response() {
+        let mock_state = MockExternalProcessorState::new()
+            .add_response(create_headers_response(
+                vec![Some(("x-stream-processed", "true")), Some(("y-custom-header", "true"))],
+                None,
+                vec![],
+                ResponseStatus::Continue as i32,
+                None,
+                false,
+            ))
+            .add_response(create_body_response(
+                vec![],
+                Some("body data from external processor".as_bytes().into()),
+                vec![],
+                ResponseStatus::Continue as i32,
+                None,
+                false,
+            ));
+        let (server_addr, _) = start_mock_server_with_delay(mock_state, Duration::from_millis(1)).await;
+        let processing_mode = ProcessingMode {
+            request_header_mode: HeaderProcessingMode::Send,
+            request_body_mode: BodyProcessingMode::Buffered,
+            request_trailer_mode: TrailerProcessingMode::Skip,
+            response_header_mode: HeaderProcessingMode::Skip,
+            response_body_mode: BodyProcessingMode::None,
+            response_trailer_mode: TrailerProcessingMode::Skip,
+        };
+
+        let mut config = create_default_config_for_ext_proc_filter(server_addr, processing_mode);
+        config.observability_mode = false;
+        config.failure_mode_allow = false;
+        config.send_body_without_waiting_for_header_response = true;
         let mut ext_proc = ExternalProcessor::from(config);
 
         let mut request = build_request_from_mock(&Mock::<RequestMsg> {
