@@ -383,6 +383,14 @@ impl<Msg: kind::MsgType + OverridableModeSelector> Processing<kind::Processing, 
         let status = ctor(ReadyStatus::default());
         Action::Return(status)
     }
+
+    pub async fn interrupt_and_complete(&mut self) {
+        debug!(target: "ext_proc", "interrupt_and_complete!");
+        for frame in self.inflight_frames.drain(..) {
+            _ = self.frame_bridge.inject_frame(Ok(frame)).await;
+        }
+        self.frame_bridge.complete().await;
+    }
 }
 
 impl<M: kind::Mode + Default, Msg: kind::MsgType + OverridableModeSelector> Processing<M, Msg> {
@@ -568,7 +576,7 @@ impl<M: kind::Mode + Default, Msg: kind::MsgType + OverridableModeSelector> Proc
                 SyntheticHttpResponse::internal_error_with_msg(
                     msg,
                     EventFailure::ExtProcError.into(),
-                    ResponseFlags(FmtResponseFlags::UPSTREAM_REQUEST_TIMEOUT),
+                    ResponseFlags(FmtResponseFlags::NO_FILTER_CONFIG_FOUND),
                 )
                 .into_response(http_version),
             )
