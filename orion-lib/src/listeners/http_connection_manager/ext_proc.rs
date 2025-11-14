@@ -7,7 +7,9 @@ mod worker_config;
 
 use crate::body::channel_body::{ChannelBody, FrameBridge};
 use crate::event_error::EventFailure;
-use crate::listeners::http_connection_manager::ext_proc::mutation::{apply_request_header_mutations, apply_response_header_mutations};
+use crate::listeners::http_connection_manager::ext_proc::mutation::{
+    apply_request_header_mutations, apply_response_header_mutations,
+};
 use crate::listeners::http_connection_manager::ext_proc::processing::RequestProcessing;
 use crate::listeners::http_connection_manager::ext_proc::processing::ResponseProcessing;
 use crate::listeners::http_connection_manager::ext_proc::r#override::{OverridableBodyMode, OverridableGlobalModes};
@@ -132,7 +134,7 @@ impl From<(ExternalProcessorConfig, Option<ExtProcPerRoute>)> for ExternalProces
             observability_mode: config.observability_mode,
             failure_mode_allow,
             disable_immediate_response: config.disable_immediate_response,
-            mutation_rules: config.mutation_rules.unwrap_or_default(),
+            mutation_rules: config.mutation_rules,
             processing_mode,
             allowed_override_modes: config.allowed_override_modes,
             allow_mode_override: config.allow_mode_override,
@@ -261,7 +263,7 @@ impl ExternalProcessor {
                     if let Err(e) = apply_request_header_mutations(
                         request,
                         &headers_modifications,
-                        Some(&self.worker_config.mutation_rules),
+                        self.worker_config.mutation_rules.as_ref(),
                     ) {
                         return self.on_filter_error(
                             "Invalid header modifications received from external processor",
@@ -379,9 +381,10 @@ impl ExternalProcessor {
                 debug!(target: "ext_proc", "apply_response: ResponseReady...");
                 if let Some(headers_modifications) = headers_modifications {
                     debug!(target: "ext_proc", "applying headers mutation...");
-                    if let Err(e) = apply_response_header_mutations(response,
+                    if let Err(e) = apply_response_header_mutations(
+                        response,
                         &headers_modifications,
-                        Some(&self.worker_config.mutation_rules),
+                        self.worker_config.mutation_rules.as_ref(),
                     ) {
                         return self.on_filter_error(
                             "Invalid header modifications received from external processor",
@@ -1194,7 +1197,8 @@ impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
         let mut response = Response::new(crate::PolyBody::from(body));
         *response.status_mut() = status;
         if let Some(header_mutation) = &response_attempt.headers {
-            let _ = apply_response_header_mutations(&mut response, header_mutation, Some(&self.config.mutation_rules));
+            let _ =
+                apply_response_header_mutations(&mut response, header_mutation, self.config.mutation_rules.as_ref());
         }
         if let Some(grpc_status) = &response_attempt.grpc_status {
             if let Ok(status_value) = http::HeaderValue::from_str(&grpc_status.status.to_string()) {
@@ -1212,10 +1216,10 @@ mod tests {
         body::{body_with_metrics::BodyWithMetrics, response_flags::BodyKind},
         listeners::http_connection_manager::ext_proc::{
             kind::{MsgType, RequestMsg, ResponseMsg},
+            mutation::apply_header_mutations,
             r#override::ModeSelector,
         },
     };
-    use crate::listeners::http_connection_manager::ext_proc::mutation::apply_header_mutations;
     use http::{Method, Version};
     use http_body_util::{BodyExt, Empty, Full};
     use orion_configuration::config::network_filters::http_connection_manager::http_filters::ext_proc::{
@@ -2158,6 +2162,51 @@ mod tests {
 
     #[tokio::test]
     #[test_log::test]
+    async fn test_request_header_mutation_pseudo_haeders() {
+        let mock_state = MockExternalProcessorState::new().add_response(create_headers_response(
+            vec![
+                Some((":method", "POST")),
+                Some((":path", "/ext-proc-html-path")),
+                Some((":scheme", "https")),
+                Some((":authority", "ext-proc.com")),
+            ],
+            None,
+            vec![],
+            ResponseStatus::Continue as i32,
+            None,
+            false,
+        ));
+        let (server_addr, _) = start_mock_server(mock_state).await;
+        let processing_mode = ProcessingMode {
+            request_header_mode: HeaderProcessingMode::Send,
+            request_body_mode: BodyProcessingMode::None,
+            request_trailer_mode: TrailerProcessingMode::Skip,
+            response_header_mode: HeaderProcessingMode::Skip,
+            response_body_mode: BodyProcessingMode::None,
+            response_trailer_mode: TrailerProcessingMode::Skip,
+        };
+
+        let config = create_config_for_ext_proc_filter(server_addr, processing_mode, false);
+        let mut ext_proc = ExternalProcessor::from(config);
+
+        let mut request = build_request_from_mock(&Mock::<RequestMsg> {
+            headers: vec![Some(("content-type", "application/json"))],
+            body: None,
+            trailers: vec![],
+            _marker: std::marker::PhantomData,
+        });
+        let result = ext_proc.apply_request(&mut request).await;
+        let (parts, _) = request.into_parts();
+
+        assert!(matches!(result, FilterDecision::Continue));
+        assert_eq!(parts.method.as_str(), "POST");
+        assert_eq!(parts.uri.authority().unwrap().as_str(), "ext-proc.com");
+        assert_eq!(parts.uri.scheme().unwrap().as_str(), "https");
+        assert_eq!(parts.uri.path_and_query().unwrap().as_str(), "/ext-proc-html-path");
+    }
+
+    #[tokio::test]
+    #[test_log::test]
     async fn test_request_trailer_mutation() {
         let mock_state = MockExternalProcessorState::new()
             .add_response(create_headers_response(vec![], None, vec![], ResponseStatus::Continue as i32, None, false))
@@ -2246,7 +2295,7 @@ mod tests {
         let mock_state = MockExternalProcessorState::new()
             .add_response(create_headers_response(vec![], None, vec![], ResponseStatus::Continue as i32, None, false))
             .add_response(create_body_response(
-                // we currently do not support header modifications on continue_and_replace body responses
+                // TODO support headers modifications on body responses
                 //vec![("y-custom-header", "true")],
                 vec![],
                 Some(new_body.as_bytes().into()),
@@ -2377,6 +2426,43 @@ mod tests {
         assert_eq!(request.headers().get("x-stream-processed").unwrap(), "true");
         let body_bytes = std::mem::take(&mut request.body_mut().inner).collect().await.unwrap().to_bytes();
         assert_eq!(body_bytes, "body data from external processor".as_bytes());
+    }
+
+    #[tokio::test]
+    #[test_log::test]
+    async fn test_response_header_mutation_pseudo_haeders() {
+        let mock_state = MockExternalProcessorState::new().add_response(create_headers_response(
+            vec![Some((":status", "404"))],
+            None,
+            vec![],
+            ResponseStatus::Continue as i32,
+            None,
+            true,
+        ));
+        let (server_addr, _) = start_mock_server(mock_state).await;
+        let processing_mode = ProcessingMode {
+            request_header_mode: HeaderProcessingMode::Skip,
+            request_body_mode: BodyProcessingMode::None,
+            request_trailer_mode: TrailerProcessingMode::Skip,
+            response_header_mode: HeaderProcessingMode::Send,
+            response_body_mode: BodyProcessingMode::None,
+            response_trailer_mode: TrailerProcessingMode::Skip,
+        };
+
+        let config = create_config_for_ext_proc_filter(server_addr, processing_mode, false);
+        let mut ext_proc = ExternalProcessor::from(config);
+
+        let mut response = build_response_from_mock(&Mock::<ResponseMsg> {
+            headers: vec![Some(("content-type", "application/json"))],
+            body: None,
+            trailers: vec![],
+            _marker: std::marker::PhantomData,
+        });
+        let result = ext_proc.apply_response(&mut response).await;
+        let (parts, _) = response.into_parts();
+
+        assert!(matches!(result, FilterDecision::Continue));
+        assert_eq!(parts.status.as_str(), "404");
     }
 
     #[tokio::test]

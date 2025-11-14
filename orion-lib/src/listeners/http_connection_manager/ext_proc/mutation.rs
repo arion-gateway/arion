@@ -24,17 +24,14 @@ const PSEUDO_HEADER_STATUS: &str = ":status";
 /// - Some(Err(())) if `raw_value` contains invalid UTF-8
 fn try_extract_header_value_as_str(opt: &HeaderValueOption) -> Option<Result<&str, ()>> {
     match opt.header.as_ref() {
-        Some(h) if !h.raw_value.is_empty() => {
-            Some(std::str::from_utf8(&h.raw_value).map_err(|_| ()))
-        },
-        Some(h) => {
-            Some(Ok(h.value.as_str()))
-        },
+        Some(h) if !h.raw_value.is_empty() => Some(std::str::from_utf8(&h.raw_value).map_err(|_| ())),
+        Some(h) => Some(Ok(h.value.as_str())),
         None => None,
     }
 }
 
 /// Holds the pseudo-headers that need to be applied to a request
+#[derive(Debug)]
 struct PseudoHeaders<'a> {
     method: Option<&'a HeaderValueOption>,
     scheme: Option<&'a HeaderValueOption>,
@@ -43,7 +40,7 @@ struct PseudoHeaders<'a> {
     status: Option<&'a HeaderValueOption>,
 }
 
-impl<'a> PseudoHeaders<'a> {
+impl PseudoHeaders<'_> {
     fn new() -> Self {
         PseudoHeaders { method: None, scheme: None, authority: None, path: None, status: None }
     }
@@ -87,6 +84,8 @@ pub fn apply_request_header_mutations<B>(
     if !pseudo_headers.is_empty() {
         // Handle :method separately as it's not part of URI
         if let Some(method_opt) = pseudo_headers.method {
+            // NOTE: if mutation rules is not specified, we allow any modification. This is not the
+            // same behavior as envoy, but is more permissive for users who don't set mutation rules.
             if mutation_rules.map(|r| r.is_modification_permitted(PSEUDO_HEADER_METHOD)).unwrap_or(true) {
                 match try_extract_header_value_as_str(method_opt) {
                     Some(Ok(method)) => {
