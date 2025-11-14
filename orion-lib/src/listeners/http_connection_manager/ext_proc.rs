@@ -2537,4 +2537,93 @@ mod tests {
         let body_bytes = &mut response.body_mut().collect().await.unwrap().to_bytes();
         assert_eq!(body_bytes, "streaming body data".as_bytes());
     }
+
+    #[tokio::test]
+    #[test_log::test]
+    async fn test_request_header_timeout() {
+        let mock_state = MockExternalProcessorState::new();
+        let (server_addr, _) = start_mock_server(mock_state).await;
+        let processing_mode = ProcessingMode {
+            request_header_mode: HeaderProcessingMode::Send,
+            request_body_mode: BodyProcessingMode::None,
+            request_trailer_mode: TrailerProcessingMode::Skip,
+            response_header_mode: HeaderProcessingMode::Skip,
+            response_body_mode: BodyProcessingMode::None,
+            response_trailer_mode: TrailerProcessingMode::Skip,
+        };
+
+        let config = create_config_for_ext_proc_filter(server_addr, processing_mode, false);
+        let mut ext_proc = ExternalProcessor::from(config);
+
+        let mut request =
+            build_request_from_mock(&Mock::<RequestMsg>::new(vec![], Some("streaming body data"), vec![]));
+        let result = ext_proc.apply_request(&mut request).await;
+        assert!(matches!(result, FilterDecision::DirectResponse(_)));
+        if let FilterDecision::DirectResponse(dr) = result {
+            assert_eq!(dr.status(), http::StatusCode::GATEWAY_TIMEOUT);
+        }
+    }
+
+    #[tokio::test]
+    #[test_log::test]
+    async fn test_request_body_timeout() {
+        let mock_state = MockExternalProcessorState::new();
+        let (server_addr, _) = start_mock_server(mock_state).await;
+        let processing_mode = ProcessingMode {
+            request_header_mode: HeaderProcessingMode::Skip,
+            request_body_mode: BodyProcessingMode::Streamed,
+            request_trailer_mode: TrailerProcessingMode::Skip,
+            response_header_mode: HeaderProcessingMode::Skip,
+            response_body_mode: BodyProcessingMode::None,
+            response_trailer_mode: TrailerProcessingMode::Skip,
+        };
+
+        let config = create_config_for_ext_proc_filter(server_addr, processing_mode, false);
+        let mut ext_proc = ExternalProcessor::from(config);
+
+        let mut request =
+            build_request_from_mock(&Mock::<RequestMsg>::new(vec![], Some("streaming body data"), vec![]));
+        let result = ext_proc.apply_request(&mut request).await;
+        assert!(matches!(result, FilterDecision::Continue));
+
+        let body_bytes = &mut request.body_mut().collect().await;
+        assert!(body_bytes.is_err());
+    }
+
+    //#[tokio::test]
+    //#[test_log::test]
+    //async fn test_wip() {
+    //    let mock_state = MockExternalProcessorState::new().add_response(create_headers_response(
+    //        vec![Some((":status", "404"))],
+    //        None,
+    //        vec![],
+    //        ResponseStatus::Continue as i32,
+    //        None,
+    //        true,
+    //    ));
+    //    let (server_addr, _) = start_mock_server(mock_state).await;
+    //    let processing_mode = ProcessingMode {
+    //        request_header_mode: HeaderProcessingMode::Skip,
+    //        request_body_mode: BodyProcessingMode::None,
+    //        request_trailer_mode: TrailerProcessingMode::Skip,
+    //        response_header_mode: HeaderProcessingMode::Send,
+    //        response_body_mode: BodyProcessingMode::None,
+    //        response_trailer_mode: TrailerProcessingMode::Skip,
+    //    };
+
+    //    let config = create_config_for_ext_proc_filter(server_addr, processing_mode, true);
+    //    let mut ext_proc = ExternalProcessor::from(config);
+
+    //    let mut response = build_response_from_mock(&Mock::<ResponseMsg> {
+    //        headers: vec![Some(("content-type", "application/json"))],
+    //        body: None,
+    //        trailers: vec![],
+    //        _marker: std::marker::PhantomData,
+    //    });
+    //    let result = ext_proc.apply_response(&mut response).await;
+    //    let (parts, _) = response.into_parts();
+
+    //    assert!(matches!(result, FilterDecision::Continue));
+    //    assert_eq!(parts.status.as_str(), "404");
+    //}
 }
