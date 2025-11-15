@@ -377,14 +377,7 @@ impl<Msg: kind::MsgType + OverridableModeSelector> Processing<kind::Processing, 
         }
     }
 
-    #[must_use = "must handle the returned Action"]
-    #[allow(clippy::unused_self)]
-    pub fn handle_noop_response(&self, ctor: fn(ReadyStatus) -> ProcessingStatus) -> Action<ProcessingRequest> {
-        let status = ctor(ReadyStatus::default());
-        Action::Return(status)
-    }
-
-    pub async fn interrupt_and_complete(&mut self) {
+    pub async fn inject_inflight_frames_and_complete(&mut self) {
         debug!(target: "ext_proc", "interrupt_and_complete!");
         for frame in self.inflight_frames.drain(..) {
             _ = self.frame_bridge.inject_frame(Ok(frame)).await;
@@ -547,11 +540,6 @@ impl<M: kind::Mode + Default, Msg: kind::MsgType + OverridableModeSelector> Proc
         Action::Send(processing_request)
     }
 
-    #[inline]
-    pub fn is_awaiting_reply(&self) -> bool {
-        self.reply_channel.is_some()
-    }
-
     pub fn status_timeout(&mut self, failure_mode_allow: bool) -> ProcessingStatus {
         if failure_mode_allow {
             ProcessingStatus::HaltedOnError
@@ -581,6 +569,18 @@ impl<M: kind::Mode + Default, Msg: kind::MsgType + OverridableModeSelector> Proc
                 .into_response(http_version),
             )
         }
+    }
+
+    pub fn status_internal_error(&mut self, msg: &str) -> ProcessingStatus {
+        let http_version = self.http_version.unwrap_or(http::Version::HTTP_11);
+        ProcessingStatus::EndWithDirectResponse(
+            SyntheticHttpResponse::internal_error_with_msg(
+                msg,
+                EventFailure::ExtProcError.into(),
+                ResponseFlags(FmtResponseFlags::UNAUTHORIZED_EXTERNAL_SERVICE),
+            )
+            .into_response(http_version),
+        )
     }
 
     pub fn frame_bridge_close(&mut self, timeout_active: &mut bool) {

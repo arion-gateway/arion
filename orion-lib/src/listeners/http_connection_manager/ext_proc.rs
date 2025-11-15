@@ -7,6 +7,7 @@ mod worker_config;
 
 use crate::body::channel_body::{ChannelBody, FrameBridge};
 use crate::event_error::EventFailure;
+
 use crate::listeners::http_connection_manager::ext_proc::mutation::{
     apply_request_header_mutations, apply_response_header_mutations,
 };
@@ -179,6 +180,30 @@ macro_rules! run_action {
     };
 }
 
+macro_rules! with_current_processing {
+    (
+        $self:ident,
+        $processing:ident,
+        $($body:block)+
+    ) => {
+        if $self.request_processing.reply_channel.is_some() {
+            $(
+                {
+                    let $processing = &mut $self.request_processing;
+                    $body
+                }
+            )+
+        } else {
+            $(
+                {
+                    let $processing = &mut $self.response_processing;
+                    $body
+                }
+            )+
+        }
+    };
+}
+
 impl ExternalProcessor {
     fn collect_to_single_chunk(
         original: Collected<Bytes>,
@@ -290,7 +315,7 @@ impl ExternalProcessor {
                 FilterDecision::Continue
             },
             Ok(ProcessingStatus::ResponseReady(ReadyStatus { .. })) => {
-                error!(target: "ext_proc", "apply_request: unexpected ResponseReady...");
+                warn!(target: "ext_proc", "apply_request: unexpected ResponseReady...");
                 return self.on_filter_error(
                     "Unexpected ResponseReady status received during request processing",
                     None,
@@ -298,12 +323,7 @@ impl ExternalProcessor {
                 );
             },
             Err(e) => {
-                error!(target: "ext_proc", "{e}");
-                self.on_filter_error(
-                    format!("External processor request processing: {e:?}").as_str(),
-                    Some(e.into()),
-                    request.version(),
-                )
+                self.on_filter_error(format!("External processor: {e:?}").as_str(), Some(e.into()), request.version())
             },
         };
 
@@ -408,21 +428,18 @@ impl ExternalProcessor {
                 FilterDecision::Continue
             },
             Ok(ProcessingStatus::RequestReady(ReadyStatus { .. })) => {
-                error!(target: "ext_proc", "apply_response: unexpected RequestReady...");
+                warn!(target: "ext_proc", "apply_response: unexpected RequestReady...");
                 return self.on_filter_error(
                     "Unexpected RequestReady status received during response processing",
                     None,
                     response.version(),
                 );
             },
-            Err(e) => {
-                error!(target: "ext_proc", "{e}");
-                self.on_filter_error(
-                    format!("External processor response processing: {e:?}").as_str(),
-                    Some(e.into()),
-                    response.version(),
-                )
-            },
+            Err(e) => self.on_filter_error(
+                format!("External processor response processing: {e:?}").as_str(),
+                Some(e.into()),
+                response.version(),
+            ),
         };
 
         debug!(target: "ext_proc", "apply_response completed: {res:?}!");
@@ -452,9 +469,9 @@ impl ExternalProcessor {
 
     fn on_filter_error(&mut self, msg: &str, error: Option<Error>, http_version: http::Version) -> FilterDecision {
         if let Some(err) = error {
-            error!(target: "ext_proc","{msg}: {err}");
+            warn!(target: "ext_proc","{msg}: {err}");
         } else {
-            error!(target: "ext_proc", "{msg}");
+            warn!(target: "ext_proc", "{msg}");
         }
         if self.worker_config.failure_mode_allow {
             FilterDecision::Continue
@@ -703,30 +720,43 @@ impl ExternalProcessingWorker<kind::Processing> {
                         Ok(Some(ProcessingResponse { response: Some(ProcessingResponseType::ImmediateResponse(response_attempt)), ..})) => {
                             debug!(target: "ext_proc", "<- ImmediateResponse received");
                             if self.config.disable_immediate_response {
-                                let msg = "external processor attempted to send immediate response - which is disabled by config";
-                                warn!("{msg}");
+                                warn!(target: "ext_proc", "External processor attempted to send immediate response which is disabled by config");
 
-                                if let Some(reply_channel) = self.request_processing.reply_channel.take() {
-                                    let _ = reply_channel.send(ProcessingStatus::HaltedOnError);
-                                }
-                                if let Some(reply_channel) = self.response_processing.reply_channel.take() {
-                                    let _ = reply_channel.send(ProcessingStatus::HaltedOnError);
-                                }
-                                // TODO
-                                //self.response_processing.exit_on_error(msg, self.config.failure_mode_allow);
-                                //self.request_processing.status_error(msg, self.config.failure_mode_allow);
+                                 if self.config.failure_mode_allow {
+                                     with_current_processing!(self, processing,
+                                     {
+                                         let status = Action::Return(ProcessingStatus::HaltedOnError);
+                                         run_action!(self, processing, status, "immediate_response_disabled");
+                                     }
+                                     {
+                                         processing.inject_inflight_frames_and_complete().await;
+                                     });
+
+                                 } else {
+                                    with_current_processing!(self, processing,
+                                     {
+                                         let action = Action::Return(processing.status_internal_error("ext_proc returned an immediate response despite being disabled by configuration"));
+                                         run_action!(self, processing, action, "immediate_response_disabled");
+                                     }
+                                     {
+                                         _ = processing.frame_bridge.inject_frame(Err(Box::new(ExtProcError::Timeout("immediate response disabled")))).await;
+                                     }
+                                    );
+                                 }
+
                             } else {
                                 let response = self.build_direct_response(&response_attempt);
-                                let status = ProcessingStatus::EndWithDirectResponse(response);
-                                if self.response_processing.is_awaiting_reply() {
-                                    if let Some(reply_channel) = self.response_processing.reply_channel.take() {
-                                        let _ = reply_channel.send(status);
-                                    }
-                                } else if let Some(reply_channel) = self.request_processing.reply_channel.take() {
-                                        let _ = reply_channel.send(status);
-                                }
+                                with_current_processing!(self, processing, {
+                                    let status = Action::Return(ProcessingStatus::EndWithDirectResponse(response));
+                                    run_action!(self, processing, status, "immediate_response_disabled");
+                                });
                             }
-                            debug!(target: "ext_proc", "immediate response processed - closing stream");
+
+                            with_current_processing!(self, processing,
+                            {
+                                 processing.inject_inflight_frames_and_complete().await;
+                            });
+
                             break 'transaction_loop;
                         },
                         Ok(Some(ProcessingResponse { mode_override, response: Some(ProcessingResponseType::RequestHeaders(headers_response)), ..})) => {
@@ -734,7 +764,6 @@ impl ExternalProcessingWorker<kind::Processing> {
                             if self.config.allow_mode_override {
                                 if let Some(overrides) = mode_override {
                                     self.request_processing.apply_mode_overrides(&overrides, &self.config.allowed_override_modes, &self.overridable_modes);
-                                    self.response_processing.apply_mode_overrides(&overrides, &self.config.allowed_override_modes, &self.overridable_modes);
                                 }
                             }
 
@@ -776,6 +805,7 @@ impl ExternalProcessingWorker<kind::Processing> {
                                 &self.overridable_modes,
                                 &mut self.timeout_state.active,
                             ).await;
+
                             run_action!(self, self.response_processing, action, "handle_headers_response");
                         },
                         Ok(Some(ProcessingResponse { response: Some(ProcessingResponseType::ResponseBody(body_response)), ..})) => {
@@ -795,27 +825,24 @@ impl ExternalProcessingWorker<kind::Processing> {
                             run_action!(self, self.response_processing, action, "handle_trailers_response");
                         },
                         Ok(Some(r)) => {
-                            debug!(target: "ext_proc", "<- unsupported response received (noop) {r:?}");
-                            let action = self.request_processing.handle_noop_response(ProcessingStatus::RequestReady);
-                            run_action!(self, self.request_processing, action, "handle_noop_response");
-                            let action = self.response_processing.handle_noop_response(ProcessingStatus::ResponseReady);
-                            run_action!(self, self.response_processing, action, "handle_noop_response");
+                            debug!(target: "ext_proc", "<- unsupported response received: {r:?}");
+
+                            let status = Action::Return(self.request_processing.status_internal_error("unsupported response type received from external processor"));
+                            run_action!(self, self.request_processing, status, "unsupported_response");
+                            let status = Action::Return(self.response_processing.status_internal_error("unsupported response type received from external processor"));
+                            run_action!(self, self.response_processing, status, "unsupported_response");
+
+                            break 'transaction_loop;
                         }
                         Err(e) => {
-                            let msg = "external processor gRPC error";
-                            error!(target: "ext_proc", "<- {msg}: {e}");
-                            if self.response_processing.is_awaiting_reply() {
-                                let status = self.response_processing.status_error(msg, self.config.failure_mode_allow);
-                                if let Some(reply_channel) = self.response_processing.reply_channel.take() {
-                                    let _ = reply_channel.send(status);
-                                }
-                            } else {
-                                let status = self.request_processing.status_error(msg, self.config.failure_mode_allow);
-                                if let Some(reply_channel) = self.request_processing.reply_channel.take() {
-                                    let _ = reply_channel.send(status);
-                                }
-                            }
-                            debug!(target: "ext_proc", "gRPC error processed - closing stream");
+                            let msg = format!("gRPC error received from external processor: {}", e.message());
+                            warn!(target: "ext_proc", msg);
+
+                            let status = Action::Return(self.request_processing.status_error(&msg, self.config.failure_mode_allow));
+                            run_action!(self, self.request_processing, status, "grpc_error");
+                            let status = Action::Return(self.response_processing.status_error(&msg, self.config.failure_mode_allow));
+                            run_action!(self, self.response_processing, status, "grpc_error");
+
                             break 'transaction_loop;
                         },
                         _ => {
@@ -921,27 +948,25 @@ impl ExternalProcessingWorker<kind::Processing> {
 
                     if self.config.failure_mode_allow {
                         warn!(target: "ext_proc", "external processing message timeout - continue (failure_mode_allow is true)");
-                        self.request_processing.interrupt_and_complete().await;
+
+                        self.request_processing.inject_inflight_frames_and_complete().await;
                         self.request_processing.frame_bridge_close(&mut self.timeout_state.active);
-                        self.response_processing.interrupt_and_complete().await;
+                        self.response_processing.inject_inflight_frames_and_complete().await;
                         self.response_processing.frame_bridge_close(&mut self.timeout_state.active);
+
                     } else {
                         warn!(target: "ext_proc", "external processing message timeout - abort (failure_mode_allow is false)");
+
                         _ = self.request_processing.frame_bridge.inject_frame(Err(Box::new(ExtProcError::Timeout("request timeout")))).await;
-                        _ = self.response_processing.frame_bridge.inject_frame(Err(Box::new(ExtProcError::Timeout("response timeout")))).await;
                         self.request_processing.frame_bridge_close(&mut self.timeout_state.active);
+                        _ = self.response_processing.frame_bridge.inject_frame(Err(Box::new(ExtProcError::Timeout("request timeout")))).await;
                         self.response_processing.frame_bridge_close(&mut self.timeout_state.active);
                     }
 
-                    if let Some(reply_channel) = self.request_processing.reply_channel.take() {
-                        let status = self.request_processing.status_timeout(self.config.failure_mode_allow);
-                        let _ = reply_channel.send(status);
-                    }
-
-                    if let Some(reply_channel) = self.response_processing.reply_channel.take() {
-                        let status = self.response_processing.status_timeout(self.config.failure_mode_allow);
-                        let _ = reply_channel.send(status);
-                    }
+                    let status = Action::Return(self.request_processing.status_timeout(self.config.failure_mode_allow));
+                    run_action!(self, self.request_processing, status, "message_timeout");
+                    let status = Action::Return(self.response_processing.status_timeout(self.config.failure_mode_allow));
+                    run_action!(self, self.response_processing, status, "message_timeout");
                 }
             }
         }
@@ -1150,7 +1175,7 @@ impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
 
         match send_outcome {
             Some(Err(err)) => {
-                error!(target: "ext_proc", "External processor is unavailable: {err}");
+                warn!(target: "ext_proc", "External processor is unavailable: {err}");
                 if let Some(reply_channel) = self.response_processing.reply_channel.take() {
                     let _ = reply_channel.send(
                         self.response_processing
@@ -1191,12 +1216,12 @@ impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
         let mut timeout_duration =
             Duration::from_secs(extended_timeout.seconds as u64) + Duration::from_nanos(extended_timeout.nanos as u64);
         if timeout_duration < Duration::from_millis(1) {
-            warn!("External processor: override_message_timeout must be >= 1ms");
+            warn!(target:"ext_proc", "External processor: override_message_timeout must be >= 1ms");
             timeout_duration = self.config.message_timeout;
         }
         if let Some(max_timeout) = self.config.max_message_timeout {
             if timeout_duration > max_timeout {
-                warn!("External processor: attempted to override message timeout to value > max_message_timeout (defaulting to max_message_timeout)");
+                warn!(target:"ext_proc", "External processor: attempted to override message timeout to value > max_message_timeout (defaulting to max_message_timeout)");
                 timeout_duration = max_timeout;
             }
         }
@@ -1992,7 +2017,7 @@ mod tests {
                         let mut request = build_request_from_mock(mock_request);
                         let result = ext_proc.apply_request(&mut request).await;
                         server_handle.abort();
-                        assert!(matches!(result, FilterDecision::Continue));
+                        assert_matches!(result, FilterDecision::Continue);
 
                         let (parts, body) = request.into_parts();
                         let request_headers = parts.headers;
@@ -2049,7 +2074,7 @@ mod tests {
                         let mut response = build_response_from_mock(mock_response);
                         let result = ext_proc.apply_response(&mut response).await;
                         server_handle.abort();
-                        assert!(matches!(result, FilterDecision::Continue));
+                        assert_matches!(result, FilterDecision::Continue);
 
                         let (parts, body) = response.into_parts();
                         let response_headers = parts.headers;
@@ -2103,7 +2128,7 @@ mod tests {
                     let mut request = build_request_from_mock(mock_request);
                     let result = ext_proc.apply_request(&mut request).await;
                     server_handle.abort();
-                    assert!(matches!(result, FilterDecision::Continue));
+                    assert_matches!(result, FilterDecision::Continue);
 
                     let (parts, body) = request.into_parts();
                     let request_headers = parts.headers;
@@ -2156,7 +2181,7 @@ mod tests {
                     let mut response = build_response_from_mock(mock_response);
                     let result = ext_proc.apply_response(&mut response).await;
                     server_handle.abort();
-                    assert!(matches!(result, FilterDecision::Continue));
+                    assert_matches!(result, FilterDecision::Continue);
 
                     let (parts, body) = response.into_parts();
                     let response_headers = parts.headers;
@@ -2221,7 +2246,7 @@ mod tests {
         });
         let result = ext_proc.apply_request(&mut request).await;
 
-        assert!(matches!(result, FilterDecision::Continue));
+        assert_matches!(result, FilterDecision::Continue);
         assert_eq!(request.headers().get("x-processed").unwrap(), "true");
         assert_eq!(request.headers().get("x-custom-header").unwrap(), "custom-value");
         assert_eq!(request.headers().get("content-type").unwrap(), "application/json");
@@ -2267,7 +2292,7 @@ mod tests {
         let result = ext_proc.apply_request(&mut request).await;
         let (parts, _) = request.into_parts();
 
-        assert!(matches!(result, FilterDecision::Continue));
+        assert_matches!(result, FilterDecision::Continue);
         assert_eq!(parts.method.as_str(), "POST");
         assert_eq!(parts.uri.authority().unwrap().as_str(), "ext-proc.com");
         assert_eq!(parts.uri.scheme().unwrap().as_str(), "https");
@@ -2312,7 +2337,7 @@ mod tests {
 
         assert!(trailers.is_some());
         let trailers = trailers.unwrap();
-        assert!(matches!(result, FilterDecision::Continue));
+        assert_matches!(result, FilterDecision::Continue);
         assert_eq!(request.headers().get("content-type").unwrap(), "application/json");
         assert_eq!(body.to_bytes(), "body");
         assert_eq!(trailers.get("x-processed").unwrap(), "true");
@@ -2354,7 +2379,7 @@ mod tests {
         });
         let result = ext_proc.apply_request(&mut request).await;
 
-        assert!(matches!(result, FilterDecision::Continue));
+        assert_matches!(result, FilterDecision::Continue);
         assert_eq!(request.method(), Method::GET);
         assert_eq!(request.headers().get("y-custom-header").unwrap(), "true");
         let body_bytes = std::mem::take(&mut request.body_mut().inner).collect().await.unwrap().to_bytes();
@@ -2400,7 +2425,7 @@ mod tests {
         });
         let result = ext_proc.apply_request(&mut request).await;
 
-        assert!(matches!(result, FilterDecision::Continue));
+        assert_matches!(result, FilterDecision::Continue);
         assert_eq!(request.method(), Method::GET);
         //assert_eq!(request.headers().get("y-custom-header").unwrap(), "true");
         let body_bytes = std::mem::take(&mut request.body_mut().inner).collect().await.unwrap().to_bytes();
@@ -2452,7 +2477,7 @@ mod tests {
         });
         let result = ext_proc.apply_request(&mut request).await;
 
-        assert!(matches!(result, FilterDecision::Continue));
+        assert_matches!(result, FilterDecision::Continue);
         assert_eq!(request.headers().get("x-stream-processed").unwrap(), "true");
         let body_bytes = std::mem::take(&mut request.body_mut().inner).collect().await.unwrap().to_bytes();
         assert_eq!(body_bytes, "body data from external processor".as_bytes());
@@ -2502,7 +2527,7 @@ mod tests {
         });
         let result = ext_proc.apply_request(&mut request).await;
 
-        assert!(matches!(result, FilterDecision::Continue));
+        assert_matches!(result, FilterDecision::Continue);
         assert_eq!(request.headers().get("x-stream-processed").unwrap(), "true");
         let body_bytes = std::mem::take(&mut request.body_mut().inner).collect().await.unwrap().to_bytes();
         assert_eq!(body_bytes, "body data from external processor".as_bytes());
@@ -2554,7 +2579,7 @@ mod tests {
         });
         let result = ext_proc.apply_request(&mut request).await;
 
-        assert!(matches!(result, FilterDecision::Continue));
+        assert_matches!(result, FilterDecision::Continue);
         assert_eq!(request.headers().get("x-stream-processed").unwrap(), "true");
         let body_bytes = std::mem::take(&mut request.body_mut().inner).collect().await.unwrap().to_bytes();
         assert_eq!(body_bytes, "body data from external processor".as_bytes());
@@ -2595,7 +2620,7 @@ mod tests {
         let result = ext_proc.apply_response(&mut response).await;
         let (parts, _) = response.into_parts();
 
-        assert!(matches!(result, FilterDecision::Continue));
+        assert_matches!(result, FilterDecision::Continue);
         assert_eq!(parts.status.as_str(), "404");
     }
 
@@ -2642,7 +2667,7 @@ mod tests {
             build_response_from_mock(&Mock::<ResponseMsg>::new(vec![], Some("streaming body data"), vec![]));
         let result = ext_proc.apply_response(&mut response).await;
 
-        assert!(matches!(result, FilterDecision::Continue));
+        assert_matches!(result, FilterDecision::Continue);
         assert_eq!(response.headers().get("x-stream-processed").unwrap(), "true");
         let body_bytes = &mut response.body_mut().collect().await.unwrap().to_bytes();
         assert_eq!(body_bytes, "body data from external processor".as_bytes());
@@ -2671,7 +2696,7 @@ mod tests {
             build_response_from_mock(&Mock::<ResponseMsg>::new(vec![], Some("streaming body data"), vec![]));
         let result = ext_proc.apply_response(&mut response).await;
 
-        assert!(matches!(result, FilterDecision::Continue));
+        assert_matches!(result, FilterDecision::Continue);
         let body_bytes = &mut response.body_mut().collect().await.unwrap().to_bytes();
         assert_eq!(body_bytes, "streaming body data".as_bytes());
     }
@@ -2698,10 +2723,9 @@ mod tests {
         let mut request =
             build_request_from_mock(&Mock::<RequestMsg>::new(vec![], Some("streaming body data"), vec![]));
         let result = ext_proc.apply_request(&mut request).await;
-        assert!(matches!(result, FilterDecision::DirectResponse(_)));
-        if let FilterDecision::DirectResponse(dr) = result {
+        assert_matches!(result, FilterDecision::DirectResponse(dr) => {
             assert_eq!(dr.status(), http::StatusCode::GATEWAY_TIMEOUT);
-        }
+        });
     }
 
     #[tokio::test]
@@ -2726,7 +2750,7 @@ mod tests {
         let mut request =
             build_request_from_mock(&Mock::<RequestMsg>::new(vec![], Some("streaming body data"), vec![]));
         let result = ext_proc.apply_request(&mut request).await;
-        assert!(matches!(result, FilterDecision::Continue));
+        assert_matches!(result, FilterDecision::Continue);
 
         let (_, body) = request.into_parts();
         let body_bytes = body.inner.collect().await;
@@ -2759,7 +2783,7 @@ mod tests {
         let mut request =
             build_request_from_mock(&Mock::<RequestMsg>::new(vec![], Some("streaming body data"), vec![]));
         let result = ext_proc.apply_request(&mut request).await;
-        assert!(matches!(result, FilterDecision::Continue));
+        assert_matches!(result, FilterDecision::Continue);
 
         let body_bytes = &mut request.body_mut().collect().await;
         assert!(body_bytes.is_err());
@@ -2787,7 +2811,7 @@ mod tests {
         let mut request =
             build_request_from_mock(&Mock::<RequestMsg>::new(vec![], Some("streaming body data"), vec![]));
         let result = ext_proc.apply_request(&mut request).await;
-        assert!(matches!(result, FilterDecision::Continue));
+        assert_matches!(result, FilterDecision::Continue);
 
         let (_, body) = request.into_parts();
         let body_bytes = body.inner.collect().await;
@@ -2820,10 +2844,9 @@ mod tests {
         let mut response =
             build_response_from_mock(&Mock::<ResponseMsg>::new(vec![], Some("streaming body data"), vec![]));
         let result = ext_proc.apply_response(&mut response).await;
-        assert!(matches!(result, FilterDecision::DirectResponse(_)));
-        if let FilterDecision::DirectResponse(dr) = result {
+        assert_matches!(result, FilterDecision::DirectResponse(dr) => {
             assert_eq!(dr.status(), http::StatusCode::GATEWAY_TIMEOUT);
-        }
+        });
     }
 
     #[tokio::test]
@@ -2848,7 +2871,7 @@ mod tests {
         let mut response =
             build_response_from_mock(&Mock::<ResponseMsg>::new(vec![], Some("streaming body data"), vec![]));
         let result = ext_proc.apply_response(&mut response).await;
-        assert!(matches!(result, FilterDecision::Continue));
+        assert_matches!(result, FilterDecision::Continue);
 
         let (_, body) = response.into_parts();
         let body_bytes = body.collect().await;
@@ -2881,7 +2904,7 @@ mod tests {
         let mut response =
             build_response_from_mock(&Mock::<ResponseMsg>::new(vec![], Some("streaming body data"), vec![]));
         let result = ext_proc.apply_response(&mut response).await;
-        assert!(matches!(result, FilterDecision::Continue));
+        assert_matches!(result, FilterDecision::Continue);
 
         let body_bytes = &mut response.body_mut().collect().await;
         assert!(body_bytes.is_err());
@@ -2909,7 +2932,7 @@ mod tests {
         let mut response =
             build_response_from_mock(&Mock::<ResponseMsg>::new(vec![], Some("streaming body data"), vec![]));
         let result = ext_proc.apply_response(&mut response).await;
-        assert!(matches!(result, FilterDecision::Continue));
+        assert_matches!(result, FilterDecision::Continue);
 
         let (_, body) = response.into_parts();
         let body_bytes = body.collect().await;
@@ -2945,14 +2968,13 @@ mod tests {
         let mut request =
             build_request_from_mock(&Mock::<RequestMsg>::new(vec![], Some("streaming body data"), vec![]));
         let result = ext_proc.apply_request(&mut request).await;
-        assert!(matches!(result, FilterDecision::DirectResponse(_)));
-        if let FilterDecision::DirectResponse(dr) = result {
+        assert_matches!(result, FilterDecision::DirectResponse(dr) => {
             assert_eq!(dr.status(), StatusCode::from_u16(302).unwrap());
             assert_eq!(dr.headers().get("x-immediate-header").unwrap(), "immediate value");
             let (_, body) = dr.into_parts();
             let body_bytes = body.collect().await.unwrap().to_bytes();
             assert_eq!(body_bytes, "immediate body".as_bytes());
-        }
+        });
     }
 
     #[tokio::test]
@@ -2985,10 +3007,9 @@ mod tests {
         ));
         let result = ext_proc.apply_request(&mut request).await;
 
-        assert!(matches!(result, FilterDecision::DirectResponse(_)));
-        if let FilterDecision::DirectResponse(dr) = result {
+        assert_matches!(result, FilterDecision::DirectResponse(dr) => {
             assert_eq!(dr.status(), StatusCode::from_u16(500).unwrap());
-        }
+        });
     }
 
     #[tokio::test]
@@ -3021,7 +3042,7 @@ mod tests {
         ));
         let result = ext_proc.apply_request(&mut request).await;
 
-        assert!(matches!(result, FilterDecision::Continue));
+        assert_matches!(result, FilterDecision::Continue);
         let (parts, body) = request.into_parts();
         assert_eq!(parts.headers.get("x-test-header").unwrap(), "original value");
         let body_bytes = body.collect().await;
