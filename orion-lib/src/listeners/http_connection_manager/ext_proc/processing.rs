@@ -125,7 +125,9 @@ impl Processing<kind::Processing, kind::RequestMsg> {
     ) {
         // --- Body Mode Override ---
         if let Ok(mode) = BodyProcessingMode::try_from(envoy_mode.request_body_mode) {
-            if allowed_override_modes.iter().any(|allowed| allowed.request_body_mode == mode) {
+            if allowed_override_modes.is_empty()
+                || allowed_override_modes.iter().any(|allowed| allowed.request_body_mode == mode)
+            {
                 override_mode.set_body_mode::<kind::RequestMsg>(mode);
             }
         }
@@ -133,7 +135,8 @@ impl Processing<kind::Processing, kind::RequestMsg> {
         // --- Trailer Mode Override ---
         if let Ok(mode) = TrailerProcessingMode::try_from(envoy_mode.request_trailer_mode) {
             if mode != TrailerProcessingMode::Default
-                && allowed_override_modes.iter().any(|allowed| allowed.request_trailer_mode == mode)
+                && (allowed_override_modes.is_empty()
+                    || allowed_override_modes.iter().any(|allowed| allowed.request_trailer_mode == mode))
             {
                 override_mode.set_trailer_mode::<kind::RequestMsg>(mode);
             }
@@ -152,7 +155,8 @@ impl Processing<kind::Processing, kind::ResponseMsg> {
         // --- Header Mode Override ---
         if let Ok(mode) = HeaderProcessingMode::try_from(envoy_mode.response_header_mode) {
             if mode != HeaderProcessingMode::Default
-                && allowed_override_modes.iter().any(|allowed| allowed.response_header_mode == mode)
+                && (allowed_override_modes.is_empty()
+                    || allowed_override_modes.iter().any(|allowed| allowed.response_header_mode == mode))
             {
                 override_mode.set_header_mode::<kind::ResponseMsg>(mode);
             }
@@ -160,7 +164,9 @@ impl Processing<kind::Processing, kind::ResponseMsg> {
 
         // --- Body Mode Override ---
         if let Ok(mode) = BodyProcessingMode::try_from(envoy_mode.response_body_mode) {
-            if allowed_override_modes.iter().any(|allowed| allowed.response_body_mode == mode) {
+            if allowed_override_modes.is_empty()
+                || allowed_override_modes.iter().any(|allowed| allowed.response_body_mode == mode)
+            {
                 override_mode.set_body_mode::<kind::ResponseMsg>(mode);
             }
         }
@@ -168,7 +174,8 @@ impl Processing<kind::Processing, kind::ResponseMsg> {
         // --- Trailer Mode Override ---
         if let Ok(mode) = TrailerProcessingMode::try_from(envoy_mode.response_trailer_mode) {
             if mode != TrailerProcessingMode::Default
-                && allowed_override_modes.iter().any(|allowed| allowed.response_trailer_mode == mode)
+                && (allowed_override_modes.is_empty()
+                    || allowed_override_modes.iter().any(|allowed| allowed.response_trailer_mode == mode))
             {
                 override_mode.set_trailer_mode::<kind::ResponseMsg>(mode);
             }
