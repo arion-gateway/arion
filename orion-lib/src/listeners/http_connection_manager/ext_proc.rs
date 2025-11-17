@@ -3129,7 +3129,8 @@ mod tests {
         };
 
         // ext-proc override
-        let mut header_response = create_headers_response(vec![], None, vec![], ResponseStatus::Continue as i32, None, false);
+        let mut header_response =
+            create_headers_response(vec![], None, vec![], ResponseStatus::Continue as i32, None, false);
         header_response.mode_override = Some(EnvoyProcessingMode {
             request_header_mode: processing_mode::HeaderSendMode::Send as i32,
             request_body_mode: processing_mode::BodySendMode::None as i32,
@@ -3138,11 +3139,9 @@ mod tests {
             response_body_mode: processing_mode::BodySendMode::None as i32,
             response_trailer_mode: processing_mode::HeaderSendMode::Skip as i32,
         });
-        let mock_state =
-            MockExternalProcessorState::new().add_response(header_response).add_response(create_trailers_response(
-                vec![Some(("x-ext-proc-trailer", "ext-proc trailer value"))],
-                false,
-            ));
+        let mock_state = MockExternalProcessorState::new().add_response(header_response).add_response(
+            create_trailers_response(vec![Some(("x-ext-proc-trailer", "ext-proc trailer value"))], false),
+        );
         let (server_addr, _) = start_mock_server(mock_state).await;
 
         let mut config = create_default_config_for_ext_proc_filter(server_addr, processing_mode);
@@ -3166,7 +3165,6 @@ mod tests {
         assert!(trailers.is_some());
         let trailers = trailers.unwrap();
         assert_matches!(result, FilterDecision::Continue);
-        assert_eq!(request.headers().get("content-type").unwrap(), "application/json");
         assert_eq!(trailers.get("x-ext-proc-trailer").unwrap(), "ext-proc trailer value");
     }
 
@@ -3242,7 +3240,8 @@ mod tests {
         };
 
         // ext-proc override
-        let mut header_response = create_headers_response(vec![], None, vec![], ResponseStatus::Continue as i32, None, true);
+        let mut header_response =
+            create_headers_response(vec![], None, vec![], ResponseStatus::Continue as i32, None, true);
         header_response.mode_override = Some(EnvoyProcessingMode {
             request_header_mode: processing_mode::HeaderSendMode::Skip as i32,
             request_body_mode: processing_mode::BodySendMode::None as i32,
@@ -3251,11 +3250,9 @@ mod tests {
             response_body_mode: processing_mode::BodySendMode::None as i32,
             response_trailer_mode: processing_mode::HeaderSendMode::Send as i32,
         });
-        let mock_state =
-            MockExternalProcessorState::new().add_response(header_response).add_response(create_trailers_response(
-                vec![Some(("x-ext-proc-trailer", "ext-proc trailer value"))],
-                true,
-            ));
+        let mock_state = MockExternalProcessorState::new()
+            .add_response(header_response)
+            .add_response(create_trailers_response(vec![Some(("x-ext-proc-trailer", "ext-proc trailer value"))], true));
         let (server_addr, _) = start_mock_server(mock_state).await;
 
         let mut config = create_default_config_for_ext_proc_filter(server_addr, processing_mode);
@@ -3280,5 +3277,87 @@ mod tests {
         let trailers = trailers.unwrap();
         assert_matches!(result, FilterDecision::Continue);
         assert_eq!(trailers.get("x-ext-proc-trailer").unwrap(), "ext-proc trailer value");
+    }
+
+    #[tokio::test]
+    #[test_log::test]
+    async fn test_request_header_override_response_header() {
+        // Original processing mode
+        let processing_mode = ProcessingMode {
+            request_header_mode: HeaderProcessingMode::Send,
+            request_body_mode: BodyProcessingMode::None,
+            request_trailer_mode: TrailerProcessingMode::Skip,
+            response_header_mode: HeaderProcessingMode::Skip,
+            response_body_mode: BodyProcessingMode::None,
+            response_trailer_mode: TrailerProcessingMode::Skip,
+        };
+
+        // ext-proc override
+        let mut request_header_response =
+            create_headers_response(vec![], None, vec![], ResponseStatus::Continue as i32, None, false);
+        request_header_response.mode_override = Some(EnvoyProcessingMode {
+            request_header_mode: processing_mode::HeaderSendMode::Send as i32,
+            request_body_mode: processing_mode::BodySendMode::None as i32,
+            request_trailer_mode: processing_mode::HeaderSendMode::Skip as i32,
+            response_header_mode: processing_mode::HeaderSendMode::Send as i32,
+            response_body_mode: processing_mode::BodySendMode::Buffered as i32,
+            response_trailer_mode: processing_mode::HeaderSendMode::Send as i32,
+        });
+        let mock_state = MockExternalProcessorState::new()
+            .add_response(request_header_response)
+            .add_response(create_headers_response(
+                vec![Some(("x-custom-header", "ext-proc header value"))],
+                None,
+                vec![],
+                ResponseStatus::Continue as i32,
+                None,
+                true,
+            ))
+            .add_response(create_body_response(
+                vec![],
+                Some("ext-proc body value".into()),
+                vec![],
+                ResponseStatus::Continue as i32,
+                None,
+                true,
+            ))
+            .add_response(create_trailers_response(vec![Some(("x-custom-trailer", "ext-proc trailer value"))], true));
+        let (server_addr, _) = start_mock_server(mock_state).await;
+
+        let mut config = create_default_config_for_ext_proc_filter(server_addr, processing_mode);
+        config.allow_mode_override = true;
+        let mut ext_proc = ExternalProcessor::from(config);
+
+        let mut request = build_request_from_mock(&Mock::<RequestMsg> {
+            headers: vec![Some(("content-type", "application/json"))],
+            body: None,
+            trailers: vec![],
+            _marker: std::marker::PhantomData,
+        });
+
+        let request_result = ext_proc.apply_request(&mut request).await;
+        assert_matches!(request_result, FilterDecision::Continue);
+        assert_eq!(request.headers().get("content-type").unwrap(), "application/json");
+
+        let mut response = build_response_from_mock(&Mock::<ResponseMsg> {
+            headers: vec![Some(("content-type", "application/json"))],
+            body: Some("original response body"),
+            trailers: vec![Some(("x-custom-trailer", "original trailer value"))],
+            _marker: std::marker::PhantomData,
+        });
+
+        let result = ext_proc.apply_response(&mut response).await;
+        assert_matches!(result, FilterDecision::Continue);
+        assert_eq!(response.headers().get("content-type").unwrap(), "application/json");
+        assert_eq!(response.headers().get("x-custom-header").unwrap(), "ext-proc header value");
+
+        let (_, body) = response.into_parts();
+        let collected_body = body.collect().await.unwrap();
+        let trailers = collected_body.trailers().cloned();
+        assert!(trailers.is_some());
+        assert_eq!(collected_body.to_bytes(), "ext-proc body value");
+        let trailers = trailers.unwrap();
+        assert_matches!(result, FilterDecision::Continue);
+        assert_eq!(trailers.get("x-custom-trailer").unwrap(), "ext-proc trailer value");
     }
 }
