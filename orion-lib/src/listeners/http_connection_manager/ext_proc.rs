@@ -327,7 +327,6 @@ impl ExternalProcessor {
             },
         };
 
-
         debug!(target: "ext_proc", "apply_request completed: {res:?}!");
         request.body_mut().inner.wait_frame().await;
         res
