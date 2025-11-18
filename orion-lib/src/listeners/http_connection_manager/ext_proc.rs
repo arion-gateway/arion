@@ -1636,13 +1636,12 @@ mod tests {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn create_headers_response(
+    fn create_headers_response<M: MsgType>(
         headers: Vec<Option<(&str, &str)>>,
         body_data: Option<Vec<u8>>,
         trailers: Vec<Option<(&str, &str)>>,
         status: i32,
         end_of_stream: Option<bool>,
-        is_response: bool,
     ) -> ProcessingResponse {
         let header_mutation = transform(headers).and_then(|hdrs| create_header_mutation(hdrs));
         let body_mutation = body_data.map(|body| create_body_mutation(body, end_of_stream));
@@ -1663,7 +1662,7 @@ mod tests {
             }),
         };
 
-        let response = if is_response {
+        let response = if M::IS_RESPONSE {
             Some(ProcessingResponseType::ResponseHeaders(header_response))
         } else {
             Some(ProcessingResponseType::RequestHeaders(header_response))
@@ -1673,13 +1672,12 @@ mod tests {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn create_body_response(
+    fn create_body_response<M: MsgType>(
         headers: Vec<Option<(&str, &str)>>,
         body_data: Option<Vec<u8>>,
         trailers: Vec<Option<(&str, &str)>>,
         status: i32,
         end_of_stream: Option<bool>,
-        is_response: bool,
     ) -> ProcessingResponse {
         let header_mutation = transform(headers).and_then(|hdrs| create_header_mutation(hdrs));
         let body_mutation = body_data.map(|body| create_body_mutation(body, end_of_stream));
@@ -1700,7 +1698,7 @@ mod tests {
             }),
         };
 
-        let response = if is_response {
+        let response = if M::IS_RESPONSE {
             Some(ProcessingResponseType::ResponseBody(body_response))
         } else {
             Some(ProcessingResponseType::RequestBody(body_response))
@@ -1709,11 +1707,11 @@ mod tests {
         ProcessingResponse { response, mode_override: None, dynamic_metadata: None, override_message_timeout: None }
     }
 
-    fn create_trailers_response(trailers: Vec<Option<(&str, &str)>>, is_response: bool) -> ProcessingResponse {
+    fn create_trailers_response<M: MsgType>(trailers: Vec<Option<(&str, &str)>>) -> ProcessingResponse {
         let trailer_mutation = transform(trailers).and_then(|trls| create_trailer_mutation(trls));
 
         let trailers_response = TrailersResponse { header_mutation: trailer_mutation };
-        let response = if is_response {
+        let response = if M::IS_RESPONSE {
             Some(ProcessingResponseType::ResponseTrailers(trailers_response))
         } else {
             Some(ProcessingResponseType::RequestTrailers(trailers_response))
@@ -1733,8 +1731,8 @@ mod tests {
     static TRAILER_PROCESSING_MODE: [TrailerProcessingMode; 3] =
         [TrailerProcessingMode::Default, TrailerProcessingMode::Skip, TrailerProcessingMode::Send];
 
-    fn generate_processing_mode_configurations(is_response: bool) -> Vec<ProcessingMode> {
-        if is_response {
+    fn generate_processing_mode_configurations<M: MsgType>() -> Vec<ProcessingMode> {
+        if M::IS_RESPONSE {
             HEADER_PROCESSING_MODE
                 .iter()
                 .flat_map(|&header_mode| {
@@ -1800,20 +1798,19 @@ mod tests {
         (!filtered.is_empty()).then_some(filtered)
     }
 
-    fn generate_header_processing_response(status: ResponseStatus, is_response: bool) -> Vec<ProcessingResponse> {
+    fn generate_header_processing_response<M :MsgType>(status: ResponseStatus) -> Vec<ProcessingResponse> {
         HEADER_MODIFICATIONS
             .iter()
             .flat_map(|&headers| {
                 BODY_MODIFICATIONS.iter().flat_map(move |&body| {
                     TRAILER_MODIFICATIONS.iter().map(move |&trailers| {
-                        create_headers_response(
+                        create_headers_response::<M>(
                             vec![headers],
                             body.map(Into::into),
                             // trailers modifications are NYI in body response in Envoy but Orion supports them
                             vec![trailers],
                             status as i32,
                             None,
-                            is_response,
                         )
                     })
                 })
@@ -1821,20 +1818,19 @@ mod tests {
             .collect()
     }
 
-    fn generate_body_processing_response(status: ResponseStatus, is_response: bool) -> Vec<ProcessingResponse> {
+    fn generate_body_processing_response<M : MsgType>(status: ResponseStatus) -> Vec<ProcessingResponse> {
         HEADER_MODIFICATIONS
             .iter()
             .flat_map(|&headers| {
                 BODY_MODIFICATIONS.iter().flat_map(move |&body| {
                     TRAILER_MODIFICATIONS.iter().map(move |&trailers| {
-                        create_body_response(
+                        create_body_response::<M>(
                             vec![headers],
                             body.map(Into::into),
                             // trailers modifications are NYI in body response in Envoy but Orion supports them
                             vec![trailers],
                             status as i32,
                             None,
-                            is_response,
                         )
                     })
                 })
@@ -1842,21 +1838,20 @@ mod tests {
             .collect()
     }
 
-    fn generate_trailer_processing_response(is_response: bool) -> Vec<ProcessingResponse> {
+    fn generate_trailer_processing_response<M: MsgType>() -> Vec<ProcessingResponse> {
         TRAILER_MODIFICATIONS
             .iter()
-            .map(move |&trailers| create_trailers_response(vec![trailers], is_response))
+            .map(move |&trailers| create_trailers_response::<M>(vec![trailers]))
             .collect()
     }
 
-    fn generate_mock_external_processors_states(
+    fn generate_mock_external_processors_states<M: MsgType>(
         status: ResponseStatus,
-        is_response: bool,
     ) -> Vec<MockExternalProcessorState> {
         let mut mock_ext_proc_state: Vec<MockExternalProcessorState> = vec![];
-        for header_response in generate_header_processing_response(status, is_response) {
-            for body_response in generate_body_processing_response(status, is_response) {
-                for trailer_response in generate_trailer_processing_response(is_response) {
+        for header_response in generate_header_processing_response::<M>(status) {
+            for body_response in generate_body_processing_response::<M>(status) {
+                for trailer_response in generate_trailer_processing_response::<M>() {
                     mock_ext_proc_state.push(
                         MockExternalProcessorState::new()
                             .add_response(header_response.clone())
@@ -2000,11 +1995,10 @@ mod tests {
     #[test_log::test]
     async fn test_request_combinatorial_modes_continue() {
         let status = ResponseStatus::Continue;
-        let is_response = false;
         let mut test_case_num = 0;
 
-        let mock_states = generate_mock_external_processors_states(status, is_response);
-        let processing_modes = generate_processing_mode_configurations(is_response);
+        let mock_states = generate_mock_external_processors_states::<RequestMsg>(status);
+        let processing_modes = generate_processing_mode_configurations::<RequestMsg>();
         let mock_requests = generate_mock_messages::<RequestMsg>();
 
         for mock_state in &mock_states {
@@ -2057,11 +2051,10 @@ mod tests {
     #[test_log::test]
     async fn test_response_combinatorial_modes_continue() {
         let status = ResponseStatus::Continue;
-        let is_response = true;
         let mut test_case_num = 0;
 
-        let mock_states = generate_mock_external_processors_states(status, is_response);
-        let processing_modes = generate_processing_mode_configurations(is_response);
+        let mock_states = generate_mock_external_processors_states::<ResponseMsg>(status);
+        let processing_modes = generate_processing_mode_configurations::<ResponseMsg>();
         let mock_responses = generate_mock_messages::<ResponseMsg>();
 
         for mock_state in &mock_states {
@@ -2113,11 +2106,10 @@ mod tests {
     #[tokio::test]
     #[test_log::test]
     async fn test_request_combinatorial_modes_observability() {
-        let is_response = false;
         let mut test_case_num = 0;
 
         let mock_state = MockExternalProcessorState::new();
-        let processing_modes = generate_processing_mode_configurations(is_response);
+        let processing_modes = generate_processing_mode_configurations::<RequestMsg>();
         let mock_requests = generate_mock_messages::<RequestMsg>();
 
         for processing_mode in &processing_modes {
@@ -2166,11 +2158,10 @@ mod tests {
     #[tokio::test]
     #[test_log::test]
     async fn test_response_combinatorial_modes_observability() {
-        let is_response = true;
         let mut test_case_num = 0;
 
         let mock_state = MockExternalProcessorState::new();
-        let processing_modes = generate_processing_mode_configurations(is_response);
+        let processing_modes = generate_processing_mode_configurations::<ResponseMsg>();
         let mock_responses = generate_mock_messages::<ResponseMsg>();
 
         for processing_mode in &processing_modes {
@@ -2219,13 +2210,12 @@ mod tests {
     #[tokio::test]
     #[test_log::test]
     async fn test_request_header_mutation() {
-        let mock_state = MockExternalProcessorState::new().add_response(create_headers_response(
+        let mock_state = MockExternalProcessorState::new().add_response(create_headers_response::<RequestMsg>(
             vec![Some(("x-processed", "true")), Some(("x-custom-header", "custom-value"))],
             None,
             vec![],
             ResponseStatus::Continue as i32,
             None,
-            false,
         ));
         let (server_addr, _) = start_mock_server(mock_state).await;
         let processing_mode = ProcessingMode {
@@ -2259,7 +2249,7 @@ mod tests {
     #[tokio::test]
     #[test_log::test]
     async fn test_request_header_mutation_pseudo_headers() {
-        let mock_state = MockExternalProcessorState::new().add_response(create_headers_response(
+        let mock_state = MockExternalProcessorState::new().add_response(create_headers_response::<RequestMsg>(
             vec![
                 Some((":method", "POST")),
                 Some((":path", "/ext-proc-html-path")),
@@ -2270,7 +2260,6 @@ mod tests {
             vec![],
             ResponseStatus::Continue as i32,
             None,
-            false,
         ));
         let (server_addr, _) = start_mock_server(mock_state).await;
         let processing_mode = ProcessingMode {
@@ -2307,12 +2296,10 @@ mod tests {
     #[test_log::test]
     async fn test_request_trailer_mutation() {
         let mock_state = MockExternalProcessorState::new()
-            .add_response(create_headers_response(vec![], None, vec![], ResponseStatus::Continue as i32, None, false))
-            .add_response(create_body_response(vec![], None, vec![], ResponseStatus::Continue as i32, None, false))
-            .add_response(create_trailers_response(
-                vec![Some(("x-processed", "true")), Some(("x-custom-trailer", "modified-value"))],
-                false,
-            ));
+            .add_response(create_headers_response::<RequestMsg>(vec![], None, vec![], ResponseStatus::Continue as i32, None))
+            .add_response(create_body_response::<RequestMsg>(vec![], None, vec![], ResponseStatus::Continue as i32, None))
+            .add_response(create_trailers_response::<RequestMsg>(
+                vec![Some(("x-processed", "true")), Some(("x-custom-trailer", "modified-value"))]));
         let (server_addr, _) = start_mock_server(mock_state).await;
         let processing_mode = ProcessingMode {
             request_header_mode: HeaderProcessingMode::Send,
@@ -2352,13 +2339,12 @@ mod tests {
     #[test_log::test]
     async fn test_request_body_buffered_continue_and_replace_on_headers_response() {
         let new_body = "modified body content";
-        let mock_state = MockExternalProcessorState::new().add_response(create_headers_response(
+        let mock_state = MockExternalProcessorState::new().add_response(create_headers_response::<RequestMsg>(
             vec![Some(("y-custom-header", "true"))],
             Some(new_body.as_bytes().into()),
             vec![],
             ResponseStatus::ContinueAndReplace as i32,
             None,
-            false,
         ));
         let (server_addr, _) = start_mock_server(mock_state).await;
         let processing_mode = ProcessingMode {
@@ -2395,8 +2381,8 @@ mod tests {
     async fn test_request_body_buffered_continue_and_replace_on_body_response() {
         let new_body = "modified body content";
         let mock_state = MockExternalProcessorState::new()
-            .add_response(create_headers_response(vec![], None, vec![], ResponseStatus::Continue as i32, None, false))
-            .add_response(create_body_response(
+            .add_response(create_headers_response::<RequestMsg>(vec![], None, vec![], ResponseStatus::Continue as i32, None))
+            .add_response(create_body_response::<RequestMsg>(
                 // TODO support headers modifications on body responses
                 //vec![("y-custom-header", "true")],
                 vec![],
@@ -2404,7 +2390,6 @@ mod tests {
                 vec![],
                 ResponseStatus::ContinueAndReplace as i32,
                 None,
-                false,
             ));
         let (server_addr, _) = start_mock_server(mock_state).await;
         let processing_mode = ProcessingMode {
@@ -2440,21 +2425,19 @@ mod tests {
     #[test_log::test]
     async fn test_request_body_buffered_mode() {
         let mock_state = MockExternalProcessorState::new()
-            .add_response(create_headers_response(
+            .add_response(create_headers_response::<RequestMsg>(
                 vec![Some(("x-stream-processed", "true")), Some(("y-custom-header", "true"))],
                 None,
                 vec![],
                 ResponseStatus::Continue as i32,
                 None,
-                false,
             ))
-            .add_response(create_body_response(
+            .add_response(create_body_response::<RequestMsg>(
                 vec![],
                 Some("body data from external processor".as_bytes().into()),
                 vec![],
                 ResponseStatus::Continue as i32,
                 None,
-                false,
             ));
         // starting mock with delay to compare output with the test that sets
         // send_body_without_waiting_for_header_response to true
@@ -2491,21 +2474,19 @@ mod tests {
     #[test_log::test]
     async fn test_request_body_buffered_mode_send_body_without_waiting_for_header_response() {
         let mock_state = MockExternalProcessorState::new()
-            .add_response(create_headers_response(
+            .add_response(create_headers_response::<RequestMsg>(
                 vec![Some(("x-stream-processed", "true")), Some(("y-custom-header", "true"))],
                 None,
                 vec![],
                 ResponseStatus::Continue as i32,
                 None,
-                false,
             ))
-            .add_response(create_body_response(
+            .add_response(create_body_response::<RequestMsg>(
                 vec![],
                 Some("body data from external processor".as_bytes().into()),
                 vec![],
                 ResponseStatus::Continue as i32,
                 None,
-                false,
             ));
         let (server_addr, _) = start_mock_server_with_delay(mock_state, Duration::from_millis(1)).await;
         let processing_mode = ProcessingMode {
@@ -2540,7 +2521,7 @@ mod tests {
     #[tokio::test]
     async fn test_request_body_streaming_mode() {
         let mock_state = MockExternalProcessorState::new()
-            .add_response(create_headers_response(
+            .add_response(create_headers_response::<RequestMsg>(
                 vec![Some(("x-stream-processed", "true")), Some(("y-custom-header", "true"))],
                 None,
                 vec![],
@@ -2548,9 +2529,8 @@ mod tests {
                 // even though we will stream the body, no body modification is
                 // performed in the headers response so no need to set the flag
                 None,
-                false,
             ))
-            .add_response(create_body_response(
+            .add_response(create_body_response::<RequestMsg>(
                 vec![],
                 Some("body data from external processor".as_bytes().into()),
                 vec![],
@@ -2558,7 +2538,6 @@ mod tests {
                 // the response for the streaming body is still just a normal Body
                 // no need to set end_of_stream, which is only for FULL_DUPLEX_STREAMED
                 None,
-                false,
             ));
         let (server_addr, _) = start_mock_server(mock_state).await;
         let processing_mode = ProcessingMode {
@@ -2592,13 +2571,12 @@ mod tests {
     #[tokio::test]
     #[test_log::test]
     async fn test_response_header_mutation_pseudo_headers() {
-        let mock_state = MockExternalProcessorState::new().add_response(create_headers_response(
+        let mock_state = MockExternalProcessorState::new().add_response(create_headers_response::<ResponseMsg>(
             vec![Some((":status", "404"))],
             None,
             vec![],
             ResponseStatus::Continue as i32,
             None,
-            true,
         ));
         let (server_addr, _) = start_mock_server(mock_state).await;
         let processing_mode = ProcessingMode {
@@ -2632,7 +2610,7 @@ mod tests {
     #[test_log::test]
     async fn test_response_body_streaming_mode() {
         let mock_state = MockExternalProcessorState::new()
-            .add_response(create_headers_response(
+            .add_response(create_headers_response::<ResponseMsg>(
                 vec![Some(("x-stream-processed", "true")), Some(("y-custom-header", "true"))],
                 None,
                 vec![],
@@ -2640,9 +2618,8 @@ mod tests {
                 // even though we will stream the body, no body modification is
                 // performed in the headers response so no need to set the flag
                 None,
-                true,
             ))
-            .add_response(create_body_response(
+            .add_response(create_body_response::<ResponseMsg>(
                 vec![],
                 Some("body data from external processor".as_bytes().into()),
                 vec![],
@@ -2650,7 +2627,6 @@ mod tests {
                 // the response for the streaming body is still just a normal Body
                 // no need to set end_of_stream, which is only for FULL_DUPLEX_STREAMED
                 None,
-                true,
             ));
         let (server_addr, _) = start_mock_server(mock_state).await;
         let processing_mode = ProcessingMode {
@@ -3071,7 +3047,7 @@ mod tests {
 
         // ext-proc override
         let mut header_response =
-            create_headers_response(vec![], None, vec![], ResponseStatus::Continue as i32, None, false);
+            create_headers_response::<RequestMsg>(vec![], None, vec![], ResponseStatus::Continue as i32, None);
         header_response.mode_override = Some(EnvoyProcessingMode {
             request_header_mode: processing_mode::HeaderSendMode::Send as i32,
             request_body_mode: processing_mode::BodySendMode::Buffered as i32,
@@ -3081,13 +3057,12 @@ mod tests {
             response_trailer_mode: processing_mode::HeaderSendMode::Skip as i32,
         });
         let mock_state =
-            MockExternalProcessorState::new().add_response(header_response).add_response(create_body_response(
+            MockExternalProcessorState::new().add_response(header_response).add_response(create_body_response::<RequestMsg>(
                 vec![],
                 Some("ext-proc body".into()),
                 vec![],
                 ResponseStatus::Continue as i32,
                 None,
-                false,
             ));
         let (server_addr, _) = start_mock_server(mock_state).await;
 
@@ -3130,7 +3105,7 @@ mod tests {
 
         // ext-proc override
         let mut header_response =
-            create_headers_response(vec![], None, vec![], ResponseStatus::Continue as i32, None, false);
+            create_headers_response::<RequestMsg>(vec![], None, vec![], ResponseStatus::Continue as i32, None);
         header_response.mode_override = Some(EnvoyProcessingMode {
             request_header_mode: processing_mode::HeaderSendMode::Send as i32,
             request_body_mode: processing_mode::BodySendMode::None as i32,
@@ -3140,7 +3115,7 @@ mod tests {
             response_trailer_mode: processing_mode::HeaderSendMode::Skip as i32,
         });
         let mock_state = MockExternalProcessorState::new().add_response(header_response).add_response(
-            create_trailers_response(vec![Some(("x-ext-proc-trailer", "ext-proc trailer value"))], false),
+            create_trailers_response::<RequestMsg>(vec![Some(("x-ext-proc-trailer", "ext-proc trailer value"))]),
         );
         let (server_addr, _) = start_mock_server(mock_state).await;
 
@@ -3183,7 +3158,7 @@ mod tests {
 
         // ext-proc override
         let mut header_response =
-            create_headers_response(vec![], None, vec![], ResponseStatus::Continue as i32, None, true);
+            create_headers_response::<ResponseMsg>(vec![], None, vec![], ResponseStatus::Continue as i32, None);
         header_response.mode_override = Some(EnvoyProcessingMode {
             request_header_mode: processing_mode::HeaderSendMode::Skip as i32,
             request_body_mode: processing_mode::BodySendMode::None as i32,
@@ -3193,13 +3168,12 @@ mod tests {
             response_trailer_mode: processing_mode::HeaderSendMode::Skip as i32,
         });
         let mock_state =
-            MockExternalProcessorState::new().add_response(header_response).add_response(create_body_response(
+            MockExternalProcessorState::new().add_response(header_response).add_response(create_body_response::<ResponseMsg>(
                 vec![],
                 Some("ext-proc body".into()),
                 vec![],
                 ResponseStatus::Continue as i32,
                 None,
-                true,
             ));
         let (server_addr, _) = start_mock_server(mock_state).await;
 
@@ -3241,7 +3215,7 @@ mod tests {
 
         // ext-proc override
         let mut header_response =
-            create_headers_response(vec![], None, vec![], ResponseStatus::Continue as i32, None, true);
+            create_headers_response::<ResponseMsg>(vec![], None, vec![], ResponseStatus::Continue as i32, None);
         header_response.mode_override = Some(EnvoyProcessingMode {
             request_header_mode: processing_mode::HeaderSendMode::Skip as i32,
             request_body_mode: processing_mode::BodySendMode::None as i32,
@@ -3252,7 +3226,7 @@ mod tests {
         });
         let mock_state = MockExternalProcessorState::new()
             .add_response(header_response)
-            .add_response(create_trailers_response(vec![Some(("x-ext-proc-trailer", "ext-proc trailer value"))], true));
+            .add_response(create_trailers_response::<ResponseMsg>(vec![Some(("x-ext-proc-trailer", "ext-proc trailer value"))]));
         let (server_addr, _) = start_mock_server(mock_state).await;
 
         let mut config = create_default_config_for_ext_proc_filter(server_addr, processing_mode);
@@ -3294,7 +3268,7 @@ mod tests {
 
         // ext-proc override
         let mut request_header_response =
-            create_headers_response(vec![], None, vec![], ResponseStatus::Continue as i32, None, false);
+            create_headers_response::<RequestMsg>(vec![], None, vec![], ResponseStatus::Continue as i32, None);
         request_header_response.mode_override = Some(EnvoyProcessingMode {
             request_header_mode: processing_mode::HeaderSendMode::Send as i32,
             request_body_mode: processing_mode::BodySendMode::None as i32,
@@ -3305,23 +3279,21 @@ mod tests {
         });
         let mock_state = MockExternalProcessorState::new()
             .add_response(request_header_response)
-            .add_response(create_headers_response(
+            .add_response(create_headers_response::<ResponseMsg>(
                 vec![Some(("x-custom-header", "ext-proc header value"))],
                 None,
                 vec![],
                 ResponseStatus::Continue as i32,
                 None,
-                true,
             ))
-            .add_response(create_body_response(
+            .add_response(create_body_response::<ResponseMsg>(
                 vec![],
                 Some("ext-proc body value".into()),
                 vec![],
                 ResponseStatus::Continue as i32,
                 None,
-                true,
             ))
-            .add_response(create_trailers_response(vec![Some(("x-custom-trailer", "ext-proc trailer value"))], true));
+            .add_response(create_trailers_response::<ResponseMsg>(vec![Some(("x-custom-trailer", "ext-proc trailer value"))]));
         let (server_addr, _) = start_mock_server(mock_state).await;
 
         let mut config = create_default_config_for_ext_proc_filter(server_addr, processing_mode);
