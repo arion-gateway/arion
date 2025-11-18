@@ -21,7 +21,7 @@ pub struct RequestMsg {}
 #[derive(Debug, Clone, Default)]
 pub struct ResponseMsg {}
 
-pub trait MsgType {
+pub trait MsgKind {
     const IS_REQUEST: bool;
     #[allow(dead_code)]
     const IS_RESPONSE: bool = !Self::IS_REQUEST;
@@ -29,10 +29,10 @@ pub trait MsgType {
     const NAME: &'static str = if Self::IS_REQUEST { "request" } else { "response" };
 }
 
-impl MsgType for RequestMsg {
+impl MsgKind for RequestMsg {
     const IS_REQUEST: bool = true;
 }
 
-impl MsgType for ResponseMsg {
+impl MsgKind for ResponseMsg {
     const IS_REQUEST: bool = false;
 }

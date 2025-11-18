@@ -1261,7 +1261,7 @@ mod tests {
     use crate::{
         body::{body_with_metrics::BodyWithMetrics, response_flags::BodyKind},
         listeners::http_connection_manager::ext_proc::{
-            kind::{MsgType, RequestMsg, ResponseMsg},
+            kind::{MsgKind, RequestMsg, ResponseMsg},
             mutation::apply_header_mutations,
             r#override::ModeSelector,
         },
@@ -1386,14 +1386,14 @@ mod tests {
     }
 
     #[derive(Debug, Default)]
-    struct Mock<M: MsgType> {
+    struct Mock<M: MsgKind> {
         headers: Vec<Option<(&'static str, &'static str)>>,
         body: Option<&'static str>,
         trailers: Vec<Option<(&'static str, &'static str)>>,
         _marker: std::marker::PhantomData<M>,
     }
 
-    impl<M: MsgType> Mock<M> {
+    impl<M: MsgKind> Mock<M> {
         fn new(
             headers: Vec<Option<(&'static str, &'static str)>>,
             body: Option<&'static str>,
@@ -1636,7 +1636,7 @@ mod tests {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn create_headers_response<M: MsgType>(
+    fn create_headers_response<M: MsgKind>(
         headers: Vec<Option<(&str, &str)>>,
         body_data: Option<Vec<u8>>,
         trailers: Vec<Option<(&str, &str)>>,
@@ -1672,7 +1672,7 @@ mod tests {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn create_body_response<M: MsgType>(
+    fn create_body_response<M: MsgKind>(
         headers: Vec<Option<(&str, &str)>>,
         body_data: Option<Vec<u8>>,
         trailers: Vec<Option<(&str, &str)>>,
@@ -1707,7 +1707,7 @@ mod tests {
         ProcessingResponse { response, mode_override: None, dynamic_metadata: None, override_message_timeout: None }
     }
 
-    fn create_trailers_response<M: MsgType>(trailers: Vec<Option<(&str, &str)>>) -> ProcessingResponse {
+    fn create_trailers_response<M: MsgKind>(trailers: Vec<Option<(&str, &str)>>) -> ProcessingResponse {
         let trailer_mutation = transform(trailers).and_then(|trls| create_trailer_mutation(trls));
 
         let trailers_response = TrailersResponse { header_mutation: trailer_mutation };
@@ -1731,7 +1731,7 @@ mod tests {
     static TRAILER_PROCESSING_MODE: [TrailerProcessingMode; 3] =
         [TrailerProcessingMode::Default, TrailerProcessingMode::Skip, TrailerProcessingMode::Send];
 
-    fn generate_processing_mode_configurations<M: MsgType>() -> Vec<ProcessingMode> {
+    fn generate_processing_mode_configurations<M: MsgKind>() -> Vec<ProcessingMode> {
         if M::IS_RESPONSE {
             HEADER_PROCESSING_MODE
                 .iter()
@@ -1772,7 +1772,7 @@ mod tests {
     static REQUEST_BODIES: [Option<&str>; 2] = [None, Some("original body")];
     static REQUEST_TRAILERS: [Option<(&str, &str)>; 2] = [None, Some(("x-test-trailer", "original-trailer-value"))];
 
-    fn generate_mock_messages<M: MsgType>() -> Vec<Mock<M>> {
+    fn generate_mock_messages<M: MsgKind>() -> Vec<Mock<M>> {
         REQUEST_HEADERS
             .iter()
             .flat_map(|&headers| {
@@ -1798,7 +1798,7 @@ mod tests {
         (!filtered.is_empty()).then_some(filtered)
     }
 
-    fn generate_header_processing_response<M :MsgType>(status: ResponseStatus) -> Vec<ProcessingResponse> {
+    fn generate_header_processing_response<M: MsgKind>(status: ResponseStatus) -> Vec<ProcessingResponse> {
         HEADER_MODIFICATIONS
             .iter()
             .flat_map(|&headers| {
@@ -1818,7 +1818,7 @@ mod tests {
             .collect()
     }
 
-    fn generate_body_processing_response<M : MsgType>(status: ResponseStatus) -> Vec<ProcessingResponse> {
+    fn generate_body_processing_response<M: MsgKind>(status: ResponseStatus) -> Vec<ProcessingResponse> {
         HEADER_MODIFICATIONS
             .iter()
             .flat_map(|&headers| {
@@ -1838,16 +1838,11 @@ mod tests {
             .collect()
     }
 
-    fn generate_trailer_processing_response<M: MsgType>() -> Vec<ProcessingResponse> {
-        TRAILER_MODIFICATIONS
-            .iter()
-            .map(move |&trailers| create_trailers_response::<M>(vec![trailers]))
-            .collect()
+    fn generate_trailer_processing_response<M: MsgKind>() -> Vec<ProcessingResponse> {
+        TRAILER_MODIFICATIONS.iter().map(move |&trailers| create_trailers_response::<M>(vec![trailers])).collect()
     }
 
-    fn generate_mock_external_processors_states<M: MsgType>(
-        status: ResponseStatus,
-    ) -> Vec<MockExternalProcessorState> {
+    fn generate_mock_external_processors_states<M: MsgKind>(status: ResponseStatus) -> Vec<MockExternalProcessorState> {
         let mut mock_ext_proc_state: Vec<MockExternalProcessorState> = vec![];
         for header_response in generate_header_processing_response::<M>(status) {
             for body_response in generate_body_processing_response::<M>(status) {
@@ -1864,7 +1859,7 @@ mod tests {
         mock_ext_proc_state
     }
 
-    fn validate_mock_server_configuration<M: MsgType + ModeSelector>(
+    fn validate_mock_server_configuration<M: MsgKind + ModeSelector>(
         mock_msg: &Mock<M>,
         processing_mode: &ProcessingMode,
         mock_ext_proc_state: &MockExternalProcessorState,
@@ -1913,7 +1908,7 @@ mod tests {
         mock_state: &MockExternalProcessorState,
         processing_mode: &ProcessingMode,
     ) where
-        M: std::fmt::Debug + MsgType + ModeSelector,
+        M: std::fmt::Debug + MsgKind + ModeSelector,
     {
         // ProcessingMode predicates
         let has_headers = transform(mock.headers.clone()).is_some();
@@ -1964,7 +1959,7 @@ mod tests {
             expected_headers,
             "test_case #: {}, asserting headers, original {} {:#?}, ext_proc server conf: {:#?}, ext_proc_filter processing mode: {:#?}",
             test_case_num,
-            <M as MsgType>::NAME,
+            <M as MsgKind>::NAME,
             mock,
             mock_state,
             processing_mode
@@ -1974,7 +1969,7 @@ mod tests {
             expected_body.as_ref(),
             "test_case #: {}, asserting body, original {} {:#?}, ext_proc server conf: {:#?}, ext_proc_filter processing mode: {:#?}",
             test_case_num,
-            <M as MsgType>::NAME,
+            <M as MsgKind>::NAME,
             mock,
             mock_state,
             processing_mode
@@ -1984,7 +1979,7 @@ mod tests {
             expected_trailers,
             "test_case #: {}, asserting trailers, original {} {:#?}, ext_proc server conf: {:#?}, ext_proc_filter processing mode: {:#?}",
             test_case_num,
-            <M as MsgType>::NAME,
+            <M as MsgKind>::NAME,
             mock,
             mock_state,
             processing_mode
@@ -2296,10 +2291,24 @@ mod tests {
     #[test_log::test]
     async fn test_request_trailer_mutation() {
         let mock_state = MockExternalProcessorState::new()
-            .add_response(create_headers_response::<RequestMsg>(vec![], None, vec![], ResponseStatus::Continue as i32, None))
-            .add_response(create_body_response::<RequestMsg>(vec![], None, vec![], ResponseStatus::Continue as i32, None))
-            .add_response(create_trailers_response::<RequestMsg>(
-                vec![Some(("x-processed", "true")), Some(("x-custom-trailer", "modified-value"))]));
+            .add_response(create_headers_response::<RequestMsg>(
+                vec![],
+                None,
+                vec![],
+                ResponseStatus::Continue as i32,
+                None,
+            ))
+            .add_response(create_body_response::<RequestMsg>(
+                vec![],
+                None,
+                vec![],
+                ResponseStatus::Continue as i32,
+                None,
+            ))
+            .add_response(create_trailers_response::<RequestMsg>(vec![
+                Some(("x-processed", "true")),
+                Some(("x-custom-trailer", "modified-value")),
+            ]));
         let (server_addr, _) = start_mock_server(mock_state).await;
         let processing_mode = ProcessingMode {
             request_header_mode: HeaderProcessingMode::Send,
@@ -2381,7 +2390,13 @@ mod tests {
     async fn test_request_body_buffered_continue_and_replace_on_body_response() {
         let new_body = "modified body content";
         let mock_state = MockExternalProcessorState::new()
-            .add_response(create_headers_response::<RequestMsg>(vec![], None, vec![], ResponseStatus::Continue as i32, None))
+            .add_response(create_headers_response::<RequestMsg>(
+                vec![],
+                None,
+                vec![],
+                ResponseStatus::Continue as i32,
+                None,
+            ))
             .add_response(create_body_response::<RequestMsg>(
                 // TODO support headers modifications on body responses
                 //vec![("y-custom-header", "true")],
@@ -3057,7 +3072,9 @@ mod tests {
             response_trailer_mode: processing_mode::HeaderSendMode::Skip as i32,
         });
         let mock_state =
-            MockExternalProcessorState::new().add_response(header_response).add_response(create_body_response::<RequestMsg>(
+            MockExternalProcessorState::new().add_response(header_response).add_response(create_body_response::<
+                RequestMsg,
+            >(
                 vec![],
                 Some("ext-proc body".into()),
                 vec![],
@@ -3114,9 +3131,13 @@ mod tests {
             response_body_mode: processing_mode::BodySendMode::None as i32,
             response_trailer_mode: processing_mode::HeaderSendMode::Skip as i32,
         });
-        let mock_state = MockExternalProcessorState::new().add_response(header_response).add_response(
-            create_trailers_response::<RequestMsg>(vec![Some(("x-ext-proc-trailer", "ext-proc trailer value"))]),
-        );
+        let mock_state =
+            MockExternalProcessorState::new().add_response(header_response).add_response(create_trailers_response::<
+                RequestMsg,
+            >(vec![Some((
+                "x-ext-proc-trailer",
+                "ext-proc trailer value",
+            ))]));
         let (server_addr, _) = start_mock_server(mock_state).await;
 
         let mut config = create_default_config_for_ext_proc_filter(server_addr, processing_mode);
@@ -3168,7 +3189,9 @@ mod tests {
             response_trailer_mode: processing_mode::HeaderSendMode::Skip as i32,
         });
         let mock_state =
-            MockExternalProcessorState::new().add_response(header_response).add_response(create_body_response::<ResponseMsg>(
+            MockExternalProcessorState::new().add_response(header_response).add_response(create_body_response::<
+                ResponseMsg,
+            >(
                 vec![],
                 Some("ext-proc body".into()),
                 vec![],
@@ -3224,9 +3247,13 @@ mod tests {
             response_body_mode: processing_mode::BodySendMode::None as i32,
             response_trailer_mode: processing_mode::HeaderSendMode::Send as i32,
         });
-        let mock_state = MockExternalProcessorState::new()
-            .add_response(header_response)
-            .add_response(create_trailers_response::<ResponseMsg>(vec![Some(("x-ext-proc-trailer", "ext-proc trailer value"))]));
+        let mock_state =
+            MockExternalProcessorState::new().add_response(header_response).add_response(create_trailers_response::<
+                ResponseMsg,
+            >(vec![Some((
+                "x-ext-proc-trailer",
+                "ext-proc trailer value",
+            ))]));
         let (server_addr, _) = start_mock_server(mock_state).await;
 
         let mut config = create_default_config_for_ext_proc_filter(server_addr, processing_mode);
@@ -3293,7 +3320,10 @@ mod tests {
                 ResponseStatus::Continue as i32,
                 None,
             ))
-            .add_response(create_trailers_response::<ResponseMsg>(vec![Some(("x-custom-trailer", "ext-proc trailer value"))]));
+            .add_response(create_trailers_response::<ResponseMsg>(vec![Some((
+                "x-custom-trailer",
+                "ext-proc trailer value",
+            ))]));
         let (server_addr, _) = start_mock_server(mock_state).await;
 
         let mut config = create_default_config_for_ext_proc_filter(server_addr, processing_mode);

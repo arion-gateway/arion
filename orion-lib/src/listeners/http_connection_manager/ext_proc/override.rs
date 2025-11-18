@@ -69,14 +69,14 @@ impl From<TrailerProcessingMode> for OverridableTrailerMode {
 // The following code is inspired by Haskell DataKind/TypeFamilies and TypeApplications
 //
 
-pub struct OverridableModes<K: kind::MsgType> {
+pub struct OverridableModes<K: kind::MsgKind> {
     header_mode: AtomicOverridableHeaderMode,
     body_mode: AtomicOverridableBodyMode,
     trailer_mode: AtomicOverridableTrailerMode,
     _kind: std::marker::PhantomData<K>,
 }
 
-impl<K: kind::MsgType> OverridableModes<K> {
+impl<K: kind::MsgKind> OverridableModes<K> {
     #[inline]
     #[allow(dead_code)]
     pub fn header_mode(&self) -> OverridableHeaderMode {
@@ -136,7 +136,7 @@ impl<K: kind::MsgType> OverridableModes<K> {
     }
 }
 
-impl<K: kind::MsgType> Default for OverridableModes<K> {
+impl<K: kind::MsgKind> Default for OverridableModes<K> {
     fn default() -> Self {
         Self {
             header_mode: AtomicOverridableHeaderMode::new(OverridableHeaderMode::Default),
@@ -147,7 +147,7 @@ impl<K: kind::MsgType> Default for OverridableModes<K> {
     }
 }
 
-impl<K: kind::MsgType> std::fmt::Debug for OverridableModes<K> {
+impl<K: kind::MsgKind> std::fmt::Debug for OverridableModes<K> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct(format!("OverridableModes<{}>", std::any::type_name::<K>()).as_str())
             .field("header_mode", &self.header_mode)
@@ -224,7 +224,7 @@ impl OverridableGlobalModes {
 }
 
 #[allow(dead_code)]
-pub trait ModeSelector: Sized + kind::MsgType {
+pub trait ModeSelector: Sized + kind::MsgKind {
     fn header_mode(mode: &ProcessingMode) -> HeaderProcessingMode;
     fn body_mode(mode: &ProcessingMode) -> BodyProcessingMode;
     fn trailer_mode(mode: &ProcessingMode) -> TrailerProcessingMode;
@@ -264,7 +264,7 @@ impl ModeSelector for kind::ResponseMsg {
     }
 }
 
-pub trait OverridableModeSelector: Sized + kind::MsgType {
+pub trait OverridableModeSelector: Sized + kind::MsgKind {
     fn get(global_mode: &OverridableGlobalModes) -> &OverridableModes<Self>;
 }
 

@@ -62,7 +62,7 @@ impl<M: kind::Mode> DerefMut for ResponseProcessing<M> {
 }
 
 #[allow(clippy::struct_excessive_bools)]
-pub struct Processing<M: kind::Mode, Msg: kind::MsgType> {
+pub struct Processing<M: kind::Mode, Msg: kind::MsgKind> {
     http_headers: Option<http::HeaderMap>,
     pub trailers: Option<http::HeaderMap>,
     pub frame_bridge: FrameBridge,
@@ -78,7 +78,7 @@ pub struct Processing<M: kind::Mode, Msg: kind::MsgType> {
     _msg: std::marker::PhantomData<Msg>,
 }
 
-impl<M: kind::Mode + Default, Msg: kind::MsgType> From<&ExternalProcessingWorkerConfig> for Processing<M, Msg> {
+impl<M: kind::Mode + Default, Msg: kind::MsgKind> From<&ExternalProcessingWorkerConfig> for Processing<M, Msg> {
     fn from(config: &ExternalProcessingWorkerConfig) -> Self {
         debug!(target: "ext_proc", "From<&ExternalProcessingWorkerConfig for Processing<>");
 
@@ -183,7 +183,7 @@ impl Processing<kind::Processing, kind::ResponseMsg> {
     }
 }
 
-impl<Msg: kind::MsgType + OverridableModeSelector> Processing<kind::Processing, Msg> {
+impl<Msg: kind::MsgKind + OverridableModeSelector> Processing<kind::Processing, Msg> {
     #[must_use = "must handle the returned Action"]
     pub async fn handle_headers_response(
         &mut self,
@@ -393,7 +393,7 @@ impl<Msg: kind::MsgType + OverridableModeSelector> Processing<kind::Processing, 
     }
 }
 
-impl<M: kind::Mode + Default, Msg: kind::MsgType + OverridableModeSelector> Processing<M, Msg> {
+impl<M: kind::Mode + Default, Msg: kind::MsgKind + OverridableModeSelector> Processing<M, Msg> {
     #[must_use = "must handle the returned Action"]
     #[allow(clippy::too_many_arguments)]
     pub fn process(
