@@ -23,7 +23,7 @@ use http::{
 use std::{iter::Cycle, sync::Arc, vec::IntoIter};
 use tracing::debug;
 
-use orion_xds::grpc_deps::{to_grpc_body, GrpcBody};
+use orion_xds::grpc_deps::GrpcBody;
 use tower::Service;
 
 use crate::{
@@ -71,7 +71,10 @@ impl GrpcService {
 
         let svc_resp =
             self.inner.to_response(&Arc::new(TransactionHandler::default()), RequestExt::new(http_req)).await?;
-        Ok(svc_resp.map(to_grpc_body))
+        let (header, body) = svc_resp.into_parts();
+        let body = GrpcBody::new(body);
+        let svc_resp = http::Response::from_parts(header, body);
+        Ok(svc_resp)
     }
 }
 
