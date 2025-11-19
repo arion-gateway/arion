@@ -624,6 +624,7 @@ impl HttpChannel {
 
         let mut total_requests = 0;
         for (index, back_off) in retry_policy.exponential_back_off().iter().enumerate() {
+            let back_off = back_off.unwrap_or(Duration::from_secs(1));
             total_requests += 1;
             let cloned_body =
                 BodyWithMetrics { inner: body.clone().into(), guard: guard.clone(), state: state.clone() };

@@ -15,9 +15,9 @@ orion-interner.workspace = true
 thiserror.workspace = true
 smol_str.workspace = true
 
-ahash          = "0.8.11"
-bitflags        = { version = "2.9.0", features = ["serde"] }
-chrono         = "0.4.40"
+ahash          = "0.8.12"
+bitflags        = { version = "2.10.0", features = ["serde"] }
+chrono         = "0.4.42"
 criterion      = "0.5.1"
 dhat           = "0.3.3"
 http-serde-ext = "1.0.2"
@@ -25,9 +25,9 @@ hyper          = { version = "1" }
 itoa           = "1.0.15"
 ptrie          = "0.7.2"
 serde          = { workspace = true, features = ["rc"] }
-thread_local   = "1.1.8"
+thread_local   = "1.1.9"
 traceparent    = "0.0.3"
-uuid           = { version = "1.16.0", features = ["v4"] }
+uuid           = { version = "1.18.1", features = ["v4"] }
 
 [features]
 dhat-heap = []
