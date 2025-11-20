@@ -78,8 +78,9 @@ impl DeterministicBuildHasher {
 #[cfg(test)]
 mod test {
     use super::{DeterministicBuildHasher, HashPolicy, HashState};
-    use http::{request::Builder, HeaderName, HeaderValue, Request};
+    use http::{request::Builder, HeaderValue, Request};
     use orion_configuration::config::network_filters::http_connection_manager::route::PolicySpecifier;
+    use orion_http_header::LB_HEADER;
     use std::{
         hash::{Hash, Hasher},
         net::SocketAddr,
@@ -123,7 +124,7 @@ mod test {
     fn hash_policy() {
         let source_ip = SocketAddr::from(([192, 168, 0, 1], 8000));
 
-        let policy_header = PolicySpecifier::Header(HeaderName::from_static("lb-header"));
+        let policy_header = PolicySpecifier::Header(LB_HEADER);
         let policy_query = PolicySpecifier::QueryParameter("lb-param".into());
         let policy_addr = PolicySpecifier::SourceIp(true);
 

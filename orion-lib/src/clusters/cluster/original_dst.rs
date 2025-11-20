@@ -30,6 +30,9 @@ use orion_configuration::config::{
     cluster::{ClusterDiscoveryType, HealthCheck, OriginalDstRoutingMethod},
     transport::BindDevice,
 };
+
+use orion_http_header::X_ENVOY_ORIGINAL_DST_HOST;
+
 use tracing::warn;
 use webpki::types::ServerName;
 
@@ -45,7 +48,7 @@ use crate::{
     },
     Result,
 };
-use http::{uri::Authority, HeaderName, HeaderValue};
+use http::{uri::Authority, HeaderValue};
 use orion_configuration::config::cluster::HttpProtocolOptions;
 
 use super::{ClusterOps, ClusterType};
@@ -78,9 +81,7 @@ impl OriginalDstClusterBuilder {
             if let ClusterDiscoveryType::OriginalDst(ref original_dst_config) = config.discovery_settings {
                 let routing_req = match &original_dst_config.routing_method {
                     OriginalDstRoutingMethod::HttpHeader { http_header_name } => {
-                        let header_name = http_header_name
-                            .to_owned()
-                            .unwrap_or_else(|| HeaderName::from_static("x-envoy-original-dst-host"));
+                        let header_name = http_header_name.to_owned().unwrap_or_else(|| X_ENVOY_ORIGINAL_DST_HOST);
                         RoutingRequirement::Header(header_name)
                     },
                     OriginalDstRoutingMethod::MetadataKey(_) => {
@@ -529,10 +530,7 @@ mod tests {
             None,
         );
         let mut cluster = build_original_dst_cluster(config);
-        assert_eq!(
-            cluster.get_routing_requirements(),
-            RoutingRequirement::Header(HeaderName::from_static("x-envoy-original-dst-host"))
-        );
+        assert_eq!(cluster.get_routing_requirements(), RoutingRequirement::Header(X_ENVOY_ORIGINAL_DST_HOST));
 
         let header_value = HeaderValue::from_str("localhost:52000").unwrap();
         let channel = cluster.get_http_connection_by_header(&header_value).unwrap();
