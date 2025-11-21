@@ -2,6 +2,7 @@ use std::{str::FromStr, sync::Arc};
 
 use http::{uri::Authority, HeaderName, HeaderValue};
 use rustc_hash::FxHashMap as HashMap;
+use tracing::debug;
 
 use super::Balancer;
 use crate::clusters::{
@@ -36,7 +37,9 @@ impl OverrideHostLoadBalancer {
     }
 
     pub fn select_override(&mut self, header_value: &HeaderValue, fallback_hash: Option<u64>) -> Result<HttpChannels> {
+        debug!("Selecting override endpoints for header value: {header_value:?}");
         let Ok(value_str) = header_value.to_str() else {
+            debug!("Invalid header value: {header_value:?}");
             let endpoint =
                 self.fallback.next_item(fallback_hash).ok_or_else(|| crate::Error::from("No active endpoint"))?;
             return Ok(HttpChannels::Single(endpoint.http_channel()));
@@ -58,12 +61,16 @@ impl OverrideHostLoadBalancer {
             .collect();
 
         if let Some((primary, rest)) = endpoints.split_first() {
+            debug!("Found {} healthy override endpoints for header value: {value_str}", endpoints.len());
             let channel = primary.http_channel();
             let failover_channels = rest.iter().map(|endpoint| endpoint.http_channel()).collect();
             Ok(HttpChannels::MultiWithFailover { channel, failover_channels })
         } else {
             let endpoint =
                 self.fallback.next_item(fallback_hash).ok_or_else(|| crate::Error::from("No active endpoint"))?;
+            debug!(
+                "No healthy override endpoints found for header {value_str} (fallback using the endpoint {endpoint:?})"
+            );
             Ok(HttpChannels::Single(endpoint.http_channel()))
         }
     }

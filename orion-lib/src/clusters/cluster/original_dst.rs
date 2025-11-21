@@ -33,7 +33,7 @@ use orion_configuration::config::{
 
 use orion_http_header::X_ENVOY_ORIGINAL_DST_HOST;
 
-use tracing::warn;
+use tracing::{debug, warn};
 use webpki::types::ServerName;
 
 use crate::{
@@ -82,6 +82,7 @@ impl OriginalDstClusterBuilder {
                 let routing_req = match &original_dst_config.routing_method {
                     OriginalDstRoutingMethod::HttpHeader { http_header_name } => {
                         let header_name = http_header_name.to_owned().unwrap_or_else(|| X_ENVOY_ORIGINAL_DST_HOST);
+                        debug!("ORIGINAL_DST cluster {name} routing by header {header_name}");
                         RoutingRequirement::Header(header_name)
                     },
                     OriginalDstRoutingMethod::MetadataKey(_) => {
@@ -179,6 +180,7 @@ impl ClusterOps for OriginalDstCluster {
                 self.get_http_connection_by_authority(authority).map(HttpChannels::Single)
             },
             RoutingContext::Header(header_value) => {
+                debug!("get HTTP connection by header {header_value:?}...");
                 self.get_http_connection_by_header(header_value).map(HttpChannels::Single)
             },
             _ => Err(format!("ORIGINAL_DST cluster {} requires authority or header routing context", self.name).into()),
