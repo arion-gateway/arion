@@ -15,13 +15,18 @@
 //
 //
 
-use std::sync::OnceLock;
+use std::cell::RefCell;
 
 use http::Version;
-use lasso::ThreadedRodeo;
+use lasso::Rodeo;
 use smol_str::SmolStr;
 
-static GLOBAL_INTERNER: OnceLock<ThreadedRodeo> = OnceLock::new();
+// static GLOBAL_INTERNER: OnceLock<ThreadedRodeo> = OnceLock::new();
+
+thread_local! {
+    /// Thread-local interner for storing static strings.
+    static THREAD_LOCAL_INTERNER: RefCell<Rodeo> = RefCell::new(Rodeo::new());
+}
 
 pub trait StringInterner {
     fn to_static_str(&self) -> &'static str;
@@ -29,15 +34,14 @@ pub trait StringInterner {
 
 #[inline]
 fn intern_str(s: &str) -> &'static str {
-    let interner = GLOBAL_INTERNER.get_or_init(ThreadedRodeo::new);
-    let key = interner.get_or_intern(s);
-    let static_ref = interner.resolve(&key);
-
-    // SAFETY: The `GLOBAL_INTERNER` is a `static` variable, meaning it has a `'static`
-    // lifetime and is never dropped. Therefore, the string slices stored within it
-    // are also valid for the `'static` lifetime. This transmute is safe because
-    // we are extending a lifetime that is already effectively `'static`.
-    unsafe { std::mem::transmute::<&str, &'static str>(static_ref) }
+    THREAD_LOCAL_INTERNER.with_borrow_mut(|interner| {
+        let key = &mut interner.get_or_intern(s);
+        // SAFETY: The `THREAD_LOCAL_INTERNER` is a `static` per-thraad variable, meaning it has a `'static`
+        // lifetime and is never dropped. Therefore, the string slices stored within it
+        // are also valid for the `'static` lifetime. This transmute is safe because
+        // we are extending a lifetime that is already effectively `'static`.
+        unsafe { std::mem::transmute::<&str, &'static str>(interner.resolve(&key)) }
+    })
 }
 
 impl StringInterner for &str {

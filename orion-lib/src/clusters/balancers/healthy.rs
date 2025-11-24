@@ -55,6 +55,7 @@ where
         this
     }
 
+    #[inline]
     pub fn next_item(&mut self, hash: Option<u64>) -> Option<Arc<E>> {
         self.balancer.next_item(hash)
     }

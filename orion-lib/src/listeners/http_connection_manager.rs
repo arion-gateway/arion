@@ -26,7 +26,8 @@
 mod direct_response;
 mod ext_proc;
 use ext_proc::ExternalProcessor;
-mod http_modifiers;
+use smallvec::SmallVec;
+pub mod http_modifiers;
 mod redirect;
 mod route;
 mod upgrades;
@@ -253,9 +254,10 @@ impl HttpFilterValue {
                     if let Some(HttpFilterConfig { filter: HttpFilterType::ExternalProcessor(base_config), .. }) =
                         base_config
                     {
-                        Some(HttpFilterValue::ExternalProcessor(
+                        let filter_value = HttpFilterValue::ExternalProcessor(
                             (base_config.clone(), Some(ext_proc_per_route.clone())).into(),
-                        ))
+                        );
+                        Some(filter_value)
                     } else {
                         None
                     }
@@ -570,6 +572,7 @@ impl TransactionHandler {
         self.thread_id
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn handle_transaction<RC>(
         self: Arc<Self>,
         route_conf: RC,
@@ -818,7 +821,7 @@ impl
         let mut processed_routes: HashSet<&RouteMatch> = HashSet::new();
         let mut cached_route = match_request_route(&request, &self);
         let mut request: Request<BodyWithMetrics<PolyBody>> = request.map(BodyWithMetrics::map_into::<PolyBody>);
-        let mut active_filters: Vec<HttpFilterValue> = Vec::new();
+        let mut active_filters: SmallVec<[HttpFilterValue; 2]> = SmallVec::new();
         loop {
             if let Some(ref chosen_route) = cached_route {
                 if processed_routes.contains(&chosen_route.route.route_match) {
@@ -851,6 +854,7 @@ impl
                     if !is_reroute {
                         break;
                     }
+                    debug!("rerouting enabled; active_filters dropped!");
                     active_filters.clear();
                     processed_routes.insert(&chosen_route.route.route_match);
                     cached_route = match_request_route(&request, &self);
@@ -896,8 +900,10 @@ impl
                 },
             }?;
 
-            while let Some(mut filter_value) = active_filters.pop() {
-                let filter_res = filter_value.apply_response(&mut response).await;
+            // Process filters on response...
+            //
+            for filter in &mut active_filters {
+                let filter_res = filter.apply_response(&mut response).await;
                 if let FilterDecision::DirectResponse(direct_response) = filter_res {
                     response = direct_response;
                     break;

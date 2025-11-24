@@ -94,8 +94,8 @@ impl<'a> RequestHandler<(MatchedRequest<'a>, &HttpConnectionManager)> for &Route
                 #[cfg(feature = "access-log")]
                 if let Some(ctx) = trans_handler.access_log_ctx.as_ref() {
                     ctx.lock().loggers.with_context(&UpstreamContext {
-                        authority: Some(&svc_channel.upstream_authority),
-                        cluster_name: Some(svc_channel.cluster_name),
+                        authority: Some(svc_channel.upstream_authority()),
+                        cluster_name: Some(svc_channel.cluster_name()),
                         route_name,
                     })
                 }
@@ -129,7 +129,7 @@ impl<'a> RequestHandler<(MatchedRequest<'a>, &HttpConnectionManager)> for &Route
                     trans_handler.trace_ctx.as_ref(),
                     &_connection_manager.get_tracing_key(),
                     SpanKind::Client,
-                    SpanName::Str::<()>(svc_channel.upstream_authority.as_str()),
+                    SpanName::Str::<()>(svc_channel.upstream_authority().as_str()),
                 );
 
                 #[cfg(feature = "tracing")]
@@ -139,8 +139,8 @@ impl<'a> RequestHandler<(MatchedRequest<'a>, &HttpConnectionManager)> for &Route
 
                     // set additional attributes for client span...
                     client_span.set_attributes([
-                        KeyValue::new(UPSTREAM_CLUSTER_NAME, svc_channel.cluster_name),
-                        KeyValue::new(UPSTREAM_ADDRESS, svc_channel.upstream_authority.to_string()),
+                        KeyValue::new(UPSTREAM_CLUSTER_NAME, svc_channel.cluster_name()),
+                        KeyValue::new(UPSTREAM_ADDRESS, svc_channel.upstream_authority().to_string()),
                     ]);
                 }
 
@@ -204,7 +204,7 @@ impl<'a> RequestHandler<(MatchedRequest<'a>, &HttpConnectionManager)> for &Route
                         );
                         Ok(SyntheticHttpResponse::bad_gateway(event_kind, flags).into_response(ver))
                     },
-                    Ok(resp) => Ok(resp),
+                    resp => resp,
                 }
             },
             // http connection not avaiable from cluster...

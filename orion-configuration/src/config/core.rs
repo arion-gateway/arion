@@ -279,7 +279,7 @@ pub mod envoy_conversions {
                         GenericError::from_msg_with_cause(format!("failed to parse \"{address}\" as an ip adress"), e)
                     })
                     .with_node(address),
-                _ => Err(GenericError::from_msg("only socket addresses are supported at the moment")),
+                _ => Err(GenericError::from_msg("only socket addresses are supported currently")),
             }
         }
     }
