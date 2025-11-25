@@ -44,11 +44,11 @@ pub type Timeout = PingoraTimeout<Pending<()>, FastTimeout>;
 
 #[pin_project]
 pub struct TimeoutBody<B> {
-    timeout: Option<Duration>,
+    pub timeout: Option<Duration>,
     #[pin]
-    sleep: Option<Pin<Box<Timeout>>>,
+    pub sleep: Option<Pin<Box<Timeout>>>,
     #[pin]
-    body: B,
+    pub inner: B,
 }
 
 impl<B> std::fmt::Debug for TimeoutBody<B>
@@ -58,7 +58,7 @@ where
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct(type_name::<TimeoutBody<B>>())
             .field("timeout", &self.timeout)
-            .field("body", &self.body)
+            .field("body", &self.inner)
             .finish_non_exhaustive()
     }
 }
@@ -66,7 +66,21 @@ where
 impl<B> TimeoutBody<B> {
     /// Creates a new [`TimeoutBody`].
     pub fn new(timeout: Option<Duration>, body: B) -> Self {
-        TimeoutBody { timeout, sleep: None, body }
+        TimeoutBody { timeout, sleep: None, inner: body }
+    }
+
+    pub fn map_into<B2>(self) -> TimeoutBody<B2>
+    where
+        B: Into<B2>,
+    {
+        TimeoutBody { inner: self.inner.into(), timeout: self.timeout, sleep: self.sleep }
+    }
+
+    pub fn map_inner<B2, F>(self, f: F) -> TimeoutBody<B2>
+    where
+        F: FnOnce(B) -> B2,
+    {
+        TimeoutBody { inner: f(self.inner), timeout: self.timeout, sleep: self.sleep }
     }
 }
 
@@ -97,19 +111,19 @@ where
             }
 
             // Check for body data.
-            let frame = ready!(this.body.poll_frame(cx));
+            let frame = ready!(this.inner.poll_frame(cx));
 
             // A frame is ready. Reset the `Sleep`...
             this.sleep.set(None);
 
             Poll::Ready(frame.transpose().map_err(TimeoutBodyError::BodyError).transpose())
         } else {
-            this.body.poll_frame(cx).map_err(TimeoutBodyError::BodyError)
+            this.inner.poll_frame(cx).map_err(TimeoutBodyError::BodyError)
         }
     }
 
     fn is_end_stream(&self) -> bool {
-        self.body.is_end_stream()
+        self.inner.is_end_stream()
     }
 }
 

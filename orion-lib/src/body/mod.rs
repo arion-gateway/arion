@@ -31,8 +31,8 @@
 //! [`Infallible`] after applying this middleware.
 //!
 
-pub mod instrumented_body;
-pub mod timeout_body;
 pub mod channel_body;
+pub mod instrumented_body;
 pub mod poly_body;
 pub(crate) mod response_flags;
+pub mod timeout_body;

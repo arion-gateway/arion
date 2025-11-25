@@ -15,7 +15,10 @@
 //
 //
 use super::{RequestHandler, TransactionHandler};
-use crate::{body::instrumented_body::InstrumentedBody, PolyBody, Result};
+use crate::{
+    body::{instrumented_body::InstrumentedBody, timeout_body::TimeoutBody},
+    PolyBody, Result,
+};
 use http_body_util::Full;
 use hyper::{Request, Response};
 use orion_configuration::config::network_filters::http_connection_manager::route::DirectResponseAction;
@@ -23,12 +26,12 @@ use orion_configuration::config::network_filters::http_connection_manager::route
 #[cfg(feature = "access-log")]
 use {crate::listeners::access_log::AccessLogContext, orion_format::context::UpstreamContext};
 
-impl<'a> RequestHandler<(Request<InstrumentedBody<PolyBody>>, &'a str)> for &DirectResponseAction {
+impl<'a> RequestHandler<(Request<InstrumentedBody<TimeoutBody<PolyBody>>>, &'a str)> for &DirectResponseAction {
     async fn to_response(
         self,
         _trans_handler: &TransactionHandler,
-        (request, _route_name): (Request<InstrumentedBody<PolyBody>>, &'a str),
-    ) -> Result<Response<PolyBody>> {
+        (request, _route_name): (Request<InstrumentedBody<TimeoutBody<PolyBody>>>, &'a str),
+    ) -> Result<Response<TimeoutBody<PolyBody>>> {
         #[cfg(feature = "access-log")]
         if let Some(ctx) = _trans_handler.access_log_ctx.as_ref() {
             ctx.lock().loggers.with_context(&UpstreamContext {
@@ -38,7 +41,7 @@ impl<'a> RequestHandler<(Request<InstrumentedBody<PolyBody>>, &'a str)> for &Dir
             })
         }
         let body = Full::new(self.body.as_ref().map(|b| bytes::Bytes::copy_from_slice(b.data())).unwrap_or_default());
-        let mut resp = Response::new(body.into());
+        let mut resp = Response::new(TimeoutBody::new(None, body.into()));
         *resp.status_mut() = self.status;
         *resp.version_mut() = request.version();
         Ok(resp)

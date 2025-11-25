@@ -105,6 +105,13 @@ mod metrics_enabled {
         {
             InstrumentedBody { inner: self.inner.into(), state: self.state, guard: self.guard }
         }
+
+        pub fn map_inner<B2, F>(self, f: F) -> InstrumentedBody<B2>
+        where
+            F: FnOnce(B) -> B2,
+        {
+            InstrumentedBody { inner: f(self.inner), state: self.state, guard: self.guard }
+        }
     }
 
     impl<B> Body for InstrumentedBody<B>
@@ -189,6 +196,13 @@ mod metrics_disabled {
             B: Into<B2>,
         {
             InstrumentedBody { inner: self.inner.into(), guard: (), state: () }
+        }
+
+        pub fn map_inner<B2, F>(self, f: F) -> InstrumentedBody<B2>
+        where
+            F: FnOnce(B) -> B2,
+        {
+            InstrumentedBody { inner: f(self.inner), state: self.state, guard: self.guard }
         }
     }
 

@@ -27,7 +27,7 @@ use orion_xds::grpc_deps::GrpcBody;
 use tower::Service;
 
 use crate::{
-    body::{instrumented_body::InstrumentedBody, response_flags::BodyKind},
+    body::{instrumented_body::InstrumentedBody, response_flags::BodyKind, timeout_body::TimeoutBody},
     listeners::http_connection_manager::{RequestHandler, TransactionHandler},
     transport::{policy::RequestExt, HttpChannel},
 };
@@ -64,9 +64,13 @@ impl GrpcService {
 
         let http_req = Request::from_parts(
             parts,
-            InstrumentedBody::new(BodyKind::Request, grpc_body.into(), |_bytes, _event_error, _flags| {
-                debug!("gRPC request body finalized");
-            }),
+            InstrumentedBody::new(
+                BodyKind::Request,
+                TimeoutBody::new(None, grpc_body.into()),
+                |_bytes, _event_error, _flags| {
+                    debug!("gRPC request body finalized");
+                },
+            ),
         );
 
         let svc_resp =

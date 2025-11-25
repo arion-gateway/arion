@@ -15,6 +15,7 @@
 //
 //
 use super::{http_modifiers, upgrades as upgrade_utils, RequestHandler, TransactionHandler};
+use crate::body::timeout_body::TimeoutBody;
 use crate::event_error::{EventError, EventFailure, EventKind, TryInferFrom};
 use crate::{
     body::{instrumented_body::InstrumentedBody, response_flags::ResponseFlags},
@@ -57,7 +58,7 @@ use std::net::SocketAddr;
 use tracing::debug;
 
 pub struct MatchedRequest<'a> {
-    pub request: Request<InstrumentedBody<PolyBody>>,
+    pub request: Request<InstrumentedBody<TimeoutBody<PolyBody>>>,
     pub retry_policy: Option<&'a RetryPolicy>,
     pub route_name: &'a str,
     pub remote_address: SocketAddr,
@@ -71,7 +72,7 @@ impl<'a> RequestHandler<(MatchedRequest<'a>, &HttpConnectionManager)> for &Route
         self,
         trans_handler: &TransactionHandler,
         (request, _connection_manager): (MatchedRequest<'a>, &HttpConnectionManager),
-    ) -> Result<Response<PolyBody>> {
+    ) -> Result<Response<TimeoutBody<PolyBody>>> {
         #[allow(unused_variables)]
         let MatchedRequest {
             request: downstream_request,
@@ -102,7 +103,7 @@ impl<'a> RequestHandler<(MatchedRequest<'a>, &HttpConnectionManager)> for &Route
 
                 let ver = downstream_request.version();
 
-                let mut upstream_request: Request<InstrumentedBody<PolyBody>> = {
+                let mut upstream_request: Request<InstrumentedBody<TimeoutBody<PolyBody>>> = {
                     let (mut parts, body) = downstream_request.into_parts();
                     let path_and_query_replacement = if let Some(rewrite) = &self.rewrite {
                         rewrite

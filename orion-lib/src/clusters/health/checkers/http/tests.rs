@@ -42,7 +42,7 @@ use crate::{
 /// and will respond with the items in `responses`.
 struct HttpActionTrace {
     requests: mpsc::UnboundedSender<http::Request<InstrumentedBody<PolyBody>>>,
-    responses: mpsc::UnboundedReceiver<http::Response<PolyBody>>,
+    responses: mpsc::UnboundedReceiver<http::Response<TimeoutBody<PolyBody>>>,
 }
 
 #[derive(Clone)]
@@ -51,7 +51,7 @@ struct MockHttpStack(Arc<Mutex<HttpActionTrace>>);
 impl MockHttpStack {
     pub fn new(
         requests: mpsc::UnboundedSender<http::Request<InstrumentedBody<PolyBody>>>,
-        responses: mpsc::UnboundedReceiver<http::Response<PolyBody>>,
+        responses: mpsc::UnboundedReceiver<http::Response<TimeoutBody<PolyBody>>>,
     ) -> Self {
         MockHttpStack(Arc::new(Mutex::new(HttpActionTrace { requests, responses })))
     }
@@ -62,7 +62,7 @@ impl<'a> RequestHandler<RequestExt<'a, Request<InstrumentedBody<PolyBody>>>> for
         self,
         _trans_handler: &TransactionHandler,
         request: RequestExt<'a, Request<InstrumentedBody<PolyBody>>>,
-    ) -> Result<Response<PolyBody>> {
+    ) -> Result<Response<TimeoutBody<PolyBody>>> {
         let state = &mut self.0.lock();
         // Log this request
         state.requests.send(request.req).unwrap();
@@ -73,8 +73,12 @@ impl<'a> RequestHandler<RequestExt<'a, Request<InstrumentedBody<PolyBody>>>> for
 }
 
 struct HttpTestFixture {
-    inner:
-        TestFixture<HttpHealthCheck, MockHttpStack, http::Request<InstrumentedBody<PolyBody>>, http::Response<PolyBody>>,
+    inner: TestFixture<
+        HttpHealthCheck,
+        MockHttpStack,
+        http::Request<InstrumentedBody<PolyBody>>,
+        http::Response<TimeoutBody<PolyBody>>,
+    >,
 }
 
 #[allow(clippy::panic)]
@@ -137,7 +141,7 @@ impl HttpTestFixture {
     }
 }
 
-deref!(HttpTestFixture => inner as TestFixture<HttpHealthCheck, MockHttpStack, http::Request<InstrumentedBody<PolyBody>>, http::Response<PolyBody>>);
+deref!(HttpTestFixture => inner as TestFixture<HttpHealthCheck, MockHttpStack, http::Request<InstrumentedBody<PolyBody>>, http::Response<TimeoutBody<PolyBody>>>);
 
 const HEALTHY_THRESHOLD: u16 = 5;
 const UNHEALTHY_THRESHOLD: u16 = 10;
