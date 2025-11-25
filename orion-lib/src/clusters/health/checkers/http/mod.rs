@@ -33,7 +33,7 @@ use tokio::{
 };
 
 use super::checker::{IntervalWaiter, ProtocolChecker, WaitInterval};
-use crate::body::{body_with_metrics::BodyWithMetrics, response_flags::BodyKind};
+use crate::body::{instrumented_body::InstrumentedBody, response_flags::BodyKind};
 // use crate::clusters::cluster::HyperService;
 use crate::{
     clusters::health::{
@@ -81,7 +81,7 @@ fn try_spawn_http_health_checker_impl<H, W>(
 where
     W: WaitInterval + Send + 'static,
     H: Send + 'static,
-    for<'a> &'a H: RequestHandler<RequestExt<'static, Request<BodyWithMetrics<PolyBody>>>>,
+    for<'a> &'a H: RequestHandler<RequestExt<'static, Request<InstrumentedBody<PolyBody>>>>,
 {
     tracing::debug!(
         "Starting HTTP health checks of endpoint {:?} in cluster {:?}",
@@ -130,7 +130,7 @@ struct HttpChecker<H = HttpChannel> {
 impl<H> ProtocolChecker for HttpChecker<H>
 where
     H: Send,
-    for<'a> &'a H: RequestHandler<RequestExt<'static, Request<BodyWithMetrics<PolyBody>>>>,
+    for<'a> &'a H: RequestHandler<RequestExt<'static, Request<InstrumentedBody<PolyBody>>>>,
 {
     type Response = Response<PolyBody>;
 
@@ -177,11 +177,11 @@ fn create_request(
     method: &http::Method,
     host: &str,
     uri: &http::Uri,
-) -> Result<RequestExt<'static, Request<BodyWithMetrics<PolyBody>>>, http::Error> {
+) -> Result<RequestExt<'static, Request<InstrumentedBody<PolyBody>>>, http::Error> {
     let req = http::Request::builder().version(http_version).method(method).uri(uri);
     let req = if http_version < http::Version::HTTP_2 { req.header("Host", host) } else { req };
     let req = req.header("User-Agent", "orion/health-checks");
 
     let empty = Empty::<Bytes>::default().into();
-    Ok(RequestExt::new(req.body(BodyWithMetrics::new(BodyKind::Request, empty, |_, _, _| {}))?))
+    Ok(RequestExt::new(req.body(InstrumentedBody::new(BodyKind::Request, empty, |_, _, _| {}))?))
 }

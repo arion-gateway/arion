@@ -106,8 +106,8 @@ use upgrades as upgrade_utils;
 
 use crate::{
     body::{
-        body_with_metrics::BodyWithMetrics,
-        body_with_timeout::BodyWithTimeout,
+        instrumented_body::InstrumentedBody,
+        timeout_body::TimeoutBody,
         response_flags::{BodyKind, ResponseFlags},
     },
     event_error::EventFailure,
@@ -230,7 +230,7 @@ impl From<HttpFilterConfig> for HttpFilter {
 }
 
 impl HttpFilterValue {
-    pub async fn apply_request(&mut self, request: &mut Request<BodyWithMetrics<PolyBody>>) -> FilterDecision {
+    pub async fn apply_request(&mut self, request: &mut Request<InstrumentedBody<PolyBody>>) -> FilterDecision {
         match self {
             HttpFilterValue::Rbac(rbac) => apply_authorization_rules(rbac, request),
             HttpFilterValue::RateLimit(rl) => rl.run(request),
@@ -416,9 +416,9 @@ impl HttpConnectionManager {
     ) -> Box<
         dyn Service<
                 ExtendedRequest<Incoming>,
-                Response = Response<BodyWithMetrics<PolyBody>>,
+                Response = Response<InstrumentedBody<PolyBody>>,
                 Error = crate::Error,
-                Future = BoxFuture<'static, StdResult<Response<BodyWithMetrics<PolyBody>>, crate::Error>>,
+                Future = BoxFuture<'static, StdResult<Response<InstrumentedBody<PolyBody>>, crate::Error>>,
             > + Send
             + Sync,
     > {
@@ -426,9 +426,9 @@ impl HttpConnectionManager {
             as Box<
                 dyn Service<
                         ExtendedRequest<Incoming>,
-                        Response = Response<BodyWithMetrics<PolyBody>>,
+                        Response = Response<InstrumentedBody<PolyBody>>,
                         Error = crate::Error,
-                        Future = BoxFuture<'static, StdResult<Response<BodyWithMetrics<PolyBody>>, crate::Error>>,
+                        Future = BoxFuture<'static, StdResult<Response<InstrumentedBody<PolyBody>>, crate::Error>>,
                     > + Send
                     + Sync,
             >
@@ -577,13 +577,13 @@ impl TransactionHandler {
         self: Arc<Self>,
         route_conf: RC,
         manager: Arc<HttpConnectionManager>,
-        mut request: Request<BodyWithMetrics<BodyWithTimeout<Incoming>>>,
+        mut request: Request<InstrumentedBody<TimeoutBody<Incoming>>>,
         downstream_metadata: Arc<DownstreamMetadata>,
         #[cfg(feature = "access-log")] permit: Option<ShareableAccessLogPermit>,
-    ) -> Result<Response<BodyWithMetrics<PolyBody>>>
+    ) -> Result<Response<InstrumentedBody<PolyBody>>>
     where
         RC: RequestHandler<(
-                Request<BodyWithMetrics<BodyWithTimeout<Incoming>>>,
+                Request<InstrumentedBody<TimeoutBody<Incoming>>>,
                 Arc<HttpConnectionManager>,
                 Arc<DownstreamMetadata>,
             )> + Clone,
@@ -624,7 +624,7 @@ impl TransactionHandler {
             let resp_head_size = response_head_size(&response);
 
             response.map(move |body| {
-                BodyWithMetrics::new(BodyKind::Response, body, move |_nbytes, _body_error, _body_flags| {
+                InstrumentedBody::new(BodyKind::Response, body, move |_nbytes, _body_error, _body_flags| {
                     with_metric!(
                         http::DOWNSTREAM_CX_TX_BYTES_TOTAL,
                         add,
@@ -684,9 +684,9 @@ impl TransactionHandler {
 
     fn trace_status_code(
         self: Arc<Self>,
-        res: Result<Response<BodyWithMetrics<PolyBody>>>,
+        res: Result<Response<InstrumentedBody<PolyBody>>>,
         _listener_name: &'static str,
-    ) -> Result<Response<BodyWithMetrics<PolyBody>>> {
+    ) -> Result<Response<InstrumentedBody<PolyBody>>> {
         if let Ok(response) = &res {
             let status_code = response.status().as_u16();
 
@@ -803,7 +803,7 @@ fn match_request_route<'a, B>(request: &Request<B>, route_config: &'a RouteConfi
 
 impl
     RequestHandler<(
-        Request<BodyWithMetrics<BodyWithTimeout<Incoming>>>,
+        Request<InstrumentedBody<TimeoutBody<Incoming>>>,
         Arc<HttpConnectionManager>,
         Arc<DownstreamMetadata>,
     )> for Arc<RouteConfiguration>
@@ -813,14 +813,14 @@ impl
         self,
         trans_handler: &TransactionHandler,
         (request, connection_manager, downstream_metadata): (
-            Request<BodyWithMetrics<BodyWithTimeout<Incoming>>>,
+            Request<InstrumentedBody<TimeoutBody<Incoming>>>,
             Arc<HttpConnectionManager>,
             Arc<DownstreamMetadata>,
         ),
     ) -> Result<Response<PolyBody>> {
         let mut processed_routes: HashSet<&RouteMatch> = HashSet::new();
         let mut cached_route = match_request_route(&request, &self);
-        let mut request: Request<BodyWithMetrics<PolyBody>> = request.map(BodyWithMetrics::map_into::<PolyBody>);
+        let mut request: Request<InstrumentedBody<PolyBody>> = request.map(InstrumentedBody::map_into::<PolyBody>);
         let mut active_filters: SmallVec<[HttpFilterValue; 2]> = SmallVec::new();
         loop {
             if let Some(ref chosen_route) = cached_route {
@@ -934,7 +934,7 @@ impl
 }
 
 impl Service<ExtendedRequest<Incoming>> for HttpRequestHandler {
-    type Response = Response<BodyWithMetrics<PolyBody>>;
+    type Response = Response<InstrumentedBody<PolyBody>>;
     type Error = crate::Error;
     type Future = BoxFuture<'static, StdResult<Self::Response, Self::Error>>;
 
@@ -1029,7 +1029,7 @@ impl Service<ExtendedRequest<Incoming>> for HttpRequestHandler {
         Box::pin(async move {
             let ExtendedRequest { request, downstream_metadata } = req;
             let (parts, body) = request.into_parts();
-            let request = Request::from_parts(parts, BodyWithTimeout::new(req_timeout, body));
+            let request = Request::from_parts(parts, TimeoutBody::new(req_timeout, body));
 
             #[cfg(feature = "access-log")]
             #[allow(clippy::if_then_some_else_none)] // avoid clippy false positive
@@ -1057,7 +1057,7 @@ impl Service<ExtendedRequest<Incoming>> for HttpRequestHandler {
             eval_http_init_context(&request, &trans_handler, downstream_metadata.server_name.as_deref());
 
             //
-            // create the BodyWithMetrics which will track the size of the request body
+            // create the InstrumentedBody which will track the size of the request body
 
             #[cfg(feature = "access-log")]
             let initial_flags = request.extensions().get::<ResponseFlags>().cloned().unwrap_or_default();
@@ -1070,7 +1070,7 @@ impl Service<ExtendedRequest<Incoming>> for HttpRequestHandler {
                 #[cfg(any(feature = "access-log", feature = "tracing", feature = "metrics"))]
                 let trans_handler = Arc::clone(&trans_handler);
 
-                BodyWithMetrics::new(BodyKind::Request, body, move |_nbytes, _body_error, _body_flags| {
+                InstrumentedBody::new(BodyKind::Request, body, move |_nbytes, _body_error, _body_flags| {
                     with_metric!(
                         http::DOWNSTREAM_CX_RX_BYTES_TOTAL,
                         add,
@@ -1168,7 +1168,7 @@ impl Service<ExtendedRequest<Incoming>> for HttpRequestHandler {
                 let resp_head_size = response_head_size(&resp);
 
                 let response = resp.map(|body| {
-                    BodyWithMetrics::new(BodyKind::Response, body, move |_nbytes, _body_error, _body_flags| {
+                    InstrumentedBody::new(BodyKind::Response, body, move |_nbytes, _body_error, _body_flags| {
                         with_metric!(
                             http::DOWNSTREAM_CX_TX_BYTES_TOTAL,
                             add,

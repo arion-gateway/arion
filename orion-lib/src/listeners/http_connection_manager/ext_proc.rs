@@ -19,7 +19,7 @@ use crate::listeners::http_connection_manager::ext_proc::status::ProcessingStatu
 use crate::listeners::http_connection_manager::ext_proc::status::ReadyStatus;
 use crate::listeners::http_connection_manager::ext_proc::worker_config::ExternalProcessingWorkerConfig;
 use crate::{
-    body::{body_with_metrics::BodyWithMetrics, response_flags::ResponseFlags},
+    body::{instrumented_body::InstrumentedBody, response_flags::ResponseFlags},
     clusters::clusters_manager::{self, RoutingContext},
     listeners::{http_connection_manager::FilterDecision, synthetic_http_response::SyntheticHttpResponse},
     Error, PolyBody,
@@ -216,7 +216,7 @@ impl ExternalProcessor {
     }
 
     #[allow(clippy::too_many_lines)]
-    pub async fn apply_request(&mut self, request: &mut Request<BodyWithMetrics<PolyBody>>) -> FilterDecision {
+    pub async fn apply_request(&mut self, request: &mut Request<InstrumentedBody<PolyBody>>) -> FilterDecision {
         let modes = &self.overridable_modes.request;
         let process_headers = modes.should_process_headers();
         let process_body = modes.should_process_body();
@@ -1260,7 +1260,7 @@ impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
 mod tests {
     use super::*;
     use crate::{
-        body::{body_with_metrics::BodyWithMetrics, response_flags::BodyKind},
+        body::{instrumented_body::InstrumentedBody, response_flags::BodyKind},
         listeners::http_connection_manager::ext_proc::{
             kind::{MsgKind, RequestMsg, ResponseMsg},
             mutation::apply_header_mutations,
@@ -1444,7 +1444,7 @@ mod tests {
         }
     }
 
-    fn build_request_from_mock(mock_request: &Mock<RequestMsg>) -> Request<BodyWithMetrics<PolyBody>> {
+    fn build_request_from_mock(mock_request: &Mock<RequestMsg>) -> Request<InstrumentedBody<PolyBody>> {
         let mut req = Request::builder().method(Method::GET).uri("http://example.com/test").version(Version::HTTP_11);
 
         if let Some(headers) = transform(mock_request.headers.clone()) {
@@ -1485,7 +1485,7 @@ mod tests {
             Some(b) => PolyBody::from(Full::new(bytes::Bytes::from(b.to_owned()))),
         };
 
-        req.body(BodyWithMetrics::new(BodyKind::Request, body, |_, _, _| {})).unwrap()
+        req.body(InstrumentedBody::new(BodyKind::Request, body, |_, _, _| {})).unwrap()
     }
 
     fn build_response_from_mock(mock_response: &Mock<ResponseMsg>) -> Response<PolyBody> {

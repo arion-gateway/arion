@@ -27,7 +27,7 @@ use orion_xds::grpc_deps::GrpcBody;
 use tower::Service;
 
 use crate::{
-    body::{body_with_metrics::BodyWithMetrics, response_flags::BodyKind},
+    body::{instrumented_body::InstrumentedBody, response_flags::BodyKind},
     listeners::http_connection_manager::{RequestHandler, TransactionHandler},
     transport::{policy::RequestExt, HttpChannel},
 };
@@ -64,7 +64,7 @@ impl GrpcService {
 
         let http_req = Request::from_parts(
             parts,
-            BodyWithMetrics::new(BodyKind::Request, grpc_body.into(), |_bytes, _event_error, _flags| {
+            InstrumentedBody::new(BodyKind::Request, grpc_body.into(), |_bytes, _event_error, _flags| {
                 debug!("gRPC request body finalized");
             }),
         );

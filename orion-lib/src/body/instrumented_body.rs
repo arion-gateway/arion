@@ -69,23 +69,23 @@ mod metrics_enabled {
     }
 
     #[pin_project]
-    pub struct BodyWithMetrics<B> {
+    pub struct InstrumentedBody<B> {
         #[pin]
         pub inner: B,
         pub state: Arc<MetricsState>,
         pub guard: DropGuard,
     }
 
-    impl<B> std::fmt::Debug for BodyWithMetrics<B>
+    impl<B> std::fmt::Debug for InstrumentedBody<B>
     where
         B: std::fmt::Debug,
     {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.write_fmt(format_args!("BodyWithMetrics<{:?}>", self.inner))
+            f.write_fmt(format_args!("InstrumentedBody<{:?}>", self.inner))
         }
     }
 
-    impl<B> BodyWithMetrics<B> {
+    impl<B> InstrumentedBody<B> {
         pub fn new<F>(kind: BodyKind, inner: B, on_complete: F) -> Self
         where
             F: FnOnce(u64, Option<EventError>, ResponseFlags) + Send + 'static,
@@ -99,15 +99,15 @@ mod metrics_enabled {
             Self { inner, guard: DropGuard { state: state.clone() }, state }
         }
 
-        pub fn map_into<B2>(self) -> BodyWithMetrics<B2>
+        pub fn map_into<B2>(self) -> InstrumentedBody<B2>
         where
             B: Into<B2>,
         {
-            BodyWithMetrics { inner: self.inner.into(), state: self.state, guard: self.guard }
+            InstrumentedBody { inner: self.inner.into(), state: self.state, guard: self.guard }
         }
     }
 
-    impl<B> Body for BodyWithMetrics<B>
+    impl<B> Body for InstrumentedBody<B>
     where
         B: Body,
         <B as http_body::Body>::Error: std::error::Error + Send + Sync + 'static,
@@ -160,23 +160,23 @@ mod metrics_disabled {
 
     #[pin_project]
     #[derive(Clone, Copy)]
-    pub struct BodyWithMetrics<B> {
+    pub struct InstrumentedBody<B> {
         #[pin]
         pub inner: B,
         pub guard: (),
         pub state: (),
     }
 
-    impl<B> std::fmt::Debug for BodyWithMetrics<B>
+    impl<B> std::fmt::Debug for InstrumentedBody<B>
     where
         B: std::fmt::Debug,
     {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.write_fmt(format_args!("BodyWithMetrics<{:?}>", self.inner))
+            f.write_fmt(format_args!("InstrumentedBody<{:?}>", self.inner))
         }
     }
 
-    impl<B> BodyWithMetrics<B> {
+    impl<B> InstrumentedBody<B> {
         pub fn new<F>(_kind: BodyKind, inner: B, _on_complete: F) -> Self
         where
             F: FnOnce(u64, Option<EventError>, ResponseFlags) + Send + 'static,
@@ -184,15 +184,15 @@ mod metrics_disabled {
             Self { inner, guard: (), state: () }
         }
 
-        pub fn map_into<B2>(self) -> BodyWithMetrics<B2>
+        pub fn map_into<B2>(self) -> InstrumentedBody<B2>
         where
             B: Into<B2>,
         {
-            BodyWithMetrics { inner: self.inner.into(), guard: (), state: () }
+            InstrumentedBody { inner: self.inner.into(), guard: (), state: () }
         }
     }
 
-    impl<B: Body> Body for BodyWithMetrics<B> {
+    impl<B: Body> Body for InstrumentedBody<B> {
         type Data = B::Data;
         type Error = B::Error;
 
@@ -217,7 +217,7 @@ mod metrics_disabled {
 }
 
 #[cfg(any(feature = "access-log", feature = "metrics"))]
-pub use metrics_enabled::BodyWithMetrics;
+pub use metrics_enabled::InstrumentedBody;
 
 #[cfg(not(any(feature = "access-log", feature = "metrics")))]
-pub use metrics_disabled::BodyWithMetrics;
+pub use metrics_disabled::InstrumentedBody;

@@ -17,7 +17,7 @@
 use super::{http_modifiers, upgrades as upgrade_utils, RequestHandler, TransactionHandler};
 use crate::event_error::{EventError, EventFailure, EventKind, TryInferFrom};
 use crate::{
-    body::{body_with_metrics::BodyWithMetrics, response_flags::ResponseFlags},
+    body::{instrumented_body::InstrumentedBody, response_flags::ResponseFlags},
     clusters::{
         balancers::hash_policy::HashState,
         clusters_manager::{self, RoutingContext},
@@ -57,7 +57,7 @@ use std::net::SocketAddr;
 use tracing::debug;
 
 pub struct MatchedRequest<'a> {
-    pub request: Request<BodyWithMetrics<PolyBody>>,
+    pub request: Request<InstrumentedBody<PolyBody>>,
     pub retry_policy: Option<&'a RetryPolicy>,
     pub route_name: &'a str,
     pub remote_address: SocketAddr,
@@ -102,7 +102,7 @@ impl<'a> RequestHandler<(MatchedRequest<'a>, &HttpConnectionManager)> for &Route
 
                 let ver = downstream_request.version();
 
-                let mut upstream_request: Request<BodyWithMetrics<PolyBody>> = {
+                let mut upstream_request: Request<InstrumentedBody<PolyBody>> = {
                     let (mut parts, body) = downstream_request.into_parts();
                     let path_and_query_replacement = if let Some(rewrite) = &self.rewrite {
                         rewrite

@@ -24,7 +24,7 @@ use super::{
 };
 use crate::PolyBody;
 use crate::{
-    body::body_with_metrics::BodyWithMetrics,
+    body::instrumented_body::InstrumentedBody,
     clusters::cluster::{ClusterOps, PartialClusterType},
     secrets::TransportSecret,
     transport::{GrpcService, HttpChannel, HttpChannels, TcpChannelConnector},
@@ -60,13 +60,13 @@ pub enum RoutingContext<'a> {
     OverrideHost { header: &'a HeaderValue, fallback_hash: Option<HashState<'a>> },
 }
 
-impl<'a> TryFrom<(&'a RoutingRequirement, &'a Request<BodyWithMetrics<PolyBody>>, HashState<'a>)>
+impl<'a> TryFrom<(&'a RoutingRequirement, &'a Request<InstrumentedBody<PolyBody>>, HashState<'a>)>
     for RoutingContext<'a>
 {
     type Error = String;
 
     fn try_from(
-        value: (&'a RoutingRequirement, &'a Request<BodyWithMetrics<PolyBody>>, HashState<'a>),
+        value: (&'a RoutingRequirement, &'a Request<InstrumentedBody<PolyBody>>, HashState<'a>),
     ) -> std::result::Result<Self, Self::Error> {
         let (routing_requirement, request, hash_state) = value;
         match routing_requirement {

@@ -15,7 +15,7 @@
 //
 //
 
-use super::body_with_timeout::{BodyWithTimeout, TimeoutBodyError};
+use super::timeout_body::{TimeoutBody, TimeoutBodyError};
 use crate::body::channel_body::ChannelBody;
 use crate::Error;
 use bytes::Bytes;
@@ -37,7 +37,7 @@ pub enum PolyBody {
     Empty(#[pin] Empty<Bytes>),
     Full(#[pin] Full<Bytes>),
     Incoming(#[pin] Incoming),
-    Timeout(#[pin] BodyWithTimeout<Incoming>),
+    Timeout(#[pin] TimeoutBody<Incoming>),
     Grpc(#[pin] GrpcBody),
     Stream(#[pin] StreamBody<ReceiverStream<Result<Frame<Bytes>, Error>>>),
     ChannelBody(#[pin] ChannelBody),
@@ -198,9 +198,9 @@ impl From<Incoming> for PolyBody {
     }
 }
 
-impl From<BodyWithTimeout<Incoming>> for PolyBody {
+impl From<TimeoutBody<Incoming>> for PolyBody {
     #[inline]
-    fn from(body: BodyWithTimeout<Incoming>) -> Self {
+    fn from(body: TimeoutBody<Incoming>) -> Self {
         PolyBody::Timeout(body)
     }
 }
@@ -324,7 +324,7 @@ impl TryFrom<PolyBody> for ChannelBody {
     }
 }
 
-impl TryFrom<PolyBody> for BodyWithTimeout<Incoming> {
+impl TryFrom<PolyBody> for TimeoutBody<Incoming> {
     type Error = PolyBodyError;
     fn try_from(value: PolyBody) -> Result<Self, Self::Error> {
         match value {

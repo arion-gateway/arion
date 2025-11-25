@@ -21,11 +21,11 @@ use http::Request;
 use orion_configuration::config::network_filters::http_connection_manager::route::{HashPolicy, HashPolicyResult};
 use twox_hash::XxHash64;
 
-use crate::body::body_with_metrics::BodyWithMetrics;
+use crate::body::instrumented_body::InstrumentedBody;
 use crate::PolyBody;
 
 #[derive(Clone, Debug)]
-pub struct HashState<'a, B = BodyWithMetrics<PolyBody>> {
+pub struct HashState<'a, B = InstrumentedBody<PolyBody>> {
     policies: &'a [HashPolicy],
     req: &'a Request<B>,
     src_addr: SocketAddr,
