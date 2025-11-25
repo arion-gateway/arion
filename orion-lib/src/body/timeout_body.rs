@@ -28,8 +28,11 @@
 ///
 use http_body::Body;
 use pin_project::pin_project;
-use pingora_timeout::fast_timeout::{fast_timeout, FastTimeout};
-use pingora_timeout::Timeout as PingoraTimeout;
+use pingora_timeout::{
+    fast_timeout::{fast_timeout, FastTimeout},
+    Timeout as PingoraTimeout,
+};
+use std::any::type_name;
 use std::{
     future::{pending, Future, Pending},
     pin::Pin,
@@ -46,6 +49,18 @@ pub struct TimeoutBody<B> {
     sleep: Option<Pin<Box<Timeout>>>,
     #[pin]
     body: B,
+}
+
+impl<B> std::fmt::Debug for TimeoutBody<B>
+where
+    B: std::fmt::Debug,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct(type_name::<TimeoutBody<B>>())
+            .field("timeout", &self.timeout)
+            .field("body", &self.body)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<B> TimeoutBody<B> {
@@ -91,6 +106,10 @@ where
         } else {
             this.body.poll_frame(cx).map_err(TimeoutBodyError::BodyError)
         }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.body.is_end_stream()
     }
 }
 
@@ -150,9 +169,9 @@ mod tests {
         let timeout_sleep = Duration::from_secs(2);
 
         let mock_body = MockBody { sleep: sleep(mock_sleep) };
-        let timeout_body = TimeoutBody::new(Some(timeout_sleep), mock_body);
+        let body_with_timeout = TimeoutBody::new(Some(timeout_sleep), mock_body);
 
-        assert!(timeout_body.boxed_unsync().frame().await.expect("no frame").is_ok());
+        assert!(body_with_timeout.boxed_unsync().frame().await.expect("no frame").is_ok());
     }
 
     #[tokio::test]
@@ -161,8 +180,8 @@ mod tests {
         let timeout_sleep = Duration::from_secs(1);
 
         let mock_body = MockBody { sleep: sleep(mock_sleep) };
-        let timeout_body = TimeoutBody::new(Some(timeout_sleep), mock_body);
+        let body_with_timeout = TimeoutBody::new(Some(timeout_sleep), mock_body);
 
-        assert!(timeout_body.boxed_unsync().frame().await.unwrap().is_err());
+        assert!(body_with_timeout.boxed_unsync().frame().await.unwrap().is_err());
     }
 }

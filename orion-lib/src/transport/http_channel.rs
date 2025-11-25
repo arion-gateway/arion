@@ -21,7 +21,7 @@ use super::{
     policy::{RequestContext, RequestExt},
 };
 use crate::{
-    body::{body_with_metrics::BodyWithMetrics, body_with_timeout::BodyWithTimeout, response_flags::ResponseFlags},
+    body::{instrumented_body::InstrumentedBody, timeout_body::TimeoutBody, response_flags::ResponseFlags},
     clusters::retry_policy::RetryCondition,
     event_error::{EventError, EventKind, TryInferFrom},
     listeners::{
@@ -82,8 +82,8 @@ const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 type IncomingResult = (std::result::Result<Response<Incoming>, Error>, Duration);
 
-type HttpClient = Client<LocalConnectorWithDNSResolver, BodyWithMetrics<PolyBody>>;
-type HttpsClient = Client<HttpsConnector<LocalConnectorWithDNSResolver>, BodyWithMetrics<PolyBody>>;
+type HttpClient = Client<LocalConnectorWithDNSResolver, InstrumentedBody<PolyBody>>;
+type HttpsClient = Client<HttpsConnector<LocalConnectorWithDNSResolver>, InstrumentedBody<PolyBody>>;
 
 // Rationale: The outer Arc is necessary to avoid building a new Client when cloning the HttpChannel.
 // The inner Arc, instead, is used to pass the client to async code, so it's already wrapped by the Arc.
@@ -402,11 +402,11 @@ fn update_upstream_stats(event: PoolEvent, tag: &dyn Any, keys: &[&PoolKey]) {
     }
 }
 
-impl<'a> RequestHandler<RequestExt<'a, Request<BodyWithMetrics<PolyBody>>>> for &HttpChannels {
+impl<'a> RequestHandler<RequestExt<'a, Request<InstrumentedBody<PolyBody>>>> for &HttpChannels {
     async fn to_response(
         self,
         trans_handler: &TransactionHandler,
-        request: RequestExt<'a, Request<BodyWithMetrics<PolyBody>>>,
+        request: RequestExt<'a, Request<InstrumentedBody<PolyBody>>>,
     ) -> Result<Response<crate::PolyBody>> {
         match self {
             HttpChannels::Single(channel) => channel.to_response(trans_handler, request).await,
@@ -414,7 +414,7 @@ impl<'a> RequestHandler<RequestExt<'a, Request<BodyWithMetrics<PolyBody>>>> for 
                 let RequestExt { req, ctx } = request;
                 let RequestContext { route_timeout, .. } = ctx;
                 let (parts, body) = req.into_parts();
-                let BodyWithMetrics { inner, guard, state } = body;
+                let InstrumentedBody { inner, guard, state } = body;
 
                 let collected = inner.collect().await.map_err(Error::from)?;
                 let replay_body = http_body_util::Full::new(collected.to_bytes());
@@ -426,7 +426,7 @@ impl<'a> RequestHandler<RequestExt<'a, Request<BodyWithMetrics<PolyBody>>>> for 
                 for (attempt, channel) in std::iter::once(channel).chain(failover_channels.iter()).enumerate() {
                     let has_more = attempt + 1 < total_attempts;
 
-                    let cloned_body = BodyWithMetrics {
+                    let cloned_body = InstrumentedBody {
                         inner: replay_body.clone().into(),
                         guard: guard.clone(),
                         state: state.clone(),
@@ -472,11 +472,11 @@ impl<'a> RequestHandler<RequestExt<'a, Request<BodyWithMetrics<PolyBody>>>> for 
     }
 }
 
-impl<'a> RequestHandler<RequestExt<'a, Request<BodyWithMetrics<PolyBody>>>> for &HttpChannel {
+impl<'a> RequestHandler<RequestExt<'a, Request<InstrumentedBody<PolyBody>>>> for &HttpChannel {
     async fn to_response(
         self,
         _trans_handler: &TransactionHandler,
-        request: RequestExt<'a, Request<BodyWithMetrics<PolyBody>>>,
+        request: RequestExt<'a, Request<InstrumentedBody<PolyBody>>>,
     ) -> Result<Response<crate::PolyBody>> {
         let version = request.req.version();
         let cluster_name = self.cluster_name;
@@ -528,8 +528,8 @@ impl HttpChannel {
     async fn send_request<C>(
         &self,
         retry_policy: Option<&RetryPolicy>,
-        sender: &Client<C, BodyWithMetrics<PolyBody>>,
-        req: Request<BodyWithMetrics<PolyBody>>,
+        sender: &Client<C, InstrumentedBody<PolyBody>>,
+        req: Request<InstrumentedBody<PolyBody>>,
         cluster_name: &'static str,
     ) -> (StdResult<Response<Incoming>, Error>, Duration)
     where
@@ -582,7 +582,7 @@ impl HttpChannel {
 
                     Request::from_parts(
                         hdr,
-                        BodyWithMetrics::new(crate::body::response_flags::BodyKind::Request, new_body, |_, _, _| {}),
+                        InstrumentedBody::new(crate::body::response_flags::BodyKind::Request, new_body, |_, _, _| {}),
                     )
                 } else {
                     req
@@ -601,8 +601,8 @@ impl HttpChannel {
     async fn send_with_retry<C>(
         &self,
         retry_policy: &RetryPolicy,
-        sender: &Client<C, BodyWithMetrics<PolyBody>>,
-        req: Request<BodyWithMetrics<PolyBody>>,
+        sender: &Client<C, InstrumentedBody<PolyBody>>,
+        req: Request<InstrumentedBody<PolyBody>>,
         _thread_id: ThreadId,
         _cluster_name: &'static str,
     ) -> (StdResult<Response<Incoming>, Error>, Duration, usize)
@@ -610,7 +610,7 @@ impl HttpChannel {
         C: Connect + Clone + Send + Sync + 'static,
     {
         let (parts, body) = req.into_parts();
-        let BodyWithMetrics { inner, guard, state } = body;
+        let InstrumentedBody { inner, guard, state } = body;
 
         let body = match inner.collect().await {
             Ok(body) => body,
@@ -627,9 +627,9 @@ impl HttpChannel {
             let back_off = back_off.unwrap_or(Duration::from_secs(1));
             total_requests += 1;
             let cloned_body =
-                BodyWithMetrics { inner: body.clone().into(), guard: guard.clone(), state: state.clone() };
+                InstrumentedBody { inner: body.clone().into(), guard: guard.clone(), state: state.clone() };
 
-            let cloned_req: Request<BodyWithMetrics<PolyBody>> = Request::from_parts(parts.clone(), cloned_body);
+            let cloned_req: Request<InstrumentedBody<PolyBody>> = Request::from_parts(parts.clone(), cloned_body);
 
             // actually send the request and wait for the response...
             let result: StdResult<Response<Incoming>, Error> = if let Some(t) = retry_policy.per_try_timeout() {
@@ -690,7 +690,7 @@ impl HttpChannel {
                 if let Some(residual_timeout) = route_timeout.map(|dur| dur.checked_sub(elapsed).unwrap_or_default()) {
                     // set the residual_timeout on the body of the Response
                     let (parts, body) = response.into_parts();
-                    Ok(Response::from_parts(parts, BodyWithTimeout::new(Some(residual_timeout), body).into()))
+                    Ok(Response::from_parts(parts, TimeoutBody::new(Some(residual_timeout), body).into()))
                 } else {
                     let (parts, body) = response.into_parts();
                     Ok(Response::from_parts(parts, body.into()))
@@ -767,17 +767,17 @@ fn select_scheme(version: http::Version, is_tls: bool) -> Option<http::uri::Sche
 }
 
 fn maybe_change_http_protocol_version(
-    request: Request<BodyWithMetrics<PolyBody>>,
+    request: Request<InstrumentedBody<PolyBody>>,
     version: Codec,
-) -> Result<Request<BodyWithMetrics<PolyBody>>> {
+) -> Result<Request<InstrumentedBody<PolyBody>>> {
     let request = maybe_update_host(request, version)?;
     Ok(maybe_rewrite_version(request, version))
 }
 
 fn maybe_rewrite_version(
-    mut request: Request<BodyWithMetrics<PolyBody>>,
+    mut request: Request<InstrumentedBody<PolyBody>>,
     version: Codec,
-) -> Request<BodyWithMetrics<PolyBody>> {
+) -> Request<InstrumentedBody<PolyBody>> {
     *request.version_mut() = match version {
         Codec::Http1 => Version::HTTP_11,
         Codec::Http2 => Version::HTTP_2,
@@ -786,9 +786,9 @@ fn maybe_rewrite_version(
 }
 
 fn maybe_update_host(
-    mut request: Request<BodyWithMetrics<PolyBody>>,
+    mut request: Request<InstrumentedBody<PolyBody>>,
     version: Codec,
-) -> Result<Request<BodyWithMetrics<PolyBody>>> {
+) -> Result<Request<InstrumentedBody<PolyBody>>> {
     let request_version = request.version();
     match (request_version, version) {
         (Version::HTTP_11, Codec::Http2) => {
@@ -810,9 +810,9 @@ fn maybe_update_host(
 }
 
 fn maybe_normalize_uri(
-    mut request: Request<BodyWithMetrics<PolyBody>>,
+    mut request: Request<InstrumentedBody<PolyBody>>,
     is_tls: bool,
-) -> crate::Result<Request<BodyWithMetrics<PolyBody>>> {
+) -> crate::Result<Request<InstrumentedBody<PolyBody>>> {
     let uri = request.uri();
     if !is_absolute(uri) {
         if let Some(host_header) = request.headers().get("host") {

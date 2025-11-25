@@ -17,7 +17,7 @@
 
 use super::{RequestHandler, TransactionHandler};
 use crate::{
-    body::{body_with_metrics::BodyWithMetrics, response_flags::ResponseFlags},
+    body::{instrumented_body::InstrumentedBody, response_flags::ResponseFlags},
     event_error::EventFailure,
     listeners::synthetic_http_response::SyntheticHttpResponse,
     transport::{policy::RequestExt, HttpChannels},
@@ -72,7 +72,7 @@ pub fn is_websocket_enabled_by_hcm(hcm_enabled_upgrades: &[UpgradeType]) -> bool
 
 pub async fn handle_websocket_upgrade(
     trans_handler: &TransactionHandler,
-    mut request: Request<BodyWithMetrics<PolyBody>>,
+    mut request: Request<InstrumentedBody<PolyBody>>,
     svc_channel: &HttpChannels,
 ) -> Result<Response<PolyBody>> {
     let version = request.version();
