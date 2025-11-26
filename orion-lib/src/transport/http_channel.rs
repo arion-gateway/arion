@@ -416,6 +416,7 @@ impl<'a> RequestHandler<RequestExt<'a, Request<InstrumentedBody<TimeoutBody<Poly
                 let (parts, body) = req.into_parts();
                 let InstrumentedBody { inner, guard, state } = body;
 
+                let body_timeout = inner.timeout;
                 let collected = inner.collect().await.map_err(Error::from)?;
                 let replay_body = http_body_util::Full::new(collected.to_bytes());
 
@@ -427,7 +428,7 @@ impl<'a> RequestHandler<RequestExt<'a, Request<InstrumentedBody<TimeoutBody<Poly
                     let has_more = attempt + 1 < total_attempts;
 
                     let cloned_body = InstrumentedBody {
-                        inner: TimeoutBody::new(None, replay_body.clone().into()),
+                        inner: TimeoutBody::new(body_timeout, replay_body.clone().into()),
                         guard: guard.clone(),
                         state: state.clone(),
                     };
