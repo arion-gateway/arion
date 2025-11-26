@@ -17,7 +17,7 @@
 
 use std::ops::BitOr;
 
-use crate::body::poly_body::PolyBodyError;
+use crate::body::{poly_body::PolyBodyError, timeout_body::TimeoutBodyError};
 use orion_format::types::ResponseFlags as FmtResponseFlags;
 
 #[derive(Clone, Debug)]
@@ -103,6 +103,18 @@ impl From<(&'_ PolyBodyError, BodyKind)> for ResponseFlags {
                 BodyKind::Request => ResponseFlags(FmtResponseFlags::UPSTREAM_REQUEST_TIMEOUT),
                 BodyKind::Response => ResponseFlags(FmtResponseFlags::STREAM_IDLE_TIMEOUT),
             },
+        }
+    }
+}
+
+impl From<(&'_ TimeoutBodyError<PolyBodyError>, BodyKind)> for ResponseFlags {
+    fn from((err, kind): (&TimeoutBodyError<PolyBodyError>, BodyKind)) -> Self {
+        match err {
+            TimeoutBodyError::TimedOut => match kind {
+                BodyKind::Request => ResponseFlags(FmtResponseFlags::UPSTREAM_REQUEST_TIMEOUT),
+                BodyKind::Response => ResponseFlags(FmtResponseFlags::STREAM_IDLE_TIMEOUT),
+            },
+            TimeoutBodyError::BodyError(err) => ResponseFlags::from((err, kind)),
         }
     }
 }

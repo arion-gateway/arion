@@ -6,6 +6,7 @@ mod status;
 mod worker_config;
 
 use crate::body::channel_body::{ChannelBody, FrameBridge};
+use crate::body::timeout_body::TimeoutBody;
 use crate::event_error::EventFailure;
 
 use crate::listeners::http_connection_manager::ext_proc::mutation::{
@@ -216,7 +217,10 @@ impl ExternalProcessor {
     }
 
     #[allow(clippy::too_many_lines)]
-    pub async fn apply_request(&mut self, request: &mut Request<InstrumentedBody<PolyBody>>) -> FilterDecision {
+    pub async fn apply_request(
+        &mut self,
+        request: &mut Request<InstrumentedBody<TimeoutBody<PolyBody>>>,
+    ) -> FilterDecision {
         let modes = &self.overridable_modes.request;
         let process_headers = modes.should_process_headers();
         let process_body = modes.should_process_body();
@@ -233,7 +237,7 @@ impl ExternalProcessor {
             ext_proc_headers = Some(self.filter_header_map(request.headers()));
         }
 
-        let body: PolyBody = std::mem::take(&mut request.body_mut().inner);
+        let body: PolyBody = std::mem::take(&mut request.body_mut().inner.inner);
 
         let ext_proc_frame_bridge = match (modes.body_mode(), modes.trailer_mode()) {
             (OverridableBodyMode::None, trailers_mode) => {
@@ -241,13 +245,13 @@ impl ExternalProcessor {
                 // create the bridge, to allow ext_proc mutate the body with ContinueAndReplace action.
                 debug!(target: "ext_proc", "request processing body(None) and trailers:{trailers_mode:?} => {body:?}");
                 let (new_body, bridge) = ChannelBody::new(body);
-                request.body_mut().inner = PolyBody::from(new_body);
+                request.body_mut().inner.inner = PolyBody::from(new_body);
                 bridge
             },
             (OverridableBodyMode::Streamed | OverridableBodyMode::FullDuplexStreamed, trailers_mode) => {
                 debug!(target: "ext_proc", "request processing body(Streamed) and trailers:{trailers_mode:?} => {body:?}");
                 let (new_body, bridge) = ChannelBody::new(body);
-                request.body_mut().inner = PolyBody::from(new_body);
+                request.body_mut().inner.inner = PolyBody::from(new_body);
                 bridge
             },
             (OverridableBodyMode::Buffered | OverridableBodyMode::BufferedPartial, trailers_mode) => {
@@ -263,7 +267,7 @@ impl ExternalProcessor {
                 let buffered = Self::collect_to_single_chunk(collected);
 
                 let (new_body, bridge) = ChannelBody::new(buffered);
-                request.body_mut().inner = PolyBody::from(new_body);
+                request.body_mut().inner.inner = PolyBody::from(new_body);
                 bridge
             },
         };
@@ -328,12 +332,12 @@ impl ExternalProcessor {
         };
 
         debug!(target: "ext_proc", "apply_request completed: {res:?}!");
-        request.body_mut().inner.wait_frame().await;
+        request.body_mut().inner.inner.wait_frame().await;
         res
     }
 
     #[allow(clippy::too_many_lines)]
-    pub async fn apply_response(&mut self, response: &mut Response<PolyBody>) -> FilterDecision {
+    pub async fn apply_response(&mut self, response: &mut Response<TimeoutBody<PolyBody>>) -> FilterDecision {
         let modes = &self.overridable_modes.response;
         let process_headers = modes.should_process_headers();
         let process_body = modes.should_process_body();
@@ -350,7 +354,7 @@ impl ExternalProcessor {
             ext_proc_headers = Some(self.filter_header_map(response.headers()));
         }
 
-        let body: PolyBody = std::mem::take(response.body_mut());
+        let body: PolyBody = std::mem::take(&mut response.body_mut().inner);
 
         let ext_proc_frame_bridge = match (modes.body_mode(), modes.trailer_mode()) {
             (OverridableBodyMode::None, trailers_mode) => {
@@ -358,13 +362,13 @@ impl ExternalProcessor {
                 // create the bridge, to allow ext_proc mutate the body with ContinueAndReplace action.
                 debug!(target: "ext_proc", "response processing body(None) and trailers:{trailers_mode:?} => {body:?}");
                 let (new_body, bridge) = ChannelBody::new(body);
-                *response.body_mut() = PolyBody::from(new_body);
+                response.body_mut().inner = PolyBody::from(new_body);
                 bridge
             },
             (OverridableBodyMode::Streamed | OverridableBodyMode::FullDuplexStreamed, trailers_mode) => {
                 debug!(target: "ext_proc", "response processing body(Streamed) and trailers:{trailers_mode:?} => {body:?}");
                 let (new_body, bridge) = ChannelBody::new(body);
-                *response.body_mut() = PolyBody::from(new_body);
+                response.body_mut().inner = PolyBody::from(new_body);
                 bridge
             },
             (OverridableBodyMode::Buffered | OverridableBodyMode::BufferedPartial, trailers_mode) => {
@@ -380,7 +384,7 @@ impl ExternalProcessor {
                 debug!(target: "ext_proc", "response body collected: {collected:?}");
                 let buffered = Self::collect_to_single_chunk(collected);
                 let (new_body, bridge) = ChannelBody::new(buffered);
-                *response.body_mut() = PolyBody::from(new_body);
+                response.body_mut().inner = PolyBody::from(new_body);
                 bridge
             },
         };
@@ -452,7 +456,7 @@ impl ExternalProcessor {
         // the first frame, single-frame responses avoid unnecessary polling
         // cycles.
 
-        response.body_mut().wait_frame().await;
+        response.body_mut().inner.wait_frame().await;
         res
     }
 
@@ -1233,7 +1237,7 @@ impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
     }
 
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    fn build_direct_response(&mut self, response_attempt: &ImmediateResponse) -> Response<PolyBody> {
+    fn build_direct_response(&mut self, response_attempt: &ImmediateResponse) -> Response<TimeoutBody<PolyBody>> {
         let status = response_attempt
             .status
             .as_ref()
@@ -1241,7 +1245,7 @@ impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
             .unwrap_or(http::StatusCode::OK);
         let body_bytes = Bytes::copy_from_slice(&response_attempt.body);
         let body = Full::new(body_bytes);
-        let mut response = Response::new(crate::PolyBody::from(body));
+        let mut response = Response::new(TimeoutBody::new(None, PolyBody::from(body)));
         *response.status_mut() = status;
         if let Some(header_mutation) = &response_attempt.headers {
             let _ =
@@ -1444,7 +1448,7 @@ mod tests {
         }
     }
 
-    fn build_request_from_mock(mock_request: &Mock<RequestMsg>) -> Request<InstrumentedBody<PolyBody>> {
+    fn build_request_from_mock(mock_request: &Mock<RequestMsg>) -> Request<InstrumentedBody<TimeoutBody<PolyBody>>> {
         let mut req = Request::builder().method(Method::GET).uri("http://example.com/test").version(Version::HTTP_11);
 
         if let Some(headers) = transform(mock_request.headers.clone()) {
@@ -1485,10 +1489,10 @@ mod tests {
             Some(b) => PolyBody::from(Full::new(bytes::Bytes::from(b.to_owned()))),
         };
 
-        req.body(InstrumentedBody::new(BodyKind::Request, body, |_, _, _| {})).unwrap()
+        req.body(InstrumentedBody::new(BodyKind::Request, TimeoutBody::new(None, body), |_, _, _| {})).unwrap()
     }
 
-    fn build_response_from_mock(mock_response: &Mock<ResponseMsg>) -> Response<PolyBody> {
+    fn build_response_from_mock(mock_response: &Mock<ResponseMsg>) -> Response<TimeoutBody<PolyBody>> {
         let mut resp = Response::builder().version(Version::HTTP_11);
 
         if let Some(headers) = transform(mock_response.headers.clone()) {
@@ -1513,21 +1517,24 @@ mod tests {
             };
         }
 
-        let body = match mock_response.body {
-            None if !trailers_map.is_empty() => PolyBody::from(
-                Empty::<bytes::Bytes>::new().with_trailers(ready(Some(Ok::<_, Infallible>(trailers_map)))),
-            ),
-            Some(b) if !trailers_map.is_empty() => {
-                PolyBody::from(Full::new(bytes::Bytes::from(b.to_owned())).with_trailers(ready(Some(Ok::<
-                    _,
-                    Infallible,
-                >(
-                    trailers_map
-                )))))
+        let body = TimeoutBody::new(
+            None,
+            match mock_response.body {
+                None if !trailers_map.is_empty() => PolyBody::from(
+                    Empty::<bytes::Bytes>::new().with_trailers(ready(Some(Ok::<_, Infallible>(trailers_map)))),
+                ),
+                Some(b) if !trailers_map.is_empty() => {
+                    PolyBody::from(Full::new(bytes::Bytes::from(b.to_owned())).with_trailers(ready(Some(Ok::<
+                        _,
+                        Infallible,
+                    >(
+                        trailers_map,
+                    )))))
+                },
+                None => PolyBody::from(Empty::<bytes::Bytes>::new()),
+                Some(b) => PolyBody::from(Full::new(bytes::Bytes::from(b.to_owned()))),
             },
-            None => PolyBody::from(Empty::<bytes::Bytes>::new()),
-            Some(b) => PolyBody::from(Full::new(bytes::Bytes::from(b.to_owned()))),
-        };
+        );
 
         resp.body(body).unwrap()
     }
@@ -2333,7 +2340,7 @@ mod tests {
         });
 
         let result = ext_proc.apply_request(&mut request).await;
-        let body = std::mem::take(&mut request.body_mut().inner).collect().await.unwrap();
+        let body = std::mem::take(&mut request.body_mut().inner.inner).collect().await.unwrap();
         let trailers = body.trailers().cloned();
 
         assert!(trailers.is_some());
@@ -2382,7 +2389,7 @@ mod tests {
         assert_matches!(result, FilterDecision::Continue);
         assert_eq!(request.method(), Method::GET);
         assert_eq!(request.headers().get("y-custom-header").unwrap(), "true");
-        let body_bytes = std::mem::take(&mut request.body_mut().inner).collect().await.unwrap().to_bytes();
+        let body_bytes = std::mem::take(&mut request.body_mut().inner.inner).collect().await.unwrap().to_bytes();
         assert_eq!(body_bytes, new_body.as_bytes());
     }
 
@@ -2432,8 +2439,7 @@ mod tests {
 
         assert_matches!(result, FilterDecision::Continue);
         assert_eq!(request.method(), Method::GET);
-        //assert_eq!(request.headers().get("y-custom-header").unwrap(), "true");
-        let body_bytes = std::mem::take(&mut request.body_mut().inner).collect().await.unwrap().to_bytes();
+        let body_bytes = std::mem::take(&mut request.body_mut().inner.inner).collect().await.unwrap().to_bytes();
         assert_eq!(body_bytes, new_body.as_bytes());
     }
 
@@ -2482,7 +2488,7 @@ mod tests {
 
         assert_matches!(result, FilterDecision::Continue);
         assert_eq!(request.headers().get("x-stream-processed").unwrap(), "true");
-        let body_bytes = std::mem::take(&mut request.body_mut().inner).collect().await.unwrap().to_bytes();
+        let body_bytes = std::mem::take(&mut request.body_mut().inner.inner).collect().await.unwrap().to_bytes();
         assert_eq!(body_bytes, "body data from external processor".as_bytes());
     }
 
@@ -2530,7 +2536,7 @@ mod tests {
 
         assert_matches!(result, FilterDecision::Continue);
         assert_eq!(request.headers().get("x-stream-processed").unwrap(), "true");
-        let body_bytes = std::mem::take(&mut request.body_mut().inner).collect().await.unwrap().to_bytes();
+        let body_bytes = std::mem::take(&mut request.body_mut().inner.inner).collect().await.unwrap().to_bytes();
         assert_eq!(body_bytes, "body data from external processor".as_bytes());
     }
 
@@ -2580,7 +2586,7 @@ mod tests {
 
         assert_matches!(result, FilterDecision::Continue);
         assert_eq!(request.headers().get("x-stream-processed").unwrap(), "true");
-        let body_bytes = std::mem::take(&mut request.body_mut().inner).collect().await.unwrap().to_bytes();
+        let body_bytes = std::mem::take(&mut request.body_mut().inner.inner).collect().await.unwrap().to_bytes();
         assert_eq!(body_bytes, "body data from external processor".as_bytes());
     }
 
@@ -3156,7 +3162,7 @@ mod tests {
         assert_matches!(result, FilterDecision::Continue);
         assert_eq!(request.headers().get("content-type").unwrap(), "application/json");
 
-        let body = std::mem::take(&mut request.body_mut().inner).collect().await.unwrap();
+        let body = std::mem::take(&mut request.body_mut().inner.inner).collect().await.unwrap();
         let trailers = body.trailers().cloned();
 
         assert!(trailers.is_some());
