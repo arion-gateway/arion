@@ -1489,7 +1489,7 @@ mod tests {
             Some(b) => PolyBody::from(Full::new(bytes::Bytes::from(b.to_owned()))),
         };
 
-        req.body(InstrumentedBody::new(BodyKind::Request, body, |_, _, _| {})).unwrap()
+        req.body(InstrumentedBody::new(BodyKind::Request, TimeoutBody::new(None, body), |_, _, _| {})).unwrap()
     }
 
     fn build_response_from_mock(mock_response: &Mock<ResponseMsg>) -> Response<TimeoutBody<PolyBody>> {
@@ -1517,21 +1517,24 @@ mod tests {
             };
         }
 
-        let body = match mock_response.body {
-            None if !trailers_map.is_empty() => PolyBody::from(
-                Empty::<bytes::Bytes>::new().with_trailers(ready(Some(Ok::<_, Infallible>(trailers_map)))),
-            ),
-            Some(b) if !trailers_map.is_empty() => {
-                PolyBody::from(Full::new(bytes::Bytes::from(b.to_owned())).with_trailers(ready(Some(Ok::<
-                    _,
-                    Infallible,
-                >(
-                    trailers_map
-                )))))
+        let body = TimeoutBody::new(
+            None,
+            match mock_response.body {
+                None if !trailers_map.is_empty() => PolyBody::from(
+                    Empty::<bytes::Bytes>::new().with_trailers(ready(Some(Ok::<_, Infallible>(trailers_map)))),
+                ),
+                Some(b) if !trailers_map.is_empty() => {
+                    PolyBody::from(Full::new(bytes::Bytes::from(b.to_owned())).with_trailers(ready(Some(Ok::<
+                        _,
+                        Infallible,
+                    >(
+                        trailers_map,
+                    )))))
+                },
+                None => PolyBody::from(Empty::<bytes::Bytes>::new()),
+                Some(b) => PolyBody::from(Full::new(bytes::Bytes::from(b.to_owned()))),
             },
-            None => PolyBody::from(Empty::<bytes::Bytes>::new()),
-            Some(b) => PolyBody::from(Full::new(bytes::Bytes::from(b.to_owned()))),
-        };
+        );
 
         resp.body(body).unwrap()
     }
@@ -2337,7 +2340,7 @@ mod tests {
         });
 
         let result = ext_proc.apply_request(&mut request).await;
-        let body = std::mem::take(&mut request.body_mut().inner).collect().await.unwrap();
+        let body = std::mem::take(&mut request.body_mut().inner.inner).collect().await.unwrap();
         let trailers = body.trailers().cloned();
 
         assert!(trailers.is_some());
@@ -2386,7 +2389,7 @@ mod tests {
         assert_matches!(result, FilterDecision::Continue);
         assert_eq!(request.method(), Method::GET);
         assert_eq!(request.headers().get("y-custom-header").unwrap(), "true");
-        let body_bytes = std::mem::take(&mut request.body_mut().inner).collect().await.unwrap().to_bytes();
+        let body_bytes = std::mem::take(&mut request.body_mut().inner.inner).collect().await.unwrap().to_bytes();
         assert_eq!(body_bytes, new_body.as_bytes());
     }
 
@@ -2436,8 +2439,7 @@ mod tests {
 
         assert_matches!(result, FilterDecision::Continue);
         assert_eq!(request.method(), Method::GET);
-        //assert_eq!(request.headers().get("y-custom-header").unwrap(), "true");
-        let body_bytes = std::mem::take(&mut request.body_mut().inner).collect().await.unwrap().to_bytes();
+        let body_bytes = std::mem::take(&mut request.body_mut().inner.inner).collect().await.unwrap().to_bytes();
         assert_eq!(body_bytes, new_body.as_bytes());
     }
 
@@ -2486,7 +2488,7 @@ mod tests {
 
         assert_matches!(result, FilterDecision::Continue);
         assert_eq!(request.headers().get("x-stream-processed").unwrap(), "true");
-        let body_bytes = std::mem::take(&mut request.body_mut().inner).collect().await.unwrap().to_bytes();
+        let body_bytes = std::mem::take(&mut request.body_mut().inner.inner).collect().await.unwrap().to_bytes();
         assert_eq!(body_bytes, "body data from external processor".as_bytes());
     }
 
@@ -2534,7 +2536,7 @@ mod tests {
 
         assert_matches!(result, FilterDecision::Continue);
         assert_eq!(request.headers().get("x-stream-processed").unwrap(), "true");
-        let body_bytes = std::mem::take(&mut request.body_mut().inner).collect().await.unwrap().to_bytes();
+        let body_bytes = std::mem::take(&mut request.body_mut().inner.inner).collect().await.unwrap().to_bytes();
         assert_eq!(body_bytes, "body data from external processor".as_bytes());
     }
 
@@ -2584,7 +2586,7 @@ mod tests {
 
         assert_matches!(result, FilterDecision::Continue);
         assert_eq!(request.headers().get("x-stream-processed").unwrap(), "true");
-        let body_bytes = std::mem::take(&mut request.body_mut().inner).collect().await.unwrap().to_bytes();
+        let body_bytes = std::mem::take(&mut request.body_mut().inner.inner).collect().await.unwrap().to_bytes();
         assert_eq!(body_bytes, "body data from external processor".as_bytes());
     }
 
@@ -3160,7 +3162,7 @@ mod tests {
         assert_matches!(result, FilterDecision::Continue);
         assert_eq!(request.headers().get("content-type").unwrap(), "application/json");
 
-        let body = std::mem::take(&mut request.body_mut().inner).collect().await.unwrap();
+        let body = std::mem::take(&mut request.body_mut().inner.inner).collect().await.unwrap();
         let trailers = body.trailers().cloned();
 
         assert!(trailers.is_some());
