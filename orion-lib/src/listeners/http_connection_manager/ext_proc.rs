@@ -65,6 +65,8 @@ use tokio::sync::mpsc::error::SendError;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, error, warn};
 
+const CHANNEL_BODY_PREFETCH_FRAMES: usize = 4;
+
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum ExtProcError {
     #[error("Timeout Error: {0}")]
@@ -244,13 +246,13 @@ impl ExternalProcessor {
                 // event though body processing is None and trailers processing is Skip, we have to
                 // create the bridge, to allow ext_proc mutate the body with ContinueAndReplace action.
                 debug!(target: "ext_proc", "request processing body(None) and trailers:{trailers_mode:?} => {body:?}");
-                let (new_body, bridge) = ChannelBody::new(body);
+                let (new_body, bridge) = ChannelBody::new(body, CHANNEL_BODY_PREFETCH_FRAMES);
                 request.body_mut().inner.inner = PolyBody::from(new_body);
                 bridge
             },
             (OverridableBodyMode::Streamed | OverridableBodyMode::FullDuplexStreamed, trailers_mode) => {
                 debug!(target: "ext_proc", "request processing body(Streamed) and trailers:{trailers_mode:?} => {body:?}");
-                let (new_body, bridge) = ChannelBody::new(body);
+                let (new_body, bridge) = ChannelBody::new(body, CHANNEL_BODY_PREFETCH_FRAMES);
                 request.body_mut().inner.inner = PolyBody::from(new_body);
                 bridge
             },
@@ -266,7 +268,7 @@ impl ExternalProcessor {
 
                 let buffered = Self::collect_to_single_chunk(collected);
 
-                let (new_body, bridge) = ChannelBody::new(buffered);
+                let (new_body, bridge) = ChannelBody::new(buffered, CHANNEL_BODY_PREFETCH_FRAMES);
                 request.body_mut().inner.inner = PolyBody::from(new_body);
                 bridge
             },
@@ -332,7 +334,7 @@ impl ExternalProcessor {
         };
 
         debug!(target: "ext_proc", "apply_request completed: {res:?}!");
-        request.body_mut().inner.inner.wait_frame(1).await;
+        request.body_mut().inner.inner.prefetch_frames().await;
         res
     }
 
@@ -361,13 +363,13 @@ impl ExternalProcessor {
                 // event though body processing is None and trailers processing is Skip, we have to
                 // create the bridge, to allow ext_proc mutate the body with ContinueAndReplace action.
                 debug!(target: "ext_proc", "response processing body(None) and trailers:{trailers_mode:?} => {body:?}");
-                let (new_body, bridge) = ChannelBody::new(body);
+                let (new_body, bridge) = ChannelBody::new(body, CHANNEL_BODY_PREFETCH_FRAMES);
                 response.body_mut().inner = PolyBody::from(new_body);
                 bridge
             },
             (OverridableBodyMode::Streamed | OverridableBodyMode::FullDuplexStreamed, trailers_mode) => {
                 debug!(target: "ext_proc", "response processing body(Streamed) and trailers:{trailers_mode:?} => {body:?}");
-                let (new_body, bridge) = ChannelBody::new(body);
+                let (new_body, bridge) = ChannelBody::new(body, CHANNEL_BODY_PREFETCH_FRAMES);
                 response.body_mut().inner = PolyBody::from(new_body);
                 bridge
             },
@@ -383,7 +385,7 @@ impl ExternalProcessor {
 
                 debug!(target: "ext_proc", "response body collected: {collected:?}");
                 let buffered = Self::collect_to_single_chunk(collected);
-                let (new_body, bridge) = ChannelBody::new(buffered);
+                let (new_body, bridge) = ChannelBody::new(buffered, CHANNEL_BODY_PREFETCH_FRAMES);
                 response.body_mut().inner = PolyBody::from(new_body);
                 bridge
             },
@@ -456,7 +458,7 @@ impl ExternalProcessor {
         // the first frame, single-frame responses avoid unnecessary polling
         // cycles.
 
-        response.body_mut().inner.wait_frame(1).await;
+        response.body_mut().inner.prefetch_frames().await;
         res
     }
 

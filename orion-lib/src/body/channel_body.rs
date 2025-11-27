@@ -1,6 +1,7 @@
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
 use http_body::{Body, Frame, SizeHint};
+use std::collections::VecDeque;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::sync::mpsc;
@@ -10,7 +11,8 @@ type FrameResult = Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>
 
 /// A wrapper for any Body that allows observing and modifying frames in real-time.
 pub struct ChannelBody {
-    prefetch: Vec<Option<FrameResult>>,
+    prefetch: VecDeque<Option<FrameResult>>,
+    prefetch_num_frames: usize,
     stream: ReceiverStream<FrameResult>,
 }
 
@@ -20,7 +22,7 @@ impl ChannelBody {
     /// Returns a tuple of (`ChannelBody`, `FrameBridge`). `FrameBridge` must be used
     /// to inject frames (either manually or via `complete()`), otherwise the `ChannelBody`
     /// will never produce any frames.
-    pub fn new<B>(body: B) -> (Self, FrameBridge)
+    pub fn new<B>(body: B, prefetch_num_frames: usize) -> (Self, FrameBridge)
     where
         B: Body<Data = Bytes> + Send + 'static,
         B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
@@ -34,18 +36,18 @@ impl ChannelBody {
         // Create the bridge with the original body
         let bridge = FrameBridge::new(body, tx);
 
-        (ChannelBody { stream: stream_of_body, prefetch: vec![] }, bridge)
+        (ChannelBody { stream: stream_of_body, prefetch: VecDeque::new(), prefetch_num_frames }, bridge)
     }
 
     /// Asynchronously waits until the given number of frames are available in the body.
     ///
     /// This method does not consume the frame.
-    pub async fn wait_frame(&mut self, num_frames: usize) {
-        self.prefetch.reserve(num_frames);
-        for _ in 0..num_frames {
+    pub async fn prefetch_frames(&mut self) {
+        self.prefetch.reserve(self.prefetch_num_frames);
+        for _ in 0..self.prefetch_num_frames {
             let r = Pin::new(&mut self.stream).next().await;
             let end_of_stream = r.is_none();
-            self.prefetch.push(r);
+            self.prefetch.push_back(r);
             if end_of_stream {
                 return;
             }
@@ -67,11 +69,19 @@ impl Body for ChannelBody {
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        if let Some(frame) = self.prefetch.pop() {
+        while self.prefetch.len() < self.prefetch_num_frames {
+            if let Poll::Ready(something) = Pin::new(&mut self.stream).poll_next(cx) {
+                self.prefetch.push_back(something);
+            } else {
+                break;
+            }
+        }
+
+        if let Some(frame) = self.prefetch.pop_front() {
             return Poll::Ready(frame);
         }
 
-        Pin::new(&mut self.stream).poll_next(cx)
+        Poll::Pending
     }
 
     fn is_end_stream(&self) -> bool {
@@ -250,7 +260,7 @@ mod tests {
     #[tokio::test]
     async fn test_complete() {
         let body = Full::new(Bytes::from("Hello, World!"));
-        let (mut channel_body, mut bridge) = ChannelBody::new(body);
+        let (mut channel_body, mut bridge) = ChannelBody::new(body, 1);
 
         // Spawn bridge task
         let bridge_handle = tokio::spawn(async move {
@@ -272,7 +282,7 @@ mod tests {
     #[tokio::test]
     async fn test_manual_injection() {
         let body = Full::new(Bytes::from("Test"));
-        let (mut channel_body, mut bridge) = ChannelBody::new(body);
+        let (mut channel_body, mut bridge) = ChannelBody::new(body, 1);
 
         // Spawn a task that consumes the ChannelBody
         let consumer_handle = tokio::spawn(async move {
@@ -308,7 +318,7 @@ mod tests {
     #[tokio::test]
     async fn test_channel_body_debug() {
         let body = Full::new(Bytes::from("Debug Test"));
-        let (mut channel_body, mut bridge) = ChannelBody::new(body);
+        let (mut channel_body, mut bridge) = ChannelBody::new(body, 1);
         assert!(!channel_body.is_end_stream());
         let mut ctx = dummy_context();
         assert!(matches!(Pin::new(&mut channel_body).poll_frame(&mut ctx), Poll::Pending));

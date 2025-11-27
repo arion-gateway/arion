@@ -65,9 +65,9 @@ impl PolyBody {
         }
     }
 
-    pub async fn wait_frame(&mut self, num_frames: usize) {
+    pub async fn prefetch_frames(&mut self) {
         if let PolyBody::ChannelBody(m) = self {
-            m.wait_frame(num_frames).await;
+            m.prefetch_frames().await;
         } else { // No-op for other body types
         }
     }
