@@ -1,5 +1,4 @@
 use bytes::Bytes;
-use futures::stream::Peekable;
 use futures::{Stream, StreamExt};
 use http_body::{Body, Frame, SizeHint};
 use std::pin::Pin;
@@ -7,11 +6,12 @@ use std::task::{Context, Poll};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
-type ReciverFrameStream = ReceiverStream<Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>>;
+type FrameResult = Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>;
 
 /// A wrapper for any Body that allows observing and modifying frames in real-time.
 pub struct ChannelBody {
-    peekable_stream: Peekable<ReciverFrameStream>,
+    prefetch: Vec<Option<FrameResult>>,
+    stream: ReceiverStream<FrameResult>,
 }
 
 impl ChannelBody {
@@ -26,28 +26,36 @@ impl ChannelBody {
         B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
     {
         // Create a channel for injecting frames
-        let (tx, rx) = mpsc::channel(32);
+        let (tx, rx) = mpsc::channel(8);
 
         // Convert the receiver into a StreamBody
-        let stream_of_body = ReceiverStream::new(rx).peekable();
+        let stream_of_body = ReceiverStream::new(rx);
 
         // Create the bridge with the original body
         let bridge = FrameBridge::new(body, tx);
 
-        (ChannelBody { peekable_stream: stream_of_body }, bridge)
+        (ChannelBody { stream: stream_of_body, prefetch: vec![] }, bridge)
     }
 
-    /// Asynchronously waits until a frame is available in the body.
+    /// Asynchronously waits until the given number of frames are available in the body.
     ///
     /// This method does not consume the frame.
-    pub async fn wait_frame(&mut self) {
-        let _ = Pin::new(&mut self.peekable_stream).peek().await;
+    pub async fn wait_frame(&mut self, num_frames: usize) {
+        self.prefetch.reserve(num_frames);
+        for _ in 0..num_frames {
+            let r = Pin::new(&mut self.stream).next().await;
+            let end_of_stream = r.is_none();
+            self.prefetch.push(r);
+            if end_of_stream {
+                return;
+            }
+        }
     }
 }
 
 impl std::fmt::Debug for ChannelBody {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ChannelBody").field("stream_body", &self.peekable_stream).finish()
+        f.debug_struct("ChannelBody").field("stream_body", &self.stream).field("buffered", &self.prefetch).finish()
     }
 }
 
@@ -59,7 +67,11 @@ impl Body for ChannelBody {
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        Pin::new(&mut self.peekable_stream).poll_next(cx)
+        if let Some(frame) = self.prefetch.pop() {
+            return Poll::Ready(frame);
+        }
+
+        Pin::new(&mut self.stream).poll_next(cx)
     }
 
     fn is_end_stream(&self) -> bool {
@@ -70,8 +82,6 @@ impl Body for ChannelBody {
         SizeHint::default()
     }
 }
-
-type FrameResult = Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>;
 
 /// A stream that allows observing frames from a body and simultaneously
 /// injecting them into the `ChannelBody`.
@@ -216,7 +226,7 @@ impl FrameBridge {
         // Inject the original frame
         if let Some(injector) = &mut self.injector {
             let _ = injector.send(frame).await;
-        };
+        }
 
         Some(cloned)
     }

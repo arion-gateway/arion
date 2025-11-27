@@ -332,7 +332,7 @@ impl ExternalProcessor {
         };
 
         debug!(target: "ext_proc", "apply_request completed: {res:?}!");
-        request.body_mut().inner.inner.wait_frame().await;
+        request.body_mut().inner.inner.wait_frame(1).await;
         res
     }
 
@@ -456,7 +456,7 @@ impl ExternalProcessor {
         // the first frame, single-frame responses avoid unnecessary polling
         // cycles.
 
-        response.body_mut().inner.wait_frame().await;
+        response.body_mut().inner.wait_frame(1).await;
         res
     }
 
