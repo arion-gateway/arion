@@ -668,6 +668,7 @@ where
         },
     };
 
+    debug!(target: "ext_proc", "merge_ready_frames: merging frames");
     let mut current_bytes = BytesMut::from(current_bytes.as_ref());
     let mut peekable_stream = Box::pin(stream.peekable());
     loop {
@@ -677,7 +678,7 @@ where
                 match peekable_stream.as_mut().poll_next(&mut cx) {
                     Poll::Ready(Some(Ok(frame))) => {
                         if let Some(data) = frame.data_ref() {
-                            debug!(target: "ext_proc", "merging additional data chunk ({} bytes)", data.len());
+                            debug!(target: "ext_proc", "merge_ready_frames: merging additional data chunk ({} bytes)", data.len());
                             current_bytes.extend_from_slice(data);
                         } else {
                             // not data frame - stop merging
@@ -685,16 +686,18 @@ where
                         }
                     },
                     _ => {
+                        debug!(target: "ext_proc", "merge_ready_frames: polled nothing");
                         break;
                     },
                 }
             },
             _ => {
+                debug!("merge_ready_frames: peeked nothing");
                 break;
             },
         }
     }
-
+    debug!(target: "ext_proc", "merge_ready_frames: returning {current_bytes:?}");
     Frame::data(current_bytes.freeze())
 }
 
