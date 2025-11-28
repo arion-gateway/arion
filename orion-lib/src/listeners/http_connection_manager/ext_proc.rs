@@ -25,7 +25,10 @@ use crate::{
     listeners::{http_connection_manager::FilterDecision, synthetic_http_response::SyntheticHttpResponse},
     Error, PolyBody,
 };
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
+use futures::stream::Stream;
+use futures::task::{noop_waker, Context, Poll};
+use futures::FutureExt;
 use futures::{future::Either, StreamExt};
 use http::header::CONTENT_LENGTH;
 use http::{Request, Response};
@@ -60,10 +63,13 @@ use pingora_timeout::fast_timeout;
 use scopeguard::defer;
 use std::convert::Infallible;
 use std::future::Future;
+use std::pin::Pin;
 use std::{sync::Arc, time::Duration};
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, error, warn};
+
+use std::error::Error as StdError;
 
 const CHANNEL_BODY_PREFETCH_FRAMES: usize = 4;
 
@@ -647,6 +653,51 @@ fn clone_frame(frame: &Frame<Bytes>) -> Frame<Bytes> {
     }
 }
 
+type FrameStream = Result<Frame<Bytes>, Box<dyn StdError + Send + Sync>>;
+
+pub fn merge_ready_frames<S>(initial_frame: Frame<Bytes>, stream: &mut S) -> Frame<Bytes>
+where
+    S: Stream<Item = FrameStream> + Unpin,
+{
+    let waker = noop_waker();
+    let mut cx = Context::from_waker(&waker);
+    let current_bytes = match initial_frame.into_data() {
+        Ok(b) => b,
+        Err(f) => {
+            return f;
+        },
+    };
+
+    let mut current_bytes = BytesMut::from(current_bytes.as_ref());
+    let mut peekable_stream = Box::pin(stream.peekable());
+    loop {
+        match peekable_stream.as_mut().poll_peek(&mut cx) {
+            Poll::Ready(Some(_)) => {
+                // poll the frame out of the stream...
+                match peekable_stream.as_mut().poll_next(&mut cx) {
+                    Poll::Ready(Some(Ok(frame))) => {
+                        if let Some(data) = frame.data_ref() {
+                            debug!(target: "ext_proc", "merging additional data chunk ({} bytes)", data.len());
+                            current_bytes.extend_from_slice(data);
+                        } else {
+                            // not data frame - stop merging
+                            break;
+                        }
+                    },
+                    _ => {
+                        break;
+                    },
+                }
+            },
+            _ => {
+                break;
+            },
+        }
+    }
+
+    Frame::data(current_bytes.freeze())
+}
+
 impl ExternalProcessingWorker<kind::Processing> {
     fn new(config: Arc<ExternalProcessingWorkerConfig>, overridable_global_modes: Arc<OverridableGlobalModes>) -> Self {
         let request_processing = RequestProcessing::<kind::Processing>::from(&*config);
@@ -866,6 +917,8 @@ impl ExternalProcessingWorker<kind::Processing> {
                     debug!(target: "ext_proc", "outbound request body frame: {outbound_request_body_frame:?}");
                     match outbound_request_body_frame {
                         Some(Ok(current_frame)) => {
+                            let buffered_frames = merge_ready_frames(current_frame, &mut self.request_processing.frame_bridge);
+
                             // 1. send previously parked frame...
                             //
                             if let Some(prev_frame) = self.request_processing.parked_frame.take() {
@@ -877,7 +930,7 @@ impl ExternalProcessingWorker<kind::Processing> {
                             }
                             // 2. park this frame for delayed transmission or inject it directly into the body bridge...
                             //
-                            self.request_processing.park_or_inject_frame(current_frame, &self.overridable_modes).await;
+                            self.request_processing.park_or_inject_frame(buffered_frames, &self.overridable_modes).await;
                         },
                         Some(Err(_err)) => {
                             request_body_to_ext_proc_complete = true;
@@ -910,6 +963,7 @@ impl ExternalProcessingWorker<kind::Processing> {
                     debug!(target: "ext_proc", "outbound response body frame: {outbound_response_body_frame:?}");
                     match outbound_response_body_frame {
                         Some(Ok(current_frame)) => {
+                            let buffered_frames = merge_ready_frames(current_frame, &mut self.request_processing.frame_bridge);
 
                             // 1. send previously parked frame...
                             //
@@ -923,7 +977,7 @@ impl ExternalProcessingWorker<kind::Processing> {
 
                             // 2. park this frame for delayed transmission or inject it directly into the body bridge...
                             //
-                            self.response_processing.park_or_inject_frame(current_frame, &self.overridable_modes).await;
+                            self.response_processing.park_or_inject_frame(buffered_frames, &self.overridable_modes).await;
 
                         },
                         Some(Err(_err)) => {
