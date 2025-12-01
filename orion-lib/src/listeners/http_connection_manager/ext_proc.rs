@@ -25,7 +25,10 @@ use crate::{
     listeners::{http_connection_manager::FilterDecision, synthetic_http_response::SyntheticHttpResponse},
     Error, PolyBody,
 };
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
+use futures::stream::Stream;
+use futures::task::{noop_waker, Context, Poll};
+use futures::FutureExt;
 use futures::{future::Either, StreamExt};
 use http::header::CONTENT_LENGTH;
 use http::{Request, Response};
@@ -60,10 +63,15 @@ use pingora_timeout::fast_timeout;
 use scopeguard::defer;
 use std::convert::Infallible;
 use std::future::Future;
+use std::pin::Pin;
 use std::{sync::Arc, time::Duration};
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, error, warn};
+
+use std::error::Error as StdError;
+
+const CHANNEL_BODY_PREFETCH_FRAMES: usize = 4;
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum ExtProcError {
@@ -244,13 +252,13 @@ impl ExternalProcessor {
                 // event though body processing is None and trailers processing is Skip, we have to
                 // create the bridge, to allow ext_proc mutate the body with ContinueAndReplace action.
                 debug!(target: "ext_proc", "request processing body(None) and trailers:{trailers_mode:?} => {body:?}");
-                let (new_body, bridge) = ChannelBody::new(body);
+                let (new_body, bridge) = ChannelBody::new(body, CHANNEL_BODY_PREFETCH_FRAMES);
                 request.body_mut().inner.inner = PolyBody::from(new_body);
                 bridge
             },
             (OverridableBodyMode::Streamed | OverridableBodyMode::FullDuplexStreamed, trailers_mode) => {
                 debug!(target: "ext_proc", "request processing body(Streamed) and trailers:{trailers_mode:?} => {body:?}");
-                let (new_body, bridge) = ChannelBody::new(body);
+                let (new_body, bridge) = ChannelBody::new(body, CHANNEL_BODY_PREFETCH_FRAMES);
                 request.body_mut().inner.inner = PolyBody::from(new_body);
                 bridge
             },
@@ -266,7 +274,7 @@ impl ExternalProcessor {
 
                 let buffered = Self::collect_to_single_chunk(collected);
 
-                let (new_body, bridge) = ChannelBody::new(buffered);
+                let (new_body, bridge) = ChannelBody::new(buffered, CHANNEL_BODY_PREFETCH_FRAMES);
                 request.body_mut().inner.inner = PolyBody::from(new_body);
                 bridge
             },
@@ -332,7 +340,7 @@ impl ExternalProcessor {
         };
 
         debug!(target: "ext_proc", "apply_request completed: {res:?}!");
-        request.body_mut().inner.inner.wait_frame().await;
+        request.body_mut().inner.inner.prefetch_frames().await;
         res
     }
 
@@ -361,13 +369,13 @@ impl ExternalProcessor {
                 // event though body processing is None and trailers processing is Skip, we have to
                 // create the bridge, to allow ext_proc mutate the body with ContinueAndReplace action.
                 debug!(target: "ext_proc", "response processing body(None) and trailers:{trailers_mode:?} => {body:?}");
-                let (new_body, bridge) = ChannelBody::new(body);
+                let (new_body, bridge) = ChannelBody::new(body, CHANNEL_BODY_PREFETCH_FRAMES);
                 response.body_mut().inner = PolyBody::from(new_body);
                 bridge
             },
             (OverridableBodyMode::Streamed | OverridableBodyMode::FullDuplexStreamed, trailers_mode) => {
                 debug!(target: "ext_proc", "response processing body(Streamed) and trailers:{trailers_mode:?} => {body:?}");
-                let (new_body, bridge) = ChannelBody::new(body);
+                let (new_body, bridge) = ChannelBody::new(body, CHANNEL_BODY_PREFETCH_FRAMES);
                 response.body_mut().inner = PolyBody::from(new_body);
                 bridge
             },
@@ -383,7 +391,7 @@ impl ExternalProcessor {
 
                 debug!(target: "ext_proc", "response body collected: {collected:?}");
                 let buffered = Self::collect_to_single_chunk(collected);
-                let (new_body, bridge) = ChannelBody::new(buffered);
+                let (new_body, bridge) = ChannelBody::new(buffered, CHANNEL_BODY_PREFETCH_FRAMES);
                 response.body_mut().inner = PolyBody::from(new_body);
                 bridge
             },
@@ -456,7 +464,7 @@ impl ExternalProcessor {
         // the first frame, single-frame responses avoid unnecessary polling
         // cycles.
 
-        response.body_mut().inner.wait_frame().await;
+        response.body_mut().inner.prefetch_frames().await;
         res
     }
 
@@ -643,6 +651,54 @@ fn clone_frame(frame: &Frame<Bytes>) -> Frame<Bytes> {
         // empty frame as fallback
         Frame::data(Bytes::new())
     }
+}
+
+type FrameStream = Result<Frame<Bytes>, Box<dyn StdError + Send + Sync>>;
+
+pub fn merge_ready_frames<S>(initial_frame: Frame<Bytes>, stream: &mut S) -> Frame<Bytes>
+where
+    S: Stream<Item = FrameStream> + Unpin,
+{
+    let waker = noop_waker();
+    let mut cx = Context::from_waker(&waker);
+    let current_bytes = match initial_frame.into_data() {
+        Ok(b) => b,
+        Err(f) => {
+            return f;
+        },
+    };
+
+    debug!(target: "ext_proc", "merge_ready_frames: merging frames");
+    let mut current_bytes = BytesMut::from(current_bytes.as_ref());
+    let mut peekable_stream = Box::pin(stream.peekable());
+    loop {
+        match peekable_stream.as_mut().poll_peek(&mut cx) {
+            Poll::Ready(Some(_)) => {
+                // poll the frame out of the stream...
+                match peekable_stream.as_mut().poll_next(&mut cx) {
+                    Poll::Ready(Some(Ok(frame))) => {
+                        if let Some(data) = frame.data_ref() {
+                            debug!(target: "ext_proc", "merge_ready_frames: merging additional data chunk ({} bytes)", data.len());
+                            current_bytes.extend_from_slice(data);
+                        } else {
+                            // not data frame - stop merging
+                            break;
+                        }
+                    },
+                    _ => {
+                        debug!(target: "ext_proc", "merge_ready_frames: polled nothing");
+                        break;
+                    },
+                }
+            },
+            _ => {
+                debug!("merge_ready_frames: peeked nothing");
+                break;
+            },
+        }
+    }
+    debug!(target: "ext_proc", "merge_ready_frames: returning {current_bytes:?}");
+    Frame::data(current_bytes.freeze())
 }
 
 impl ExternalProcessingWorker<kind::Processing> {
@@ -864,6 +920,8 @@ impl ExternalProcessingWorker<kind::Processing> {
                     debug!(target: "ext_proc", "outbound request body frame: {outbound_request_body_frame:?}");
                     match outbound_request_body_frame {
                         Some(Ok(current_frame)) => {
+                            let buffered_frames = merge_ready_frames(current_frame, &mut self.request_processing.frame_bridge);
+
                             // 1. send previously parked frame...
                             //
                             if let Some(prev_frame) = self.request_processing.parked_frame.take() {
@@ -875,7 +933,7 @@ impl ExternalProcessingWorker<kind::Processing> {
                             }
                             // 2. park this frame for delayed transmission or inject it directly into the body bridge...
                             //
-                            self.request_processing.park_or_inject_frame(current_frame, &self.overridable_modes).await;
+                            self.request_processing.park_or_inject_frame(buffered_frames, &self.overridable_modes).await;
                         },
                         Some(Err(_err)) => {
                             request_body_to_ext_proc_complete = true;
@@ -908,6 +966,7 @@ impl ExternalProcessingWorker<kind::Processing> {
                     debug!(target: "ext_proc", "outbound response body frame: {outbound_response_body_frame:?}");
                     match outbound_response_body_frame {
                         Some(Ok(current_frame)) => {
+                            let buffered_frames = merge_ready_frames(current_frame, &mut self.request_processing.frame_bridge);
 
                             // 1. send previously parked frame...
                             //
@@ -921,7 +980,7 @@ impl ExternalProcessingWorker<kind::Processing> {
 
                             // 2. park this frame for delayed transmission or inject it directly into the body bridge...
                             //
-                            self.response_processing.park_or_inject_frame(current_frame, &self.overridable_modes).await;
+                            self.response_processing.park_or_inject_frame(buffered_frames, &self.overridable_modes).await;
 
                         },
                         Some(Err(_err)) => {
