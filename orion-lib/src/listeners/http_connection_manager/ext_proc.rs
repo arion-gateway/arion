@@ -28,7 +28,6 @@ use crate::{
 use bytes::{Bytes, BytesMut};
 use futures::stream::Stream;
 use futures::task::{noop_waker, Context, Poll};
-use futures::FutureExt;
 use futures::{future::Either, StreamExt};
 use http::header::CONTENT_LENGTH;
 use http::{Request, Response};
@@ -63,7 +62,6 @@ use pingora_timeout::fast_timeout;
 use scopeguard::defer;
 use std::convert::Infallible;
 use std::future::Future;
-use std::pin::Pin;
 use std::{sync::Arc, time::Duration};
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::{mpsc, oneshot};
@@ -72,6 +70,7 @@ use tracing::{debug, error, warn};
 use std::error::Error as StdError;
 
 const CHANNEL_BODY_PREFETCH_FRAMES: usize = 4;
+const FRAME_MERGE_LIMIT: u32 = 4;
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum ExtProcError {
@@ -655,7 +654,14 @@ fn clone_frame(frame: &Frame<Bytes>) -> Frame<Bytes> {
 
 type FrameStream = Result<Frame<Bytes>, Box<dyn StdError + Send + Sync>>;
 
-pub fn merge_ready_frames<S>(initial_frame: Frame<Bytes>, stream: &mut S) -> Frame<Bytes>
+#[allow(dead_code)]
+enum MergeResult {
+    Retry(u32),
+    Error(u32),
+    None(u32),
+}
+
+fn merge_ready_frames<S>(initial_frame: Frame<Bytes>, stream: &mut S, num_frames: u32) -> (Frame<Bytes>, MergeResult)
 where
     S: Stream<Item = FrameStream> + Unpin,
 {
@@ -664,41 +670,60 @@ where
     let current_bytes = match initial_frame.into_data() {
         Ok(b) => b,
         Err(f) => {
-            return f;
+            return (f, MergeResult::None(0));
         },
     };
 
     debug!(target: "ext_proc", "merge_ready_frames: merging frames");
     let mut current_bytes = BytesMut::from(current_bytes.as_ref());
     let mut peekable_stream = Box::pin(stream.peekable());
-    loop {
+    let mut merged = 0;
+    let mut i = 0;
+
+    let res = loop {
+        if i >= num_frames {
+            debug!(target: "ext_proc", "merge_ready_frames: reached max frames to merge: {num_frames}");
+            break MergeResult::Retry(merged);
+        }
+
         match peekable_stream.as_mut().poll_peek(&mut cx) {
-            Poll::Ready(Some(_)) => {
+            Poll::Ready(Some(Ok(_))) => {
                 // poll the frame out of the stream...
                 match peekable_stream.as_mut().poll_next(&mut cx) {
                     Poll::Ready(Some(Ok(frame))) => {
                         if let Some(data) = frame.data_ref() {
                             debug!(target: "ext_proc", "merge_ready_frames: merging additional data chunk ({} bytes)", data.len());
                             current_bytes.extend_from_slice(data);
+                            merged += 1;
                         } else {
                             // not data frame - stop merging
-                            break;
+                            break MergeResult::None(merged);
                         }
                     },
                     _ => {
-                        debug!(target: "ext_proc", "merge_ready_frames: polled nothing");
-                        break;
+                        unreachable!("ext_proc: merge_ready_frames: polled ready frame should be available");
                     },
                 }
             },
-            _ => {
-                debug!("merge_ready_frames: peeked nothing");
-                break;
+            Poll::Ready(Some(Err(_))) => {
+                debug!(target: "ext_proc", "merge_ready_frames: polled error frame");
+                break MergeResult::Error(merged);
+            },
+            Poll::Ready(None) => {
+                debug!(target: "ext_proc", "merge_ready_frames: polled none (end of stream)");
+                break MergeResult::None(merged);
+            },
+            Poll::Pending => {
+                debug!(target: "ext_proc", "merge_ready_frames: polled pending");
+                break MergeResult::Retry(merged);
             },
         }
-    }
+
+        i += 1;
+    };
+
     debug!(target: "ext_proc", "merge_ready_frames: returning {current_bytes:?}");
-    Frame::data(current_bytes.freeze())
+    (Frame::data(current_bytes.freeze()), res)
 }
 
 impl ExternalProcessingWorker<kind::Processing> {
@@ -919,8 +944,25 @@ impl ExternalProcessingWorker<kind::Processing> {
 
                     debug!(target: "ext_proc", "outbound request body frame: {outbound_request_body_frame:?}");
                     match outbound_request_body_frame {
-                        Some(Ok(current_frame)) => {
-                            let buffered_frames = merge_ready_frames(current_frame, &mut self.request_processing.frame_bridge);
+                        Some(Ok(mut frame)) => {
+                            let mut i = 0;
+                            let buffered_frames = loop {
+                                if i >= FRAME_MERGE_LIMIT {
+                                    break frame;
+                                }
+                                tokio::task::yield_now().await;
+                                let (new_frame, merge_result) = merge_ready_frames(frame, &mut self.request_processing.frame_bridge, FRAME_MERGE_LIMIT - i);
+                                if let MergeResult::Retry(n) = merge_result {
+                                    if n == 0 {
+                                        break new_frame;
+                                    }
+                                    frame = new_frame;
+                                    i += n;
+                                    continue;
+                                } else {
+                                    break new_frame;
+                                }
+                            };
 
                             // 1. send previously parked frame...
                             //
@@ -965,8 +1007,25 @@ impl ExternalProcessingWorker<kind::Processing> {
 
                     debug!(target: "ext_proc", "outbound response body frame: {outbound_response_body_frame:?}");
                     match outbound_response_body_frame {
-                        Some(Ok(current_frame)) => {
-                            let buffered_frames = merge_ready_frames(current_frame, &mut self.request_processing.frame_bridge);
+                        Some(Ok(mut frame)) => {
+                            let mut i = 0;
+                            let buffered_frames = loop {
+                                if i >= FRAME_MERGE_LIMIT {
+                                    break frame;
+                                }
+                                tokio::task::yield_now().await;
+                                let (new_frame, merge_result) = merge_ready_frames(frame, &mut self.request_processing.frame_bridge, FRAME_MERGE_LIMIT - i);
+                                if let MergeResult::Retry(n) = merge_result {
+                                    if n == 0 {
+                                        break new_frame;
+                                    }
+                                    frame = new_frame;
+                                    i += n;
+                                    continue;
+                                } else {
+                                    break new_frame;
+                                }
+                            };
 
                             // 1. send previously parked frame...
                             //
