@@ -601,7 +601,7 @@ impl<M: kind::Mode + Default, Msg: kind::MsgKind + OverridableModeSelector> Proc
             // This is a DATA, let's park it if is supposed to be streamed
             if override_mode.should_process_body::<Msg>() {
                 self.parked_frame = Some(frame);
-                debug!(target: "ext_proc", "parking body chunk of response (DATA)");
+                debug!(target: "ext_proc", "parking body chunk (DATA)");
             } else {
                 debug!(target: "ext_proc", "DATA is injected directly into frame bridge!");
                 _ = self.frame_bridge.inject_frame(Ok(frame)).await;
@@ -611,7 +611,7 @@ impl<M: kind::Mode + Default, Msg: kind::MsgKind + OverridableModeSelector> Proc
             debug!(target: "ext_proc", "processing_request: sending trailers to external processor...");
             if override_mode.should_process_trailers::<Msg>() {
                 self.parked_frame = Some(frame);
-                debug!(target: "ext_proc", "parking body chunk of response (TRAILERS)");
+                debug!(target: "ext_proc", "parking body chunk (TRAILERS)");
             } else {
                 debug!(target: "ext_proc", "TRAILERS are injected directly into frame bridge");
                 _ = self.frame_bridge.inject_frame(Ok(frame)).await;
