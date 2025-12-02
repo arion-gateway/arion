@@ -687,34 +687,38 @@ where
         }
 
         match peekable_stream.as_mut().poll_peek(&mut cx) {
-            Poll::Ready(Some(Ok(_))) => {
-                // poll the frame out of the stream...
-                match peekable_stream.as_mut().poll_next(&mut cx) {
-                    Poll::Ready(Some(Ok(frame))) => {
-                        if let Some(data) = frame.data_ref() {
-                            debug!(target: "ext_proc", "merge_ready_frames: merging additional data chunk ({} bytes)", data.len());
-                            current_bytes.extend_from_slice(data);
-                            merged += 1;
-                        } else {
-                            // not data frame - stop merging
-                            break MergeResult::None(merged);
-                        }
-                    },
-                    _ => {
-                        unreachable!("ext_proc: merge_ready_frames: polled ready frame should be available");
-                    },
+            Poll::Ready(Some(Ok(frame))) => {
+                if frame.is_data() {
+                    // poll the frame out of the stream...
+                    match peekable_stream.as_mut().poll_next(&mut cx) {
+                        Poll::Ready(Some(Ok(frame))) => {
+                            if let Some(data) = frame.data_ref() {
+                                debug!(target: "ext_proc", "merge_ready_frames: merging additional data chunk ({} bytes)", data.len());
+                                current_bytes.extend_from_slice(data);
+                                merged += 1;
+                            } else {
+                                unreachable!("ext_proc: merge_ready_frames: a ready frame is available but it's not a DATA frame");
+                            }
+                        },
+                        _ => {
+                            unreachable!("ext_proc: merge_ready_frames: a ready DATA frame should be available");
+                        },
+                    }
+                } else {
+                    debug!(target: "ext_proc", "merge_ready_frames: peeked trailer frame - stopping merge");
+                    break MergeResult::None(merged);
                 }
             },
             Poll::Ready(Some(Err(_))) => {
-                debug!(target: "ext_proc", "merge_ready_frames: polled error frame");
+                debug!(target: "ext_proc", "merge_ready_frames: peeked error frame");
                 break MergeResult::Error(merged);
             },
             Poll::Ready(None) => {
-                debug!(target: "ext_proc", "merge_ready_frames: polled none (end of stream)");
+                debug!(target: "ext_proc", "merge_ready_frames: peeked none (end of stream)");
                 break MergeResult::None(merged);
             },
             Poll::Pending => {
-                debug!(target: "ext_proc", "merge_ready_frames: polled pending");
+                debug!(target: "ext_proc", "merge_ready_frames: peeked pending");
                 break MergeResult::Retry(merged);
             },
         }
