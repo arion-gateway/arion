@@ -271,9 +271,7 @@ impl ExternalProcessor {
                     );
                 };
 
-                let buffered = Self::collect_to_single_chunk(collected);
-
-                let (new_body, bridge) = ChannelBody::new(buffered, CHANNEL_BODY_PREFETCH_FRAMES);
+                let (new_body, bridge) = ChannelBody::new(collected, CHANNEL_BODY_PREFETCH_FRAMES);
                 request.body_mut().inner.inner = PolyBody::from(new_body);
                 bridge
             },
@@ -389,8 +387,7 @@ impl ExternalProcessor {
                 };
 
                 debug!(target: "ext_proc", "response body collected: {collected:?}");
-                let buffered = Self::collect_to_single_chunk(collected);
-                let (new_body, bridge) = ChannelBody::new(buffered, CHANNEL_BODY_PREFETCH_FRAMES);
+                let (new_body, bridge) = ChannelBody::new(collected, CHANNEL_BODY_PREFETCH_FRAMES);
                 response.body_mut().inner = PolyBody::from(new_body);
                 bridge
             },
@@ -661,7 +658,7 @@ enum MergeResult {
     None(u32),
 }
 
-fn merge_ready_frames<S>(initial_frame: Frame<Bytes>, stream: &mut S, num_frames: u32) -> (Frame<Bytes>, MergeResult)
+fn merge_ready_frames<S>(initial_frame: Frame<Bytes>, stream: &mut S) -> (Frame<Bytes>, MergeResult)
 where
     S: Stream<Item = FrameStream> + Unpin,
 {
@@ -678,14 +675,8 @@ where
     let mut current_bytes = BytesMut::from(current_bytes.as_ref());
     let mut peekable_stream = Box::pin(stream.peekable());
     let mut merged = 0;
-    let mut i = 0;
 
     let res = loop {
-        if i >= num_frames {
-            debug!(target: "ext_proc", "merge_ready_frames: reached max frames to merge: {num_frames}");
-            break MergeResult::Retry(merged);
-        }
-
         match peekable_stream.as_mut().poll_peek(&mut cx) {
             Poll::Ready(Some(Ok(frame))) => {
                 if frame.is_data() {
@@ -722,8 +713,6 @@ where
                 break MergeResult::Retry(merged);
             },
         }
-
-        i += 1;
     };
 
     debug!(target: "ext_proc", "merge_ready_frames: returning {current_bytes:?}");
@@ -955,7 +944,7 @@ impl ExternalProcessingWorker<kind::Processing> {
                                     break frame;
                                 }
                                 tokio::task::yield_now().await;
-                                let (new_frame, merge_result) = merge_ready_frames(frame, &mut self.request_processing.frame_bridge, FRAME_MERGE_LIMIT - i);
+                                let (new_frame, merge_result) = merge_ready_frames(frame, &mut self.request_processing.frame_bridge);
                                 if let MergeResult::Retry(n) = merge_result {
                                     if n == 0 {
                                         break new_frame;
@@ -1018,7 +1007,7 @@ impl ExternalProcessingWorker<kind::Processing> {
                                     break frame;
                                 }
                                 tokio::task::yield_now().await;
-                                let (new_frame, merge_result) = merge_ready_frames(frame, &mut self.request_processing.frame_bridge, FRAME_MERGE_LIMIT - i);
+                                let (new_frame, merge_result) = merge_ready_frames(frame, &mut self.request_processing.frame_bridge);
                                 if let MergeResult::Retry(n) = merge_result {
                                     if n == 0 {
                                         break new_frame;
@@ -1678,7 +1667,7 @@ mod tests {
             disable_immediate_response: false,
             forward_rules: None,
             mutation_rules: None,
-            message_timeout: Some(Duration::from_millis(200)),
+            message_timeout: Some(Duration::from_secs(1)),
             max_message_timeout: None,
             allowed_override_modes: vec![],
             allow_mode_override: false,
