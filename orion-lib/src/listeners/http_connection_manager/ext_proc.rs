@@ -8,6 +8,7 @@ mod worker_config;
 use crate::body::channel_body::{ChannelBody, FrameBridge};
 use crate::body::timeout_body::TimeoutBody;
 use crate::event_error::EventFailure;
+use http_body_util::{BodyExt, Collected};
 
 use crate::listeners::http_connection_manager::ext_proc::mutation::{
     apply_request_header_mutations, apply_response_header_mutations,
@@ -56,6 +57,8 @@ use orion_data_plane_api::envoy_data_plane_api::{
 use orion_format::types::ResponseFlags as FmtResponseFlags;
 use pingora_timeout::fast_timeout;
 use scopeguard::defer;
+use std::convert::Infallible;
+use std::future::ready;
 use std::{sync::Arc, time::Duration};
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::{mpsc, oneshot};
@@ -210,6 +213,12 @@ macro_rules! with_current_processing {
 }
 
 impl ExternalProcessor {
+    async fn to_buffered(original: Collected<Bytes>) -> Collected<Bytes> {
+        let trailers = original.trailers().cloned().map(Ok::<_, Infallible>);
+        let aggregated_bytes = original.to_bytes();
+        Full::new(aggregated_bytes).with_trailers(ready(trailers)).collect().await.unwrap()
+    }
+
     #[allow(clippy::too_many_lines)]
     pub async fn apply_request(
         &mut self,
@@ -233,13 +242,37 @@ impl ExternalProcessor {
 
         let body: PolyBody = std::mem::take(&mut request.body_mut().inner.inner);
 
-        let ext_proc_frame_bridge = {
-            // event though body processing is None and trailers processing is Skip, we have to
-            // create the bridge, to allow ext_proc mutate the body with ContinueAndReplace action.
-            debug!(target: "ext_proc", "request processing body:{:?} and trailers:{:?}", modes.body_mode(), modes.trailer_mode());
-            let (new_body, bridge) = ChannelBody::new(body, CHANNEL_BODY_PREFETCH_FRAMES);
-            request.body_mut().inner.inner = PolyBody::from(new_body);
-            bridge
+        let ext_proc_frame_bridge = match (modes.body_mode(), modes.trailer_mode()) {
+            (OverridableBodyMode::None, trailers_mode) => {
+                // event though body processing is None and trailers processing is Skip, we have to
+                // create the bridge, to allow ext_proc mutate the body with ContinueAndReplace action.
+                debug!(target: "ext_proc", "request processing body(None) and trailers:{trailers_mode:?} => {body:?}");
+                let (new_body, bridge) = ChannelBody::new(body, CHANNEL_BODY_PREFETCH_FRAMES);
+                request.body_mut().inner.inner = PolyBody::from(new_body);
+                bridge
+            },
+            (OverridableBodyMode::Streamed | OverridableBodyMode::FullDuplexStreamed, trailers_mode) => {
+                debug!(target: "ext_proc", "request processing body(Streamed) and trailers:{trailers_mode:?} => {body:?}");
+                let (new_body, bridge) = ChannelBody::new(body, CHANNEL_BODY_PREFETCH_FRAMES);
+                request.body_mut().inner.inner = PolyBody::from(new_body);
+                bridge
+            },
+            (OverridableBodyMode::Buffered | OverridableBodyMode::BufferedPartial, trailers_mode) => {
+                debug!(target: "ext_proc", "request processing body(Buffered) with trailers:{trailers_mode:?} => {body:?}");
+                let Ok(collected) = body.collect().await else {
+                    return self.on_filter_error(
+                        "Failed to collect request body for external processing",
+                        None,
+                        request.version(),
+                    );
+                };
+
+                let buffered = Self::to_buffered(collected).await;
+
+                let (new_body, bridge) = ChannelBody::new(buffered, CHANNEL_BODY_PREFETCH_FRAMES);
+                request.body_mut().inner.inner = PolyBody::from(new_body);
+                bridge
+            },
         };
 
         debug!(target: "ext_proc", "request headers: {ext_proc_headers:?}");
@@ -326,13 +359,37 @@ impl ExternalProcessor {
 
         let body: PolyBody = std::mem::take(&mut response.body_mut().inner);
 
-        let ext_proc_frame_bridge = {
-            // event though body processing is None and trailers processing is Skip, we have to
-            // create the bridge, to allow ext_proc mutate the body with ContinueAndReplace action.
-            debug!(target: "ext_proc", "response processing body:{:?} and trailers:{:?}", modes.body_mode(), modes.trailer_mode());
-            let (new_body, bridge) = ChannelBody::new(body, CHANNEL_BODY_PREFETCH_FRAMES);
-            response.body_mut().inner = PolyBody::from(new_body);
-            bridge
+        let ext_proc_frame_bridge = match (modes.body_mode(), modes.trailer_mode()) {
+            (OverridableBodyMode::None, trailers_mode) => {
+                // event though body processing is None and trailers processing is Skip, we have to
+                // create the bridge, to allow ext_proc mutate the body with ContinueAndReplace action.
+                debug!(target: "ext_proc", "response processing body(None) and trailers:{trailers_mode:?} => {body:?}");
+                let (new_body, bridge) = ChannelBody::new(body, CHANNEL_BODY_PREFETCH_FRAMES);
+                response.body_mut().inner = PolyBody::from(new_body);
+                bridge
+            },
+            (OverridableBodyMode::Streamed | OverridableBodyMode::FullDuplexStreamed, trailers_mode) => {
+                debug!(target: "ext_proc", "response processing body(Streamed) and trailers:{trailers_mode:?} => {body:?}");
+                let (new_body, bridge) = ChannelBody::new(body, CHANNEL_BODY_PREFETCH_FRAMES);
+                response.body_mut().inner = PolyBody::from(new_body);
+                bridge
+            },
+            (OverridableBodyMode::Buffered | OverridableBodyMode::BufferedPartial, trailers_mode) => {
+                debug!(target: "ext_proc", "response processing body(Buffered) with trailers:{trailers_mode:?} => {body:?}");
+                let Ok(collected) = body.collect().await else {
+                    return self.on_filter_error(
+                        "Failed to collect response body for external processing",
+                        None,
+                        response.version(),
+                    );
+                };
+
+                let buffered = Self::to_buffered(collected).await;
+
+                let (new_body, bridge) = ChannelBody::new(buffered, CHANNEL_BODY_PREFETCH_FRAMES);
+                response.body_mut().inner = PolyBody::from(new_body);
+                bridge
+            },
         };
 
         debug!(target: "ext_proc", "response headers: {ext_proc_headers:?}");
