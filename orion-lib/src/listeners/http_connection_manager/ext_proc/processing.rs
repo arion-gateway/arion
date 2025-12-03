@@ -9,7 +9,7 @@ use crate::listeners::http_connection_manager::ext_proc::status::{Action, Proces
 use crate::listeners::http_connection_manager::ext_proc::worker_config::ExternalProcessingWorkerConfig;
 use crate::listeners::http_connection_manager::ext_proc::EnvoyHeaderMap;
 use crate::{body::response_flags::ResponseFlags, listeners::synthetic_http_response::SyntheticHttpResponse};
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use http_body::Frame;
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::ext_proc::{
     BodyProcessingMode, HeaderProcessingMode, ProcessingMode, RouteCacheAction, TrailerProcessingMode,
@@ -28,8 +28,13 @@ use orion_format::types::ResponseFlags as FmtResponseFlags;
 use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
+use std::time::Duration;
 use tokio::sync::oneshot;
-use tracing::debug;
+use tokio::time::Instant;
+use tracing::{debug, warn};
+
+const EXT_PROC_FRAME_MERGE_LIMIT: u32 = 8; // max number of frames to merge in streaming mode
+const EXT_PROC_MERGE_WINDOW: Duration = tokio::time::Duration::from_millis(1); // time window to wait for more frames to merge
 
 pub struct RequestProcessing<M: kind::Mode>(Processing<M, kind::RequestMsg>);
 
@@ -61,6 +66,66 @@ impl<M: kind::Mode> DerefMut for ResponseProcessing<M> {
     }
 }
 
+pub struct FramesBuffer {
+    buffer: Option<Frame<Bytes>>,
+    last_merge: Option<Instant>,
+    count: u32,
+}
+
+impl FramesBuffer {
+    fn new() -> Self {
+        Self { buffer: None, count: 0, last_merge: None }
+    }
+
+    // merge can either return a DATA frame or None
+    pub fn merge(&mut self, frame: Frame<Bytes>, now: tokio::time::Instant, buffered: bool) -> Option<Frame<Bytes>> {
+        if let Some(new_data) = frame.data_ref() {
+            // DATA
+            if let Some(frame_buffered) = self.buffer.as_mut() {
+                if let Some(data_buffered) = frame_buffered.data_ref() {
+                    self.count += 1;
+                    let mut combined = BytesMut::from(data_buffered.as_ref());
+                    combined.extend_from_slice(new_data.as_ref());
+                    *frame_buffered = Frame::data(combined.freeze());
+                } else {
+                    // This case should never occur, as no frames are expected after the final TRAILERS.
+                    warn!(target: "ext_proc", "FramesBuffer::merge_frame: unexpected frame after TRAILERS!");
+                }
+            } else {
+                self.count = 1;
+                self.buffer = Some(frame);
+            }
+
+            let emit = !buffered
+                && (self.count >= EXT_PROC_FRAME_MERGE_LIMIT
+                    || now.duration_since(self.last_merge.unwrap_or(now)) >= EXT_PROC_MERGE_WINDOW);
+
+            self.last_merge = Some(now);
+
+            if emit {
+                self.count = 0;
+                self.buffer.take()
+            } else {
+                None
+            }
+        } else {
+            // TRAILERS
+            let data = self.buffer.take();
+            self.count = 0;
+            self.last_merge = Some(now);
+            self.buffer = Some(frame);
+            data
+        }
+    }
+
+    // take can either return a DATA or TRAILERS frame
+    pub fn take(&mut self) -> Option<Frame<Bytes>> {
+        self.count = 0;
+        self.last_merge = None;
+        self.buffer.take()
+    }
+}
+
 #[allow(clippy::struct_excessive_bools)]
 pub struct Processing<M: kind::Mode, Msg: kind::MsgKind> {
     http_headers: Option<http::HeaderMap>,
@@ -72,7 +137,7 @@ pub struct Processing<M: kind::Mode, Msg: kind::MsgKind> {
     pub failure_mode_allow: bool,
     pub streaming_body_enabled: bool,
     pub end_of_stream: bool,
-    pub parked_frame: Option<Frame<Bytes>>,
+    pub frames_buffer: FramesBuffer,
     pub inflight_frames: SmallVec<[Frame<Bytes>; 2]>,
     _mode: std::marker::PhantomData<M>,
     _msg: std::marker::PhantomData<Msg>,
@@ -93,7 +158,7 @@ impl<M: kind::Mode + Default, Msg: kind::MsgKind> From<&ExternalProcessingWorker
             http_version: None,
             streaming_body_enabled: false,
             end_of_stream: false,
-            parked_frame: None,
+            frames_buffer: FramesBuffer::new(),
             inflight_frames: SmallVec::new(),
             _mode: std::marker::PhantomData,
             _msg: std::marker::PhantomData,
@@ -594,28 +659,5 @@ impl<M: kind::Mode + Default, Msg: kind::MsgKind + OverridableModeSelector> Proc
         *timeout_active = false;
         self.streaming_body_enabled = false;
         self.frame_bridge.close();
-    }
-
-    pub async fn park_or_inject_frame(&mut self, frame: Frame<Bytes>, override_mode: &OverridableGlobalModes) {
-        if frame.is_data() {
-            // This is a DATA, let's park it if is supposed to be streamed
-            if override_mode.should_process_body::<Msg>() {
-                self.parked_frame = Some(frame);
-                debug!(target: "ext_proc", "parking body chunk (DATA)");
-            } else {
-                debug!(target: "ext_proc", "DATA is injected directly into frame bridge!");
-                _ = self.frame_bridge.inject_frame(Ok(frame)).await;
-            }
-        } else {
-            // This is TRAILERS. it is the last frame.
-            debug!(target: "ext_proc", "processing_request: sending trailers to external processor...");
-            if override_mode.should_process_trailers::<Msg>() {
-                self.parked_frame = Some(frame);
-                debug!(target: "ext_proc", "parking body chunk (TRAILERS)");
-            } else {
-                debug!(target: "ext_proc", "TRAILERS are injected directly into frame bridge");
-                _ = self.frame_bridge.inject_frame(Ok(frame)).await;
-            }
-        }
     }
 }
