@@ -229,7 +229,7 @@ impl ExternalProcessor {
         let ext_proc_frame_bridge = {
             // event though body processing is None and trailers processing is Skip, we have to
             // create the bridge, to allow ext_proc mutate the body with ContinueAndReplace action.
-            debug!(target: "ext_proc", "request processing body:{:?} and trailers:{:?} => {body:?}", modes.body_mode(), modes.trailer_mode());
+            debug!(target: "ext_proc", "request processing body:{:?} and trailers:{:?}", modes.body_mode(), modes.trailer_mode());
             let (new_body, bridge) = ChannelBody::new(body, CHANNEL_BODY_PREFETCH_FRAMES);
             request.body_mut().inner.inner = PolyBody::from(new_body);
             bridge
@@ -322,7 +322,7 @@ impl ExternalProcessor {
         let ext_proc_frame_bridge = {
             // event though body processing is None and trailers processing is Skip, we have to
             // create the bridge, to allow ext_proc mutate the body with ContinueAndReplace action.
-            debug!(target: "ext_proc", "response processing body:{:?} and trailers:{:?} => {body:?}", modes.body_mode(), modes.trailer_mode());
+            debug!(target: "ext_proc", "response processing body:{:?} and trailers:{:?}", modes.body_mode(), modes.trailer_mode());
             let (new_body, bridge) = ChannelBody::new(body, CHANNEL_BODY_PREFETCH_FRAMES);
             response.body_mut().inner = PolyBody::from(new_body);
             bridge
@@ -3340,5 +3340,57 @@ mod tests {
         let trailers = trailers.unwrap();
         assert_matches!(result, FilterDecision::Continue);
         assert_eq!(trailers.get("x-custom-trailer").unwrap(), "ext-proc trailer value");
+    }
+
+    #[tokio::test]
+    #[test_log::test]
+    async fn test_request_body_buffered_too_large() {
+        let mock_state = MockExternalProcessorState::new().add_response(create_headers_response::<RequestMsg>(
+            vec![Some(("y-custom-header", "true"))],
+            None,
+            vec![],
+            ResponseStatus::Continue as i32,
+            None,
+        )).add_response(create_body_response::<ResponseMsg>(
+            vec![],
+            None,
+            vec![],
+            ResponseStatus::Continue as i32,
+            None,
+        ));
+
+        let (server_addr, _) = start_mock_server(mock_state).await;
+
+        let processing_mode = ProcessingMode {
+            request_header_mode: HeaderProcessingMode::Send,
+            request_body_mode: BodyProcessingMode::Buffered,
+            request_trailer_mode: TrailerProcessingMode::Skip,
+            response_header_mode: HeaderProcessingMode::Skip,
+            response_body_mode: BodyProcessingMode::None,
+            response_trailer_mode: TrailerProcessingMode::Skip,
+        };
+
+        let mut config = create_default_config_for_ext_proc_filter(server_addr, processing_mode);
+        config.observability_mode = false;
+        config.failure_mode_allow = false;
+        let mut ext_proc = ExternalProcessor::from(config);
+
+        // let very_large_body = "a".repeat(10 * 1024 * 1024); // 10 MB body
+        let very_large_body = "a".repeat(10); // 10 MB body
+        let boxed_str: Box<str> = very_large_body.clone().into_boxed_str();
+
+        let mut request = build_request_from_mock(&Mock::<RequestMsg> {
+            headers: vec![],
+            body: Some(Box::leak(boxed_str)),
+            trailers: vec![],
+            _marker: std::marker::PhantomData,
+        });
+        let result = ext_proc.apply_request(&mut request).await;
+
+        assert_matches!(result, FilterDecision::Continue);
+        assert_eq!(request.method(), Method::GET);
+        assert_eq!(request.headers().get("y-custom-header").unwrap(), "true");
+        let body = std::mem::take(&mut request.body_mut().inner.inner).collect().await;
+        assert!(body.is_err());
     }
 }
