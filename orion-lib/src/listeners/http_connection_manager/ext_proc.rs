@@ -67,6 +67,12 @@ const CHANNEL_BODY_PREFETCH_FRAMES: usize = 4;
 pub enum ExtProcError {
     #[error("Timeout Error: {0}")]
     Timeout(&'static str),
+    #[error("Unsupported Response Type: {0}")]
+    UnsupportedResponseType(String),
+    #[error("Connection closed by remote GRPC")]
+    UnexpectedEof,
+    #[error("GRPC error: {0}")]
+    GrpcError(String),
 }
 
 #[derive(Debug, Clone)]
@@ -155,7 +161,7 @@ macro_rules! run_action {
     // $processor: The specific processing struct (e.g., self.request_processing or self.response_processing).
     // $action: The Action to process.
     // $ctx: A string literal context for logging.
-    ($self:ident, $processor:expr, $action:expr, $ctx:literal) => {
+    ($self:ident, $processor:expr, $action:expr, $ctx:expr) => {
         match $action {
             Action::Send(outbound) => {
                 debug!(target: "ext_proc", "{ctx} @{typ}: action -> forward {outbound:?}",
@@ -613,6 +619,39 @@ impl ExternalProcessingWorker<kind::Processing> {
         }
     }
 
+    async fn recover_or_failure(&mut self, err: ExtProcError, log_msg: &str) {
+        if self.config.failure_mode_allow {
+            warn!(target: "ext_proc", "{} - continue (failure_mode_allow is true)", log_msg);
+            self.request_processing.inject_inflight_frames_and_complete().await;
+            self.request_processing.frame_bridge_close(&mut self.timeout_state.active);
+            self.response_processing.inject_inflight_frames_and_complete().await;
+            self.response_processing.frame_bridge_close(&mut self.timeout_state.active);
+        } else {
+            warn!(target: "ext_proc", "{} - abort (failure_mode_allow is false)", log_msg);
+            _ = self.request_processing.frame_bridge.inject_frame(Err(Box::new(err.clone()))).await;
+            self.request_processing.frame_bridge_close(&mut self.timeout_state.active);
+            _ = self.response_processing.frame_bridge.inject_frame(Err(Box::new(err.clone()))).await;
+            self.response_processing.frame_bridge_close(&mut self.timeout_state.active);
+        }
+
+        match err {
+            ExtProcError::Timeout(_) => {
+                let status = Action::Return(self.request_processing.status_timeout(self.config.failure_mode_allow));
+                run_action!(self, self.request_processing, status, log_msg);
+                let status = Action::Return(self.response_processing.status_timeout(self.config.failure_mode_allow));
+                run_action!(self, self.response_processing, status, log_msg);
+            },
+            _ => {
+                let status =
+                    Action::Return(self.request_processing.status_error(log_msg, self.config.failure_mode_allow));
+                run_action!(self, self.request_processing, status, log_msg);
+                let status =
+                    Action::Return(self.response_processing.status_error(log_msg, self.config.failure_mode_allow));
+                run_action!(self, self.response_processing, status, log_msg);
+            },
+        }
+    }
+
     #[allow(clippy::too_many_lines)]
     async fn processing_loop(mut self, mut processing_request_channel: mpsc::Receiver<ProcessingTask>) {
         debug!(target: "ext_proc", "===== BEGIN =====");
@@ -659,6 +698,7 @@ impl ExternalProcessingWorker<kind::Processing> {
                     } else {
                         Either::Right(std::future::pending::<Result<Option<ProcessingResponse>, Status>>())
                     } => {
+
                     debug!(target: "ext_proc", "<= inbound processing response: {inbound_processing_response:?}");
 
                     match inbound_processing_response {
@@ -737,7 +777,6 @@ impl ExternalProcessingWorker<kind::Processing> {
                                 .handle_body_response(body_response, Some(&self.config.route_cache_action), &mut self.timeout_state.active).await;
 
                             run_action!(self, self.request_processing, action, "body_response");
-
                         },
                         Ok(Some(ProcessingResponse { response: Some(ProcessingResponseType::RequestTrailers(trailers_response)), ..})) => {
                             debug!(target: "ext_proc", "<- RequestTrailers response received");
@@ -778,28 +817,18 @@ impl ExternalProcessingWorker<kind::Processing> {
                             run_action!(self, self.response_processing, action, "handle_trailers_response");
                         },
                         Ok(Some(r)) => {
-                            debug!(target: "ext_proc", "<- unsupported response received: {r:?}");
-
-                            let status = Action::Return(self.request_processing.status_internal_error("unsupported response type received from external processor"));
-                            run_action!(self, self.request_processing, status, "unsupported_response");
-                            let status = Action::Return(self.response_processing.status_internal_error("unsupported response type received from external processor"));
-                            run_action!(self, self.response_processing, status, "unsupported_response");
-
+                            let msg = format!("unsupported response message received: {r:?}");
+                            self.recover_or_failure(ExtProcError::UnsupportedResponseType(format!("{r:?}")), &msg).await;
                             break 'transaction_loop;
                         }
-                        Err(e) => {
-                            let msg = format!("gRPC error received from external processor: {}", e.message());
-                            warn!(target: "ext_proc", msg);
-
-                            let status = Action::Return(self.request_processing.status_error(&msg, self.config.failure_mode_allow));
-                            run_action!(self, self.request_processing, status, "grpc_error");
-                            let status = Action::Return(self.response_processing.status_error(&msg, self.config.failure_mode_allow));
-                            run_action!(self, self.response_processing, status, "grpc_error");
-
+                        Ok(None) => {
+                            let msg = "stream closed by the external processor";
+                            self.recover_or_failure(ExtProcError::UnexpectedEof, msg).await;
                             break 'transaction_loop;
                         },
-                        _ => {
-                            debug!(target: "ext_proc", "stream closed by the external processor");
+                        Err(e) => {
+                            let msg = format!("gRPC error received from external processor: {}", e.message());
+                            self.recover_or_failure(ExtProcError::GrpcError(e.message().into()), &msg).await;
                             break 'transaction_loop;
                         }
                     }
@@ -925,29 +954,9 @@ impl ExternalProcessingWorker<kind::Processing> {
                 },
 
                 () = fast_timeout::fast_sleep(self.timeout_state.duration), if self.timeout_state.active => {
-                    debug!(target: "ext_proc", "loop: message timeout!");
-
-                    if self.config.failure_mode_allow {
-                        warn!(target: "ext_proc", "external processing message timeout - continue (failure_mode_allow is true)");
-
-                        self.request_processing.inject_inflight_frames_and_complete().await;
-                        self.request_processing.frame_bridge_close(&mut self.timeout_state.active);
-                        self.response_processing.inject_inflight_frames_and_complete().await;
-                        self.response_processing.frame_bridge_close(&mut self.timeout_state.active);
-
-                    } else {
-                        warn!(target: "ext_proc", "external processing message timeout - abort (failure_mode_allow is false)");
-
-                        _ = self.request_processing.frame_bridge.inject_frame(Err(Box::new(ExtProcError::Timeout("request timeout")))).await;
-                        self.request_processing.frame_bridge_close(&mut self.timeout_state.active);
-                        _ = self.response_processing.frame_bridge.inject_frame(Err(Box::new(ExtProcError::Timeout("request timeout")))).await;
-                        self.response_processing.frame_bridge_close(&mut self.timeout_state.active);
-                    }
-
-                    let status = Action::Return(self.request_processing.status_timeout(self.config.failure_mode_allow));
-                    run_action!(self, self.request_processing, status, "message_timeout");
-                    let status = Action::Return(self.response_processing.status_timeout(self.config.failure_mode_allow));
-                    run_action!(self, self.response_processing, status, "message_timeout");
+                    let msg = "processing_loop: message timeout";
+                    self.recover_or_failure(ExtProcError::Timeout("message timeout"), &msg).await;
+                    break 'transaction_loop;
                 }
             }
         }
@@ -1017,7 +1026,6 @@ impl ExternalProcessingWorker<kind::Observability> {
                 },
 
                 outbound_request_body_frame = self.request_processing.frame_bridge.next(), if outbound_req_enabled => {
-
                     debug!(target: "ext_proc", "outbound request body frame: {outbound_request_body_frame:?}");
                     match outbound_request_body_frame {
                         Some(Ok(frame)) => {
@@ -1046,7 +1054,6 @@ impl ExternalProcessingWorker<kind::Observability> {
                 },
 
                 outbound_response_body_frame = self.response_processing.frame_bridge.next(), if outbound_resp_enabled => {
-
                     debug!(target: "ext_proc", "outbound response body frame: {outbound_response_body_frame:?}");
                     match outbound_response_body_frame {
                         Some(Ok(frame)) => {
