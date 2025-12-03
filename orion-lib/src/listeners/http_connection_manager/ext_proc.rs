@@ -899,7 +899,7 @@ impl ExternalProcessingWorker<kind::Processing> {
                             let body_mode = self.overridable_modes.request.body_mode();
 
                             debug!(target: "ext_proc", "outbound request body frame: buffering frame...");
-                            if let Some(frame_to_send) = self.request_processing.frames_buffer.merge(frame, now, matches!(body_mode, OverridableBodyMode::Buffered)) {
+                            if let Some(frame_to_send) = self.request_processing.frames_buffer.merge(frame, now) {
                                 // invariant: frame_to_send is always a DATA frame at this point. TRAILERS are sent later.
                                 match body_mode {
                                     OverridableBodyMode::None => { // body processing is disabled, just inject back the frame
@@ -959,7 +959,7 @@ impl ExternalProcessingWorker<kind::Processing> {
                             let body_mode = self.overridable_modes.response.body_mode();
 
                             debug!(target: "ext_proc", "outbound response body frame: buffering frame...");
-                            if let Some(frame_to_send) = self.response_processing.frames_buffer.merge(frame, now, matches!(body_mode, OverridableBodyMode::Buffered)) {
+                            if let Some(frame_to_send) = self.response_processing.frames_buffer.merge(frame, now) {
                                 // invariant: frame_to_send is always a DATA frame at this point. TRAILERS are sent later.
                                 match body_mode {
                                     OverridableBodyMode::None => { // body processing is disabled, just inject back the frame

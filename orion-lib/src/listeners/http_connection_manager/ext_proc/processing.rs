@@ -34,7 +34,7 @@ use tokio::sync::oneshot;
 use tokio::time::Instant;
 use tracing::{debug, warn};
 
-const EXT_PROC_FRAME_MERGE_LIMIT: u32 = 8; // max number of frames to merge in streaming mode
+const EXT_PROC_FRAME_MERGE_LIMIT: u32 = 4; // max number of frames to merge in streaming mode
 const EXT_PROC_MERGE_WINDOW: Duration = tokio::time::Duration::from_millis(1); // time window to wait for more frames to merge
 
 pub struct RequestProcessing<M: kind::Mode>(Processing<M, kind::RequestMsg>);
@@ -68,53 +68,49 @@ impl<M: kind::Mode> DerefMut for ResponseProcessing<M> {
 }
 
 pub struct FramesBuffer {
-    buffer: Option<Frame<Bytes>>,
+    data_buffer: Option<BytesMut>,
+    trailers_buffer: Option<Frame<Bytes>>,
     last_merge: Option<Instant>,
     count: u32,
 }
 
 impl FramesBuffer {
     fn new() -> Self {
-        Self { buffer: None, count: 0, last_merge: None }
+        Self { data_buffer: None, trailers_buffer: None, count: 0, last_merge: None }
     }
 
     // merge can either return a DATA frame or None
-    pub fn merge(&mut self, frame: Frame<Bytes>, now: tokio::time::Instant, buffered: bool) -> Option<Frame<Bytes>> {
+    pub fn merge(&mut self, frame: Frame<Bytes>, now: tokio::time::Instant) -> Option<Frame<Bytes>> {
         if let Some(new_data) = frame.data_ref() {
             // DATA
-            if let Some(frame_buffered) = self.buffer.as_mut() {
-                if let Some(data_buffered) = frame_buffered.data_ref() {
-                    self.count += 1;
-                    let mut combined = BytesMut::from(data_buffered.as_ref());
-                    combined.extend_from_slice(new_data.as_ref());
-                    *frame_buffered = Frame::data(combined.freeze());
-                } else {
-                    // This case should never occur, as no frames are expected after the final TRAILERS.
-                    warn!(target: "ext_proc", "FramesBuffer::merge_frame: unexpected frame after TRAILERS!");
-                }
+            if self.trailers_buffer.is_some() {
+                // This case should never occur, as no frames are expected after the final TRAILERS.
+                warn!(target: "ext_proc", "FramesBuffer::merge_frame: unexpected frame after TRAILERS!");
+            } else if let Some(buf) = self.data_buffer.as_mut() {
+                self.count += 1;
+                buf.extend_from_slice(new_data.as_ref());
             } else {
                 self.count = 1;
-                self.buffer = Some(frame);
+                self.data_buffer = Some(BytesMut::from(new_data.as_ref()));
             }
 
-            let emit = !buffered
-                && (self.count >= EXT_PROC_FRAME_MERGE_LIMIT
-                    || now.duration_since(self.last_merge.unwrap_or(now)) >= EXT_PROC_MERGE_WINDOW);
+            let emit = self.count >= EXT_PROC_FRAME_MERGE_LIMIT
+                || now.duration_since(self.last_merge.unwrap_or(now)) >= EXT_PROC_MERGE_WINDOW;
 
             self.last_merge = Some(now);
 
             if emit {
                 self.count = 0;
-                self.buffer.take()
+                self.data_buffer.take().map(|buf| Frame::data(buf.freeze()))
             } else {
                 None
             }
         } else {
             // TRAILERS
-            let data = self.buffer.take();
+            let data = self.data_buffer.take().map(|buf| Frame::data(buf.freeze()));
             self.count = 0;
             self.last_merge = Some(now);
-            self.buffer = Some(frame);
+            self.trailers_buffer = Some(frame);
             data
         }
     }
@@ -123,7 +119,11 @@ impl FramesBuffer {
     pub fn take(&mut self) -> Option<Frame<Bytes>> {
         self.count = 0;
         self.last_merge = None;
-        self.buffer.take()
+        if let Some(buf) = self.data_buffer.take() {
+            Some(Frame::data(buf.freeze()))
+        } else {
+            self.trailers_buffer.take()
+        }
     }
 }
 
