@@ -8,6 +8,7 @@ use crate::listeners::http_connection_manager::ext_proc::r#override::{
 use crate::listeners::http_connection_manager::ext_proc::status::{Action, ProcessingStatus, ReadyStatus};
 use crate::listeners::http_connection_manager::ext_proc::worker_config::ExternalProcessingWorkerConfig;
 use crate::listeners::http_connection_manager::ext_proc::EnvoyHeaderMap;
+use crate::utils::truncated_debug::TruncatedDebug;
 use crate::{body::response_flags::ResponseFlags, listeners::synthetic_http_response::SyntheticHttpResponse};
 use bytes::{Bytes, BytesMut};
 use http_body::Frame;
@@ -340,7 +341,7 @@ impl<Msg: kind::MsgKind + OverridableModeSelector> Processing<kind::Processing, 
         route_cache_action: Option<&RouteCacheAction>,
         timeout_active: &mut bool,
     ) -> Action<ProcessingRequest> {
-        debug!(target: "ext_proc", "handle_body_response: pending frames => {:?}", self.inflight_frames);
+        debug!(target: "ext_proc", "handle_body_response: inflight frames ({})", self.inflight_frames.len());
 
         if let Some(response_data) = body_response.response {
             let chunk_replacement = match response_data.body_mutation.and_then(|body_mutation| body_mutation.mutation) {
@@ -608,7 +609,7 @@ impl<M: kind::Mode + Default, Msg: kind::MsgKind + OverridableModeSelector> Proc
             return Action::Return(self.status_error(msg, self.failure_mode_allow));
         };
 
-        debug!(target: "ext_proc", "handle_body_chunk: prepared processing_request: {:?}", processing_request);
+        debug!(target: "ext_proc", "handle_body_chunk: prepared processing_request: {:?}", TruncatedDebug::<_,1024>(&processing_request));
         Action::Send(processing_request)
     }
 

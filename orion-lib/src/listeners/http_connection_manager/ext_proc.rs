@@ -19,6 +19,7 @@ use crate::listeners::http_connection_manager::ext_proc::status::Action;
 use crate::listeners::http_connection_manager::ext_proc::status::ProcessingStatus;
 use crate::listeners::http_connection_manager::ext_proc::status::ReadyStatus;
 use crate::listeners::http_connection_manager::ext_proc::worker_config::ExternalProcessingWorkerConfig;
+use crate::utils::truncated_debug::TruncatedDebug;
 use crate::{
     body::{instrumented_body::InstrumentedBody, response_flags::ResponseFlags},
     clusters::clusters_manager::{self, RoutingContext},
@@ -160,7 +161,7 @@ macro_rules! run_action {
                 debug!(target: "ext_proc", "{ctx} @{typ}: action -> forward {outbound:?}",
                     ctx = $ctx,
                     typ = stringify!($processor),
-                    outbound = outbound);
+                    outbound = TruncatedDebug::<_,1024>(&outbound));
 
                 $self.forward_to_external_processor(outbound).await;
             },
@@ -805,21 +806,22 @@ impl ExternalProcessingWorker<kind::Processing> {
                 },
 
                 outbound_request_body_frame = self.request_processing.frame_bridge.next(), if outbound_req_enabled => {
-                    debug!(target: "ext_proc", "outbound request body frame: {outbound_request_body_frame:?}");
+                    debug!(target: "ext_proc", "outbound request body frame: {:?}", TruncatedDebug::<_,1024>(&outbound_request_body_frame));
                     match outbound_request_body_frame {
                         Some(Ok(frame)) => {
                             let now = tokio::time::Instant::now();
                             let body_mode = self.overridable_modes.request.body_mode();
 
+                            debug!(target: "ext_proc", "outbound request body frame: buffering frame...");
                             if let Some(frame_to_send) = self.request_processing.frames_buffer.merge(frame, now, matches!(body_mode, OverridableBodyMode::Buffered)) {
                                 // invariant: frame_to_send is always a DATA frame at this point. TRAILERS are sent later.
                                 match body_mode {
                                     OverridableBodyMode::None => { // body processing is disabled, just inject back the frame
-                                        debug!(target: "ext_proc", "injecting the frame DATA into the body");
+                                        debug!(target: "ext_proc", "outbound request body frame: injecting the frame DATA into the body");
                                         _ = self.request_processing.frame_bridge.inject_frame(Ok(frame_to_send)).await;
                                     },
                                     _ => { // send the merged frame to ext_proc and park a copy for later injection
-                                        debug!(target: "ext_proc", "sending body chunk of request ({})",  if frame_to_send.is_data() { "DATA" } else { "TRAILERS" });
+                                        debug!(target: "ext_proc", "outbound request body frame: sending body chunk of request ({})",  if frame_to_send.is_data() { "DATA" } else { "TRAILERS" });
                                         let action = self.request_processing.handle_outgoing_body_chunk(clone_frame(&frame_to_send), false);
                                         run_action!(self, self.request_processing, action, "handle_body_chunk (merged frame sent)");
                                         // save a copy of the frame to inject into the body bridge later
@@ -842,7 +844,7 @@ impl ExternalProcessingWorker<kind::Processing> {
 
                                 if send_to_ext_proc {
                                     debug!(target: "ext_proc", "sending the last body chunk of request");
-                                    let action = self.request_processing.handle_outgoing_body_chunk(clone_frame(&last_frame), false);
+                                    let action = self.request_processing.handle_outgoing_body_chunk(clone_frame(&last_frame), true);
                                     run_action!(self, self.request_processing, action, "handle_body_chunk (last frame sent)");
                                     // save a copy of the frame to inject into the body bridge later
                                     self.request_processing.inflight_frames.push(last_frame);
@@ -864,21 +866,22 @@ impl ExternalProcessingWorker<kind::Processing> {
 
                 outbound_response_body_frame = self.response_processing.frame_bridge.next(), if outbound_resp_enabled => {
 
-                    debug!(target: "ext_proc", "outbound response body frame: {outbound_response_body_frame:?}");
+                    debug!(target: "ext_proc", "outbound response body frame: {:?}", TruncatedDebug::<_,1024>(&outbound_response_body_frame));
                     match outbound_response_body_frame {
                         Some(Ok(frame)) => {
                             let now = tokio::time::Instant::now();
                             let body_mode = self.overridable_modes.response.body_mode();
 
+                            debug!(target: "ext_proc", "outbound response body frame: buffering frame...");
                             if let Some(frame_to_send) = self.response_processing.frames_buffer.merge(frame, now, matches!(body_mode, OverridableBodyMode::Buffered)) {
                                 // invariant: frame_to_send is always a DATA frame at this point. TRAILERS are sent later.
                                 match body_mode {
                                     OverridableBodyMode::None => { // body processing is disabled, just inject back the frame
-                                        debug!(target: "ext_proc", "injecting the frame DATA into the body");
+                                        debug!(target: "ext_proc", "outbound response body frame: injecting the frame DATA into the body");
                                         _ = self.response_processing.frame_bridge.inject_frame(Ok(frame_to_send)).await;
                                     },
                                     _ => { // send the merged frame to ext_proc and park a copy for later injection
-                                        debug!(target: "ext_proc", "sending body chunk of response ({})",  if frame_to_send.is_data() { "DATA" } else { "TRAILERS" });
+                                        debug!(target: "ext_proc", "outbound response body frame: sending body chunk of response ({})",  if frame_to_send.is_data() { "DATA" } else { "TRAILERS" });
                                         let action = self.response_processing.handle_outgoing_body_chunk(clone_frame(&frame_to_send), false);
                                         run_action!(self, self.response_processing, action, "handle_body_chunk (merged frame sent)");
                                         // save a copy of the frame to inject into the body bridge later
@@ -901,7 +904,7 @@ impl ExternalProcessingWorker<kind::Processing> {
 
                                 if send_to_ext_proc {
                                     debug!(target: "ext_proc", "sending the last body chunk of response");
-                                    let action = self.response_processing.handle_outgoing_body_chunk(clone_frame(&last_frame), false);
+                                    let action = self.response_processing.handle_outgoing_body_chunk(clone_frame(&last_frame), true);
                                     run_action!(self, self.response_processing, action, "handle_body_chunk (last frame sent)");
                                     // save a copy of the frame to inject into the body bridge later
                                     self.response_processing.inflight_frames.push(last_frame);
@@ -3345,22 +3348,23 @@ mod tests {
     #[tokio::test]
     #[test_log::test]
     async fn test_request_body_buffered_too_large() {
-        let mock_state = MockExternalProcessorState::new().add_response(create_headers_response::<RequestMsg>(
-            vec![Some(("y-custom-header", "true"))],
-            None,
-            vec![],
-            ResponseStatus::Continue as i32,
-            None,
-        )).add_response(create_body_response::<ResponseMsg>(
-            vec![],
-            None,
-            vec![],
-            ResponseStatus::Continue as i32,
-            None,
-        ));
+        let mock_state = MockExternalProcessorState::new()
+            .add_response(create_headers_response::<RequestMsg>(
+                vec![],
+                None,
+                vec![],
+                ResponseStatus::Continue as i32,
+                None,
+            ))
+            .add_response(create_body_response::<RequestMsg>(
+                vec![],
+                None,
+                vec![],
+                ResponseStatus::Continue as i32,
+                None,
+            ));
 
         let (server_addr, _) = start_mock_server(mock_state).await;
-
         let processing_mode = ProcessingMode {
             request_header_mode: HeaderProcessingMode::Send,
             request_body_mode: BodyProcessingMode::Buffered,
@@ -3375,8 +3379,7 @@ mod tests {
         config.failure_mode_allow = false;
         let mut ext_proc = ExternalProcessor::from(config);
 
-        // let very_large_body = "a".repeat(10 * 1024 * 1024); // 10 MB body
-        let very_large_body = "a".repeat(10); // 10 MB body
+        let very_large_body = "a".repeat(10 * 1024 * 1024); // 10 MB body
         let boxed_str: Box<str> = very_large_body.clone().into_boxed_str();
 
         let mut request = build_request_from_mock(&Mock::<RequestMsg> {
@@ -3388,8 +3391,6 @@ mod tests {
         let result = ext_proc.apply_request(&mut request).await;
 
         assert_matches!(result, FilterDecision::Continue);
-        assert_eq!(request.method(), Method::GET);
-        assert_eq!(request.headers().get("y-custom-header").unwrap(), "true");
         let body = std::mem::take(&mut request.body_mut().inner.inner).collect().await;
         assert!(body.is_err());
     }
