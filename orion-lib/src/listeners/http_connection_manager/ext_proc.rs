@@ -3,9 +3,9 @@ mod mutation;
 mod r#override;
 mod processing;
 mod status;
-mod worker_config;
 #[cfg(test)]
 mod tests;
+mod worker_config;
 
 use crate::body::channel_body::{ChannelBody, FrameBridge};
 use crate::body::timeout_body::TimeoutBody;
