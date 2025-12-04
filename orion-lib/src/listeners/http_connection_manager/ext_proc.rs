@@ -3853,4 +3853,175 @@ mod tests {
             ["body data", "external processor"].into_iter().map(|s| s.into()).collect::<Vec<Bytes>>()
         );
     }
+
+    use futures::task::noop_waker;
+    use http_body::{Body as HttpBody, Frame};
+    use std::pin::Pin;
+    use std::task::Context;
+    use std::task::{Poll, Waker};
+
+    async fn assert_body_frames<B: HttpBody + Unpin>(mut body: B, expected_data: &[Bytes], expected_trailers: Option<http::HeaderMap>) -> Result<(), String>
+    where
+        B: HttpBody<Data = Bytes>,
+        B::Error: Sized + Unpin + std::fmt::Debug,
+    {
+        // Setup for manual polling
+        let waker = noop_waker();
+        let mut cx = Context::from_waker(&waker);
+
+        let mut pinned_body = Pin::new(&mut body);
+        let mut data_index = 0;
+        let mut trailers_seen = None;
+
+        loop {
+            // Simulates the call to poll_frame from the asynchronous runtime
+            let poll = pinned_body.as_mut().poll_frame(&mut cx);
+
+            match poll {
+                // Case 1: Frame is ready
+                std::task::Poll::Ready(maybe_frame) => {
+                    match maybe_frame {
+                        // Body is fully consumed: End the loop
+                        None => {
+                            break;
+                        },
+
+                        Some(Ok(frame)) => {
+                            if frame.is_data() {
+                                // Control 1: DATA Frame
+                                if trailers_seen.is_some() {
+                                    return Err(format!(
+                                        "Error: DATA received after TRAILERS. Data Index: {}",
+                                        data_index
+                                    ));
+                                }
+
+                                // Optional: Verification of DATA content
+                                let data = frame.into_data().unwrap();
+
+                                if data_index < expected_data.len() {
+                                    if data != expected_data[data_index] {
+                                        return Err(format!("Error: DATA content mismatch for chunk {}", data_index));
+                                    }
+                                } else {
+                                    // Received more DATA than expected (malformed)
+                                    return Err("Error: More DATA chunks than expected.".to_string());
+                                }
+
+                                data_index += 1;
+                            } else if frame.is_trailers() {
+                                // Control 2: TRAILERS Frame
+                                if trailers_seen.is_some() {
+                                    return Err("Error: Received a second Frame::trailers.".to_string());
+                                }
+                                if data_index < expected_data.len() {
+                                    // Trailer frame received before all expected data chunks were seen
+                                    return Err("Error: TRAILERS received prematurely before all DATA.".to_string());
+                                }
+
+                                trailers_seen = Some(frame.into_trailers().unwrap());
+                            } else {
+                                // Unexpected frame type
+                                return Err(format!("DEBUG: Received unexpected Frame: {:?}", frame));
+                            }
+                        },
+
+                        Some(Err(e)) => {
+                            // Error occurred while reading the body
+                            return Err(format!("Body Error: {:?}", e));
+                        },
+                    }
+                },
+
+                // Case 2: Not ready, Body is pending (waiting for data)
+                std::task::Poll::Pending => {
+                    // In a synchronous test with Full body, this should not happen.
+                    // In a real async body, this means the body is waiting for I/O.
+                    return Err("Body unexpectedly went to Pending state.".to_string());
+                },
+            }
+        }
+
+        if trailers_seen != expected_trailers {
+            return Err("Trailers did not match expected state.".to_string());
+        }
+
+        // Final check: ensure all expected data was processed
+        if data_index == expected_data.len() {
+            Ok(())
+        } else {
+            Err("Body was not consumed completely.".to_string())
+        }
+    }
+
+    #[tokio::test]
+    #[test_log::test]
+    async fn test_request_body_and_trailer_out_of_order() {
+        let mock_state = MockExternalProcessorState::new()
+            .add_response(create_headers_response::<RequestMsg>(
+                vec![],
+                None,
+                vec![],
+                ResponseStatus::Continue as i32,
+                None,
+            ))
+            .add_response(create_body_response::<RequestMsg>(
+                vec![],
+                None,
+                vec![],
+                ResponseStatus::Continue as i32,
+                None,
+            ))
+            .add_response(create_body_response::<RequestMsg>(
+                vec![],
+                None,
+                vec![],
+                ResponseStatus::Continue as i32,
+                None,
+            ))
+            .add_response(create_body_response::<RequestMsg>(
+                vec![],
+                None,
+                vec![],
+                ResponseStatus::Continue as i32,
+                None,
+            ));
+
+        let (server_addr, _) = start_mock_server_with_delay(mock_state, Duration::from_millis(100)).await;
+        let processing_mode = ProcessingMode {
+            request_header_mode: HeaderProcessingMode::Send,
+            request_body_mode: BodyProcessingMode::Streamed,
+            request_trailer_mode: TrailerProcessingMode::Skip,
+            response_header_mode: HeaderProcessingMode::Skip,
+            response_body_mode: BodyProcessingMode::None,
+            response_trailer_mode: TrailerProcessingMode::Skip,
+        };
+
+        let mut config = create_default_config_for_ext_proc_filter(server_addr, processing_mode);
+        config.observability_mode = false;
+        config.failure_mode_allow = false;
+
+        let ext_config =
+            ExternalProcessorConfigExt { frame_merge_limit: 1, frame_merge_window: Duration::from_millis(0) };
+
+        let mut ext_proc = ExternalProcessor::from((config, None, Some(ext_config)));
+
+        let mut request = build_request_from_mock(&Mock::<RequestMsg> {
+            headers: vec![Some(("content-type", "application/json"))],
+            body: vec!["chunk1", "chunk2", "chunk3"],
+            trailers: vec![Some(("x-custom-trailer", "original-value"))],
+            _marker: std::marker::PhantomData,
+        })
+        .await;
+
+        let result = ext_proc.apply_request(&mut request).await;
+        assert_matches!(result, FilterDecision::Continue);
+
+        let body = std::mem::take(&mut request.body_mut().inner.inner);
+
+        let expected_trailers = http::HeaderMap::from_iter(vec![(http::HeaderName::from_static("x-custom-trailer"), http::HeaderValue::from_static("expected-value"))]);
+        let expected_data = &["chunk1".into(), "chunk2".into(), "chunk3".into()];
+
+        assert_matches!(assert_body_frames(body, expected_data, Some(expected_trailers)).await, Ok(()));
+    }
 }
