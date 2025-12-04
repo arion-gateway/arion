@@ -91,8 +91,8 @@ pub struct ExternalProcessor {
 // Extended External Processor Configuration, specific to Orion
 #[derive(Debug, Clone)]
 pub struct ExternalProcessorConfigExt {
-    frame_merge_limit: u32,
-    frame_merge_window: Duration,
+    pub frame_merge_limit: u32,
+    pub frame_merge_window: Duration,
 }
 
 impl From<ExternalProcessorConfig> for ExternalProcessor {
@@ -3488,5 +3488,174 @@ mod tests {
         assert_matches!(result, FilterDecision::Continue);
         let body = std::mem::take(&mut request.body_mut().inner.inner).collect().await;
         assert!(body.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_request_multichunk_merged_body_streaming_mode() {
+        let mock_state = MockExternalProcessorState::new()
+            .add_response(create_headers_response::<RequestMsg>(
+                vec![Some(("x-stream-processed", "true")), Some(("y-custom-header", "true"))],
+                None,
+                vec![],
+                ResponseStatus::Continue as i32,
+                // even though we will stream the body, no body modification is
+                // performed in the headers response so no need to set the flag
+                None,
+            ))
+            .add_response(create_body_response::<RequestMsg>(
+                vec![],
+                Some("body data from external processor".as_bytes().into()),
+                vec![],
+                ResponseStatus::Continue as i32,
+                // the response for the streaming body is still just a normal Body
+                // no need to set end_of_stream, which is only for FULL_DUPLEX_STREAMED
+                None,
+            ));
+        let (server_addr, _) = start_mock_server(mock_state).await;
+        let processing_mode = ProcessingMode {
+            request_header_mode: HeaderProcessingMode::Send,
+            request_body_mode: BodyProcessingMode::Streamed,
+            request_trailer_mode: TrailerProcessingMode::Skip,
+            response_header_mode: HeaderProcessingMode::Skip,
+            response_body_mode: BodyProcessingMode::None,
+            response_trailer_mode: TrailerProcessingMode::Skip,
+        };
+
+        let mut config = create_default_config_for_ext_proc_filter(server_addr, processing_mode);
+        config.observability_mode = false;
+        config.failure_mode_allow = false;
+        let mut ext_proc = ExternalProcessor::from(config);
+
+        let mut request = build_request_from_mock(&Mock::<RequestMsg> {
+            headers: vec![],
+            body: vec!["streaming", "body data"],
+            trailers: vec![],
+            _marker: std::marker::PhantomData,
+        }).await;
+        let result = ext_proc.apply_request(&mut request).await;
+
+        assert_matches!(result, FilterDecision::Continue);
+        assert_eq!(request.headers().get("x-stream-processed").unwrap(), "true");
+        let body_bytes = std::mem::take(&mut request.body_mut().inner.inner).collect().await.unwrap().to_bytes();
+        assert_eq!(body_bytes, "body data from external processor".as_bytes());
+    }
+
+    #[tokio::test]
+    async fn test_request_multichunk_merged_body_buffered_mode() {
+        let mock_state = MockExternalProcessorState::new()
+            .add_response(create_headers_response::<RequestMsg>(
+                vec![Some(("x-stream-processed", "true")), Some(("y-custom-header", "true"))],
+                None,
+                vec![],
+                ResponseStatus::Continue as i32,
+                // even though we will stream the body, no body modification is
+                // performed in the headers response so no need to set the flag
+                None,
+            ))
+            .add_response(create_body_response::<RequestMsg>(
+                vec![],
+                Some("body data from external processor".as_bytes().into()),
+                vec![],
+                ResponseStatus::Continue as i32,
+                // the response for the streaming body is still just a normal Body
+                // no need to set end_of_stream, which is only for FULL_DUPLEX_STREAMED
+                None,
+            ));
+        let (server_addr, _) = start_mock_server(mock_state).await;
+        let processing_mode = ProcessingMode {
+            request_header_mode: HeaderProcessingMode::Send,
+            request_body_mode: BodyProcessingMode::Buffered,
+            request_trailer_mode: TrailerProcessingMode::Skip,
+            response_header_mode: HeaderProcessingMode::Skip,
+            response_body_mode: BodyProcessingMode::None,
+            response_trailer_mode: TrailerProcessingMode::Skip,
+        };
+
+        let mut config = create_default_config_for_ext_proc_filter(server_addr, processing_mode);
+        config.observability_mode = false;
+        config.failure_mode_allow = false;
+        let mut ext_proc = ExternalProcessor::from(config);
+
+        let mut request = build_request_from_mock(&Mock::<RequestMsg> {
+            headers: vec![],
+            body: vec!["streaming", "body data"],
+            trailers: vec![],
+            _marker: std::marker::PhantomData,
+        }).await;
+        let result = ext_proc.apply_request(&mut request).await;
+
+        assert_matches!(result, FilterDecision::Continue);
+        assert_eq!(request.headers().get("x-stream-processed").unwrap(), "true");
+        let body_bytes = std::mem::take(&mut request.body_mut().inner.inner).collect().await.unwrap().to_bytes();
+        assert_eq!(body_bytes, "body data from external processor".as_bytes());
+    }
+
+    #[tokio::test]
+    async fn test_request_multichunk_not_merged_body_streaming_mode() {
+        let mock_state = MockExternalProcessorState::new()
+            .add_response(create_headers_response::<RequestMsg>(
+                vec![Some(("x-stream-processed", "true")), Some(("y-custom-header", "true"))],
+                None,
+                vec![],
+                ResponseStatus::Continue as i32,
+                // even though we will stream the body, no body modification is
+                // performed in the headers response so no need to set the flag
+                None,
+            ))
+            .add_response(create_body_response::<RequestMsg>(
+                vec![],
+                Some("body data".as_bytes().into()),
+                vec![],
+                ResponseStatus::Continue as i32,
+                // the response for the streaming body is still just a normal Body
+                // no need to set end_of_stream, which is only for FULL_DUPLEX_STREAMED
+                None,
+            ))
+            .add_response(create_body_response::<RequestMsg>(
+                vec![],
+                Some("external processor".as_bytes().into()),
+                vec![],
+                ResponseStatus::Continue as i32,
+                // the response for the streaming body is still just a normal Body
+                // no need to set end_of_stream, which is only for FULL_DUPLEX_STREAMED
+                None,
+            ));
+        let (server_addr, _) = start_mock_server(mock_state).await;
+        let processing_mode = ProcessingMode {
+            request_header_mode: HeaderProcessingMode::Send,
+            request_body_mode: BodyProcessingMode::Streamed,
+            request_trailer_mode: TrailerProcessingMode::Skip,
+            response_header_mode: HeaderProcessingMode::Skip,
+            response_body_mode: BodyProcessingMode::None,
+            response_trailer_mode: TrailerProcessingMode::Skip,
+        };
+
+        let mut config = create_default_config_for_ext_proc_filter(server_addr, processing_mode);
+        config.observability_mode = false;
+        config.failure_mode_allow = false;
+
+        // build external processor, with extended configuration that prevent
+        // chunks aggregation
+
+        let ext_config = ExternalProcessorConfigExt {
+            frame_merge_limit: 1,
+            frame_merge_window: Duration::from_millis(0),
+        };
+
+        let mut ext_proc = ExternalProcessor::from((config, None, Some(ext_config)));
+
+        let mut request = build_request_from_mock(&Mock::<RequestMsg> {
+            headers: vec![],
+            body: vec!["streaming", "body"],
+            trailers: vec![],
+            _marker: std::marker::PhantomData,
+        }).await;
+        let result = ext_proc.apply_request(&mut request).await;
+
+        assert_matches!(result, FilterDecision::Continue);
+        assert_eq!(request.headers().get("x-stream-processed").unwrap(), "true");
+
+        let body_chunks = to_body_data_chunks(std::mem::take(&mut request.body_mut().inner.inner).collect().await.unwrap()).await;
+        assert_eq!(body_chunks, ["body data", "external processor"].into_iter().map(|s| s.into()).collect::<Vec<Bytes>>());
     }
 }
