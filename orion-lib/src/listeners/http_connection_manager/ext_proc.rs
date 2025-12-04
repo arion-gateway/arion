@@ -2975,6 +2975,7 @@ mod tests {
             assert_eq!(bytes.to_bytes(), "streaming body data".as_bytes());
         }
     }
+
     #[tokio::test]
     #[test_log::test]
     async fn test_request_multichunk_body_with_mutation() {
@@ -3855,12 +3856,15 @@ mod tests {
     }
 
     use futures::task::noop_waker;
-    use http_body::{Body as HttpBody, Frame};
+    use http_body::Body as HttpBody;
     use std::pin::Pin;
     use std::task::Context;
-    use std::task::{Poll, Waker};
 
-    async fn assert_body_frames<B: HttpBody + Unpin>(mut body: B, expected_data: &[Bytes], expected_trailers: Option<http::HeaderMap>) -> Result<(), String>
+    async fn assert_body_frames<B: HttpBody + Unpin>(
+        mut body: B,
+        expected_data: &[Bytes],
+        expected_trailers: Option<http::HeaderMap>,
+    ) -> Result<(), String>
     where
         B: HttpBody<Data = Bytes>,
         B::Error: Sized + Unpin + std::fmt::Debug,
@@ -3935,9 +3939,11 @@ mod tests {
 
                 // Case 2: Not ready, Body is pending (waiting for data)
                 std::task::Poll::Pending => {
-                    // In a synchronous test with Full body, this should not happen.
-                    // In a real async body, this means the body is waiting for I/O.
-                    return Err("Body unexpectedly went to Pending state.".to_string());
+                    // Even if we are in a test, ext_proc uses a ChannelBody
+                    // that might delay delivery of data chunks, so we could hit
+                    // a Poll::Pending. If that happens, yield to allow the body
+                    // to make progress.
+                    tokio::task::yield_now().await;
                 },
             }
         }
@@ -4019,9 +4025,67 @@ mod tests {
 
         let body = std::mem::take(&mut request.body_mut().inner.inner);
 
-        let expected_trailers = http::HeaderMap::from_iter(vec![(http::HeaderName::from_static("x-custom-trailer"), http::HeaderValue::from_static("expected-value"))]);
+        let expected_trailers = http::HeaderMap::from_iter(vec![(
+            http::HeaderName::from_static("x-custom-trailer"),
+            http::HeaderValue::from_static("expected-value"),
+        )]);
         let expected_data = &["chunk1".into(), "chunk2".into(), "chunk3".into()];
 
         assert_matches!(assert_body_frames(body, expected_data, Some(expected_trailers)).await, Ok(()));
+    }
+
+    #[tokio::test]
+    #[test_log::test]
+    async fn test_request_multichunk_body_no_truncate_body() {
+        let mock_state = MockExternalProcessorState::new()
+            .add_response(create_body_response::<RequestMsg>(
+                vec![],
+                Some("CHUNK1".into()),
+                vec![],
+                ResponseStatus::Continue as i32,
+                None,
+            ))
+            .add_response(create_body_response::<RequestMsg>(
+                vec![],
+                Some("CHUNK2".into()),
+                vec![],
+                ResponseStatus::Continue as i32,
+                None,
+            ))
+            .add_response(create_body_response::<RequestMsg>(
+                vec![],
+                Some("CHUNK3".into()),
+                vec![],
+                ResponseStatus::Continue as i32,
+                None,
+            ));
+
+        let (server_addr, _) = start_mock_server_with_delay(mock_state, Duration::from_millis(100)).await;
+        let processing_mode = ProcessingMode {
+            request_header_mode: HeaderProcessingMode::Skip,
+            request_body_mode: BodyProcessingMode::Streamed,
+            request_trailer_mode: TrailerProcessingMode::Skip,
+            response_header_mode: HeaderProcessingMode::Skip,
+            response_body_mode: BodyProcessingMode::None,
+            response_trailer_mode: TrailerProcessingMode::Skip,
+        };
+
+        let mut config = create_default_config_for_ext_proc_filter(server_addr, processing_mode);
+        config.observability_mode = false;
+        config.failure_mode_allow = false;
+
+        let ext_config =
+            ExternalProcessorConfigExt { frame_merge_limit: 1, frame_merge_window: Duration::from_millis(0) };
+        let mut ext_proc = ExternalProcessor::from((config, None, Some(ext_config)));
+
+        let mut request =
+            build_request_from_mock(&Mock::<RequestMsg>::new(vec![], vec!["chunk1", "chunk2", "chunk3"], vec![])).await;
+        let result = ext_proc.apply_request(&mut request).await;
+        assert_matches!(result, FilterDecision::Continue);
+
+        let body_chunks =
+            to_body_data_chunks(std::mem::take(&mut request.body_mut().inner.inner).collect().await.unwrap()).await;
+
+        assert_eq!(body_chunks, ["CHUNK1", "CHUNK2", "CHUNK3"].into_iter().map(|s| s.into()).collect::<Vec<Bytes>>());
     }
 }
