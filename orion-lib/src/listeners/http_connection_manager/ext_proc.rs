@@ -2975,11 +2975,65 @@ mod tests {
             assert_eq!(bytes.to_bytes(), "streaming body data".as_bytes());
         }
     }
+    #[tokio::test]
+    #[test_log::test]
+    async fn test_request_multichunk_body_with_mutation() {
+        let mock_state = MockExternalProcessorState::new()
+            .add_response(create_body_response::<RequestMsg>(
+                vec![],
+                Some("CHUNK1".into()),
+                vec![],
+                ResponseStatus::Continue as i32,
+                None,
+            ))
+            .add_response(create_body_response::<RequestMsg>(
+                vec![],
+                Some("CHUNK2".into()),
+                vec![],
+                ResponseStatus::Continue as i32,
+                None,
+            ))
+            .add_response(create_body_response::<RequestMsg>(
+                vec![],
+                Some("CHUNK3".into()),
+                vec![],
+                ResponseStatus::Continue as i32,
+                None,
+            ));
+
+        let (server_addr, _) = start_mock_server(mock_state).await;
+        let processing_mode = ProcessingMode {
+            request_header_mode: HeaderProcessingMode::Skip,
+            request_body_mode: BodyProcessingMode::Streamed,
+            request_trailer_mode: TrailerProcessingMode::Skip,
+            response_header_mode: HeaderProcessingMode::Skip,
+            response_body_mode: BodyProcessingMode::None,
+            response_trailer_mode: TrailerProcessingMode::Skip,
+        };
+
+        let mut config = create_default_config_for_ext_proc_filter(server_addr, processing_mode);
+        config.observability_mode = false;
+        config.failure_mode_allow = false;
+
+        let ext_config =
+            ExternalProcessorConfigExt { frame_merge_limit: 1, frame_merge_window: Duration::from_millis(0) };
+        let mut ext_proc = ExternalProcessor::from((config, None, Some(ext_config)));
+
+        let mut request =
+            build_request_from_mock(&Mock::<RequestMsg>::new(vec![], vec!["chunk1", "chunk2", "chunk3"], vec![])).await;
+        let result = ext_proc.apply_request(&mut request).await;
+        assert_matches!(result, FilterDecision::Continue);
+
+        let body_chunks =
+            to_body_data_chunks(std::mem::take(&mut request.body_mut().inner.inner).collect().await.unwrap()).await;
+
+        assert_eq!(body_chunks, ["CHUNK1", "CHUNK2", "CHUNK3"].into_iter().map(|s| s.into()).collect::<Vec<Bytes>>());
+    }
 
     #[tokio::test]
     #[test_log::test]
     async fn test_request_multichunk_body_timeout_failure_mode_allow_true() {
-        let mock_state = MockExternalProcessorState::new().add_response(create_body_response::<ResponseMsg>(
+        let mock_state = MockExternalProcessorState::new().add_response(create_body_response::<RequestMsg>(
             vec![],
             Some("modified_chunk".into()),
             vec![],

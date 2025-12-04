@@ -356,7 +356,6 @@ impl<Msg: kind::MsgKind + OverridableModeSelector> Processing<kind::Processing, 
                 Some(Mutation::ClearBody(false)) | None => None,
                 Some(Mutation::StreamedResponse(chunk)) => Some(Frame::data(chunk.body.into())),
             };
-            debug!(target: "ext_proc", "chunk_replacement => {chunk_replacement:?}");
 
             let mut status = if Msg::IS_REQUEST {
                 ProcessingStatus::RequestReady(ReadyStatus::default())
