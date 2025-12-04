@@ -141,8 +141,19 @@ impl SyntheticHttpResponse {
     }
 
     #[allow(dead_code)]
-    pub fn custom_error(http_status: StatusCode, event_kind: EventKind, response_flags: ResponseFlags) -> Self {
-        Self { http_status, event_kind, response_flags, body: Bytes::default(), close_connection: false }
+    pub fn custom_error(
+        http_status: StatusCode,
+        body: Option<Bytes>,
+        event_kind: EventKind,
+        response_flags: ResponseFlags,
+    ) -> Self {
+        Self {
+            http_status,
+            event_kind,
+            response_flags,
+            body: body.unwrap_or(Bytes::default()),
+            close_connection: false,
+        }
     }
 
     #[inline]

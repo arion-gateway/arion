@@ -75,7 +75,14 @@ pub struct FramesBuffer {
 
 impl FramesBuffer {
     fn new(frame_merge_limit: u32, frame_merge_window: Duration) -> Self {
-        Self { data_buffer: None, trailers_buffer: None, count: 0, last_merge: None, frame_merge_limit, frame_merge_window }
+        Self {
+            data_buffer: None,
+            trailers_buffer: None,
+            count: 0,
+            last_merge: None,
+            frame_merge_limit,
+            frame_merge_window,
+        }
     }
 
     // merge can either return a DATA frame or None
