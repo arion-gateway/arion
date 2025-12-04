@@ -34,9 +34,6 @@ use tokio::sync::oneshot;
 use tokio::time::Instant;
 use tracing::{debug, warn};
 
-const EXT_PROC_FRAME_MERGE_LIMIT: u32 = 4; // max number of frames to merge in streaming mode
-const EXT_PROC_MERGE_WINDOW: Duration = tokio::time::Duration::from_millis(1); // time window to wait for more frames to merge
-
 pub struct RequestProcessing<M: kind::Mode>(Processing<M, kind::RequestMsg>);
 
 impl<M: kind::Mode> Deref for RequestProcessing<M> {
@@ -72,11 +69,13 @@ pub struct FramesBuffer {
     trailers_buffer: Option<Frame<Bytes>>,
     last_merge: Option<Instant>,
     count: u32,
+    frame_merge_limit: u32,
+    frame_merge_window: Duration,
 }
 
 impl FramesBuffer {
-    fn new() -> Self {
-        Self { data_buffer: None, trailers_buffer: None, count: 0, last_merge: None }
+    fn new(frame_merge_limit: u32, frame_merge_window: Duration) -> Self {
+        Self { data_buffer: None, trailers_buffer: None, count: 0, last_merge: None, frame_merge_limit, frame_merge_window }
     }
 
     // merge can either return a DATA frame or None
@@ -94,8 +93,8 @@ impl FramesBuffer {
                 self.data_buffer = Some(BytesMut::from(new_data.as_ref()));
             }
 
-            let emit = self.count >= EXT_PROC_FRAME_MERGE_LIMIT
-                || now.duration_since(self.last_merge.unwrap_or(now)) >= EXT_PROC_MERGE_WINDOW;
+            let emit = self.count >= self.frame_merge_limit
+                || now.duration_since(self.last_merge.unwrap_or(now)) >= self.frame_merge_window;
 
             self.last_merge = Some(now);
 
@@ -159,7 +158,7 @@ impl<M: kind::Mode + Default, Msg: kind::MsgKind> From<&ExternalProcessingWorker
             http_version: None,
             streaming_body_enabled: false,
             end_of_stream: false,
-            frames_buffer: FramesBuffer::new(),
+            frames_buffer: FramesBuffer::new(config.frame_merge_limit, config.frame_merge_window),
             inflight_frames: SmallVec::new(),
             _mode: std::marker::PhantomData,
             _msg: std::marker::PhantomData,

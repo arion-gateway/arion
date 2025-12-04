@@ -258,7 +258,7 @@ impl HttpFilterValue {
                         base_config
                     {
                         let filter_value = HttpFilterValue::ExternalProcessor(
-                            (base_config.clone(), Some(ext_proc_per_route.clone())).into(),
+                            (base_config.clone(), Some(ext_proc_per_route.clone()), None).into(),
                         );
                         Some(filter_value)
                     } else {
