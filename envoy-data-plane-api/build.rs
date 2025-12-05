@@ -27,7 +27,7 @@ fn main() -> std::io::Result<()> {
     let udpa_protos: Vec<PathBuf> = glob("xds/udpa/**/*.proto").unwrap().filter_map(Result::ok).collect();
     protos.extend(udpa_protos);
 
-    let custom_protos: Vec<PathBuf> = glob("../proto/**/*.proto").unwrap().filter_map(Result::ok).collect();
+    let custom_protos: Vec<PathBuf> = glob("orion/**/*.proto").unwrap().filter_map(Result::ok).collect();
     protos.extend(custom_protos);
 
     let include_paths = [
@@ -41,7 +41,7 @@ fn main() -> std::io::Result<()> {
         "./cel-spec/proto",
         "./protobuf/src/",
         "./udpa/udpa/type/v1",
-        "../proto/",
+        "./orion/",
     ];
 
     let mut config = prost_build::Config::new();

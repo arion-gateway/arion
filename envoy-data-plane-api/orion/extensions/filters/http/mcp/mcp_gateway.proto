@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+// Il package segue la convenzione di Envoy.
+package orion.extensions.filters.http.mcp.mcp_gateway.v1;
+
+import "udpa/annotations/status.proto";
+import "validate/validate.proto";
+
+// [#protodoc-title: McpGateway Filter]
+// Configuraton for McpGateway 
+// [#extension: envoy.filters.network.mcp_gateway]
+
+message McpGateway {
+  string cluster_header_name = 1 [(validate.rules).string = {min_bytes: 1}];
+}
