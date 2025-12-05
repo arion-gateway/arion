@@ -22,10 +22,11 @@ use orion_configuration::config::network_filters::http_connection_manager::route
 use twox_hash::XxHash64;
 
 use crate::body::instrumented_body::InstrumentedBody;
+use crate::body::timeout_body::TimeoutBody;
 use crate::PolyBody;
 
 #[derive(Clone, Debug)]
-pub struct HashState<'a, B = InstrumentedBody<PolyBody>> {
+pub struct HashState<'a, B = InstrumentedBody<TimeoutBody<PolyBody>>> {
     policies: &'a [HashPolicy],
     req: &'a Request<B>,
     src_addr: SocketAddr,

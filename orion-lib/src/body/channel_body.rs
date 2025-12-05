@@ -1,17 +1,19 @@
 use bytes::Bytes;
-use futures::stream::Peekable;
 use futures::{Stream, StreamExt};
 use http_body::{Body, Frame, SizeHint};
+use std::collections::VecDeque;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
-type ReciverFrameStream = ReceiverStream<Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>>;
+type FrameResult = Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>;
 
 /// A wrapper for any Body that allows observing and modifying frames in real-time.
 pub struct ChannelBody {
-    peekable_stream: Peekable<ReciverFrameStream>,
+    prefetch: VecDeque<Option<FrameResult>>,
+    prefetch_num_frames: usize,
+    stream: ReceiverStream<FrameResult>,
 }
 
 impl ChannelBody {
@@ -20,34 +22,42 @@ impl ChannelBody {
     /// Returns a tuple of (`ChannelBody`, `FrameBridge`). `FrameBridge` must be used
     /// to inject frames (either manually or via `complete()`), otherwise the `ChannelBody`
     /// will never produce any frames.
-    pub fn new<B>(body: B) -> (Self, FrameBridge)
+    pub fn new<B>(body: B, prefetch_num_frames: usize) -> (Self, FrameBridge)
     where
         B: Body<Data = Bytes> + Send + 'static,
         B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
     {
         // Create a channel for injecting frames
-        let (tx, rx) = mpsc::channel(32);
+        let (tx, rx) = mpsc::channel(8);
 
         // Convert the receiver into a StreamBody
-        let stream_of_body = ReceiverStream::new(rx).peekable();
+        let stream_of_body = ReceiverStream::new(rx);
 
         // Create the bridge with the original body
         let bridge = FrameBridge::new(body, tx);
 
-        (ChannelBody { peekable_stream: stream_of_body }, bridge)
+        (ChannelBody { stream: stream_of_body, prefetch: VecDeque::new(), prefetch_num_frames }, bridge)
     }
 
-    /// Asynchronously waits until a frame is available in the body.
+    /// Asynchronously waits until the given number of frames are available in the body.
     ///
     /// This method does not consume the frame.
-    pub async fn wait_frame(&mut self) {
-        let _ = Pin::new(&mut self.peekable_stream).peek().await;
+    pub async fn prefetch_frames(&mut self) {
+        self.prefetch.reserve(self.prefetch_num_frames);
+        for _ in 0..self.prefetch_num_frames {
+            let r = Pin::new(&mut self.stream).next().await;
+            let end_of_stream = r.is_none();
+            self.prefetch.push_back(r);
+            if end_of_stream {
+                return;
+            }
+        }
     }
 }
 
 impl std::fmt::Debug for ChannelBody {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ChannelBody").field("stream_body", &self.peekable_stream).finish()
+        f.debug_struct("ChannelBody").field("stream_body", &self.stream).field("buffered", &self.prefetch).finish()
     }
 }
 
@@ -59,7 +69,19 @@ impl Body for ChannelBody {
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        Pin::new(&mut self.peekable_stream).poll_next(cx)
+        while self.prefetch.len() < self.prefetch_num_frames {
+            if let Poll::Ready(something) = Pin::new(&mut self.stream).poll_next(cx) {
+                self.prefetch.push_back(something);
+            } else {
+                break;
+            }
+        }
+
+        if let Some(frame) = self.prefetch.pop_front() {
+            return Poll::Ready(frame);
+        }
+
+        Poll::Pending
     }
 
     fn is_end_stream(&self) -> bool {
@@ -70,8 +92,6 @@ impl Body for ChannelBody {
         SizeHint::default()
     }
 }
-
-type FrameResult = Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>;
 
 /// A stream that allows observing frames from a body and simultaneously
 /// injecting them into the `ChannelBody`.
@@ -216,7 +236,7 @@ impl FrameBridge {
         // Inject the original frame
         if let Some(injector) = &mut self.injector {
             let _ = injector.send(frame).await;
-        };
+        }
 
         Some(cloned)
     }
@@ -240,7 +260,7 @@ mod tests {
     #[tokio::test]
     async fn test_complete() {
         let body = Full::new(Bytes::from("Hello, World!"));
-        let (mut channel_body, mut bridge) = ChannelBody::new(body);
+        let (mut channel_body, mut bridge) = ChannelBody::new(body, 1);
 
         // Spawn bridge task
         let bridge_handle = tokio::spawn(async move {
@@ -262,7 +282,7 @@ mod tests {
     #[tokio::test]
     async fn test_manual_injection() {
         let body = Full::new(Bytes::from("Test"));
-        let (mut channel_body, mut bridge) = ChannelBody::new(body);
+        let (mut channel_body, mut bridge) = ChannelBody::new(body, 1);
 
         // Spawn a task that consumes the ChannelBody
         let consumer_handle = tokio::spawn(async move {
@@ -298,7 +318,7 @@ mod tests {
     #[tokio::test]
     async fn test_channel_body_debug() {
         let body = Full::new(Bytes::from("Debug Test"));
-        let (mut channel_body, mut bridge) = ChannelBody::new(body);
+        let (mut channel_body, mut bridge) = ChannelBody::new(body, 1);
         assert!(!channel_body.is_end_stream());
         let mut ctx = dummy_context();
         assert!(matches!(Pin::new(&mut channel_body).poll_frame(&mut ctx), Poll::Pending));

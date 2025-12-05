@@ -107,8 +107,8 @@ use upgrades as upgrade_utils;
 use crate::{
     body::{
         instrumented_body::InstrumentedBody,
-        timeout_body::TimeoutBody,
         response_flags::{BodyKind, ResponseFlags},
+        timeout_body::TimeoutBody,
     },
     event_error::EventFailure,
     listeners::{
@@ -230,14 +230,17 @@ impl From<HttpFilterConfig> for HttpFilter {
 }
 
 impl HttpFilterValue {
-    pub async fn apply_request(&mut self, request: &mut Request<InstrumentedBody<PolyBody>>) -> FilterDecision {
+    pub async fn apply_request(
+        &mut self,
+        request: &mut Request<InstrumentedBody<TimeoutBody<PolyBody>>>,
+    ) -> FilterDecision {
         match self {
             HttpFilterValue::Rbac(rbac) => apply_authorization_rules(rbac, request),
             HttpFilterValue::RateLimit(rl) => rl.run(request),
             HttpFilterValue::ExternalProcessor(ext_proc) => ext_proc.apply_request(request).await,
         }
     }
-    pub async fn apply_response(&mut self, response: &mut Response<PolyBody>) -> FilterDecision {
+    pub async fn apply_response(&mut self, response: &mut Response<TimeoutBody<PolyBody>>) -> FilterDecision {
         match self {
             // RBAC and RateLimit do not apply on the response path
             HttpFilterValue::Rbac(_) | HttpFilterValue::RateLimit(_) => FilterDecision::Continue,
@@ -255,7 +258,7 @@ impl HttpFilterValue {
                         base_config
                     {
                         let filter_value = HttpFilterValue::ExternalProcessor(
-                            (base_config.clone(), Some(ext_proc_per_route.clone())).into(),
+                            (base_config.clone(), Some(ext_proc_per_route.clone()), None).into(),
                         );
                         Some(filter_value)
                     } else {
@@ -416,9 +419,9 @@ impl HttpConnectionManager {
     ) -> Box<
         dyn Service<
                 ExtendedRequest<Incoming>,
-                Response = Response<InstrumentedBody<PolyBody>>,
+                Response = Response<InstrumentedBody<TimeoutBody<PolyBody>>>,
                 Error = crate::Error,
-                Future = BoxFuture<'static, StdResult<Response<InstrumentedBody<PolyBody>>, crate::Error>>,
+                Future = BoxFuture<'static, StdResult<Response<InstrumentedBody<TimeoutBody<PolyBody>>>, crate::Error>>,
             > + Send
             + Sync,
     > {
@@ -426,9 +429,12 @@ impl HttpConnectionManager {
             as Box<
                 dyn Service<
                         ExtendedRequest<Incoming>,
-                        Response = Response<InstrumentedBody<PolyBody>>,
+                        Response = Response<InstrumentedBody<TimeoutBody<PolyBody>>>,
                         Error = crate::Error,
-                        Future = BoxFuture<'static, StdResult<Response<InstrumentedBody<PolyBody>>, crate::Error>>,
+                        Future = BoxFuture<
+                            'static,
+                            StdResult<Response<InstrumentedBody<TimeoutBody<PolyBody>>>, crate::Error>,
+                        >,
                     > + Send
                     + Sync,
             >
@@ -441,7 +447,7 @@ pub enum FilterDecision {
     #[default]
     Continue,
     Reroute,
-    DirectResponse(Response<PolyBody>),
+    DirectResponse(Response<TimeoutBody<PolyBody>>),
 }
 
 pub struct CachedRoute<'a> {
@@ -580,7 +586,7 @@ impl TransactionHandler {
         mut request: Request<InstrumentedBody<TimeoutBody<Incoming>>>,
         downstream_metadata: Arc<DownstreamMetadata>,
         #[cfg(feature = "access-log")] permit: Option<ShareableAccessLogPermit>,
-    ) -> Result<Response<InstrumentedBody<PolyBody>>>
+    ) -> Result<Response<InstrumentedBody<TimeoutBody<PolyBody>>>>
     where
         RC: RequestHandler<(
                 Request<InstrumentedBody<TimeoutBody<Incoming>>>,
@@ -684,9 +690,9 @@ impl TransactionHandler {
 
     fn trace_status_code(
         self: Arc<Self>,
-        res: Result<Response<InstrumentedBody<PolyBody>>>,
+        res: Result<Response<InstrumentedBody<TimeoutBody<PolyBody>>>>,
         _listener_name: &'static str,
-    ) -> Result<Response<InstrumentedBody<PolyBody>>> {
+    ) -> Result<Response<InstrumentedBody<TimeoutBody<PolyBody>>>> {
         if let Ok(response) = &res {
             let status_code = response.status().as_u16();
 
@@ -787,7 +793,7 @@ pub trait RequestHandler<R>: Sized {
         self,
         trans_handler: &TransactionHandler,
         request: R,
-    ) -> impl Future<Output = Result<Response<PolyBody>>> + Send;
+    ) -> impl Future<Output = Result<Response<TimeoutBody<PolyBody>>>> + Send;
 }
 
 #[inline]
@@ -817,10 +823,11 @@ impl
             Arc<HttpConnectionManager>,
             Arc<DownstreamMetadata>,
         ),
-    ) -> Result<Response<PolyBody>> {
+    ) -> Result<Response<TimeoutBody<PolyBody>>> {
         let mut processed_routes: HashSet<&RouteMatch> = HashSet::new();
         let mut cached_route = match_request_route(&request, &self);
-        let mut request: Request<InstrumentedBody<PolyBody>> = request.map(InstrumentedBody::map_into::<PolyBody>);
+        let mut request: Request<InstrumentedBody<TimeoutBody<PolyBody>>> =
+            request.map(|body| body.map_inner(|timeout_body| timeout_body.map_into()));
         let mut active_filters: SmallVec<[HttpFilterValue; 2]> = SmallVec::new();
         loop {
             if let Some(ref chosen_route) = cached_route {
@@ -934,7 +941,7 @@ impl
 }
 
 impl Service<ExtendedRequest<Incoming>> for HttpRequestHandler {
-    type Response = Response<InstrumentedBody<PolyBody>>;
+    type Response = Response<InstrumentedBody<TimeoutBody<PolyBody>>>;
     type Error = crate::Error;
     type Future = BoxFuture<'static, StdResult<Self::Response, Self::Error>>;
 

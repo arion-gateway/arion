@@ -15,7 +15,7 @@
 //
 //
 
-use super::timeout_body::{TimeoutBody, TimeoutBodyError};
+use super::timeout_body::TimeoutBodyError;
 use crate::body::channel_body::ChannelBody;
 use crate::Error;
 use bytes::Bytes;
@@ -37,7 +37,6 @@ pub enum PolyBody {
     Empty(#[pin] Empty<Bytes>),
     Full(#[pin] Full<Bytes>),
     Incoming(#[pin] Incoming),
-    Timeout(#[pin] TimeoutBody<Incoming>),
     Grpc(#[pin] GrpcBody),
     Stream(#[pin] StreamBody<ReceiverStream<Result<Frame<Bytes>, Error>>>),
     ChannelBody(#[pin] ChannelBody),
@@ -66,9 +65,9 @@ impl PolyBody {
         }
     }
 
-    pub async fn wait_frame(&mut self) {
+    pub async fn prefetch_frames(&mut self) {
         if let PolyBody::ChannelBody(m) = self {
-            m.wait_frame().await;
+            m.prefetch_frames().await;
         } else { // No-op for other body types
         }
     }
@@ -87,7 +86,6 @@ impl std::fmt::Debug for PolyBody {
             PolyBody::Empty(b) => f.write_fmt(format_args!("PolyBody::Empty<Bytes>: {b:?}")),
             PolyBody::Full(b) => f.write_fmt(format_args!("PolyBody::Full<Bytes>: {b:?}")),
             PolyBody::Incoming(b) => f.write_fmt(format_args!("PolyBody::Incoming: {b:?}")),
-            PolyBody::Timeout(b) => f.write_fmt(format_args!("PolyBody::Timeout<Incoming>: {b:?}")),
             PolyBody::Grpc(b) => f.write_fmt(format_args!("PolyBody::Grpc: {b:?}")),
             PolyBody::Stream(b) => f.write_fmt(format_args!("PolyBody::Stream: {b:?}")),
             PolyBody::ChannelBody(b) => f.write_fmt(format_args!("PolyBody::ChannelBody: {b:?}")),
@@ -143,7 +141,6 @@ impl Body for PolyBody {
             PolyBodyProj::Empty(e) => e.poll_frame(cx).map_err(Into::into),
             PolyBodyProj::Full(f) => f.poll_frame(cx).map_err(Into::into),
             PolyBodyProj::Incoming(i) => i.poll_frame(cx).map_err(Into::into),
-            PolyBodyProj::Timeout(t) => t.poll_frame(cx).map_err(Into::into),
             PolyBodyProj::Grpc(g) => g.poll_frame(cx).map_err(|e| Into::into(Box::new(e))),
             PolyBodyProj::Stream(s) => {
                 s.poll_frame(cx).map_err(|e| PolyBodyError::Boxed(Box::new(std::io::Error::other(e.to_string()))))
@@ -165,7 +162,6 @@ impl Body for PolyBody {
             PolyBody::Empty(e) => e.is_end_stream(),
             PolyBody::Full(f) => f.is_end_stream(),
             PolyBody::Incoming(i) => i.is_end_stream(),
-            PolyBody::Timeout(t) => t.is_end_stream(),
             PolyBody::Grpc(g) => g.is_end_stream(),
             PolyBody::Stream(s) => s.is_end_stream(),
             PolyBody::ChannelBody(m) => m.is_end_stream(),
@@ -195,13 +191,6 @@ impl From<Incoming> for PolyBody {
     #[inline]
     fn from(body: Incoming) -> Self {
         PolyBody::Incoming(body)
-    }
-}
-
-impl From<TimeoutBody<Incoming>> for PolyBody {
-    #[inline]
-    fn from(body: TimeoutBody<Incoming>) -> Self {
-        PolyBody::Timeout(body)
     }
 }
 
@@ -319,16 +308,6 @@ impl TryFrom<PolyBody> for ChannelBody {
     fn try_from(value: PolyBody) -> Result<Self, Self::Error> {
         match value {
             PolyBody::ChannelBody(s) => Ok(s),
-            _ => Err(PolyBodyError::BadVariant),
-        }
-    }
-}
-
-impl TryFrom<PolyBody> for TimeoutBody<Incoming> {
-    type Error = PolyBodyError;
-    fn try_from(value: PolyBody) -> Result<Self, Self::Error> {
-        match value {
-            PolyBody::Timeout(t) => Ok(t),
             _ => Err(PolyBodyError::BadVariant),
         }
     }

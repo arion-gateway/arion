@@ -19,7 +19,11 @@ use bytes::Bytes;
 use http::{HeaderValue, Response, StatusCode, Version as HttpVersion};
 use http_body_util::Full;
 
-use crate::{body::response_flags::ResponseFlags, event_error::EventKind, PolyBody};
+use crate::{
+    body::{response_flags::ResponseFlags, timeout_body::TimeoutBody},
+    event_error::EventKind,
+    PolyBody,
+};
 
 #[derive(Clone, Debug)]
 pub struct SyntheticHttpResponse {
@@ -137,13 +141,24 @@ impl SyntheticHttpResponse {
     }
 
     #[allow(dead_code)]
-    pub fn custom_error(http_status: StatusCode, event_kind: EventKind, response_flags: ResponseFlags) -> Self {
-        Self { http_status, event_kind, response_flags, body: Bytes::default(), close_connection: false }
+    pub fn custom_error(
+        http_status: StatusCode,
+        body: Option<Bytes>,
+        event_kind: EventKind,
+        response_flags: ResponseFlags,
+    ) -> Self {
+        Self {
+            http_status,
+            event_kind,
+            response_flags,
+            body: body.unwrap_or(Bytes::default()),
+            close_connection: false,
+        }
     }
 
     #[inline]
-    pub fn into_response(self, version: http::Version) -> Response<PolyBody> {
-        let mut rsp = Response::new(Full::from(self.body).into());
+    pub fn into_response(self, version: http::Version) -> Response<TimeoutBody<PolyBody>> {
+        let mut rsp = Response::new(TimeoutBody::new(None, Full::from(self.body).into()));
         *rsp.status_mut() = self.http_status;
         *rsp.version_mut() = version;
         rsp.extensions_mut().insert(self.response_flags);

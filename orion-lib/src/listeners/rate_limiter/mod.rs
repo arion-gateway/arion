@@ -45,6 +45,7 @@ impl LocalRateLimit {
                 return FilterDecision::DirectResponse(
                     SyntheticHttpResponse::custom_error(
                         status,
+                        None,
                         EventFailure::RateLimited.into(),
                         ResponseFlags(FmtResponseFlags::RATE_LIMITED),
                     )

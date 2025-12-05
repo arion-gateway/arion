@@ -16,7 +16,10 @@
 //
 
 use super::upgrade_utils;
-use crate::{event_error::EventFailure, listeners::synthetic_http_response::SyntheticHttpResponse, PolyBody};
+use crate::{
+    body::timeout_body::TimeoutBody, event_error::EventFailure,
+    listeners::synthetic_http_response::SyntheticHttpResponse, PolyBody,
+};
 use http::{header, HeaderMap, HeaderName, HeaderValue, Method, Request, Response};
 use orion_configuration::config::{
     cluster::http_protocol_options::Codec, network_filters::http_connection_manager::XffSettings,
@@ -39,7 +42,7 @@ pub fn apply_prerouting_functions<T>(request: &mut Request<T>, downstream_addr: 
     process_xff_headers(request, downstream_addr, xff_settings);
 }
 
-pub fn apply_preflight_functions<T>(request: &mut Request<T>) -> Option<Response<PolyBody>> {
+pub fn apply_preflight_functions<T>(request: &mut Request<T>) -> Option<Response<TimeoutBody<PolyBody>>> {
     if let Some(direct_response) = filter_disallowed_requests(request) {
         return Some(direct_response);
     }
@@ -47,7 +50,7 @@ pub fn apply_preflight_functions<T>(request: &mut Request<T>) -> Option<Response
     None
 }
 
-fn filter_disallowed_requests<T>(request: &Request<T>) -> Option<Response<PolyBody>> {
+fn filter_disallowed_requests<T>(request: &Request<T>) -> Option<Response<TimeoutBody<PolyBody>>> {
     if request.method() == Method::CONNECT {
         return Some(
             SyntheticHttpResponse::forbidden(EventFailure::UpgradeFailed.into(), "CONNECT not permitted")

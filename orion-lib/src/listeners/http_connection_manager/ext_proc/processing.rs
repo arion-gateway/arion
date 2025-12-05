@@ -8,8 +8,9 @@ use crate::listeners::http_connection_manager::ext_proc::r#override::{
 use crate::listeners::http_connection_manager::ext_proc::status::{Action, ProcessingStatus, ReadyStatus};
 use crate::listeners::http_connection_manager::ext_proc::worker_config::ExternalProcessingWorkerConfig;
 use crate::listeners::http_connection_manager::ext_proc::EnvoyHeaderMap;
+use crate::utils::truncated_debug::TruncatedDebug;
 use crate::{body::response_flags::ResponseFlags, listeners::synthetic_http_response::SyntheticHttpResponse};
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use http_body::Frame;
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::ext_proc::{
     BodyProcessingMode, HeaderProcessingMode, ProcessingMode, RouteCacheAction, TrailerProcessingMode,
@@ -28,8 +29,10 @@ use orion_format::types::ResponseFlags as FmtResponseFlags;
 use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
+use std::time::Duration;
 use tokio::sync::oneshot;
-use tracing::debug;
+use tokio::time::Instant;
+use tracing::{debug, warn};
 
 pub struct RequestProcessing<M: kind::Mode>(Processing<M, kind::RequestMsg>);
 
@@ -61,6 +64,75 @@ impl<M: kind::Mode> DerefMut for ResponseProcessing<M> {
     }
 }
 
+pub struct FramesBuffer {
+    data_buffer: Option<BytesMut>,
+    trailers_buffer: Option<Frame<Bytes>>,
+    last_merge: Option<Instant>,
+    count: u32,
+    frame_merge_limit: u32,
+    frame_merge_window: Duration,
+}
+
+impl FramesBuffer {
+    fn new(frame_merge_limit: u32, frame_merge_window: Duration) -> Self {
+        Self {
+            data_buffer: None,
+            trailers_buffer: None,
+            count: 0,
+            last_merge: None,
+            frame_merge_limit,
+            frame_merge_window,
+        }
+    }
+
+    // merge can either return a DATA frame or None
+    pub fn merge(&mut self, frame: Frame<Bytes>, now: tokio::time::Instant) -> Option<Frame<Bytes>> {
+        if let Some(new_data) = frame.data_ref() {
+            // DATA
+            if self.trailers_buffer.is_some() {
+                // This case should never occur, as no frames are expected after the final TRAILERS.
+                warn!(target: "ext_proc", "FramesBuffer::merge_frame: unexpected frame after TRAILERS!");
+            } else if let Some(buf) = self.data_buffer.as_mut() {
+                self.count += 1;
+                buf.extend_from_slice(new_data.as_ref());
+            } else {
+                self.count = 1;
+                self.data_buffer = Some(BytesMut::from(new_data.as_ref()));
+            }
+
+            let emit = self.count >= self.frame_merge_limit
+                || now.duration_since(self.last_merge.unwrap_or(now)) >= self.frame_merge_window;
+
+            self.last_merge = Some(now);
+
+            if emit {
+                self.count = 0;
+                self.data_buffer.take().map(|buf| Frame::data(buf.freeze()))
+            } else {
+                None
+            }
+        } else {
+            // TRAILERS
+            let data = self.data_buffer.take().map(|buf| Frame::data(buf.freeze()));
+            self.count = 0;
+            self.last_merge = Some(now);
+            self.trailers_buffer = Some(frame);
+            data
+        }
+    }
+
+    // take can either return a DATA or TRAILERS frame
+    pub fn take(&mut self) -> Option<Frame<Bytes>> {
+        self.count = 0;
+        self.last_merge = None;
+        if let Some(buf) = self.data_buffer.take() {
+            Some(Frame::data(buf.freeze()))
+        } else {
+            self.trailers_buffer.take()
+        }
+    }
+}
+
 #[allow(clippy::struct_excessive_bools)]
 pub struct Processing<M: kind::Mode, Msg: kind::MsgKind> {
     http_headers: Option<http::HeaderMap>,
@@ -72,8 +144,9 @@ pub struct Processing<M: kind::Mode, Msg: kind::MsgKind> {
     pub failure_mode_allow: bool,
     pub streaming_body_enabled: bool,
     pub end_of_stream: bool,
-    pub parked_frame: Option<Frame<Bytes>>,
+    pub frames_buffer: FramesBuffer,
     pub inflight_frames: SmallVec<[Frame<Bytes>; 2]>,
+    pub parked_trailers: Option<Frame<Bytes>>,
     _mode: std::marker::PhantomData<M>,
     _msg: std::marker::PhantomData<Msg>,
 }
@@ -93,8 +166,9 @@ impl<M: kind::Mode + Default, Msg: kind::MsgKind> From<&ExternalProcessingWorker
             http_version: None,
             streaming_body_enabled: false,
             end_of_stream: false,
-            parked_frame: None,
+            frames_buffer: FramesBuffer::new(config.frame_merge_limit, config.frame_merge_window),
             inflight_frames: SmallVec::new(),
+            parked_trailers: None,
             _mode: std::marker::PhantomData,
             _msg: std::marker::PhantomData,
         }
@@ -239,14 +313,14 @@ impl<Msg: kind::MsgKind + OverridableModeSelector> Processing<kind::Processing, 
                 }
 
                 debug!(target: "ext_proc", "frame bridge closed (handle header response)!");
-                self.frame_bridge_close(timeout_active);
+                self.frame_bridge_close(timeout_active).await;
             } else {
                 debug!(target: "ext_proc", "handle_headers_response: ResponseStatus:Continue: headers processed");
                 if !override_mode.should_process_body::<Msg>() && !override_mode.should_process_trailers::<Msg>() {
                     debug!(target: "ext_proc", "handle_headers_response: complete to stream original body and close!");
                     self.frame_bridge.complete().await;
                     debug!(target: "ext_proc", "frame bridge closed (handle header response)!");
-                    self.frame_bridge_close(timeout_active);
+                    self.frame_bridge_close(timeout_active).await;
                 } else {
                     debug!(target: "ext_proc", "handle_headers_response: streaming body enabled...");
                     self.streaming_body_enabled = true;
@@ -275,7 +349,7 @@ impl<Msg: kind::MsgKind + OverridableModeSelector> Processing<kind::Processing, 
         route_cache_action: Option<&RouteCacheAction>,
         timeout_active: &mut bool,
     ) -> Action<ProcessingRequest> {
-        debug!(target: "ext_proc", "handle_body_response: pending frames => {:?}", self.inflight_frames);
+        debug!(target: "ext_proc", "handle_body_response: inflight frames ({})", self.inflight_frames.len());
 
         if let Some(response_data) = body_response.response {
             let chunk_replacement = match response_data.body_mutation.and_then(|body_mutation| body_mutation.mutation) {
@@ -284,7 +358,6 @@ impl<Msg: kind::MsgKind + OverridableModeSelector> Processing<kind::Processing, 
                 Some(Mutation::ClearBody(false)) | None => None,
                 Some(Mutation::StreamedResponse(chunk)) => Some(Frame::data(chunk.body.into())),
             };
-            debug!(target: "ext_proc", "chunk_replacement => {chunk_replacement:?}");
 
             let mut status = if Msg::IS_REQUEST {
                 ProcessingStatus::RequestReady(ReadyStatus::default())
@@ -333,13 +406,13 @@ impl<Msg: kind::MsgKind + OverridableModeSelector> Processing<kind::Processing, 
 
             if matches!(embedded_status, ResponseStatus::ContinueAndReplace) {
                 debug!(target: "ext_proc", "handle_body_response: CONTINUE_AND_REPLACE: sending message status {status:?}");
-                self.frame_bridge_close(timeout_active);
+                self.frame_bridge_close(timeout_active).await;
                 return Action::Return(status);
             }
 
             if self.end_of_stream && self.inflight_frames.is_empty() {
                 debug!(target: "ext_proc", "handle_body_response: end_of_stream (closing frame bridge)!");
-                self.frame_bridge_close(timeout_active);
+                self.frame_bridge_close(timeout_active).await;
             }
 
             Action::Return(status)
@@ -366,7 +439,7 @@ impl<Msg: kind::MsgKind + OverridableModeSelector> Processing<kind::Processing, 
             _ = self.frame_bridge.inject_frame(Ok(Frame::trailers(trailers))).await;
 
             self.end_of_stream = true;
-            self.frame_bridge_close(timeout_active);
+            self.frame_bridge_close(timeout_active).await;
 
             let status = if Msg::IS_REQUEST {
                 ProcessingStatus::RequestReady(ReadyStatus::default())
@@ -377,7 +450,7 @@ impl<Msg: kind::MsgKind + OverridableModeSelector> Processing<kind::Processing, 
             Action::Return(status)
         } else {
             debug!(target: "ext_proc", "frame bridge closed (handle trailers response)!");
-            self.frame_bridge_close(timeout_active);
+            self.frame_bridge_close(timeout_active).await;
             Action::Return(
                 self.status_error("handle_trailers_response: No trailers to process", self.failure_mode_allow),
             )
@@ -543,7 +616,7 @@ impl<M: kind::Mode + Default, Msg: kind::MsgKind + OverridableModeSelector> Proc
             return Action::Return(self.status_error(msg, self.failure_mode_allow));
         };
 
-        debug!(target: "ext_proc", "handle_body_chunk: prepared processing_request: {:?}", processing_request);
+        debug!(target: "ext_proc", "handle_body_chunk: prepared processing_request: {:?}", TruncatedDebug::<_,1024>(&processing_request));
         Action::Send(processing_request)
     }
 
@@ -590,32 +663,12 @@ impl<M: kind::Mode + Default, Msg: kind::MsgKind + OverridableModeSelector> Proc
         )
     }
 
-    pub fn frame_bridge_close(&mut self, timeout_active: &mut bool) {
+    pub async fn frame_bridge_close(&mut self, timeout_active: &mut bool) {
         *timeout_active = false;
         self.streaming_body_enabled = false;
-        self.frame_bridge.close();
-    }
-
-    pub async fn park_or_inject_frame(&mut self, frame: Frame<Bytes>, override_mode: &OverridableGlobalModes) {
-        if frame.is_data() {
-            // This is a DATA, let's park it if is supposed to be streamed
-            if override_mode.should_process_body::<Msg>() {
-                self.parked_frame = Some(frame);
-                debug!(target: "ext_proc", "parking body chunk of response (DATA)");
-            } else {
-                debug!(target: "ext_proc", "DATA is injected directly into frame bridge!");
-                _ = self.frame_bridge.inject_frame(Ok(frame)).await;
-            }
-        } else {
-            // This is TRAILERS. it is the last frame.
-            debug!(target: "ext_proc", "processing_request: sending trailers to external processor...");
-            if override_mode.should_process_trailers::<Msg>() {
-                self.parked_frame = Some(frame);
-                debug!(target: "ext_proc", "parking body chunk of response (TRAILERS)");
-            } else {
-                debug!(target: "ext_proc", "TRAILERS are injected directly into frame bridge");
-                _ = self.frame_bridge.inject_frame(Ok(frame)).await;
-            }
+        if let Some(trailers) = self.parked_trailers.take() {
+            _ = self.frame_bridge.inject_frame(Ok(trailers)).await;
         }
+        self.frame_bridge.close();
     }
 }
