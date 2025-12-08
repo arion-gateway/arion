@@ -83,7 +83,7 @@ use {
 use arc_swap::ArcSwap;
 use core::time::Duration;
 use futures::future::BoxFuture;
-use hyper::{body::Incoming, service::Service, Request, Response};
+use hyper::{Request, Response, body::Incoming, service::Service};
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::{
     FilterConfigOverride, FilterOverride,
 };
@@ -216,8 +216,10 @@ pub enum HttpFilterValue {
     McpGateway(McpGateway),
 }
 
-impl From<HttpFilterConfig> for HttpFilter {
-    fn from(value: HttpFilterConfig) -> Self {
+impl TryFrom<HttpFilterConfig> for HttpFilter {
+    type Error = crate::Error;
+
+    fn try_from(value: HttpFilterConfig) -> Result<Self> {
         let hcm_config = match &value.filter {
             HttpFilterType::ExternalProcessor(_) => Some(value.clone()),
             _ => None,
@@ -233,9 +235,9 @@ impl From<HttpFilterConfig> for HttpFilter {
                 let builder = JwtAuthenticationBuilder::new(conf);
                 HttpFilterValue::JwtAuthentication(builder.build())
             },
-            HttpFilterType::McpGateway(mcp) => HttpFilterValue::McpGateway(mcp.into()),
+            HttpFilterType::McpGateway(mcp) => HttpFilterValue::McpGateway(mcp.try_into()?),
         };
-        Self { name, disabled, filter: Some(filter), base_config: hcm_config }
+        Ok(Self { name, disabled, filter: Some(filter), base_config: hcm_config })
     }
 }
 
@@ -319,8 +321,10 @@ impl TryFrom<ConversionContext<'_, HttpConnectionManagerConfig>> for PartialHttp
         let http_filters_hcm = configuration
             .http_filters
             .into_iter()
-            .map(|f| Arc::new(HttpFilter::from(f)))
-            .collect::<Vec<Arc<HttpFilter>>>();
+            .map(|f| -> Result<Arc<HttpFilter>> {
+                Ok(Arc::new(HttpFilter::try_from(f)?))
+            })
+            .collect::<Result<Vec<Arc<HttpFilter>>>>()?;
         let request_timeout = configuration.request_timeout;
         let xff_settings = configuration.xff_settings;
         let generate_request_id = configuration.generate_request_id;

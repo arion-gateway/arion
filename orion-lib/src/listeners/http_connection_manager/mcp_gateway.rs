@@ -1,4 +1,4 @@
-use http::Request;
+use http::{HeaderValue, Request};
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::McpGateway as McpGatewayConfig;
 use tracing::debug;
 
@@ -26,7 +26,9 @@ impl McpGateway {
         request: &mut Request<InstrumentedBody<TimeoutBody<PolyBody>>>,
     ) -> FilterDecision {
         debug!(target: "mcp", "processing request: {:?}", request);
-        // Implement request filtering logic here
+        // Implement request routing/filtering logic here
+        let headers = request.headers_mut();
+        headers.append(&self.config.cluster_header, HeaderValue::from_static("cluster_http"));
         FilterDecision::Continue
     }
 }

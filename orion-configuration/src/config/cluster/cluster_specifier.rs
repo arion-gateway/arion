@@ -15,6 +15,7 @@
 //
 //
 
+use http::HeaderName;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 use std::{borrow::Cow, num::NonZeroU32};
@@ -24,7 +25,8 @@ use std::{borrow::Cow, num::NonZeroU32};
 pub enum ClusterSpecifier {
     Cluster(SmolStr),
     WeightedCluster(Vec<WeightedClusterSpecifier>),
-    ClusterHeader(SmolStr),
+    #[serde(with = "http_serde_ext::header_name")]
+    ClusterHeader(HeaderName),
 }
 
 impl ClusterSpecifier {
@@ -50,6 +52,7 @@ mod envoy_conversions {
     #![allow(deprecated)]
     use super::{ClusterSpecifier, WeightedClusterSpecifier};
     use crate::config::common::*;
+    use http::HeaderName;
     use orion_data_plane_api::envoy_data_plane_api::envoy::{
         config::route::v3::{
             route_action::ClusterSpecifier as EnvoyClusterSpecifier,
@@ -89,7 +92,8 @@ mod envoy_conversions {
                 EnvoyClusterSpecifier::Cluster(cluster) => required!(cluster).map(SmolStr::from).map(Self::Cluster),
                 EnvoyClusterSpecifier::WeightedClusters(envoy) => envoy.try_into(),
                 EnvoyClusterSpecifier::ClusterHeader(name) => {
-                    required!(name).map(SmolStr::from).map(Self::ClusterHeader)
+                    let t = required!(name).map(|n| HeaderName::from_bytes(n.as_bytes()))??;
+                    Ok(Self::ClusterHeader(t))
                 },
                 EnvoyClusterSpecifier::ClusterSpecifierPlugin(_) => {
                     Err(GenericError::unsupported_variant("ClusterSpecifierPlugin"))
