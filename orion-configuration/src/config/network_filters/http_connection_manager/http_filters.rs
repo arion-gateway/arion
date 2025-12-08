@@ -15,15 +15,18 @@
 //
 //
 
+pub mod ext_proc;
 pub mod http_rbac;
+pub mod jwt;
+pub mod mcp_gateway;
+pub mod router;
+
 use http_rbac::HttpRbac;
 use smol_str::SmolStr;
 pub mod local_rate_limit;
-use local_rate_limit::LocalRateLimit;
-pub mod ext_proc;
 pub use ext_proc::{ExtProcPerRoute, ExternalProcessor};
-pub mod jwt;
-pub mod router;
+use local_rate_limit::LocalRateLimit;
+pub use mcp_gateway::McpGateway;
 
 use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -64,6 +67,7 @@ pub enum HttpFilterType {
     RateLimit(LocalRateLimit),
     ExternalProcessor(ExternalProcessor),
     JwtAuthentication(JwtAuthentication),
+    McpGateway(McpGateway),
 }
 
 #[cfg(feature = "envoy-conversions")]
@@ -80,6 +84,7 @@ mod envoy_conversions {
         ext_proc::ExtProcPerRoute, FilterConfigOverride, FilterOverride, HttpFilter, HttpFilterType, HttpRbac,
     };
     use crate::config::common::*;
+    use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::mcp::mcp_gateway::v3::McpGateway as OrionMcpGateway;
     use orion_data_plane_api::envoy_data_plane_api::{
         envoy::{
             config::route::v3::FilterConfig as EnvoyFilterConfig,
@@ -143,6 +148,7 @@ mod envoy_conversions {
                 SupportedEnvoyFilter::LocalRateLimit(lr) => lr.try_into().map(Self::RateLimit),
                 SupportedEnvoyFilter::Rbac(rbac) => rbac.try_into().map(Self::Rbac),
                 SupportedEnvoyFilter::ExternalProcessor(ext_proc) => ext_proc.try_into().map(Self::ExternalProcessor),
+                SupportedEnvoyFilter::McpGateway(mcp_gateway) => mcp_gateway.try_into().map(Self::McpGateway),
                 SupportedEnvoyFilter::Router(_) => {
                     Err(GenericError::from_msg("router filter has to be the last filter in the chain"))
                 },
@@ -159,6 +165,7 @@ mod envoy_conversions {
         Router(EnvoyRouter),
         ExternalProcessor(EnvoyExternalProcessor),
         JwtAuthentication(EnvoyJwtAuthentication),
+        McpGateway(OrionMcpGateway),
     }
 
     impl TryFrom<Any> for SupportedEnvoyFilter {
@@ -179,6 +186,9 @@ mod envoy_conversions {
                 },
                 "type.googleapis.com/envoy.extensions.filters.http.jwt_authn.v3.JwtAuthentication" => {
                     EnvoyJwtAuthentication::decode(typed_config.value.as_slice()).map(Self::JwtAuthentication)
+                },
+                "type.googleapis.com/orion.extensions.filters.http.mcp.mcp_gateway.v3.McpGateway" => {
+                    OrionMcpGateway::decode(typed_config.value.as_slice()).map(Self::McpGateway)
                 },
                 _ => return Err(GenericError::unsupported_variant(typed_config.type_url)),
             }

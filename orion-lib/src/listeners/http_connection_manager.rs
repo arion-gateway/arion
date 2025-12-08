@@ -25,8 +25,10 @@
 
 mod direct_response;
 mod ext_proc;
+mod mcp_gateway;
 use ext_proc::ExternalProcessor;
 use jwt_authn::JwtAuthentication;
+use mcp_gateway::McpGateway;
 use smallvec::SmallVec;
 pub mod http_modifiers;
 pub mod jwt_authn;
@@ -211,6 +213,7 @@ pub enum HttpFilterValue {
     Rbac(HttpRbac),
     ExternalProcessor(ExternalProcessor),
     JwtAuthentication(JwtAuthentication),
+    McpGateway(McpGateway),
 }
 
 impl From<HttpFilterConfig> for HttpFilter {
@@ -230,6 +233,7 @@ impl From<HttpFilterConfig> for HttpFilter {
                 let builder = JwtAuthenticationBuilder::new(conf);
                 HttpFilterValue::JwtAuthentication(builder.build())
             },
+            HttpFilterType::McpGateway(mcp) => HttpFilterValue::McpGateway(mcp.into()),
         };
         Self { name, disabled, filter: Some(filter), base_config: hcm_config }
     }
@@ -245,12 +249,15 @@ impl HttpFilterValue {
             HttpFilterValue::RateLimit(rl) => rl.run(request),
             HttpFilterValue::ExternalProcessor(ext_proc) => ext_proc.apply_request(request).await,
             HttpFilterValue::JwtAuthentication(jwt) => jwt.apply_request(request),
+            HttpFilterValue::McpGateway(mcp) => mcp.apply_request(request).await,
         }
     }
     pub async fn apply_response(&mut self, response: &mut Response<TimeoutBody<PolyBody>>) -> FilterDecision {
         match self {
             // RBAC and RateLimit do not apply on the response path
-            HttpFilterValue::Rbac(_) | HttpFilterValue::RateLimit(_) => FilterDecision::Continue,
+            HttpFilterValue::Rbac(_) | HttpFilterValue::RateLimit(_) | HttpFilterValue::McpGateway(_) => {
+                FilterDecision::Continue
+            },
             HttpFilterValue::ExternalProcessor(ext_proc) => ext_proc.apply_response(response).await,
             HttpFilterValue::JwtAuthentication(_) => FilterDecision::Continue,
         }
