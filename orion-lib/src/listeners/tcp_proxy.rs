@@ -93,7 +93,7 @@ impl TcpProxy {
         access_loggers.with_context_fn(|| InitContext { start_time: std::time::SystemTime::now() });
 
         let cluster_selector = &self.cluster;
-        let cluster_id = clusters_manager::resolve_cluster(cluster_selector)
+        let cluster_id = clusters_manager::resolve_cluster(cluster_selector, None)
             .ok_or_else(|| "Failed to resolve cluster from specifier".to_owned())?;
         let maybe_connector = clusters_manager::get_tcp_connection(cluster_id, RoutingContext::None);
 

@@ -24,6 +24,7 @@ use std::{borrow::Cow, num::NonZeroU32};
 pub enum ClusterSpecifier {
     Cluster(SmolStr),
     WeightedCluster(Vec<WeightedClusterSpecifier>),
+    ClusterHeader(SmolStr),
 }
 
 impl ClusterSpecifier {
@@ -33,6 +34,7 @@ impl ClusterSpecifier {
             ClusterSpecifier::WeightedCluster(clusters) => {
                 clusters.iter().map(|c| c.cluster.as_str()).collect::<Vec<_>>().join(",").into()
             },
+            ClusterSpecifier::ClusterHeader(name) => name.as_str().into(),
         }
     }
 }
@@ -86,7 +88,9 @@ mod envoy_conversions {
             match value {
                 EnvoyClusterSpecifier::Cluster(cluster) => required!(cluster).map(SmolStr::from).map(Self::Cluster),
                 EnvoyClusterSpecifier::WeightedClusters(envoy) => envoy.try_into(),
-                EnvoyClusterSpecifier::ClusterHeader(_) => Err(GenericError::unsupported_variant("ClusterHeader")),
+                EnvoyClusterSpecifier::ClusterHeader(name) => {
+                    required!(name).map(SmolStr::from).map(Self::ClusterHeader)
+                },
                 EnvoyClusterSpecifier::ClusterSpecifierPlugin(_) => {
                     Err(GenericError::unsupported_variant("ClusterSpecifierPlugin"))
                 },
@@ -126,11 +130,11 @@ mod envoy_conversions {
             )?;
             let cluster: String = required!(name)?;
             (|| -> Result<_, GenericError> {
-                // we could allow for default = 1 if missing in ng to allow equaly balanced clusters with shorthand notation
+                // we could allow for default = 1 if missing in ng to allow equally balanced clusters with shorthand notation
                 let weight = weight.map(|x| x.value).ok_or(GenericError::MissingField("weight"))?;
                 let weight = weight
                     .try_into()
-                    .map_err(|_| GenericError::from_msg("clusterweight has to be > 0"))
+                    .map_err(|_| GenericError::from_msg("cluster-weight has to be > 0"))
                     .with_node("weight")?;
                 Ok(Self { cluster: cluster.to_smolstr(), weight })
             })()
@@ -172,7 +176,7 @@ mod envoy_conversions {
             let cluster = required!(name)?.into();
             let weight = weight
                 .try_into()
-                .map_err(|_| GenericError::from_msg("clusterweight has to be > 0"))
+                .map_err(|_| GenericError::from_msg("cluster-weight has to be > 0"))
                 .with_node("weight")?;
             Ok(Self { cluster, weight })
         }

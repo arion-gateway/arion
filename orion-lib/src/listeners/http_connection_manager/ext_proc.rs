@@ -1347,7 +1347,7 @@ impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
         let response_stream = match grpc_service_specifier {
             GrpcServiceSpecifier::Cluster(cluster_name) => {
                 let cluster_spec = ClusterSpecifier::Cluster(cluster_name.clone());
-                let cluster_id = clusters_manager::resolve_cluster(&cluster_spec).ok_or_else(|| {
+                let cluster_id = clusters_manager::resolve_cluster(&cluster_spec, None).ok_or_else(|| {
                     Error::from(format!("Failed to resolve cluster '{cluster_name}' for external processor"))
                 })?;
                 let grpc_service = clusters_manager::get_grpc_connection(cluster_id, RoutingContext::None)?;

@@ -42,7 +42,7 @@ use {
     orion_format::context::{UpstreamContext, UpstreamRequest},
 };
 
-use orion_format::types::{ResponseFlagsLong, ResponseFlagsShort};
+use orion_format::types::{ResponseFlags as FmtResponseFlags, ResponseFlagsLong, ResponseFlagsShort};
 
 #[cfg(feature = "tracing")]
 use {
@@ -83,8 +83,17 @@ impl<'a> RequestHandler<(MatchedRequest<'a>, &HttpConnectionManager)> for &Route
             websocket_enabled_by_default,
         } = request;
 
-        let cluster_id = clusters_manager::resolve_cluster(&self.cluster_specifier)
-            .ok_or_else(|| "Failed to resolve cluster from specifier".to_owned())?;
+        let cluster_id = clusters_manager::resolve_cluster(&self.cluster_specifier, Some(downstream_request.headers()));
+        if cluster_id.is_none() {
+            debug!("Failed to resolve cluster from specifier {:?}", self.cluster_specifier);
+            return Ok(SyntheticHttpResponse::internal_error(
+                EventKind::Failure(EventFailure::ClusterNotFound),
+                ResponseFlags(FmtResponseFlags::NO_CLUSTER_FOUND),
+            )
+            .into_response(downstream_request.version()));
+        }
+
+        let cluster_id = cluster_id.unwrap();
         let routing_requirement = clusters_manager::get_cluster_routing_requirements(cluster_id);
         let hash_state = HashState::new(self.hash_policy.as_slice(), &downstream_request, remote_address);
         let routing_context = RoutingContext::try_from((&routing_requirement, &downstream_request, hash_state))?;
@@ -208,7 +217,7 @@ impl<'a> RequestHandler<(MatchedRequest<'a>, &HttpConnectionManager)> for &Route
                     resp => resp,
                 }
             },
-            // http connection not avaiable from cluster...
+            // http connection not available from cluster...
             Err(err) => {
                 let err = err.into_inner();
                 let event_error = EventError::try_infer_from(&err);

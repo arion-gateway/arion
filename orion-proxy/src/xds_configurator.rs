@@ -78,7 +78,7 @@ impl XdsConfigurationHandler {
         DeltaDiscoverySubscriptionManager,
     )> {
         let selector = ClusterSpecifier::Cluster(cluster_name.into());
-        let cluster_id = orion_lib::clusters::resolve_cluster(&selector)
+        let cluster_id = orion_lib::clusters::resolve_cluster(&selector, None)
             .ok_or_else(|| format!("Failed to resolve cluster {cluster_name} from specifier"))?;
         let grpc_connections = match orion_lib::clusters::all_grpc_connections(cluster_id) {
             Ok(connections) => connections,

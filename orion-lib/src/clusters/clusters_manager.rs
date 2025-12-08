@@ -30,7 +30,7 @@ use crate::{
     Result,
 };
 use crate::{body::timeout_body::TimeoutBody, PolyBody};
-use http::{uri::Authority, HeaderName, HeaderValue, Request};
+use http::{uri::Authority, HeaderMap, HeaderName, HeaderValue, Request};
 use orion_configuration::config::cluster::{Cluster as ClusterConfig, ClusterSpecifier};
 use orion_interner::StringInterner;
 use rand::{prelude::SliceRandom, thread_rng};
@@ -38,7 +38,7 @@ use std::{
     cell::RefCell,
     collections::{btree_map::Entry as BTreeEntry, BTreeMap},
 };
-use tracing::warn;
+use tracing::{debug, warn};
 
 type ClusterID = &'static str;
 type ClustersMap = BTreeMap<ClusterID, ClusterType>;
@@ -104,13 +104,28 @@ thread_local! {
     static CLUSTERS_MAP_CACHE : RefCell<CachedWatcher<'static, ClustersMap>> = RefCell::new(CLUSTERS_MAP.watcher());
 }
 
-pub fn resolve_cluster(selector: &ClusterSpecifier) -> Option<ClusterID> {
+pub fn resolve_cluster(selector: &ClusterSpecifier, header_map: Option<&HeaderMap>) -> Option<ClusterID> {
+    debug!("Resolving cluster: {:?} with header map: {:?}", selector, header_map);
     match selector {
         ClusterSpecifier::Cluster(cluster_name) => Some(cluster_name.to_static_str()),
         ClusterSpecifier::WeightedCluster(weighted_clusters) => weighted_clusters
             .choose_weighted(&mut thread_rng(), |cluster| u32::from(cluster.weight))
             .ok()
             .map(|cluster| cluster.cluster.to_static_str()),
+        ClusterSpecifier::ClusterHeader(name) => {
+            debug!("Resolving cluster header '{}'...", name);
+            if let Some(header_map) = header_map {
+                if let Some(header_value) = header_map.get(name.as_str()) {
+                    header_value.to_str().ok().map(|s| s.to_static_str())
+                } else {
+                    debug!("Header '{}' not found in the request/header map (no cluster found)", name);
+                    None
+                }
+            } else {
+                debug!("No header map provided (no cluster found)");
+                None
+            }
+        },
     }
 }
 
