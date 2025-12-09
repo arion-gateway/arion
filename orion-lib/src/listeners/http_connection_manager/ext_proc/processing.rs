@@ -131,6 +131,18 @@ impl FramesBuffer {
             self.trailers_buffer.take()
         }
     }
+
+    #[inline]
+    #[allow(unused)]
+    pub fn has_data(&self) -> bool {
+        self.data_buffer.is_some()
+    }
+
+    #[inline]
+    #[allow(unused)]
+    pub fn has_trailers(&self) -> bool {
+        self.trailers_buffer.is_some()
+    }
 }
 
 #[allow(clippy::struct_excessive_bools)]

@@ -1014,7 +1014,8 @@ impl ExternalProcessingWorker<kind::Processing> {
                                 if last_frame.is_data() { // DATA
                                   if self.overridable_modes.request.should_process_body() {
                                       debug!(target: "ext_proc", "sending the last body chunk of request");
-                                      let action = self.request_processing.handle_outgoing_body_chunk(clone_frame(&last_frame), true);
+                                      let end_of_stream = !self.request_processing.frames_buffer.has_trailers();
+                                      let action = self.request_processing.handle_outgoing_body_chunk(clone_frame(&last_frame), end_of_stream);
                                       run_action!(self, self.request_processing, action, "handle_body_chunk (last frame sent)");
                                       // save a copy of the frame to inject into the body bridge later
                                       self.request_processing.inflight_frames.push(last_frame);
@@ -1085,7 +1086,8 @@ impl ExternalProcessingWorker<kind::Processing> {
                                 if last_frame.is_data() { // DATA
                                   if self.overridable_modes.response.should_process_body() {
                                       debug!(target: "ext_proc", "sending the last body chunk of response");
-                                      let action = self.response_processing.handle_outgoing_body_chunk(clone_frame(&last_frame), true);
+                                      let end_of_stream = !self.response_processing.frames_buffer.has_trailers();
+                                      let action = self.response_processing.handle_outgoing_body_chunk(clone_frame(&last_frame), end_of_stream);
                                       run_action!(self, self.response_processing, action, "handle_body_chunk (last frame sent)");
                                       // save a copy of the frame to inject into the body bridge later
                                       self.response_processing.inflight_frames.push(last_frame);
