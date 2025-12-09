@@ -8,7 +8,7 @@ use crate::{
     },
 };
 use http::{Method, StatusCode, Version};
-use http_body_util::{BodyExt, StreamBody};
+use http_body_util::{BodyExt, Empty, StreamBody};
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::ext_proc::{
     BodyProcessingMode, ExternalProcessor as ExternalProcessorConfig, GoogleGrpc, GrpcService, GrpcServiceSpecifier,
     HeaderProcessingMode, ProcessingMode, RouteCacheAction, TrailerProcessingMode,
@@ -277,13 +277,11 @@ async fn build_request_from_mock(mock_request: &Mock<RequestMsg>) -> Request<Ins
         };
     }
 
-    let body = PolyBody::from(
-        create_collected_body_with_trailers(
-            mock_request.body.clone(),
-            if trailers_map.is_empty() { None } else { Some(trailers_map) },
-        )
-        .await,
-    );
+    let body = create_collected_body_with_trailers(
+        mock_request.body.clone(),
+        if trailers_map.is_empty() { None } else { Some(trailers_map) },
+    )
+    .await;
 
     req.body(InstrumentedBody::new(BodyKind::Request, TimeoutBody::new(None, body), |_, _, _| {})).unwrap()
 }
@@ -313,13 +311,11 @@ async fn build_response_from_mock(mock_response: &Mock<ResponseMsg>) -> Response
         };
     }
 
-    let body = PolyBody::from(
-        create_collected_body_with_trailers(
-            mock_response.body.clone(),
-            if trailers_map.is_empty() { None } else { Some(trailers_map) },
-        )
-        .await,
-    );
+    let body = create_collected_body_with_trailers(
+        mock_response.body.clone(),
+        if trailers_map.is_empty() { None } else { Some(trailers_map) },
+    )
+    .await;
 
     resp.body(TimeoutBody::new(None, body)).unwrap()
 }
@@ -456,10 +452,7 @@ fn create_headers_response<M: MsgKind>(
     ProcessingResponse { response, mode_override: None, dynamic_metadata: None, override_message_timeout: None }
 }
 
-pub async fn create_collected_body_with_trailers(
-    frames: Vec<&str>,
-    trailers: Option<http::HeaderMap>,
-) -> Collected<Bytes> {
+pub async fn create_collected_body_with_trailers(frames: Vec<&str>, trailers: Option<http::HeaderMap>) -> PolyBody {
     let mut chunks: Vec<Result<http_body::Frame<Bytes>, Infallible>> = Vec::new();
 
     for frame in frames {
@@ -471,10 +464,16 @@ pub async fn create_collected_body_with_trailers(
         chunks.push(Ok(http_body::Frame::trailers(t_map)));
     }
 
-    let body_stream = futures_util::stream::iter(chunks);
-    let body = StreamBody::new(body_stream);
+    // Collected body does not implement is_end_stream method, which always returns false by default (even for empty bodies).
+    // For this reason, we create the Collected body only when the vector of chunks is not empty.
+    // Empty instead implements is_end_stream correctly which always returns true.
 
-    BodyExt::collect(body).await.unwrap()
+    if chunks.is_empty() {
+        PolyBody::from(Empty::new())
+    } else {
+        let body_stream = futures_util::stream::iter(chunks);
+        PolyBody::from(BodyExt::collect(StreamBody::new(body_stream)).await.unwrap())
+    }
 }
 
 pub async fn to_body_data_chunks(mut body: Collected<Bytes>) -> Vec<Bytes> {
