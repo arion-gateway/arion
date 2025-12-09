@@ -33,7 +33,7 @@ use bytes::Bytes;
 use futures::{future::Either, StreamExt};
 use http::header::CONTENT_LENGTH;
 use http::{Request, Response, StatusCode};
-use http_body::Frame;
+use http_body::{Body, Frame};
 use http_body_util::Full;
 use orion_configuration::config::{
     cluster::ClusterSpecifier,
@@ -294,31 +294,37 @@ impl ExternalProcessor {
             },
             (OverridableBodyMode::Buffered | OverridableBodyMode::BufferedPartial, trailers_mode) => {
                 debug!(target: "ext_proc", "request processing body(Buffered) with trailers:{trailers_mode:?}");
-                let body = Limited::new(body, EXT_PROC_BUFFERED_BODY_LIMIT);
-                let collected = match body.collect().await {
-                    Ok(collected) => collected,
-                    Err(e) => {
-                        if let Some(_) = e.downcast_ref::<LengthLimitError>() {
+                if body.is_end_stream() {
+                    let (new_body, bridge) = ChannelBody::new(body, CHANNEL_BODY_PREFETCH_FRAMES);
+                    request.body_mut().inner.inner = PolyBody::from(new_body);
+                    bridge
+                } else {
+                    let body = Limited::new(body, EXT_PROC_BUFFERED_BODY_LIMIT);
+                    let collected = match body.collect().await {
+                        Ok(collected) => collected,
+                        Err(e) => {
+                            if let Some(_) = e.downcast_ref::<LengthLimitError>() {
+                                return self.on_filter_error(
+                                    &format!("Request body: {}", e),
+                                    None,
+                                    request.version(),
+                                    Some(StatusCode::PAYLOAD_TOO_LARGE),
+                                );
+                            }
                             return self.on_filter_error(
-                                &format!("Request body: {}", e),
+                                &format!("Error collecting request body: {}", e),
                                 None,
                                 request.version(),
-                                Some(StatusCode::PAYLOAD_TOO_LARGE),
+                                None,
                             );
-                        }
-                        return self.on_filter_error(
-                            &format!("Error collecting request body: {}", e),
-                            None,
-                            request.version(),
-                            None,
-                        );
-                    },
-                };
+                        },
+                    };
 
-                let buffered = Self::to_buffered(collected).await;
-                let (new_body, bridge) = ChannelBody::new(buffered, CHANNEL_BODY_PREFETCH_FRAMES);
-                request.body_mut().inner.inner = PolyBody::from(new_body);
-                bridge
+                    let buffered = Self::to_buffered(collected).await;
+                    let (new_body, bridge) = ChannelBody::new(buffered, CHANNEL_BODY_PREFETCH_FRAMES);
+                    request.body_mut().inner.inner = PolyBody::from(new_body);
+                    bridge
+                }
             },
         };
 
@@ -433,32 +439,37 @@ impl ExternalProcessor {
             },
             (OverridableBodyMode::Buffered | OverridableBodyMode::BufferedPartial, trailers_mode) => {
                 debug!(target: "ext_proc", "response processing body(Buffered) with trailers:{trailers_mode:?}");
-
-                let body = Limited::new(body, EXT_PROC_BUFFERED_BODY_LIMIT);
-                let collected = match body.collect().await {
-                    Ok(collected) => collected,
-                    Err(e) => {
-                        if let Some(_) = e.downcast_ref::<LengthLimitError>() {
+                if body.is_end_stream() {
+                    let (new_body, bridge) = ChannelBody::new(body, CHANNEL_BODY_PREFETCH_FRAMES);
+                    response.body_mut().inner = PolyBody::from(new_body);
+                    bridge
+                } else {
+                    let body = Limited::new(body, EXT_PROC_BUFFERED_BODY_LIMIT);
+                    let collected = match body.collect().await {
+                        Ok(collected) => collected,
+                        Err(e) => {
+                            if let Some(_) = e.downcast_ref::<LengthLimitError>() {
+                                return self.on_filter_error(
+                                    &format!("Response body: {}", e),
+                                    None,
+                                    response.version(),
+                                    Some(StatusCode::PAYLOAD_TOO_LARGE),
+                                );
+                            }
                             return self.on_filter_error(
-                                &format!("Response body: {}", e),
+                                &format!("Error collecting response body: {}", e),
                                 None,
                                 response.version(),
-                                Some(StatusCode::PAYLOAD_TOO_LARGE),
+                                None,
                             );
-                        }
-                        return self.on_filter_error(
-                            &format!("Error collecting response body: {}", e),
-                            None,
-                            response.version(),
-                            None,
-                        );
-                    },
-                };
+                        },
+                    };
 
-                let buffered = Self::to_buffered(collected).await;
-                let (new_body, bridge) = ChannelBody::new(buffered, CHANNEL_BODY_PREFETCH_FRAMES);
-                response.body_mut().inner = PolyBody::from(new_body);
-                bridge
+                    let buffered = Self::to_buffered(collected).await;
+                    let (new_body, bridge) = ChannelBody::new(buffered, CHANNEL_BODY_PREFETCH_FRAMES);
+                    response.body_mut().inner = PolyBody::from(new_body);
+                    bridge
+                }
             },
         };
 

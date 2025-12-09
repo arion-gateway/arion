@@ -520,8 +520,8 @@ impl<M: kind::Mode + Default, Msg: kind::MsgKind + OverridableModeSelector> Proc
             ));
         };
 
-        let end_of_stream = self.frame_bridge.is_empty_body() ||
-            (!override_mode.should_process_body::<Msg>() && !override_mode.should_process_trailers::<Msg>());
+        let end_of_stream = self.frame_bridge.is_empty_body()
+            || (!override_mode.should_process_body::<Msg>() && !override_mode.should_process_trailers::<Msg>());
 
         let envmap: EnvoyHeaderMap = headers.into();
 
