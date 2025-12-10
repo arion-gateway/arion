@@ -86,7 +86,7 @@ impl FramesBuffer {
     }
 
     // merge can either return a DATA frame or None
-    pub fn merge(&mut self, frame: Frame<Bytes>, now: tokio::time::Instant) -> Option<Frame<Bytes>> {
+    pub fn push(&mut self, frame: Frame<Bytes>, now: tokio::time::Instant) -> Option<Frame<Bytes>> {
         if let Some(new_data) = frame.data_ref() {
             // DATA
             if self.trailers_buffer.is_some() {
@@ -130,6 +130,18 @@ impl FramesBuffer {
         } else {
             self.trailers_buffer.take()
         }
+    }
+
+    #[inline]
+    #[allow(unused)]
+    pub fn has_data(&self) -> bool {
+        self.data_buffer.is_some()
+    }
+
+    #[inline]
+    #[allow(unused)]
+    pub fn has_trailers(&self) -> bool {
+        self.trailers_buffer.is_some()
     }
 }
 
@@ -508,8 +520,8 @@ impl<M: kind::Mode + Default, Msg: kind::MsgKind + OverridableModeSelector> Proc
             ));
         };
 
-        let end_of_stream =
-            !override_mode.should_process_body::<Msg>() && !override_mode.should_process_trailers::<Msg>();
+        let end_of_stream = self.frame_bridge.is_empty_body()
+            || (!override_mode.should_process_body::<Msg>() && !override_mode.should_process_trailers::<Msg>());
 
         let envmap: EnvoyHeaderMap = headers.into();
 
