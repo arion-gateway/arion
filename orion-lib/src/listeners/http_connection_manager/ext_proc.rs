@@ -64,7 +64,7 @@ use std::future::ready;
 use std::{sync::Arc, time::Duration};
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::{mpsc, oneshot};
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 const CHANNEL_BODY_PREFETCH_FRAMES: usize = 4;
 const EXT_PROC_FRAME_MERGE_LIMIT: u32 = 4; // max number of frames to merge in streaming mode
@@ -381,7 +381,7 @@ impl ExternalProcessor {
                 FilterDecision::Continue
             },
             Ok(ProcessingStatus::ResponseReady(ReadyStatus { .. })) => {
-                warn!(target: "ext_proc", "apply_request: unexpected ResponseReady...");
+                warn!(target: "ext_proc", "apply_request: unexpected ResponseReady!");
                 return self.on_filter_error(
                     "Unexpected ResponseReady status received during request processing",
                     None,
@@ -523,7 +523,7 @@ impl ExternalProcessor {
                 FilterDecision::Continue
             },
             Ok(ProcessingStatus::RequestReady(ReadyStatus { .. })) => {
-                warn!(target: "ext_proc", "apply_response: unexpected RequestReady...");
+                warn!(target: "ext_proc", "apply_response: unexpected RequestReady!");
                 return self.on_filter_error(
                     "Unexpected RequestReady status received during response processing",
                     None,
@@ -572,9 +572,9 @@ impl ExternalProcessor {
         status_code: Option<StatusCode>,
     ) -> FilterDecision {
         if let Some(err) = error {
-            warn!(target: "ext_proc","{msg}: {err}");
+            info!(target: "ext_proc","{msg}: {err}");
         } else {
-            warn!(target: "ext_proc", "{msg}");
+            info!(target: "ext_proc", "{msg}");
         }
         if self.worker_config.failure_mode_allow {
             FilterDecision::Continue
@@ -774,13 +774,13 @@ impl ExternalProcessingWorker<kind::Processing> {
 
     async fn recover_or_failure(&mut self, err: ExtProcError, log_msg: &str) {
         if self.config.failure_mode_allow {
-            warn!(target: "ext_proc", "{} - continue (failure_mode_allow is true)", log_msg);
+            info!(target: "ext_proc", "{} - continue (failure_mode_allow is true)", log_msg);
             self.request_processing.inject_inflight_frames_and_complete().await;
             self.request_processing.frame_bridge_close(&mut self.timeout_state.active).await;
             self.response_processing.inject_inflight_frames_and_complete().await;
             self.response_processing.frame_bridge_close(&mut self.timeout_state.active).await;
         } else {
-            warn!(target: "ext_proc", "{} - abort (failure_mode_allow is false)", log_msg);
+            info!(target: "ext_proc", "{} - abort (failure_mode_allow is false)", log_msg);
             _ = self.request_processing.frame_bridge.inject_frame(Err(Box::new(err.clone()))).await;
             self.request_processing.frame_bridge_close(&mut self.timeout_state.active).await;
             _ = self.response_processing.frame_bridge.inject_frame(Err(Box::new(err.clone()))).await;
@@ -865,7 +865,7 @@ impl ExternalProcessingWorker<kind::Processing> {
                         Ok(Some(ProcessingResponse { response: Some(ProcessingResponseType::ImmediateResponse(response_attempt)), ..})) => {
                             debug!(target: "ext_proc", "<- ImmediateResponse received");
                             if self.config.disable_immediate_response {
-                                warn!(target: "ext_proc", "External processor attempted to send immediate response which is disabled by config");
+                                info!(target: "ext_proc", "External processor attempted to send immediate response which is disabled by config");
 
                                  if self.config.failure_mode_allow {
                                      with_current_processing!(self, processing,
@@ -1402,7 +1402,7 @@ impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
 
         match send_outcome {
             Some(Err(err)) => {
-                warn!(target: "ext_proc", "External processor is unavailable: {err}");
+                info!(target: "ext_proc", "External processor is unavailable: {err}");
                 if let Some(reply_channel) = self.response_processing.reply_channel.take() {
                     let _ = reply_channel.send(
                         self.response_processing
@@ -1443,12 +1443,12 @@ impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
         let mut timeout_duration =
             Duration::from_secs(extended_timeout.seconds as u64) + Duration::from_nanos(extended_timeout.nanos as u64);
         if timeout_duration < Duration::from_millis(1) {
-            warn!(target:"ext_proc", "External processor: override_message_timeout must be >= 1ms");
+            info!(target:"ext_proc", "External processor: override_message_timeout must be >= 1ms");
             timeout_duration = self.config.message_timeout;
         }
         if let Some(max_timeout) = self.config.max_message_timeout {
             if timeout_duration > max_timeout {
-                warn!(target:"ext_proc", "External processor: attempted to override message timeout to value > max_message_timeout (defaulting to max_message_timeout)");
+                info!(target:"ext_proc", "External processor: attempted to override message timeout to value > max_message_timeout (defaulting to max_message_timeout)");
                 timeout_duration = max_timeout;
             }
         }
