@@ -991,11 +991,10 @@ impl ExternalProcessingWorker<kind::Processing> {
                     debug!(target: "ext_proc", "outbound request body frame: {:?}", TruncatedDebug::<_,1024>(&outbound_request_body_frame));
                     match outbound_request_body_frame {
                         Some(Ok(frame)) => {
-                            let now = tokio::time::Instant::now();
                             let body_mode = self.overridable_modes.request.body_mode();
 
                             debug!(target: "ext_proc", "outbound request body frame: buffering frame...");
-                            if let Some(frame_to_send) = self.request_processing.frames_buffer.merge(frame, now) {
+                            if let Some(frame_to_send) = self.request_processing.frames_buffer.push(frame, tokio::time::Instant::now()) {
                                 // invariant: frame_to_send is always a DATA frame at this point. TRAILERS are sent later.
                                 match body_mode {
                                     OverridableBodyMode::None => { // body processing is disabled, just inject back the frame
@@ -1019,7 +1018,7 @@ impl ExternalProcessingWorker<kind::Processing> {
                         },
                         None => {
                             request_body_to_ext_proc_complete = true;
-                            debug!(target: "ext_proc", "request body stream complete!");
+                            debug!(target: "ext_proc", "request body stream completing...");
 
                             while let Some(last_frame) = self.request_processing.frames_buffer.take() {
                                 if last_frame.is_data() { // DATA
@@ -1042,7 +1041,7 @@ impl ExternalProcessingWorker<kind::Processing> {
                                         // save a copy of the frame to inject into the body bridge later
                                         self.request_processing.inflight_frames.push(last_frame);
                                     } else {
-                                        debug!(target: "ext_proc", "injecting the last body chunk of request into the body");
+                                        debug!(target: "ext_proc", "parking the trailers chunk to avoid out-of-order delivery");
                                         self.request_processing.parked_trailers = Some(last_frame);
                                     }
                                 }
@@ -1059,15 +1058,13 @@ impl ExternalProcessingWorker<kind::Processing> {
                 },
 
                 outbound_response_body_frame = self.response_processing.frame_bridge.next(), if outbound_resp_enabled => {
-
                     debug!(target: "ext_proc", "outbound response body frame: {:?}", TruncatedDebug::<_,1024>(&outbound_response_body_frame));
                     match outbound_response_body_frame {
                         Some(Ok(frame)) => {
-                            let now = tokio::time::Instant::now();
                             let body_mode = self.overridable_modes.response.body_mode();
 
                             debug!(target: "ext_proc", "outbound response body frame: buffering frame...");
-                            if let Some(frame_to_send) = self.response_processing.frames_buffer.merge(frame, now) {
+                            if let Some(frame_to_send) = self.response_processing.frames_buffer.push(frame, tokio::time::Instant::now()) {
                                 // invariant: frame_to_send is always a DATA frame at this point. TRAILERS are sent later.
                                 match body_mode {
                                     OverridableBodyMode::None => { // body processing is disabled, just inject back the frame
@@ -1091,7 +1088,7 @@ impl ExternalProcessingWorker<kind::Processing> {
                         },
                         None => {
                             response_body_to_ext_proc_complete = true;
-                            debug!(target: "ext_proc", "response body stream complete!");
+                            debug!(target: "ext_proc", "response body stream completing...");
 
                             while let Some(last_frame) = self.response_processing.frames_buffer.take() {
                                 if last_frame.is_data() { // DATA
@@ -1114,7 +1111,7 @@ impl ExternalProcessingWorker<kind::Processing> {
                                         // save a copy of the frame to inject into the body bridge later
                                         self.response_processing.inflight_frames.push(last_frame);
                                     } else {
-                                        debug!(target: "ext_proc", "injecting the last body chunk of response into the body");
+                                        debug!(target: "ext_proc", "parking the trailers chunk to avoid out-of-order delivery");
                                         self.response_processing.parked_trailers = Some(last_frame);
                                     }
                                 }
@@ -1206,13 +1203,19 @@ impl ExternalProcessingWorker<kind::Observability> {
                     debug!(target: "ext_proc", "outbound request body frame: {:?}", TruncatedDebug::<_,1024>(&outbound_request_body_frame));
                     match outbound_request_body_frame {
                         Some(Ok(frame)) => {
-                            // send the current frame and inject back into the body bridge...
-                            debug!(target: "ext_proc", "sending body chunk of request ({})",  if frame.is_data() { "DATA" } else { "TRAILERS" });
-                            let action = self.request_processing.handle_outgoing_body_chunk(clone_frame(&frame), false);
-                            run_action!(self, self.request_processing, action, "handle_body_chunk");
-                            _ = self.request_processing.frame_bridge.inject_frame(Ok(frame)).await;
-                            let action = Action::Return(ProcessingStatus::RequestReady(ReadyStatus::default()));
-                            run_action!(self, self.request_processing, action, "handle_body_chunk (returning after first chunk)");
+                            debug!(target: "ext_proc", "outbound request body frame: buffering frame...");
+                            if let Some(frame_to_send) = self.request_processing.frames_buffer.push(frame, tokio::time::Instant::now()) {
+                                if self.overridable_modes.request.should_process_body() {
+                                    _ = self.request_processing.frame_bridge.inject_frame(Ok(clone_frame(&frame_to_send))).await;
+                                    debug!(target: "ext_proc", "outbound request body frame: sending body chunk of request ({})",  if frame_to_send.is_data() { "DATA" } else { "TRAILERS" });
+                                    let action = self.request_processing.handle_outgoing_body_chunk(frame_to_send, false);
+                                    run_action!(self, self.request_processing, action, "handle_body_chunk (merged frame sent)");
+
+                                } else {
+                                    debug!(target: "ext_proc", "outbound request body frame: injecting the frame DATA into the body");
+                                    _ = self.request_processing.frame_bridge.inject_frame(Ok(frame_to_send)).await;
+                                }
+                            }
                         },
                         Some(Err(_err)) => {
                             request_body_to_ext_proc_complete = true;
@@ -1220,27 +1223,58 @@ impl ExternalProcessingWorker<kind::Observability> {
                             self.request_processing.status_error("error occurred when streaming request body to external processing", self.config.failure_mode_allow);
                         },
                         None => {
-                            debug!(target: "ext_proc", "request body stream ended!");
                             request_body_to_ext_proc_complete = true;
-                            self.request_processing.end_of_stream = true;
-                            self.request_processing.frame_bridge_close(&mut self.timeout_state.active).await;
+                            debug!(target: "ext_proc", "request body stream completing...");
+
+                            while let Some(last_frame) = self.request_processing.frames_buffer.take() {
+                                if last_frame.is_data() { // DATA
+                                  if self.overridable_modes.request.should_process_body() {
+                                      debug!(target: "ext_proc", "sending the last data chunk of request");
+                                      _ = self.request_processing.frame_bridge.inject_frame(Ok(clone_frame(&last_frame))).await;
+                                      let end_of_stream = !self.request_processing.frames_buffer.has_trailers();
+                                      let action = self.request_processing.handle_outgoing_body_chunk(last_frame, end_of_stream);
+                                      run_action!(self, self.request_processing, action, "handle_body_chunk (last data frame sent)");
+                                  } else {
+                                      debug!(target: "ext_proc", "injecting the last data chunk of request into the body");
+                                      _ = self.request_processing.frame_bridge.inject_frame(Ok(last_frame)).await;
+                                  }
+                                } else { // TRAILERS
+                                    if self.overridable_modes.request.should_process_trailers() {
+                                        debug!(target: "ext_proc", "sending trailers chunk of request");
+                                        _ = self.request_processing.frame_bridge.inject_frame(Ok(clone_frame(&last_frame))).await;
+                                        let action = self.request_processing.handle_outgoing_body_chunk(last_frame, true);
+                                        run_action!(self, self.request_processing, action, "handle_body_chunk (trailer frame sent)");
+                                    } else {
+                                        debug!(target: "ext_proc", "injecting the trailers chunk of request into the body");
+                                        _ = self.request_processing.frame_bridge.inject_frame(Ok(last_frame)).await;
+                                    }
+                                }
+                            }
+
                             let action = Action::Return(ProcessingStatus::RequestReady(ReadyStatus::default()));
-                            run_action!(self, self.request_processing, action, "handle_body_chunk (end)");
+                            run_action!(self, self.request_processing, action, "request streaming completed");
+                            self.request_processing.end_of_stream = true;
                         }
                     }
                 },
 
                 outbound_response_body_frame = self.response_processing.frame_bridge.next(), if outbound_resp_enabled => {
-                    debug!(target: "ext_proc", "outbound response body frame: {outbound_response_body_frame:?}");
+                    debug!(target: "ext_proc", "outbound response body frame: {:?}", TruncatedDebug::<_,1024>(&outbound_response_body_frame));
                     match outbound_response_body_frame {
                         Some(Ok(frame)) => {
-                            // send the current frame and inject back into the body bridge...
-                            debug!(target: "ext_proc", "sending body chunk of request ({})",  if frame.is_data() { "DATA" } else { "TRAILERS" });
-                            let action = self.response_processing.handle_outgoing_body_chunk(clone_frame(&frame), false);
-                            run_action!(self, self.response_processing, action, "handle_body_chunk");
-                            _ = self.response_processing.frame_bridge.inject_frame(Ok(frame)).await;
-                            let action = Action::Return(ProcessingStatus::ResponseReady(ReadyStatus::default()));
-                            run_action!(self, self.response_processing, action, "handle_body_chunk (returning after first chunk)");
+                            debug!(target: "ext_proc", "outbound response body frame: buffering frame...");
+                            if let Some(frame_to_send) = self.response_processing.frames_buffer.push(frame, tokio::time::Instant::now()) {
+                                if self.overridable_modes.response.should_process_body() {
+                                    _ = self.response_processing.frame_bridge.inject_frame(Ok(clone_frame(&frame_to_send))).await;
+                                    debug!(target: "ext_proc", "outbound response body frame: sending body chunk of response ({})",  if frame_to_send.is_data() { "DATA" } else { "TRAILERS" });
+                                    let action = self.response_processing.handle_outgoing_body_chunk(frame_to_send, false);
+                                    run_action!(self, self.response_processing, action, "handle_body_chunk (merged frame sent)");
+
+                                } else {
+                                    debug!(target: "ext_proc", "outbound response body frame: injecting the frame DATA into the body");
+                                    _ = self.response_processing.frame_bridge.inject_frame(Ok(frame_to_send)).await;
+                                }
+                            }
                         },
                         Some(Err(_err)) => {
                             response_body_to_ext_proc_complete = true;
@@ -1248,14 +1282,44 @@ impl ExternalProcessingWorker<kind::Observability> {
                             self.response_processing.status_error("error occurred when streaming response body to external processing", self.config.failure_mode_allow);
                         },
                         None => {
-                            debug!(target: "ext_proc", "request body stream ended!");
                             response_body_to_ext_proc_complete = true;
-                            self.response_processing.end_of_stream = true;
-                            self.response_processing.frame_bridge_close(&mut self.timeout_state.active).await;
+                            debug!(target: "ext_proc", "response body stream completing...");
+
+                            while let Some(last_frame) = self.response_processing.frames_buffer.take() {
+                                if last_frame.is_data() { // DATA
+                                  if self.overridable_modes.response.should_process_body() {
+                                      debug!(target: "ext_proc", "sending the last data chunk of response");
+                                      _ = self.response_processing.frame_bridge.inject_frame(Ok(clone_frame(&last_frame))).await;
+                                      let end_of_stream = !self.response_processing.frames_buffer.has_trailers();
+                                      let action = self.response_processing.handle_outgoing_body_chunk(last_frame, end_of_stream);
+                                      run_action!(self, self.response_processing, action, "handle_body_chunk (last data frame sent)");
+                                  } else {
+                                      debug!(target: "ext_proc", "injecting the last data chunk of response into the body");
+                                      _ = self.response_processing.frame_bridge.inject_frame(Ok(last_frame)).await;
+                                  }
+                                } else { // TRAILERS
+                                    if self.overridable_modes.response.should_process_trailers() {
+                                        debug!(target: "ext_proc", "sending trailers chunk of response");
+                                        _ = self.response_processing.frame_bridge.inject_frame(Ok(clone_frame(&last_frame))).await;
+                                        let action = self.response_processing.handle_outgoing_body_chunk(last_frame, true);
+                                        run_action!(self, self.response_processing, action, "handle_body_chunk (trailer frame sent)");
+                                    } else {
+                                        debug!(target: "ext_proc", "injecting the trailers chunk of response into the body");
+                                        _ = self.response_processing.frame_bridge.inject_frame(Ok(last_frame)).await;
+                                    }
+                                }
+                            }
+
                             let action = Action::Return(ProcessingStatus::ResponseReady(ReadyStatus::default()));
-                            run_action!(self, self.response_processing, action, "handle_body_chunk (end)");
+                            run_action!(self, self.response_processing, action, "response streaming completed");
+                            self.response_processing.end_of_stream = true;
                         }
                     }
+                },
+
+                _ = std::future::ready(()), if streaming_enabled && !outbound_req_enabled && !outbound_resp_enabled => {
+                    debug!(target: "ext_proc", "no outbound request or response enabled (observability terminating...)");
+                    break 'transaction_loop;
                 }
             }
         }

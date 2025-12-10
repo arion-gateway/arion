@@ -86,7 +86,7 @@ impl FramesBuffer {
     }
 
     // merge can either return a DATA frame or None
-    pub fn merge(&mut self, frame: Frame<Bytes>, now: tokio::time::Instant) -> Option<Frame<Bytes>> {
+    pub fn push(&mut self, frame: Frame<Bytes>, now: tokio::time::Instant) -> Option<Frame<Bytes>> {
         if let Some(new_data) = frame.data_ref() {
             // DATA
             if self.trailers_buffer.is_some() {
