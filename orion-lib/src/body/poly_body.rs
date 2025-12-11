@@ -19,7 +19,7 @@ use super::timeout_body::TimeoutBodyError;
 use crate::body::channel_body::ChannelBody;
 use crate::Error;
 use bytes::Bytes;
-use http_body::Frame;
+use http_body::{Frame, SizeHint};
 use http_body_util::combinators::WithTrailers;
 use http_body_util::{BodyExt, Collected, Empty, Full, StreamBody};
 use hyper::body::{Body, Incoming};
@@ -169,6 +169,21 @@ impl Body for PolyBody {
             PolyBody::FullWithTrailers(w) => w.is_end_stream(),
             PolyBody::EmptyWithTrailers(w) => w.is_end_stream(),
             PolyBody::CollectedWithTrailers(w) => w.is_end_stream(),
+        }
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        match self {
+            PolyBody::Empty(e) => e.size_hint(),
+            PolyBody::Full(f) => f.size_hint(),
+            PolyBody::Incoming(i) => i.size_hint(),
+            PolyBody::Grpc(g) => g.size_hint(),
+            PolyBody::Stream(s) => s.size_hint(),
+            PolyBody::ChannelBody(m) => m.size_hint(),
+            PolyBody::Collected(s) => s.size_hint(),
+            PolyBody::FullWithTrailers(w) => w.size_hint(),
+            PolyBody::EmptyWithTrailers(w) => w.size_hint(),
+            PolyBody::CollectedWithTrailers(w) => w.size_hint(),
         }
     }
 }

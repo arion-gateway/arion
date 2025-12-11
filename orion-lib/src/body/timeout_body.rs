@@ -26,7 +26,7 @@
 /// 1. Unpin: The original `TimeoutBody` is !Unpin, while this version is Unpin to enable use in certain asynchronous contexts.
 /// 2. Optional Timeout: The timeout is wrapped in `Option`, allowing for cases where a timeout may not be necessary.
 ///
-use http_body::Body;
+use http_body::{Body, SizeHint};
 use pin_project::pin_project;
 use pingora_timeout::{
     fast_timeout::{fast_timeout, FastTimeout},
@@ -124,6 +124,10 @@ where
 
     fn is_end_stream(&self) -> bool {
         self.inner.is_end_stream()
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        self.inner.size_hint()
     }
 }
 

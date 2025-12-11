@@ -14,6 +14,7 @@ pub struct ChannelBody {
     prefetch: VecDeque<Option<FrameResult>>,
     prefetch_num_frames: usize,
     stream: ReceiverStream<FrameResult>,
+    is_end_stream: bool,
 }
 
 impl ChannelBody {
@@ -36,7 +37,7 @@ impl ChannelBody {
         // Create the bridge with the original body
         let bridge = FrameBridge::new(body, tx);
 
-        (ChannelBody { stream: stream_of_body, prefetch: VecDeque::new(), prefetch_num_frames }, bridge)
+        (ChannelBody { stream: stream_of_body, prefetch: VecDeque::new(), prefetch_num_frames, is_end_stream: false }, bridge)
     }
 
     /// Asynchronously waits until the given number of frames are available in the body.
@@ -46,9 +47,9 @@ impl ChannelBody {
         self.prefetch.reserve(self.prefetch_num_frames);
         for _ in 0..self.prefetch_num_frames {
             let r = Pin::new(&mut self.stream).next().await;
-            let end_of_stream = r.is_none();
+            self.is_end_stream = r.is_none();
             self.prefetch.push_back(r);
-            if end_of_stream {
+            if self.is_end_stream {
                 return;
             }
         }
@@ -71,7 +72,11 @@ impl Body for ChannelBody {
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
         while self.prefetch.len() < self.prefetch_num_frames {
             if let Poll::Ready(something) = Pin::new(&mut self.stream).poll_next(cx) {
+                self.is_end_stream = something.is_none();
                 self.prefetch.push_back(something);
+                if self.is_end_stream {
+                    break;
+                }
             } else {
                 break;
             }
@@ -81,15 +86,34 @@ impl Body for ChannelBody {
             return Poll::Ready(frame);
         }
 
+        if self.is_end_stream {
+            return Poll::Ready(None);
+        }
+
         Poll::Pending
     }
 
     fn is_end_stream(&self) -> bool {
-        false
+        self.is_end_stream && self.prefetch.is_empty()
     }
 
     fn size_hint(&self) -> SizeHint {
-        SizeHint::default()
+        // Calculates the length of all data frames currently in the prefetch buffer.
+        // Iterates over options, flattens them, extracts data frames, and sums their lengths.
+        let prefetched_len: u64 = self.prefetch.iter()
+            .flatten()
+            .filter_map(|res| res.as_ref().ok()) // ignoring any Err in the buffer for the size calculation.
+            .filter_map(|f| f.data_ref()) // Keeps only frames with some data (ignores trailers), returns &Data
+            .map(|b| b.len() as u64)
+            .sum();
+
+        if self.is_end_stream {
+            SizeHint::with_exact(prefetched_len)
+        } else {
+            let mut sh = SizeHint::new();
+            sh.set_lower(prefetched_len);
+            sh
+        }
     }
 }
 
@@ -102,7 +126,7 @@ impl Body for ChannelBody {
 pub struct FrameBridge {
     body_stream: Pin<Box<dyn Stream<Item = FrameResult> + Send>>,
     injector: Option<mpsc::Sender<FrameResult>>,
-    is_empty_body: bool,
+    orig_empty_body: bool,
 }
 
 impl std::fmt::Debug for FrameBridge {
@@ -113,7 +137,7 @@ impl std::fmt::Debug for FrameBridge {
 
 impl Default for FrameBridge {
     fn default() -> Self {
-        Self { body_stream: Box::pin(futures::stream::empty()), injector: None, is_empty_body: true }
+        Self { body_stream: Box::pin(futures::stream::empty()), injector: None, orig_empty_body: true }
     }
 }
 
@@ -129,7 +153,7 @@ impl FrameBridge {
         let body_stream: Pin<Box<dyn Stream<Item = FrameResult> + Send>> =
             Box::pin(http_body_util::BodyStream::new(body).map(|result| result.map_err(Into::into)));
 
-        Self { body_stream, injector: Some(injector), is_empty_body: end_of_stream }
+        Self { body_stream, injector: Some(injector), orig_empty_body: end_of_stream }
     }
 
     /// Close the `FrameBridge` to prevent further frame injections.
@@ -245,8 +269,8 @@ impl FrameBridge {
     }
 
     /// Check if the `FrameBridge` has been constructed with an empty body.
-    pub fn is_empty_body(&self) -> bool {
-        self.is_empty_body
+    pub fn is_orig_empty_body(&self) -> bool {
+        self.orig_empty_body
     }
 }
 
