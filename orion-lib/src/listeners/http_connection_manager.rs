@@ -26,8 +26,10 @@
 mod direct_response;
 mod ext_proc;
 use ext_proc::ExternalProcessor;
+use jwt_authn::JwtAuthentication;
 use smallvec::SmallVec;
 pub mod http_modifiers;
+pub mod jwt_authn;
 mod redirect;
 mod route;
 mod upgrades;
@@ -208,6 +210,7 @@ pub enum HttpFilterValue {
     RateLimit(LocalRateLimit),
     Rbac(HttpRbac),
     ExternalProcessor(ExternalProcessor),
+    JwtAuthentication(JwtAuthentication),
 }
 
 impl From<HttpFilterConfig> for HttpFilter {
@@ -220,9 +223,10 @@ impl From<HttpFilterConfig> for HttpFilter {
         let HttpFilterConfig { name, disabled, filter } = value;
 
         let filter = match filter {
-            HttpFilterType::RateLimit(r) => HttpFilterValue::RateLimit(r.into()),
-            HttpFilterType::Rbac(rbac) => HttpFilterValue::Rbac(HttpRbac::new(&rbac)),
-            HttpFilterType::ExternalProcessor(ext_proc) => HttpFilterValue::ExternalProcessor(ext_proc.into()),
+            HttpFilterType::RateLimit(conf) => HttpFilterValue::RateLimit(conf.into()),
+            HttpFilterType::Rbac(conf) => HttpFilterValue::Rbac(HttpRbac::new(&conf)),
+            HttpFilterType::ExternalProcessor(conf) => HttpFilterValue::ExternalProcessor(conf.into()),
+            HttpFilterType::JwtAuthentication(conf) => HttpFilterValue::JwtAuthentication(JwtAuthentication::new(conf)),
         };
         Self { name, disabled, filter: Some(filter), base_config: hcm_config }
     }
@@ -237,6 +241,7 @@ impl HttpFilterValue {
             HttpFilterValue::Rbac(rbac) => apply_authorization_rules(rbac, request),
             HttpFilterValue::RateLimit(rl) => rl.run(request),
             HttpFilterValue::ExternalProcessor(ext_proc) => ext_proc.apply_request(request).await,
+            HttpFilterValue::JwtAuthentication(jwt) => jwt.apply_request(request).await,
         }
     }
     pub async fn apply_response(&mut self, response: &mut Response<TimeoutBody<PolyBody>>) -> FilterDecision {
@@ -244,6 +249,7 @@ impl HttpFilterValue {
             // RBAC and RateLimit do not apply on the response path
             HttpFilterValue::Rbac(_) | HttpFilterValue::RateLimit(_) => FilterDecision::Continue,
             HttpFilterValue::ExternalProcessor(ext_proc) => ext_proc.apply_response(response).await,
+            HttpFilterValue::JwtAuthentication(_) =>  FilterDecision::Continue,
         }
     }
     fn from_filter_override(value: &FilterOverride, base_config: Option<&HttpFilterConfig>) -> Option<Self> {

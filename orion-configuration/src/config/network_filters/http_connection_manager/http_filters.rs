@@ -23,6 +23,7 @@ use local_rate_limit::LocalRateLimit;
 pub mod ext_proc;
 pub use ext_proc::{ExtProcPerRoute, ExternalProcessor};
 pub mod router;
+pub mod jwt;
 
 use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -62,10 +63,13 @@ pub enum HttpFilterType {
     Rbac(HttpRbac),
     RateLimit(LocalRateLimit),
     ExternalProcessor(ExternalProcessor),
+    JwtAuthentication(JwtAuthentication),
 }
 
 #[cfg(feature = "envoy-conversions")]
 pub(crate) use envoy_conversions::*;
+
+use crate::config::network_filters::http_connection_manager::http_filters::jwt::JwtAuthentication;
 
 use super::is_default;
 
@@ -87,6 +91,7 @@ mod envoy_conversions {
                     local_ratelimit::v3::LocalRateLimit as EnvoyLocalRateLimit,
                     rbac::v3::{Rbac as EnvoyRbac, RbacPerRoute as EnvoyRbacPerRoute},
                     router::v3::Router as EnvoyRouter,
+                    jwt_authn::v3::JwtAuthentication as EnvoyJwtAuthentication,
                 },
                 network::http_connection_manager::v3::{
                     http_filter::ConfigType as EnvoyConfigType, HttpFilter as EnvoyHttpFilter,
@@ -141,6 +146,9 @@ mod envoy_conversions {
                 SupportedEnvoyFilter::Router(_) => {
                     Err(GenericError::from_msg("router filter has to be the last filter in the chain"))
                 },
+                SupportedEnvoyFilter::JwtAuthentication(jwt) => {
+                    jwt.try_into().map(Self::JwtAuthentication)
+                }
             }
         }
     }
@@ -152,6 +160,7 @@ mod envoy_conversions {
         Rbac(EnvoyRbac),
         Router(EnvoyRouter),
         ExternalProcessor(EnvoyExternalProcessor),
+        JwtAuthentication(EnvoyJwtAuthentication),
     }
 
     impl TryFrom<Any> for SupportedEnvoyFilter {
@@ -169,6 +178,9 @@ mod envoy_conversions {
                 },
                 "type.googleapis.com/envoy.extensions.filters.http.router.v3.Router" => {
                     EnvoyRouter::decode(typed_config.value.as_slice()).map(Self::Router)
+                },
+                "type.googleapis.com/envoy.extensions.filters.http.jwt_authn.v3.JwtAuthentication" => {
+                    EnvoyJwtAuthentication::decode(typed_config.value.as_slice()).map(Self::JwtAuthentication)
                 },
                 _ => return Err(GenericError::unsupported_variant(typed_config.type_url)),
             }

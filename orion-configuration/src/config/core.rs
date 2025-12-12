@@ -262,8 +262,6 @@ pub mod envoy_conversions {
         google::protobuf::Duration as EnvoyDuration,
     };
 
-    pub struct CidrRange(IpNet);
-
     impl TryFrom<EnvoyDuration> for Duration {
         type Error = GenericError;
 
@@ -276,6 +274,8 @@ pub mod envoy_conversions {
             Ok(Duration(std::time::Duration::new(seconds as u64, nanos as u32)))
         }
     }
+
+    pub struct CidrRange(IpNet);
 
     impl CidrRange {
         pub fn into_ipnet(self) -> IpNet {
