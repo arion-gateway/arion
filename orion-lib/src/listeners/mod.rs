@@ -22,5 +22,6 @@ pub(crate) mod http_connection_manager;
 pub(crate) mod listener;
 pub(crate) mod listeners_manager;
 pub(crate) mod rate_limiter;
+pub(crate) mod rbac;
 pub(crate) mod synthetic_http_response;
 pub(crate) mod tcp_proxy;

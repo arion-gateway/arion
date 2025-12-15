@@ -37,7 +37,15 @@ impl ChannelBody {
         // Create the bridge with the original body
         let bridge = FrameBridge::new(body, tx);
 
-        (ChannelBody { stream: stream_of_body, prefetch: VecDeque::new(), prefetch_num_frames, is_end_stream: false }, bridge)
+        (
+            ChannelBody {
+                stream: stream_of_body,
+                prefetch: VecDeque::new(),
+                prefetch_num_frames,
+                is_end_stream: false,
+            },
+            bridge,
+        )
     }
 
     /// Asynchronously waits until the given number of frames are available in the body.
@@ -100,7 +108,9 @@ impl Body for ChannelBody {
     fn size_hint(&self) -> SizeHint {
         // Calculates the length of all data frames currently in the prefetch buffer.
         // Iterates over options, flattens them, extracts data frames, and sums their lengths.
-        let prefetched_len: u64 = self.prefetch.iter()
+        let prefetched_len: u64 = self
+            .prefetch
+            .iter()
             .flatten()
             .filter_map(|res| res.as_ref().ok()) // ignoring any Err in the buffer for the size calculation.
             .filter_map(|f| f.data_ref()) // Keeps only frames with some data (ignores trailers), returns &Data

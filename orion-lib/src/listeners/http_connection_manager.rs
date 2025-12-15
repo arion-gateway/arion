@@ -85,11 +85,12 @@ use orion_configuration::config::network_filters::http_connection_manager::http_
 };
 use orion_configuration::config::network_filters::http_connection_manager::route::RouteMatch;
 use orion_configuration::config::network_filters::http_connection_manager::{
-    http_filters::{http_rbac::HttpRbac, HttpFilter as HttpFilterConfig, HttpFilterType},
+    http_filters::{HttpFilter as HttpFilterConfig, HttpFilterType},
     route::{Action, RouteMatchResult},
     CodecType, ConfigSource, ConfigSourceSpecifier, HttpConnectionManager as HttpConnectionManagerConfig, RdsSpecifier,
     RouteSpecifier, UpgradeType,
 };
+
 use orion_configuration::config::network_filters::http_connection_manager::{Route, VirtualHost, XffSettings};
 use orion_configuration::config::network_filters::tracing::{TracingConfig, TracingKey};
 use orion_configuration::config::GenericError;
@@ -112,7 +113,8 @@ use crate::{
     },
     event_error::EventFailure,
     listeners::{
-        filter_state::DownstreamMetadata, rate_limiter::LocalRateLimit, synthetic_http_response::SyntheticHttpResponse,
+        filter_state::DownstreamMetadata, rate_limiter::LocalRateLimit, rbac::HttpRbac,
+        synthetic_http_response::SyntheticHttpResponse,
     },
     with_client_span, with_metric, with_server_span, ConversionContext, PolyBody, Result, RouteConfiguration,
 };
@@ -204,8 +206,6 @@ pub struct HttpFilter {
 
 #[derive(Debug, Clone)]
 pub enum HttpFilterValue {
-    // todo(francesco): In this enum the RateLimit variant uses a runtime type
-    // while Rbac uses a configuration type - we might want to revisit this
     RateLimit(LocalRateLimit),
     Rbac(HttpRbac),
     ExternalProcessor(ExternalProcessor),
@@ -222,7 +222,7 @@ impl From<HttpFilterConfig> for HttpFilter {
 
         let filter = match filter {
             HttpFilterType::RateLimit(r) => HttpFilterValue::RateLimit(r.into()),
-            HttpFilterType::Rbac(rbac) => HttpFilterValue::Rbac(rbac),
+            HttpFilterType::Rbac(rbac) => HttpFilterValue::Rbac(HttpRbac::new(&rbac)),
             HttpFilterType::ExternalProcessor(ext_proc) => HttpFilterValue::ExternalProcessor(ext_proc.into()),
         };
         Self { name, disabled, filter: Some(filter), base_config: hcm_config }
@@ -251,7 +251,7 @@ impl HttpFilterValue {
         match &value.filter_settings {
             Some(filter_settings) => match filter_settings {
                 FilterConfigOverride::LocalRateLimit(rl) => Some(HttpFilterValue::RateLimit((*rl).into())),
-                FilterConfigOverride::Rbac(Some(rbac)) => Some(HttpFilterValue::Rbac(rbac.clone())),
+                FilterConfigOverride::Rbac(Some(rbac)) => Some(HttpFilterValue::Rbac(HttpRbac::new(&rbac))),
                 FilterConfigOverride::Rbac(None) => None,
                 FilterConfigOverride::ExternalProcessor(ext_proc_per_route) => {
                     if let Some(HttpFilterConfig { filter: HttpFilterType::ExternalProcessor(base_config), .. }) =
@@ -1315,7 +1315,7 @@ fn eval_http_finish_context(
 
 fn apply_authorization_rules<B>(rbac: &HttpRbac, req: &Request<B>) -> FilterDecision {
     debug!("Applying authorization rules {rbac:?} {:?}", &req.headers());
-    let (permitted, enforced_policy) = rbac.is_permitted(req);
+    let (permitted, enforced_policy) = rbac.inner.is_permitted(req);
     if permitted {
         FilterDecision::Continue
     } else {
