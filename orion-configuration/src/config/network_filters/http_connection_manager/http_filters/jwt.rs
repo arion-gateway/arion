@@ -8,44 +8,43 @@ use smol_str::SmolStr;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct JwtClaimToHeader {
     #[serde(with = "http_serde_ext::header_name")]
-    header_name: HeaderName,
-    claim_name: SmolStr,
+    pub header_name: HeaderName,
+    pub claim_name: SmolStr,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct JwtHeader {
     #[serde(with = "http_serde_ext::header_name")]
-    name: HeaderName,
-    value_prefix: String,
+    pub name: HeaderName,
+    pub value_prefix: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[allow(clippy::struct_excessive_bools)]
 pub struct JwtProvider {
-    issuer: SmolStr,
-    audiences: Vec<SmolStr>,
-    subjects: Option<StringMatcher>,
-    require_expiration: bool,
-    max_lifetime: Option<Duration>,
-    forward: bool,
-    from_headers: Vec<JwtHeader>,
-    from_params: Vec<SmolStr>,
-    from_cookies: Vec<SmolStr>,
+    pub issuer: SmolStr,
+    pub audiences: Vec<SmolStr>,
+    pub subjects: Option<StringMatcher>,
+    pub require_expiration: bool,
+    pub max_lifetime: Option<Duration>,
+    pub forward: bool,
+    pub from_headers: Vec<JwtHeader>,
+    pub from_params: Vec<SmolStr>,
+    pub from_cookies: Vec<SmolStr>,
     #[serde(with = "http_serde_ext::header_name::option")]
-    forward_payload_header: Option<HeaderName>,
-    pad_forward_payload_header: bool,
-    payload_in_metadata: Option<SmolStr>,
-    header_in_metadata: Option<SmolStr>,
-    failed_status_in_metadata: Option<SmolStr>,
-    clock_skew_seconds: u32,
-    clear_route_cache: bool,
-    claim_to_headers: Vec<JwtClaimToHeader>,
-    jwks_source_specifier: Option<JwksSourceSpecifier>,
+    pub forward_payload_header: Option<HeaderName>,
+    pub pad_forward_payload_header: bool,
+    pub payload_in_metadata: Option<SmolStr>,
+    pub header_in_metadata: Option<SmolStr>,
+    pub failed_status_in_metadata: Option<SmolStr>,
+    pub clock_skew_seconds: u32,
+    pub clear_route_cache: bool,
+    pub claim_to_headers: Vec<JwtClaimToHeader>,
+    pub jwks_source_specifier: JwksSourceSpecifier,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HttpUri {
-    uri: String,
+    pub uri: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -83,8 +82,8 @@ pub struct RequirementRule {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct JwtAuthentication {
-    providers: HashMap<SmolStr, JwtProvider>,
-    rules: Vec<RequirementRule>,
+    pub providers: HashMap<SmolStr, JwtProvider>,
+    pub rules: Vec<RequirementRule>,
 }
 
 use crate::config::core::Duration;
@@ -95,7 +94,7 @@ mod envoy_conversions {
     use std::str::FromStr;
 
     use crate::config::common::envoy_conversions::IsUsed;
-    use crate::config::{unsupported_field, GenericError};
+    use crate::config::{GenericError, required, unsupported_field};
     use http::HeaderName;
     use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::jwt_authn::v3::JwtAuthentication as EnvoyJwtAuthentication;
     use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::jwt_authn::v3::JwtHeader as EnvoyJwtHeader;
@@ -235,7 +234,7 @@ mod envoy_conversions {
                 clock_skew_seconds,
                 clear_route_cache,
                 claim_to_headers: claim_to_headers.into_iter().map(TryInto::try_into).collect::<Result<Vec<JwtClaimToHeader>, _>>()?,
-                jwks_source_specifier: jwks_source_specifier.map(TryInto::try_into).transpose()?,
+                jwks_source_specifier: required!(jwks_source_specifier)?.try_into()?,
             })
         }
     }

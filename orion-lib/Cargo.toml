@@ -75,6 +75,8 @@ smallvec = "1.15.1"
 atomic_enum.workspace = true
 assert_matches = "1.5.0"
 tokio-util = "0.7.17"
+jsonwebtoken = { version = "10.2.0", features = ["rust_crypto"] }
+serde_json.workspace = true
 
 
 [dev-dependencies]
