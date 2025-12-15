@@ -83,12 +83,17 @@ pub enum ExtProcError {
     GrpcError(String),
 }
 
+#[derive(Debug)]
+pub struct ExternalProcessorInner {
+    worker_config: ExternalProcessingWorkerConfig,
+    forward_rules: Option<HeaderForwardingRules>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ExternalProcessor {
     ext_proc_worker: Option<mpsc::Sender<ProcessingTask>>,
-    worker_config: Arc<ExternalProcessingWorkerConfig>,
-    forward_rules: Option<Arc<HeaderForwardingRules>>,
-    overridable_modes: Arc<OverridableGlobalModes>,
+    overridable_modes: Arc<OverridableGlobalModes>, // blueprint copy shared with with the worker.
+    inner: Arc<ExternalProcessorInner>,             // shared with sessions.
 }
 
 // Extended External Processor Configuration, specific to Orion
@@ -116,17 +121,13 @@ impl From<(ExternalProcessorConfig, Option<ExtProcPerRoute>, Option<ExternalProc
         ),
     ) -> Self {
         debug!(target: "ext_proc", "From<ExternalProcessorConfig, Option<ExtProcPerRoute>, Option<ExternalProcessorConfigExt>> for ExternalProcessor");
-        let forward_rules = initial_config.forward_rules.clone().map(Arc::new);
+        let forward_rules = initial_config.forward_rules.clone();
         let worker_config = ExternalProcessingWorkerConfig::from((initial_config, per_route_config, ext_config));
+        let overridable_modes = Arc::new(OverridableGlobalModes::from(&worker_config));
 
-        let overridable_global_modes = Arc::new(OverridableGlobalModes::from(&worker_config));
+        let inner = Arc::new(ExternalProcessorInner { worker_config, forward_rules });
 
-        Self {
-            ext_proc_worker: None,
-            worker_config: Arc::new(worker_config),
-            forward_rules,
-            overridable_modes: overridable_global_modes,
-        }
+        Self { ext_proc_worker: None, inner, overridable_modes }
     }
 }
 
@@ -359,7 +360,7 @@ impl ExternalProcessor {
                     if let Err(e) = apply_request_header_mutations(
                         request,
                         &headers_modifications,
-                        self.worker_config.mutation_rules.as_ref(),
+                        self.inner.worker_config.mutation_rules.as_ref(),
                     ) {
                         return self.on_filter_error(
                             "Invalid header modifications received from external processor",
@@ -504,7 +505,7 @@ impl ExternalProcessor {
                     if let Err(e) = apply_response_header_mutations(
                         response,
                         &headers_modifications,
-                        self.worker_config.mutation_rules.as_ref(),
+                        self.inner.worker_config.mutation_rules.as_ref(),
                     ) {
                         return self.on_filter_error(
                             "Invalid header modifications received from external processor",
@@ -576,7 +577,7 @@ impl ExternalProcessor {
         } else {
             info!(target: "ext_proc", "{msg}");
         }
-        if self.worker_config.failure_mode_allow {
+        if self.inner.worker_config.failure_mode_allow {
             FilterDecision::Continue
         } else {
             FilterDecision::DirectResponse(
@@ -599,21 +600,16 @@ impl ExternalProcessor {
 
             // replace the internal overridable modes blueprint with a new spawned instance for the worker
             //
-
             let overridable_modes = Arc::new(self.overridable_modes.spawn());
             self.overridable_modes = Arc::clone(&overridable_modes);
 
-            if self.worker_config.observability_mode {
-                let worker = ExternalProcessingWorker::<kind::Observability>::new(
-                    Arc::clone(&self.worker_config),
-                    overridable_modes,
-                );
+            if self.inner.worker_config.observability_mode {
+                let worker =
+                    ExternalProcessingWorker::<kind::Observability>::new(Arc::clone(&self.inner), overridable_modes);
                 tokio::spawn(worker.observability_loop(receiver));
             } else {
-                let worker = ExternalProcessingWorker::<kind::Processing>::new(
-                    Arc::clone(&self.worker_config),
-                    overridable_modes,
-                );
+                let worker =
+                    ExternalProcessingWorker::<kind::Processing>::new(Arc::clone(&self.inner), overridable_modes);
                 tokio::spawn(worker.processing_loop(receiver));
             }
             self.ext_proc_worker.insert(sender)
@@ -622,7 +618,7 @@ impl ExternalProcessor {
 
     #[inline]
     fn should_forward_header(&self, header_name: &str) -> bool {
-        if let Some(forward_rules) = &self.forward_rules {
+        if let Some(forward_rules) = &self.inner.forward_rules {
             if !forward_rules.disallowed_headers.is_empty() {
                 return !forward_rules.disallowed_headers.iter().any(|m| m.matches(header_name));
             }
@@ -634,7 +630,7 @@ impl ExternalProcessor {
     }
 
     fn filter_header_map(&self, headers: &http::HeaderMap) -> http::HeaderMap {
-        let Some(rules) = &self.forward_rules else {
+        let Some(rules) = &self.inner.forward_rules else {
             return headers.clone();
         };
 
@@ -724,7 +720,7 @@ struct TimeoutState {
 }
 
 struct ExternalProcessingWorker<S: kind::Mode> {
-    config: Arc<ExternalProcessingWorkerConfig>,
+    inner: Arc<ExternalProcessorInner>,
     bidi_stream: Option<BidiStream>,
     request_processing: RequestProcessing<S>,
     response_processing: ResponseProcessing<S>,
@@ -752,17 +748,19 @@ enum MergeResult {
 }
 
 impl ExternalProcessingWorker<kind::Processing> {
-    fn new(config: Arc<ExternalProcessingWorkerConfig>, overridable_global_modes: Arc<OverridableGlobalModes>) -> Self {
-        let request_processing = RequestProcessing::<kind::Processing>::from(&*config);
-        let response_processing = ResponseProcessing::<kind::Processing>::from(&*config);
+    fn new(inner: Arc<ExternalProcessorInner>, overridable_global_modes: Arc<OverridableGlobalModes>) -> Self {
+        let request_processing = RequestProcessing::<kind::Processing>::from(&inner.worker_config);
+        let response_processing = ResponseProcessing::<kind::Processing>::from(&inner.worker_config);
         let handshake = Some(ProtocolConfiguration {
-            request_body_mode: config.processing_mode.request_body_mode as i32,
-            response_body_mode: config.processing_mode.response_body_mode as i32,
-            send_body_without_waiting_for_header_response: config.send_body_without_waiting_for_header_response,
+            request_body_mode: inner.worker_config.processing_mode.request_body_mode as i32,
+            response_body_mode: inner.worker_config.processing_mode.response_body_mode as i32,
+            send_body_without_waiting_for_header_response: inner
+                .worker_config
+                .send_body_without_waiting_for_header_response,
         });
-        let message_timeout = config.message_timeout;
+        let message_timeout = inner.worker_config.message_timeout;
         Self {
-            config,
+            inner,
             bidi_stream: None,
             request_processing,
             response_processing,
@@ -773,7 +771,7 @@ impl ExternalProcessingWorker<kind::Processing> {
     }
 
     async fn recover_or_failure(&mut self, err: ExtProcError, log_msg: &str) {
-        if self.config.failure_mode_allow {
+        if self.inner.worker_config.failure_mode_allow {
             info!(target: "ext_proc", "{} - continue (failure_mode_allow is true)", log_msg);
             self.request_processing.inject_inflight_frames_and_complete().await;
             self.request_processing.frame_bridge_close(&mut self.timeout_state.active).await;
@@ -789,17 +787,22 @@ impl ExternalProcessingWorker<kind::Processing> {
 
         match err {
             ExtProcError::Timeout(_) => {
-                let status = Action::Return(self.request_processing.status_timeout(self.config.failure_mode_allow));
+                let status =
+                    Action::Return(self.request_processing.status_timeout(self.inner.worker_config.failure_mode_allow));
                 run_action!(self, self.request_processing, status, log_msg);
-                let status = Action::Return(self.response_processing.status_timeout(self.config.failure_mode_allow));
+                let status = Action::Return(
+                    self.response_processing.status_timeout(self.inner.worker_config.failure_mode_allow),
+                );
                 run_action!(self, self.response_processing, status, log_msg);
             },
             _ => {
-                let status =
-                    Action::Return(self.request_processing.status_error(log_msg, self.config.failure_mode_allow));
+                let status = Action::Return(
+                    self.request_processing.status_error(log_msg, self.inner.worker_config.failure_mode_allow),
+                );
                 run_action!(self, self.request_processing, status, log_msg);
-                let status =
-                    Action::Return(self.response_processing.status_error(log_msg, self.config.failure_mode_allow));
+                let status = Action::Return(
+                    self.response_processing.status_error(log_msg, self.inner.worker_config.failure_mode_allow),
+                );
                 run_action!(self, self.response_processing, status, log_msg);
             },
         }
@@ -864,10 +867,10 @@ impl ExternalProcessingWorker<kind::Processing> {
                         },
                         Ok(Some(ProcessingResponse { response: Some(ProcessingResponseType::ImmediateResponse(response_attempt)), ..})) => {
                             debug!(target: "ext_proc", "<- ImmediateResponse received");
-                            if self.config.disable_immediate_response {
+                            if self.inner.worker_config.disable_immediate_response {
                                 info!(target: "ext_proc", "External processor attempted to send immediate response which is disabled by config");
 
-                                 if self.config.failure_mode_allow {
+                                 if self.inner.worker_config.failure_mode_allow {
                                      with_current_processing!(self, processing,
                                      {
                                          let status = Action::Return(ProcessingStatus::HaltedOnError);
@@ -906,16 +909,16 @@ impl ExternalProcessingWorker<kind::Processing> {
                         },
                         Ok(Some(ProcessingResponse { mode_override, response: Some(ProcessingResponseType::RequestHeaders(headers_response)), ..})) => {
                             debug!(target: "ext_proc", "<- RequestHeaders response received");
-                            if self.config.allow_mode_override {
+                            if self.inner.worker_config.allow_mode_override {
                                 if let Some(overrides) = mode_override {
-                                    self.request_processing.apply_mode_overrides(&overrides, &self.config.allowed_override_modes, &self.overridable_modes);
-                                    self.response_processing.apply_mode_overrides(&overrides, &self.config.allowed_override_modes, &self.overridable_modes);
+                                    self.request_processing.apply_mode_overrides(&overrides, &self.inner.worker_config.allowed_override_modes, &self.overridable_modes);
+                                    self.response_processing.apply_mode_overrides(&overrides, &self.inner.worker_config.allowed_override_modes, &self.overridable_modes);
                                 }
                             }
 
                             let action = self.request_processing.handle_headers_response(
                                 headers_response,
-                                &self.config.route_cache_action,
+                                &self.inner.worker_config.route_cache_action,
                                 &self.overridable_modes,
                                 &mut self.timeout_state.active,
                             ).await;
@@ -927,7 +930,7 @@ impl ExternalProcessingWorker<kind::Processing> {
 
                             let action = self
                                 .request_processing
-                                .handle_body_response(body_response, Some(&self.config.route_cache_action), &mut self.timeout_state.active).await;
+                                .handle_body_response(body_response, Some(&self.inner.worker_config.route_cache_action), &mut self.timeout_state.active).await;
 
                             run_action!(self, self.request_processing, action, "body_response");
                         },
@@ -938,15 +941,15 @@ impl ExternalProcessingWorker<kind::Processing> {
                         },
                         Ok(Some(ProcessingResponse { mode_override, response: Some(ProcessingResponseType::ResponseHeaders(headers_response)), ..})) => {
                             debug!(target: "ext_proc", "<- ResponseHeaders response received");
-                            if self.config.allow_mode_override {
+                            if self.inner.worker_config.allow_mode_override {
                                 if let Some(overrides) = mode_override {
-                                    self.response_processing.apply_mode_overrides(&overrides, &self.config.allowed_override_modes, &self.overridable_modes);
+                                    self.response_processing.apply_mode_overrides(&overrides, &self.inner.worker_config.allowed_override_modes, &self.overridable_modes);
                                 }
                             }
 
                             let action = self.response_processing.handle_headers_response(
                                 headers_response,
-                                &self.config.route_cache_action,
+                                &self.inner.worker_config.route_cache_action,
                                 &self.overridable_modes,
                                 &mut self.timeout_state.active,
                             ).await;
@@ -1014,7 +1017,7 @@ impl ExternalProcessingWorker<kind::Processing> {
                         Some(Err(_err)) => {
                             request_body_to_ext_proc_complete = true;
                             debug!(target: "ext_proc", "error occurred when streaming request body to external processing");
-                            self.request_processing.status_error("error occurred when streaming request body to external processing", self.config.failure_mode_allow);
+                            self.request_processing.status_error("error occurred when streaming request body to external processing", self.inner.worker_config.failure_mode_allow);
                         },
                         None => {
                             request_body_to_ext_proc_complete = true;
@@ -1084,7 +1087,7 @@ impl ExternalProcessingWorker<kind::Processing> {
                         Some(Err(_err)) => {
                             response_body_to_ext_proc_complete = true;
                             debug!(target: "ext_proc", "error occurred when streaming response body to external processing");
-                            self.response_processing.status_error("error occurred when streaming response body to external processing", self.config.failure_mode_allow);
+                            self.response_processing.status_error("error occurred when streaming response body to external processing", self.inner.worker_config.failure_mode_allow);
                         },
                         None => {
                             response_body_to_ext_proc_complete = true;
@@ -1138,18 +1141,20 @@ impl ExternalProcessingWorker<kind::Processing> {
 }
 
 impl ExternalProcessingWorker<kind::Observability> {
-    fn new(config: Arc<ExternalProcessingWorkerConfig>, overridable_global_modes: Arc<OverridableGlobalModes>) -> Self {
-        let request_processing = RequestProcessing::<kind::Observability>::from(&*config);
-        let response_processing = ResponseProcessing::<kind::Observability>::from(&*config);
+    fn new(inner: Arc<ExternalProcessorInner>, overridable_global_modes: Arc<OverridableGlobalModes>) -> Self {
+        let request_processing = RequestProcessing::<kind::Observability>::from(&inner.worker_config);
+        let response_processing = ResponseProcessing::<kind::Observability>::from(&inner.worker_config);
 
         let handshake = Some(ProtocolConfiguration {
-            request_body_mode: config.processing_mode.request_body_mode as i32,
-            response_body_mode: config.processing_mode.response_body_mode as i32,
-            send_body_without_waiting_for_header_response: config.send_body_without_waiting_for_header_response,
+            request_body_mode: inner.worker_config.processing_mode.request_body_mode as i32,
+            response_body_mode: inner.worker_config.processing_mode.response_body_mode as i32,
+            send_body_without_waiting_for_header_response: inner
+                .worker_config
+                .send_body_without_waiting_for_header_response,
         });
-        let message_timeout = config.message_timeout;
+        let message_timeout = inner.worker_config.message_timeout;
         Self {
-            config,
+            inner,
             bidi_stream: None,
             request_processing,
             response_processing,
@@ -1220,7 +1225,7 @@ impl ExternalProcessingWorker<kind::Observability> {
                         Some(Err(_err)) => {
                             request_body_to_ext_proc_complete = true;
                             debug!(target: "ext_proc", "error occurred when streaming request body to external processing");
-                            self.request_processing.status_error("error occurred when streaming request body to external processing", self.config.failure_mode_allow);
+                            self.request_processing.status_error("error occurred when streaming request body to external processing", self.inner.worker_config.failure_mode_allow);
                         },
                         None => {
                             request_body_to_ext_proc_complete = true;
@@ -1279,7 +1284,7 @@ impl ExternalProcessingWorker<kind::Observability> {
                         Some(Err(_err)) => {
                             response_body_to_ext_proc_complete = true;
                             debug!(target: "ext_proc", "error occurred when streaming response body to external processing");
-                            self.response_processing.status_error("error occurred when streaming response body to external processing", self.config.failure_mode_allow);
+                            self.response_processing.status_error("error occurred when streaming response body to external processing", self.inner.worker_config.failure_mode_allow);
                         },
                         None => {
                             response_body_to_ext_proc_complete = true;
@@ -1376,7 +1381,7 @@ impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
             let first_request = pending_request.take().ok_or_else(|| {
                 Error::from("Internal error: attempted to establish bidi stream with external processor without a ProcessingRequest")
             })?;
-            let stream = Self::connect(&self.config.grpc_service_specifier, first_request).await?;
+            let stream = Self::connect(&self.inner.worker_config.grpc_service_specifier, first_request).await?;
             Ok(self.bidi_stream.insert(stream))
         }
     }
@@ -1387,10 +1392,14 @@ impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
 
         let stream = match self.get_bidi_stream(&mut request_opt).await {
             Err(err) => {
-                self.response_processing
-                    .status_error(format!("External processor: {err:?}").as_str(), self.config.failure_mode_allow);
-                self.request_processing
-                    .status_error(format!("External processor: {err:?}").as_str(), self.config.failure_mode_allow);
+                self.response_processing.status_error(
+                    format!("External processor: {err:?}").as_str(),
+                    self.inner.worker_config.failure_mode_allow,
+                );
+                self.request_processing.status_error(
+                    format!("External processor: {err:?}").as_str(),
+                    self.inner.worker_config.failure_mode_allow,
+                );
                 return;
             },
             Ok(stream) => stream,
@@ -1404,24 +1413,24 @@ impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
             Some(Err(err)) => {
                 info!(target: "ext_proc", "External processor is unavailable: {err}");
                 if let Some(reply_channel) = self.response_processing.reply_channel.take() {
-                    let _ = reply_channel.send(
-                        self.response_processing
-                            .status_error("Lost connection to external processor", self.config.failure_mode_allow),
-                    );
+                    let _ = reply_channel.send(self.response_processing.status_error(
+                        "Lost connection to external processor",
+                        self.inner.worker_config.failure_mode_allow,
+                    ));
                 }
 
                 if let Some(reply_channel) = self.request_processing.reply_channel.take() {
-                    let _ = reply_channel.send(
-                        self.request_processing
-                            .status_error("Lost connection to external processor", self.config.failure_mode_allow),
-                    );
+                    let _ = reply_channel.send(self.request_processing.status_error(
+                        "Lost connection to external processor",
+                        self.inner.worker_config.failure_mode_allow,
+                    ));
                 }
 
                 self.timeout_state.active = false;
             },
             _ => {
                 // enable timeout, if not in observability mode
-                self.timeout_state.active = !self.config.observability_mode;
+                self.timeout_state.active = !self.inner.worker_config.observability_mode;
             },
         }
     }
@@ -1431,11 +1440,13 @@ impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
         if self.timeout_state.extended {
             let msg = "External processor attempted multiple timeout extensions";
             if let Some(reply_channel) = self.response_processing.reply_channel.take() {
-                let _ = reply_channel.send(self.response_processing.status_error(msg, self.config.failure_mode_allow));
+                let _ = reply_channel
+                    .send(self.response_processing.status_error(msg, self.inner.worker_config.failure_mode_allow));
             }
 
             if let Some(reply_channel) = self.request_processing.reply_channel.take() {
-                let _ = reply_channel.send(self.request_processing.status_error(msg, self.config.failure_mode_allow));
+                let _ = reply_channel
+                    .send(self.request_processing.status_error(msg, self.inner.worker_config.failure_mode_allow));
             }
 
             return false;
@@ -1444,9 +1455,9 @@ impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
             Duration::from_secs(extended_timeout.seconds as u64) + Duration::from_nanos(extended_timeout.nanos as u64);
         if timeout_duration < Duration::from_millis(1) {
             info!(target:"ext_proc", "External processor: override_message_timeout must be >= 1ms");
-            timeout_duration = self.config.message_timeout;
+            timeout_duration = self.inner.worker_config.message_timeout;
         }
-        if let Some(max_timeout) = self.config.max_message_timeout {
+        if let Some(max_timeout) = self.inner.worker_config.max_message_timeout {
             if timeout_duration > max_timeout {
                 info!(target:"ext_proc", "External processor: attempted to override message timeout to value > max_message_timeout (defaulting to max_message_timeout)");
                 timeout_duration = max_timeout;
@@ -1469,8 +1480,11 @@ impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
         let mut response = Response::new(TimeoutBody::new(None, PolyBody::from(body)));
         *response.status_mut() = status;
         if let Some(header_mutation) = &response_attempt.headers {
-            let _ =
-                apply_response_header_mutations(&mut response, header_mutation, self.config.mutation_rules.as_ref());
+            let _ = apply_response_header_mutations(
+                &mut response,
+                header_mutation,
+                self.inner.worker_config.mutation_rules.as_ref(),
+            );
         }
         if let Some(grpc_status) = &response_attempt.grpc_status {
             if let Ok(status_value) = http::HeaderValue::from_str(&grpc_status.status.to_string()) {

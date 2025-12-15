@@ -16,6 +16,8 @@
 //
 
 mod token_bucket;
+use std::sync::Arc;
+
 use http::{status::StatusCode, Request};
 use tracing::warn;
 
@@ -32,16 +34,21 @@ use crate::{
 };
 
 #[derive(Debug, Clone)]
-pub struct LocalRateLimit {
+pub struct LocalRateLimitInner {
     pub status: StatusCode,
     pub token_bucket: Option<TokenBucket>,
 }
 
+#[derive(Debug, Clone)]
+pub struct LocalRateLimit {
+    pub inner: Arc<LocalRateLimitInner>, // shared across sessions...
+}
+
 impl LocalRateLimit {
     pub fn run<B>(&self, req: &Request<B>) -> FilterDecision {
-        if let Some(token_bucket) = &self.token_bucket {
+        if let Some(token_bucket) = &self.inner.token_bucket {
             if !token_bucket.consume(1) {
-                let status = self.status;
+                let status = self.inner.status;
                 return FilterDecision::DirectResponse(
                     SyntheticHttpResponse::custom_error(
                         status,
@@ -71,9 +78,9 @@ impl From<LocalRateLimitConfig> for LocalRateLimit {
                 warn!("failed to adjust fill interval to number of configured runtimes (overflow)");
                 fill_interval
             };
-            let tb = TokenBucket::new(max_tokens, tokens_per_fill, fill_interval);
-            return Self { status, token_bucket: Some(tb) };
+            let token_bucket = TokenBucket::new(max_tokens, tokens_per_fill, fill_interval);
+            return Self { inner: Arc::new(LocalRateLimitInner { status, token_bucket: Some(token_bucket) }) };
         }
-        Self { status, token_bucket: None }
+        Self { inner: Arc::new(LocalRateLimitInner { status, token_bucket: None }) }
     }
 }
