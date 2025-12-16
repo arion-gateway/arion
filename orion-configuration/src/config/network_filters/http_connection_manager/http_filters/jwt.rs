@@ -23,6 +23,7 @@ pub struct JwtHeader {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct JwtProvider {
     pub issuer: SmolStr,
     pub audiences: Vec<SmolStr>,
@@ -258,14 +259,14 @@ mod envoy_conversions {
             match value {
                 EnvoyRequiresType::ProviderName(provider_name) => Ok(Self::ProviderName(provider_name.into())),
                 EnvoyRequiresType::ProviderAndAudiences(_) => {
-                    return Err(GenericError::unsupported_variant("ProviderAndAudiences"))
+                    Err(GenericError::unsupported_variant("ProviderAndAudiences"))
                 },
-                EnvoyRequiresType::RequiresAny(_) => return Err(GenericError::unsupported_variant("RequiresAny")),
-                EnvoyRequiresType::RequiresAll(_) => return Err(GenericError::unsupported_variant("RequiresAll")),
+                EnvoyRequiresType::RequiresAny(_) => Err(GenericError::unsupported_variant("RequiresAny")),
+                EnvoyRequiresType::RequiresAll(_) => Err(GenericError::unsupported_variant("RequiresAll")),
                 EnvoyRequiresType::AllowMissingOrFailed(_) => {
-                    return Err(GenericError::unsupported_variant("AllowMissingOrFailed"))
+                    Err(GenericError::unsupported_variant("AllowMissingOrFailed"))
                 },
-                EnvoyRequiresType::AllowMissing(_) => return Err(GenericError::unsupported_variant("AllowMissing")),
+                EnvoyRequiresType::AllowMissing(_) => Err(GenericError::unsupported_variant("AllowMissing")),
             }
         }
     }

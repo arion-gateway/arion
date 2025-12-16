@@ -113,17 +113,17 @@ impl JwtAuthenticationBuilder {
         let mut validation = Validation::new(alg);
 
         if !provider.issuer.is_empty() {
-            validation.set_issuer(&[provider.issuer.clone()]);
+            validation.set_issuer(std::slice::from_ref(&provider.issuer));
         }
 
-        if !provider.audiences.is_empty() {
+        if provider.audiences.is_empty() {
+            validation.validate_aud = false;
+        } else {
             validation.set_audience(&provider.audiences);
             validation.validate_aud = true;
-        } else {
-            validation.validate_aud = false;
         }
 
-        validation.leeway = provider.clock_skew_seconds as u64;
+        validation.leeway = u64::from(provider.clock_skew_seconds);
         validation.validate_exp = provider.require_expiration;
 
         validation
@@ -147,7 +147,7 @@ impl JwtAuthenticationBuilder {
                         let key_alg = jwk.common.key_algorithm.ok_or(JwkError::NoAlgInJwk)?;
                         let alg = Algorithm::from_str(&key_alg.to_string())?;
                         let decoding_key = DecodingKey::from_jwk(&jwk)?;
-                        let validation = Self::build_validation(alg, &provider);
+                        let validation = Self::build_validation(alg, provider);
                         keys.insert(kid, ValidationKey { decoding_key, validation });
                     }
                 } else {
@@ -168,8 +168,8 @@ impl JwtAuthenticationBuilder {
         let config = self.config;
 
         let mut providers = HashMap::<SmolStr, ProviderContext, ahash::RandomState>::default();
-        for (provider, prov_config) in config.providers.iter() {
-            match Self::parse_and_validate_keys(&prov_config) {
+        for (provider, prov_config) in &config.providers {
+            match Self::parse_and_validate_keys(prov_config) {
                 Ok(keys) => {
                     providers.insert(provider.to_owned(), ProviderContext { keys });
                 },
@@ -203,9 +203,7 @@ pub enum JwtExtract<'a, 'b> {
 impl JwtExtract<'_, '_> {
     pub fn token(&self) -> &str {
         match self {
-            JwtExtract::Header(_, token) => token,
-            JwtExtract::QueryParams(_, token) => token,
-            JwtExtract::Cookie(token) => token,
+            JwtExtract::Header(_, token) | JwtExtract::QueryParams(_, token) | JwtExtract::Cookie(token) => token,
         }
     }
 }
@@ -215,7 +213,7 @@ impl JwtAuthentication {
         let provider = self.inner.config.providers.get(provider_name)?;
 
         // Try to extract token from headers
-        for hdr in provider.from_headers.iter() {
+        for hdr in &provider.from_headers {
             if let Some(header_value) = req.headers().get(&hdr.name) {
                 if let Ok(header_str) = header_value.to_str() {
                     // Check if the header value starts with the expected prefix
@@ -232,7 +230,7 @@ impl JwtAuthentication {
 
         // Try to extract token from query parameters
         if let Some(query) = req.uri().query() {
-            for param_name in provider.from_params.iter() {
+            for param_name in &provider.from_params {
                 for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
                     if key == param_name.as_str() && !value.is_empty() {
                         debug!(target: "jwt", "Token extracted from query parameter '{}'", param_name);
@@ -245,7 +243,7 @@ impl JwtAuthentication {
         // Try to extract token from cookies
         if let Some(cookie_header) = req.headers().get(http::header::COOKIE) {
             if let Ok(cookie_str) = cookie_header.to_str() {
-                for cookie_name in provider.from_cookies.iter() {
+                for cookie_name in &provider.from_cookies {
                     for cookie in cookie_str.split(';') {
                         let cookie = cookie.trim();
                         if let Some((name, value)) = cookie.split_once('=') {
@@ -265,7 +263,7 @@ impl JwtAuthentication {
 
     pub fn provider_lookup<B>(&self, request: &Request<B>) -> Option<&str> {
         // Iterate through the rules to find a matching provider
-        for rule in self.inner.config.rules.iter() {
+        for rule in &self.inner.config.rules {
             // Check if the request matches the rule's route match criteria
             let matches = if let Some(route_match) = &rule.r#match {
                 // If there's a route match, use the built-in match_request method
@@ -311,10 +309,7 @@ impl JwtAuthentication {
     }
 
     #[allow(clippy::too_many_lines)]
-    pub async fn apply_request(
-        &mut self,
-        req: &mut Request<InstrumentedBody<TimeoutBody<PolyBody>>>,
-    ) -> FilterDecision {
+    pub fn apply_request(&mut self, req: &mut Request<InstrumentedBody<TimeoutBody<PolyBody>>>) -> FilterDecision {
         debug!(target: "jwt", "Applying JWT authentication filter: {:#?}", self.inner.config);
 
         // lookup the provider name...
@@ -342,7 +337,7 @@ impl JwtAuthentication {
         });
 
         // get the associated validation key...
-        let Some(ref val_key) = validation_key else {
+        let Some(val_key) = validation_key else {
             warn!(target: "jwt", "JWT no validation key found");
             return self.unauthorized(req.version(), "JWT no validation key found");
         };
@@ -387,7 +382,7 @@ impl JwtAuthentication {
                                 .extend_pairs(filtered_params)
                                 .finish();
                             let path = req.uri().path();
-                            http::uri::PathAndQuery::from_str(&format!("{}?{}", path, new_query))
+                            http::uri::PathAndQuery::from_str(&format!("{path}?{new_query}"))
                         };
 
                         match new_path_and_query {
@@ -409,7 +404,7 @@ impl JwtAuthentication {
         }
 
         // handle claim_to_headers
-        for claim_to_header in jwt_provider.claim_to_headers.iter() {
+        for claim_to_header in &jwt_provider.claim_to_headers {
             if let Some(value) = jwt.claims.get(claim_to_header.claim_name.as_str()) {
                 let header_value = http::HeaderValue::from_str(&value.to_string());
                 if let Ok(header_value) = header_value {
