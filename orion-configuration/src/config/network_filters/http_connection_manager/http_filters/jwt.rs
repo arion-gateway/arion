@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 
-use crate::config::{core::{DataSource, StringMatcher}, network_filters::http_connection_manager::route::RouteMatch};
+use crate::config::{
+    core::{DataSource, StringMatcher},
+    network_filters::http_connection_manager::route::RouteMatch,
+};
 use http::HeaderName;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
@@ -94,28 +97,25 @@ mod envoy_conversions {
     use std::str::FromStr;
 
     use crate::config::common::envoy_conversions::IsUsed;
-    use crate::config::{GenericError, required, unsupported_field};
+    use crate::config::{required, unsupported_field, GenericError};
     use http::HeaderName;
+    use orion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::HttpUri as EnvoyHttpUri;
+    use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::jwt_authn::v3::jwt_provider::JwksSourceSpecifier as EnvoyJwksSourceSpecifier;
+    use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::jwt_authn::v3::jwt_requirement::RequiresType as EnvoyRequiresType;
+    use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::jwt_authn::v3::requirement_rule::RequirementType as EnvoyRequirementType;
     use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::jwt_authn::v3::JwtAuthentication as EnvoyJwtAuthentication;
+    use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::jwt_authn::v3::JwtClaimToHeader as EnvoyJwtClaimToHeader;
     use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::jwt_authn::v3::JwtHeader as EnvoyJwtHeader;
     use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::jwt_authn::v3::JwtProvider as EnvoyJwtProvider;
     use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::jwt_authn::v3::JwtRequirement as EnvoyJwtRequirement;
-    use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::jwt_authn::v3::JwtClaimToHeader as EnvoyJwtClaimToHeader;
-    use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::jwt_authn::v3::RequirementRule as EnvoyRequirementRule;
-    use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::jwt_authn::v3::requirement_rule::RequirementType as EnvoyRequirementType;
-    use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::jwt_authn::v3::jwt_requirement::RequiresType as EnvoyRequiresType;
-    use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::jwt_authn::v3::jwt_provider::JwksSourceSpecifier as EnvoyJwksSourceSpecifier;
     use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::jwt_authn::v3::RemoteJwks as EnvoyRemoteJwks;
-    use orion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::HttpUri as EnvoyHttpUri;
+    use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::jwt_authn::v3::RequirementRule as EnvoyRequirementRule;
 
     impl TryFrom<EnvoyHttpUri> for HttpUri {
         type Error = GenericError;
         fn try_from(value: EnvoyHttpUri) -> Result<Self, Self::Error> {
             let EnvoyHttpUri { uri, timeout, http_upstream_type } = value;
-            unsupported_field!(
-                timeout,
-                http_upstream_type
-            )?;
+            unsupported_field!(timeout, http_upstream_type)?;
 
             Ok(HttpUri { uri })
         }
@@ -131,9 +131,7 @@ mod envoy_conversions {
                 async_fetch,
                 retry_policy
             )?;
-            Ok(RemoteJwks {
-                http_uri: http_uri.map(TryInto::try_into).transpose()?,
-            })
+            Ok(RemoteJwks { http_uri: http_uri.map(TryInto::try_into).transpose()? })
         }
     }
 
@@ -141,8 +139,12 @@ mod envoy_conversions {
         type Error = GenericError;
         fn try_from(value: EnvoyJwksSourceSpecifier) -> Result<Self, Self::Error> {
             match value {
-                EnvoyJwksSourceSpecifier::RemoteJwks(remote_jwks) => Ok(JwksSourceSpecifier::RemoteJwks(remote_jwks.try_into()?)),
-                EnvoyJwksSourceSpecifier::LocalJwks(local_jwks) => Ok(JwksSourceSpecifier::LocalJwks(local_jwks.try_into()?)),
+                EnvoyJwksSourceSpecifier::RemoteJwks(remote_jwks) => {
+                    Ok(JwksSourceSpecifier::RemoteJwks(remote_jwks.try_into()?))
+                },
+                EnvoyJwksSourceSpecifier::LocalJwks(local_jwks) => {
+                    Ok(JwksSourceSpecifier::LocalJwks(local_jwks.try_into()?))
+                },
             }
         }
     }
@@ -225,15 +227,26 @@ mod envoy_conversions {
                 from_headers: from_headers.into_iter().map(TryInto::try_into).collect::<Result<Vec<JwtHeader>, _>>()?,
                 from_params: from_params.into_iter().map(Into::into).collect(),
                 from_cookies: from_cookies.into_iter().map(Into::into).collect(),
-                forward_payload_header: if forward_payload_header.is_empty() { None } else { Some(HeaderName::from_str(&forward_payload_header)?) },
+                forward_payload_header: if forward_payload_header.is_empty() {
+                    None
+                } else {
+                    Some(HeaderName::from_str(&forward_payload_header)?)
+                },
                 pad_forward_payload_header,
                 payload_in_metadata: if payload_in_metadata.is_empty() { None } else { None },
                 // normalize_payload_in_metadata,
                 header_in_metadata: if header_in_metadata.is_empty() { None } else { Some(header_in_metadata.into()) },
-                failed_status_in_metadata: if failed_status_in_metadata.is_empty() { None } else { Some(failed_status_in_metadata.into()) },
+                failed_status_in_metadata: if failed_status_in_metadata.is_empty() {
+                    None
+                } else {
+                    Some(failed_status_in_metadata.into())
+                },
                 clock_skew_seconds,
                 clear_route_cache,
-                claim_to_headers: claim_to_headers.into_iter().map(TryInto::try_into).collect::<Result<Vec<JwtClaimToHeader>, _>>()?,
+                claim_to_headers: claim_to_headers
+                    .into_iter()
+                    .map(TryInto::try_into)
+                    .collect::<Result<Vec<JwtClaimToHeader>, _>>()?,
                 jwks_source_specifier: required!(jwks_source_specifier)?.try_into()?,
             })
         }
@@ -244,10 +257,14 @@ mod envoy_conversions {
         fn try_from(value: EnvoyRequiresType) -> Result<Self, Self::Error> {
             match value {
                 EnvoyRequiresType::ProviderName(provider_name) => Ok(Self::ProviderName(provider_name.into())),
-                EnvoyRequiresType::ProviderAndAudiences(_) => return Err(GenericError::unsupported_variant("ProviderAndAudiences")),
+                EnvoyRequiresType::ProviderAndAudiences(_) => {
+                    return Err(GenericError::unsupported_variant("ProviderAndAudiences"))
+                },
                 EnvoyRequiresType::RequiresAny(_) => return Err(GenericError::unsupported_variant("RequiresAny")),
                 EnvoyRequiresType::RequiresAll(_) => return Err(GenericError::unsupported_variant("RequiresAll")),
-                EnvoyRequiresType::AllowMissingOrFailed(_) => return Err(GenericError::unsupported_variant("AllowMissingOrFailed")),
+                EnvoyRequiresType::AllowMissingOrFailed(_) => {
+                    return Err(GenericError::unsupported_variant("AllowMissingOrFailed"))
+                },
                 EnvoyRequiresType::AllowMissing(_) => return Err(GenericError::unsupported_variant("AllowMissing")),
             }
         }
@@ -257,9 +274,7 @@ mod envoy_conversions {
         type Error = GenericError;
         fn try_from(value: EnvoyJwtRequirement) -> Result<Self, Self::Error> {
             let EnvoyJwtRequirement { requires_type } = value;
-            Ok(Self {
-                requires_type: requires_type.map(TryInto::try_into).transpose()?,
-            })
+            Ok(Self { requires_type: requires_type.map(TryInto::try_into).transpose()? })
         }
     }
 
@@ -267,8 +282,10 @@ mod envoy_conversions {
         type Error = GenericError;
         fn try_from(value: EnvoyRequirementType) -> Result<Self, Self::Error> {
             match value {
-                EnvoyRequirementType::Requires(jwt_requirement) => Ok(RequirementType::Requires(jwt_requirement.try_into()?)),
-                EnvoyRequirementType::RequirementName(name) => Ok(RequirementType::RequirementName(name.into())),
+                EnvoyRequirementType::Requires(jwt_requirement) => {
+                    Ok(RequirementType::Requires(jwt_requirement.try_into()?))
+                },
+                EnvoyRequirementType::RequirementName(_) => Err(GenericError::unsupported_variant("RequirementName")),
             }
         }
     }
@@ -277,12 +294,9 @@ mod envoy_conversions {
         type Error = GenericError;
         fn try_from(value: EnvoyRequirementRule) -> Result<Self, Self::Error> {
             let EnvoyRequirementRule { r#match, requirement_type } = value;
-            let route_match : Option<RouteMatch> = r#match.map(TryInto::try_into).transpose()?;
+            let route_match: Option<RouteMatch> = r#match.map(TryInto::try_into).transpose()?;
             let requirement_type = requirement_type.map(TryInto::try_into).transpose()?;
-            Ok(Self {
-                r#match: route_match,
-                requirement_type,
-            })
+            Ok(Self { r#match: route_match, requirement_type })
         }
     }
 
@@ -317,10 +331,7 @@ mod envoy_conversions {
             let rules: Vec<RequirementRule> =
                 rules.into_iter().map(RequirementRule::try_from).collect::<Result<Vec<_>, _>>()?;
 
-            Ok(JwtAuthentication {
-                providers,
-                rules,
-            })
+            Ok(JwtAuthentication { providers, rules })
         }
     }
 }

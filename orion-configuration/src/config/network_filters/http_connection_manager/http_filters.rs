@@ -22,8 +22,8 @@ pub mod local_rate_limit;
 use local_rate_limit::LocalRateLimit;
 pub mod ext_proc;
 pub use ext_proc::{ExtProcPerRoute, ExternalProcessor};
-pub mod router;
 pub mod jwt;
+pub mod router;
 
 use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -88,10 +88,10 @@ mod envoy_conversions {
                     ext_proc::v3::{
                         ExtProcPerRoute as EnvoyExtProcPerRoute, ExternalProcessor as EnvoyExternalProcessor,
                     },
+                    jwt_authn::v3::JwtAuthentication as EnvoyJwtAuthentication,
                     local_ratelimit::v3::LocalRateLimit as EnvoyLocalRateLimit,
                     rbac::v3::{Rbac as EnvoyRbac, RbacPerRoute as EnvoyRbacPerRoute},
                     router::v3::Router as EnvoyRouter,
-                    jwt_authn::v3::JwtAuthentication as EnvoyJwtAuthentication,
                 },
                 network::http_connection_manager::v3::{
                     http_filter::ConfigType as EnvoyConfigType, HttpFilter as EnvoyHttpFilter,
@@ -146,9 +146,7 @@ mod envoy_conversions {
                 SupportedEnvoyFilter::Router(_) => {
                     Err(GenericError::from_msg("router filter has to be the last filter in the chain"))
                 },
-                SupportedEnvoyFilter::JwtAuthentication(jwt) => {
-                    jwt.try_into().map(Self::JwtAuthentication)
-                }
+                SupportedEnvoyFilter::JwtAuthentication(jwt) => jwt.try_into().map(Self::JwtAuthentication),
             }
         }
     }

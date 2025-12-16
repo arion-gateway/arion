@@ -239,7 +239,7 @@ pub(crate) use envoy_conversions::*;
 #[cfg(feature = "envoy-conversions")]
 pub mod envoy_conversions {
     #![allow(deprecated)]
-    use super::{Duration, DataSource, StringMatcher, StringMatcherPattern};
+    use super::{DataSource, Duration, StringMatcher, StringMatcherPattern};
     use crate::config::common::*;
     use http::uri::Authority;
     use ipnet::IpNet;
@@ -256,11 +256,9 @@ pub mod envoy_conversions {
     };
     use regex::{Regex, RegexBuilder};
     use serde::{Deserialize, Serialize};
-    use std::{net::SocketAddr};
+    use std::net::SocketAddr;
 
-    use orion_data_plane_api::envoy_data_plane_api::{
-        google::protobuf::Duration as EnvoyDuration,
-    };
+    use orion_data_plane_api::envoy_data_plane_api::google::protobuf::Duration as EnvoyDuration;
 
     impl TryFrom<EnvoyDuration> for Duration {
         type Error = GenericError;

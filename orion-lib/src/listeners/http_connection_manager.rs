@@ -114,8 +114,8 @@ use crate::{
     },
     event_error::EventFailure,
     listeners::{
-        filter_state::DownstreamMetadata, rate_limiter::LocalRateLimit, rbac::HttpRbac,
-        synthetic_http_response::SyntheticHttpResponse,
+        filter_state::DownstreamMetadata, http_connection_manager::jwt_authn::JwtAuthenticationBuilder,
+        rate_limiter::LocalRateLimit, rbac::HttpRbac, synthetic_http_response::SyntheticHttpResponse,
     },
     with_client_span, with_metric, with_server_span, ConversionContext, PolyBody, Result, RouteConfiguration,
 };
@@ -226,7 +226,10 @@ impl From<HttpFilterConfig> for HttpFilter {
             HttpFilterType::RateLimit(conf) => HttpFilterValue::RateLimit(conf.into()),
             HttpFilterType::Rbac(conf) => HttpFilterValue::Rbac(HttpRbac::new(&conf)),
             HttpFilterType::ExternalProcessor(conf) => HttpFilterValue::ExternalProcessor(conf.into()),
-            HttpFilterType::JwtAuthentication(conf) => HttpFilterValue::JwtAuthentication(JwtAuthentication::new(conf)),
+            HttpFilterType::JwtAuthentication(conf) => {
+                let builder = JwtAuthenticationBuilder::new(conf);
+                HttpFilterValue::JwtAuthentication(builder.build())
+            },
         };
         Self { name, disabled, filter: Some(filter), base_config: hcm_config }
     }
@@ -249,7 +252,7 @@ impl HttpFilterValue {
             // RBAC and RateLimit do not apply on the response path
             HttpFilterValue::Rbac(_) | HttpFilterValue::RateLimit(_) => FilterDecision::Continue,
             HttpFilterValue::ExternalProcessor(ext_proc) => ext_proc.apply_response(response).await,
-            HttpFilterValue::JwtAuthentication(_) =>  FilterDecision::Continue,
+            HttpFilterValue::JwtAuthentication(_) => FilterDecision::Continue,
         }
     }
     fn from_filter_override(value: &FilterOverride, base_config: Option<&HttpFilterConfig>) -> Option<Self> {

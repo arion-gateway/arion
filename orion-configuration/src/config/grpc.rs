@@ -16,8 +16,8 @@
 //
 
 use crate::config::{common::envoy_conversions::IsUsed, unsupported_field, GenericError};
-use orion_data_plane_api::envoy_data_plane_api::{
-    envoy::config::core::v3::{grpc_service::GoogleGrpc as EnvoyGoogleGrpc, GrpcService as EnvoyGrpcService},
+use orion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::{
+    grpc_service::GoogleGrpc as EnvoyGoogleGrpc, GrpcService as EnvoyGrpcService,
 };
 use serde::{Deserialize, Serialize};
 
