@@ -18,6 +18,7 @@
 pub mod header_matcher;
 pub mod header_modifer;
 pub mod http_filters;
+pub mod metadata_matcher;
 pub mod route;
 
 use exponential_backoff::Backoff;

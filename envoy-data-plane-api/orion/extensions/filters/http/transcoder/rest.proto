@@ -1,3 +1,28 @@
 syntax = "proto3";
 
 package orion.extensions.filters.http.transcoder.rest.v3;
+
+import "envoy/config/core/v3/base.proto";
+import "envoy/config/core/v3/config_source.proto";
+import "validate/validate.proto";
+
+message RestTranscoder {
+  // Config source is explicitly set to FILTER_STATE (Envoy standard)
+  envoy.config.core.v3.ConfigSource config_source = 1 [(validate.rules).message = {required: true}];
+
+  // Filter state key (from MCP state)
+  string filter_state_key = 2 [(validate.rules).message = {required: true}];
+
+  // Passthrough behavior when config is missing
+  bool passthrough_when_missing = 3;
+
+  // JSON-RPC wrapper configuration
+  ResponseWrapper response_wrapper = 4;
+}
+
+message ResponseWrapper {
+  string jsonrpc_version = 1;
+  // ID source uses Envoy's FILTER_STATE convention
+  string id_source = 2;
+  string id_key = 3;
+}

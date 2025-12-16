@@ -2,14 +2,7 @@ syntax = "proto3";
 
 package orion.extensions.filters.http.mcp.mcp_gateway.v3;
 
-import "envoy/config/admin/v3/server_info.proto";
-import "envoy/config/core/v3/base.proto";
-import "envoy/config/core/v3/extension_definition.proto";
-import "envoy/config/filter/http/v3/http_filter.proto";
-import "envoy/config/filter/http/v3/router.proto";
 import "envoy/type/matcher/metadata.proto";
-import "envoy/type/matcher/string.proto";
-import "envoy/type/matcher/value.proto";
 import "google/protobuf/any.proto";
 import "google/protobuf/duration.proto";
 import "validate/validate.proto";
@@ -19,12 +12,17 @@ import "validate/validate.proto";
 // [#extension: envoy.filters.network.mcp_gateway]
 message McpGateway {
     string cluster_header = 1 [(validate.rules).string = {min_bytes: 1}];
-    envoy.config.admin.v3.ServerInfo server_info = 2;
+    ServerInfo server_info = 2 [(validate.rules).message = {required: true}];
     Capabilities capabilities = 3;
-    repeated string supported_protocol_versions = 3;
-    SessionConfig session = 4;
-    repeated Tool tools = 5;
-    UpstreamAuth upstream_auth = 6;
+    repeated string supported_protocol_versions = 4;
+    SessionConfig session = 5;
+    repeated Tool tools = 6;
+    UpstreamAuth upstream_auth = 7;
+}
+
+message ServerInfo {
+    string name = 1 [(validate.rules).string = {min_bytes: 1}];
+    string version = 2 [(validate.rules).string = {min_bytes: 1}];
 }
 
 // Capabilities of the Orion MCP Gateway.
@@ -35,17 +33,17 @@ message Capabilities {
 // Session configuration.
 message SessionConfig {
     bool enabled = 1;
-    google.protobuf.Duration ttl = 2 [(validate.rules).duration = {gt: 0}];
+    google.protobuf.Duration ttl = 2; // [(validate.rules).duration = {gt: 0}];
     bool cache_client_init = 3;
 }
 
 // Tool configuration
 message Tool {
     string name = 1 [(validate.rules).string = {min_bytes: 1}];
-    string description = 3 [(validate.rules).string = {min_bytes: 1}];
-    google.protobuf.Any input_schema = 4;
-    Rbac rbac = 5;
-    BackendConfig backend = 6;
+    string description = 2 [(validate.rules).string = {min_bytes: 1}];
+    google.protobuf.Any input_schema = 3;
+    Rbac rbac = 4;
+    BackendConfig backend = 5;
 }
 
 // RBAC config
