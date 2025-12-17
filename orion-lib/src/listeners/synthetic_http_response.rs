@@ -67,6 +67,16 @@ impl SyntheticHttpResponse {
         }
     }
 
+    pub fn unauthorized(event_kind: EventKind, msg: &str) -> Self {
+        Self {
+            http_status: StatusCode::UNAUTHORIZED,
+            event_kind,
+            response_flags: ResponseFlags::default(),
+            body: Bytes::copy_from_slice(msg.as_bytes()),
+            close_connection: true,
+        }
+    }
+
     pub fn forbidden(event_kind: EventKind, msg: &str) -> Self {
         Self {
             http_status: StatusCode::FORBIDDEN,

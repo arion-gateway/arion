@@ -15,6 +15,7 @@
 //
 //
 
+use http::header::InvalidHeaderName;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
@@ -152,6 +153,8 @@ pub enum GenericError {
     DataSource(#[from] DataSourceReadError),
     #[error("Utf8: {0}")]
     Utf8(#[from] FromUtf8Error),
+    #[error("HeaderName: {0}")]
+    InvalidHeaderName(#[from] InvalidHeaderName),
 }
 
 impl GenericError {
@@ -338,6 +341,7 @@ pub(crate) mod envoy_conversions {
             self.is_used().then_some(self).ok_or(GenericError::MissingField(name))
         }
     }
+
     // it would be nice to allow for x = "y" syntax to overwrite the field name, since some fields are
     // named differently in the code vs config file and having the code-local name might confuse an end-user
     macro_rules! unsupported_field {
