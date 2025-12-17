@@ -824,23 +824,20 @@ impl
             Arc<DownstreamMetadata>,
         ),
     ) -> Result<Response<TimeoutBody<PolyBody>>> {
-        let mut processed_routes: HashSet<&RouteMatch> = HashSet::new();
         let mut cached_route = match_request_route(&request, &self);
         let mut request: Request<InstrumentedBody<TimeoutBody<PolyBody>>> =
             request.map(|body| body.map_inner(|timeout_body| timeout_body.map_into()));
         let mut active_filters: SmallVec<[HttpFilterValue; 2]> = SmallVec::new();
+        let mut filter_idx = 0;
         loop {
             if let Some(ref chosen_route) = cached_route {
-                if processed_routes.contains(&chosen_route.route.route_match) {
-                    // we are in routing loop, processing the same route twice is not permitted
-                    return Err(GenericError::from_msg("Routing loop detected").into());
-                }
-
                 let guard = connection_manager.http_filters_per_route.load();
                 let route_filters = guard.get(&chosen_route.route.route_match);
                 if let Some(route_filters) = route_filters {
-                    let mut is_reroute = false;
-                    for filter in route_filters {
+                    let mut reroute = false;
+                    while filter_idx < route_filters.len() {
+                        let filter = &route_filters[filter_idx];
+                        filter_idx += 1;
                         if filter.disabled {
                             continue;
                         }
@@ -850,7 +847,7 @@ impl
                             active_filters.push(filter_value);
                             if matches!(filter_res, FilterDecision::Reroute) {
                                 // stop processing filters and re-evaluate the route
-                                is_reroute = true;
+                                reroute = true;
                                 break;
                             }
                             if let FilterDecision::DirectResponse(response) = filter_res {
@@ -858,12 +855,10 @@ impl
                             }
                         }
                     }
-                    if !is_reroute {
+                    if !reroute {
                         break;
                     }
-                    debug!("rerouting enabled; active_filters dropped!");
-                    active_filters.clear();
-                    processed_routes.insert(&chosen_route.route.route_match);
+                    debug!("rerouting enabled!");
                     cached_route = match_request_route(&request, &self);
                 } else {
                     // there are no filters to process
