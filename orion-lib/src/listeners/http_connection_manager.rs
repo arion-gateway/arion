@@ -93,12 +93,11 @@ use orion_configuration::config::network_filters::http_connection_manager::{
 
 use orion_configuration::config::network_filters::http_connection_manager::{Route, VirtualHost, XffSettings};
 use orion_configuration::config::network_filters::tracing::{TracingConfig, TracingKey};
-use orion_configuration::config::GenericError;
 use orion_format::types::ResponseFlags as FmtResponseFlags;
 use route::MatchedRequest;
 use scopeguard::defer;
 use smol_str::SmolStr;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::thread::ThreadId;
 use std::{fmt, future::Future, result::Result as StdResult, sync::Arc};
 use tokio::sync::watch;
