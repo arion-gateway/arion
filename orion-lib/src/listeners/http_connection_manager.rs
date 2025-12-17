@@ -901,9 +901,9 @@ impl
                 },
             }?;
 
-            // Process filters on response...
+            // Process filters on response in reverse order...
             //
-            for filter in &mut active_filters {
+            for filter in &mut active_filters.iter_mut().rev() {
                 let filter_res = filter.apply_response(&mut response).await;
                 if let FilterDecision::DirectResponse(direct_response) = filter_res {
                     response = direct_response;
