@@ -1,3 +1,6 @@
+pub mod claims;
+use claims::JwtClaims;
+
 use std::{
     borrow::{Borrow, Cow},
     collections::HashMap,
@@ -12,20 +15,18 @@ use crate::{
     listeners::{http_connection_manager::FilterDecision, synthetic_http_response::SyntheticHttpResponse},
     PolyBody,
 };
-use http::{HeaderName, Request};
+use http::{HeaderMap, HeaderName, HeaderValue, Request};
 use jsonwebtoken::{decode, decode_header, jwk::Jwk, Algorithm, DecodingKey, TokenData, Validation};
-use ref_cast::RefCast;
-use serde_json::Value;
-use smol_str::SmolStr;
-use thiserror::Error;
-use tracing::{debug, error, info, warn};
-
 use orion_configuration::config::{
     core::DataSourceReadError,
     network_filters::http_connection_manager::http_filters::jwt::{
         JwksSourceSpecifier, JwtAuthentication as JwtAuthenticationConfig, JwtProvider, RequirementType, RequiresType,
     },
 };
+use ref_cast::RefCast;
+use smol_str::SmolStr;
+use thiserror::Error;
+use tracing::{debug, error, info, warn};
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct Kid(SmolStr);
@@ -57,8 +58,6 @@ struct ProviderContext {
     /// Valid keys from static config or remote endpoint derived from Jwk
     keys: HashMap<Kid, ValidationKey, ahash::RandomState>,
 }
-
-type Claims = HashMap<String, Value>;
 
 impl ProviderContext {
     pub fn validation_key_lookup(&self, kid: Option<&KidStr>) -> Option<&ValidationKey> {
@@ -265,13 +264,10 @@ impl JwtAuthentication {
         // Iterate through the rules to find a matching provider
         for rule in &self.inner.config.rules {
             // Check if the request matches the rule's route match criteria
-            let matches = if let Some(route_match) = &rule.r#match {
-                // If there's a route match, use the built-in match_request method
+            // if the rule has no route match, it applies to all requests
+            let matches = rule.r#match.as_ref().is_none_or(|route_match| {
                 route_match.match_request(request).matched()
-            } else {
-                // If no route match is specified, the rule applies to all requests
-                true
-            };
+            });
 
             if matches {
                 // Extract the provider name from the requirement type
@@ -301,11 +297,82 @@ impl JwtAuthentication {
     }
 
     #[inline]
-    fn unauthorized(&self, ver: http::Version, msg: &str) -> FilterDecision {
+    fn unauthorized(ver: http::Version, msg: &str) -> FilterDecision {
         FilterDecision::DirectResponse(
             SyntheticHttpResponse::unauthorized(EventFailure::RbacAccessDenied(msg.into()).into(), msg)
                 .into_response(ver),
         )
+    }
+
+    fn claims_to_headers(jwt_provider: &JwtProvider, claims: &JwtClaims, headers: &mut HeaderMap<HeaderValue>) {
+        for claim_to_header in &jwt_provider.claim_to_headers {
+            match claim_to_header.claim_name.as_str() {
+                "iss" => {
+                    if let Some(value) = &claims.iss {
+                        let header_value = http::HeaderValue::from_str(value);
+                        if let Ok(header_value) = header_value {
+                            headers.insert(&claim_to_header.header_name, header_value);
+                        }
+                    }
+                },
+                "sub" => {
+                    if let Some(value) = &claims.sub {
+                        let header_value = http::HeaderValue::from_str(value);
+                        if let Ok(header_value) = header_value {
+                            headers.insert(&claim_to_header.header_name, header_value);
+                        }
+                    }
+                },
+                "aud" => {
+                    if let Some(value) = &claims.aud {
+                        let header_value = http::HeaderValue::from_str(&format!("{value:?}"));
+                        if let Ok(header_value) = header_value {
+                            headers.insert(&claim_to_header.header_name, header_value);
+                        }
+                    }
+                },
+                "exp" => {
+                    if let Some(value) = &claims.exp {
+                        let header_value = http::HeaderValue::from_str(&value.to_string());
+                        if let Ok(header_value) = header_value {
+                            headers.insert(&claim_to_header.header_name, header_value);
+                        }
+                    }
+                },
+                "iat" => {
+                    if let Some(value) = &claims.iat {
+                        let header_value = http::HeaderValue::from_str(&value.to_string());
+                        if let Ok(header_value) = header_value {
+                            headers.insert(&claim_to_header.header_name, header_value);
+                        }
+                    }
+                },
+                "nbf" => {
+                    if let Some(value) = &claims.nbf {
+                        let header_value = http::HeaderValue::from_str(&value.to_string());
+                        if let Ok(header_value) = header_value {
+                            headers.insert(&claim_to_header.header_name, header_value);
+                        }
+                    }
+                },
+                "jti" => {
+                    if let Some(value) = &claims.jti {
+                        let header_value = http::HeaderValue::from_str(value);
+                        if let Ok(header_value) = header_value {
+                            headers.insert(&claim_to_header.header_name, header_value);
+                        }
+                    }
+                },
+                _ => {
+                    if let Some(value) = &claims.extra.get(claim_to_header.claim_name.as_str()) {
+                        let header_value = http::HeaderValue::from_str(&value.to_string());
+                        if let Ok(header_value) = header_value {
+                            headers.insert(&claim_to_header.header_name, header_value);
+                        }
+                    }
+                },
+            }
+        }
     }
 
     #[allow(clippy::too_many_lines)]
@@ -315,19 +382,19 @@ impl JwtAuthentication {
         // lookup the provider name...
         let Some(provider_name) = self.provider_lookup(req) else {
             warn!(target: "jwt", "JWT no provider configured");
-            return self.unauthorized(req.version(), "JWT no provider configured");
+            return Self::unauthorized(req.version(), "JWT no provider configured");
         };
 
         // extract token from the request...
         let Some(jwt_extract) = self.extract_token(provider_name, req) else {
             warn!(target: "jwt", "JWT no token found");
-            return self.unauthorized(req.version(), "JWT no token found");
+            return Self::unauthorized(req.version(), "JWT no token found");
         };
 
         // decode the header token...
         let Ok(header) = decode_header(jwt_extract.token()) else {
             warn!(target: "jwt", "JWT failed to decode token header");
-            return self.unauthorized(req.version(), "JWT failed to decode token header");
+            return Self::unauthorized(req.version(), "JWT failed to decode token header");
         };
 
         // get the validation_key for this provider...
@@ -339,22 +406,22 @@ impl JwtAuthentication {
         // get the associated validation key...
         let Some(val_key) = validation_key else {
             warn!(target: "jwt", "JWT no validation key found");
-            return self.unauthorized(req.version(), "JWT no validation key found");
+            return Self::unauthorized(req.version(), "JWT no validation key found");
         };
 
         // finally decode the JWT token...
-        let jwt: TokenData<Claims> = match decode(jwt_extract.token(), &val_key.decoding_key, &val_key.validation) {
+        let jwt: TokenData<JwtClaims> = match decode(jwt_extract.token(), &val_key.decoding_key, &val_key.validation) {
             Ok(jwt) => jwt,
             Err(err) => {
                 warn!(target: "jwt", "JWT failed to decode token: {}", err);
-                return self.unauthorized(req.version(), "JWT failed to decode token");
+                return Self::unauthorized(req.version(), "JWT failed to decode token");
             },
         };
 
         // retrieve configuration for this provider...
         let Some(jwt_provider) = self.inner.config.providers.get(provider_name) else {
             warn!(target: "jwt", "JWT no provider found");
-            return self.unauthorized(req.version(), "JWT no provider found");
+            return Self::unauthorized(req.version(), "JWT no provider found");
         };
 
         // handle forward option
@@ -404,13 +471,17 @@ impl JwtAuthentication {
         }
 
         // handle claim_to_headers
-        for claim_to_header in &jwt_provider.claim_to_headers {
-            if let Some(value) = jwt.claims.get(claim_to_header.claim_name.as_str()) {
-                let header_value = http::HeaderValue::from_str(&value.to_string());
-                if let Ok(header_value) = header_value {
-                    req.headers_mut().insert(&claim_to_header.header_name, header_value);
-                }
-            }
+
+        if !jwt_provider.claim_to_headers.is_empty() {
+            Self::claims_to_headers(jwt_provider, &jwt.claims, req.headers_mut());
+        }
+
+        if jwt_provider.header_in_metadata.is_some() {
+            req.extensions_mut().insert(header);
+        }
+
+        if jwt_provider.payload_in_metadata.is_some() {
+            req.extensions_mut().insert(jwt.claims.clone());
         }
 
         debug!(target: "jwt", "{:#?}", jwt);

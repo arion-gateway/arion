@@ -234,7 +234,11 @@ mod envoy_conversions {
                     Some(HeaderName::from_str(&forward_payload_header)?)
                 },
                 pad_forward_payload_header,
-                payload_in_metadata: if payload_in_metadata.is_empty() { None } else { None },
+                payload_in_metadata: if payload_in_metadata.is_empty() {
+                    None
+                } else {
+                    Some(payload_in_metadata.into())
+                },
                 // normalize_payload_in_metadata,
                 header_in_metadata: if header_in_metadata.is_empty() { None } else { Some(header_in_metadata.into()) },
                 failed_status_in_metadata: if failed_status_in_metadata.is_empty() {
