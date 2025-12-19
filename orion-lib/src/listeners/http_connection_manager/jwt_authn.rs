@@ -381,20 +381,23 @@ impl JwtAuthentication {
 
         // lookup the provider name...
         let Some(provider_name) = self.provider_lookup(req) else {
-            warn!(target: "jwt", "JWT no provider configured");
-            return Self::unauthorized(req.version(), "JWT no provider configured");
+            info!(target: "jwt", "JWT no provider found for request");
+            return Self::unauthorized(req.version(), "JWT no provider found for request");
         };
 
         // extract token from the request...
         let Some(jwt_extract) = self.extract_token(provider_name, req) else {
-            warn!(target: "jwt", "JWT no token found");
-            return Self::unauthorized(req.version(), "JWT no token found");
+            info!(target: "jwt", "JWT no token found for provider {provider_name}");
+            return Self::unauthorized(req.version(), &format!("JWT no token found for provider {provider_name}"));
         };
 
         // decode the header token...
-        let Ok(header) = decode_header(jwt_extract.token()) else {
-            warn!(target: "jwt", "JWT failed to decode token header");
-            return Self::unauthorized(req.version(), "JWT failed to decode token header");
+        let header = match decode_header(jwt_extract.token()) {
+            Ok(header) => header,
+            Err(err) => {
+                info!(target: "jwt", "JWT failed to decode token header: {err}");
+                return Self::unauthorized(req.version(), &format!("JWT failed to decode token header: {err}"));
+            }
         };
 
         // get the validation_key for this provider...
@@ -405,7 +408,7 @@ impl JwtAuthentication {
 
         // get the associated validation key...
         let Some(val_key) = validation_key else {
-            warn!(target: "jwt", "JWT no validation key found");
+            info!(target: "jwt", "JWT no validation key found");
             return Self::unauthorized(req.version(), "JWT no validation key found");
         };
 
@@ -413,15 +416,15 @@ impl JwtAuthentication {
         let jwt: TokenData<JwtClaims> = match decode(jwt_extract.token(), &val_key.decoding_key, &val_key.validation) {
             Ok(jwt) => jwt,
             Err(err) => {
-                warn!(target: "jwt", "JWT failed to decode token: {}", err);
-                return Self::unauthorized(req.version(), "JWT failed to decode token");
+                info!(target: "jwt", "JWT failed to decode token: {err}");
+                return Self::unauthorized(req.version(), &format!("JWT failed to decode token: {err}"));
             },
         };
 
         // retrieve configuration for this provider...
         let Some(jwt_provider) = self.inner.config.providers.get(provider_name) else {
-            warn!(target: "jwt", "JWT no provider found");
-            return Self::unauthorized(req.version(), "JWT no provider found");
+            info!(target: "jwt", "JWT no provider found: {provider_name}");
+            return Self::unauthorized(req.version(), &format!("JWT no provider found: {provider_name}"));
         };
 
         // handle forward option
@@ -457,11 +460,11 @@ impl JwtAuthentication {
                                 parts.path_and_query = Some(pq);
                                 match http::Uri::from_parts(parts) {
                                     Ok(new_uri) => *req.uri_mut() = new_uri,
-                                    Err(e) => warn!(target: "jwt", "Failed to rebuild URI from parts: {}", e),
+                                    Err(e) => info!(target: "jwt", "Failed to rebuild URI from parts: {e}"),
                                 }
                             },
                             Err(e) => {
-                                warn!(target: "jwt", "Failed to parse path and query after removing JWT parameter: {}", e)
+                                info!(target: "jwt", "Failed to parse path and query after removing JWT parameter: {e}")
                             },
                         }
                     }
