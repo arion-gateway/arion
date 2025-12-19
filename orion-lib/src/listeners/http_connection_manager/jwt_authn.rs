@@ -267,9 +267,7 @@ impl JwtAuthentication {
         for rule in &self.inner.config.rules {
             // Check if the request matches the rule's route match criteria
             // if the rule has no route match, it applies to all requests
-            let matches = rule.r#match.as_ref().is_none_or(|route_match| {
-                route_match.match_request(request).matched()
-            });
+            let matches = rule.r#match.as_ref().is_none_or(|route_match| route_match.match_request(request).matched());
 
             if matches {
                 // Extract the provider name from the requirement type

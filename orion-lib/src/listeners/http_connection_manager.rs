@@ -834,112 +834,139 @@ impl
     ) -> Result<Response<TimeoutBody<PolyBody>>> {
         let mut cached_route = match_request_route(&request, &self);
         let mut request: Request<InstrumentedBody<TimeoutBody<PolyBody>>> =
-            request.map(|body| body.map_inner(|timeout_body| timeout_body.map_into()));
-        let mut active_filters: SmallVec<[HttpFilterValue; 2]> = SmallVec::new();
+            request.map(|body| body.map_inner(TimeoutBody::map_into));
+        let mut active_filters: SmallVec<[HttpFilterValue; 4]> = SmallVec::new();
         let mut filter_idx = 0;
-        loop {
-            if let Some(ref chosen_route) = cached_route {
-                let guard = connection_manager.http_filters_per_route.load();
-                let route_filters = guard.get(&chosen_route.route.route_match);
-                if let Some(route_filters) = route_filters {
-                    let mut reroute = false;
-                    while filter_idx < route_filters.len() {
-                        let filter = &route_filters[filter_idx];
-                        filter_idx += 1;
-                        if filter.disabled {
-                            continue;
-                        }
-                        if let Some(filter_value) = &filter.filter {
-                            let mut filter_value = filter_value.clone();
-                            let filter_res = filter_value.apply_request(&mut request).await;
-                            active_filters.push(filter_value);
-                            if matches!(filter_res, FilterDecision::Reroute) {
-                                // stop processing filters and re-evaluate the route
-                                reroute = true;
-                                break;
-                            }
-                            if let FilterDecision::DirectResponse(response) = filter_res {
-                                return Ok(response);
-                            }
-                        }
-                    }
-                    if !reroute {
-                        break;
-                    }
-                    debug!("rerouting enabled!");
-                    cached_route = match_request_route(&request, &self);
-                } else {
-                    // there are no filters to process
-                    break;
-                }
-            } else {
+
+        let filter_response = 'filter_loop: loop {
+            let Some(ref chosen_route) = cached_route else {
+                // No route found - return 404 immediately
                 return Ok(SyntheticHttpResponse::not_found(
                     EventFailure::RouteNotFound.into(),
                     ResponseFlags(FmtResponseFlags::NO_ROUTE_FOUND),
                 )
                 .into_response(request.version()));
+            };
+
+            let guard = connection_manager.http_filters_per_route.load();
+            let route_filters = guard.get(&chosen_route.route.route_match);
+
+            let Some(route_filters) = route_filters else {
+                // No filters to process
+                break 'filter_loop FilterDecision::Continue;
+            };
+
+            let mut reroute = false;
+
+            while filter_idx < route_filters.len() {
+                let filter = &route_filters[filter_idx];
+                filter_idx += 1;
+                if filter.disabled {
+                    continue;
+                }
+                if let Some(filter_value) = &filter.filter {
+                    let mut filter_value = filter_value.clone();
+                    let filter_res = filter_value.apply_request(&mut request).await;
+
+                    match &filter_res {
+                        FilterDecision::Continue => {
+                            active_filters.push(filter_value);
+                        },
+                        FilterDecision::DirectResponse(_) => {
+                            // interrupt processing filters with this DirectResponse
+                            break 'filter_loop filter_res;
+                        },
+                        FilterDecision::Reroute => {
+                            // stop processing filters and re-evaluate the route
+                            active_filters.push(filter_value);
+                            reroute = true;
+                            break;
+                        },
+                    }
+                }
             }
-        }
 
-        if let Some(chosen_route) = cached_route {
-            let websocket_enabled_by_default =
-                upgrade_utils::is_websocket_enabled_by_hcm(&connection_manager.enabled_upgrades);
+            if reroute {
+                debug!("rerouting request...");
+                cached_route = match_request_route(&request, &self);
+            } else {
+                // All filters processed successfully
+                break 'filter_loop FilterDecision::Continue;
+            }
+        };
 
-            let mut response = match &chosen_route.route.action {
-                Action::DirectResponse(dr) => dr.to_response(trans_handler, (request, &chosen_route.route.name)).await,
-                Action::Redirect(rd) => {
-                    rd.to_response(trans_handler, (request, chosen_route.route_match, &chosen_route.route.name)).await
-                },
-                Action::Route(route) => {
-                    route
-                        .to_response(
-                            trans_handler,
-                            (
-                                MatchedRequest {
-                                    request,
-                                    route_name: &chosen_route.route.name,
-                                    retry_policy: chosen_route.vh.retry_policy.as_ref(),
-                                    route_match: chosen_route.route_match,
-                                    remote_address: downstream_metadata.connection.peer_address(),
-                                    websocket_enabled_by_default,
-                                },
-                                &connection_manager,
-                            ),
-                        )
-                        .await
-                },
-            }?;
-
-            // Process filters on response in reverse order...
-            //
+        // One filter in the chain has returned a direct response.
+        // Process the active filters on the response in the reverse order:
+        if let FilterDecision::DirectResponse(resp) = filter_response {
+            let mut response = resp;
             for filter in &mut active_filters.iter_mut().rev() {
                 let filter_res = filter.apply_response(&mut response).await;
                 if let FilterDecision::DirectResponse(direct_response) = filter_res {
                     response = direct_response;
-                    break;
                 }
             }
 
-            let resp_headers = response.headers_mut();
-            if self.most_specific_header_mutations_wins {
-                self.response_header_modifier.modify(resp_headers);
-                chosen_route.vh.response_header_modifier.modify(resp_headers);
-                chosen_route.route.response_header_modifier.modify(resp_headers);
-            } else {
-                chosen_route.route.response_header_modifier.modify(resp_headers);
-                chosen_route.vh.response_header_modifier.modify(resp_headers);
-                self.response_header_modifier.modify(resp_headers);
-            }
+            return Ok(response);
+        }
 
-            Ok(response)
-        } else {
-            // We should not be here
-            Ok(SyntheticHttpResponse::not_found(
+        let Some(chosen_route) = cached_route else {
+            return Ok(SyntheticHttpResponse::not_found(
                 EventFailure::RouteNotFound.into(),
                 ResponseFlags(FmtResponseFlags::NO_ROUTE_FOUND),
             )
-            .into_response(request.version()))
+            .into_response(request.version()));
+        };
+
+        let websocket_enabled_by_default =
+            upgrade_utils::is_websocket_enabled_by_hcm(&connection_manager.enabled_upgrades);
+
+        let mut response = match &chosen_route.route.action {
+            Action::DirectResponse(dr) => dr.to_response(trans_handler, (request, &chosen_route.route.name)).await,
+            Action::Redirect(rd) => {
+                rd.to_response(trans_handler, (request, chosen_route.route_match, &chosen_route.route.name)).await
+            },
+            Action::Route(route) => {
+                route
+                    .to_response(
+                        trans_handler,
+                        (
+                            MatchedRequest {
+                                request,
+                                route_name: &chosen_route.route.name,
+                                retry_policy: chosen_route.vh.retry_policy.as_ref(),
+                                route_match: chosen_route.route_match,
+                                remote_address: downstream_metadata.connection.peer_address(),
+                                websocket_enabled_by_default,
+                            },
+                            &connection_manager,
+                        ),
+                    )
+                    .await
+            },
+        }?;
+
+        // let's process the active filters on response in the reverse order...
+        //
+        for filter in &mut active_filters.iter_mut().rev() {
+            let filter_res = filter.apply_response(&mut response).await;
+            if let FilterDecision::DirectResponse(direct_response) = filter_res {
+                response = direct_response;
+                break;
+            }
         }
+
+        let resp_headers = response.headers_mut();
+        if self.most_specific_header_mutations_wins {
+            self.response_header_modifier.modify(resp_headers);
+            chosen_route.vh.response_header_modifier.modify(resp_headers);
+            chosen_route.route.response_header_modifier.modify(resp_headers);
+        } else {
+            chosen_route.route.response_header_modifier.modify(resp_headers);
+            chosen_route.vh.response_header_modifier.modify(resp_headers);
+            self.response_header_modifier.modify(resp_headers);
+        }
+
+        Ok(response)
     }
 }
 
