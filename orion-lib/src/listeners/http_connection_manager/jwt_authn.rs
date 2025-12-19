@@ -123,7 +123,7 @@ impl JwtAuthenticationBuilder {
         }
 
         validation.leeway = u64::from(provider.clock_skew_seconds);
-        validation.validate_exp = provider.require_expiration;
+        validation.validate_exp = true;
 
         validation
     }

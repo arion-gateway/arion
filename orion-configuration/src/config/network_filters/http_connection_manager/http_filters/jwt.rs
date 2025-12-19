@@ -28,8 +28,6 @@ pub struct JwtProvider {
     pub issuer: SmolStr,
     pub audiences: Vec<SmolStr>,
     pub subjects: Option<StringMatcher>,
-    pub require_expiration: bool,
-    pub max_lifetime: Option<Duration>,
     pub forward: bool,
     pub from_headers: Vec<JwtHeader>,
     pub from_params: Vec<SmolStr>,
@@ -44,6 +42,8 @@ pub struct JwtProvider {
     pub clear_route_cache: bool,
     pub claim_to_headers: Vec<JwtClaimToHeader>,
     pub jwks_source_specifier: JwksSourceSpecifier,
+    // pub require_expiration: bool,
+    // pub max_lifetime: Option<Duration>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -89,8 +89,6 @@ pub struct JwtAuthentication {
     pub providers: HashMap<SmolStr, JwtProvider>,
     pub rules: Vec<RequirementRule>,
 }
-
-use crate::config::core::Duration;
 
 #[cfg(feature = "envoy-conversions")]
 mod envoy_conversions {
@@ -199,8 +197,8 @@ mod envoy_conversions {
                 //issuer,
                 //audiences,
                 //subjects,
-                //require_expiration,
-                //max_lifetime,
+                require_expiration,
+                max_lifetime,
                 //forward,
                 //from_headers,
                 //from_params,
@@ -222,8 +220,8 @@ mod envoy_conversions {
                 issuer: issuer.into(),
                 audiences: audiences.into_iter().map(Into::into).collect(),
                 subjects: subjects.map(TryInto::try_into).transpose()?,
-                require_expiration,
-                max_lifetime: max_lifetime.map(TryInto::try_into).transpose()?,
+                // require_expiration,
+                // max_lifetime: max_lifetime.map(TryInto::try_into).transpose()?,
                 forward,
                 from_headers: from_headers.into_iter().map(TryInto::try_into).collect::<Result<Vec<JwtHeader>, _>>()?,
                 from_params: from_params.into_iter().map(Into::into).collect(),
