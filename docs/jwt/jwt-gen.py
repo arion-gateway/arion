@@ -64,7 +64,9 @@ if __name__ == "__main__":
         "name": "John Doe",
         "role": "admin",
         "iat": int(time.time()),             # Issued At
-        "exp": int(time.time()) + 3600       # Expires in 1 hour
+        "exp": int(time.time()) + 3600,      # Expires in 1 hour
+        "aud": ["mcp-gateway"],
+        "iss": "https://auth.example.com"
     }
 
     # Generate the Token

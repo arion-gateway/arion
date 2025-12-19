@@ -111,19 +111,21 @@ impl JwtAuthenticationBuilder {
     pub fn build_validation(alg: Algorithm, provider: &JwtProvider) -> Validation {
         let mut validation = Validation::new(alg);
 
+        validation.leeway = u64::from(provider.clock_skew_seconds);
+        validation.validate_exp = true;
+
         if !provider.issuer.is_empty() {
+            validation.required_spec_claims.insert("iss".into());
             validation.set_issuer(std::slice::from_ref(&provider.issuer));
         }
 
         if provider.audiences.is_empty() {
             validation.validate_aud = false;
         } else {
+            validation.required_spec_claims.insert("aud".into());
             validation.set_audience(&provider.audiences);
             validation.validate_aud = true;
         }
-
-        validation.leeway = u64::from(provider.clock_skew_seconds);
-        validation.validate_exp = true;
 
         validation
     }
