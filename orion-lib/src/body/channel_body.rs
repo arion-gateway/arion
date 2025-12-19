@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use futures::{Stream, StreamExt};
+use futures::{Sink, Stream, StreamExt};
 use http_body::{Body, Frame, SizeHint};
 use std::collections::VecDeque;
 use std::pin::Pin;
@@ -289,6 +289,38 @@ impl Stream for FrameBridge {
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         self.body_stream.as_mut().poll_next(cx)
+    }
+}
+
+impl Sink<Bytes> for FrameBridge {
+    type Error = mpsc::error::SendError<FrameResult>;
+
+    fn poll_ready(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        if self.injector.is_some() {
+            Poll::Ready(Ok(()))
+        } else {
+            Poll::Ready(Err(mpsc::error::SendError(Ok(Frame::data(Bytes::new())))))
+        }
+    }
+
+    fn start_send(mut self: Pin<&mut Self>, item: Bytes) -> Result<(), Self::Error> {
+        if let Some(injector) = &mut self.injector {
+            injector.try_send(Ok(Frame::data(item))).map_err(|e| match e {
+                mpsc::error::TrySendError::Full(frame) | mpsc::error::TrySendError::Closed(frame) => mpsc::error::SendError(frame),
+            })
+        } else {
+            Err(mpsc::error::SendError(Ok(Frame::data(item))))
+        }
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        // mpsc channels don't need explicit flushing
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_close(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.injector.take();
+        Poll::Ready(Ok(()))
     }
 }
 
