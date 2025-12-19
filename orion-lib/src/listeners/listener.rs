@@ -20,7 +20,10 @@ use super::{
     listeners_manager::TlsContextChange,
 };
 use crate::{
-    listeners::filter_state::{DownstreamConnectionMetadata, DownstreamMetadata},
+    listeners::{
+        filter_state::{DownstreamConnectionMetadata, DownstreamMetadata},
+        http_connection_manager::mcp_gateway::mcp::McpGatewayContext,
+    },
     secrets::{TlsConfigurator, WantsToBuildServer},
     transport::{bind_device::BindDevice, tls_inspector, AsyncStream, ProxyProtocolReader},
     ConversionContext, Error, Result, RouteConfigurationChange,
@@ -35,6 +38,7 @@ use orion_interner::StringInterner;
 use opentelemetry::KeyValue;
 
 use crate::{with_histogram, with_metric};
+use dashmap::DashMap;
 #[cfg(feature = "metrics")]
 use orion_metrics::metrics::{http, listeners};
 
@@ -46,7 +50,7 @@ use std::{
     net::SocketAddr,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, OnceLock,
     },
 };
 use tokio::{
@@ -145,6 +149,19 @@ impl TryFrom<ConversionContext<'_, ListenerConfig>> for ListenerFactory {
         let listener = PartialListener::try_from(ctx)?;
         Ok(Self { listener })
     }
+}
+
+#[derive(Debug, Default)]
+pub struct ListenerContext {
+    pub mcp: McpGatewayContext,
+}
+
+static LISTENERS_CONTEXT: OnceLock<DashMap<&'static str, Arc<ListenerContext>>> = OnceLock::new();
+
+#[inline]
+pub fn get_listener_context(listener_name: &'static str) -> Arc<ListenerContext> {
+    let dmap = LISTENERS_CONTEXT.get_or_init(|| DashMap::new());
+    dmap.entry(listener_name).or_insert_with(|| Arc::new(ListenerContext::default())).value().clone()
 }
 
 #[derive(Debug)]
@@ -371,7 +388,7 @@ impl Listener {
             with_histogram!(listeners::DOWNSTREAM_CX_LENGTH_MS, record, _ms, &[KeyValue::new("listener", listener_name)]);
         }
 
-        let server_name = if with_tls_inspector {
+        let sni = if with_tls_inspector {
             let (tls_result, rewound_stream) = tls_inspector::inspect_client_hello(stream).await;
             stream = rewound_stream;
             match tls_result {
@@ -422,7 +439,7 @@ impl Listener {
             None
         };
 
-        let downstream_metadata = if let Some(config) = proxy_protocol_config.as_ref() {
+        let connection_metadata = if let Some(config) = proxy_protocol_config.as_ref() {
             let reader = ProxyProtocolReader::new(Arc::clone(config));
             let (metadata, new_stream) = reader.try_read_proxy_header(stream, local_address, peer_addr).await?;
             stream = new_stream;
@@ -431,19 +448,18 @@ impl Listener {
             DownstreamConnectionMetadata::FromSocket { peer_address: peer_addr, local_address }
         };
 
-        let selected_filterchain =
-            Self::select_filterchain(&filter_chains, &downstream_metadata, server_name.as_deref())?;
+        let selected_filterchain = Self::select_filterchain(&filter_chains, &connection_metadata, sni.as_deref())?;
 
         if let Some(filterchain) = selected_filterchain {
             debug!(
                 "{listener_name} : mapping connection from {peer_addr} to filter chain {}",
                 filterchain.filter_chain().name
             );
-            if let Some(stream) = filterchain.apply_rbac(stream, &downstream_metadata, server_name.as_deref()) {
+            if let Some(stream) = filterchain.apply_rbac(stream, &connection_metadata, sni.as_deref()) {
                 return filterchain
                     .start_filterchain(
                         stream,
-                        Arc::new(DownstreamMetadata { connection: downstream_metadata, server_name }),
+                        DownstreamMetadata::new(connection_metadata, sni, listener_name),
                         shard_id,
                         listener_name,
                         start_instant,

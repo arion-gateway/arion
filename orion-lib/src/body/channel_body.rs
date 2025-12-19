@@ -2,6 +2,7 @@ use bytes::Bytes;
 use futures::{Sink, Stream, StreamExt};
 use http_body::{Body, Frame, SizeHint};
 use std::collections::VecDeque;
+use std::num::NonZeroUsize;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::sync::mpsc;
@@ -12,7 +13,7 @@ type FrameResult = Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>
 /// A wrapper for any Body that allows observing and modifying frames in real-time.
 pub struct ChannelBody {
     prefetch: VecDeque<Option<FrameResult>>,
-    prefetch_num_frames: usize,
+    prefetch_num_frames: NonZeroUsize,
     stream: ReceiverStream<FrameResult>,
     is_end_stream: bool,
 }
@@ -23,7 +24,7 @@ impl ChannelBody {
     /// Returns a tuple of (`ChannelBody`, `FrameBridge`). `FrameBridge` must be used
     /// to inject frames (either manually or via `complete()`), otherwise the `ChannelBody`
     /// will never produce any frames.
-    pub fn new<B>(body: B, prefetch_num_frames: usize) -> (Self, FrameBridge)
+    pub fn new<B>(body: B, prefetch_num_frames: NonZeroUsize) -> (Self, FrameBridge)
     where
         B: Body<Data = Bytes> + Send + 'static,
         B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
@@ -52,8 +53,8 @@ impl ChannelBody {
     ///
     /// This method does not consume the frame.
     pub async fn prefetch_frames(&mut self) {
-        self.prefetch.reserve(self.prefetch_num_frames);
-        for _ in 0..self.prefetch_num_frames {
+        self.prefetch.reserve(self.prefetch_num_frames.get());
+        for _ in 0..self.prefetch_num_frames.get() {
             let r = Pin::new(&mut self.stream).next().await;
             self.is_end_stream = r.is_none();
             self.prefetch.push_back(r);
@@ -78,7 +79,7 @@ impl Body for ChannelBody {
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        while self.prefetch.len() < self.prefetch_num_frames {
+        while self.prefetch.len() < self.prefetch_num_frames.get() {
             if let Poll::Ready(something) = Pin::new(&mut self.stream).poll_next(cx) {
                 self.is_end_stream = something.is_none();
                 self.prefetch.push_back(something);
@@ -306,7 +307,9 @@ impl Sink<Bytes> for FrameBridge {
     fn start_send(mut self: Pin<&mut Self>, item: Bytes) -> Result<(), Self::Error> {
         if let Some(injector) = &mut self.injector {
             injector.try_send(Ok(Frame::data(item))).map_err(|e| match e {
-                mpsc::error::TrySendError::Full(frame) | mpsc::error::TrySendError::Closed(frame) => mpsc::error::SendError(frame),
+                mpsc::error::TrySendError::Full(frame) | mpsc::error::TrySendError::Closed(frame) => {
+                    mpsc::error::SendError(frame)
+                },
             })
         } else {
             Err(mpsc::error::SendError(Ok(Frame::data(item))))

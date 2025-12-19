@@ -61,12 +61,13 @@ use pingora_timeout::fast_timeout;
 use scopeguard::defer;
 use std::convert::Infallible;
 use std::future::ready;
+use std::num::NonZeroUsize;
 use std::{sync::Arc, time::Duration};
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, error, info, warn};
 
-const CHANNEL_BODY_PREFETCH_FRAMES: usize = 4;
+const CHANNEL_BODY_PREFETCH_FRAMES: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(4) };
 const EXT_PROC_FRAME_MERGE_LIMIT: u32 = 4; // max number of frames to merge in streaming mode
 const EXT_PROC_MERGE_WINDOW: Duration = tokio::time::Duration::from_millis(1); // time window to wait for more frames to merge
 const EXT_PROC_BUFFERED_BODY_LIMIT: usize = 4 * 1024 * 1024; // this is the default limit for GRPC payload lenght

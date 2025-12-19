@@ -397,7 +397,7 @@ impl JwtAuthentication {
             Err(err) => {
                 info!(target: "jwt", "JWT failed to decode token header: {err}");
                 return Self::unauthorized(req.version(), &format!("JWT failed to decode token header: {err}"));
-            }
+            },
         };
 
         // get the validation_key for this provider...

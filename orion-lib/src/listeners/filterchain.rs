@@ -20,10 +20,7 @@ use super::{
     tcp_proxy::{TcpProxy, TcpProxyBuilder},
 };
 use crate::{
-    listeners::{
-        filter_state::{DownstreamConnectionMetadata, DownstreamMetadata},
-        http_connection_manager::ExtendedRequest,
-    },
+    listeners::filter_state::{DownstreamConnectionMetadata, DownstreamMetadata},
     secrets::{TlsConfigurator, WantsToBuildServer},
     transport::AsyncReadWrite,
     AsyncStream, ConversionContext, Error, Result,
@@ -177,7 +174,7 @@ impl FilterchainType {
     pub async fn start_filterchain(
         &self,
         stream: AsyncStream,
-        downstream_metadata: Arc<DownstreamMetadata>,
+        downstream_metadata: DownstreamMetadata,
         _shard_id: ThreadId,
         listener_name: &'static str,
         start_instant: std::time::Instant,
@@ -246,10 +243,9 @@ impl FilterchainType {
                 hyper_server
                     .serve_connection_with_upgrades(
                         stream,
-                        hyper::service::service_fn(|req: Request<hyper::body::Incoming>| {
-                            let handler_req =
-                                ExtendedRequest { request: req, downstream_metadata: downstream_metadata.clone() };
-                            req_handler.call(handler_req).map_err(orion_error::Error::into_inner)
+                        hyper::service::service_fn(|mut req: Request<hyper::body::Incoming>| {
+                            req.extensions_mut().insert::<DownstreamMetadata>(downstream_metadata.clone());
+                            req_handler.call(req).map_err(orion_error::Error::into_inner)
                         }),
                     )
                     .await
@@ -280,7 +276,7 @@ impl FilterchainType {
                     };
 
                 debug!("Starting tcp proxy");
-                let res = tcp_proxy.serve_connection(stream, downstream_metadata.clone()).await;
+                let res = tcp_proxy.serve_connection(stream, downstream_metadata).await;
                 debug!("TcpProxy closed {res:?}");
                 res
             },

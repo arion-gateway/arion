@@ -25,13 +25,13 @@
 
 mod direct_response;
 mod ext_proc;
-mod mcp_gateway;
 use ext_proc::ExternalProcessor;
 use jwt_authn::JwtAuthentication;
-use mcp_gateway::McpGateway;
+use mcp_gateway::mcp::McpGateway;
 use smallvec::SmallVec;
 pub mod http_modifiers;
 pub mod jwt_authn;
+pub mod mcp_gateway;
 mod redirect;
 mod route;
 mod upgrades;
@@ -83,7 +83,7 @@ use {
 use arc_swap::ArcSwap;
 use core::time::Duration;
 use futures::future::BoxFuture;
-use hyper::{Request, Response, body::Incoming, service::Service};
+use hyper::{body::Incoming, service::Service, Request, Response};
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::{
     FilterConfigOverride, FilterOverride,
 };
@@ -101,8 +101,11 @@ use orion_format::types::ResponseFlags as FmtResponseFlags;
 use route::MatchedRequest;
 use scopeguard::defer;
 use smol_str::SmolStr;
-use std::collections::HashMap;
 use std::thread::ThreadId;
+use std::{
+    collections::HashMap,
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+};
 use std::{fmt, future::Future, result::Result as StdResult, sync::Arc};
 use tokio::sync::watch;
 use tracing::debug;
@@ -321,9 +324,7 @@ impl TryFrom<ConversionContext<'_, HttpConnectionManagerConfig>> for PartialHttp
         let http_filters_hcm = configuration
             .http_filters
             .into_iter()
-            .map(|f| -> Result<Arc<HttpFilter>> {
-                Ok(Arc::new(HttpFilter::try_from(f)?))
-            })
+            .map(|f| -> Result<Arc<HttpFilter>> { Ok(Arc::new(HttpFilter::try_from(f)?)) })
             .collect::<Result<Vec<Arc<HttpFilter>>>>()?;
         let request_timeout = configuration.request_timeout;
         let xff_settings = configuration.xff_settings;
@@ -437,7 +438,7 @@ impl HttpConnectionManager {
         self: &Arc<Self>,
     ) -> Box<
         dyn Service<
-                ExtendedRequest<Incoming>,
+                Request<Incoming>,
                 Response = Response<InstrumentedBody<TimeoutBody<PolyBody>>>,
                 Error = crate::Error,
                 Future = BoxFuture<'static, StdResult<Response<InstrumentedBody<TimeoutBody<PolyBody>>>, crate::Error>>,
@@ -447,7 +448,7 @@ impl HttpConnectionManager {
         Box::new(HttpRequestHandler { manager: Arc::clone(self), router: self.router_sender.subscribe() })
             as Box<
                 dyn Service<
-                        ExtendedRequest<Incoming>,
+                        Request<Incoming>,
                         Response = Response<InstrumentedBody<TimeoutBody<PolyBody>>>,
                         Error = crate::Error,
                         Future = BoxFuture<
@@ -478,11 +479,6 @@ pub struct CachedRoute<'a> {
 pub(crate) struct HttpRequestHandler {
     manager: Arc<HttpConnectionManager>,
     router: watch::Receiver<Option<Arc<RouteConfiguration>>>,
-}
-
-pub struct ExtendedRequest<B> {
-    pub request: Request<B>,
-    pub downstream_metadata: Arc<DownstreamMetadata>,
 }
 
 #[cfg(feature = "access-log")]
@@ -603,27 +599,22 @@ impl TransactionHandler {
         route_conf: RC,
         manager: Arc<HttpConnectionManager>,
         mut request: Request<InstrumentedBody<TimeoutBody<Incoming>>>,
-        downstream_metadata: Arc<DownstreamMetadata>,
         #[cfg(feature = "access-log")] permit: Option<ShareableAccessLogPermit>,
     ) -> Result<Response<InstrumentedBody<TimeoutBody<PolyBody>>>>
     where
-        RC: RequestHandler<(
-                Request<InstrumentedBody<TimeoutBody<Incoming>>>,
-                Arc<HttpConnectionManager>,
-                Arc<DownstreamMetadata>,
-            )> + Clone,
+        RC: RequestHandler<(Request<InstrumentedBody<TimeoutBody<Incoming>>>, Arc<HttpConnectionManager>)> + Clone,
     {
         let _listener_name = manager.listener_name;
+        let downstream_metadata = request.extensions().get::<DownstreamMetadata>();
+        let downstream_addr = downstream_metadata
+            .map(|md| md.connection.peer_address())
+            .unwrap_or_else(|| SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0));
 
         // apply the request header modifiers
-        http_modifiers::apply_prerouting_functions(
-            &mut request,
-            downstream_metadata.connection.peer_address(),
-            manager.xff_settings,
-        );
+        http_modifiers::apply_prerouting_functions(&mut request, downstream_addr, manager.xff_settings);
 
         // process request, get the response..
-        let result = route_conf.to_response(&self, (request, manager.clone(), downstream_metadata.clone())).await;
+        let result = route_conf.to_response(&self, (request, manager.clone())).await;
 
         // calculate the time to first byte..
         #[cfg(feature = "access-log")]
@@ -826,22 +817,14 @@ fn match_request_route<'a, B>(request: &Request<B>, route_config: &'a RouteConfi
     Some(CachedRoute { route: chosen_route, route_match: route_match_result, vh: chosen_vh })
 }
 
-impl
-    RequestHandler<(
-        Request<InstrumentedBody<TimeoutBody<Incoming>>>,
-        Arc<HttpConnectionManager>,
-        Arc<DownstreamMetadata>,
-    )> for Arc<RouteConfiguration>
+impl RequestHandler<(Request<InstrumentedBody<TimeoutBody<Incoming>>>, Arc<HttpConnectionManager>)>
+    for Arc<RouteConfiguration>
 {
     #[allow(clippy::too_many_lines)]
     async fn to_response(
         self,
         trans_handler: &TransactionHandler,
-        (request, connection_manager, downstream_metadata): (
-            Request<InstrumentedBody<TimeoutBody<Incoming>>>,
-            Arc<HttpConnectionManager>,
-            Arc<DownstreamMetadata>,
-        ),
+        (request, connection_manager): (Request<InstrumentedBody<TimeoutBody<Incoming>>>, Arc<HttpConnectionManager>),
     ) -> Result<Response<TimeoutBody<PolyBody>>> {
         let mut cached_route = match_request_route(&request, &self);
         let mut request: Request<InstrumentedBody<TimeoutBody<PolyBody>>> =
@@ -937,6 +920,11 @@ impl
                 rd.to_response(trans_handler, (request, chosen_route.route_match, &chosen_route.route.name)).await
             },
             Action::Route(route) => {
+                let remote_address = request
+                    .extensions()
+                    .get::<DownstreamMetadata>()
+                    .map(|md| md.connection.peer_address())
+                    .unwrap_or_else(|| SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0));
                 route
                     .to_response(
                         trans_handler,
@@ -946,7 +934,7 @@ impl
                                 route_name: &chosen_route.route.name,
                                 retry_policy: chosen_route.vh.retry_policy.as_ref(),
                                 route_match: chosen_route.route_match,
-                                remote_address: downstream_metadata.connection.peer_address(),
+                                remote_address,
                                 websocket_enabled_by_default,
                             },
                             &connection_manager,
@@ -981,16 +969,16 @@ impl
     }
 }
 
-impl Service<ExtendedRequest<Incoming>> for HttpRequestHandler {
+impl Service<Request<Incoming>> for HttpRequestHandler {
     type Response = Response<InstrumentedBody<TimeoutBody<PolyBody>>>;
     type Error = crate::Error;
     type Future = BoxFuture<'static, StdResult<Self::Response, Self::Error>>;
 
     #[allow(clippy::too_many_lines)]
-    fn call(&self, req: ExtendedRequest<Incoming>) -> Self::Future {
-        // destructure the ExtendedRequest to get the request and addresses
-        let ExtendedRequest { request, downstream_metadata } = req;
+    fn call(&self, mut request: Request<Incoming>) -> Self::Future {
+        // destructure the Request to get the request and addresses
         let incoming_request_id = RequestId::from_request(&request);
+        let metadata = request.extensions_mut().remove::<DownstreamMetadata>();
 
         let access_log_enabled = {
             #[cfg(feature = "access-log")]
@@ -1046,7 +1034,11 @@ impl Service<ExtendedRequest<Incoming>> for HttpRequestHandler {
         }
 
         // update the incoming request...
-        let req = ExtendedRequest { request: updated_request, downstream_metadata };
+        if let Some(metadata) = metadata {
+            updated_request.extensions_mut().insert::<DownstreamMetadata>(metadata);
+        }
+
+        let request = updated_request;
 
         let req_timeout = self.manager.request_timeout;
         let listener_name = self.manager.listener_name;
@@ -1075,7 +1067,6 @@ impl Service<ExtendedRequest<Incoming>> for HttpRequestHandler {
         }
 
         Box::pin(async move {
-            let ExtendedRequest { request, downstream_metadata } = req;
             let (parts, body) = request.into_parts();
             let request = Request::from_parts(parts, TimeoutBody::new(req_timeout, body));
 
@@ -1102,7 +1093,12 @@ impl Service<ExtendedRequest<Incoming>> for HttpRequestHandler {
 
             //
             // evaluate InitHttpContext...
-            eval_http_init_context(&request, &trans_handler, downstream_metadata.server_name.as_deref());
+            let metadata = request.extensions().get::<DownstreamMetadata>();
+            eval_http_init_context(
+                &request,
+                &trans_handler,
+                metadata.map(|md| md.sni.as_ref().map(|s| s.as_str())).flatten(),
+            );
 
             //
             // create the InstrumentedBody which will track the size of the request body
@@ -1177,7 +1173,7 @@ impl Service<ExtendedRequest<Incoming>> for HttpRequestHandler {
             });
 
             let Some(route_conf) = route_conf else {
-                // immediately return a SyntheticHttpResponse, and calcuate the first byte instant
+                // immediately return a SyntheticHttpResponse, and calculate the first byte instant
                 let resp = SyntheticHttpResponse::not_found(
                     EventFailure::RouteNotFound.into(),
                     ResponseFlags(FmtResponseFlags::NO_ROUTE_FOUND),
@@ -1281,7 +1277,6 @@ impl Service<ExtendedRequest<Incoming>> for HttpRequestHandler {
                     route_conf,
                     manager,
                     request,
-                    downstream_metadata,
                     #[cfg(feature = "access-log")]
                     permit,
                 )

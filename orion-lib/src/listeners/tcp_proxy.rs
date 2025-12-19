@@ -41,7 +41,7 @@ use orion_format::{
     types::ResponseFlags,
 };
 
-use std::{fmt, net::SocketAddr, sync::Arc, time::Instant};
+use std::{fmt, net::SocketAddr, time::Instant};
 use tracing::{debug, error};
 
 #[derive(Debug, Clone)]
@@ -85,7 +85,7 @@ impl TcpProxy {
     pub async fn serve_connection(
         &self,
         mut stream: AsyncStream,
-        downstream_metadata: Arc<DownstreamMetadata>,
+        downstream_metadata: DownstreamMetadata,
     ) -> Result<()> {
         let start_instant = Instant::now();
         let mut access_loggers = self.access_log.iter().map(|al| al.logger.local_clone()).collect::<Vec<_>>();

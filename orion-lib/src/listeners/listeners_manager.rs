@@ -104,7 +104,7 @@ impl ListenersManager {
                     }
                 },
                 Some(route_configuration_change) = self.route_configuration_channel.recv() => {
-                    // routes could be CachedWatch instead, as they are evaluated lazilly
+                    // routes could be CachedWatch instead, as they are evaluated lazily
                     let res = tx_route_updates.send(route_configuration_change);
                     if let Err(e) = res{
                         warn!("Internal problem when updating a route: {e}");

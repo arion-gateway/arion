@@ -37,21 +37,11 @@ pub struct SyntheticHttpResponse {
 // === impl SyntheticHttpResponse ===
 
 impl SyntheticHttpResponse {
-    pub fn internal_error(event_kind: EventKind, response_flags: ResponseFlags) -> Self {
+    pub fn internal_server_error(event_kind: EventKind, response_flags: ResponseFlags, msg: &str) -> Self {
         Self {
             http_status: StatusCode::INTERNAL_SERVER_ERROR,
             event_kind,
             response_flags,
-            body: Bytes::default(),
-            close_connection: true,
-        }
-    }
-
-    pub fn internal_error_with_msg(msg: &str, event_kind: EventKind, response_flags: ResponseFlags) -> Self {
-        Self {
-            http_status: StatusCode::INTERNAL_SERVER_ERROR,
-            response_flags,
-            event_kind,
             body: Bytes::copy_from_slice(msg.as_bytes()),
             close_connection: true,
         }

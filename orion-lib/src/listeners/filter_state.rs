@@ -53,14 +53,15 @@ impl DownstreamConnectionMetadata {
 #[derive(Debug, Clone)]
 pub struct DownstreamMetadata {
     pub connection: DownstreamConnectionMetadata,
-    pub server_name: Option<SmolStr>,
+    pub sni: Option<SmolStr>,
+    pub listener_name: &'static str,
 }
 
 impl DownstreamMetadata {
-    pub fn new<S>(connection: DownstreamConnectionMetadata, server_name: Option<S>) -> Self
+    pub fn new<S>(connection: DownstreamConnectionMetadata, sni: Option<S>, listener_name: &'static str) -> Self
     where
         S: Into<SmolStr>,
     {
-        Self { connection, server_name: server_name.map(Into::into) }
+        Self { connection, sni: sni.map(Into::into), listener_name }
     }
 }

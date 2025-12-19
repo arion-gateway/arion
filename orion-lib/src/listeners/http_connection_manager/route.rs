@@ -83,11 +83,14 @@ impl<'a> RequestHandler<(MatchedRequest<'a>, &HttpConnectionManager)> for &Route
             websocket_enabled_by_default,
         } = request;
 
-        let Some(cluster_id) = clusters_manager::resolve_cluster(&self.cluster_specifier, Some(downstream_request.headers())) else {
+        let Some(cluster_id) =
+            clusters_manager::resolve_cluster(&self.cluster_specifier, Some(downstream_request.headers()))
+        else {
             debug!("Failed to resolve cluster from specifier {:?}", self.cluster_specifier);
-            return Ok(SyntheticHttpResponse::internal_error(
+            return Ok(SyntheticHttpResponse::internal_server_error(
                 EventKind::Failure(EventFailure::ClusterNotFound),
                 ResponseFlags(FmtResponseFlags::NO_CLUSTER_FOUND),
+                "Failed to resolve cluster",
             )
             .into_response(downstream_request.version()));
         };
@@ -227,7 +230,12 @@ impl<'a> RequestHandler<(MatchedRequest<'a>, &HttpConnectionManager)> for &Route
                     ResponseFlagsLong(&flags.0).to_smolstr(),
                     ResponseFlagsShort(&flags.0).to_smolstr()
                 );
-                Ok(SyntheticHttpResponse::internal_error(event_kind, flags).into_response(downstream_request.version()))
+                Ok(SyntheticHttpResponse::internal_server_error(
+                    event_kind,
+                    flags,
+                    "Failed to connect to upstream cluster",
+                )
+                .into_response(downstream_request.version()))
             },
         }
     }
