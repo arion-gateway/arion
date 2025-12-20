@@ -40,10 +40,10 @@ pub enum PolyBody {
     Grpc(#[pin] GrpcBody),
     Stream(#[pin] StreamBody<ReceiverStream<Result<Frame<Bytes>, Error>>>),
     ChannelBody(#[pin] ChannelBody),
-    Collected(#[pin] Collected<Bytes>),
-    FullWithTrailers(#[pin] WithTrailers<Full<Bytes>, Ready<TrailersType>>),
-    EmptyWithTrailers(#[pin] WithTrailers<Empty<Bytes>, Ready<TrailersType>>),
-    CollectedWithTrailers(#[pin] WithTrailers<Collected<Bytes>, Ready<TrailersType>>),
+    Collected(#[pin] Box<Collected<Bytes>>),
+    FullWithTrailers(#[pin] Box<WithTrailers<Full<Bytes>, Ready<TrailersType>>>),
+    EmptyWithTrailers(#[pin] Box<WithTrailers<Empty<Bytes>, Ready<TrailersType>>>),
+    CollectedWithTrailers(#[pin] Box<WithTrailers<Collected<Bytes>, Ready<TrailersType>>>),
 }
 
 impl PolyBody {
@@ -51,15 +51,15 @@ impl PolyBody {
         match self {
             PolyBody::Empty(e) => {
                 let ready = std::future::ready(Some(Ok::<_, Infallible>(trailers)));
-                Ok(PolyBody::EmptyWithTrailers(e.with_trailers(ready)))
+                Ok(PolyBody::EmptyWithTrailers(Box::new(e.with_trailers(ready))))
             },
             PolyBody::Full(f) => {
                 let ready = std::future::ready(Some(Ok::<_, Infallible>(trailers)));
-                Ok(PolyBody::FullWithTrailers(f.with_trailers(ready)))
+                Ok(PolyBody::FullWithTrailers(Box::new(f.with_trailers(ready))))
             },
             PolyBody::Collected(c) => {
                 let ready = std::future::ready(Some(Ok::<_, Infallible>(trailers)));
-                Ok(PolyBody::CollectedWithTrailers(c.with_trailers(ready)))
+                Ok(PolyBody::CollectedWithTrailers(Box::new((*c).with_trailers(ready))))
             },
             b => Err(PolyBodyError::Trailers(format!("{b:?}"))),
         }
@@ -219,7 +219,7 @@ impl From<GrpcBody> for PolyBody {
 impl From<Collected<Bytes>> for PolyBody {
     #[inline]
     fn from(body: Collected<Bytes>) -> Self {
-        PolyBody::Collected(body)
+        PolyBody::Collected(Box::new(body))
     }
 }
 
@@ -240,21 +240,21 @@ impl From<ChannelBody> for PolyBody {
 impl From<WithTrailers<Full<Bytes>, Ready<TrailersType>>> for PolyBody {
     #[inline]
     fn from(body: WithTrailers<Full<Bytes>, Ready<TrailersType>>) -> Self {
-        PolyBody::FullWithTrailers(body)
+        PolyBody::FullWithTrailers(Box::new(body))
     }
 }
 
 impl From<WithTrailers<Empty<Bytes>, Ready<TrailersType>>> for PolyBody {
     #[inline]
     fn from(body: WithTrailers<Empty<Bytes>, Ready<TrailersType>>) -> Self {
-        PolyBody::EmptyWithTrailers(body)
+        PolyBody::EmptyWithTrailers(Box::new(body))
     }
 }
 
 impl From<WithTrailers<Collected<Bytes>, Ready<TrailersType>>> for PolyBody {
     #[inline]
     fn from(body: WithTrailers<Collected<Bytes>, Ready<TrailersType>>) -> Self {
-        PolyBody::CollectedWithTrailers(body)
+        PolyBody::CollectedWithTrailers(Box::new(body))
     }
 }
 
@@ -302,7 +302,7 @@ impl TryFrom<PolyBody> for Collected<Bytes> {
     type Error = PolyBodyError;
     fn try_from(value: PolyBody) -> Result<Self, Self::Error> {
         match value {
-            PolyBody::Collected(c) => Ok(c),
+            PolyBody::Collected(c) => Ok(*c),
             _ => Err(PolyBodyError::BadVariant),
         }
     }
@@ -332,7 +332,7 @@ impl TryFrom<PolyBody> for WithTrailers<Full<Bytes>, Ready<TrailersType>> {
     type Error = PolyBodyError;
     fn try_from(value: PolyBody) -> Result<Self, Self::Error> {
         match value {
-            PolyBody::FullWithTrailers(w) => Ok(w),
+            PolyBody::FullWithTrailers(w) => Ok(*w),
             _ => Err(PolyBodyError::BadVariant),
         }
     }
@@ -342,7 +342,7 @@ impl TryFrom<PolyBody> for WithTrailers<Empty<Bytes>, Ready<TrailersType>> {
     type Error = PolyBodyError;
     fn try_from(value: PolyBody) -> Result<Self, Self::Error> {
         match value {
-            PolyBody::EmptyWithTrailers(w) => Ok(w),
+            PolyBody::EmptyWithTrailers(w) => Ok(*w),
             _ => Err(PolyBodyError::BadVariant),
         }
     }
@@ -352,7 +352,7 @@ impl TryFrom<PolyBody> for WithTrailers<Collected<Bytes>, Ready<TrailersType>> {
     type Error = PolyBodyError;
     fn try_from(value: PolyBody) -> Result<Self, Self::Error> {
         match value {
-            PolyBody::CollectedWithTrailers(w) => Ok(w),
+            PolyBody::CollectedWithTrailers(w) => Ok(*w),
             _ => Err(PolyBodyError::BadVariant),
         }
     }
