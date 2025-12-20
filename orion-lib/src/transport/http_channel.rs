@@ -21,10 +21,17 @@ use super::{
     policy::{RequestContext, RequestExt},
 };
 use crate::{
-    Error, HttpBody, PolyBody, Result, body::{instrumented_body::InstrumentedBody, response_flags::ResponseFlags, timeout_body::TimeoutBody}, clusters::retry_policy::RetryCondition, event_error::{EventError, EventKind, TryInferFrom}, listeners::{
-        http_connection_manager::{RequestHandler, TransactionHandler, http_modifiers::strip_trailers_headers},
+    body::{instrumented_body::InstrumentedBody, response_flags::ResponseFlags, timeout_body::TimeoutBody},
+    clusters::retry_policy::RetryCondition,
+    event_error::{EventError, EventKind, TryInferFrom},
+    listeners::{
+        http_connection_manager::{http_modifiers::strip_trailers_headers, RequestHandler, TransactionHandler},
         synthetic_http_response::SyntheticHttpResponse,
-    }, secrets::{TlsConfigurator, WantsToBuildClient}, thread_local::{LocalBuilder, LocalObject}, transport::timer::PingoraTimer
+    },
+    secrets::{TlsConfigurator, WantsToBuildClient},
+    thread_local::{LocalBuilder, LocalObject},
+    transport::timer::PingoraTimer,
+    Error, HttpBody, PolyBody, Result,
 };
 use http::{
     uri::{Authority, Parts},
@@ -395,14 +402,15 @@ fn update_upstream_stats(event: PoolEvent, tag: &dyn Any, keys: &[&PoolKey]) {
     }
 }
 
-impl<'a> RequestHandler<RequestExt<'a, Request<HttpBody>>> for &HttpChannels {
+impl<'a> RequestHandler<RequestExt<'a, Request<HttpBody>>, ()> for &HttpChannels {
     async fn to_response(
         self,
         trans_handler: &TransactionHandler,
         request: RequestExt<'a, Request<HttpBody>>,
+        _arg: (),
     ) -> Result<Response<TimeoutBody<PolyBody>>> {
         match self {
-            HttpChannels::Single(channel) => channel.to_response(trans_handler, request).await,
+            HttpChannels::Single(channel) => channel.to_response(trans_handler, request, ()).await,
             HttpChannels::MultiWithFailover { channel, failover_channels } => {
                 let RequestExt { req, ctx } = request;
                 let RequestContext { route_timeout, .. } = ctx;
@@ -429,7 +437,7 @@ impl<'a> RequestHandler<RequestExt<'a, Request<HttpBody>>> for &HttpChannels {
                     let attempt_ctx = RequestContext { route_timeout, retry_policy: None };
                     let attempt_request = RequestExt::with_context(attempt_ctx, rebuilt_req);
 
-                    match channel.to_response(trans_handler, attempt_request).await {
+                    match channel.to_response(trans_handler, attempt_request, ()).await {
                         Ok(response) => {
                             if has_more {
                                 debug!(
@@ -466,11 +474,12 @@ impl<'a> RequestHandler<RequestExt<'a, Request<HttpBody>>> for &HttpChannels {
     }
 }
 
-impl<'a> RequestHandler<RequestExt<'a, Request<HttpBody>>> for &HttpChannel {
+impl<'a> RequestHandler<RequestExt<'a, Request<HttpBody>>, ()> for &HttpChannel {
     async fn to_response(
         self,
         _trans_handler: &TransactionHandler,
         request: RequestExt<'a, Request<HttpBody>>,
+        _arg: (),
     ) -> Result<Response<TimeoutBody<PolyBody>>> {
         let version = request.req.version();
         let cluster_name = self.cluster_name;
@@ -604,8 +613,7 @@ impl HttpChannel {
                 state: state.clone(),
             };
 
-            let cloned_req: Request<HttpBody> =
-                Request::from_parts(parts.clone(), cloned_body);
+            let cloned_req: Request<HttpBody> = Request::from_parts(parts.clone(), cloned_body);
 
             // actually send the request and wait for the response...
             let result: StdResult<Response<Incoming>, Error> = if let Some(t) = retry_policy.per_try_timeout() {
@@ -742,18 +750,12 @@ fn select_scheme(version: http::Version, is_tls: bool) -> Option<http::uri::Sche
     }
 }
 
-fn maybe_change_http_protocol_version(
-    request: Request<HttpBody>,
-    version: Codec,
-) -> Result<Request<HttpBody>> {
+fn maybe_change_http_protocol_version(request: Request<HttpBody>, version: Codec) -> Result<Request<HttpBody>> {
     let request = maybe_update_host(request, version)?;
     Ok(maybe_rewrite_version(request, version))
 }
 
-fn maybe_rewrite_version(
-    mut request: Request<HttpBody>,
-    version: Codec,
-) -> Request<HttpBody> {
+fn maybe_rewrite_version(mut request: Request<HttpBody>, version: Codec) -> Request<HttpBody> {
     *request.version_mut() = match version {
         Codec::Http1 => Version::HTTP_11,
         Codec::Http2 => Version::HTTP_2,
@@ -761,10 +763,7 @@ fn maybe_rewrite_version(
     request
 }
 
-fn maybe_update_host(
-    mut request: Request<HttpBody>,
-    version: Codec,
-) -> Result<Request<HttpBody>> {
+fn maybe_update_host(mut request: Request<HttpBody>, version: Codec) -> Result<Request<HttpBody>> {
     let request_version = request.version();
     match (request_version, version) {
         (Version::HTTP_11, Codec::Http2) => {
@@ -785,10 +784,7 @@ fn maybe_update_host(
     Ok(request)
 }
 
-fn maybe_normalize_uri(
-    mut request: Request<HttpBody>,
-    is_tls: bool,
-) -> crate::Result<Request<HttpBody>> {
+fn maybe_normalize_uri(mut request: Request<HttpBody>, is_tls: bool) -> crate::Result<Request<HttpBody>> {
     let uri = request.uri();
     if !is_absolute(uri) {
         if let Some(host_header) = request.headers().get("host") {

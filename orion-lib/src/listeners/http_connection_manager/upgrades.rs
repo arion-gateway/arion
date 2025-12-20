@@ -17,7 +17,11 @@
 
 use super::{RequestHandler, TransactionHandler};
 use crate::{
-    HttpBody, PolyBody, Result, body::{response_flags::ResponseFlags, timeout_body::TimeoutBody}, event_error::EventFailure, listeners::synthetic_http_response::SyntheticHttpResponse, transport::{HttpChannels, policy::RequestExt}
+    body::{response_flags::ResponseFlags, timeout_body::TimeoutBody},
+    event_error::EventFailure,
+    listeners::synthetic_http_response::SyntheticHttpResponse,
+    transport::{policy::RequestExt, HttpChannels},
+    HttpBody, PolyBody, Result,
 };
 use orion_format::types::ResponseFlags as FmtResponseFlags;
 
@@ -75,7 +79,7 @@ pub async fn handle_websocket_upgrade(
     match version {
         Version::HTTP_11 => {
             let request_upgrade = hyper::upgrade::on(&mut request);
-            match svc_channel.to_response(trans_handler, RequestExt::new(request)).await {
+            match svc_channel.to_response(trans_handler, RequestExt::new(request), ()).await {
                 Ok(mut upstream_response) if upstream_response.status() == StatusCode::SWITCHING_PROTOCOLS => {
                     let response_upgrade = hyper::upgrade::on(&mut upstream_response);
                     tokio::spawn(async move {

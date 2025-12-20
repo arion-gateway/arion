@@ -13,14 +13,17 @@ use tracing::debug;
 use uuid::Uuid;
 
 use crate::{
-    HttpBody, PolyBody, body::{
+    body::{
         channel_body::{ChannelBody, FrameBridge},
         response_flags::ResponseFlags,
         timeout_body::TimeoutBody,
-    }, event_error::EventFailure, listeners::{
+    },
+    event_error::EventFailure,
+    listeners::{
         filter_state::DownstreamMetadata, http_connection_manager::FilterDecision, listener::get_listener_context,
         synthetic_http_response::SyntheticHttpResponse,
-    }
+    },
+    HttpBody, PolyBody,
 };
 
 #[derive(Debug, Clone, Default, Eq, PartialEq, Hash)]
@@ -54,10 +57,7 @@ impl From<McpGatewayConfig> for McpGateway {
 }
 
 impl McpGateway {
-    pub async fn apply_request(
-        &mut self,
-        request: &mut Request<HttpBody>,
-    ) -> FilterDecision {
+    pub async fn apply_request(&mut self, request: &mut Request<HttpBody>) -> FilterDecision {
         debug!(target: "mcp", "processing request: {:?}", request);
 
         let Some(downstream_ctx) = request.extensions().get::<DownstreamMetadata>() else {

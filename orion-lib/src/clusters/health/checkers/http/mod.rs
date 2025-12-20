@@ -33,7 +33,10 @@ use tokio::{
 };
 
 use super::checker::{IntervalWaiter, ProtocolChecker, WaitInterval};
-use crate::{HttpBody, body::{instrumented_body::InstrumentedBody, response_flags::BodyKind, timeout_body::TimeoutBody}};
+use crate::{
+    body::{instrumented_body::InstrumentedBody, response_flags::BodyKind, timeout_body::TimeoutBody},
+    HttpBody,
+};
 // use crate::clusters::cluster::HyperService;
 use crate::{
     clusters::health::{
@@ -81,7 +84,7 @@ fn try_spawn_http_health_checker_impl<H, W>(
 where
     W: WaitInterval + Send + 'static,
     H: Send + 'static,
-    for<'a> &'a H: RequestHandler<RequestExt<'static, Request<HttpBody>>>,
+    for<'a> &'a H: RequestHandler<RequestExt<'static, Request<HttpBody>>, ()>,
 {
     tracing::debug!(
         "Starting HTTP health checks of endpoint {:?} in cluster {:?}",
@@ -130,13 +133,13 @@ struct HttpChecker<H = HttpChannel> {
 impl<H> ProtocolChecker for HttpChecker<H>
 where
     H: Send,
-    for<'a> &'a H: RequestHandler<RequestExt<'static, Request<HttpBody>>>,
+    for<'a> &'a H: RequestHandler<RequestExt<'static, Request<HttpBody>>, ()>,
 {
     type Response = Response<TimeoutBody<PolyBody>>;
 
     async fn check(&mut self) -> Result<Self::Response, Error> {
         let request = create_request(self.http_version, &self.method, &self.host, &self.uri)?;
-        self.client.to_response(&TransactionHandler::default(), request).await
+        self.client.to_response(&TransactionHandler::default(), request, ()).await
     }
 
     fn process_response(

@@ -10,7 +10,9 @@ use std::{
 };
 
 use crate::{
-    HttpBody, event_error::EventFailure, listeners::{http_connection_manager::FilterDecision, synthetic_http_response::SyntheticHttpResponse}
+    event_error::EventFailure,
+    listeners::{http_connection_manager::FilterDecision, synthetic_http_response::SyntheticHttpResponse},
+    HttpBody,
 };
 use http::{HeaderMap, HeaderName, HeaderValue, Request};
 use jsonwebtoken::{decode, decode_header, jwk::Jwk, Algorithm, DecodingKey, TokenData, Validation};

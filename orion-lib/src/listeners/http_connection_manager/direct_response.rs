@@ -15,9 +15,7 @@
 //
 //
 use super::{RequestHandler, TransactionHandler};
-use crate::{
-    HttpBody, PolyBody, Result, body::timeout_body::TimeoutBody
-};
+use crate::{body::timeout_body::TimeoutBody, HttpBody, PolyBody, Result};
 use http_body_util::Full;
 use hyper::{Request, Response};
 use orion_configuration::config::network_filters::http_connection_manager::route::DirectResponseAction;
@@ -25,11 +23,12 @@ use orion_configuration::config::network_filters::http_connection_manager::route
 #[cfg(feature = "access-log")]
 use {crate::listeners::access_log::AccessLogContext, orion_format::context::UpstreamContext};
 
-impl<'a> RequestHandler<(Request<HttpBody>, &'a str)> for &DirectResponseAction {
+impl<'a> RequestHandler<Request<HttpBody>, &'a str> for &DirectResponseAction {
     async fn to_response(
         self,
         _trans_handler: &TransactionHandler,
-        (request, _route_name): (Request<HttpBody>, &'a str),
+        request: Request<HttpBody>,
+        _route_name: &'a str,
     ) -> Result<Response<TimeoutBody<PolyBody>>> {
         #[cfg(feature = "access-log")]
         if let Some(ctx) = _trans_handler.access_log_ctx.as_ref() {

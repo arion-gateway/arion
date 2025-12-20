@@ -7,10 +7,10 @@ mod status;
 mod tests;
 mod worker_config;
 
-use crate::HttpBody;
 use crate::body::channel_body::{ChannelBody, FrameBridge};
 use crate::body::timeout_body::TimeoutBody;
 use crate::event_error::EventFailure;
+use crate::HttpBody;
 use http_body_util::{BodyExt, Collected, LengthLimitError, Limited};
 
 use crate::listeners::http_connection_manager::ext_proc::mutation::{
@@ -25,7 +25,7 @@ use crate::listeners::http_connection_manager::ext_proc::status::ReadyStatus;
 use crate::listeners::http_connection_manager::ext_proc::worker_config::ExternalProcessingWorkerConfig;
 use crate::utils::truncated_debug::TruncatedDebug;
 use crate::{
-    body::{response_flags::ResponseFlags},
+    body::response_flags::ResponseFlags,
     clusters::clusters_manager::{self, RoutingContext},
     listeners::{http_connection_manager::FilterDecision, synthetic_http_response::SyntheticHttpResponse},
     Error, PolyBody,
@@ -258,10 +258,7 @@ impl ExternalProcessor {
     }
 
     #[allow(clippy::too_many_lines)]
-    pub async fn apply_request(
-        &mut self,
-        request: &mut Request<HttpBody>,
-    ) -> FilterDecision {
+    pub async fn apply_request(&mut self, request: &mut Request<HttpBody>) -> FilterDecision {
         let modes = &self.overridable_modes.request;
         let process_headers = modes.should_process_headers();
         let process_body = modes.should_process_body();

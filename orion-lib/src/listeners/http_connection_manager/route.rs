@@ -15,11 +15,11 @@
 //
 //
 use super::{http_modifiers, upgrades as upgrade_utils, RequestHandler, TransactionHandler};
-use crate::HttpBody;
 use crate::body::timeout_body::TimeoutBody;
 use crate::event_error::{EventError, EventFailure, EventKind, TryInferFrom};
+use crate::HttpBody;
 use crate::{
-    body::{response_flags::ResponseFlags},
+    body::response_flags::ResponseFlags,
     clusters::{
         balancers::hash_policy::HashState,
         clusters_manager::{self, RoutingContext},
@@ -67,12 +67,13 @@ pub struct MatchedRequest<'a> {
     pub websocket_enabled_by_default: bool,
 }
 
-impl<'a> RequestHandler<(MatchedRequest<'a>, &HttpConnectionManager)> for &RouteAction {
+impl<'a> RequestHandler<MatchedRequest<'a>, &HttpConnectionManager> for &RouteAction {
     #[allow(clippy::too_many_lines)]
     async fn to_response(
         self,
         trans_handler: &TransactionHandler,
-        (request, _connection_manager): (MatchedRequest<'a>, &HttpConnectionManager),
+        request: MatchedRequest<'a>,
+        _connection_manager: &HttpConnectionManager,
     ) -> Result<Response<TimeoutBody<PolyBody>>> {
         #[allow(unused_variables)]
         let MatchedRequest {
@@ -200,6 +201,7 @@ impl<'a> RequestHandler<(MatchedRequest<'a>, &HttpConnectionManager)> for &Route
                             RequestContext { route_timeout: self.timeout, retry_policy },
                             upstream_request,
                         ),
+                        (),
                     )
                     .await;
                 match resp {

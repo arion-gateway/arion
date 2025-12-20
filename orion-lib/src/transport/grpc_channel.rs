@@ -74,7 +74,7 @@ impl GrpcService {
         );
 
         let svc_resp =
-            self.inner.to_response(&Arc::new(TransactionHandler::default()), RequestExt::new(http_req)).await?;
+            self.inner.to_response(&Arc::new(TransactionHandler::default()), RequestExt::new(http_req), ()).await?;
         let (header, body) = svc_resp.into_parts();
         let body = GrpcBody::new(body);
         let svc_resp = http::Response::from_parts(header, body);

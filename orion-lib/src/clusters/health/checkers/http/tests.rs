@@ -73,12 +73,7 @@ impl<'a> RequestHandler<RequestExt<'a, Request<HttpBody>>> for &MockHttpStack {
 }
 
 struct HttpTestFixture {
-    inner: TestFixture<
-        HttpHealthCheck,
-        MockHttpStack,
-        http::Request<HttpBody>,
-        http::Response<TimeoutBody<PolyBody>>,
-    >,
+    inner: TestFixture<HttpHealthCheck, MockHttpStack, http::Request<HttpBody>, http::Response<TimeoutBody<PolyBody>>>,
 }
 
 #[allow(clippy::panic)]
@@ -109,10 +104,7 @@ impl HttpTestFixture {
         self.inner.enqueue_response(response);
     }
 
-    pub async fn request_expected(
-        &mut self,
-        timeout_value: Duration,
-    ) -> http::Request<HttpBody> {
+    pub async fn request_expected(&mut self, timeout_value: Duration) -> http::Request<HttpBody> {
         let req = self.inner.request_expected(timeout_value).await;
 
         assert_eq!(

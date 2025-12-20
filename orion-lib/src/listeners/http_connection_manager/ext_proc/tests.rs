@@ -42,10 +42,10 @@ use std::{collections::VecDeque, convert::Infallible, net::SocketAddr, str::From
 use tokio::{net::TcpListener, task::JoinHandle};
 use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
 
+use crate::HttpBody;
 use tokio::select;
 use tokio::sync::mpsc::Sender;
 use tokio_util::sync::CancellationToken;
-use crate::HttpBody;
 
 pub struct OutState {
     last_end_of_stream: Option<bool>,

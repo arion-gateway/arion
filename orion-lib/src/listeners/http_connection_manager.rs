@@ -112,14 +112,17 @@ use tracing::debug;
 use upgrades as upgrade_utils;
 
 use crate::{
-    ConversionContext, HttpBody, PolyBody, Result, RouteConfiguration, body::{
+    body::{
         instrumented_body::InstrumentedBody,
         response_flags::{BodyKind, ResponseFlags},
         timeout_body::TimeoutBody,
-    }, event_error::EventFailure, listeners::{
+    },
+    event_error::EventFailure,
+    listeners::{
         filter_state::DownstreamMetadata, http_connection_manager::jwt_authn::JwtAuthenticationBuilder,
         rate_limiter::LocalRateLimit, rbac::HttpRbac, synthetic_http_response::SyntheticHttpResponse,
-    }, with_client_span, with_metric, with_server_span
+    },
+    with_client_span, with_metric, with_server_span, ConversionContext, HttpBody, PolyBody, Result, RouteConfiguration,
 };
 
 use orion_tracing::http_tracer::HttpTracer;
@@ -242,10 +245,7 @@ impl TryFrom<HttpFilterConfig> for HttpFilter {
 }
 
 impl HttpFilterValue {
-    pub async fn apply_request(
-        &mut self,
-        request: &mut Request<HttpBody>,
-    ) -> FilterDecision {
+    pub async fn apply_request(&mut self, request: &mut Request<HttpBody>) -> FilterDecision {
         match self {
             HttpFilterValue::Rbac(rbac) => apply_authorization_rules(rbac, request),
             HttpFilterValue::RateLimit(rl) => rl.run(request),
@@ -448,10 +448,7 @@ impl HttpConnectionManager {
                         Request<Incoming>,
                         Response = Response<HttpBody>,
                         Error = crate::Error,
-                        Future = BoxFuture<
-                            'static,
-                            StdResult<Response<HttpBody>, crate::Error>,
-                        >,
+                        Future = BoxFuture<'static, StdResult<Response<HttpBody>, crate::Error>>,
                     > + Send
                     + Sync,
             >
@@ -599,7 +596,7 @@ impl TransactionHandler {
         #[cfg(feature = "access-log")] permit: Option<ShareableAccessLogPermit>,
     ) -> Result<Response<HttpBody>>
     where
-        RC: RequestHandler<(Request<InstrumentedBody<TimeoutBody<Incoming>>>, Arc<HttpConnectionManager>)> + Clone,
+        RC: RequestHandler<Request<InstrumentedBody<TimeoutBody<Incoming>>>, Arc<HttpConnectionManager>> + Clone,
     {
         let _listener_name = manager.listener_name;
         let downstream_metadata = request.extensions().get::<DownstreamMetadata>();
@@ -611,7 +608,7 @@ impl TransactionHandler {
         http_modifiers::apply_prerouting_functions(&mut request, downstream_addr, manager.xff_settings);
 
         // process request, get the response..
-        let result = route_conf.to_response(&self, (request, manager.clone())).await;
+        let result = route_conf.to_response(&self, request, manager.clone()).await;
 
         // calculate the time to first byte..
         #[cfg(feature = "access-log")]
@@ -795,11 +792,12 @@ fn select_virtual_host<'a, T>(request: &Request<T>, virtual_hosts: &'a [VirtualH
 }
 
 // has to be a trait due to foreign impl rules.
-pub trait RequestHandler<R>: Sized {
+pub trait RequestHandler<R, A>: Sized {
     fn to_response(
         self,
         trans_handler: &TransactionHandler,
         request: R,
+        arg: A,
     ) -> impl Future<Output = Result<Response<TimeoutBody<PolyBody>>>> + Send;
 }
 
@@ -814,18 +812,18 @@ fn match_request_route<'a, B>(request: &Request<B>, route_config: &'a RouteConfi
     Some(CachedRoute { route: chosen_route, route_match: route_match_result, vh: chosen_vh })
 }
 
-impl RequestHandler<(Request<InstrumentedBody<TimeoutBody<Incoming>>>, Arc<HttpConnectionManager>)>
+impl RequestHandler<Request<InstrumentedBody<TimeoutBody<Incoming>>>, Arc<HttpConnectionManager>>
     for Arc<RouteConfiguration>
 {
     #[allow(clippy::too_many_lines)]
     async fn to_response(
         self,
         trans_handler: &TransactionHandler,
-        (request, connection_manager): (Request<InstrumentedBody<TimeoutBody<Incoming>>>, Arc<HttpConnectionManager>),
+        request: Request<InstrumentedBody<TimeoutBody<Incoming>>>,
+        connection_manager: Arc<HttpConnectionManager>,
     ) -> Result<Response<TimeoutBody<PolyBody>>> {
         let mut cached_route = match_request_route(&request, &self);
-        let mut request: Request<HttpBody> =
-            request.map(|body| body.map_inner(TimeoutBody::map_into));
+        let mut request: Request<HttpBody> = request.map(|body| body.map_inner(TimeoutBody::map_into));
         let mut active_filters: SmallVec<[HttpFilterValue; 4]> = SmallVec::new();
         let mut filter_idx = 0;
 
@@ -912,9 +910,9 @@ impl RequestHandler<(Request<InstrumentedBody<TimeoutBody<Incoming>>>, Arc<HttpC
             upgrade_utils::is_websocket_enabled_by_hcm(&connection_manager.enabled_upgrades);
 
         let mut response = match &chosen_route.route.action {
-            Action::DirectResponse(dr) => dr.to_response(trans_handler, (request, &chosen_route.route.name)).await,
+            Action::DirectResponse(dr) => dr.to_response(trans_handler, request, &chosen_route.route.name).await,
             Action::Redirect(rd) => {
-                rd.to_response(trans_handler, (request, chosen_route.route_match, &chosen_route.route.name)).await
+                rd.to_response(trans_handler, request, (chosen_route.route_match, &chosen_route.route.name)).await
             },
             Action::Route(route) => {
                 let remote_address = request
@@ -925,17 +923,15 @@ impl RequestHandler<(Request<InstrumentedBody<TimeoutBody<Incoming>>>, Arc<HttpC
                 route
                     .to_response(
                         trans_handler,
-                        (
-                            MatchedRequest {
-                                request,
-                                route_name: &chosen_route.route.name,
-                                retry_policy: chosen_route.vh.retry_policy.as_ref(),
-                                route_match: chosen_route.route_match,
-                                remote_address,
-                                websocket_enabled_by_default,
-                            },
-                            &connection_manager,
-                        ),
+                        MatchedRequest {
+                            request,
+                            route_name: &chosen_route.route.name,
+                            retry_policy: chosen_route.vh.retry_policy.as_ref(),
+                            route_match: chosen_route.route_match,
+                            remote_address,
+                            websocket_enabled_by_default,
+                        },
+                        &connection_manager,
                     )
                     .await
             },

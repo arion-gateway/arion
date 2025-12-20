@@ -23,7 +23,10 @@ use super::{
     load_assignment::{ClusterLoadAssignmentBuilder, PartialClusterLoadAssignment},
 };
 use crate::{
-    HttpBody, Result, clusters::cluster::{ClusterOps, PartialClusterType}, secrets::TransportSecret, transport::{GrpcService, HttpChannel, HttpChannels, TcpChannelConnector}
+    clusters::cluster::{ClusterOps, PartialClusterType},
+    secrets::TransportSecret,
+    transport::{GrpcService, HttpChannel, HttpChannels, TcpChannelConnector},
+    HttpBody, Result,
 };
 use http::{uri::Authority, HeaderMap, HeaderName, HeaderValue, Request};
 use orion_configuration::config::cluster::{Cluster as ClusterConfig, ClusterSpecifier};
@@ -55,9 +58,7 @@ pub enum RoutingContext<'a> {
     OverrideHost { header: &'a HeaderValue, fallback_hash: Option<HashState<'a>> },
 }
 
-impl<'a> TryFrom<(&'a RoutingRequirement, &'a Request<HttpBody>, HashState<'a>)>
-    for RoutingContext<'a>
-{
+impl<'a> TryFrom<(&'a RoutingRequirement, &'a Request<HttpBody>, HashState<'a>)> for RoutingContext<'a> {
     type Error = String;
 
     fn try_from(
