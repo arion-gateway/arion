@@ -58,8 +58,7 @@ use smol_str::ToSmolStr;
 use std::net::SocketAddr;
 use tracing::debug;
 
-pub struct MatchedRequest<'a> {
-    pub request: Request<HttpBody>,
+pub struct RouteContext<'a> {
     pub retry_policy: Option<&'a RetryPolicy>,
     pub route_name: &'a str,
     pub remote_address: SocketAddr,
@@ -67,23 +66,17 @@ pub struct MatchedRequest<'a> {
     pub websocket_enabled_by_default: bool,
 }
 
-impl<'a> RequestHandler<MatchedRequest<'a>, &HttpConnectionManager> for &RouteAction {
+impl<'a> RequestHandler<Request<HttpBody>, (RouteContext<'a>, &HttpConnectionManager)> for &RouteAction {
     #[allow(clippy::too_many_lines)]
     async fn to_response(
         self,
         trans_handler: &TransactionHandler,
-        request: MatchedRequest<'a>,
-        _connection_manager: &HttpConnectionManager,
+        downstream_request: Request<HttpBody>,
+        (route_context, _connection_manager): (RouteContext<'a>, &HttpConnectionManager),
     ) -> Result<Response<TimeoutBody<PolyBody>>> {
         #[allow(unused_variables)]
-        let MatchedRequest {
-            request: downstream_request,
-            route_name,
-            retry_policy,
-            remote_address,
-            route_match,
-            websocket_enabled_by_default,
-        } = request;
+        let RouteContext { route_name, retry_policy, remote_address, route_match, websocket_enabled_by_default } =
+            route_context;
 
         let Some(cluster_id) =
             clusters_manager::resolve_cluster(&self.cluster_specifier, Some(downstream_request.headers()))

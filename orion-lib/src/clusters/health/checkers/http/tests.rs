@@ -57,11 +57,12 @@ impl MockHttpStack {
     }
 }
 
-impl<'a> RequestHandler<RequestExt<'a, Request<HttpBody>>> for &MockHttpStack {
+impl<'a> RequestHandler<RequestExt<'a, Request<HttpBody>>, ()> for &MockHttpStack {
     async fn to_response(
         self,
         _trans_handler: &TransactionHandler,
         request: RequestExt<'a, Request<HttpBody>>,
+        _arg: (),
     ) -> Result<Response<TimeoutBody<PolyBody>>> {
         let state = &mut self.0.lock();
         // Log this request

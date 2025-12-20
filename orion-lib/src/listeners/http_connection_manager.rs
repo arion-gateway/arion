@@ -98,7 +98,7 @@ use orion_configuration::config::network_filters::http_connection_manager::{
 use orion_configuration::config::network_filters::http_connection_manager::{Route, VirtualHost, XffSettings};
 use orion_configuration::config::network_filters::tracing::{TracingConfig, TracingKey};
 use orion_format::types::ResponseFlags as FmtResponseFlags;
-use route::MatchedRequest;
+use route::RouteContext;
 use scopeguard::defer;
 use smol_str::SmolStr;
 use std::thread::ThreadId;
@@ -923,15 +923,17 @@ impl RequestHandler<Request<InstrumentedBody<TimeoutBody<Incoming>>>, Arc<HttpCo
                 route
                     .to_response(
                         trans_handler,
-                        MatchedRequest {
-                            request,
-                            route_name: &chosen_route.route.name,
-                            retry_policy: chosen_route.vh.retry_policy.as_ref(),
-                            route_match: chosen_route.route_match,
-                            remote_address,
-                            websocket_enabled_by_default,
-                        },
-                        &connection_manager,
+                        request,
+                        (
+                            RouteContext {
+                                route_name: &chosen_route.route.name,
+                                retry_policy: chosen_route.vh.retry_policy.as_ref(),
+                                route_match: chosen_route.route_match,
+                                remote_address,
+                                websocket_enabled_by_default,
+                            },
+                            &connection_manager,
+                        ),
                     )
                     .await
             },
