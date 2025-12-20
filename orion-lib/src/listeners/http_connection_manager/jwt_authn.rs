@@ -10,10 +10,7 @@ use std::{
 };
 
 use crate::{
-    body::{instrumented_body::InstrumentedBody, timeout_body::TimeoutBody},
-    event_error::EventFailure,
-    listeners::{http_connection_manager::FilterDecision, synthetic_http_response::SyntheticHttpResponse},
-    PolyBody,
+    HttpBody, event_error::EventFailure, listeners::{http_connection_manager::FilterDecision, synthetic_http_response::SyntheticHttpResponse}
 };
 use http::{HeaderMap, HeaderName, HeaderValue, Request};
 use jsonwebtoken::{decode, decode_header, jwk::Jwk, Algorithm, DecodingKey, TokenData, Validation};
@@ -376,7 +373,7 @@ impl JwtAuthentication {
     }
 
     #[allow(clippy::too_many_lines)]
-    pub fn apply_request(&mut self, req: &mut Request<InstrumentedBody<TimeoutBody<PolyBody>>>) -> FilterDecision {
+    pub fn apply_request(&mut self, req: &mut Request<HttpBody>) -> FilterDecision {
         debug!(target: "jwt", "Applying JWT authentication filter: {:#?}", self.inner.config);
 
         // lookup the provider name...

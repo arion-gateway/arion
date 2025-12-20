@@ -23,13 +23,8 @@ use super::{
     load_assignment::{ClusterLoadAssignmentBuilder, PartialClusterLoadAssignment},
 };
 use crate::{
-    body::instrumented_body::InstrumentedBody,
-    clusters::cluster::{ClusterOps, PartialClusterType},
-    secrets::TransportSecret,
-    transport::{GrpcService, HttpChannel, HttpChannels, TcpChannelConnector},
-    Result,
+    HttpBody, Result, clusters::cluster::{ClusterOps, PartialClusterType}, secrets::TransportSecret, transport::{GrpcService, HttpChannel, HttpChannels, TcpChannelConnector}
 };
-use crate::{body::timeout_body::TimeoutBody, PolyBody};
 use http::{uri::Authority, HeaderMap, HeaderName, HeaderValue, Request};
 use orion_configuration::config::cluster::{Cluster as ClusterConfig, ClusterSpecifier};
 use orion_interner::StringInterner;
@@ -60,13 +55,13 @@ pub enum RoutingContext<'a> {
     OverrideHost { header: &'a HeaderValue, fallback_hash: Option<HashState<'a>> },
 }
 
-impl<'a> TryFrom<(&'a RoutingRequirement, &'a Request<InstrumentedBody<TimeoutBody<PolyBody>>>, HashState<'a>)>
+impl<'a> TryFrom<(&'a RoutingRequirement, &'a Request<HttpBody>, HashState<'a>)>
     for RoutingContext<'a>
 {
     type Error = String;
 
     fn try_from(
-        value: (&'a RoutingRequirement, &'a Request<InstrumentedBody<TimeoutBody<PolyBody>>>, HashState<'a>),
+        value: (&'a RoutingRequirement, &'a Request<HttpBody>, HashState<'a>),
     ) -> std::result::Result<Self, Self::Error> {
         let (routing_requirement, request, hash_state) = value;
         match routing_requirement {

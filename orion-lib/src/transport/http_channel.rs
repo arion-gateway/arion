@@ -21,17 +21,10 @@ use super::{
     policy::{RequestContext, RequestExt},
 };
 use crate::{
-    body::{instrumented_body::InstrumentedBody, response_flags::ResponseFlags, timeout_body::TimeoutBody},
-    clusters::retry_policy::RetryCondition,
-    event_error::{EventError, EventKind, TryInferFrom},
-    listeners::{
-        http_connection_manager::{http_modifiers::strip_trailers_headers, RequestHandler, TransactionHandler},
+    Error, HttpBody, PolyBody, Result, body::{instrumented_body::InstrumentedBody, response_flags::ResponseFlags, timeout_body::TimeoutBody}, clusters::retry_policy::RetryCondition, event_error::{EventError, EventKind, TryInferFrom}, listeners::{
+        http_connection_manager::{RequestHandler, TransactionHandler, http_modifiers::strip_trailers_headers},
         synthetic_http_response::SyntheticHttpResponse,
-    },
-    secrets::{TlsConfigurator, WantsToBuildClient},
-    thread_local::{LocalBuilder, LocalObject},
-    transport::timer::PingoraTimer,
-    Error, PolyBody, Result,
+    }, secrets::{TlsConfigurator, WantsToBuildClient}, thread_local::{LocalBuilder, LocalObject}, transport::timer::PingoraTimer
 };
 use http::{
     uri::{Authority, Parts},
@@ -82,8 +75,8 @@ const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 type IncomingResult = (std::result::Result<Response<Incoming>, Error>, Duration);
 
-type HttpClient = Client<LocalConnectorWithDNSResolver, InstrumentedBody<TimeoutBody<PolyBody>>>;
-type HttpsClient = Client<HttpsConnector<LocalConnectorWithDNSResolver>, InstrumentedBody<TimeoutBody<PolyBody>>>;
+type HttpClient = Client<LocalConnectorWithDNSResolver, HttpBody>;
+type HttpsClient = Client<HttpsConnector<LocalConnectorWithDNSResolver>, HttpBody>;
 
 // Rationale: The outer Arc is necessary to avoid building a new Client when cloning the HttpChannel.
 // The inner Arc, instead, is used to pass the client to async code, so it's already wrapped by the Arc.
@@ -402,11 +395,11 @@ fn update_upstream_stats(event: PoolEvent, tag: &dyn Any, keys: &[&PoolKey]) {
     }
 }
 
-impl<'a> RequestHandler<RequestExt<'a, Request<InstrumentedBody<TimeoutBody<PolyBody>>>>> for &HttpChannels {
+impl<'a> RequestHandler<RequestExt<'a, Request<HttpBody>>> for &HttpChannels {
     async fn to_response(
         self,
         trans_handler: &TransactionHandler,
-        request: RequestExt<'a, Request<InstrumentedBody<TimeoutBody<PolyBody>>>>,
+        request: RequestExt<'a, Request<HttpBody>>,
     ) -> Result<Response<TimeoutBody<PolyBody>>> {
         match self {
             HttpChannels::Single(channel) => channel.to_response(trans_handler, request).await,
@@ -473,11 +466,11 @@ impl<'a> RequestHandler<RequestExt<'a, Request<InstrumentedBody<TimeoutBody<Poly
     }
 }
 
-impl<'a> RequestHandler<RequestExt<'a, Request<InstrumentedBody<TimeoutBody<PolyBody>>>>> for &HttpChannel {
+impl<'a> RequestHandler<RequestExt<'a, Request<HttpBody>>> for &HttpChannel {
     async fn to_response(
         self,
         _trans_handler: &TransactionHandler,
-        request: RequestExt<'a, Request<InstrumentedBody<TimeoutBody<PolyBody>>>>,
+        request: RequestExt<'a, Request<HttpBody>>,
     ) -> Result<Response<TimeoutBody<PolyBody>>> {
         let version = request.req.version();
         let cluster_name = self.cluster_name;
@@ -529,8 +522,8 @@ impl HttpChannel {
     async fn send_request<C>(
         &self,
         retry_policy: Option<&RetryPolicy>,
-        sender: &Client<C, InstrumentedBody<TimeoutBody<PolyBody>>>,
-        mut req: Request<InstrumentedBody<TimeoutBody<PolyBody>>>,
+        sender: &Client<C, HttpBody>,
+        mut req: Request<HttpBody>,
         cluster_name: &'static str,
     ) -> (StdResult<Response<Incoming>, Error>, Duration)
     where
@@ -580,8 +573,8 @@ impl HttpChannel {
     async fn send_with_retry<C>(
         &self,
         retry_policy: &RetryPolicy,
-        sender: &Client<C, InstrumentedBody<TimeoutBody<PolyBody>>>,
-        req: Request<InstrumentedBody<TimeoutBody<PolyBody>>>,
+        sender: &Client<C, HttpBody>,
+        req: Request<HttpBody>,
         _thread_id: ThreadId,
         _cluster_name: &'static str,
     ) -> (StdResult<Response<Incoming>, Error>, Duration, usize)
@@ -611,7 +604,7 @@ impl HttpChannel {
                 state: state.clone(),
             };
 
-            let cloned_req: Request<InstrumentedBody<TimeoutBody<PolyBody>>> =
+            let cloned_req: Request<HttpBody> =
                 Request::from_parts(parts.clone(), cloned_body);
 
             // actually send the request and wait for the response...
@@ -750,17 +743,17 @@ fn select_scheme(version: http::Version, is_tls: bool) -> Option<http::uri::Sche
 }
 
 fn maybe_change_http_protocol_version(
-    request: Request<InstrumentedBody<TimeoutBody<PolyBody>>>,
+    request: Request<HttpBody>,
     version: Codec,
-) -> Result<Request<InstrumentedBody<TimeoutBody<PolyBody>>>> {
+) -> Result<Request<HttpBody>> {
     let request = maybe_update_host(request, version)?;
     Ok(maybe_rewrite_version(request, version))
 }
 
 fn maybe_rewrite_version(
-    mut request: Request<InstrumentedBody<TimeoutBody<PolyBody>>>,
+    mut request: Request<HttpBody>,
     version: Codec,
-) -> Request<InstrumentedBody<TimeoutBody<PolyBody>>> {
+) -> Request<HttpBody> {
     *request.version_mut() = match version {
         Codec::Http1 => Version::HTTP_11,
         Codec::Http2 => Version::HTTP_2,
@@ -769,9 +762,9 @@ fn maybe_rewrite_version(
 }
 
 fn maybe_update_host(
-    mut request: Request<InstrumentedBody<TimeoutBody<PolyBody>>>,
+    mut request: Request<HttpBody>,
     version: Codec,
-) -> Result<Request<InstrumentedBody<TimeoutBody<PolyBody>>>> {
+) -> Result<Request<HttpBody>> {
     let request_version = request.version();
     match (request_version, version) {
         (Version::HTTP_11, Codec::Http2) => {
@@ -793,9 +786,9 @@ fn maybe_update_host(
 }
 
 fn maybe_normalize_uri(
-    mut request: Request<InstrumentedBody<TimeoutBody<PolyBody>>>,
+    mut request: Request<HttpBody>,
     is_tls: bool,
-) -> crate::Result<Request<InstrumentedBody<TimeoutBody<PolyBody>>>> {
+) -> crate::Result<Request<HttpBody>> {
     let uri = request.uri();
     if !is_absolute(uri) {
         if let Some(host_header) = request.headers().get("host") {

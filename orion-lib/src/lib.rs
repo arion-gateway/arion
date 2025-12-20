@@ -41,6 +41,7 @@ use orion_configuration::config::Runtime;
 use serde::Serialize;
 use tokio::sync::mpsc;
 
+use crate::body::{instrumented_body::InstrumentedBody, timeout_body::TimeoutBody};
 pub use crate::configuration::get_listeners_and_clusters;
 
 pub use clusters::{
@@ -67,6 +68,9 @@ pub type Result<T> = ::core::result::Result<T, Error>;
 pub use crate::body::poly_body::PolyBody;
 
 pub static RUNTIME_CONFIG: OnceLock<Runtime> = OnceLock::new();
+
+/// The Orion HttpBody: a poly body with timeout and instrumentation
+pub type HttpBody = InstrumentedBody<TimeoutBody<PolyBody>>;
 
 #[allow(clippy::expect_used, clippy::missing_panics_doc)]
 pub fn runtime_config() -> &'static Runtime {

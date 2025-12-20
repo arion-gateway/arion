@@ -21,8 +21,7 @@ use super::{RequestHandler, TransactionHandler};
 use {crate::listeners::access_log::AccessLogContext, orion_format::context::UpstreamContext};
 
 use crate::{
-    body::{instrumented_body::InstrumentedBody, timeout_body::TimeoutBody},
-    Error, PolyBody, Result,
+    Error, HttpBody, PolyBody, Result, body::{timeout_body::TimeoutBody}
 };
 use http::{
     header::LOCATION,
@@ -37,14 +36,14 @@ use orion_error::Context;
 
 use std::str::FromStr;
 
-impl<'a> RequestHandler<(Request<InstrumentedBody<TimeoutBody<PolyBody>>>, RouteMatchResult, &'a str)>
+impl<'a> RequestHandler<(Request<HttpBody>, RouteMatchResult, &'a str)>
     for &RedirectAction
 {
     async fn to_response(
         self,
         _trans_handler: &TransactionHandler,
         (request, route_match_result, _route_name): (
-            Request<InstrumentedBody<TimeoutBody<PolyBody>>>,
+            Request<HttpBody>,
             RouteMatchResult,
             &'a str,
         ),
