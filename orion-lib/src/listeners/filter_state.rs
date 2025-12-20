@@ -58,6 +58,7 @@ pub struct DownstreamMetadata {
 }
 
 impl DownstreamMetadata {
+    #[inline]
     pub fn new<S>(connection: DownstreamConnectionMetadata, sni: Option<S>, listener_name: &'static str) -> Self
     where
         S: Into<SmolStr>,

@@ -276,11 +276,11 @@ impl Listener {
 
     fn select_filterchain<'a, T>(
         filter_chains: &'a HashMap<FilterChainMatch, T>,
-        downstream_metadata: &DownstreamConnectionMetadata,
+        connection_metadata: &DownstreamConnectionMetadata,
         server_name: Option<&str>,
     ) -> Result<Option<&'a T>> {
-        let source_addr = downstream_metadata.peer_address();
-        let destination_addr = downstream_metadata.local_address();
+        let source_addr = connection_metadata.peer_address();
+        let destination_addr = connection_metadata.local_address();
         fn match_subitem<'a, F: Fn(&FilterChainMatch, T) -> MatchResult, T: Copy>(
             function: F,
             comparand: T,

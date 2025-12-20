@@ -60,11 +60,11 @@ impl McpGateway {
     pub async fn apply_request(&mut self, request: &mut Request<HttpBody>) -> FilterDecision {
         debug!(target: "mcp", "processing request: {:?}", request);
 
-        let Some(downstream_ctx) = request.extensions().get::<DownstreamMetadata>() else {
+        let Some(metadata) = request.extensions().get::<DownstreamMetadata>() else {
             return self.internal_server_error("Failed to retrieve metadata", request.version());
         };
 
-        let listener_ctx = get_listener_context(downstream_ctx.listener_name);
+        let listener_ctx = get_listener_context(metadata.listener_name);
 
         match (request.method(), request.uri().path()) {
             (&Method::GET, "/sse") => self.handle_sse_handshake(&listener_ctx.mcp, request.version()).await,

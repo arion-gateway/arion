@@ -155,12 +155,12 @@ impl FilterchainType {
     pub fn apply_rbac(
         &self,
         stream: AsyncStream,
-        downstream_metadata: &DownstreamConnectionMetadata,
+        connection_metadata: &DownstreamConnectionMetadata,
         server_name: Option<&str>,
     ) -> Option<AsyncStream> {
         let rbac_filters = &self.filter_chain().rbac_filters;
         let network_context =
-            NetworkContext::new(downstream_metadata.local_address(), downstream_metadata.peer_address(), server_name);
+            NetworkContext::new(connection_metadata.local_address(), connection_metadata.peer_address(), server_name);
         for rbac in rbac_filters {
             let (permitted, _) = rbac.is_permitted(&network_context);
             if !permitted {
@@ -174,7 +174,7 @@ impl FilterchainType {
     pub async fn start_filterchain(
         &self,
         stream: AsyncStream,
-        downstream_metadata: DownstreamMetadata,
+        metadata: DownstreamMetadata,
         _shard_id: ThreadId,
         listener_name: &'static str,
         start_instant: std::time::Instant,
@@ -244,7 +244,7 @@ impl FilterchainType {
                     .serve_connection_with_upgrades(
                         stream,
                         hyper::service::service_fn(|mut req: Request<hyper::body::Incoming>| {
-                            req.extensions_mut().insert::<DownstreamMetadata>(downstream_metadata.clone());
+                            req.extensions_mut().insert::<DownstreamMetadata>(metadata.clone());
                             req_handler.call(req).map_err(orion_error::Error::into_inner)
                         }),
                     )
@@ -276,7 +276,7 @@ impl FilterchainType {
                     };
 
                 debug!("Starting tcp proxy");
-                let res = tcp_proxy.serve_connection(stream, downstream_metadata).await;
+                let res = tcp_proxy.serve_connection(stream, metadata).await;
                 debug!("TcpProxy closed {res:?}");
                 res
             },

@@ -99,6 +99,7 @@ mod metrics_enabled {
             Self { inner, guard: DropGuard { state: state.clone() }, state }
         }
 
+        #[inline]
         pub fn map_into<B2>(self) -> InstrumentedBody<B2>
         where
             B: Into<B2>,
@@ -106,6 +107,7 @@ mod metrics_enabled {
             InstrumentedBody { inner: self.inner.into(), state: self.state, guard: self.guard }
         }
 
+        #[inline]
         pub fn map_inner<B2, F>(self, f: F) -> InstrumentedBody<B2>
         where
             F: FnOnce(B) -> B2,
@@ -149,10 +151,12 @@ mod metrics_enabled {
             poll
         }
 
+        #[inline]
         fn is_end_stream(&self) -> bool {
             self.inner.is_end_stream()
         }
 
+        #[inline]
         fn size_hint(&self) -> SizeHint {
             self.inner.size_hint()
         }

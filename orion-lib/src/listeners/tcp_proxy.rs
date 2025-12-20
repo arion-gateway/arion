@@ -82,11 +82,7 @@ impl fmt::Display for TcpProxy {
 
 impl TcpProxy {
     #[allow(clippy::too_many_lines)]
-    pub async fn serve_connection(
-        &self,
-        mut stream: AsyncStream,
-        downstream_metadata: DownstreamMetadata,
-    ) -> Result<()> {
+    pub async fn serve_connection(&self, mut stream: AsyncStream, metadata: DownstreamMetadata) -> Result<()> {
         let start_instant = Instant::now();
         let mut access_loggers = self.access_log.iter().map(|al| al.logger.local_clone()).collect::<Vec<_>>();
 
@@ -110,7 +106,7 @@ impl TcpProxy {
 
         let res = match maybe_connector {
             Ok(connector) => {
-                let channel_result = connector.connect(Some(&downstream_metadata.connection)).await;
+                let channel_result = connector.connect(Some(&metadata.connection)).await;
                 match channel_result {
                     Ok(mut channel) => {
                         maybe_upstream_local_addr = channel.upstream_local_addr;
@@ -132,8 +128,8 @@ impl TcpProxy {
                         }
 
                         access_loggers.with_context(&TcpContext {
-                            downstream_local_addr: Some(downstream_metadata.connection.local_address()),
-                            downstream_peer_addr: Some(downstream_metadata.connection.peer_address()),
+                            downstream_local_addr: Some(metadata.connection.local_address()),
+                            downstream_peer_addr: Some(metadata.connection.peer_address()),
                             upstream_local_addr: maybe_upstream_local_addr,
                             upstream_peer_addr: maybe_upstream_peer_addr,
                             cluster_name: channel.cluster_name,
@@ -160,8 +156,8 @@ impl TcpProxy {
                         maybe_connection_termination_details = io_err.map(ConnectionTerminationDetails::from);
 
                         access_loggers.with_context(&TcpContext {
-                            downstream_local_addr: Some(downstream_metadata.connection.local_address()),
-                            downstream_peer_addr: Some(downstream_metadata.connection.peer_address()),
+                            downstream_local_addr: Some(metadata.connection.local_address()),
+                            downstream_peer_addr: Some(metadata.connection.peer_address()),
                             upstream_local_addr: None,
                             upstream_peer_addr: maybe_upstream_peer_addr,
                             cluster_name,
@@ -181,8 +177,8 @@ impl TcpProxy {
                 maybe_connection_termination_details = io_err.map(ConnectionTerminationDetails::from);
 
                 access_loggers.with_context(&TcpContext {
-                    downstream_local_addr: Some(downstream_metadata.connection.local_address()),
-                    downstream_peer_addr: Some(downstream_metadata.connection.peer_address()),
+                    downstream_local_addr: Some(metadata.connection.local_address()),
+                    downstream_peer_addr: Some(metadata.connection.peer_address()),
                     upstream_local_addr: None,
                     upstream_peer_addr: None,
                     cluster_name: &cluster_selector.name(),

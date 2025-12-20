@@ -592,15 +592,15 @@ impl TransactionHandler {
         self: Arc<Self>,
         route_conf: RC,
         manager: Arc<HttpConnectionManager>,
-        mut request: Request<InstrumentedBody<TimeoutBody<Incoming>>>,
+        mut request: Request<HttpBody>,
         #[cfg(feature = "access-log")] permit: Option<ShareableAccessLogPermit>,
     ) -> Result<Response<HttpBody>>
     where
-        RC: RequestHandler<Request<InstrumentedBody<TimeoutBody<Incoming>>>, Arc<HttpConnectionManager>> + Clone,
+        RC: RequestHandler<Request<HttpBody>, Arc<HttpConnectionManager>> + Clone,
     {
         let _listener_name = manager.listener_name;
-        let downstream_metadata = request.extensions().get::<DownstreamMetadata>();
-        let downstream_addr = downstream_metadata
+        let metadata = request.extensions().get::<DownstreamMetadata>();
+        let downstream_addr = metadata
             .map(|md| md.connection.peer_address())
             .unwrap_or_else(|| SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0));
 
@@ -812,18 +812,16 @@ fn match_request_route<'a, B>(request: &Request<B>, route_config: &'a RouteConfi
     Some(CachedRoute { route: chosen_route, route_match: route_match_result, vh: chosen_vh })
 }
 
-impl RequestHandler<Request<InstrumentedBody<TimeoutBody<Incoming>>>, Arc<HttpConnectionManager>>
-    for Arc<RouteConfiguration>
-{
+impl RequestHandler<Request<HttpBody>, Arc<HttpConnectionManager>> for Arc<RouteConfiguration> {
     #[allow(clippy::too_many_lines)]
     async fn to_response(
         self,
         trans_handler: &TransactionHandler,
-        request: Request<InstrumentedBody<TimeoutBody<Incoming>>>,
+        mut request: Request<HttpBody>,
         connection_manager: Arc<HttpConnectionManager>,
     ) -> Result<Response<TimeoutBody<PolyBody>>> {
         let mut cached_route = match_request_route(&request, &self);
-        let mut request: Request<HttpBody> = request.map(|body| body.map_inner(TimeoutBody::map_into));
+        // let mut request: Request<HttpBody> = request.map(|body| body.map_inner(TimeoutBody::map_into));
         let mut active_filters: SmallVec<[HttpFilterValue; 4]> = SmallVec::new();
         let mut filter_idx = 0;
 
@@ -970,10 +968,9 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
     type Future = BoxFuture<'static, StdResult<Self::Response, Self::Error>>;
 
     #[allow(clippy::too_many_lines)]
-    fn call(&self, mut request: Request<Incoming>) -> Self::Future {
+    fn call(&self, incoming_request: Request<Incoming>) -> Self::Future {
         // destructure the Request to get the request and addresses
-        let incoming_request_id = RequestId::from_request(&request);
-        let metadata = request.extensions_mut().remove::<DownstreamMetadata>();
+        let incoming_request_id = RequestId::from_request(&incoming_request);
 
         let access_log_enabled = {
             #[cfg(feature = "access-log")]
@@ -986,28 +983,29 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
 
         // apply x_request_id policy...
         #[allow(unused_mut)]
-        let (mut updated_request, request_id) =
-            self.manager.request_id_handler.apply_policy(request, access_log_enabled, incoming_request_id.as_ref());
+        let (mut request, request_id) = self.manager.request_id_handler.apply_policy(
+            incoming_request,
+            access_log_enabled,
+            incoming_request_id.as_ref(),
+        );
 
         // create a trace context and SERVER span, if enabled...
         #[cfg(feature = "tracing")]
-        let trace_context = self
-            .manager
-            .http_tracer
-            .try_build_trace_context(&updated_request, incoming_request_id.or(request_id.clone()));
+        let trace_context =
+            self.manager.http_tracer.try_build_trace_context(&request, incoming_request_id.or(request_id.clone()));
 
         #[cfg(feature = "tracing")]
         let mut server_span = self.manager.http_tracer.try_create_span(
             trace_context.as_ref(),
             &self.manager.get_tracing_key(),
             SpanKind::Server,
-            SpanName::Host(&updated_request),
+            SpanName::Host(&request),
         );
 
         // set default attributes to span, using downstream request information...
         #[cfg(feature = "tracing")]
         if let Some(span) = server_span.as_mut() {
-            set_attributes_from_request(span, &updated_request);
+            set_attributes_from_request(span, &request);
         }
 
         // create the transaction context
@@ -1025,15 +1023,8 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
         // update tracing headers...
         #[cfg(feature = "tracing")]
         if let Some(trace_ctx) = trans_handler.trace_ctx.as_ref() {
-            self.manager.http_tracer.update_tracing_headers(trace_ctx, &mut updated_request);
+            self.manager.http_tracer.update_tracing_headers(trace_ctx, &mut request);
         }
-
-        // update the incoming request...
-        if let Some(metadata) = metadata {
-            updated_request.extensions_mut().insert::<DownstreamMetadata>(metadata);
-        }
-
-        let request = updated_request;
 
         let req_timeout = self.manager.request_timeout;
         let listener_name = self.manager.listener_name;
@@ -1062,9 +1053,6 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
         }
 
         Box::pin(async move {
-            let (parts, body) = request.into_parts();
-            let request = Request::from_parts(parts, TimeoutBody::new(req_timeout, body));
-
             #[cfg(feature = "access-log")]
             #[allow(clippy::if_then_some_else_none)] // avoid clippy false positive
             let permit: Option<ShareableAccessLogPermit> = {
@@ -1084,15 +1072,16 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
             //  note that we can still time-out a request due to e.g. the filters taking a long time to compute, or the proxy being overwhelmed
             // not just due to the downstream being slow.
             // todo(hayley): this timeout is incorrect (checks for time between frames not total time), and doesn't seem to get converted into
-            //  http response
+            // http response
 
             //
             // evaluate InitHttpContext...
+
             let metadata = request.extensions().get::<DownstreamMetadata>();
             eval_http_init_context(
                 &request,
                 &trans_handler,
-                metadata.map(|md| md.sni.as_ref().map(|s| s.as_str())).flatten(),
+                metadata.and_then(|md| md.sni.as_ref().map(|s| s.as_str())),
             );
 
             //
@@ -1108,6 +1097,7 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
             let request = request.map(|body| {
                 #[cfg(any(feature = "access-log", feature = "tracing", feature = "metrics"))]
                 let trans_handler = Arc::clone(&trans_handler);
+                let body = TimeoutBody::new(req_timeout, PolyBody::from(body));
 
                 InstrumentedBody::new(BodyKind::Request, body, move |_nbytes, _body_error, _body_flags| {
                     with_metric!(
