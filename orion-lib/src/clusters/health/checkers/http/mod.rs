@@ -35,7 +35,7 @@ use tokio::{
 use super::checker::{IntervalWaiter, ProtocolChecker, WaitInterval};
 use crate::{
     body::{instrumented_body::InstrumentedBody, response_flags::BodyKind, timeout_body::TimeoutBody},
-    HttpBody,
+    HttpBody, RequestContext,
 };
 // use crate::clusters::cluster::HyperService;
 use crate::{
@@ -44,7 +44,7 @@ use crate::{
         HealthStatus,
     },
     listeners::http_connection_manager::{RequestHandler, TransactionHandler},
-    transport::{policy::RequestExt, HttpChannel},
+    transport::HttpChannel,
     Error, PolyBody,
 };
 
@@ -84,7 +84,7 @@ fn try_spawn_http_health_checker_impl<H, W>(
 where
     W: WaitInterval + Send + 'static,
     H: Send + 'static,
-    for<'a> &'a H: RequestHandler<RequestExt<'static, Request<HttpBody>>, ()>,
+    for<'a> &'a H: RequestHandler<Request<HttpBody>, RequestContext<'a>>,
 {
     tracing::debug!(
         "Starting HTTP health checks of endpoint {:?} in cluster {:?}",
@@ -133,13 +133,13 @@ struct HttpChecker<H = HttpChannel> {
 impl<H> ProtocolChecker for HttpChecker<H>
 where
     H: Send,
-    for<'a> &'a H: RequestHandler<RequestExt<'static, Request<HttpBody>>, ()>,
+    for<'a> &'a H: RequestHandler<Request<HttpBody>, RequestContext<'a>>,
 {
     type Response = Response<TimeoutBody<PolyBody>>;
 
     async fn check(&mut self) -> Result<Self::Response, Error> {
         let request = create_request(self.http_version, &self.method, &self.host, &self.uri)?;
-        self.client.to_response(&TransactionHandler::default(), request, ()).await
+        self.client.to_response(&TransactionHandler::default(), request, RequestContext::default()).await
     }
 
     fn process_response(
@@ -180,11 +180,11 @@ fn create_request(
     method: &http::Method,
     host: &str,
     uri: &http::Uri,
-) -> Result<RequestExt<'static, Request<HttpBody>>, http::Error> {
+) -> Result<Request<HttpBody>, http::Error> {
     let req = http::Request::builder().version(http_version).method(method).uri(uri);
     let req = if http_version < http::Version::HTTP_2 { req.header("Host", host) } else { req };
     let req = req.header("User-Agent", "orion/health-checks");
 
     let empty = TimeoutBody::new(None, Empty::<Bytes>::default().into());
-    Ok(RequestExt::new(req.body(InstrumentedBody::new(BodyKind::Request, empty, |_, _, _| {}))?))
+    Ok(req.body(InstrumentedBody::new(BodyKind::Request, empty, |_, _, _| {}))?)
 }

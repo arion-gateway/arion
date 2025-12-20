@@ -29,7 +29,8 @@ use tower::Service;
 use crate::{
     body::{instrumented_body::InstrumentedBody, response_flags::BodyKind, timeout_body::TimeoutBody},
     listeners::http_connection_manager::{RequestHandler, TransactionHandler},
-    transport::{policy::RequestExt, HttpChannel},
+    transport::HttpChannel,
+    RequestContext,
 };
 
 /// Adapts a [`HttpChannel`] to a [`Service`] that can be used as a channel for gRPC.
@@ -73,8 +74,10 @@ impl GrpcService {
             ),
         );
 
-        let svc_resp =
-            self.inner.to_response(&Arc::new(TransactionHandler::default()), RequestExt::new(http_req), ()).await?;
+        let svc_resp = self
+            .inner
+            .to_response(&Arc::new(TransactionHandler::default()), http_req, RequestContext::default())
+            .await?;
         let (header, body) = svc_resp.into_parts();
         let body = GrpcBody::new(body);
         let svc_resp = http::Response::from_parts(header, body);

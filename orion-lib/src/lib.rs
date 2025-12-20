@@ -67,10 +67,19 @@ pub type Result<T> = ::core::result::Result<T, Error>;
 
 pub use crate::body::poly_body::PolyBody;
 
-pub static RUNTIME_CONFIG: OnceLock<Runtime> = OnceLock::new();
+use orion_configuration::config::network_filters::http_connection_manager::RetryPolicy;
+use std::time::Duration;
 
 /// The Orion HttpBody: a poly body with timeout and instrumentation
 pub type HttpBody = InstrumentedBody<TimeoutBody<PolyBody>>;
+
+#[derive(Clone, Debug, Default)]
+pub struct RequestContext<'a> {
+    pub route_timeout: Option<Duration>,
+    pub retry_policy: Option<&'a RetryPolicy>,
+}
+
+pub static RUNTIME_CONFIG: OnceLock<Runtime> = OnceLock::new();
 
 #[allow(clippy::expect_used, clippy::missing_panics_doc)]
 pub fn runtime_config() -> &'static Runtime {

@@ -17,7 +17,6 @@
 use super::{http_modifiers, upgrades as upgrade_utils, RequestHandler, TransactionHandler};
 use crate::body::timeout_body::TimeoutBody;
 use crate::event_error::{EventError, EventFailure, EventKind, TryInferFrom};
-use crate::HttpBody;
 use crate::{
     body::response_flags::ResponseFlags,
     clusters::{
@@ -25,9 +24,9 @@ use crate::{
         clusters_manager::{self, RoutingContext},
     },
     listeners::{http_connection_manager::HttpConnectionManager, synthetic_http_response::SyntheticHttpResponse},
-    transport::policy::{RequestContext, RequestExt},
     PolyBody, Result,
 };
+use crate::{HttpBody, RequestContext};
 
 use http::{uri::Parts as UriParts, Uri};
 use hyper::{Request, Response};
@@ -190,11 +189,8 @@ impl<'a> RequestHandler<Request<HttpBody>, (RouteContext<'a>, &HttpConnectionMan
                 let resp = svc_channel
                     .to_response(
                         trans_handler,
-                        RequestExt::with_context(
-                            RequestContext { route_timeout: self.timeout, retry_policy },
-                            upstream_request,
-                        ),
-                        (),
+                        upstream_request,
+                        RequestContext { route_timeout: self.timeout, retry_policy },
                     )
                     .await;
                 match resp {

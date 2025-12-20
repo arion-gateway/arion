@@ -15,11 +15,7 @@
 //
 //
 
-use super::{
-    bind_device::BindDevice,
-    connector::LocalConnectorWithDNSResolver,
-    policy::{RequestContext, RequestExt},
-};
+use super::{bind_device::BindDevice, connector::LocalConnectorWithDNSResolver};
 use crate::{
     body::{instrumented_body::InstrumentedBody, response_flags::ResponseFlags, timeout_body::TimeoutBody},
     clusters::retry_policy::RetryCondition,
@@ -31,7 +27,7 @@ use crate::{
     secrets::{TlsConfigurator, WantsToBuildClient},
     thread_local::{LocalBuilder, LocalObject},
     transport::timer::PingoraTimer,
-    Error, HttpBody, PolyBody, Result,
+    Error, HttpBody, PolyBody, RequestContext, Result,
 };
 use http::{
     uri::{Authority, Parts},
@@ -402,19 +398,18 @@ fn update_upstream_stats(event: PoolEvent, tag: &dyn Any, keys: &[&PoolKey]) {
     }
 }
 
-impl<'a> RequestHandler<RequestExt<'a, Request<HttpBody>>, ()> for &HttpChannels {
+impl<'a> RequestHandler<Request<HttpBody>, RequestContext<'a>> for &HttpChannels {
     async fn to_response(
         self,
         trans_handler: &TransactionHandler,
-        request: RequestExt<'a, Request<HttpBody>>,
-        _arg: (),
+        request: Request<HttpBody>,
+        ctx: RequestContext<'a>,
     ) -> Result<Response<TimeoutBody<PolyBody>>> {
         match self {
-            HttpChannels::Single(channel) => channel.to_response(trans_handler, request, ()).await,
+            HttpChannels::Single(channel) => channel.to_response(trans_handler, request, ctx).await,
             HttpChannels::MultiWithFailover { channel, failover_channels } => {
-                let RequestExt { req, ctx } = request;
                 let RequestContext { route_timeout, .. } = ctx;
-                let (parts, body) = req.into_parts();
+                let (parts, body) = request.into_parts();
                 let InstrumentedBody { inner, guard, state } = body;
 
                 let body_timeout = inner.timeout;
@@ -435,9 +430,8 @@ impl<'a> RequestHandler<RequestExt<'a, Request<HttpBody>>, ()> for &HttpChannels
                     };
                     let rebuilt_req = Request::from_parts(parts.clone(), cloned_body);
                     let attempt_ctx = RequestContext { route_timeout, retry_policy: None };
-                    let attempt_request = RequestExt::with_context(attempt_ctx, rebuilt_req);
 
-                    match channel.to_response(trans_handler, attempt_request, ()).await {
+                    match channel.to_response(trans_handler, rebuilt_req, attempt_ctx).await {
                         Ok(response) => {
                             if has_more {
                                 debug!(
@@ -474,20 +468,20 @@ impl<'a> RequestHandler<RequestExt<'a, Request<HttpBody>>, ()> for &HttpChannels
     }
 }
 
-impl<'a> RequestHandler<RequestExt<'a, Request<HttpBody>>, ()> for &HttpChannel {
+impl<'a> RequestHandler<Request<HttpBody>, RequestContext<'a>> for &HttpChannel {
     async fn to_response(
         self,
         _trans_handler: &TransactionHandler,
-        request: RequestExt<'a, Request<HttpBody>>,
-        _arg: (),
+        request: Request<HttpBody>,
+        ctx: RequestContext<'a>,
     ) -> Result<Response<TimeoutBody<PolyBody>>> {
-        let version = request.req.version();
+        let version = request.version();
         let cluster_name = self.cluster_name;
         match &self.client {
             HttpChannelClient::Plain(sender) => {
-                let RequestContext { route_timeout, retry_policy } = request.ctx;
+                let RequestContext { route_timeout, retry_policy } = ctx;
                 let client = sender.get_or_build();
-                let req = maybe_normalize_uri(request.req, false)?;
+                let req = maybe_normalize_uri(request, false)?;
 
                 let result = if let Some(t) = route_timeout {
                     match fast_timeout(t, self.send_request(retry_policy, client, req, cluster_name)).await {
@@ -501,13 +495,13 @@ impl<'a> RequestHandler<RequestExt<'a, Request<HttpBody>>, ()> for &HttpChannel 
             },
             HttpChannelClient::Tls(context) => {
                 let ClientContext { configured_upstream_http_version, client: sender } = context;
-                let RequestContext { route_timeout, retry_policy } = request.ctx;
+                let RequestContext { route_timeout, retry_policy } = ctx;
                 let configured_version = *configured_upstream_http_version;
                 let client = sender.get_or_build();
 
                 //FIXME(hayley): apply http protocol translation for plaintext too
                 debug!("Using TLS incoming http {version:?} configured {configured_version:?}");
-                let req = maybe_normalize_uri(request.req, true)?;
+                let req = maybe_normalize_uri(request, true)?;
                 let req = maybe_change_http_protocol_version(req, configured_version)?;
                 let result = if let Some(t) = route_timeout {
                     match fast_timeout(t, self.send_request(retry_policy, client, req, cluster_name)).await {
