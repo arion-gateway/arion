@@ -332,12 +332,12 @@ mod tests {
     use super::*;
     use futures::future;
     use http_body_util::Full;
-    use std::task::{Context, Poll, Waker};
+    use std::{num::NonZeroUsize, task::{Context, Poll, Waker}};
 
     #[tokio::test]
     async fn test_complete() {
         let body = Full::new(Bytes::from("Hello, World!"));
-        let (mut channel_body, mut bridge) = ChannelBody::new(body, 1);
+        let (mut channel_body, mut bridge) = ChannelBody::new(body, NonZeroUsize::new(1).unwrap());
 
         // Spawn bridge task
         let bridge_handle = tokio::spawn(async move {
@@ -359,7 +359,7 @@ mod tests {
     #[tokio::test]
     async fn test_manual_injection() {
         let body = Full::new(Bytes::from("Test"));
-        let (mut channel_body, mut bridge) = ChannelBody::new(body, 1);
+        let (mut channel_body, mut bridge) = ChannelBody::new(body, NonZeroUsize::new(1).unwrap());
 
         // Spawn a task that consumes the ChannelBody
         let consumer_handle = tokio::spawn(async move {
@@ -395,7 +395,7 @@ mod tests {
     #[tokio::test]
     async fn test_channel_body_debug() {
         let body = Full::new(Bytes::from("Debug Test"));
-        let (mut channel_body, mut bridge) = ChannelBody::new(body, 1);
+        let (mut channel_body, mut bridge) = ChannelBody::new(body, NonZeroUsize::new(1).unwrap());
         assert!(!channel_body.is_end_stream());
         let mut ctx = dummy_context();
         assert!(matches!(Pin::new(&mut channel_body).poll_frame(&mut ctx), Poll::Pending));
