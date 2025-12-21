@@ -165,6 +165,8 @@ mod metrics_enabled {
 
 #[cfg(not(any(feature = "access-log", feature = "metrics")))]
 mod metrics_disabled {
+    use std::marker::PhantomData;
+
     #[allow(clippy::wildcard_imports)]
     use super::*;
     use pin_project::pin_project;
@@ -174,8 +176,8 @@ mod metrics_disabled {
     pub struct InstrumentedBody<B> {
         #[pin]
         pub inner: B,
-        pub guard: (),
-        pub state: (),
+        pub guard: PhantomData<()>,
+        pub state: PhantomData<()>,
     }
 
     impl<B> std::fmt::Debug for InstrumentedBody<B>
@@ -192,14 +194,14 @@ mod metrics_disabled {
         where
             F: FnOnce(u64, Option<EventError>, ResponseFlags) + Send + 'static,
         {
-            Self { inner, guard: (), state: () }
+            Self { inner, guard: PhantomData, state: PhantomData }
         }
 
         pub fn map_into<B2>(self) -> InstrumentedBody<B2>
         where
             B: Into<B2>,
         {
-            InstrumentedBody { inner: self.inner.into(), guard: (), state: () }
+            InstrumentedBody { inner: self.inner.into(), guard: PhantomData, state: PhantomData }
         }
 
         pub fn map_inner<B2, F>(self, f: F) -> InstrumentedBody<B2>
