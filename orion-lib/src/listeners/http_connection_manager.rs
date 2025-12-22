@@ -258,11 +258,12 @@ impl HttpFilterValue {
     pub async fn apply_response(&mut self, response: &mut Response<OrionResponseBody>) -> FilterDecision {
         match self {
             // RBAC and RateLimit do not apply on the response path
-            HttpFilterValue::Rbac(_) | HttpFilterValue::RateLimit(_) | HttpFilterValue::McpGateway(_) => {
+            HttpFilterValue::Rbac(_) | HttpFilterValue::RateLimit(_) => {
                 FilterDecision::Continue
             },
             HttpFilterValue::ExternalProcessor(ext_proc) => ext_proc.apply_response(response).await,
             HttpFilterValue::JwtAuthentication(_) => FilterDecision::Continue,
+            HttpFilterValue::McpGateway(mcp) => mcp.apply_response(response).await,
         }
     }
     fn from_filter_override(value: &FilterOverride, base_config: Option<&HttpFilterConfig>) -> Option<Self> {
@@ -463,6 +464,7 @@ pub enum FilterDecision {
     Continue,
     Reroute,
     DirectResponse(Response<OrionResponseBody>),
+    AsyncRequest(Response<OrionResponseBody>, Option<Request<OrionRequestBody>>),
 }
 
 pub struct CachedRoute<'a> {
@@ -813,6 +815,153 @@ fn match_request_route<'a, B>(request: &Request<B>, route_config: &'a RouteConfi
     Some(CachedRoute { route: chosen_route, route_match: route_match_result, vh: chosen_vh })
 }
 
+struct AsyncExecution(Arc<RouteConfiguration>);
+
+impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usize, HttpFilterValue)> for AsyncExecution {
+    #[allow(clippy::too_many_lines)]
+    async fn to_response(
+        self,
+        trans_handler: &TransactionHandler,
+        mut request: Request<OrionRequestBody>,
+        (connection_manager, mut filter_idx, http_filter): (Arc<HttpConnectionManager>, usize, HttpFilterValue),
+    ) -> Result<Response<OrionResponseBody>> {
+        let mut cached_route = match_request_route(&request, &self.0);
+        let mut active_filters: SmallVec<[HttpFilterValue; 4]> = SmallVec::new();
+
+        active_filters.push(http_filter);
+
+        let filter_response = 'filter_loop: loop {
+            let Some(ref chosen_route) = cached_route else {
+                // No route found - return 404 immediately
+                return Ok(SyntheticHttpResponse::not_found(
+                    EventFailure::RouteNotFound.into(),
+                    ResponseFlags(FmtResponseFlags::NO_ROUTE_FOUND),
+                )
+                .into_response(request.version()));
+            };
+
+            let guard = connection_manager.http_filters_per_route.load();
+            let route_filters = guard.get(&chosen_route.route.route_match);
+
+            let Some(route_filters) = route_filters else {
+                // No filters to process
+                break 'filter_loop FilterDecision::Continue;
+            };
+
+            let mut reroute = false;
+
+            while filter_idx < route_filters.len() {
+                let filter = &route_filters[filter_idx];
+                filter_idx += 1;
+                if filter.disabled {
+                    continue;
+                }
+                if let Some(filter_value) = &filter.filter {
+                    let mut filter_value = filter_value.clone();
+                    let filter_res = filter_value.apply_request(&mut request).await;
+
+                    match filter_res {
+                        FilterDecision::Continue => {
+                            active_filters.push(filter_value);
+                        },
+                        FilterDecision::DirectResponse(_) => {
+                            // interrupt processing filters with this DirectResponse
+                            break 'filter_loop filter_res;
+                        },
+                        FilterDecision::AsyncRequest(_, _) => {
+                            unimplemented!()
+                        },
+                        FilterDecision::Reroute => {
+                            // stop processing filters and re-evaluate the route
+                            active_filters.push(filter_value);
+                            reroute = true;
+                            break;
+                        },
+                    }
+                }
+            }
+
+            if reroute {
+                debug!("rerouting request...");
+                cached_route = match_request_route(&request, &self.0);
+            } else {
+                // All filters processed successfully
+                break 'filter_loop FilterDecision::Continue;
+            }
+        };
+
+        // One filter in the chain has returned a direct response.
+        // Process the active filters on the response in the reverse order:
+        match filter_response {
+            FilterDecision::DirectResponse(resp) | FilterDecision::AsyncRequest(resp, _) => {
+                let mut response = resp;
+                for filter in &mut active_filters.iter_mut().rev() {
+                    let filter_res = filter.apply_response(&mut response).await;
+                    if let FilterDecision::DirectResponse(direct_response) = filter_res {
+                        response = direct_response;
+                    }
+                }
+
+                return Ok(response);
+            } ,
+            _ => ()
+        }
+
+        let Some(chosen_route) = cached_route else {
+            return Ok(SyntheticHttpResponse::not_found(
+                EventFailure::RouteNotFound.into(),
+                ResponseFlags(FmtResponseFlags::NO_ROUTE_FOUND),
+            )
+            .into_response(request.version()));
+        };
+
+        let websocket_enabled_by_default =
+            upgrade_utils::is_websocket_enabled_by_hcm(&connection_manager.enabled_upgrades);
+
+        let mut response = match &chosen_route.route.action {
+            Action::DirectResponse(dr) => dr.to_response(trans_handler, request, &chosen_route.route.name).await,
+            Action::Redirect(rd) => {
+                rd.to_response(trans_handler, request, (chosen_route.route_match, &chosen_route.route.name)).await
+            },
+            Action::Route(route) => {
+                let remote_address = request
+                    .extensions()
+                    .get::<DownstreamMetadata>()
+                    .map(|md| md.connection.peer_address())
+                    .unwrap_or_else(|| SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0));
+                route
+                    .to_response(
+                        trans_handler,
+                        request,
+                        (
+                            RouteContext {
+                                route_name: &chosen_route.route.name,
+                                retry_policy: chosen_route.vh.retry_policy.as_ref(),
+                                route_match: chosen_route.route_match,
+                                remote_address,
+                                websocket_enabled_by_default,
+                            },
+                            &connection_manager,
+                        ),
+                    )
+                    .await
+            },
+        }?;
+
+        // let's process the active filters on response in the reverse order...
+        //
+        for filter in &mut active_filters.iter_mut().rev() {
+            let filter_res = filter.apply_response(&mut response).await;
+            if let FilterDecision::DirectResponse(direct_response) = filter_res {
+                response = direct_response;
+                break;
+            }
+        }
+
+        Ok(response)
+    }
+}
+
 impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for Arc<RouteConfiguration> {
     #[allow(clippy::too_many_lines)]
     async fn to_response(
@@ -824,6 +973,7 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
         let mut cached_route = match_request_route(&request, &self);
         // let mut request: Request<HttpBody> = request.map(|body| body.map_inner(TimeoutBody::map_into));
         let mut active_filters: SmallVec<[HttpFilterValue; 4]> = SmallVec::new();
+
         let mut filter_idx = 0;
 
         let filter_response = 'filter_loop: loop {
@@ -856,13 +1006,29 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
                     let mut filter_value = filter_value.clone();
                     let filter_res = filter_value.apply_request(&mut request).await;
 
-                    match &filter_res {
+                    match filter_res {
                         FilterDecision::Continue => {
                             active_filters.push(filter_value);
                         },
                         FilterDecision::DirectResponse(_) => {
                             // interrupt processing filters with this DirectResponse
                             break 'filter_loop filter_res;
+                        },
+                        FilterDecision::AsyncRequest(resp, Some(request)) => {
+                            // Handle asynchronous request
+                            //
+                            let self_clone = AsyncExecution(self.clone());
+                            let conn_manager = connection_manager.clone();
+
+                            tokio::spawn(async move {
+                                let trans_handler = TransactionHandler::default();
+                                _ = self_clone.to_response(&trans_handler, request, (conn_manager, filter_idx, filter_value)).await;
+                            });
+
+                            break 'filter_loop FilterDecision::AsyncRequest(resp, None);
+                        },
+                        FilterDecision::AsyncRequest(resp, None) => {
+                            break 'filter_loop FilterDecision::AsyncRequest(resp, None);
                         },
                         FilterDecision::Reroute => {
                             // stop processing filters and re-evaluate the route
@@ -885,16 +1051,19 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
 
         // One filter in the chain has returned a direct response.
         // Process the active filters on the response in the reverse order:
-        if let FilterDecision::DirectResponse(resp) = filter_response {
-            let mut response = resp;
-            for filter in &mut active_filters.iter_mut().rev() {
-                let filter_res = filter.apply_response(&mut response).await;
-                if let FilterDecision::DirectResponse(direct_response) = filter_res {
-                    response = direct_response;
+        match filter_response {
+            FilterDecision::DirectResponse(resp) | FilterDecision::AsyncRequest(resp, _) => {
+                let mut response = resp;
+                for filter in &mut active_filters.iter_mut().rev() {
+                    let filter_res = filter.apply_response(&mut response).await;
+                    if let FilterDecision::DirectResponse(direct_response) = filter_res {
+                        response = direct_response;
+                    }
                 }
-            }
 
-            return Ok(response);
+                return Ok(response);
+            } ,
+            _ => ()
         }
 
         let Some(chosen_route) = cached_route else {
