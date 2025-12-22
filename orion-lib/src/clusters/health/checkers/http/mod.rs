@@ -35,7 +35,7 @@ use tokio::{
 use super::checker::{IntervalWaiter, ProtocolChecker, WaitInterval};
 use crate::{
     body::{instrumented_body::InstrumentedBody, response_flags::BodyKind, timeout_body::TimeoutBody},
-    HttpBody, RequestContext,
+    OrionRequestBody, OrionResponseBody, RequestContext,
 };
 // use crate::clusters::cluster::HyperService;
 use crate::{
@@ -45,7 +45,7 @@ use crate::{
     },
     listeners::http_connection_manager::{RequestHandler, TransactionHandler},
     transport::HttpChannel,
-    Error, PolyBody,
+    Error,
 };
 
 /// Spawns an HTTP health checker and returns its handle. Must be called from a Tokio runtime context.
@@ -84,7 +84,7 @@ fn try_spawn_http_health_checker_impl<H, W>(
 where
     W: WaitInterval + Send + 'static,
     H: Send + 'static,
-    for<'a> &'a H: RequestHandler<Request<HttpBody>, RequestContext<'a>>,
+    for<'a> &'a H: RequestHandler<Request<OrionRequestBody>, RequestContext<'a>>,
 {
     tracing::debug!(
         "Starting HTTP health checks of endpoint {:?} in cluster {:?}",
@@ -133,9 +133,9 @@ struct HttpChecker<H = HttpChannel> {
 impl<H> ProtocolChecker for HttpChecker<H>
 where
     H: Send,
-    for<'a> &'a H: RequestHandler<Request<HttpBody>, RequestContext<'a>>,
+    for<'a> &'a H: RequestHandler<Request<OrionRequestBody>, RequestContext<'a>>,
 {
-    type Response = Response<TimeoutBody<PolyBody>>;
+    type Response = Response<OrionResponseBody>;
 
     async fn check(&mut self) -> Result<Self::Response, Error> {
         let request = create_request(self.http_version, &self.method, &self.host, &self.uri)?;
@@ -180,7 +180,7 @@ fn create_request(
     method: &http::Method,
     host: &str,
     uri: &http::Uri,
-) -> Result<Request<HttpBody>, http::Error> {
+) -> Result<Request<OrionRequestBody>, http::Error> {
     let req = http::Request::builder().version(http_version).method(method).uri(uri);
     let req = if http_version < http::Version::HTTP_2 { req.header("Host", host) } else { req };
     let req = req.header("User-Agent", "orion/health-checks");

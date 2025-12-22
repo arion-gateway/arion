@@ -122,7 +122,8 @@ use crate::{
         filter_state::DownstreamMetadata, http_connection_manager::jwt_authn::JwtAuthenticationBuilder,
         rate_limiter::LocalRateLimit, rbac::HttpRbac, synthetic_http_response::SyntheticHttpResponse,
     },
-    with_client_span, with_metric, with_server_span, ConversionContext, HttpBody, PolyBody, Result, RouteConfiguration,
+    with_client_span, with_metric, with_server_span, ConversionContext, OrionRequestBody, OrionResponseBody, PolyBody,
+    Result, RouteConfiguration,
 };
 
 use orion_tracing::http_tracer::HttpTracer;
@@ -245,7 +246,7 @@ impl TryFrom<HttpFilterConfig> for HttpFilter {
 }
 
 impl HttpFilterValue {
-    pub async fn apply_request(&mut self, request: &mut Request<HttpBody>) -> FilterDecision {
+    pub async fn apply_request(&mut self, request: &mut Request<OrionRequestBody>) -> FilterDecision {
         match self {
             HttpFilterValue::Rbac(rbac) => apply_authorization_rules(rbac, request),
             HttpFilterValue::RateLimit(rl) => rl.run(request),
@@ -254,7 +255,7 @@ impl HttpFilterValue {
             HttpFilterValue::McpGateway(mcp) => mcp.apply_request(request).await,
         }
     }
-    pub async fn apply_response(&mut self, response: &mut Response<TimeoutBody<PolyBody>>) -> FilterDecision {
+    pub async fn apply_response(&mut self, response: &mut Response<OrionResponseBody>) -> FilterDecision {
         match self {
             // RBAC and RateLimit do not apply on the response path
             HttpFilterValue::Rbac(_) | HttpFilterValue::RateLimit(_) | HttpFilterValue::McpGateway(_) => {
@@ -436,9 +437,9 @@ impl HttpConnectionManager {
     ) -> Box<
         dyn Service<
                 Request<Incoming>,
-                Response = Response<HttpBody>,
+                Response = Response<OrionRequestBody>,
                 Error = crate::Error,
-                Future = BoxFuture<'static, StdResult<Response<HttpBody>, crate::Error>>,
+                Future = BoxFuture<'static, StdResult<Response<OrionRequestBody>, crate::Error>>,
             > + Send
             + Sync,
     > {
@@ -446,9 +447,9 @@ impl HttpConnectionManager {
             as Box<
                 dyn Service<
                         Request<Incoming>,
-                        Response = Response<HttpBody>,
+                        Response = Response<OrionRequestBody>,
                         Error = crate::Error,
-                        Future = BoxFuture<'static, StdResult<Response<HttpBody>, crate::Error>>,
+                        Future = BoxFuture<'static, StdResult<Response<OrionRequestBody>, crate::Error>>,
                     > + Send
                     + Sync,
             >
@@ -461,7 +462,7 @@ pub enum FilterDecision {
     #[default]
     Continue,
     Reroute,
-    DirectResponse(Response<TimeoutBody<PolyBody>>),
+    DirectResponse(Response<OrionResponseBody>),
 }
 
 pub struct CachedRoute<'a> {
@@ -592,11 +593,11 @@ impl TransactionHandler {
         self: Arc<Self>,
         route_conf: RC,
         manager: Arc<HttpConnectionManager>,
-        mut request: Request<HttpBody>,
+        mut request: Request<OrionRequestBody>,
         #[cfg(feature = "access-log")] permit: Option<ShareableAccessLogPermit>,
-    ) -> Result<Response<HttpBody>>
+    ) -> Result<Response<OrionRequestBody>>
     where
-        RC: RequestHandler<Request<HttpBody>, Arc<HttpConnectionManager>> + Clone,
+        RC: RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> + Clone,
     {
         let _listener_name = manager.listener_name;
         let metadata = request.extensions().get::<DownstreamMetadata>();
@@ -694,9 +695,9 @@ impl TransactionHandler {
 
     fn trace_status_code(
         self: Arc<Self>,
-        res: Result<Response<HttpBody>>,
+        res: Result<Response<OrionRequestBody>>,
         _listener_name: &'static str,
-    ) -> Result<Response<HttpBody>> {
+    ) -> Result<Response<OrionRequestBody>> {
         if let Ok(response) = &res {
             let status_code = response.status().as_u16();
 
@@ -798,7 +799,7 @@ pub trait RequestHandler<R, A>: Sized {
         trans_handler: &TransactionHandler,
         request: R,
         arg: A,
-    ) -> impl Future<Output = Result<Response<TimeoutBody<PolyBody>>>> + Send;
+    ) -> impl Future<Output = Result<Response<OrionResponseBody>>> + Send;
 }
 
 #[inline]
@@ -812,14 +813,14 @@ fn match_request_route<'a, B>(request: &Request<B>, route_config: &'a RouteConfi
     Some(CachedRoute { route: chosen_route, route_match: route_match_result, vh: chosen_vh })
 }
 
-impl RequestHandler<Request<HttpBody>, Arc<HttpConnectionManager>> for Arc<RouteConfiguration> {
+impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for Arc<RouteConfiguration> {
     #[allow(clippy::too_many_lines)]
     async fn to_response(
         self,
         trans_handler: &TransactionHandler,
-        mut request: Request<HttpBody>,
+        mut request: Request<OrionRequestBody>,
         connection_manager: Arc<HttpConnectionManager>,
-    ) -> Result<Response<TimeoutBody<PolyBody>>> {
+    ) -> Result<Response<OrionResponseBody>> {
         let mut cached_route = match_request_route(&request, &self);
         // let mut request: Request<HttpBody> = request.map(|body| body.map_inner(TimeoutBody::map_into));
         let mut active_filters: SmallVec<[HttpFilterValue; 4]> = SmallVec::new();
@@ -963,7 +964,7 @@ impl RequestHandler<Request<HttpBody>, Arc<HttpConnectionManager>> for Arc<Route
 }
 
 impl Service<Request<Incoming>> for HttpRequestHandler {
-    type Response = Response<HttpBody>;
+    type Response = Response<OrionRequestBody>;
     type Error = crate::Error;
     type Future = BoxFuture<'static, StdResult<Self::Response, Self::Error>>;
 

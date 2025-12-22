@@ -26,7 +26,7 @@ use crate::{
     clusters::cluster::{ClusterOps, PartialClusterType},
     secrets::TransportSecret,
     transport::{GrpcService, HttpChannel, HttpChannels, TcpChannelConnector},
-    HttpBody, Result,
+    OrionRequestBody, Result,
 };
 use http::{uri::Authority, HeaderMap, HeaderName, HeaderValue, Request};
 use orion_configuration::config::cluster::{Cluster as ClusterConfig, ClusterSpecifier};
@@ -58,11 +58,11 @@ pub enum RoutingContext<'a> {
     OverrideHost { header: &'a HeaderValue, fallback_hash: Option<HashState<'a>> },
 }
 
-impl<'a> TryFrom<(&'a RoutingRequirement, &'a Request<HttpBody>, HashState<'a>)> for RoutingContext<'a> {
+impl<'a> TryFrom<(&'a RoutingRequirement, &'a Request<OrionRequestBody>, HashState<'a>)> for RoutingContext<'a> {
     type Error = String;
 
     fn try_from(
-        value: (&'a RoutingRequirement, &'a Request<HttpBody>, HashState<'a>),
+        value: (&'a RoutingRequirement, &'a Request<OrionRequestBody>, HashState<'a>),
     ) -> std::result::Result<Self, Self::Error> {
         let (routing_requirement, request, hash_state) = value;
         match routing_requirement {

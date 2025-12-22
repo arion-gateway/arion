@@ -27,7 +27,7 @@ use crate::{
     secrets::{TlsConfigurator, WantsToBuildClient},
     thread_local::{LocalBuilder, LocalObject},
     transport::timer::PingoraTimer,
-    Error, HttpBody, PolyBody, RequestContext, Result,
+    Error, OrionRequestBody, OrionResponseBody, RequestContext, Result,
 };
 use http::{
     uri::{Authority, Parts},
@@ -78,8 +78,8 @@ const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 type IncomingResult = (std::result::Result<Response<Incoming>, Error>, Duration);
 
-type HttpClient = Client<LocalConnectorWithDNSResolver, HttpBody>;
-type HttpsClient = Client<HttpsConnector<LocalConnectorWithDNSResolver>, HttpBody>;
+type HttpClient = Client<LocalConnectorWithDNSResolver, OrionRequestBody>;
+type HttpsClient = Client<HttpsConnector<LocalConnectorWithDNSResolver>, OrionRequestBody>;
 
 // Rationale: The outer Arc is necessary to avoid building a new Client when cloning the HttpChannel.
 // The inner Arc, instead, is used to pass the client to async code, so it's already wrapped by the Arc.
@@ -398,13 +398,13 @@ fn update_upstream_stats(event: PoolEvent, tag: &dyn Any, keys: &[&PoolKey]) {
     }
 }
 
-impl<'a> RequestHandler<Request<HttpBody>, RequestContext<'a>> for &HttpChannels {
+impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &HttpChannels {
     async fn to_response(
         self,
         trans_handler: &TransactionHandler,
-        request: Request<HttpBody>,
+        request: Request<OrionRequestBody>,
         ctx: RequestContext<'a>,
-    ) -> Result<Response<TimeoutBody<PolyBody>>> {
+    ) -> Result<Response<OrionResponseBody>> {
         match self {
             HttpChannels::Single(channel) => channel.to_response(trans_handler, request, ctx).await,
             HttpChannels::MultiWithFailover { channel, failover_channels } => {
@@ -418,7 +418,7 @@ impl<'a> RequestHandler<Request<HttpBody>, RequestContext<'a>> for &HttpChannels
 
                 let total_attempts = 1 + failover_channels.len();
                 let mut last_error: Option<Error> = None;
-                let mut last_response: Option<Response<TimeoutBody<PolyBody>>> = None;
+                let mut last_response: Option<Response<OrionResponseBody>> = None;
 
                 for (attempt, channel) in std::iter::once(channel).chain(failover_channels.iter()).enumerate() {
                     let has_more = attempt + 1 < total_attempts;
@@ -468,13 +468,13 @@ impl<'a> RequestHandler<Request<HttpBody>, RequestContext<'a>> for &HttpChannels
     }
 }
 
-impl<'a> RequestHandler<Request<HttpBody>, RequestContext<'a>> for &HttpChannel {
+impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &HttpChannel {
     async fn to_response(
         self,
         _trans_handler: &TransactionHandler,
-        request: Request<HttpBody>,
+        request: Request<OrionRequestBody>,
         ctx: RequestContext<'a>,
-    ) -> Result<Response<TimeoutBody<PolyBody>>> {
+    ) -> Result<Response<OrionResponseBody>> {
         let version = request.version();
         let cluster_name = self.cluster_name;
         match &self.client {
@@ -525,8 +525,8 @@ impl HttpChannel {
     async fn send_request<C>(
         &self,
         retry_policy: Option<&RetryPolicy>,
-        sender: &Client<C, HttpBody>,
-        mut req: Request<HttpBody>,
+        sender: &Client<C, OrionRequestBody>,
+        mut req: Request<OrionRequestBody>,
         cluster_name: &'static str,
     ) -> (StdResult<Response<Incoming>, Error>, Duration)
     where
@@ -576,8 +576,8 @@ impl HttpChannel {
     async fn send_with_retry<C>(
         &self,
         retry_policy: &RetryPolicy,
-        sender: &Client<C, HttpBody>,
-        req: Request<HttpBody>,
+        sender: &Client<C, OrionRequestBody>,
+        req: Request<OrionRequestBody>,
         _thread_id: ThreadId,
         _cluster_name: &'static str,
     ) -> (StdResult<Response<Incoming>, Error>, Duration, usize)
@@ -607,7 +607,7 @@ impl HttpChannel {
                 state: state.clone(),
             };
 
-            let cloned_req: Request<HttpBody> = Request::from_parts(parts.clone(), cloned_body);
+            let cloned_req: Request<OrionRequestBody> = Request::from_parts(parts.clone(), cloned_body);
 
             // actually send the request and wait for the response...
             let result: StdResult<Response<Incoming>, Error> = if let Some(t) = retry_policy.per_try_timeout() {
@@ -660,7 +660,7 @@ impl HttpChannel {
         result: IncomingResult,
         route_timeout: Option<Duration>,
         version: http::Version,
-    ) -> StdResult<hyper::Response<TimeoutBody<PolyBody>>, Error> {
+    ) -> StdResult<hyper::Response<OrionResponseBody>, Error> {
         match result {
             (Ok(response), elapsed) => {
                 // calculate the remaining timeout (relative to the route timeout) for receiving
@@ -744,12 +744,15 @@ fn select_scheme(version: http::Version, is_tls: bool) -> Option<http::uri::Sche
     }
 }
 
-fn maybe_change_http_protocol_version(request: Request<HttpBody>, version: Codec) -> Result<Request<HttpBody>> {
+fn maybe_change_http_protocol_version(
+    request: Request<OrionRequestBody>,
+    version: Codec,
+) -> Result<Request<OrionRequestBody>> {
     let request = maybe_update_host(request, version)?;
     Ok(maybe_rewrite_version(request, version))
 }
 
-fn maybe_rewrite_version(mut request: Request<HttpBody>, version: Codec) -> Request<HttpBody> {
+fn maybe_rewrite_version(mut request: Request<OrionRequestBody>, version: Codec) -> Request<OrionRequestBody> {
     *request.version_mut() = match version {
         Codec::Http1 => Version::HTTP_11,
         Codec::Http2 => Version::HTTP_2,
@@ -757,7 +760,7 @@ fn maybe_rewrite_version(mut request: Request<HttpBody>, version: Codec) -> Requ
     request
 }
 
-fn maybe_update_host(mut request: Request<HttpBody>, version: Codec) -> Result<Request<HttpBody>> {
+fn maybe_update_host(mut request: Request<OrionRequestBody>, version: Codec) -> Result<Request<OrionRequestBody>> {
     let request_version = request.version();
     match (request_version, version) {
         (Version::HTTP_11, Codec::Http2) => {
@@ -778,7 +781,10 @@ fn maybe_update_host(mut request: Request<HttpBody>, version: Codec) -> Result<R
     Ok(request)
 }
 
-fn maybe_normalize_uri(mut request: Request<HttpBody>, is_tls: bool) -> crate::Result<Request<HttpBody>> {
+fn maybe_normalize_uri(
+    mut request: Request<OrionRequestBody>,
+    is_tls: bool,
+) -> crate::Result<Request<OrionRequestBody>> {
     let uri = request.uri();
     if !is_absolute(uri) {
         if let Some(host_header) = request.headers().get("host") {

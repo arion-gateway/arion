@@ -12,7 +12,7 @@ use std::{
 use crate::{
     event_error::EventFailure,
     listeners::{http_connection_manager::FilterDecision, synthetic_http_response::SyntheticHttpResponse},
-    HttpBody,
+    OrionRequestBody,
 };
 use http::{HeaderMap, HeaderName, HeaderValue, Request};
 use jsonwebtoken::{decode, decode_header, jwk::Jwk, Algorithm, DecodingKey, TokenData, Validation};
@@ -375,7 +375,7 @@ impl JwtAuthentication {
     }
 
     #[allow(clippy::too_many_lines)]
-    pub fn apply_request(&mut self, req: &mut Request<HttpBody>) -> FilterDecision {
+    pub fn apply_request(&mut self, req: &mut Request<OrionRequestBody>) -> FilterDecision {
         debug!(target: "jwt", "Applying JWT authentication filter: {:#?}", self.inner.config);
 
         // lookup the provider name...

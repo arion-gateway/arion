@@ -70,8 +70,11 @@ pub use crate::body::poly_body::PolyBody;
 use orion_configuration::config::network_filters::http_connection_manager::RetryPolicy;
 use std::time::Duration;
 
-/// The Orion HttpBody: a poly body with timeout and instrumentation
-pub type HttpBody = InstrumentedBody<TimeoutBody<PolyBody>>;
+/// The Orion Request Body: a poly body with timeout and instrumentation
+pub type OrionRequestBody = InstrumentedBody<TimeoutBody<PolyBody>>;
+
+/// The Orion Response Body: a poly body with timeout
+pub type OrionResponseBody = TimeoutBody<PolyBody>;
 
 #[derive(Clone, Debug, Default)]
 pub struct RequestContext<'a> {

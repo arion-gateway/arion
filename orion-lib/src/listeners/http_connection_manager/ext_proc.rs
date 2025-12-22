@@ -10,7 +10,7 @@ mod worker_config;
 use crate::body::channel_body::{ChannelBody, FrameBridge};
 use crate::body::timeout_body::TimeoutBody;
 use crate::event_error::EventFailure;
-use crate::HttpBody;
+use crate::{OrionRequestBody, OrionResponseBody};
 use http_body_util::{BodyExt, Collected, LengthLimitError, Limited};
 
 use crate::listeners::http_connection_manager::ext_proc::mutation::{
@@ -258,7 +258,7 @@ impl ExternalProcessor {
     }
 
     #[allow(clippy::too_many_lines)]
-    pub async fn apply_request(&mut self, request: &mut Request<HttpBody>) -> FilterDecision {
+    pub async fn apply_request(&mut self, request: &mut Request<OrionRequestBody>) -> FilterDecision {
         let modes = &self.overridable_modes.request;
         let process_headers = modes.should_process_headers();
         let process_body = modes.should_process_body();
@@ -403,7 +403,7 @@ impl ExternalProcessor {
     }
 
     #[allow(clippy::too_many_lines)]
-    pub async fn apply_response(&mut self, response: &mut Response<TimeoutBody<PolyBody>>) -> FilterDecision {
+    pub async fn apply_response(&mut self, response: &mut Response<OrionResponseBody>) -> FilterDecision {
         let modes = &self.overridable_modes.response;
         let process_headers = modes.should_process_headers();
         let process_body = modes.should_process_body();
@@ -1468,7 +1468,7 @@ impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
     }
 
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    fn build_direct_response(&mut self, response_attempt: &ImmediateResponse) -> Response<TimeoutBody<PolyBody>> {
+    fn build_direct_response(&mut self, response_attempt: &ImmediateResponse) -> Response<OrionResponseBody> {
         let status = response_attempt
             .status
             .as_ref()

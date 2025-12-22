@@ -23,7 +23,7 @@ use crate::{
         filter_state::DownstreamMetadata, http_connection_manager::FilterDecision, listener::get_listener_context,
         synthetic_http_response::SyntheticHttpResponse,
     },
-    HttpBody, PolyBody,
+    OrionRequestBody, PolyBody,
 };
 
 #[derive(Debug, Clone, Default, Eq, PartialEq, Hash)]
@@ -57,7 +57,7 @@ impl From<McpGatewayConfig> for McpGateway {
 }
 
 impl McpGateway {
-    pub async fn apply_request(&mut self, request: &mut Request<HttpBody>) -> FilterDecision {
+    pub async fn apply_request(&mut self, request: &mut Request<OrionRequestBody>) -> FilterDecision {
         debug!(target: "mcp", "processing request: {:?}", request);
 
         let Some(metadata) = request.extensions().get::<DownstreamMetadata>() else {

@@ -22,7 +22,7 @@ use http_body_util::Full;
 use crate::{
     body::{response_flags::ResponseFlags, timeout_body::TimeoutBody},
     event_error::EventKind,
-    PolyBody,
+    OrionResponseBody,
 };
 
 #[derive(Clone, Debug)]
@@ -157,7 +157,7 @@ impl SyntheticHttpResponse {
     }
 
     #[inline]
-    pub fn into_response(self, version: http::Version) -> Response<TimeoutBody<PolyBody>> {
+    pub fn into_response(self, version: http::Version) -> Response<OrionResponseBody> {
         let mut rsp = Response::new(TimeoutBody::new(None, Full::from(self.body).into()));
         *rsp.status_mut() = self.http_status;
         *rsp.version_mut() = version;

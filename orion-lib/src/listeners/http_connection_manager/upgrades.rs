@@ -17,11 +17,9 @@
 
 use super::{RequestHandler, TransactionHandler};
 use crate::{
-    body::{response_flags::ResponseFlags, timeout_body::TimeoutBody},
-    event_error::EventFailure,
-    listeners::synthetic_http_response::SyntheticHttpResponse,
-    transport::HttpChannels,
-    HttpBody, PolyBody, RequestContext, Result,
+    body::response_flags::ResponseFlags, event_error::EventFailure,
+    listeners::synthetic_http_response::SyntheticHttpResponse, transport::HttpChannels, OrionRequestBody,
+    OrionResponseBody, RequestContext, Result,
 };
 use orion_format::types::ResponseFlags as FmtResponseFlags;
 
@@ -72,9 +70,9 @@ pub fn is_websocket_enabled_by_hcm(hcm_enabled_upgrades: &[UpgradeType]) -> bool
 
 pub async fn handle_websocket_upgrade(
     trans_handler: &TransactionHandler,
-    mut request: Request<HttpBody>,
+    mut request: Request<OrionRequestBody>,
     svc_channel: &HttpChannels,
-) -> Result<Response<TimeoutBody<PolyBody>>> {
+) -> Result<Response<OrionResponseBody>> {
     let version = request.version();
     match version {
         Version::HTTP_11 => {

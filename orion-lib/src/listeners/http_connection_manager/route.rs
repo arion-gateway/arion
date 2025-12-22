@@ -15,7 +15,6 @@
 //
 //
 use super::{http_modifiers, upgrades as upgrade_utils, RequestHandler, TransactionHandler};
-use crate::body::timeout_body::TimeoutBody;
 use crate::event_error::{EventError, EventFailure, EventKind, TryInferFrom};
 use crate::{
     body::response_flags::ResponseFlags,
@@ -24,9 +23,9 @@ use crate::{
         clusters_manager::{self, RoutingContext},
     },
     listeners::{http_connection_manager::HttpConnectionManager, synthetic_http_response::SyntheticHttpResponse},
-    PolyBody, Result,
+    Result,
 };
-use crate::{HttpBody, RequestContext};
+use crate::{OrionRequestBody, OrionResponseBody, RequestContext};
 
 use http::{uri::Parts as UriParts, Uri};
 use hyper::{Request, Response};
@@ -65,14 +64,14 @@ pub struct RouteContext<'a> {
     pub websocket_enabled_by_default: bool,
 }
 
-impl<'a> RequestHandler<Request<HttpBody>, (RouteContext<'a>, &HttpConnectionManager)> for &RouteAction {
+impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConnectionManager)> for &RouteAction {
     #[allow(clippy::too_many_lines)]
     async fn to_response(
         self,
         trans_handler: &TransactionHandler,
-        downstream_request: Request<HttpBody>,
+        downstream_request: Request<OrionRequestBody>,
         (route_context, _connection_manager): (RouteContext<'a>, &HttpConnectionManager),
-    ) -> Result<Response<TimeoutBody<PolyBody>>> {
+    ) -> Result<Response<OrionResponseBody>> {
         #[allow(unused_variables)]
         let RouteContext { route_name, retry_policy, remote_address, route_match, websocket_enabled_by_default } =
             route_context;
@@ -107,7 +106,7 @@ impl<'a> RequestHandler<Request<HttpBody>, (RouteContext<'a>, &HttpConnectionMan
 
                 let ver = downstream_request.version();
 
-                let mut upstream_request: Request<HttpBody> = {
+                let mut upstream_request: Request<OrionRequestBody> = {
                     let (mut parts, body) = downstream_request.into_parts();
                     let path_and_query_replacement = if let Some(rewrite) = &self.rewrite {
                         rewrite

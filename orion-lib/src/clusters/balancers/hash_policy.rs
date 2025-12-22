@@ -21,10 +21,10 @@ use http::Request;
 use orion_configuration::config::network_filters::http_connection_manager::route::{HashPolicy, HashPolicyResult};
 use twox_hash::XxHash64;
 
-use crate::HttpBody;
+use crate::OrionRequestBody;
 
 #[derive(Clone, Debug)]
-pub struct HashState<'a, B = HttpBody> {
+pub struct HashState<'a, B = OrionRequestBody> {
     policies: &'a [HashPolicy],
     req: &'a Request<B>,
     src_addr: SocketAddr,
