@@ -100,11 +100,13 @@ impl McpGateway {
             return Self::rate_limited(request.version());
         }
 
-        listener_ctx.mcp.active_async_requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
         match (request.method(), request.uri().path()) {
             (&Method::GET, "/sse") => self.handle_sse_handshake(&listener_ctx.mcp, request, metadata.listener_name).await,
-            (&Method::GET, "/dummy") => self.handle_dummy_endpoint(&listener_ctx.mcp, request, metadata.listener_name).await,
+            (&Method::GET, "/dummy") => {
+                let filter_decision = self.handle_dummy_endpoint(&listener_ctx.mcp, request, metadata.listener_name).await;
+                listener_ctx.mcp.active_async_requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                filter_decision
+            },
             _ => FilterDecision::DirectResponse(
                 SyntheticHttpResponse::not_found(
                     EventFailure::RouteNotFound.into(),
@@ -113,6 +115,7 @@ impl McpGateway {
                 .into_response(request.version()),
             ),
         }
+
         // Implement request routing/filtering logic here
         // let headers = request.headers_mut();
         // headers.append(&self.inner.config.cluster_header, HeaderValue::from_static("cluster_http"));
@@ -135,9 +138,9 @@ impl McpGateway {
     pub async fn apply_response(&mut self, response: &mut Response<OrionResponseBody>) -> FilterDecision {
         // get global context for this listener
         let listener_ctx = get_listener_context(self.session_ctx.session.listener_name);
-        listener_ctx.mcp.active_async_requests.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
 
         let Ok(body) = response.body_mut().collect().await else {
+            listener_ctx.mcp.active_async_requests.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
             return Self::internal_server_error("Failed to collect response body", response.version());
         };
 
@@ -145,9 +148,11 @@ impl McpGateway {
         let mut bridge = self.session_ctx.session.bridge.lock().await;
 
         let Ok(_) = bridge.send(body.to_bytes()).await else {
+            listener_ctx.mcp.active_async_requests.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
             return Self::internal_server_error("Failed to send SSE payload", response.version());
         };
 
+        listener_ctx.mcp.active_async_requests.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
         FilterDecision::Continue
     }
 
