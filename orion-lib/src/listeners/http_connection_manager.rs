@@ -220,6 +220,22 @@ pub enum HttpFilterValue {
     McpGateway(McpGateway),
 }
 
+trait FactoryFilter {
+    fn new_from(&self) -> Self;
+}
+
+impl FactoryFilter for HttpFilterValue {
+    fn new_from(&self) -> Self {
+        match self {
+            HttpFilterValue::RateLimit(conf) => HttpFilterValue::RateLimit(conf.clone()),
+            HttpFilterValue::Rbac(conf) => HttpFilterValue::Rbac(conf.clone()),
+            HttpFilterValue::ExternalProcessor(conf) => HttpFilterValue::ExternalProcessor(conf.clone()),
+            HttpFilterValue::JwtAuthentication(conf) => HttpFilterValue::JwtAuthentication(conf.clone()),
+            HttpFilterValue::McpGateway(conf) => HttpFilterValue::McpGateway(conf.new_from()),
+        }
+    }
+}
+
 impl TryFrom<HttpFilterConfig> for HttpFilter {
     type Error = crate::Error;
 
@@ -258,9 +274,7 @@ impl HttpFilterValue {
     pub async fn apply_response(&mut self, response: &mut Response<OrionResponseBody>) -> FilterDecision {
         match self {
             // RBAC and RateLimit do not apply on the response path
-            HttpFilterValue::Rbac(_) | HttpFilterValue::RateLimit(_) => {
-                FilterDecision::Continue
-            },
+            HttpFilterValue::Rbac(_) | HttpFilterValue::RateLimit(_) => FilterDecision::Continue,
             HttpFilterValue::ExternalProcessor(ext_proc) => ext_proc.apply_response(response).await,
             HttpFilterValue::JwtAuthentication(_) => FilterDecision::Continue,
             HttpFilterValue::McpGateway(mcp) => mcp.apply_response(response).await,
@@ -817,7 +831,9 @@ fn match_request_route<'a, B>(request: &Request<B>, route_config: &'a RouteConfi
 
 struct AsyncExecution(Arc<RouteConfiguration>);
 
-impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usize, HttpFilterValue)> for AsyncExecution {
+impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usize, HttpFilterValue)>
+    for AsyncExecution
+{
     #[allow(clippy::too_many_lines)]
     async fn to_response(
         self,
@@ -857,7 +873,7 @@ impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usiz
                     continue;
                 }
                 if let Some(filter_value) = &filter.filter {
-                    let mut filter_value = filter_value.clone();
+                    let mut filter_value = filter_value.new_from();
                     let filter_res = filter_value.apply_request(&mut request).await;
 
                     match filter_res {
@@ -903,8 +919,8 @@ impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usiz
                 }
 
                 return Ok(response);
-            } ,
-            _ => ()
+            },
+            _ => (),
         }
 
         let Some(chosen_route) = cached_route else {
@@ -1003,7 +1019,7 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
                     continue;
                 }
                 if let Some(filter_value) = &filter.filter {
-                    let mut filter_value = filter_value.clone();
+                    let mut filter_value = filter_value.new_from();
                     let filter_res = filter_value.apply_request(&mut request).await;
 
                     match filter_res {
@@ -1022,7 +1038,9 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
 
                             tokio::spawn(async move {
                                 let trans_handler = TransactionHandler::default();
-                                _ = self_clone.to_response(&trans_handler, request, (conn_manager, filter_idx, filter_value)).await;
+                                _ = self_clone
+                                    .to_response(&trans_handler, request, (conn_manager, filter_idx, filter_value))
+                                    .await;
                             });
 
                             break 'filter_loop FilterDecision::AsyncRequest(resp, None);
@@ -1062,8 +1080,8 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
                 }
 
                 return Ok(response);
-            } ,
-            _ => ()
+            },
+            _ => (),
         }
 
         let Some(chosen_route) = cached_route else {
