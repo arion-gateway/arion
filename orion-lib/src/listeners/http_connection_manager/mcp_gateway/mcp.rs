@@ -7,18 +7,15 @@ use orion_configuration::config::network_filters::http_connection_manager::http_
 use orion_format::types::ResponseFlags as FmtResponseFlags;
 use scopeguard::defer;
 use smol_str::{SmolStr, ToSmolStr};
-use std::{
-    num::NonZeroUsize,
-    sync::{atomic::AtomicUsize, Arc},
-};
+use std::sync::{atomic::AtomicUsize, Arc};
 use tracing::debug;
 use uuid::Uuid;
 
 use crate::{
     body::{
-        channel_body::{ChannelBody, FrameBridge},
         instrumented_body::InstrumentedBody,
         response_flags::{BodyKind, ResponseFlags},
+        sse_body::{SseBody, SseBridge},
         timeout_body::TimeoutBody,
     },
     event_error::EventFailure,
@@ -48,7 +45,7 @@ impl std::fmt::Display for SessionId {
 
 #[derive(Debug, Default)]
 pub struct Session {
-    bridge: tokio::sync::Mutex<FrameBridge>,
+    bridge: tokio::sync::Mutex<SseBridge>,
     listener_name: &'static str,
 }
 
@@ -220,7 +217,7 @@ impl McpGateway {
             .status(StatusCode::OK);
 
         let payload = format!("event: endpoint\r\ndata: /mcp/messages?{SESSION_ID_PREFIX}{}\r\n", session_id.0);
-        let (body, mut bridge) = ChannelBody::new(Empty::new(), unsafe { NonZeroUsize::new_unchecked(1) });
+        let (body, mut bridge) = SseBody::new(Empty::new());
 
         let body = TimeoutBody::new(None, PolyBody::from(body));
 
