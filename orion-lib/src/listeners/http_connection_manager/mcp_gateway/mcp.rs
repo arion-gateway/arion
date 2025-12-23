@@ -12,6 +12,7 @@ use std::{
 };
 use tracing::{debug, info};
 use uuid::Uuid;
+use scopeguard::defer;
 
 use crate::{
     body::{
@@ -31,7 +32,7 @@ use crate::{
 };
 
 const SESSION_ID_PREFIX: &str = "session_id=";
-const MAX_CONCURRENT_ASYNC_REQUESTS: usize = 8192;
+const MAX_CONCURRENT_ASYNC_REQUESTS: usize = 128;
 
 #[derive(Debug, Clone, Default, Eq, PartialEq, Hash)]
 pub struct SessionId(pub SmolStr);
@@ -94,17 +95,22 @@ impl McpGateway {
 
         // get global context for this listener
         let listener_ctx = get_listener_context(metadata.listener_name);
+        debug!(target: "mcp_gateway", "listener name: {}", metadata.listener_name);
+
         if listener_ctx.mcp.active_async_requests.load(std::sync::atomic::Ordering::Relaxed)
             >= MAX_CONCURRENT_ASYNC_REQUESTS
         {
+            debug!(target: "mcp_gateway", "rate limited!");
             return Self::rate_limited(request.version());
         }
 
         match (request.method(), request.uri().path()) {
-            (&Method::GET, "/sse") => self.handle_sse_handshake(&listener_ctx.mcp, request, metadata.listener_name).await,
-            (&Method::GET, "/dummy") => {
-                let filter_decision = self.handle_dummy_endpoint(&listener_ctx.mcp, request, metadata.listener_name).await;
-                listener_ctx.mcp.active_async_requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            (&Method::GET, "/sse") => {
+                let res = self.handle_sse_handshake(&listener_ctx.mcp, request, metadata.listener_name).await;
+                res
+            },
+            (&Method::GET, "/mcp/messages") => {
+                let filter_decision = self.handle_message_endpoint(&listener_ctx.mcp, request, metadata.listener_name).await;
                 filter_decision
             },
             _ => FilterDecision::DirectResponse(
@@ -138,9 +144,11 @@ impl McpGateway {
     pub async fn apply_response(&mut self, response: &mut Response<OrionResponseBody>) -> FilterDecision {
         // get global context for this listener
         let listener_ctx = get_listener_context(self.session_ctx.session.listener_name);
+        defer! {
+            listener_ctx.mcp.active_async_requests.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        };
 
         let Ok(body) = response.body_mut().collect().await else {
-            listener_ctx.mcp.active_async_requests.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
             return Self::internal_server_error("Failed to collect response body", response.version());
         };
 
@@ -148,15 +156,13 @@ impl McpGateway {
         let mut bridge = self.session_ctx.session.bridge.lock().await;
 
         let Ok(_) = bridge.send(body.to_bytes()).await else {
-            listener_ctx.mcp.active_async_requests.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
             return Self::internal_server_error("Failed to send SSE payload", response.version());
         };
 
-        listener_ctx.mcp.active_async_requests.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
         FilterDecision::Continue
     }
 
-    pub async fn handle_dummy_endpoint(
+    pub async fn handle_message_endpoint(
         &mut self,
         state: &McpGatewayContext,
         downstream_req: &mut Request<OrionRequestBody>,
@@ -171,6 +177,9 @@ impl McpGateway {
             info!(target: "mcp_gateway", "Session ID {session_id} not found!");
             return Self::not_found(downstream_req.version());
         };
+
+        // increment active async requests
+        state.active_async_requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         // save the current session ID
         self.session_ctx.session_id = session_id;
@@ -196,9 +205,9 @@ impl McpGateway {
         req: &mut Request<OrionRequestBody>,
         listener_name: &'static str,
     ) -> FilterDecision {
+        debug!(target: "mcp_gateway", "Handling SSE handshake...");
         // generate a unique session ID
         let session_id = SessionId(Uuid::new_v4().to_smolstr());
-        self.session_ctx.session_id = session_id.clone();
 
         // create a new session
         let mut session = Session::default();
@@ -226,11 +235,8 @@ impl McpGateway {
         session.bridge = tokio::sync::Mutex::new(bridge);
         session.listener_name = listener_name;
 
-        let session = Arc::new(session);
-        self.session_ctx.session = Arc::clone(&session);
-
         // add the session to the map
-        state.sse_map.insert(session_id.clone(), session);
+        state.sse_map.insert(session_id.clone(), Arc::new(session));
         FilterDecision::DirectResponse(response)
     }
 
