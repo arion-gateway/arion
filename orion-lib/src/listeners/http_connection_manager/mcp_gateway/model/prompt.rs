@@ -1,10 +1,10 @@
-use base64::engine::{Engine, general_purpose::STANDARD as BASE64_STANDARD};
+use base64::engine::{general_purpose::STANDARD as BASE64_STANDARD, Engine};
 use serde::{Deserialize, Serialize};
 
 use super::{
-    AnnotateAble, Annotations, Icon, Meta, RawEmbeddedResource, RawImageContent,
     content::{EmbeddedResource, ImageContent},
     resource::ResourceContents,
+    AnnotateAble, Annotations, Icon, Meta, RawEmbeddedResource, RawImageContent,
 };
 
 /// A prompt that can be used to generate text from a model
@@ -32,11 +32,7 @@ pub struct Prompt {
 
 impl Prompt {
     /// Create a new prompt with the given name, description and arguments
-    pub fn new<N, D>(
-        name: N,
-        description: Option<D>,
-        arguments: Option<Vec<PromptArgument>>,
-    ) -> Self
+    pub fn new<N, D>(name: N, description: Option<D>, arguments: Option<Vec<PromptArgument>>) -> Self
     where
         N: Into<String>,
         D: Into<String>,
@@ -123,10 +119,7 @@ pub struct PromptMessage {
 impl PromptMessage {
     /// Create a new text message with the given role and text content
     pub fn new_text<S: Into<String>>(role: PromptMessageRole, text: S) -> Self {
-        Self {
-            role,
-            content: PromptMessageContent::Text { text: text.into() },
-        }
+        Self { role, content: PromptMessageContent::Text { text: text.into() } }
     }
 
     /// Create a new image message. `meta` and `annotations` are optional.
@@ -135,19 +128,15 @@ impl PromptMessage {
         role: PromptMessageRole,
         data: &[u8],
         mime_type: &str,
-        meta: Option<crate::model::Meta>,
+        meta: Option<super::Meta>,
         annotations: Option<Annotations>,
     ) -> Self {
         let base64 = BASE64_STANDARD.encode(data);
         Self {
             role,
             content: PromptMessageContent::Image {
-                image: RawImageContent {
-                    data: base64,
-                    mime_type: mime_type.into(),
-                    meta,
-                }
-                .optional_annotate(annotations),
+                image: RawImageContent { data: base64, mime_type: mime_type.into(), meta }
+                    .optional_annotate(annotations),
             },
         }
     }
@@ -158,17 +147,12 @@ impl PromptMessage {
         uri: String,
         mime_type: Option<String>,
         text: Option<String>,
-        resource_meta: Option<crate::model::Meta>,
-        resource_content_meta: Option<crate::model::Meta>,
+        resource_meta: Option<super::Meta>,
+        resource_content_meta: Option<super::Meta>,
         annotations: Option<Annotations>,
     ) -> Self {
         let resource_contents = match text {
-            Some(t) => ResourceContents::TextResourceContents {
-                uri,
-                mime_type,
-                text: t,
-                meta: resource_content_meta,
-            },
+            Some(t) => ResourceContents::TextResourceContents { uri, mime_type, text: t, meta: resource_content_meta },
             None => ResourceContents::BlobResourceContents {
                 uri,
                 mime_type,
@@ -179,31 +163,21 @@ impl PromptMessage {
         Self {
             role,
             content: PromptMessageContent::Resource {
-                resource: RawEmbeddedResource {
-                    meta: resource_meta,
-                    resource: resource_contents,
-                }
-                .optional_annotate(annotations),
+                resource: RawEmbeddedResource { meta: resource_meta, resource: resource_contents }
+                    .optional_annotate(annotations),
             },
         }
     }
 
     /// Note: PromptMessage text content does not carry protocol-level _meta per current schema.
     /// This function exists for API symmetry but ignores the meta parameter.
-    pub fn new_text_with_meta<S: Into<String>>(
-        role: PromptMessageRole,
-        text: S,
-        _meta: Option<crate::model::Meta>,
-    ) -> Self {
+    pub fn new_text_with_meta<S: Into<String>>(role: PromptMessageRole, text: S, _meta: Option<super::Meta>) -> Self {
         Self::new_text(role, text)
     }
 
     /// Create a new resource link message
     pub fn new_resource_link(role: PromptMessageRole, resource: super::resource::Resource) -> Self {
-        Self {
-            role,
-            content: PromptMessageContent::ResourceLink { link: resource },
-        }
+        Self { role, content: PromptMessageContent::ResourceLink { link: resource } }
     }
 }
 
@@ -215,11 +189,8 @@ mod tests {
 
     #[test]
     fn test_prompt_message_image_serialization() {
-        let image_content = RawImageContent {
-            data: "base64data".to_string(),
-            mime_type: "image/png".to_string(),
-            meta: None,
-        };
+        let image_content =
+            RawImageContent { data: "base64data".to_string(), mime_type: "image/png".to_string(), meta: None };
 
         let json = serde_json::to_string(&image_content).unwrap();
         println!("PromptMessage ImageContent JSON: {}", json);
@@ -234,8 +205,7 @@ mod tests {
         use super::super::resource::RawResource;
 
         let resource = RawResource::new("file:///test.txt", "test.txt");
-        let message =
-            PromptMessage::new_resource_link(PromptMessageRole::User, resource.no_annotation());
+        let message = PromptMessage::new_resource_link(PromptMessageRole::User, resource.no_annotation());
 
         let json = serde_json::to_string(&message).unwrap();
         println!("PromptMessage with ResourceLink JSON: {}", json);

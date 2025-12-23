@@ -78,12 +78,7 @@ pub enum ResourceContents {
 
 impl ResourceContents {
     pub fn text(text: impl Into<String>, uri: impl Into<String>) -> Self {
-        Self::TextResourceContents {
-            uri: uri.into(),
-            mime_type: Some("text".into()),
-            text: text.into(),
-            meta: None,
-        }
+        Self::TextResourceContents { uri: uri.into(), mime_type: Some("text".into()), text: text.into(), meta: None }
     }
 }
 

@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::{
-    ClientNotification, ClientRequest, CustomNotification, Extensions, JsonObject, JsonRpcMessage,
-    NumberOrString, ProgressToken, ServerNotification, ServerRequest,
+    ClientNotification, ClientRequest, CustomNotification, Extensions, JsonObject, JsonRpcMessage, NumberOrString,
+    ProgressToken, ServerNotification, ServerRequest,
 };
 
 pub trait GetMeta {
@@ -32,9 +32,7 @@ impl GetMeta for CustomNotification {
         self.extensions_mut().get_or_insert_default()
     }
     fn get_meta(&self) -> &Meta {
-        self.extensions()
-            .get::<Meta>()
-            .unwrap_or(Meta::static_empty())
+        self.extensions().get::<Meta>().unwrap_or(Meta::static_empty())
     }
 }
 
@@ -150,20 +148,17 @@ impl Meta {
                 } else {
                     None
                 }
-            }
+            },
             _ => None,
         })
     }
 
     pub fn set_progress_token(&mut self, token: ProgressToken) {
         match token.0 {
-            NumberOrString::String(ref s) => self.0.insert(
-                PROGRESS_TOKEN_FIELD.to_string(),
-                Value::String(s.to_string()),
-            ),
-            NumberOrString::Number(n) => self
-                .0
-                .insert(PROGRESS_TOKEN_FIELD.to_string(), Value::Number(n.into())),
+            NumberOrString::String(ref s) => {
+                self.0.insert(PROGRESS_TOKEN_FIELD.to_string(), Value::String(s.to_string()))
+            },
+            NumberOrString::Number(n) => self.0.insert(PROGRESS_TOKEN_FIELD.to_string(), Value::Number(n.into())),
         };
     }
 
@@ -197,14 +192,11 @@ where
         match self {
             JsonRpcMessage::Request(json_rpc_request) => {
                 json_rpc_request.request.extensions_mut().insert(value);
-            }
+            },
             JsonRpcMessage::Notification(json_rpc_notification) => {
-                json_rpc_notification
-                    .notification
-                    .extensions_mut()
-                    .insert(value);
-            }
-            _ => {}
+                json_rpc_notification.notification.extensions_mut().insert(value);
+            },
+            _ => {},
         }
     }
 }

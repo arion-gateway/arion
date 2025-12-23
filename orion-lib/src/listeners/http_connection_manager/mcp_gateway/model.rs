@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use std::{borrow::Cow, sync::Arc};
 mod annotated;
 mod capabilities;
@@ -17,7 +18,7 @@ pub use extension::*;
 pub use meta::*;
 pub use prompt::*;
 pub use resource::*;
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 pub use tool::*;
 
@@ -92,11 +93,7 @@ macro_rules! const_string {
                 if s == $value {
                     Ok($name)
                 } else {
-                    Err(serde::de::Error::custom(format!(concat!(
-                        "expect const string value \"",
-                        $value,
-                        "\""
-                    ))))
+                    Err(serde::de::Error::custom(format!(concat!("expect const string value \"", $value, "\""))))
                 }
             }
         }
@@ -108,7 +105,7 @@ macro_rules! const_string {
             }
 
             fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
-                use serde_json::{Map, json};
+                use serde_json::{json, Map};
 
                 let mut schema_map = Map::new();
                 schema_map.insert("type".to_string(), json!("string"));
@@ -175,7 +172,7 @@ impl<'de> Deserialize<'de> for ProtocolVersion {
             "2024-11-05" => return Ok(ProtocolVersion::V_2024_11_05),
             "2025-03-26" => return Ok(ProtocolVersion::V_2025_03_26),
             "2025-06-18" => return Ok(ProtocolVersion::V_2025_06_18),
-            _ => {}
+            _ => {},
         }
         Ok(ProtocolVersion(Cow::Owned(s)))
     }
@@ -243,7 +240,7 @@ impl<'de> Deserialize<'de> for NumberOrString {
                 } else {
                     Err(serde::de::Error::custom("Expected an integer"))
                 }
-            }
+            },
             Value::String(s) => Ok(NumberOrString::String(s.into())),
             _ => Err(serde::de::Error::custom("Expect number or string")),
         }
@@ -257,7 +254,7 @@ impl schemars::JsonSchema for NumberOrString {
     }
 
     fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        use serde_json::{Map, json};
+        use serde_json::{json, Map};
 
         let mut number_schema = Map::new();
         number_schema.insert("type".to_string(), json!("number"));
@@ -308,11 +305,7 @@ pub struct Request<M = String, P = JsonObject> {
 
 impl<M: Default, P> Request<M, P> {
     pub fn new(params: P) -> Self {
-        Self {
-            method: Default::default(),
-            params,
-            extensions: Extensions::default(),
-        }
+        Self { method: Default::default(), params, extensions: Extensions::default() }
     }
 }
 
@@ -340,11 +333,7 @@ pub struct RequestOptionalParam<M = String, P = JsonObject> {
 
 impl<M: Default, P> RequestOptionalParam<M, P> {
     pub fn with_param(params: P) -> Self {
-        Self {
-            method: Default::default(),
-            params: Some(params),
-            extensions: Extensions::default(),
-        }
+        Self { method: Default::default(), params: Some(params), extensions: Extensions::default() }
     }
 }
 
@@ -381,11 +370,7 @@ pub struct Notification<M = String, P = JsonObject> {
 
 impl<M: Default, P> Notification<M, P> {
     pub fn new(params: P) -> Self {
-        Self {
-            method: Default::default(),
-            params,
-            extensions: Extensions::default(),
-        }
+        Self { method: Default::default(), params, extensions: Extensions::default() }
     }
 }
 
@@ -472,16 +457,8 @@ pub struct ErrorData {
 }
 
 impl ErrorData {
-    pub fn new(
-        code: ErrorCode,
-        message: impl Into<Cow<'static, str>>,
-        data: Option<Value>,
-    ) -> Self {
-        Self {
-            code,
-            message: message.into(),
-            data,
-        }
+    pub fn new(code: ErrorCode, message: impl Into<Cow<'static, str>>, data: Option<Value>) -> Self {
+        Self { code, message: message.into(), data }
     }
     pub fn resource_not_found(message: impl Into<Cow<'static, str>>, data: Option<Value>) -> Self {
         Self::new(ErrorCode::RESOURCE_NOT_FOUND, message, data)
@@ -525,34 +502,19 @@ pub enum JsonRpcMessage<Req = Request, Resp = DefaultResponse, Noti = Notificati
 impl<Req, Resp, Not> JsonRpcMessage<Req, Resp, Not> {
     #[inline]
     pub const fn request(request: Req, id: RequestId) -> Self {
-        JsonRpcMessage::Request(JsonRpcRequest {
-            jsonrpc: JsonRpcVersion2_0,
-            id,
-            request,
-        })
+        JsonRpcMessage::Request(JsonRpcRequest { jsonrpc: JsonRpcVersion2_0, id, request })
     }
     #[inline]
     pub const fn response(response: Resp, id: RequestId) -> Self {
-        JsonRpcMessage::Response(JsonRpcResponse {
-            jsonrpc: JsonRpcVersion2_0,
-            id,
-            result: response,
-        })
+        JsonRpcMessage::Response(JsonRpcResponse { jsonrpc: JsonRpcVersion2_0, id, result: response })
     }
     #[inline]
     pub const fn error(error: ErrorData, id: RequestId) -> Self {
-        JsonRpcMessage::Error(JsonRpcError {
-            jsonrpc: JsonRpcVersion2_0,
-            id,
-            error,
-        })
+        JsonRpcMessage::Error(JsonRpcError { jsonrpc: JsonRpcVersion2_0, id, error })
     }
     #[inline]
     pub const fn notification(notification: Not) -> Self {
-        JsonRpcMessage::Notification(JsonRpcNotification {
-            jsonrpc: JsonRpcVersion2_0,
-            notification,
-        })
+        JsonRpcMessage::Notification(JsonRpcNotification { jsonrpc: JsonRpcVersion2_0, notification })
     }
     pub fn into_request(self) -> Option<(Req, RequestId)> {
         match self {
@@ -624,8 +586,7 @@ const_string!(CancelledNotificationMethod = "notifications/cancelled");
 /// This notification indicates that the result will be unused, so any associated processing SHOULD cease.
 ///
 /// A client MUST NOT attempt to cancel its `initialize` request.
-pub type CancelledNotification =
-    Notification<CancelledNotificationMethod, CancelledNotificationParam>;
+pub type CancelledNotification = Notification<CancelledNotificationMethod, CancelledNotificationParam>;
 
 /// A catch-all notification either side can use to send custom messages to its peer.
 ///
@@ -645,19 +606,12 @@ pub struct CustomNotification {
 
 impl CustomNotification {
     pub fn new(method: impl Into<String>, params: Option<Value>) -> Self {
-        Self {
-            method: method.into(),
-            params,
-            extensions: Extensions::default(),
-        }
+        Self { method: method.into(), params, extensions: Extensions::default() }
     }
 
     /// Deserialize `params` into a strongly-typed structure.
     pub fn params_as<T: DeserializeOwned>(&self) -> Result<Option<T>, serde_json::Error> {
-        self.params
-            .as_ref()
-            .map(|params| serde_json::from_value(params.clone()))
-            .transpose()
+        self.params.as_ref().map(|params| serde_json::from_value(params.clone())).transpose()
     }
 }
 
@@ -855,8 +809,7 @@ macro_rules! paginated_result {
 
 const_string!(ListResourcesRequestMethod = "resources/list");
 /// Request to list all available resources from a server
-pub type ListResourcesRequest =
-    RequestOptionalParam<ListResourcesRequestMethod, PaginatedRequestParam>;
+pub type ListResourcesRequest = RequestOptionalParam<ListResourcesRequestMethod, PaginatedRequestParam>;
 
 paginated_result!(ListResourcesResult {
     resources: Vec<Resource>
@@ -864,8 +817,7 @@ paginated_result!(ListResourcesResult {
 
 const_string!(ListResourceTemplatesRequestMethod = "resources/templates/list");
 /// Request to list all available resource templates from a server
-pub type ListResourceTemplatesRequest =
-    RequestOptionalParam<ListResourceTemplatesRequestMethod, PaginatedRequestParam>;
+pub type ListResourceTemplatesRequest = RequestOptionalParam<ListResourceTemplatesRequestMethod, PaginatedRequestParam>;
 
 paginated_result!(ListResourceTemplatesResult {
     resource_templates: Vec<ResourceTemplate>
@@ -894,8 +846,7 @@ pub type ReadResourceRequest = Request<ReadResourceRequestMethod, ReadResourceRe
 
 const_string!(ResourceListChangedNotificationMethod = "notifications/resources/list_changed");
 /// Notification sent when the list of available resources changes
-pub type ResourceListChangedNotification =
-    NotificationNoParam<ResourceListChangedNotificationMethod>;
+pub type ResourceListChangedNotification = NotificationNoParam<ResourceListChangedNotificationMethod>;
 
 const_string!(SubscribeRequestMethod = "resources/subscribe");
 /// Parameters for subscribing to resource updates
@@ -1013,8 +964,7 @@ pub struct LoggingMessageNotificationParam {
     pub data: Value,
 }
 /// Notification containing a log message
-pub type LoggingMessageNotification =
-    Notification<LoggingMessageNotificationMethod, LoggingMessageNotificationParam>;
+pub type LoggingMessageNotification = Notification<LoggingMessageNotificationMethod, LoggingMessageNotificationParam>;
 
 // =============================================================================
 // SAMPLING (LLM INTERACTION)
@@ -1162,9 +1112,7 @@ impl CompletionContext {
 
     /// Create a completion context with the given arguments
     pub fn with_arguments(arguments: std::collections::HashMap<String, String>) -> Self {
-        Self {
-            arguments: Some(arguments),
-        }
+        Self { arguments: Some(arguments) }
     }
 
     /// Get a specific argument value by name
@@ -1179,11 +1127,7 @@ impl CompletionContext {
 
     /// Get all argument names
     pub fn argument_names(&self) -> impl Iterator<Item = &str> {
-        self.arguments
-            .as_ref()
-            .into_iter()
-            .flat_map(|args| args.keys())
-            .map(|k| k.as_str())
+        self.arguments.as_ref().into_iter().flat_map(|args| args.keys()).map(|k| k.as_str())
     }
 }
 
@@ -1218,41 +1162,21 @@ impl CompletionInfo {
     /// Create a new CompletionInfo with validation for maximum values
     pub fn new(values: Vec<String>) -> Result<Self, String> {
         if values.len() > Self::MAX_VALUES {
-            return Err(format!(
-                "Too many completion values: {} (max: {})",
-                values.len(),
-                Self::MAX_VALUES
-            ));
+            return Err(format!("Too many completion values: {} (max: {})", values.len(), Self::MAX_VALUES));
         }
-        Ok(Self {
-            values,
-            total: None,
-            has_more: None,
-        })
+        Ok(Self { values, total: None, has_more: None })
     }
 
     /// Create CompletionInfo with all values and no pagination
     pub fn with_all_values(values: Vec<String>) -> Result<Self, String> {
         let completion = Self::new(values)?;
-        Ok(Self {
-            total: Some(completion.values.len() as u32),
-            has_more: Some(false),
-            ..completion
-        })
+        Ok(Self { total: Some(completion.values.len() as u32), has_more: Some(false), ..completion })
     }
 
     /// Create CompletionInfo with pagination information
-    pub fn with_pagination(
-        values: Vec<String>,
-        total: Option<u32>,
-        has_more: bool,
-    ) -> Result<Self, String> {
+    pub fn with_pagination(values: Vec<String>, total: Option<u32>, has_more: bool) -> Result<Self, String> {
         let completion = Self::new(values)?;
-        Ok(Self {
-            total,
-            has_more: Some(has_more),
-            ..completion
-        })
+        Ok(Self { total, has_more: Some(has_more), ..completion })
     }
 
     /// Check if this completion response indicates more results are available
@@ -1268,11 +1192,7 @@ impl CompletionInfo {
     /// Validate that the completion info complies with MCP specification
     pub fn validate(&self) -> Result<(), String> {
         if self.values.len() > Self::MAX_VALUES {
-            return Err(format!(
-                "Too many completion values: {} (max: {})",
-                self.values.len(),
-                Self::MAX_VALUES
-            ));
+            return Err(format!("Too many completion values: {} (max: {})", self.values.len(), Self::MAX_VALUES));
         }
         Ok(())
     }
@@ -1301,10 +1221,7 @@ impl Reference {
         // Not accepting `title` currently as it'll break the API
         // Until further decision, keep it `None`, modify later
         // if required, add `title` to the API
-        Self::Prompt(PromptReference {
-            name: name.into(),
-            title: None,
-        })
+        Self::Prompt(PromptReference { name: name.into(), title: None })
     }
 
     /// Create a resource reference
@@ -1465,8 +1382,7 @@ pub struct CreateElicitationResult {
 }
 
 /// Request type for creating an elicitation to gather user input
-pub type CreateElicitationRequest =
-    Request<ElicitationCreateRequestMethod, CreateElicitationRequestParam>;
+pub type CreateElicitationRequest = Request<ElicitationCreateRequestMethod, CreateElicitationRequestParam>;
 
 // =============================================================================
 // TOOL EXECUTION RESULTS
@@ -1496,21 +1412,11 @@ pub struct CallToolResult {
 impl CallToolResult {
     /// Create a successful tool result with unstructured content
     pub fn success(content: Vec<Content>) -> Self {
-        CallToolResult {
-            content,
-            structured_content: None,
-            is_error: Some(false),
-            meta: None,
-        }
+        CallToolResult { content, structured_content: None, is_error: Some(false), meta: None }
     }
     /// Create an error tool result with unstructured content
     pub fn error(content: Vec<Content>) -> Self {
-        CallToolResult {
-            content,
-            structured_content: None,
-            is_error: Some(true),
-            meta: None,
-        }
+        CallToolResult { content, structured_content: None, is_error: Some(true), meta: None }
     }
     /// Create a successful tool result with structured content
     ///
@@ -1580,7 +1486,7 @@ impl CallToolResult {
                 } else {
                     None
                 }
-            }
+            },
             (None, None) => None,
         };
         if let Some(text) = raw_text {
@@ -1620,9 +1526,7 @@ impl<'de> Deserialize<'de> for CallToolResult {
 
         // Validate mutual exclusivity
         if result.content.is_empty() && result.structured_content.is_none() {
-            return Err(serde::de::Error::custom(
-                "CallToolResult must have either content or structured_content",
-            ));
+            return Err(serde::de::Error::custom("CallToolResult must have either content or structured_content"));
         }
 
         Ok(result)
@@ -1883,13 +1787,12 @@ mod tests {
             "jsonrpc": JsonRpcVersion2_0,
             "method": InitializedNotificationMethod,
         });
-        let message: ClientJsonRpcMessage =
-            serde_json::from_value(raw.clone()).expect("invalid notification");
+        let message: ClientJsonRpcMessage = serde_json::from_value(raw.clone()).expect("invalid notification");
         match &message {
             ClientJsonRpcMessage::Notification(JsonRpcNotification {
                 notification: ClientNotification::InitializedNotification(_n),
                 ..
-            }) => {}
+            }) => {},
             _ => panic!("Expected Notification"),
         }
         let json = serde_json::to_value(message).expect("valid json");
@@ -1904,23 +1807,15 @@ mod tests {
             "params": {"foo": "bar"},
         });
 
-        let message: ClientJsonRpcMessage =
-            serde_json::from_value(raw.clone()).expect("invalid notification");
+        let message: ClientJsonRpcMessage = serde_json::from_value(raw.clone()).expect("invalid notification");
         match &message {
             ClientJsonRpcMessage::Notification(JsonRpcNotification {
                 notification: ClientNotification::CustomNotification(notification),
                 ..
             }) => {
                 assert_eq!(notification.method, "notifications/custom");
-                assert_eq!(
-                    notification
-                        .params
-                        .as_ref()
-                        .and_then(|p| p.get("foo"))
-                        .expect("foo present"),
-                    "bar"
-                );
-            }
+                assert_eq!(notification.params.as_ref().and_then(|p| p.get("foo")).expect("foo present"), "bar");
+            },
             _ => panic!("Expected custom client notification"),
         }
 
@@ -1936,23 +1831,15 @@ mod tests {
             "params": {"hello": "world"},
         });
 
-        let message: ServerJsonRpcMessage =
-            serde_json::from_value(raw.clone()).expect("invalid notification");
+        let message: ServerJsonRpcMessage = serde_json::from_value(raw.clone()).expect("invalid notification");
         match &message {
             ServerJsonRpcMessage::Notification(JsonRpcNotification {
                 notification: ServerNotification::CustomNotification(notification),
                 ..
             }) => {
                 assert_eq!(notification.method, "notifications/custom-server");
-                assert_eq!(
-                    notification
-                        .params
-                        .as_ref()
-                        .and_then(|p| p.get("hello"))
-                        .expect("hello present"),
-                    "world"
-                );
-            }
+                assert_eq!(notification.params.as_ref().and_then(|p| p.get("hello")).expect("hello present"), "world");
+            },
             _ => panic!("Expected custom server notification"),
         }
 
@@ -1974,13 +1861,8 @@ mod tests {
             JsonRpcMessage::Request(r) => {
                 assert_eq!(r.id, RequestId::Number(1));
                 assert_eq!(r.request.method, "request");
-                assert_eq!(
-                    &r.request.params,
-                    json!({"key": "value"})
-                        .as_object()
-                        .expect("should be an object")
-                );
-            }
+                assert_eq!(&r.request.params, json!({"key": "value"}).as_object().expect("should be an object"));
+            },
             _ => panic!("Expected Request"),
         }
         let json = serde_json::to_value(&message).expect("valid json");
@@ -2031,34 +1913,25 @@ mod tests {
             }
           }
         });
-        let request: ClientJsonRpcMessage =
-            serde_json::from_value(request.clone()).expect("invalid request");
+        let request: ClientJsonRpcMessage = serde_json::from_value(request.clone()).expect("invalid request");
         let (request, id) = request.into_request().expect("should be a request");
         assert_eq!(id, RequestId::Number(1));
         match request {
             ClientRequest::InitializeRequest(Request {
                 method: _,
-                params:
-                    InitializeRequestParam {
-                        protocol_version: _,
-                        capabilities,
-                        client_info,
-                    },
+                params: InitializeRequestParam { protocol_version: _, capabilities, client_info },
                 ..
             }) => {
                 assert_eq!(capabilities.roots.unwrap().list_changed, Some(true));
                 assert_eq!(capabilities.sampling.unwrap().len(), 0);
                 assert_eq!(client_info.name, "ExampleClient");
                 assert_eq!(client_info.version, "1.0.0");
-            }
+            },
             _ => panic!("Expected InitializeRequest"),
         }
         let server_response: ServerJsonRpcMessage =
             serde_json::from_value(raw_response_json.clone()).expect("invalid response");
-        let (response, id) = server_response
-            .clone()
-            .into_response()
-            .expect("expect response");
+        let (response, id) = server_response.clone().into_response().expect("expect response");
         assert_eq!(id, RequestId::Number(1));
         match response {
             ServerResult::InitializeResult(InitializeResult {
@@ -2069,17 +1942,14 @@ mod tests {
             }) => {
                 assert_eq!(capabilities.logging.unwrap().len(), 0);
                 assert_eq!(capabilities.prompts.unwrap().list_changed, Some(true));
-                assert_eq!(
-                    capabilities.resources.as_ref().unwrap().subscribe,
-                    Some(true)
-                );
+                assert_eq!(capabilities.resources.as_ref().unwrap().subscribe, Some(true));
                 assert_eq!(capabilities.resources.unwrap().list_changed, Some(true));
                 assert_eq!(capabilities.tools.unwrap().list_changed, Some(true));
                 assert_eq!(server_info.name, "ExampleServer");
                 assert_eq!(server_info.version, "1.0.0");
                 assert_eq!(server_info.icons, None);
                 assert_eq!(instructions, None);
-            }
+            },
             other => panic!("Expected InitializeResult, got {other:?}"),
         }
 
@@ -2104,7 +1974,7 @@ mod tests {
         match &message {
             JsonRpcMessage::Request(r) => {
                 assert_eq!(r.id, RequestId::Number(-1));
-            }
+            },
             _ => panic!("Expected Request"),
         }
 
@@ -2120,13 +1990,13 @@ mod tests {
             "params": {}
         });
 
-        let message: JsonRpcMessage = serde_json::from_value(large_negative_json.clone())
-            .expect("Should parse large negative ID");
+        let message: JsonRpcMessage =
+            serde_json::from_value(large_negative_json.clone()).expect("Should parse large negative ID");
 
         match &message {
             JsonRpcMessage::Request(r) => {
                 assert_eq!(r.id, RequestId::Number(-9007199254740991i64));
-            }
+            },
             _ => panic!("Expected Request"),
         }
 
@@ -2138,13 +2008,13 @@ mod tests {
             "params": {}
         });
 
-        let message: JsonRpcMessage = serde_json::from_value(large_positive_json.clone())
-            .expect("Should parse large positive ID");
+        let message: JsonRpcMessage =
+            serde_json::from_value(large_positive_json.clone()).expect("Should parse large positive ID");
 
         match &message {
             JsonRpcMessage::Request(r) => {
                 assert_eq!(r.id, RequestId::Number(9007199254740991i64));
-            }
+            },
             _ => panic!("Expected Request"),
         }
 
@@ -2156,13 +2026,12 @@ mod tests {
             "params": {}
         });
 
-        let message: JsonRpcMessage =
-            serde_json::from_value(zero_id_json.clone()).expect("Should parse zero ID");
+        let message: JsonRpcMessage = serde_json::from_value(zero_id_json.clone()).expect("Should parse zero ID");
 
         match &message {
             JsonRpcMessage::Request(r) => {
                 assert_eq!(r.id, RequestId::Number(0));
-            }
+            },
             _ => panic!("Expected Request"),
         }
     }
@@ -2194,11 +2063,7 @@ mod tests {
 
     #[test]
     fn test_icon_minimal() {
-        let icon = Icon {
-            src: "data:image/svg+xml;base64,PHN2Zy8+".to_string(),
-            mime_type: None,
-            sizes: None,
-        };
+        let icon = Icon { src: "data:image/svg+xml;base64,PHN2Zy8+".to_string(), mime_type: None, sizes: None };
 
         let json = serde_json::to_value(&icon).unwrap();
         assert_eq!(json["src"], "data:image/svg+xml;base64,PHN2Zy8+");
@@ -2273,10 +2138,7 @@ mod tests {
 
         let json = serde_json::to_value(&init_result).unwrap();
         assert!(json["serverInfo"]["icons"].is_array());
-        assert_eq!(
-            json["serverInfo"]["icons"][0]["src"],
-            "https://example.com/server.png"
-        );
+        assert_eq!(json["serverInfo"]["icons"][0]["src"], "https://example.com/server.png");
         assert_eq!(json["serverInfo"]["icons"][0]["sizes"][0], "48x48");
         assert_eq!(json["serverInfo"]["websiteUrl"], "https://docs.example.com");
     }

@@ -276,9 +276,7 @@ builder! {
     }
 }
 
-impl<const E: bool, const S: bool>
-    ClientCapabilitiesBuilder<ClientCapabilitiesBuilderState<E, true, S>>
-{
+impl<const E: bool, const S: bool> ClientCapabilitiesBuilder<ClientCapabilitiesBuilderState<E, true, S>> {
     pub fn enable_roots_list_changed(mut self) -> Self {
         if let Some(c) = self.roots.as_mut() {
             c.list_changed = Some(true);
@@ -317,30 +315,14 @@ mod test {
         assert_eq!(builder.logging, Some(JsonObject::default()));
         assert_eq!(builder.prompts, Some(PromptsCapability::default()));
         assert_eq!(builder.resources, Some(ResourcesCapability::default()));
-        assert_eq!(
-            builder.tools,
-            Some(ToolsCapability {
-                list_changed: Some(true),
-            })
-        );
-        assert_eq!(
-            builder.experimental,
-            Some(ExperimentalCapabilities::default())
-        );
+        assert_eq!(builder.tools, Some(ToolsCapability { list_changed: Some(true) }));
+        assert_eq!(builder.experimental, Some(ExperimentalCapabilities::default()));
         let client_builder = <ClientCapabilitiesBuilder>::default()
             .enable_experimental()
             .enable_roots()
             .enable_roots_list_changed()
             .enable_sampling();
-        assert_eq!(
-            client_builder.experimental,
-            Some(ExperimentalCapabilities::default())
-        );
-        assert_eq!(
-            client_builder.roots,
-            Some(RootsCapabilities {
-                list_changed: Some(true),
-            })
-        );
+        assert_eq!(client_builder.experimental, Some(ExperimentalCapabilities::default()));
+        assert_eq!(client_builder.roots, Some(RootsCapabilities { list_changed: Some(true) }));
     }
 }

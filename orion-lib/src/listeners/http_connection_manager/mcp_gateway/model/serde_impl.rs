@@ -3,8 +3,8 @@ use std::borrow::Cow;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    CustomNotification, Extensions, Meta, Notification, NotificationNoParam, Request,
-    RequestNoParam, RequestOptionalParam,
+    CustomNotification, Extensions, Meta, Notification, NotificationNoParam, Request, RequestNoParam,
+    RequestOptionalParam,
 };
 #[derive(Serialize, Deserialize)]
 struct WithMeta<'a, P> {
@@ -42,16 +42,7 @@ where
     {
         let extensions = &self.extensions;
         let _meta = extensions.get::<Meta>().map(Cow::Borrowed);
-        Proxy::serialize(
-            &Proxy {
-                method: &self.method,
-                params: WithMeta {
-                    _rest: &self.params,
-                    _meta,
-                },
-            },
-            serializer,
-        )
+        Proxy::serialize(&Proxy { method: &self.method, params: WithMeta { _rest: &self.params, _meta } }, serializer)
     }
 }
 
@@ -70,11 +61,7 @@ where
         if let Some(meta) = _meta {
             extensions.insert(meta);
         }
-        Ok(Request {
-            extensions,
-            method: body.method,
-            params: body.params._rest,
-        })
+        Ok(Request { extensions, method: body.method, params: body.params._rest })
     }
 }
 
@@ -89,16 +76,7 @@ where
     {
         let extensions = &self.extensions;
         let _meta = extensions.get::<Meta>().map(Cow::Borrowed);
-        Proxy::serialize(
-            &Proxy {
-                method: &self.method,
-                params: WithMeta {
-                    _rest: &self.params,
-                    _meta,
-                },
-            },
-            serializer,
-        )
+        Proxy::serialize(&Proxy { method: &self.method, params: WithMeta { _rest: &self.params, _meta } }, serializer)
     }
 }
 
@@ -122,11 +100,7 @@ where
         if let Some(meta) = _meta {
             extensions.insert(meta);
         }
-        Ok(RequestOptionalParam {
-            extensions,
-            method: body.method,
-            params,
-        })
+        Ok(RequestOptionalParam { extensions, method: body.method, params })
     }
 }
 
@@ -140,12 +114,7 @@ where
     {
         let extensions = &self.extensions;
         let _meta = extensions.get::<Meta>().map(Cow::Borrowed);
-        ProxyNoParam::serialize(
-            &ProxyNoParam {
-                method: &self.method,
-            },
-            serializer,
-        )
+        ProxyNoParam::serialize(&ProxyNoParam { method: &self.method }, serializer)
     }
 }
 
@@ -159,10 +128,7 @@ where
     {
         let body = ProxyNoParam::<_>::deserialize(deserializer)?;
         let extensions = Extensions::new();
-        Ok(RequestNoParam {
-            extensions,
-            method: body.method,
-        })
+        Ok(RequestNoParam { extensions, method: body.method })
     }
 }
 
@@ -177,16 +143,7 @@ where
     {
         let extensions = &self.extensions;
         let _meta = extensions.get::<Meta>().map(Cow::Borrowed);
-        Proxy::serialize(
-            &Proxy {
-                method: &self.method,
-                params: WithMeta {
-                    _rest: &self.params,
-                    _meta,
-                },
-            },
-            serializer,
-        )
+        Proxy::serialize(&Proxy { method: &self.method, params: WithMeta { _rest: &self.params, _meta } }, serializer)
     }
 }
 
@@ -205,11 +162,7 @@ where
         if let Some(meta) = _meta {
             extensions.insert(meta);
         }
-        Ok(Notification {
-            extensions,
-            method: body.method,
-            params: body.params._rest,
-        })
+        Ok(Notification { extensions, method: body.method, params: body.params._rest })
     }
 }
 
@@ -223,12 +176,7 @@ where
     {
         let extensions = &self.extensions;
         let _meta = extensions.get::<Meta>().map(Cow::Borrowed);
-        ProxyNoParam::serialize(
-            &ProxyNoParam {
-                method: &self.method,
-            },
-            serializer,
-        )
+        ProxyNoParam::serialize(&ProxyNoParam { method: &self.method }, serializer)
     }
 }
 
@@ -242,10 +190,7 @@ where
     {
         let body = ProxyNoParam::<_>::deserialize(deserializer)?;
         let extensions = Extensions::new();
-        Ok(NotificationNoParam {
-            extensions,
-            method: body.method,
-        })
+        Ok(NotificationNoParam { extensions, method: body.method })
     }
 }
 
@@ -258,22 +203,10 @@ impl Serialize for CustomNotification {
         let _meta = extensions.get::<Meta>().map(Cow::Borrowed);
         let params = self.params.as_ref();
 
-        let params = if _meta.is_some() || params.is_some() {
-            Some(WithMeta {
-                _meta,
-                _rest: &self.params,
-            })
-        } else {
-            None
-        };
+        let params =
+            if _meta.is_some() || params.is_some() { Some(WithMeta { _meta, _rest: &self.params }) } else { None };
 
-        ProxyOptionalParam::serialize(
-            &ProxyOptionalParam {
-                method: &self.method,
-                params,
-            },
-            serializer,
-        )
+        ProxyOptionalParam::serialize(&ProxyOptionalParam { method: &self.method, params }, serializer)
     }
 }
 
@@ -282,8 +215,7 @@ impl<'de> Deserialize<'de> for CustomNotification {
     where
         D: serde::Deserializer<'de>,
     {
-        let body =
-            ProxyOptionalParam::<'_, _, Option<serde_json::Value>>::deserialize(deserializer)?;
+        let body = ProxyOptionalParam::<'_, _, Option<serde_json::Value>>::deserialize(deserializer)?;
         let mut params = None;
         let mut _meta = None;
         if let Some(body_params) = body.params {
@@ -294,11 +226,7 @@ impl<'de> Deserialize<'de> for CustomNotification {
         if let Some(meta) = _meta {
             extensions.insert(meta);
         }
-        Ok(CustomNotification {
-            extensions,
-            method: body.method,
-            params,
-        })
+        Ok(CustomNotification { extensions, method: body.method, params })
     }
 }
 

@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::{AnnotateAble, Annotated, resource::ResourceContents};
+use super::{resource::ResourceContents, AnnotateAble, Annotated};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -73,9 +73,9 @@ pub enum RawContent {
 pub type Content = Annotated<RawContent>;
 
 impl RawContent {
-    pub fn json<S: Serialize>(json: S) -> Result<Self, crate::ErrorData> {
+    pub fn json<S: Serialize>(json: S) -> Result<Self, super::ErrorData> {
         let json = serde_json::to_string(&json).map_err(|e| {
-            crate::ErrorData::internal_error(
+            super::ErrorData::internal_error(
                 "fail to serialize response to json",
                 Some(json!(
                     {"reason": e.to_string()}
@@ -86,25 +86,15 @@ impl RawContent {
     }
 
     pub fn text<S: Into<String>>(text: S) -> Self {
-        RawContent::Text(RawTextContent {
-            text: text.into(),
-            meta: None,
-        })
+        RawContent::Text(RawTextContent { text: text.into(), meta: None })
     }
 
     pub fn image<S: Into<String>, T: Into<String>>(data: S, mime_type: T) -> Self {
-        RawContent::Image(RawImageContent {
-            data: data.into(),
-            mime_type: mime_type.into(),
-            meta: None,
-        })
+        RawContent::Image(RawImageContent { data: data.into(), mime_type: mime_type.into(), meta: None })
     }
 
     pub fn resource(resource: ResourceContents) -> Self {
-        RawContent::Resource(RawEmbeddedResource {
-            meta: None,
-            resource,
-        })
+        RawContent::Resource(RawEmbeddedResource { meta: None, resource })
     }
 
     pub fn embedded_text<S: Into<String>, T: Into<String>>(uri: S, content: T) -> Self {
@@ -174,7 +164,7 @@ impl Content {
         RawContent::embedded_text(uri, content).no_annotation()
     }
 
-    pub fn json<S: Serialize>(json: S) -> Result<Self, crate::ErrorData> {
+    pub fn json<S: Serialize>(json: S) -> Result<Self, super::ErrorData> {
         RawContent::json(json).map(|c| c.no_annotation())
     }
 
@@ -217,11 +207,8 @@ mod tests {
 
     #[test]
     fn test_image_content_serialization() {
-        let image_content = RawImageContent {
-            data: "base64data".to_string(),
-            mime_type: "image/png".to_string(),
-            meta: None,
-        };
+        let image_content =
+            RawImageContent { data: "base64data".to_string(), mime_type: "image/png".to_string(), meta: None };
 
         let json = serde_json::to_string(&image_content).unwrap();
         println!("ImageContent JSON: {}", json);
@@ -233,10 +220,7 @@ mod tests {
 
     #[test]
     fn test_audio_content_serialization() {
-        let audio_content = RawAudioContent {
-            data: "base64audiodata".to_string(),
-            mime_type: "audio/wav".to_string(),
-        };
+        let audio_content = RawAudioContent { data: "base64audiodata".to_string(), mime_type: "audio/wav".to_string() };
 
         let json = serde_json::to_string(&audio_content).unwrap();
         println!("AudioContent JSON: {}", json);

@@ -4,8 +4,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::{
-    RawAudioContent, RawContent, RawEmbeddedResource, RawImageContent, RawResource,
-    RawResourceTemplate, RawTextContent, Role,
+    RawAudioContent, RawContent, RawEmbeddedResource, RawImageContent, RawResource, RawResourceTemplate,
+    RawTextContent, Role,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -24,15 +24,8 @@ impl Annotations {
     /// Creates a new Annotations instance specifically for resources
     /// optional priority, and a timestamp (defaults to now if None)
     pub fn for_resource(priority: f32, timestamp: DateTime<Utc>) -> Self {
-        assert!(
-            (0.0..=1.0).contains(&priority),
-            "Priority {priority} must be between 0.0 and 1.0"
-        );
-        Annotations {
-            priority: Some(priority),
-            last_modified: Some(timestamp),
-            audience: None,
-        }
+        assert!((0.0..=1.0).contains(&priority), "Priority {priority} must be between 0.0 and 1.0");
+        Annotations { priority: Some(priority), last_modified: Some(timestamp), audience: None }
     }
 }
 
@@ -79,21 +72,11 @@ impl<T: AnnotateAble> Annotated<T> {
         Self: Sized,
     {
         if let Some(annotations) = self.annotations {
-            Annotated {
-                raw: self.raw,
-                annotations: Some(Annotations {
-                    audience: Some(audience),
-                    ..annotations
-                }),
-            }
+            Annotated { raw: self.raw, annotations: Some(Annotations { audience: Some(audience), ..annotations }) }
         } else {
             Annotated {
                 raw: self.raw,
-                annotations: Some(Annotations {
-                    audience: Some(audience),
-                    priority: None,
-                    last_modified: None,
-                }),
+                annotations: Some(Annotations { audience: Some(audience), priority: None, last_modified: None }),
             }
         }
     }
@@ -102,21 +85,11 @@ impl<T: AnnotateAble> Annotated<T> {
         Self: Sized,
     {
         if let Some(annotations) = self.annotations {
-            Annotated {
-                raw: self.raw,
-                annotations: Some(Annotations {
-                    priority: Some(priority),
-                    ..annotations
-                }),
-            }
+            Annotated { raw: self.raw, annotations: Some(Annotations { priority: Some(priority), ..annotations }) }
         } else {
             Annotated {
                 raw: self.raw,
-                annotations: Some(Annotations {
-                    priority: Some(priority),
-                    last_modified: None,
-                    audience: None,
-                }),
+                annotations: Some(Annotations { priority: Some(priority), last_modified: None, audience: None }),
             }
         }
     }
@@ -127,19 +100,12 @@ impl<T: AnnotateAble> Annotated<T> {
         if let Some(annotations) = self.annotations {
             Annotated {
                 raw: self.raw,
-                annotations: Some(Annotations {
-                    last_modified: Some(timestamp),
-                    ..annotations
-                }),
+                annotations: Some(Annotations { last_modified: Some(timestamp), ..annotations }),
             }
         } else {
             Annotated {
                 raw: self.raw,
-                annotations: Some(Annotations {
-                    last_modified: Some(timestamp),
-                    priority: None,
-                    audience: None,
-                }),
+                annotations: Some(Annotations { last_modified: Some(timestamp), priority: None, audience: None }),
             }
         }
     }
@@ -192,28 +158,19 @@ pub trait AnnotateAble: sealed::Sealed {
     where
         Self: Sized,
     {
-        self.annotate(Annotations {
-            audience: Some(audience),
-            ..Default::default()
-        })
+        self.annotate(Annotations { audience: Some(audience), ..Default::default() })
     }
     fn with_priority(self, priority: f32) -> Annotated<Self>
     where
         Self: Sized,
     {
-        self.annotate(Annotations {
-            priority: Some(priority),
-            ..Default::default()
-        })
+        self.annotate(Annotations { priority: Some(priority), ..Default::default() })
     }
     fn with_timestamp(self, timestamp: DateTime<Utc>) -> Annotated<Self>
     where
         Self: Sized,
     {
-        self.annotate(Annotations {
-            last_modified: Some(timestamp),
-            ..Default::default()
-        })
+        self.annotate(Annotations { last_modified: Some(timestamp), ..Default::default() })
     }
     fn with_timestamp_now(self) -> Annotated<Self>
     where

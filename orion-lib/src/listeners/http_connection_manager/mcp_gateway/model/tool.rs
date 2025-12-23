@@ -1,6 +1,6 @@
 use std::{borrow::Cow, sync::Arc};
 
-use schemars::JsonSchema;
+// use schemars::JsonSchema;
 /// Tools represent a routine that a server can execute
 /// Tool calls represent requests from the client to execute one
 use serde::{Deserialize, Serialize};
@@ -96,34 +96,19 @@ impl ToolAnnotations {
     where
         T: Into<String>,
     {
-        ToolAnnotations {
-            title: Some(title.into()),
-            ..Self::default()
-        }
+        ToolAnnotations { title: Some(title.into()), ..Self::default() }
     }
     pub fn read_only(self, read_only: bool) -> Self {
-        ToolAnnotations {
-            read_only_hint: Some(read_only),
-            ..self
-        }
+        ToolAnnotations { read_only_hint: Some(read_only), ..self }
     }
     pub fn destructive(self, destructive: bool) -> Self {
-        ToolAnnotations {
-            destructive_hint: Some(destructive),
-            ..self
-        }
+        ToolAnnotations { destructive_hint: Some(destructive), ..self }
     }
     pub fn idempotent(self, idempotent: bool) -> Self {
-        ToolAnnotations {
-            idempotent_hint: Some(idempotent),
-            ..self
-        }
+        ToolAnnotations { idempotent_hint: Some(idempotent), ..self }
     }
     pub fn open_world(self, open_world: bool) -> Self {
-        ToolAnnotations {
-            open_world_hint: Some(open_world),
-            ..self
-        }
+        ToolAnnotations { open_world_hint: Some(open_world), ..self }
     }
 
     /// If not set, defaults to true.
@@ -158,10 +143,7 @@ impl Tool {
     }
 
     pub fn annotate(self, annotations: ToolAnnotations) -> Self {
-        Tool {
-            annotations: Some(annotations),
-            ..self
-        }
+        Tool { annotations: Some(annotations), ..self }
     }
 
     /// Set the output schema using a type that implements JsonSchema
@@ -169,18 +151,18 @@ impl Tool {
     /// # Panics
     ///
     /// Panics if the generated schema does not have root type "object" as required by MCP specification.
-    pub fn with_output_schema<T: JsonSchema + 'static>(mut self) -> Self {
-        let schema = crate::handler::server::tool::schema_for_output::<T>()
-            .unwrap_or_else(|e| panic!("Invalid output schema for tool '{}': {}", self.name, e));
-        self.output_schema = Some(schema);
-        self
-    }
+    //pub fn with_output_schema<T: JsonSchema + 'static>(mut self) -> Self {
+    //    let schema = crate::handler::server::tool::schema_for_output::<T>()
+    //        .unwrap_or_else(|e| panic!("Invalid output schema for tool '{}': {}", self.name, e));
+    //    self.output_schema = Some(schema);
+    //    self
+    //}
 
-    /// Set the input schema using a type that implements JsonSchema
-    pub fn with_input_schema<T: JsonSchema + 'static>(mut self) -> Self {
-        self.input_schema = crate::handler::server::tool::schema_for_type::<T>();
-        self
-    }
+    ///// Set the input schema using a type that implements JsonSchema
+    //pub fn with_input_schema<T: JsonSchema + 'static>(mut self) -> Self {
+    //    self.input_schema = crate::handler::server::tool::schema_for_type::<T>();
+    //    self
+    //}
 
     /// Get the schema as json value
     pub fn schema_as_json_value(&self) -> Value {

@@ -140,15 +140,8 @@ impl Extensions {
     ///
     /// assert_eq!(*ext.get::<i32>().unwrap(), 3);
     /// ```
-    pub fn get_or_insert_with<T: Clone + Send + Sync + 'static, F: FnOnce() -> T>(
-        &mut self,
-        f: F,
-    ) -> &mut T {
-        let out = self
-            .map
-            .get_or_insert_with(Box::default)
-            .entry(TypeId::of::<T>())
-            .or_insert_with(|| Box::new(f()));
+    pub fn get_or_insert_with<T: Clone + Send + Sync + 'static, F: FnOnce() -> T>(&mut self, f: F) -> &mut T {
+        let out = self.map.get_or_insert_with(Box::default).entry(TypeId::of::<T>()).or_insert_with(|| Box::new(f()));
         (**out).as_any_mut().downcast_mut().unwrap()
     }
 
