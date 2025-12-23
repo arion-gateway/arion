@@ -2434,6 +2434,7 @@ dependencies = [
  "atomic_enum",
  "bounded-integer",
  "bytes",
+ "chrono",
  "dashmap",
  "enum_dispatch",
  "exponential-backoff",
