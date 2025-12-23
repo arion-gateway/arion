@@ -5,6 +5,7 @@ use http::{Method, Request, Response, StatusCode};
 use http_body_util::{BodyExt, Empty};
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::McpGateway as McpGatewayConfig;
 use orion_format::types::ResponseFlags as FmtResponseFlags;
+use scopeguard::defer;
 use smol_str::{SmolStr, ToSmolStr};
 use std::{
     num::NonZeroUsize,
@@ -12,7 +13,6 @@ use std::{
 };
 use tracing::{debug, info};
 use uuid::Uuid;
-use scopeguard::defer;
 
 use crate::{
     body::{
@@ -24,7 +24,10 @@ use crate::{
     event_error::EventFailure,
     listeners::{
         filter_state::DownstreamMetadata,
-        http_connection_manager::{FactoryFilter, FilterDecision},
+        http_connection_manager::{
+            mcp_gateway::direct_response::{bad_request, internal_server_error, not_found, rate_limited},
+            FactoryFilter, FilterDecision,
+        },
         listener::get_listener_context,
         synthetic_http_response::SyntheticHttpResponse,
     },
@@ -90,7 +93,7 @@ impl McpGateway {
         debug!(target: "mcp_gateway", "processing request: {:?}", request);
 
         let Some(metadata) = request.extensions().get::<DownstreamMetadata>() else {
-            return Self::internal_server_error("Failed to retrieve metadata", request.version());
+            return internal_server_error("Failed to retrieve metadata", request.version());
         };
 
         // get global context for this listener
@@ -101,7 +104,7 @@ impl McpGateway {
             >= MAX_CONCURRENT_ASYNC_REQUESTS
         {
             debug!(target: "mcp_gateway", "rate limited!");
-            return Self::rate_limited(request.version());
+            return rate_limited(request.version());
         }
 
         match (request.method(), request.uri().path()) {
@@ -110,7 +113,8 @@ impl McpGateway {
                 res
             },
             (&Method::GET, "/mcp/messages") => {
-                let filter_decision = self.handle_message_endpoint(&listener_ctx.mcp, request, metadata.listener_name).await;
+                let filter_decision =
+                    self.handle_message_endpoint(&listener_ctx.mcp, request, metadata.listener_name).await;
                 filter_decision
             },
             _ => FilterDecision::DirectResponse(
@@ -128,19 +132,6 @@ impl McpGateway {
         // FilterDecision::Continue
     }
 
-    // parse session id from request URI (query part)
-    pub fn get_session_id(req: &Request<OrionRequestBody>) -> Option<SessionId> {
-        req.uri().query().and_then(|query| {
-            query.split('&').find_map(|part| {
-                debug!(target: "mcp_gateway", "Parsing session ID from query part: {}", part);
-                part.split(SESSION_ID_PREFIX).nth(1).and_then(|value| {
-                    debug!(target: "mcp_gateway", "Session ID value: {}", value);
-                    Some(SessionId(value.to_smolstr()))
-                })
-            })
-        })
-    }
-
     pub async fn apply_response(&mut self, response: &mut Response<OrionResponseBody>) -> FilterDecision {
         // get global context for this listener
         let listener_ctx = get_listener_context(self.session_ctx.session.listener_name);
@@ -149,17 +140,27 @@ impl McpGateway {
         };
 
         let Ok(body) = response.body_mut().collect().await else {
-            return Self::internal_server_error("Failed to collect response body", response.version());
+            return internal_server_error("Failed to collect response body", response.version());
         };
 
-        // find the session context using the current session ID
+        // get the SSE connection via body bridge
         let mut bridge = self.session_ctx.session.bridge.lock().await;
 
-        let Ok(_) = bridge.send(body.to_bytes()).await else {
-            return Self::internal_server_error("Failed to send SSE payload", response.version());
-        };
-
-        FilterDecision::Continue
+        // FIXME: send the response body to the SSE connection
+        match bridge.send(body.to_bytes()).await {
+            Err(e) => {
+                let listener_ctx = get_listener_context(self.session_ctx.session.listener_name);
+                listener_ctx.mcp.sse_map.remove(&self.session_ctx.session_id);
+                internal_server_error(
+                    &format!(
+                        "Failed to send SSE payload: {:?} (session_id: {} dropped)",
+                        e, self.session_ctx.session_id
+                    ),
+                    response.version(),
+                )
+            },
+            _ => FilterDecision::Continue,
+        }
     }
 
     pub async fn handle_message_endpoint(
@@ -170,18 +171,18 @@ impl McpGateway {
     ) -> FilterDecision {
         let Some(session_id) = Self::get_session_id(downstream_req) else {
             info!(target: "mcp_gateway", "Missing session ID!");
-            return Self::bad_request(downstream_req.version());
+            return bad_request(downstream_req.version());
         };
 
         let Some(session) = state.sse_map.get(&session_id) else {
             info!(target: "mcp_gateway", "Session ID {session_id} not found!");
-            return Self::not_found(downstream_req.version());
+            return not_found(downstream_req.version());
         };
 
         // increment active async requests
         state.active_async_requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-        // save the current session ID
+        // save the current session ID and session
         self.session_ctx.session_id = session_id;
         self.session_ctx.session = session.value().clone();
 
@@ -189,6 +190,7 @@ impl McpGateway {
         *okay.status_mut() = http::StatusCode::OK;
         *okay.version_mut() = downstream_req.version();
 
+        // FIXME: prepare the upstream request...
         let mut req = Request::new(InstrumentedBody::new(
             BodyKind::Request,
             TimeoutBody::new(None, PolyBody::from(Empty::new())),
@@ -225,11 +227,11 @@ impl McpGateway {
         let body = TimeoutBody::new(None, PolyBody::from(body));
 
         let Ok(_) = bridge.send(Bytes::from(payload)).await else {
-            return Self::internal_server_error("Failed to send SSE payload", req.version());
+            return internal_server_error("Failed to send SSE payload", req.version());
         };
 
         let Ok(response) = builder.body(body) else {
-            return Self::internal_server_error("Failed to build body for response", req.version());
+            return internal_server_error("Failed to build body for response", req.version());
         };
 
         session.bridge = tokio::sync::Mutex::new(bridge);
@@ -240,43 +242,16 @@ impl McpGateway {
         FilterDecision::DirectResponse(response)
     }
 
-    #[inline]
-    pub fn internal_server_error(msg: &str, ver: http::Version) -> FilterDecision {
-        FilterDecision::DirectResponse(
-            SyntheticHttpResponse::internal_server_error(
-                EventFailure::DirectResponse.into(),
-                ResponseFlags::default(),
-                msg,
-            )
-            .into_response(ver),
-        )
-    }
-
-    #[inline]
-    pub fn bad_request(ver: http::Version) -> FilterDecision {
-        FilterDecision::DirectResponse(
-            SyntheticHttpResponse::bad_request(EventFailure::DirectResponse.into()).into_response(ver),
-        )
-    }
-
-    #[inline]
-    pub fn not_found(ver: http::Version) -> FilterDecision {
-        FilterDecision::DirectResponse(
-            SyntheticHttpResponse::not_found(EventFailure::DirectResponse.into(), ResponseFlags::default())
-                .into_response(ver),
-        )
-    }
-
-    #[inline]
-    pub fn rate_limited(ver: http::Version) -> FilterDecision {
-        FilterDecision::DirectResponse(
-            SyntheticHttpResponse::custom_error(
-                http::StatusCode::TOO_MANY_REQUESTS,
-                None,
-                EventFailure::RateLimited.into(),
-                ResponseFlags(FmtResponseFlags::RATE_LIMITED),
-            )
-            .into_response(ver),
-        )
+    // parse session id from request URI (query part)
+    pub fn get_session_id(req: &Request<OrionRequestBody>) -> Option<SessionId> {
+        req.uri().query().and_then(|query| {
+            query.split('&').find_map(|part| {
+                debug!(target: "mcp_gateway", "Parsing session ID from query part: {}", part);
+                part.split(SESSION_ID_PREFIX).nth(1).and_then(|value| {
+                    debug!(target: "mcp_gateway", "Session ID value: {}", value);
+                    Some(SessionId(value.to_smolstr()))
+                })
+            })
+        })
     }
 }
