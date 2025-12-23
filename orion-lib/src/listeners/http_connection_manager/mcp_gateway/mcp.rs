@@ -15,7 +15,7 @@ use crate::{
     body::{
         instrumented_body::InstrumentedBody,
         response_flags::{BodyKind, ResponseFlags},
-        sse_body::{SseBody, SseBridge},
+        sse_body::{SseBody, SseSender},
         timeout_body::TimeoutBody,
     },
     event_error::EventFailure,
@@ -45,7 +45,7 @@ impl std::fmt::Display for SessionId {
 
 #[derive(Debug, Default)]
 pub struct Session {
-    bridge: tokio::sync::Mutex<SseBridge>,
+    bridge: tokio::sync::Mutex<SseSender>,
     listener_name: &'static str,
 }
 
@@ -217,7 +217,7 @@ impl McpGateway {
             .status(StatusCode::OK);
 
         let payload = format!("event: endpoint\r\ndata: /mcp/messages?{SESSION_ID_PREFIX}{}\r\n", session_id.0);
-        let (body, mut bridge) = SseBody::new(Empty::new());
+        let (body, mut bridge) = SseBody::new();
 
         let body = TimeoutBody::new(None, PolyBody::from(body));
 
