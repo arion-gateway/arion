@@ -24,11 +24,7 @@
 #![allow(clippy::mutable_key_type)]
 
 mod direct_response;
-mod ext_proc;
-use ext_proc::ExternalProcessor;
-use jwt_authn::JwtAuthentication;
-use mcp_gateway::mcp::McpGateway;
-use smallvec::SmallVec;
+pub mod ext_proc;
 pub mod http_modifiers;
 pub mod jwt_authn;
 pub mod mcp_gateway;
@@ -36,6 +32,7 @@ mod redirect;
 mod route;
 mod upgrades;
 
+use smallvec::SmallVec;
 #[cfg(any(feature = "tracing", feature = "access-log"))]
 use std::sync::atomic::AtomicUsize;
 
@@ -84,12 +81,8 @@ use arc_swap::ArcSwap;
 use core::time::Duration;
 use futures::future::BoxFuture;
 use hyper::{body::Incoming, service::Service, Request, Response};
-use orion_configuration::config::network_filters::http_connection_manager::http_filters::{
-    FilterConfigOverride, FilterOverride,
-};
 use orion_configuration::config::network_filters::http_connection_manager::route::RouteMatch;
 use orion_configuration::config::network_filters::http_connection_manager::{
-    http_filters::{HttpFilter as HttpFilterConfig, HttpFilterType},
     route::{Action, RouteMatchResult},
     CodecType, ConfigSource, ConfigSourceSpecifier, HttpConnectionManager as HttpConnectionManagerConfig, RdsSpecifier,
     RouteSpecifier, UpgradeType,
@@ -119,8 +112,9 @@ use crate::{
     },
     event_error::EventFailure,
     listeners::{
-        filter_state::DownstreamMetadata, http_connection_manager::jwt_authn::JwtAuthenticationBuilder,
-        rate_limiter::LocalRateLimit, rbac::HttpRbac, synthetic_http_response::SyntheticHttpResponse,
+        http_filters::{per_route_http_filters, FactoryFilter, FilterDecision, HttpFilter, HttpFilterValue},
+        metadata::DownstreamMetadata,
+        synthetic_http_response::SyntheticHttpResponse,
     },
     with_client_span, with_metric, with_server_span, ConversionContext, OrionRequestBody, OrionResponseBody, PolyBody,
     Result, RouteConfiguration,
@@ -201,131 +195,6 @@ pub struct PartialHttpConnectionManager {
     tracing: Option<TracingConfig>,
     #[cfg(feature = "access-log")]
     access_log: Vec<AccessLog>,
-}
-
-#[derive(Debug, Clone)]
-pub struct HttpFilter {
-    pub name: SmolStr,
-    pub disabled: bool,
-    pub filter: Option<HttpFilterValue>,
-    pub base_config: Option<HttpFilterConfig>,
-}
-
-#[derive(Debug, Clone)]
-pub enum HttpFilterValue {
-    RateLimit(LocalRateLimit),
-    Rbac(HttpRbac),
-    ExternalProcessor(ExternalProcessor),
-    JwtAuthentication(JwtAuthentication),
-    McpGateway(McpGateway),
-}
-
-trait FactoryFilter {
-    fn new_from(&self) -> Self;
-}
-
-impl FactoryFilter for HttpFilterValue {
-    fn new_from(&self) -> Self {
-        match self {
-            HttpFilterValue::RateLimit(conf) => HttpFilterValue::RateLimit(conf.clone()),
-            HttpFilterValue::Rbac(conf) => HttpFilterValue::Rbac(conf.clone()),
-            HttpFilterValue::ExternalProcessor(conf) => HttpFilterValue::ExternalProcessor(conf.clone()),
-            HttpFilterValue::JwtAuthentication(conf) => HttpFilterValue::JwtAuthentication(conf.clone()),
-            HttpFilterValue::McpGateway(conf) => HttpFilterValue::McpGateway(conf.new_from()),
-        }
-    }
-}
-
-impl TryFrom<HttpFilterConfig> for HttpFilter {
-    type Error = crate::Error;
-
-    fn try_from(value: HttpFilterConfig) -> Result<Self> {
-        let hcm_config = match &value.filter {
-            HttpFilterType::ExternalProcessor(_) => Some(value.clone()),
-            _ => None,
-        };
-
-        let HttpFilterConfig { name, disabled, filter } = value;
-
-        let filter = match filter {
-            HttpFilterType::RateLimit(conf) => HttpFilterValue::RateLimit(conf.into()),
-            HttpFilterType::Rbac(conf) => HttpFilterValue::Rbac(HttpRbac::new(&conf)),
-            HttpFilterType::ExternalProcessor(conf) => HttpFilterValue::ExternalProcessor(conf.into()),
-            HttpFilterType::JwtAuthentication(conf) => {
-                let builder = JwtAuthenticationBuilder::new(conf);
-                HttpFilterValue::JwtAuthentication(builder.build())
-            },
-            HttpFilterType::McpGateway(mcp) => HttpFilterValue::McpGateway(mcp.try_into()?),
-        };
-        Ok(Self { name, disabled, filter: Some(filter), base_config: hcm_config })
-    }
-}
-
-impl HttpFilterValue {
-    pub async fn apply_request(&mut self, request: &mut Request<OrionRequestBody>) -> FilterDecision {
-        match self {
-            HttpFilterValue::Rbac(rbac) => apply_authorization_rules(rbac, request),
-            HttpFilterValue::RateLimit(rl) => rl.run(request),
-            HttpFilterValue::ExternalProcessor(ext_proc) => ext_proc.apply_request(request).await,
-            HttpFilterValue::JwtAuthentication(jwt) => jwt.apply_request(request),
-            HttpFilterValue::McpGateway(mcp) => mcp.apply_request(request).await,
-        }
-    }
-    pub async fn apply_response(&mut self, response: &mut Response<OrionResponseBody>) -> FilterDecision {
-        match self {
-            // RBAC and RateLimit do not apply on the response path
-            HttpFilterValue::Rbac(_) | HttpFilterValue::RateLimit(_) => FilterDecision::Continue,
-            HttpFilterValue::ExternalProcessor(ext_proc) => ext_proc.apply_response(response).await,
-            HttpFilterValue::JwtAuthentication(_) => FilterDecision::Continue,
-            HttpFilterValue::McpGateway(mcp) => mcp.apply_response(response).await,
-        }
-    }
-    fn from_filter_override(value: &FilterOverride, base_config: Option<&HttpFilterConfig>) -> Option<Self> {
-        match &value.filter_settings {
-            Some(filter_settings) => match filter_settings {
-                FilterConfigOverride::LocalRateLimit(rl) => Some(HttpFilterValue::RateLimit((*rl).into())),
-                FilterConfigOverride::Rbac(Some(rbac)) => Some(HttpFilterValue::Rbac(HttpRbac::new(&rbac))),
-                FilterConfigOverride::Rbac(None) => None,
-                FilterConfigOverride::ExternalProcessor(ext_proc_per_route) => {
-                    if let Some(HttpFilterConfig { filter: HttpFilterType::ExternalProcessor(base_config), .. }) =
-                        base_config
-                    {
-                        let filter_value = HttpFilterValue::ExternalProcessor(
-                            (base_config.clone(), Some(ext_proc_per_route.clone()), None).into(),
-                        );
-                        Some(filter_value)
-                    } else {
-                        None
-                    }
-                },
-            },
-            None => None,
-        }
-    }
-}
-
-fn per_route_http_filters(
-    route_config: &RouteConfiguration,
-    hcm_filters: &[Arc<HttpFilter>],
-) -> HashMap<RouteMatch, Vec<Arc<HttpFilter>>> {
-    let mut per_route_filters: HashMap<RouteMatch, Vec<Arc<HttpFilter>>> = HashMap::new();
-    for vh in &route_config.virtual_hosts {
-        for route in &vh.routes {
-            for hcm_filter in hcm_filters {
-                let effective_filter = match route.typed_per_filter_config.get(&hcm_filter.name) {
-                    Some(override_config) => Arc::new(HttpFilter {
-                        name: hcm_filter.name.clone(),
-                        disabled: override_config.disabled,
-                        filter: HttpFilterValue::from_filter_override(override_config, hcm_filter.base_config.as_ref()),
-                        base_config: hcm_filter.base_config.clone(),
-                    }),
-                    None => Arc::clone(hcm_filter),
-                };
-                per_route_filters.entry(route.route_match.clone()).or_default().push(effective_filter);
-            }
-        }
-    }
-    per_route_filters
 }
 
 impl TryFrom<ConversionContext<'_, HttpConnectionManagerConfig>> for PartialHttpConnectionManager {
@@ -469,16 +338,6 @@ impl HttpConnectionManager {
                     + Sync,
             >
     }
-}
-
-#[derive(Debug, Default)]
-#[allow(dead_code)]
-pub enum FilterDecision {
-    #[default]
-    Continue,
-    Reroute,
-    DirectResponse(Response<OrionResponseBody>),
-    AsyncRequest(Response<OrionResponseBody>, Option<Request<OrionRequestBody>>),
 }
 
 pub struct CachedRoute<'a> {
@@ -1519,22 +1378,6 @@ fn eval_http_finish_context(
         let loggers: Vec<LogFormatterLocal> = std::mem::take(access_loggers);
         let messages = loggers.into_iter().map(LogFormatterLocal::into_message).collect::<Vec<_>>();
         log_access(permit, Target::Listener(_listener_name.into()), messages);
-    }
-}
-
-fn apply_authorization_rules<B>(rbac: &HttpRbac, req: &Request<B>) -> FilterDecision {
-    debug!("Applying authorization rules {rbac:?} {:?}", &req.headers());
-    let (permitted, enforced_policy) = rbac.inner.is_permitted(req);
-    if permitted {
-        FilterDecision::Continue
-    } else {
-        FilterDecision::DirectResponse(
-            SyntheticHttpResponse::forbidden(
-                EventFailure::RbacAccessDenied(enforced_policy.unwrap_or(SmolStr::new_static("unknown"))).into(),
-                "RBAC: access denied",
-            )
-            .into_response(req.version()),
-        )
     }
 }
 

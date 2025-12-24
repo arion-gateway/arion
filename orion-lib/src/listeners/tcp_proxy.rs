@@ -28,7 +28,7 @@ use crate::{
     event_error::{
         find_error_in_chain, ConnectionTerminationDetails, ResponseCodeDetails, UpstreamTransportEventError,
     },
-    listeners::{access_log::AccessLogContext, filter_state::DownstreamMetadata},
+    listeners::{access_log::AccessLogContext, metadata::DownstreamMetadata},
     transport::connector::TcpErrorContext,
     AsyncStream, Result,
 };

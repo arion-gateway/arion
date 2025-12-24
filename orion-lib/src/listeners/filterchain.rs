@@ -20,7 +20,7 @@ use super::{
     tcp_proxy::{TcpProxy, TcpProxyBuilder},
 };
 use crate::{
-    listeners::filter_state::{DownstreamConnectionMetadata, DownstreamMetadata},
+    listeners::metadata::{DownstreamConnectionMetadata, DownstreamMetadata},
     secrets::{TlsConfigurator, WantsToBuildServer},
     transport::AsyncReadWrite,
     AsyncStream, ConversionContext, Error, Result,

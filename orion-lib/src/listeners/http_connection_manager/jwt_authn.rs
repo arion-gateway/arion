@@ -11,7 +11,7 @@ use std::{
 
 use crate::{
     event_error::EventFailure,
-    listeners::{http_connection_manager::FilterDecision, synthetic_http_response::SyntheticHttpResponse},
+    listeners::{http_filters::FilterDecision, synthetic_http_response::SyntheticHttpResponse},
     OrionRequestBody,
 };
 use http::{HeaderMap, HeaderName, HeaderValue, Request};

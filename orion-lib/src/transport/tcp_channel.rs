@@ -21,7 +21,7 @@ use super::{
     bind_device::BindDevice, connector::LocalConnectorWithDNSResolver, AsyncStream, UpstreamTransportSocketConfigurator,
 };
 use crate::{
-    listeners::filter_state::DownstreamConnectionMetadata,
+    listeners::metadata::DownstreamConnectionMetadata,
     secrets::{TlsConfigurator, WantsToBuildClient},
 };
 use futures::future::BoxFuture;

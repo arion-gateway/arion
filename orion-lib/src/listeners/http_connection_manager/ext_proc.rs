@@ -27,7 +27,7 @@ use crate::utils::truncated_debug::TruncatedDebug;
 use crate::{
     body::response_flags::ResponseFlags,
     clusters::clusters_manager::{self, RoutingContext},
-    listeners::{http_connection_manager::FilterDecision, synthetic_http_response::SyntheticHttpResponse},
+    listeners::{http_filters::FilterDecision, synthetic_http_response::SyntheticHttpResponse},
     Error, PolyBody,
 };
 use bytes::Bytes;

@@ -21,8 +21,8 @@ use super::{
 };
 use crate::{
     listeners::{
-        filter_state::{DownstreamConnectionMetadata, DownstreamMetadata},
         http_connection_manager::mcp_gateway::mcp::McpGatewayContext,
+        metadata::{DownstreamConnectionMetadata, DownstreamMetadata},
     },
     secrets::{TlsConfigurator, WantsToBuildServer},
     transport::{bind_device::BindDevice, tls_inspector, AsyncStream, ProxyProtocolReader},

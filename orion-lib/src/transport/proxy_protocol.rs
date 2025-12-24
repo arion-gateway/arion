@@ -16,7 +16,7 @@
 //
 
 use crate::{
-    listeners::filter_state::DownstreamConnectionMetadata,
+    listeners::metadata::DownstreamConnectionMetadata,
     secrets::{TlsConfigurator, WantsToBuildClient},
     transport::AsyncReadWrite,
     utils::rewindable_stream::RewindableHeadAsyncStream,
