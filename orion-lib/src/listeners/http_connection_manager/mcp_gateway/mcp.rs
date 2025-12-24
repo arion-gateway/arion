@@ -5,6 +5,8 @@ use http::{Method, Request, Response, StatusCode};
 use http_body_util::{BodyExt, Empty};
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::McpGateway as McpGatewayConfig;
 use scopeguard::defer;
+use serde::Serialize;
+use serde_json::json;
 use smol_str::{SmolStr, ToSmolStr};
 use std::{
     panic,
@@ -22,7 +24,7 @@ use crate::{
         timeout_body::TimeoutBody,
     },
     listeners::{
-        http_connection_manager::mcp_gateway::model::{self},
+        http_connection_manager::mcp_gateway::model::{self, NumberOrString},
         http_filters::{FactoryFilter, FilterDecision},
         listener::FilterListenerContext,
         metadata::DownstreamMetadata,
@@ -75,6 +77,7 @@ pub struct McpGateway {
     inner: Arc<McpGatewayInner>,
     session_ctx: SessionContext,
     request_id: model::RequestId,
+    initialize_request_params: Option<model::InitializeRequestParam>,
 }
 
 impl From<McpGatewayConfig> for McpGateway {
@@ -83,13 +86,19 @@ impl From<McpGatewayConfig> for McpGateway {
             inner: Arc::new(McpGatewayInner { config }),
             session_ctx: SessionContext(None),
             request_id: model::RequestId::Number(0),
+            initialize_request_params: None,
         }
     }
 }
 
 impl FactoryFilter for McpGateway {
     fn new_from(&self) -> Self {
-        Self { inner: self.inner.clone(), session_ctx: SessionContext(None), request_id: model::RequestId::Number(0) }
+        Self {
+            inner: self.inner.clone(),
+            session_ctx: SessionContext(None),
+            request_id: model::RequestId::Number(0),
+            initialize_request_params: None,
+        }
     }
 }
 
@@ -108,10 +117,13 @@ impl McpGateway {
 
         match (request.method(), request.uri().path()) {
             (&Method::GET, "/sse") => self.handle_sse_handshake(&mcp_ctx, request, metadata.listener_name).await,
-            (&Method::GET, "/mcp/messages") => {
+            (&Method::POST, "/mcp/messages") => {
                 self.handle_message_endpoint(&mcp_ctx, request, metadata.listener_name).await
             },
-            _ => FilterDecision::no_route_found(request.version()),
+            _ => {
+                debug!(target: "mcp_gateway", "apply_request: no route found");
+                FilterDecision::no_route_found(request.version())
+            },
         }
 
         // Implement request routing/filtering logic here
@@ -127,9 +139,6 @@ impl McpGateway {
             mcp_ctx.active_async_requests.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
         };
 
-        // get the SSE connection via body bridge
-        let mut sender = self.session_ctx.get().sender.lock().await;
-
         // collect the body...
         let Ok(body) = response.body_mut().collect().await else {
             debug!(target: "mcp_gateway", "apply_response: failed to collect response body");
@@ -137,16 +146,12 @@ impl McpGateway {
                 self.request_id.clone(),
                 model::ErrorData::internal_error("failed to collect response body", None),
             );
-            _ = sender.send(msg).await;
+
+            self.send_message(msg).await;
             return FilterDecision::Continue;
         };
 
-        if let Err(e) = sender.send(body.to_bytes()).await {
-            let mcp_ctx = McpGatewayListenerContext::get_filter_context(self.session_ctx.get().listener_name);
-            mcp_ctx.sse_map.remove(&self.session_ctx.get().session_id);
-            debug!(target: "mcp_gateway", "apply_response: failed to send SSE payload for session {}, error {e}", self.session_ctx.get().session_id);
-        };
-
+        self.send_message(body.to_bytes()).await;
         FilterDecision::Continue
     }
 
@@ -168,16 +173,6 @@ impl McpGateway {
             return FilterDecision::not_found(request.version());
         };
 
-        // (fixme) rate limit the request. we are limiting any kind of request, but we should be
-        // limiting only those requests that triggers upstream requests.
-        if state.active_async_requests.load(std::sync::atomic::Ordering::Relaxed) >= MAX_CONCURRENT_ASYNC_REQUESTS {
-            debug!(target: "mcp_gateway", "apply_request: rate limited!");
-            return FilterDecision::rate_limited(request.version());
-        }
-
-        // increment active async requests
-        state.active_async_requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
         // save the current session ID and session
         self.session_ctx = SessionContext(Some(session.value().clone()));
 
@@ -188,23 +183,33 @@ impl McpGateway {
             return FilterDecision::internal_server_error("Failed to collect request body", request.version());
         };
 
-        let body = body.to_bytes();
+        let okay = okay_response(request.version());
 
-        // let message: JsonRpcMessage = serde_json::from_str(body)?;
-
-        let mut okay = Response::new(TimeoutBody::new(None, PolyBody::from(Empty::new())));
-        *okay.status_mut() = http::StatusCode::OK;
-        *okay.version_mut() = request.version();
-
-        // FIXME: prepare the upstream request...
-        let mut req = Request::new(InstrumentedBody::new(
-            BodyKind::Request,
-            TimeoutBody::new(None, PolyBody::from(Empty::new())),
-            |_, _, _| {},
-        ));
-        std::mem::swap(request, &mut req);
-
-        FilterDecision::AsyncRequest(okay, Some(req))
+        let res = self.handle_message(body.to_bytes());
+        match res {
+            MessageResponse::Error(json_rpc_error) => {
+                self.send_message(to_json_bytes(json_rpc_error)).await;
+                return FilterDecision::DirectResponse(okay);
+            },
+            MessageResponse::RpcResponse(json_rpc_response) => {
+                self.send_message(to_json_bytes(json_rpc_response)).await;
+                return FilterDecision::DirectResponse(okay);
+            },
+            MessageResponse::Nothing => {
+                return FilterDecision::DirectResponse(okay);
+            },
+            MessageResponse::Upstream(req) => {
+                if state.active_async_requests.load(std::sync::atomic::Ordering::Relaxed)
+                    >= MAX_CONCURRENT_ASYNC_REQUESTS
+                {
+                    debug!(target: "mcp_gateway", "apply_request: rate limited!");
+                    return FilterDecision::rate_limited(request.version());
+                }
+                state.active_async_requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                debug!(target: "mcp_gateway", "Sending async request: {:#?}", req);
+                return FilterDecision::AsyncRequest(okay, Some(req));
+            },
+        }
     }
 
     pub async fn handle_sse_handshake(
@@ -225,11 +230,11 @@ impl McpGateway {
             .status(StatusCode::OK);
 
         let payload = format!("event: endpoint\r\ndata: /mcp/messages?{SESSION_ID_PREFIX}{}\r\n", session_id.0);
-        let (body, mut bridge) = SseBody::new();
+        let (body, mut sender) = SseBody::new();
 
         let body = TimeoutBody::new(None, PolyBody::from(body));
 
-        let Ok(_) = bridge.send(Bytes::from(payload)).await else {
+        let Ok(_) = sender.send(Bytes::from(payload)).await else {
             debug!(target: "mcp_gateway", "handle_sse_handshake: failed to send SSE payload");
             return FilterDecision::internal_server_error("Failed to send SSE payload", req.version());
         };
@@ -241,7 +246,7 @@ impl McpGateway {
 
         // create a new session
         let session = Arc::new(Session {
-            sender: Mutex::new(bridge),
+            sender: Mutex::new(sender),
             listener_name: listener_name,
             session_id: session_id.clone(),
         });
@@ -265,6 +270,113 @@ impl McpGateway {
             })
         })
     }
+
+    fn handle_message(&mut self, body: Bytes) -> MessageResponse {
+        let Ok(message): Result<model::JsonRpcMessage, _> = serde_json::from_slice(&body) else {
+            debug!("get_session_id: failed to parse JSON message");
+            return MessageResponse::Error(model::JsonRpcError {
+                jsonrpc: model::JsonRpcVersion2_0,
+                id: model::RequestId::String(Arc::from("")),
+                error: model::ErrorData::parse_error("invalid JSON", None),
+            });
+        };
+
+        match message {
+            model::JsonRpcMessage::Request(json_rpc_request) => {
+                self.request_id = json_rpc_request.id.clone();
+                self.handle_rpc_request(json_rpc_request)
+            },
+            model::JsonRpcMessage::Response(json_rpc_response) => {
+                todo!()
+            },
+            model::JsonRpcMessage::Notification(json_rpc_notification) => {
+                todo!()
+            },
+            model::JsonRpcMessage::Error(json_rpc_error) => {
+                todo!()
+            },
+        }
+    }
+
+    fn handle_rpc_request(&mut self, rpc: model::JsonRpcRequest) -> MessageResponse {
+        match rpc.request.method.as_str() {
+            "initialize" => {
+                debug!(target: "mcp_gateway", "Initialize request received");
+                let Ok(init_params): Result<model::InitializeRequestParam, _> =
+                    serde_json::from_value(serde_json::Value::Object(rpc.request.params))
+                else {
+                    debug!(target: "mcp_gateway", "handle_rpc_request: invalid params");
+                    return MessageResponse::Error(model::JsonRpcError {
+                        jsonrpc: model::JsonRpcVersion2_0,
+                        id: self.request_id.clone(),
+                        error: model::ErrorData::invalid_params("invalid params", None),
+                    });
+                };
+
+                self.initialize_request_params = Some(init_params);
+
+                let response = model::JsonRpcResponse {
+                    jsonrpc: model::JsonRpcVersion2_0,
+                    id: self.request_id.clone(),
+                    result: json!({
+                        "name": "John Doe",
+                        "age": 43,
+                        "phones": [
+                            "+44 1234567",
+                            "+44 2345678"
+                        ]
+                    }),
+                };
+
+                return MessageResponse::RpcResponse(response);
+            },
+            "upstream" => {
+                debug!(target: "mcp_gateway", "Upstream request received");
+                let request =
+                    http::Request::builder().uri("http://127.0.0.1:8000/").header("User-Agent", "my-awesome-agent/1.0");
+
+                let body = InstrumentedBody::new(
+                    BodyKind::Request,
+                    TimeoutBody::new(None, PolyBody::from(Empty::new())),
+                    |_, _, _| {},
+                );
+
+                return MessageResponse::Upstream(request.body(body).unwrap());
+            },
+            _ => {
+                return MessageResponse::Error(model::JsonRpcError {
+                    jsonrpc: model::JsonRpcVersion2_0,
+                    id: self.request_id.clone(),
+                    error: model::ErrorData::new(model::ErrorCode::METHOD_NOT_FOUND, "Method not found", None),
+                })
+            },
+        }
+    }
+
+    async fn send_message(&self, message: Bytes) {
+        let mut sender = self.session_ctx.get().sender.lock().await;
+        if let Err(e) = sender.send(message).await {
+            let mcp_ctx = McpGatewayListenerContext::get_filter_context(self.session_ctx.get().listener_name);
+            mcp_ctx.sse_map.remove(&self.session_ctx.get().session_id);
+            debug!(target: "mcp_gateway", "send_message: failed to send SSE payload for session {}, error {e}", self.session_ctx.get().session_id);
+        };
+    }
+}
+
+enum MessageResponse {
+    Nothing,
+    Error(model::JsonRpcError),
+    RpcResponse(model::JsonRpcResponse<serde_json::Value>),
+    Upstream(Request<OrionRequestBody>),
+}
+
+fn to_json_bytes<S: Serialize>(value: S) -> Bytes {
+    let Ok(msg) = serde_json::to_string(&value) else {
+        panic!("Failed to serialize error message");
+    };
+    let mut err_msg = BytesMut::from(msg.as_str());
+    err_msg.put_slice(b"\r\n\r\n");
+    err_msg.freeze()
 }
 
 fn prepare_rpc_error(request_id: model::RequestId, data: model::ErrorData) -> Bytes {
