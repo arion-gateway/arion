@@ -33,7 +33,7 @@ use crate::{
 };
 
 const SESSION_ID_PREFIX: &str = "session_id=";
-const MAX_CONCURRENT_ASYNC_REQUESTS: usize = 256;
+const MAX_CONCURRENT_ASYNC_REQUESTS: usize = 8192;
 
 #[derive(Debug, Clone, Default, Eq, PartialEq, Hash)]
 pub struct SessionId(pub SmolStr);
