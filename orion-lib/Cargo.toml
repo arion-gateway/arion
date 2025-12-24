@@ -82,6 +82,7 @@ chrono = { version = "0.4.42", features = ["serde"] }
 base64 = "0.22.1"
 schemars = { version = "1.1.0", features = ["std", "derive", "chrono04"] }
 pastey = "0.2.1"
+owning_ref = "0.4.1"
 
 
 [dev-dependencies]

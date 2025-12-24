@@ -1,29 +1,31 @@
-use bytes::Bytes;
+use bytes::{BufMut, Bytes, BytesMut};
 use dashmap::DashMap;
 use futures::SinkExt;
 use http::{Method, Request, Response, StatusCode};
 use http_body_util::{BodyExt, Empty};
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::McpGateway as McpGatewayConfig;
-use orion_format::types::ResponseFlags as FmtResponseFlags;
 use scopeguard::defer;
 use smol_str::{SmolStr, ToSmolStr};
-use std::sync::{atomic::AtomicUsize, Arc};
+use std::{
+    panic,
+    sync::{atomic::AtomicUsize, Arc},
+};
+use tokio::sync::Mutex;
 use tracing::debug;
 use uuid::Uuid;
 
 use crate::{
     body::{
         instrumented_body::InstrumentedBody,
-        response_flags::{BodyKind, ResponseFlags},
+        response_flags::BodyKind,
         sse_body::{SseBody, SseSender},
         timeout_body::TimeoutBody,
     },
-    event_error::EventFailure,
     listeners::{
+        http_connection_manager::mcp_gateway::model::{self},
         http_filters::{FactoryFilter, FilterDecision},
-        listener::get_listener_context,
+        listener::FilterListenerContext,
         metadata::DownstreamMetadata,
-        synthetic_http_response::SyntheticHttpResponse,
     },
     OrionRequestBody, OrionResponseBody, PolyBody,
 };
@@ -42,21 +44,15 @@ impl std::fmt::Display for SessionId {
 
 #[derive(Debug, Default)]
 pub struct Session {
-    listener_name: &'static str,
+    listener_name: &'static str, // to handle session eviction from listener.sse_map
     session_id: SessionId,
-    bridge: tokio::sync::Mutex<SseSender>,
+    sender: Mutex<SseSender>,
 }
 
 #[derive(Debug, Default)]
-pub struct McpGatewayContext {
+pub struct McpGatewayListenerContext {
     sse_map: DashMap<SessionId, Arc<Session>>,
     active_async_requests: AtomicUsize,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct McpContext {
-    session_id: SessionId,
-    session: Arc<Session>,
 }
 
 #[derive(Debug)]
@@ -64,22 +60,36 @@ pub struct McpGatewayInner {
     config: McpGatewayConfig,
 }
 
+#[derive(Debug, Default, Clone)]
+struct SessionContext(Option<Arc<Session>>);
+
+impl SessionContext {
+    pub fn get(&self) -> &Session {
+        unsafe { self.0.as_ref().unwrap_unchecked() }
+    }
+}
+
 /// McpGateway filter
 #[derive(Debug, Clone)]
 pub struct McpGateway {
     inner: Arc<McpGatewayInner>,
-    mcp_ctx: McpContext,
+    session_ctx: SessionContext,
+    request_id: model::RequestId,
 }
 
 impl From<McpGatewayConfig> for McpGateway {
     fn from(config: McpGatewayConfig) -> Self {
-        Self { inner: Arc::new(McpGatewayInner { config }), mcp_ctx: McpContext::default() }
+        Self {
+            inner: Arc::new(McpGatewayInner { config }),
+            session_ctx: SessionContext(None),
+            request_id: model::RequestId::Number(0),
+        }
     }
 }
 
 impl FactoryFilter for McpGateway {
     fn new_from(&self) -> Self {
-        Self { inner: self.inner.clone(), mcp_ctx: McpContext::default() }
+        Self { inner: self.inner.clone(), session_ctx: SessionContext(None), request_id: model::RequestId::Number(0) }
     }
 }
 
@@ -88,28 +98,20 @@ impl McpGateway {
         debug!(target: "mcp_gateway", "apply_request: processing request: {:?}", request);
 
         let Some(metadata) = request.extensions().get::<DownstreamMetadata>() else {
-            debug!(target: "mcp_gateway", "apply_request: failed to retrive metada");
+            debug!(target: "mcp_gateway", "apply_request: failed to retrieve metadata");
             return FilterDecision::internal_server_error("Failed to retrieve metadata", request.version());
         };
 
         // get global context for this listener
-        let listener_ctx = get_listener_context(metadata.listener_name);
+        let mcp_ctx = McpGatewayListenerContext::get_filter_context(metadata.listener_name);
         debug!(target: "mcp_gateway", "apply_request: listener name: {}", metadata.listener_name);
 
         match (request.method(), request.uri().path()) {
-            (&Method::GET, "/sse") => {
-                self.handle_sse_handshake(&listener_ctx.mcp, request, metadata.listener_name).await
-            },
+            (&Method::GET, "/sse") => self.handle_sse_handshake(&mcp_ctx, request, metadata.listener_name).await,
             (&Method::GET, "/mcp/messages") => {
-                self.handle_message_endpoint(&listener_ctx.mcp, request, metadata.listener_name).await
+                self.handle_message_endpoint(&mcp_ctx, request, metadata.listener_name).await
             },
-            _ => FilterDecision::DirectResponse(
-                SyntheticHttpResponse::not_found(
-                    EventFailure::RouteNotFound.into(),
-                    ResponseFlags(FmtResponseFlags::NO_ROUTE_FOUND),
-                )
-                .into_response(request.version()),
-            ),
+            _ => FilterDecision::no_route_found(request.version()),
         }
 
         // Implement request routing/filtering logic here
@@ -120,37 +122,37 @@ impl McpGateway {
 
     pub async fn apply_response(&mut self, response: &mut Response<OrionResponseBody>) -> FilterDecision {
         // get global context for this listener
-        let listener_ctx = get_listener_context(self.mcp_ctx.session.listener_name);
+        let mcp_ctx = McpGatewayListenerContext::get_filter_context(self.session_ctx.get().listener_name);
         defer! {
-            listener_ctx.mcp.active_async_requests.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-        };
-
-        let Ok(body) = response.body_mut().collect().await else {
-            debug!(target: "mcp_gateway", "apply_response: failed to collect response body");
-            return FilterDecision::internal_server_error("Failed to collect response body", response.version());
+            mcp_ctx.active_async_requests.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
         };
 
         // get the SSE connection via body bridge
-        let mut bridge = self.mcp_ctx.session.bridge.lock().await;
+        let mut sender = self.session_ctx.get().sender.lock().await;
 
-        // FIXME: send the response body to the SSE connection
-        match bridge.send(body.to_bytes()).await {
-            Err(e) => {
-                let listener_ctx = get_listener_context(self.mcp_ctx.session.listener_name);
-                listener_ctx.mcp.sse_map.remove(&self.mcp_ctx.session_id);
-                debug!(target: "mcp_gateway", "apply_response: failed to send SSE payload for session {}, error {e}", self.mcp_ctx.session_id);
-                FilterDecision::internal_server_error(
-                    &format!("Failed to send SSE payload: {:?} (session_id: {} dropped)", e, self.mcp_ctx.session_id),
-                    response.version(),
-                )
-            },
-            _ => FilterDecision::Continue,
-        }
+        // collect the body...
+        let Ok(body) = response.body_mut().collect().await else {
+            debug!(target: "mcp_gateway", "apply_response: failed to collect response body");
+            let msg = prepare_rpc_error(
+                self.request_id.clone(),
+                model::ErrorData::internal_error("failed to collect response body", None),
+            );
+            _ = sender.send(msg).await;
+            return FilterDecision::Continue;
+        };
+
+        if let Err(e) = sender.send(body.to_bytes()).await {
+            let mcp_ctx = McpGatewayListenerContext::get_filter_context(self.session_ctx.get().listener_name);
+            mcp_ctx.sse_map.remove(&self.session_ctx.get().session_id);
+            debug!(target: "mcp_gateway", "apply_response: failed to send SSE payload for session {}, error {e}", self.session_ctx.get().session_id);
+        };
+
+        FilterDecision::Continue
     }
 
     pub async fn handle_message_endpoint(
         &mut self,
-        state: &McpGatewayContext,
+        state: &McpGatewayListenerContext,
         request: &mut Request<OrionRequestBody>,
         _listener_name: &'static str,
     ) -> FilterDecision {
@@ -177,11 +179,9 @@ impl McpGateway {
         state.active_async_requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         // save the current session ID and session
-        self.mcp_ctx.session_id = session_id;
-        self.mcp_ctx.session = session.value().clone();
+        self.session_ctx = SessionContext(Some(session.value().clone()));
 
         // shallow parsing the body of the request:
-        //
 
         let Ok(body) = request.body_mut().collect().await else {
             debug!(target: "mcp_gateway", "apply_request: failed to collect request body");
@@ -209,16 +209,13 @@ impl McpGateway {
 
     pub async fn handle_sse_handshake(
         &mut self,
-        state: &McpGatewayContext,
+        state: &McpGatewayListenerContext,
         req: &mut Request<OrionRequestBody>,
         listener_name: &'static str,
     ) -> FilterDecision {
         debug!(target: "mcp_gateway", "handle_sse_handshake: starting SSE handshake...");
         // generate a unique session ID
         let session_id = SessionId(Uuid::new_v4().to_smolstr());
-
-        // create a new session
-        let mut session = Session::default();
 
         // build the SSE response...
         let builder = Response::builder()
@@ -242,12 +239,17 @@ impl McpGateway {
             return FilterDecision::internal_server_error("Failed to build body for response", req.version());
         };
 
-        session.bridge = tokio::sync::Mutex::new(bridge);
-        session.listener_name = listener_name;
-        session.session_id = session_id.clone();
+        // create a new session
+        let session = Arc::new(Session {
+            sender: Mutex::new(bridge),
+            listener_name: listener_name,
+            session_id: session_id.clone(),
+        });
 
         // add the session to the map
-        state.sse_map.insert(session_id.clone(), Arc::new(session));
+        state.sse_map.insert(session_id.clone(), session.clone());
+        self.session_ctx = SessionContext(Some(session));
+
         FilterDecision::DirectResponse(response)
     }
 
@@ -263,4 +265,22 @@ impl McpGateway {
             })
         })
     }
+}
+
+fn prepare_rpc_error(request_id: model::RequestId, data: model::ErrorData) -> Bytes {
+    let error = model::JsonRpcError { jsonrpc: model::JsonRpcVersion2_0, id: request_id, error: data };
+    let Ok(error_msg) = serde_json::to_string(&error) else {
+        panic!("Failed to serialize error message");
+    };
+    let mut err_msg = BytesMut::from(error_msg.as_str());
+    err_msg.put_slice(b"\r\n\r\n");
+    err_msg.freeze()
+}
+
+#[inline]
+fn okay_response(ver: http::Version) -> Response<OrionResponseBody> {
+    let mut okay = Response::new(TimeoutBody::new(None, PolyBody::from(Empty::new())));
+    *okay.status_mut() = http::StatusCode::OK;
+    *okay.version_mut() = ver;
+    okay
 }

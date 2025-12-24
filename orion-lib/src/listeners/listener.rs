@@ -21,7 +21,7 @@ use super::{
 };
 use crate::{
     listeners::{
-        http_connection_manager::mcp_gateway::mcp::McpGatewayContext,
+        http_connection_manager::mcp_gateway::mcp::McpGatewayListenerContext,
         metadata::{DownstreamConnectionMetadata, DownstreamMetadata},
     },
     secrets::{TlsConfigurator, WantsToBuildServer},
@@ -36,6 +36,7 @@ use orion_interner::StringInterner;
 
 #[cfg(feature = "metrics")]
 use opentelemetry::KeyValue;
+use owning_ref::ArcRef;
 
 use crate::{with_histogram, with_metric};
 use dashmap::DashMap;
@@ -153,13 +154,25 @@ impl TryFrom<ConversionContext<'_, ListenerConfig>> for ListenerFactory {
 
 #[derive(Debug, Default)]
 pub struct ListenerContext {
-    pub mcp: McpGatewayContext,
+    pub mcp: McpGatewayListenerContext,
 }
 
 static LISTENERS_CONTEXT: OnceLock<DashMap<&'static str, Arc<ListenerContext>>> = OnceLock::new();
 
+pub trait FilterListenerContext {
+    fn get_filter_context(listener_name: &'static str) -> ArcRef<ListenerContext, Self>;
+}
+
+impl FilterListenerContext for McpGatewayListenerContext {
+    #[inline]
+    fn get_filter_context(listener_name: &'static str) -> ArcRef<ListenerContext, McpGatewayListenerContext> {
+        let ctx = get_listener_context(listener_name);
+        ArcRef::new(ctx).map(|ctx| &ctx.mcp)
+    }
+}
+
 #[inline]
-pub fn get_listener_context(listener_name: &'static str) -> Arc<ListenerContext> {
+fn get_listener_context(listener_name: &'static str) -> Arc<ListenerContext> {
     let dmap = LISTENERS_CONTEXT.get_or_init(|| DashMap::new());
     dmap.entry(listener_name).or_insert_with(|| Arc::new(ListenerContext::default())).value().clone()
 }

@@ -67,6 +67,17 @@ impl FilterDecision {
     }
 
     #[inline]
+    pub fn no_route_found(ver: http::Version) -> FilterDecision {
+        FilterDecision::DirectResponse(
+            SyntheticHttpResponse::not_found(
+                EventFailure::RouteNotFound.into(),
+                ResponseFlags(FmtResponseFlags::NO_ROUTE_FOUND),
+            )
+            .into_response(ver),
+        )
+    }
+
+    #[inline]
     pub fn rate_limited(ver: http::Version) -> FilterDecision {
         FilterDecision::DirectResponse(
             SyntheticHttpResponse::custom_error(
