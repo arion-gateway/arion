@@ -117,6 +117,7 @@ impl McpGateway {
 
         match (request.method(), request.uri().path()) {
             (&Method::GET, "/sse") => self.handle_sse_handshake(&mcp_ctx, request, metadata.listener_name).await,
+            (&Method::OPTIONS, "/sse") => self.handle_preflight_checks(request).await,
             (&Method::POST, "/mcp/messages") => {
                 self.handle_message_endpoint(&mcp_ctx, request, metadata.listener_name).await
             },
@@ -212,6 +213,23 @@ impl McpGateway {
         }
     }
 
+    pub async fn handle_preflight_checks(&mut self, req: &mut Request<OrionRequestBody>) -> FilterDecision {
+        let builder = Response::builder()
+            .header("Access-Control-Allow-Origin", "*")
+            .header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            .header("Access-Control-Allow-Headers", "Content-Type, x-mcp-protocol-version")
+            .header("Access-Control-Max-Age", "86400")
+            .status(StatusCode::NO_CONTENT);
+
+        let Ok(response) = builder.body(TimeoutBody::new(None, PolyBody::from(Empty::new()))) else {
+            debug!(target: "mcp_gateway", "handle_preflight_checks: failed to build body for response");
+            return FilterDecision::internal_server_error("Failed to build body for response", req.version());
+        };
+
+        debug!(target: "mcp_gateway", "handle_preflight_checks: sending {response:?} back to client");
+        FilterDecision::DirectResponse(response)
+    }
+
     pub async fn handle_sse_handshake(
         &mut self,
         state: &McpGatewayListenerContext,
@@ -255,6 +273,7 @@ impl McpGateway {
         state.sse_map.insert(session_id.clone(), session.clone());
         self.session_ctx = SessionContext(Some(session));
 
+        debug!(target: "mcp_gateway", "handle_sse_handshake: sending {response:?} back to client");
         FilterDecision::DirectResponse(response)
     }
 
