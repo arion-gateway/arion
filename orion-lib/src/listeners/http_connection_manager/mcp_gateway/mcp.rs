@@ -10,7 +10,6 @@ use serde_json::json;
 use smol_str::{SmolStr, ToSmolStr};
 use std::{
     panic,
-    path::Display,
     sync::{atomic::AtomicUsize, Arc},
 };
 use tokio::sync::Mutex;
@@ -25,7 +24,7 @@ use crate::{
         timeout_body::TimeoutBody,
     },
     listeners::{
-        http_connection_manager::mcp_gateway::model::{self, NumberOrString},
+        http_connection_manager::mcp_gateway::model::{self},
         http_filters::{FactoryFilter, FilterDecision},
         listener::FilterListenerContext,
         metadata::DownstreamMetadata,
@@ -79,6 +78,7 @@ pub struct McpGateway {
     inner: Arc<McpGatewayInner>,
     session_ctx: SessionContext,
     request_id: model::RequestId,
+    version: http::Version,
     initialize_request_params: Option<model::InitializeRequestParam>,
 }
 
@@ -89,6 +89,7 @@ impl From<McpGatewayConfig> for McpGateway {
             session_ctx: SessionContext(None),
             request_id: model::RequestId::Number(0),
             initialize_request_params: None,
+            version: http::Version::default(),
         }
     }
 }
@@ -100,6 +101,7 @@ impl FactoryFilter for McpGateway {
             session_ctx: SessionContext(None),
             request_id: model::RequestId::Number(0),
             initialize_request_params: None,
+            version: http::Version::default(),
         }
     }
 }
@@ -108,9 +110,11 @@ impl McpGateway {
     pub async fn apply_request(&mut self, request: &mut Request<OrionRequestBody>) -> FilterDecision {
         debug!(target: "mcp_gateway", "apply_request: processing request: {:?}", request);
 
+        self.version = request.version();
+
         let Some(metadata) = request.extensions().get::<DownstreamMetadata>() else {
             debug!(target: "mcp_gateway", "apply_request: failed to retrieve metadata");
-            return FilterDecision::internal_server_error("Failed to retrieve metadata", request.version());
+            return FilterDecision::internal_server_error("Failed to retrieve metadata", self.version);
         };
 
         // get global context for this listener
@@ -125,7 +129,7 @@ impl McpGateway {
             },
             _ => {
                 debug!(target: "mcp_gateway", "apply_request: no route found");
-                FilterDecision::no_route_found(request.version())
+                FilterDecision::no_route_found(self.version)
             },
         }
 
@@ -150,11 +154,15 @@ impl McpGateway {
                 model::ErrorData::internal_error("failed to collect response body", None),
             );
 
-            self.send_message(msg).await;
+            if let Err(e) = self.send_message(msg).await {
+                return e;
+            }
             return FilterDecision::Continue;
         };
 
-        self.send_message(body.to_bytes()).await;
+        if let Err(e) = self.send_message(body.to_bytes()).await {
+            return e;
+        }
         FilterDecision::Continue
     }
 
@@ -167,13 +175,13 @@ impl McpGateway {
         // extract session ID from request
         let Some(session_id) = Self::get_session_id(request) else {
             debug!(target: "mcp_gateway", "handle_message_endpoint: missing session ID!");
-            return FilterDecision::bad_request(request.version());
+            return FilterDecision::bad_request(self.version);
         };
 
         // search for session in map
         let Some(session) = state.sse_map.get(&session_id) else {
             debug!(target: "mcp_gateway", "handle_message_endpoint: session ID {session_id} not found!");
-            return FilterDecision::not_found(request.version());
+            return FilterDecision::not_found(self.version);
         };
 
         // save the current session ID and session
@@ -183,23 +191,29 @@ impl McpGateway {
 
         let Ok(body) = request.body_mut().collect().await else {
             debug!(target: "mcp_gateway", "apply_request: failed to collect request body");
-            return FilterDecision::internal_server_error("Failed to collect request body", request.version());
+            return FilterDecision::internal_server_error("Failed to collect request body", self.version);
         };
 
-        let okay = accepted_response(request.version());
+        let Ok(accepted) = self.build_accepted_response() else {
+            return FilterDecision::internal_server_error("Failed to build accepted response", self.version);
+        };
 
         let res = self.handle_message(body.to_bytes());
         match res {
             MessageResponse::Error(json_rpc_error) => {
-                self.send_message(to_json_bytes(json_rpc_error)).await;
-                return FilterDecision::DirectResponse(okay);
+                if let Err(e) = self.send_message(to_json_bytes(json_rpc_error)).await {
+                    return e;
+                }
+                return FilterDecision::DirectResponse(accepted);
             },
             MessageResponse::RpcResponse(json_rpc_response) => {
-                self.send_message(to_json_bytes(json_rpc_response)).await;
-                return FilterDecision::DirectResponse(okay);
+                if let Err(e) = self.send_message(to_json_bytes(json_rpc_response)).await {
+                    return e;
+                }
+                return FilterDecision::DirectResponse(accepted);
             },
             MessageResponse::Nothing => {
-                return FilterDecision::DirectResponse(okay);
+                return FilterDecision::DirectResponse(accepted);
             },
             MessageResponse::Upstream(req) => {
                 if state.active_async_requests.load(std::sync::atomic::Ordering::Relaxed)
@@ -210,7 +224,7 @@ impl McpGateway {
                 }
                 state.active_async_requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 debug!(target: "mcp_gateway", "Sending async request: {:#?}", req);
-                return FilterDecision::AsyncRequest(okay, Some(req));
+                return FilterDecision::AsyncRequest(accepted, Some(req));
             },
         }
     }
@@ -221,6 +235,7 @@ impl McpGateway {
             .header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
             .header("Access-Control-Allow-Headers", "Content-Type, x-mcp-protocol-version")
             .header("Access-Control-Max-Age", "86400")
+            .version(self.version)
             .status(StatusCode::NO_CONTENT);
 
         let Ok(response) = builder.body(TimeoutBody::new(None, PolyBody::from(Empty::new()))) else {
@@ -248,6 +263,7 @@ impl McpGateway {
             .header("Content-Type", "text/event-stream")
             .header("Cache-Control", "no-cache, no-transform")
             .header("Connection", "keep-alive")
+            .version(self.version)
             .status(StatusCode::OK);
 
         let payload = format!("event: endpoint\ndata: /mcp/message?{SESSION_ID_PREFIX}{}\n\n", session_id.0);
@@ -375,7 +391,7 @@ impl McpGateway {
         }
     }
 
-    async fn send_message(&self, message: Bytes) {
+    async fn send_message(&self, message: Bytes) -> Result<(), FilterDecision> {
         let mut msg = BytesMut::with_capacity(message.len() + SSE_MESSAGE_PREFIX.len());
         msg.extend_from_slice(SSE_MESSAGE_PREFIX.as_bytes());
         msg.extend_from_slice(message.as_ref());
@@ -384,7 +400,30 @@ impl McpGateway {
             let mcp_ctx = McpGatewayListenerContext::get_filter_context(self.session_ctx.get().listener_name);
             mcp_ctx.sse_map.remove(&self.session_ctx.get().session_id);
             debug!(target: "mcp_gateway", "send_message: failed to send SSE payload for session {}, error {e}", self.session_ctx.get().session_id);
+            return Err(FilterDecision::internal_server_error(
+                format!("Failed to send SSE payload for session {}", self.session_ctx.get().session_id).as_str(),
+                self.version,
+            ));
         }
+        Ok(())
+    }
+
+    #[inline]
+    fn build_accepted_response(&self) -> Result<Response<OrionResponseBody>, FilterDecision> {
+        let builder = Response::builder()
+            .header("Access-Control-Allow-Origin", "*")
+            .header("Connection", "keep-alive")
+            .status(StatusCode::ACCEPTED)
+            .version(self.version);
+        let body = TimeoutBody::new(None, PolyBody::from(Full::from("Accepted")));
+        let Ok(resp) = builder.body(body) else {
+            return Err(FilterDecision::internal_server_error(
+                format!("Failed to build accepted response for session {}", self.session_ctx.get().session_id).as_str(),
+                self.version,
+            ));
+        };
+
+        Ok(resp)
     }
 }
 
@@ -412,16 +451,4 @@ fn prepare_rpc_error(request_id: model::RequestId, data: model::ErrorData) -> By
     let mut err_msg = BytesMut::from(error_msg.as_str());
     err_msg.put_slice(b"\r\n\r\n");
     err_msg.freeze()
-}
-
-#[inline]
-fn accepted_response(ver: http::Version) -> Response<OrionResponseBody> {
-    let builder = Response::builder()
-        .header("Access-Control-Allow-Origin", "*")
-        .header("Connection", "keep-alive")
-        .status(StatusCode::ACCEPTED)
-        .version(ver);
-    let body = TimeoutBody::new(None, PolyBody::from(Full::from("Accepted")));
-    // todo: remove unwrap
-    builder.body(body).unwrap()
 }
