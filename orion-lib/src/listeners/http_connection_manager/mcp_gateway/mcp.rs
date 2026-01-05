@@ -2,7 +2,7 @@ use bytes::{BufMut, Bytes, BytesMut};
 use dashmap::DashMap;
 use futures::SinkExt;
 use http::{Method, Request, Response, StatusCode};
-use http_body_util::{BodyExt, Empty};
+use http_body_util::{BodyExt, Empty, Full};
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::McpGateway as McpGatewayConfig;
 use scopeguard::defer;
 use serde::Serialize;
@@ -10,6 +10,7 @@ use serde_json::json;
 use smol_str::{SmolStr, ToSmolStr};
 use std::{
     panic,
+    path::Display,
     sync::{atomic::AtomicUsize, Arc},
 };
 use tokio::sync::Mutex;
@@ -32,7 +33,8 @@ use crate::{
     OrionRequestBody, OrionResponseBody, PolyBody,
 };
 
-const SESSION_ID_PREFIX: &str = "session_id=";
+const SESSION_ID_PREFIX: &str = "sessionId=";
+const SSE_MESSAGE_PREFIX: &str = "event: message\ndata: ";
 const MAX_CONCURRENT_ASYNC_REQUESTS: usize = 8192;
 
 #[derive(Debug, Clone, Default, Eq, PartialEq, Hash)]
@@ -118,7 +120,7 @@ impl McpGateway {
         match (request.method(), request.uri().path()) {
             (&Method::GET, "/sse") => self.handle_sse_handshake(&mcp_ctx, request, metadata.listener_name).await,
             (&Method::OPTIONS, "/sse") => self.handle_preflight_checks(request).await,
-            (&Method::POST, "/mcp/messages") => {
+            (&Method::POST, "/mcp/message") => {
                 self.handle_message_endpoint(&mcp_ctx, request, metadata.listener_name).await
             },
             _ => {
@@ -184,7 +186,7 @@ impl McpGateway {
             return FilterDecision::internal_server_error("Failed to collect request body", request.version());
         };
 
-        let okay = okay_response(request.version());
+        let okay = accepted_response(request.version());
 
         let res = self.handle_message(body.to_bytes());
         match res {
@@ -242,12 +244,13 @@ impl McpGateway {
 
         // build the SSE response...
         let builder = Response::builder()
+            .header("Access-Control-Allow-Origin", "*")
             .header("Content-Type", "text/event-stream")
-            .header("Cache-Control", "no-cache")
+            .header("Cache-Control", "no-cache, no-transform")
             .header("Connection", "keep-alive")
             .status(StatusCode::OK);
 
-        let payload = format!("event: endpoint\r\ndata: /mcp/messages?{SESSION_ID_PREFIX}{}\r\n", session_id.0);
+        let payload = format!("event: endpoint\ndata: /mcp/message?{SESSION_ID_PREFIX}{}\n\n", session_id.0);
         let (body, mut sender) = SseBody::new();
 
         let body = TimeoutBody::new(None, PolyBody::from(body));
@@ -373,12 +376,15 @@ impl McpGateway {
     }
 
     async fn send_message(&self, message: Bytes) {
+        let mut msg = BytesMut::with_capacity(message.len() + SSE_MESSAGE_PREFIX.len());
+        msg.extend_from_slice(SSE_MESSAGE_PREFIX.as_bytes());
+        msg.extend_from_slice(message.as_ref());
         let mut sender = self.session_ctx.get().sender.lock().await;
-        if let Err(e) = sender.send(message).await {
+        if let Err(e) = sender.send(msg.into()).await {
             let mcp_ctx = McpGatewayListenerContext::get_filter_context(self.session_ctx.get().listener_name);
             mcp_ctx.sse_map.remove(&self.session_ctx.get().session_id);
             debug!(target: "mcp_gateway", "send_message: failed to send SSE payload for session {}, error {e}", self.session_ctx.get().session_id);
-        };
+        }
     }
 }
 
@@ -409,9 +415,13 @@ fn prepare_rpc_error(request_id: model::RequestId, data: model::ErrorData) -> By
 }
 
 #[inline]
-fn okay_response(ver: http::Version) -> Response<OrionResponseBody> {
-    let mut okay = Response::new(TimeoutBody::new(None, PolyBody::from(Empty::new())));
-    *okay.status_mut() = http::StatusCode::OK;
-    *okay.version_mut() = ver;
-    okay
+fn accepted_response(ver: http::Version) -> Response<OrionResponseBody> {
+    let builder = Response::builder()
+        .header("Access-Control-Allow-Origin", "*")
+        .header("Connection", "keep-alive")
+        .status(StatusCode::ACCEPTED)
+        .version(ver);
+    let body = TimeoutBody::new(None, PolyBody::from(Full::from("Accepted")));
+    // todo: remove unwrap
+    builder.body(body).unwrap()
 }
