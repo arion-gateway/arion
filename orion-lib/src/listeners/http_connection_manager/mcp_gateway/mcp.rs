@@ -34,6 +34,7 @@ use crate::{
 
 const SESSION_ID_PREFIX: &str = "sessionId=";
 const SSE_MESSAGE_PREFIX: &str = "event: message\ndata: ";
+const MCP_MESSAGE_ENDPOINT: &str = "/mcp/message";
 const MAX_CONCURRENT_ASYNC_REQUESTS: usize = 8192;
 
 #[derive(Debug, Clone, Default, Eq, PartialEq, Hash)]
@@ -123,8 +124,8 @@ impl McpGateway {
 
         match (request.method(), request.uri().path()) {
             (&Method::GET, "/sse") => self.handle_sse_handshake(&mcp_ctx, request, metadata.listener_name).await,
-            (&Method::OPTIONS, "/sse") => self.handle_preflight_checks(request).await,
-            (&Method::POST, "/mcp/message") => {
+            (&Method::OPTIONS, "/sse") | (&Method::OPTIONS, MCP_MESSAGE_ENDPOINT)  => self.handle_preflight_checks(request).await,
+            (&Method::POST, MCP_MESSAGE_ENDPOINT) => {
                 self.handle_message_endpoint(&mcp_ctx, request, metadata.listener_name).await
             },
             _ => {
@@ -266,7 +267,7 @@ impl McpGateway {
             .version(self.version)
             .status(StatusCode::OK);
 
-        let payload = format!("event: endpoint\ndata: /mcp/message?{SESSION_ID_PREFIX}{}\n\n", session_id.0);
+        let payload = format!("event: endpoint\ndata: {MCP_MESSAGE_ENDPOINT}?{SESSION_ID_PREFIX}{}\n\n", session_id.0);
         let (body, mut sender) = SseBody::new();
 
         let body = TimeoutBody::new(None, PolyBody::from(body));
