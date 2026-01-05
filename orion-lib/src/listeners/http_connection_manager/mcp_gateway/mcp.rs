@@ -6,7 +6,6 @@ use http_body_util::{BodyExt, Empty, Full};
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::McpGateway as McpGatewayConfig;
 use scopeguard::defer;
 use serde::Serialize;
-use serde_json::json;
 use smol_str::{SmolStr, ToSmolStr};
 use std::{
     panic,
@@ -24,7 +23,9 @@ use crate::{
         timeout_body::TimeoutBody,
     },
     listeners::{
-        http_connection_manager::mcp_gateway::model::{self},
+        http_connection_manager::mcp_gateway::model::{
+            self, Implementation, InitializeResult, ProtocolVersion, ServerCapabilities,
+        },
         http_filters::{FactoryFilter, FilterDecision},
         listener::FilterListenerContext,
         metadata::DownstreamMetadata,
@@ -124,7 +125,9 @@ impl McpGateway {
 
         match (request.method(), request.uri().path()) {
             (&Method::GET, "/sse") => self.handle_sse_handshake(&mcp_ctx, request, metadata.listener_name).await,
-            (&Method::OPTIONS, "/sse") | (&Method::OPTIONS, MCP_MESSAGE_ENDPOINT)  => self.handle_preflight_checks(request).await,
+            (&Method::OPTIONS, "/sse") | (&Method::OPTIONS, MCP_MESSAGE_ENDPOINT) => {
+                self.handle_preflight_checks(request).await
+            },
             (&Method::POST, MCP_MESSAGE_ENDPOINT) => {
                 self.handle_message_endpoint(&mcp_ctx, request, metadata.listener_name).await
             },
@@ -233,8 +236,8 @@ impl McpGateway {
     pub async fn handle_preflight_checks(&mut self, req: &mut Request<OrionRequestBody>) -> FilterDecision {
         let builder = Response::builder()
             .header("Access-Control-Allow-Origin", "*")
-            .header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-            .header("Access-Control-Allow-Headers", "Content-Type, x-mcp-protocol-version")
+            .header("Access-Control-Allow-Methods", "GET, POST")
+            .header("Access-Control-Allow-Headers", "content-type, x-mcp-protocol-version")
             .header("Access-Control-Max-Age", "86400")
             .version(self.version)
             .status(StatusCode::NO_CONTENT);
@@ -354,17 +357,26 @@ impl McpGateway {
 
                 self.initialize_request_params = Some(init_params);
 
+                let result = InitializeResult {
+                    protocol_version: ProtocolVersion::default(),
+                    capabilities: ServerCapabilities::default(),
+                    server_info: Implementation::from_build_env(),
+                    instructions: None,
+                };
+
                 let response = model::JsonRpcResponse {
                     jsonrpc: model::JsonRpcVersion2_0,
                     id: self.request_id.clone(),
-                    result: json!({
-                        "name": "John Doe",
-                        "age": 43,
-                        "phones": [
-                            "+44 1234567",
-                            "+44 2345678"
-                        ]
-                    }),
+                    result: serde_json::to_value(result).unwrap(),
+                };
+
+                return MessageResponse::RpcResponse(response);
+            },
+            "ping" => {
+                let response = model::JsonRpcResponse {
+                    jsonrpc: model::JsonRpcVersion2_0,
+                    id: self.request_id.clone(),
+                    result: serde_json::Value::Object(serde_json::Map::default()),
                 };
 
                 return MessageResponse::RpcResponse(response);
