@@ -46,7 +46,7 @@ pub fn object(value: serde_json::Value) -> JsonObject {
 #[macro_export]
 macro_rules! object {
     ({$($tt:tt)*}) => {
-        $crate::model::object(serde_json::json! {
+        $crate::listeners::http_connection_manager::mcp_gateway::model::object(serde_json::json! {
             {$($tt)*}
         })
     };

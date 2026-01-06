@@ -234,7 +234,7 @@ impl<'de> Deserialize<'de> for CustomNotification {
 mod test {
     use serde_json::json;
 
-    use crate::model::ListToolsRequest;
+    use super::super::super::model::ListToolsRequest;
 
     #[test]
     fn test_deserialize_lost_tools_request() {
