@@ -17,8 +17,6 @@ use uuid::Uuid;
 
 use crate::{
     OrionRequestBody, OrionResponseBody, PolyBody, body::{
-        instrumented_body::InstrumentedBody,
-        response_flags::BodyKind,
         sse_body::{SseBody, SseSender},
         timeout_body::TimeoutBody,
     }, listeners::{
@@ -451,16 +449,14 @@ impl McpGateway {
             },
             "tools/call" => {
                 debug!(target: "mcp_gateway", "tools/call {:#?}", rpc);
-                let request =
-                    http::Request::builder().uri("http://127.0.0.1:8000/").header("User-Agent", "my-awesome-agent/1.0");
-
-                let body = InstrumentedBody::new(
-                    BodyKind::Request,
-                    TimeoutBody::new(None, PolyBody::from(Empty::new())),
-                    |_, _, _| {},
-                );
-
-                return MessageResponse::Upstream(request.body(body).unwrap());
+                let Some(request) = self.tools.build_request(rpc.request) else {
+                    return MessageResponse::Error(model::JsonRpcError {
+                        jsonrpc: model::JsonRpcVersion2_0,
+                        id: self.request_id.clone(),
+                        error: model::ErrorData::new(model::ErrorCode::INVALID_PARAMS, "Invalid parameters", None),
+                    })
+                };
+                return MessageResponse::Upstream(request);
             },
             _ => {
                 return MessageResponse::Error(model::JsonRpcError {
