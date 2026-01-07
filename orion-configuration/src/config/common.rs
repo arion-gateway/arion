@@ -155,6 +155,8 @@ pub enum GenericError {
     Utf8(#[from] FromUtf8Error),
     #[error("HeaderName: {0}")]
     InvalidHeaderName(#[from] InvalidHeaderName),
+    #[error("Invalid JSON: {0}")]
+    InvalidJson(#[from] serde_json::Error),
 }
 
 impl GenericError {

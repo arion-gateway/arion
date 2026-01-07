@@ -25,10 +25,6 @@ message Tool {
     string name = 1 [(validate.rules).string = {min_bytes: 1}];
     string description = 2 [(validate.rules).string = {min_bytes: 1}];
     envoy.config.core.v3.DataSource input_schema = 3;
-    BackendConfig backend = 4;
-}
-
-message BackendConfig {
     oneof backend {
         RestBackend rest = 5;
         FunctionGraphBackend function_graph = 6;

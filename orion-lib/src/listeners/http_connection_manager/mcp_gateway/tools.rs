@@ -1,4 +1,4 @@
-use super::model::{ListToolsResult, Tool};
+use super::model::{ListToolsResult, Tool as RmcpTool};
 use crate::{
     body::{instrumented_body::InstrumentedBody, response_flags::BodyKind, timeout_body::TimeoutBody},
     listeners::http_connection_manager::mcp_gateway::model::Request,
@@ -12,7 +12,7 @@ use url::form_urlencoded;
 const DEFAULT_USER_AGENT: &str = concat!("orion/", env!("CARGO_PKG_VERSION"));
 
 #[derive(Debug, Clone)]
-pub struct OrionTool {
+pub struct Tool {
     name: String,
     description: String,
     schema: serde_json::Map<String, serde_json::Value>,
@@ -28,7 +28,7 @@ enum Backend {
 
 #[derive(Debug, Clone)]
 pub struct ToolsRegistry {
-    registry: Vec<OrionTool>,
+    registry: Vec<Tool>,
 }
 
 impl ToolsRegistry {
@@ -39,7 +39,7 @@ impl ToolsRegistry {
     pub fn with_dummy_tools() -> Self {
         let mut myself = ToolsRegistry::new();
 
-        myself.register(OrionTool {
+        myself.register(Tool {
             name: "get_name".into(),
             description: "Get weather information for a city".into(),
             schema: object!({
@@ -56,7 +56,7 @@ impl ToolsRegistry {
             },
         });
 
-        myself.register(OrionTool {
+        myself.register(Tool {
             name: "post_user".into(),
             description: "Add a new username and email".into(),
             schema: object!({
@@ -77,7 +77,7 @@ impl ToolsRegistry {
         myself
     }
 
-    pub fn register(&mut self, endpoint: OrionTool) {
+    pub fn register(&mut self, endpoint: Tool) {
         self.registry.push(endpoint);
     }
 
@@ -89,7 +89,7 @@ impl ToolsRegistry {
             //    api.method.to_string().to_lowercase(),
             //    api.path.replace("/", "_").trim_start_matches('_')
             //);
-            tools.push(Tool {
+            tools.push(RmcpTool {
                 name: api.name.clone().into(),
                 description: Some(api.description.clone().into()),
                 input_schema: Arc::new(api.schema.clone()),
@@ -128,9 +128,11 @@ impl ToolsRegistry {
         let name = request.params.get("name")?.as_str()?;
         let endpoint = self.registry.iter().find(|e| e.name == name)?;
         match &endpoint.backend {
-            Backend::Rest { method, path, params } => self.build_rest_request(orig_request, request, &method, &path, &params),
-            Backend::FunctionGraph {  } => self.build_function_graph_request(orig_request, request),
-            Backend::Mcp {  } => self.build_mcp_request(orig_request, request),
+            Backend::Rest { method, path, params } => {
+                self.build_rest_request(orig_request, request, &method, &path, &params)
+            },
+            Backend::FunctionGraph {} => self.build_function_graph_request(orig_request, request),
+            Backend::Mcp {} => self.build_mcp_request(orig_request, request),
         }
     }
 
@@ -174,10 +176,8 @@ impl ToolsRegistry {
         let user_agent =
             headers.get(http::header::USER_AGENT).and_then(|ua| ua.to_str().ok()).unwrap_or(DEFAULT_USER_AGENT);
 
-        let mut builder = http::Request::builder()
-            .method(method.clone())
-            .uri(uri)
-            .header(http::header::USER_AGENT, user_agent);
+        let mut builder =
+            http::Request::builder().method(method.clone()).uri(uri).header(http::header::USER_AGENT, user_agent);
 
         if let Some(host) = headers.get(http::header::HOST).and_then(|h| h.to_str().ok()) {
             builder = builder.header(http::header::HOST, host);
