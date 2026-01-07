@@ -12,7 +12,7 @@ use url::form_urlencoded;
 const DEFAULT_USER_AGENT: &str = concat!("orion/", env!("CARGO_PKG_VERSION"));
 
 #[derive(Debug, Clone)]
-struct OrionTool {
+pub struct OrionTool {
     name: String,
     description: String,
     schema: serde_json::Map<String, serde_json::Value>,
@@ -21,16 +21,9 @@ struct OrionTool {
 
 #[derive(Debug, Clone)]
 enum Backend {
-    Rest(RestBackend),
-    //FunctionGraph(FunctionGraphBackend),
-    //Mcp(McpBackend),
-}
-
-#[derive(Debug, Clone)]
-pub struct RestBackend {
-    method: http::Method,
-    path: String,
-    params: Vec<SmolStr>,
+    Rest { method: http::Method, path: String, params: Vec<SmolStr> },
+    FunctionGraph {},
+    Mcp {},
 }
 
 #[derive(Debug, Clone)]
@@ -56,11 +49,11 @@ impl ToolsRegistry {
                 },
                 "required": ["city"]
             }),
-            backend: Backend::Rest(RestBackend {
+            backend: Backend::Rest {
                 method: http::Method::GET,
                 path: "/weather".into(),
                 params: vec!["city".into(), "country".into()],
-            }),
+            },
         });
 
         myself.register(OrionTool {
@@ -74,11 +67,11 @@ impl ToolsRegistry {
                 },
                 "required": ["username", "email"]
             }),
-            backend: Backend::Rest(RestBackend {
+            backend: Backend::Rest {
                 method: http::Method::POST,
                 path: "/user".into(),
                 params: vec!["username".into(), "email".into()],
-            }),
+            },
         });
 
         myself
@@ -134,7 +127,21 @@ impl ToolsRegistry {
     ) -> Option<http::Request<OrionRequestBody>> {
         let name = request.params.get("name")?.as_str()?;
         let endpoint = self.registry.iter().find(|e| e.name == name)?;
+        match &endpoint.backend {
+            Backend::Rest { method, path, params } => self.build_rest_request(orig_request, request, &method, &path, &params),
+            Backend::FunctionGraph {  } => self.build_function_graph_request(orig_request, request),
+            Backend::Mcp {  } => self.build_mcp_request(orig_request, request),
+        }
+    }
 
+    fn build_rest_request(
+        &self,
+        orig_request: &http::Request<OrionRequestBody>,
+        request: &Request,
+        method: &http::Method,
+        path: &str,
+        _params: &Vec<SmolStr>,
+    ) -> Option<http::Request<OrionRequestBody>> {
         // Pre-calculate capacity to minimize re-allocations
         let authority = orig_request.uri().authority();
         let arguments = request.params.get("arguments").and_then(|v| v.as_object());
@@ -142,7 +149,7 @@ impl ToolsRegistry {
 
         // Estimate: base + '?' + ~24 chars per argument (key=value&)
         let capacity = {
-            let base_len = authority.map_or(0, |a| a.as_str().len() + 1) + endpoint.path.len();
+            let base_len = authority.map_or(0, |a| a.as_str().len() + 1) + path.len();
             base_len + if has_args { 1 + arguments.map_or(0, |m| m.len() * 24) } else { 0 }
         };
 
@@ -152,7 +159,7 @@ impl ToolsRegistry {
             uri.push_str(auth.as_str());
             uri.push('/');
         }
-        uri.push_str(&endpoint.path);
+        uri.push_str(path);
 
         // Build query string directly using lazy iterator
         if has_args {
@@ -168,7 +175,7 @@ impl ToolsRegistry {
             headers.get(http::header::USER_AGENT).and_then(|ua| ua.to_str().ok()).unwrap_or(DEFAULT_USER_AGENT);
 
         let mut builder = http::Request::builder()
-            .method(endpoint.method.clone())
+            .method(method.clone())
             .uri(uri)
             .header(http::header::USER_AGENT, user_agent);
 
@@ -183,5 +190,21 @@ impl ToolsRegistry {
         );
 
         builder.body(body).ok()
+    }
+
+    fn build_mcp_request(
+        &self,
+        _orig_request: &http::Request<OrionRequestBody>,
+        _request: &Request,
+    ) -> Option<http::Request<OrionRequestBody>> {
+        None
+    }
+
+    fn build_function_graph_request(
+        &self,
+        _orig_request: &http::Request<OrionRequestBody>,
+        _request: &Request,
+    ) -> Option<http::Request<OrionRequestBody>> {
+        None
     }
 }
