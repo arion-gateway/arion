@@ -464,7 +464,7 @@ impl McpGateway {
             },
             "tools/call" => {
                 debug!(target: "mcp_gateway", "tools/call {:#?}", rpc);
-                let Some(request) = self.inner.tools.build_request(request, rpc.request) else {
+                let Some(request) = self.inner.tools.build_request(request, &rpc.request) else {
                     return MessageResponse::Error(model::JsonRpcError {
                         jsonrpc: model::JsonRpcVersion2_0,
                         id: self.request_id.clone(),

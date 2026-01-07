@@ -101,7 +101,7 @@ use std::{
 };
 use std::{fmt, future::Future, result::Result as StdResult, sync::Arc};
 use tokio::sync::watch;
-use tracing::{debug, error};
+use tracing::debug;
 use upgrades as upgrade_utils;
 
 use crate::{
