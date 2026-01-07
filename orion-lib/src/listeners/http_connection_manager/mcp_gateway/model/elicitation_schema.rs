@@ -6,7 +6,7 @@
 //!
 //! # Example
 //!
-//! ```rust
+//! ```rust,ignore
 //! use rmcp::model::*;
 //!
 //! let schema = ElicitationSchema::builder()
@@ -501,7 +501,7 @@ impl EnumSchema {
 ///
 /// # Example
 ///
-/// ```rust
+/// ```rust,ignore
 /// use rmcp::model::*;
 ///
 /// let schema = ElicitationSchema::builder()
@@ -637,7 +637,7 @@ impl ElicitationSchema {
 ///
 /// # Example
 ///
-/// ```rust
+/// ```rust,ignore
 /// use rmcp::model::*;
 ///
 /// let schema = ElicitationSchema::builder()

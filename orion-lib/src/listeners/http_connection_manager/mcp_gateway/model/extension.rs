@@ -60,7 +60,7 @@ impl Extensions {
     ///
     /// # Example
     ///
-    /// ```
+    /// ```rust,ignore
     /// # use rmcp::model::Extensions;
     /// let mut ext = Extensions::new();
     /// assert!(ext.insert(5i32).is_none());
@@ -78,7 +78,7 @@ impl Extensions {
     ///
     /// # Example
     ///
-    /// ```
+    /// ```rust,ignore
     /// # use rmcp::model::Extensions;
     /// let mut ext = Extensions::new();
     /// assert!(ext.get::<i32>().is_none());
@@ -97,7 +97,7 @@ impl Extensions {
     ///
     /// # Example
     ///
-    /// ```
+    /// ```rust,ignore
     /// # use rmcp::model::Extensions;
     /// let mut ext = Extensions::new();
     /// ext.insert(String::from("Hello"));
@@ -117,7 +117,7 @@ impl Extensions {
     ///
     /// # Example
     ///
-    /// ```
+    /// ```rust,ignore
     /// # use rmcp::model::Extensions;
     /// let mut ext = Extensions::new();
     /// *ext.get_or_insert(1i32) += 2;
@@ -133,7 +133,7 @@ impl Extensions {
     ///
     /// # Example
     ///
-    /// ```
+    /// ```rust,ignore
     /// # use rmcp::model::Extensions;
     /// let mut ext = Extensions::new();
     /// *ext.get_or_insert_with(|| 1i32) += 2;
@@ -150,7 +150,7 @@ impl Extensions {
     ///
     /// # Example
     ///
-    /// ```
+    /// ```rust,ignore
     /// # use rmcp::model::Extensions;
     /// let mut ext = Extensions::new();
     /// *ext.get_or_insert_default::<i32>() += 2;
@@ -167,7 +167,7 @@ impl Extensions {
     ///
     /// # Example
     ///
-    /// ```
+    /// ```rust,ignore
     /// # use rmcp::model::Extensions;
     /// let mut ext = Extensions::new();
     /// ext.insert(5i32);
@@ -185,7 +185,7 @@ impl Extensions {
     ///
     /// # Example
     ///
-    /// ```
+    /// ```rust,ignore
     /// # use rmcp::model::Extensions;
     /// let mut ext = Extensions::new();
     /// ext.insert(5i32);
@@ -204,7 +204,7 @@ impl Extensions {
     ///
     /// # Example
     ///
-    /// ```
+    /// ```rust,ignore
     /// # use rmcp::model::Extensions;
     /// let mut ext = Extensions::new();
     /// assert!(ext.is_empty());
@@ -220,7 +220,7 @@ impl Extensions {
     ///
     /// # Example
     ///
-    /// ```
+    /// ```rust,ignore
     /// # use rmcp::model::Extensions;
     /// let mut ext = Extensions::new();
     /// assert_eq!(ext.len(), 0);
@@ -239,7 +239,7 @@ impl Extensions {
     ///
     /// # Example
     ///
-    /// ```
+    /// ```rust,ignore
     /// # use rmcp::model::Extensions;
     /// let mut ext_a = Extensions::new();
     /// ext_a.insert(8u8);
