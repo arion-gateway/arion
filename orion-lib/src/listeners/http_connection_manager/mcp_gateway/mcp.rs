@@ -14,6 +14,7 @@ use std::{
 use tokio::sync::Mutex;
 use tracing::debug;
 use uuid::Uuid;
+use url::form_urlencoded;
 
 use crate::{
     OrionRequestBody, OrionResponseBody, PolyBody, body::{
@@ -344,16 +345,15 @@ impl McpGateway {
         FilterDecision::DirectResponse(response)
     }
 
-    // parse session id from request URI (query part)
     pub fn get_session_id(req: &Request<OrionRequestBody>) -> Option<SessionId> {
         req.uri().query().and_then(|query| {
-            query.split('&').find_map(|part| {
-                debug!(target: "mcp_gateway", "get_session_id: parsing session ID from query part: {}", part);
-                part.split(SESSION_ID_PREFIX).nth(1).and_then(|value| {
-                    debug!(target: "mcp_gateway", "get_session_id: session ID value: {}", value);
-                    Some(SessionId(value.to_smolstr()))
+            form_urlencoded::parse(query.as_bytes())
+                .find(|(key, _)| {
+                    key == "sessionId" || key == "session_id"
                 })
-            })
+                .map(|(_, value)| {
+                    SessionId(value.to_smolstr())
+                })
         })
     }
 
