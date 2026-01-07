@@ -101,7 +101,7 @@ use std::{
 };
 use std::{fmt, future::Future, result::Result as StdResult, sync::Arc};
 use tokio::sync::watch;
-use tracing::debug;
+use tracing::{debug, error};
 use upgrades as upgrade_utils;
 
 use crate::{
@@ -340,6 +340,7 @@ impl HttpConnectionManager {
     }
 }
 
+#[derive(Debug)]
 pub struct CachedRoute<'a> {
     route: &'a Route,
     route_match: RouteMatchResult,
@@ -708,11 +709,13 @@ impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usiz
         let filter_response = 'filter_loop: loop {
             let Some(ref chosen_route) = cached_route else {
                 // No route found - return 404 immediately
-                return Ok(SyntheticHttpResponse::not_found(
-                    EventFailure::RouteNotFound.into(),
-                    ResponseFlags(FmtResponseFlags::NO_ROUTE_FOUND),
-                )
-                .into_response(request.version()));
+                break 'filter_loop FilterDecision::DirectResponse(
+                    SyntheticHttpResponse::not_found(
+                        EventFailure::RouteNotFound.into(),
+                        ResponseFlags(FmtResponseFlags::NO_ROUTE_FOUND),
+                    )
+                    .into_response(request.version()),
+                );
             };
 
             let guard = connection_manager.http_filters_per_route.load();
@@ -765,63 +768,53 @@ impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usiz
             }
         };
 
-        // One filter in the chain has returned a direct response.
-        // Process the active filters on the response in the reverse order:
-        match filter_response {
-            FilterDecision::DirectResponse(resp) | FilterDecision::AsyncRequest(resp, _) => {
-                let mut response = resp;
-                for filter in &mut active_filters.iter_mut().rev() {
-                    let filter_res = filter.apply_response(&mut response).await;
-                    if let FilterDecision::DirectResponse(direct_response) = filter_res {
-                        response = direct_response;
-                    }
-                }
+        let mut response = match filter_response {
+            FilterDecision::DirectResponse(resp) | FilterDecision::AsyncRequest(resp, _) => resp,
+            _ => match cached_route {
+                None => SyntheticHttpResponse::not_found(
+                    EventFailure::RouteNotFound.into(),
+                    ResponseFlags(FmtResponseFlags::NO_ROUTE_FOUND),
+                )
+                .into_response(request.version()),
+                Some(chosen_route) => {
+                    let websocket_enabled_by_default =
+                        upgrade_utils::is_websocket_enabled_by_hcm(&connection_manager.enabled_upgrades);
 
-                return Ok(response);
+                    match &chosen_route.route.action {
+                        Action::DirectResponse(dr) => {
+                            dr.to_response(trans_handler, request, &chosen_route.route.name).await
+                        },
+                        Action::Redirect(rd) => {
+                            rd.to_response(trans_handler, request, (chosen_route.route_match, &chosen_route.route.name))
+                                .await
+                        },
+                        Action::Route(route) => {
+                            let remote_address = request
+                                .extensions()
+                                .get::<DownstreamMetadata>()
+                                .map(|md| md.connection.peer_address())
+                                .unwrap_or_else(|| SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0));
+                            route
+                                .to_response(
+                                    trans_handler,
+                                    request,
+                                    (
+                                        RouteContext {
+                                            route_name: &chosen_route.route.name,
+                                            retry_policy: chosen_route.vh.retry_policy.as_ref(),
+                                            route_match: chosen_route.route_match,
+                                            remote_address,
+                                            websocket_enabled_by_default,
+                                        },
+                                        &connection_manager,
+                                    ),
+                                )
+                                .await
+                        },
+                    }?
+                },
             },
-            _ => (),
-        }
-
-        let Some(chosen_route) = cached_route else {
-            return Ok(SyntheticHttpResponse::not_found(
-                EventFailure::RouteNotFound.into(),
-                ResponseFlags(FmtResponseFlags::NO_ROUTE_FOUND),
-            )
-            .into_response(request.version()));
         };
-
-        let websocket_enabled_by_default =
-            upgrade_utils::is_websocket_enabled_by_hcm(&connection_manager.enabled_upgrades);
-
-        let mut response = match &chosen_route.route.action {
-            Action::DirectResponse(dr) => dr.to_response(trans_handler, request, &chosen_route.route.name).await,
-            Action::Redirect(rd) => {
-                rd.to_response(trans_handler, request, (chosen_route.route_match, &chosen_route.route.name)).await
-            },
-            Action::Route(route) => {
-                let remote_address = request
-                    .extensions()
-                    .get::<DownstreamMetadata>()
-                    .map(|md| md.connection.peer_address())
-                    .unwrap_or_else(|| SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0));
-                route
-                    .to_response(
-                        trans_handler,
-                        request,
-                        (
-                            RouteContext {
-                                route_name: &chosen_route.route.name,
-                                retry_policy: chosen_route.vh.retry_policy.as_ref(),
-                                route_match: chosen_route.route_match,
-                                remote_address,
-                                websocket_enabled_by_default,
-                            },
-                            &connection_manager,
-                        ),
-                    )
-                    .await
-            },
-        }?;
 
         // let's process the active filters on response in the reverse order...
         //
@@ -829,7 +822,6 @@ impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usiz
             let filter_res = filter.apply_response(&mut response).await;
             if let FilterDecision::DirectResponse(direct_response) = filter_res {
                 response = direct_response;
-                break;
             }
         }
 
@@ -854,11 +846,13 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
         let filter_response = 'filter_loop: loop {
             let Some(ref chosen_route) = cached_route else {
                 // No route found - return 404 immediately
-                return Ok(SyntheticHttpResponse::not_found(
-                    EventFailure::RouteNotFound.into(),
-                    ResponseFlags(FmtResponseFlags::NO_ROUTE_FOUND),
-                )
-                .into_response(request.version()));
+                break 'filter_loop FilterDecision::DirectResponse(
+                    SyntheticHttpResponse::not_found(
+                        EventFailure::RouteNotFound.into(),
+                        ResponseFlags(FmtResponseFlags::NO_ROUTE_FOUND),
+                    )
+                    .into_response(request.version()),
+                );
             };
 
             let guard = connection_manager.http_filters_per_route.load();
@@ -892,12 +886,12 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
                         FilterDecision::AsyncRequest(resp, Some(request)) => {
                             // Handle asynchronous request
                             //
-                            let self_clone = AsyncExecution(self.clone());
+                            let async_exec = AsyncExecution(self.clone());
                             let conn_manager = connection_manager.clone();
 
                             tokio::spawn(async move {
                                 let trans_handler = TransactionHandler::default();
-                                _ = self_clone
+                                _ = async_exec
                                     .to_response(&trans_handler, request, (conn_manager, filter_idx, filter_value))
                                     .await;
                             });
@@ -926,63 +920,66 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
             }
         };
 
-        // One filter in the chain has returned a direct response.
-        // Process the active filters on the response in the reverse order:
-        match filter_response {
-            FilterDecision::DirectResponse(resp) | FilterDecision::AsyncRequest(resp, _) => {
-                let mut response = resp;
-                for filter in &mut active_filters.iter_mut().rev() {
-                    let filter_res = filter.apply_response(&mut response).await;
-                    if let FilterDecision::DirectResponse(direct_response) = filter_res {
-                        response = direct_response;
+        let mut response = match filter_response {
+            FilterDecision::DirectResponse(resp) | FilterDecision::AsyncRequest(resp, _) => resp,
+            _ => match cached_route {
+                None => SyntheticHttpResponse::not_found(
+                    EventFailure::RouteNotFound.into(),
+                    ResponseFlags(FmtResponseFlags::NO_ROUTE_FOUND),
+                )
+                .into_response(request.version()),
+                Some(chosen_route) => {
+                    let websocket_enabled_by_default =
+                        upgrade_utils::is_websocket_enabled_by_hcm(&connection_manager.enabled_upgrades);
+
+                    let mut response = match &chosen_route.route.action {
+                        Action::DirectResponse(dr) => {
+                            dr.to_response(trans_handler, request, &chosen_route.route.name).await
+                        },
+                        Action::Redirect(rd) => {
+                            rd.to_response(trans_handler, request, (chosen_route.route_match, &chosen_route.route.name))
+                                .await
+                        },
+                        Action::Route(route) => {
+                            let remote_address = request
+                                .extensions()
+                                .get::<DownstreamMetadata>()
+                                .map(|md| md.connection.peer_address())
+                                .unwrap_or_else(|| SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0));
+                            route
+                                .to_response(
+                                    trans_handler,
+                                    request,
+                                    (
+                                        RouteContext {
+                                            route_name: &chosen_route.route.name,
+                                            retry_policy: chosen_route.vh.retry_policy.as_ref(),
+                                            route_match: chosen_route.route_match,
+                                            remote_address,
+                                            websocket_enabled_by_default,
+                                        },
+                                        &connection_manager,
+                                    ),
+                                )
+                                .await
+                        },
+                    }?;
+
+                    let resp_headers = response.headers_mut();
+                    if self.most_specific_header_mutations_wins {
+                        self.response_header_modifier.modify(resp_headers);
+                        chosen_route.vh.response_header_modifier.modify(resp_headers);
+                        chosen_route.route.response_header_modifier.modify(resp_headers);
+                    } else {
+                        chosen_route.route.response_header_modifier.modify(resp_headers);
+                        chosen_route.vh.response_header_modifier.modify(resp_headers);
+                        self.response_header_modifier.modify(resp_headers);
                     }
-                }
 
-                return Ok(response);
+                    response
+                },
             },
-            _ => (),
-        }
-
-        let Some(chosen_route) = cached_route else {
-            return Ok(SyntheticHttpResponse::not_found(
-                EventFailure::RouteNotFound.into(),
-                ResponseFlags(FmtResponseFlags::NO_ROUTE_FOUND),
-            )
-            .into_response(request.version()));
         };
-
-        let websocket_enabled_by_default =
-            upgrade_utils::is_websocket_enabled_by_hcm(&connection_manager.enabled_upgrades);
-
-        let mut response = match &chosen_route.route.action {
-            Action::DirectResponse(dr) => dr.to_response(trans_handler, request, &chosen_route.route.name).await,
-            Action::Redirect(rd) => {
-                rd.to_response(trans_handler, request, (chosen_route.route_match, &chosen_route.route.name)).await
-            },
-            Action::Route(route) => {
-                let remote_address = request
-                    .extensions()
-                    .get::<DownstreamMetadata>()
-                    .map(|md| md.connection.peer_address())
-                    .unwrap_or_else(|| SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0));
-                route
-                    .to_response(
-                        trans_handler,
-                        request,
-                        (
-                            RouteContext {
-                                route_name: &chosen_route.route.name,
-                                retry_policy: chosen_route.vh.retry_policy.as_ref(),
-                                route_match: chosen_route.route_match,
-                                remote_address,
-                                websocket_enabled_by_default,
-                            },
-                            &connection_manager,
-                        ),
-                    )
-                    .await
-            },
-        }?;
 
         // let's process the active filters on response in the reverse order...
         //
@@ -990,19 +987,7 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
             let filter_res = filter.apply_response(&mut response).await;
             if let FilterDecision::DirectResponse(direct_response) = filter_res {
                 response = direct_response;
-                break;
             }
-        }
-
-        let resp_headers = response.headers_mut();
-        if self.most_specific_header_mutations_wins {
-            self.response_header_modifier.modify(resp_headers);
-            chosen_route.vh.response_header_modifier.modify(resp_headers);
-            chosen_route.route.response_header_modifier.modify(resp_headers);
-        } else {
-            chosen_route.route.response_header_modifier.modify(resp_headers);
-            chosen_route.vh.response_header_modifier.modify(resp_headers);
-            self.response_header_modifier.modify(resp_headers);
         }
 
         Ok(response)
