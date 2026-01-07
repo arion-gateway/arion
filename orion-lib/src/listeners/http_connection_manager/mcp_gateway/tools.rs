@@ -1,5 +1,9 @@
 use super::model::{ListToolsResult, Tool};
-use crate::{OrionRequestBody, PolyBody, body::{instrumented_body::InstrumentedBody, response_flags::BodyKind, timeout_body::TimeoutBody}, listeners::http_connection_manager::mcp_gateway::model::Request, object};
+use crate::{
+    body::{instrumented_body::InstrumentedBody, response_flags::BodyKind, timeout_body::TimeoutBody},
+    listeners::http_connection_manager::mcp_gateway::model::Request,
+    object, OrionRequestBody, PolyBody,
+};
 use http_body_util::Empty;
 use smol_str::SmolStr;
 use std::sync::Arc;
@@ -88,23 +92,36 @@ impl ToolsRegistry {
         ListToolsResult { tools, next_cursor: None, meta: None }
     }
 
-    pub fn build_request(&self, http_request: &http::Request<OrionRequestBody>, request: Request) -> Option<http::Request<OrionRequestBody>> {
+    pub fn build_request(
+        &self,
+        orig_request: &http::Request<OrionRequestBody>,
+        request: Request,
+    ) -> Option<http::Request<OrionRequestBody>> {
         let name = request.params.get("name").and_then(|name| name.as_str()).unwrap_or("unknown");
         let endpoint = self.registry.iter().find(|e| e.name == name)?;
-        let user_agent = http_request.headers().get("User-Agent").map(|ua| ua.to_str().unwrap_or("orion/{CARGO_PKG_VERSION}")).unwrap_or("orion/{CARGO_PKG_VERSION}");
-        let authority = http_request.uri().authority();
+        let user_agent = orig_request
+            .headers()
+            .get("User-Agent")
+            .map(|ua| ua.to_str().unwrap_or("orion/{CARGO_PKG_VERSION}"))
+            .unwrap_or("orion/{CARGO_PKG_VERSION}");
+        let authority = orig_request.uri().authority();
 
-        //let uri = match authority {
-        //    Some(authority) => &format!("{}{}", authority, endpoint.path),
-        //    None => &endpoint.path,
-        //};
+        let host = orig_request.headers().get(http::header::HOST).and_then(|header_value| header_value.to_str().ok());
 
-        let uri = format!("http://127.0.0.1:8000/{}", endpoint.path);
+        let uri = match authority {
+            Some(authority) => &format!("{}/{}", authority, endpoint.path),
+            None => &endpoint.path,
+        };
 
-        let builder = http::Request::builder()
-            .method(endpoint.method.clone())
-            .uri(uri)
-            .header("User-Agent", user_agent);
+        // Orion will override the authority with the correct upstream endpoint.
+        // This is required for the match_virtual_host to work properly.
+
+        let mut builder =
+            http::Request::builder().method(endpoint.method.clone()).uri(uri).header("User-Agent", user_agent);
+
+        if let Some(host) = host {
+            builder = builder.header(http::header::HOST, host);
+        }
 
         let body = InstrumentedBody::new(
             BodyKind::Request,

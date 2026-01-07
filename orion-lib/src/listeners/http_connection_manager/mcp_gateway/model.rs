@@ -1337,7 +1337,7 @@ pub enum ElicitationAction {
 ///
 /// # Example
 ///
-/// ```rust
+/// ```rust,ignore
 /// use rmcp::model::*;
 ///
 /// let params = CreateElicitationRequestParam {

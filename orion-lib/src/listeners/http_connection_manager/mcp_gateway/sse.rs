@@ -13,9 +13,7 @@ pub mod transport {
         #[inline]
         pub fn to_bytes(&self) -> Bytes {
             match self {
-                Event::Endpoint(endpoint) => {
-                    Bytes::from(format!("event: endpoint\ndata: {}\n\n", endpoint))
-                },
+                Event::Endpoint(endpoint) => Bytes::from(format!("event: endpoint\ndata: {}\n\n", endpoint)),
                 Event::Message(value) => {
                     let msg = serde_json::to_string(value).unwrap_or_else(|err| {
                         error!(target: "mcp_gateway", "SEE: failed to serialize message: {}", err);

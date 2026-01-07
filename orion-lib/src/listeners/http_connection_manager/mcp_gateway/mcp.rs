@@ -8,30 +8,31 @@ use scopeguard::defer;
 use serde::Serialize;
 use serde_json::json;
 use smol_str::{SmolStr, ToSmolStr};
-use std::{
-    sync::{atomic::AtomicUsize, Arc},
-};
+use std::sync::{atomic::AtomicUsize, Arc};
 use tokio::sync::Mutex;
 use tracing::debug;
-use uuid::Uuid;
 use url::form_urlencoded;
+use uuid::Uuid;
 
 use crate::{
-    OrionRequestBody, OrionResponseBody, PolyBody, body::{
+    body::{
         sse_body::{SseBody, SseSender},
         timeout_body::TimeoutBody,
-    }, listeners::{
+    },
+    listeners::{
         http_connection_manager::mcp_gateway::{
             model::{
                 self, Annotated, CallToolResult, Implementation, InitializeResult, JsonRpcResponse, ProtocolVersion,
                 RawContent, RawTextContent, ServerCapabilities, ServerResult,
             },
-            sse, tools::{ToolsRegistry},
+            sse,
+            tools::ToolsRegistry,
         },
         http_filters::{FactoryFilter, FilterDecision},
         listener::FilterListenerContext,
         metadata::DownstreamMetadata,
-    }
+    },
+    OrionRequestBody, OrionResponseBody, PolyBody,
 };
 
 const SESSION_ID_PREFIX: &str = "sessionId=";
@@ -191,16 +192,15 @@ impl McpGateway {
                     } else {
                         b
                     }
-                }
+                },
             }
         };
 
-        let is_error = response.status().is_server_error();
         let content = RawContent::Text(RawTextContent { text: body_string, meta: None });
 
         let tool_result = CallToolResult {
             content: vec![Annotated::new(content, None)],
-            is_error: Some(is_error),
+            is_error: Some(!response.status().is_success()),
             meta: None,
             structured_content: None,
         };
@@ -287,7 +287,6 @@ impl McpGateway {
                     return FilterDecision::rate_limited(request.version());
                 }
                 state.active_async_requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                debug!(target: "mcp_gateway", "Sending async request: {:#?}", req);
                 return FilterDecision::AsyncRequest(accepted, Some(req));
             },
         }
@@ -364,12 +363,8 @@ impl McpGateway {
     pub fn get_session_id(req: &Request<OrionRequestBody>) -> Option<SessionId> {
         req.uri().query().and_then(|query| {
             form_urlencoded::parse(query.as_bytes())
-                .find(|(key, _)| {
-                    key == "sessionId" || key == "session_id"
-                })
-                .map(|(_, value)| {
-                    SessionId(value.to_smolstr())
-                })
+                .find(|(key, _)| key == "sessionId" || key == "session_id")
+                .map(|(_, value)| SessionId(value.to_smolstr()))
         })
     }
 
@@ -403,7 +398,11 @@ impl McpGateway {
         }
     }
 
-    fn handle_rpc_request(&mut self, request: &Request<OrionRequestBody>, rpc: model::JsonRpcRequest) -> MessageResponse {
+    fn handle_rpc_request(
+        &mut self,
+        request: &Request<OrionRequestBody>,
+        rpc: model::JsonRpcRequest,
+    ) -> MessageResponse {
         match rpc.request.method.as_str() {
             "initialize" => {
                 debug!(target: "mcp_gateway", "rpc initialize received");
@@ -470,7 +469,7 @@ impl McpGateway {
                         jsonrpc: model::JsonRpcVersion2_0,
                         id: self.request_id.clone(),
                         error: model::ErrorData::new(model::ErrorCode::INVALID_PARAMS, "Invalid parameters", None),
-                    })
+                    });
                 };
 
                 debug!(target: "mcp_gateway", "UPSTREAM {:#?}", request);
