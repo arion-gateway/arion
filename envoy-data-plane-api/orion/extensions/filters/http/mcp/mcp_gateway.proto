@@ -2,74 +2,45 @@ syntax = "proto3";
 
 package orion.extensions.filters.http.mcp.mcp_gateway.v3;
 
-import "envoy/type/matcher/metadata.proto";
-import "google/protobuf/any.proto";
-import "google/protobuf/duration.proto";
+import "envoy/config/core/v3/base.proto";
 import "validate/validate.proto";
 
 // [#protodoc-title: McpGateway Filter]
 // Configuraton for McpGateway
 // [#extension: envoy.filters.network.mcp_gateway]
 message McpGateway {
-    string cluster_header = 1 [(validate.rules).string = {min_bytes: 1}];
-    ServerInfo server_info = 2 [(validate.rules).message = {required: true}];
-    Capabilities capabilities = 3;
-    repeated string supported_protocol_versions = 4;
-    SessionConfig session = 5;
-    repeated Tool tools = 6;
-    UpstreamAuth upstream_auth = 7;
+    ServerInfo server_info = 1 [(validate.rules).message = {required: true}];
+    repeated string supported_protocol_versions = 2;
+    repeated Tool tools = 3;
 }
 
+// Server info
 message ServerInfo {
     string name = 1 [(validate.rules).string = {min_bytes: 1}];
     string version = 2 [(validate.rules).string = {min_bytes: 1}];
-}
-
-// Capabilities of the Orion MCP Gateway.
-message Capabilities {
-    map<string, google.protobuf.Any> tools = 1;
-}
-
-// Session configuration.
-message SessionConfig {
-    bool enabled = 1;
-    google.protobuf.Duration ttl = 2; // [(validate.rules).duration = {gt: 0}];
-    bool cache_client_init = 3;
 }
 
 // Tool configuration
 message Tool {
     string name = 1 [(validate.rules).string = {min_bytes: 1}];
     string description = 2 [(validate.rules).string = {min_bytes: 1}];
-    google.protobuf.Any input_schema = 3;
-    Rbac rbac = 4;
-    BackendConfig backend = 5;
-}
-
-// RBAC config
-message Rbac {
-    envoy.type.matcher.MetadataMatcher match = 1;
+    envoy.config.core.v3.DataSource input_schema = 3;
+    BackendConfig backend = 4;
 }
 
 message BackendConfig {
-    BackendType type = 1;
-    string cluster = 2 [(validate.rules).string = {min_bytes: 1}];
-    Transcoding transcoding = 3;
+    oneof backend {
+        RestBackend rest = 5;
+        FunctionGraphBackend function_graph = 6;
+        McpServerBackend mcp_server = 7;
+    }
 }
 
-enum BackendType {
-  BACKEND_TYPE_UNSPECIFIED = 0;
-  BACKEND_TYPE_REST = 1;
-  BACKEND_TYPE_FUNCTION_GRAPH = 2;
-  BACKEND_TYPE_MCP_SERVER = 3;
-}
-
-message Transcoding {
+message RestBackend {
   bool enabled = 1;
   string method = 2 [(validate.rules).string = {min_bytes: 1}];
-  string path_template = 3 [(validate.rules).string = {min_bytes: 1}];
-  repeated QueryParam query_params = 4;
-  string extract_path = 5 [(validate.rules).string = {min_bytes: 1}];
+  string path = 3 [(validate.rules).string = {min_bytes: 1}];
+  repeated QueryParam params = 4;
 }
 
 message QueryParam {
@@ -77,7 +48,8 @@ message QueryParam {
   string source = 2 [(validate.rules).string = {min_bytes: 1}];
 }
 
-// Upstream Authentication configuration
-message UpstreamAuth {
-  string type = 1 [(validate.rules).string = {min_bytes: 1}];
+message FunctionGraphBackend {
+}
+
+message McpServerBackend {
 }

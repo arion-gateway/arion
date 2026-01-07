@@ -12,18 +12,30 @@ use url::form_urlencoded;
 const DEFAULT_USER_AGENT: &str = concat!("orion/", env!("CARGO_PKG_VERSION"));
 
 #[derive(Debug, Clone)]
-pub struct ApiEndpoint {
+struct OrionTool {
     name: String,
+    description: String,
+    schema: serde_json::Map<String, serde_json::Value>,
+    backend: Backend,
+}
+
+#[derive(Debug, Clone)]
+enum Backend {
+    Rest(RestBackend),
+    //FunctionGraph(FunctionGraphBackend),
+    //Mcp(McpBackend),
+}
+
+#[derive(Debug, Clone)]
+pub struct RestBackend {
     method: http::Method,
     path: String,
     params: Vec<SmolStr>,
-    description: String,
-    schema: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone)]
 pub struct ToolsRegistry {
-    registry: Vec<ApiEndpoint>,
+    registry: Vec<OrionTool>,
 }
 
 impl ToolsRegistry {
@@ -34,11 +46,8 @@ impl ToolsRegistry {
     pub fn with_dummy_tools() -> Self {
         let mut myself = ToolsRegistry::new();
 
-        myself.register(ApiEndpoint {
+        myself.register(OrionTool {
             name: "get_name".into(),
-            method: http::Method::GET,
-            path: "/weather".into(),
-            params: vec!["city".into(), "country".into()],
             description: "Get weather information for a city".into(),
             schema: object!({
                 "type": "object",
@@ -47,13 +56,15 @@ impl ToolsRegistry {
                 },
                 "required": ["city"]
             }),
+            backend: Backend::Rest(RestBackend {
+                method: http::Method::GET,
+                path: "/weather".into(),
+                params: vec!["city".into(), "country".into()],
+            }),
         });
 
-        myself.register(ApiEndpoint {
+        myself.register(OrionTool {
             name: "post_user".into(),
-            method: http::Method::POST,
-            path: "/user".into(),
-            params: vec!["username".into(), "email".into()],
             description: "Add a new username and email".into(),
             schema: object!({
                 "type": "object",
@@ -63,12 +74,17 @@ impl ToolsRegistry {
                 },
                 "required": ["username", "email"]
             }),
+            backend: Backend::Rest(RestBackend {
+                method: http::Method::POST,
+                path: "/user".into(),
+                params: vec!["username".into(), "email".into()],
+            }),
         });
 
         myself
     }
 
-    pub fn register(&mut self, endpoint: ApiEndpoint) {
+    pub fn register(&mut self, endpoint: OrionTool) {
         self.registry.push(endpoint);
     }
 
@@ -98,25 +114,17 @@ impl ToolsRegistry {
     /// Returns an iterator over arguments as (key, value) pairs without allocating a Vec.
     /// Values are borrowed when possible (strings), owned only when conversion is needed.
     #[inline]
-    fn extract_arguments(
-        request: &Request,
-    ) -> impl Iterator<Item = (&str, Cow<'_, str>)> {
-        request
-            .params
-            .get("arguments")
-            .and_then(|v| v.as_object())
-            .into_iter()
-            .flatten()
-            .map(|(k, v)| {
-                let value = match v {
-                    serde_json::Value::String(s) => Cow::Borrowed(s.as_str()),
-                    serde_json::Value::Null => Cow::Borrowed("null"),
-                    serde_json::Value::Bool(true) => Cow::Borrowed("true"),
-                    serde_json::Value::Bool(false) => Cow::Borrowed("false"),
-                    other => Cow::Owned(other.to_string()),
-                };
-                (k.as_str(), value)
-            })
+    fn extract_arguments(request: &Request) -> impl Iterator<Item = (&str, Cow<'_, str>)> {
+        request.params.get("arguments").and_then(|v| v.as_object()).into_iter().flatten().map(|(k, v)| {
+            let value = match v {
+                serde_json::Value::String(s) => Cow::Borrowed(s.as_str()),
+                serde_json::Value::Null => Cow::Borrowed("null"),
+                serde_json::Value::Bool(true) => Cow::Borrowed("true"),
+                serde_json::Value::Bool(false) => Cow::Borrowed("false"),
+                other => Cow::Owned(other.to_string()),
+            };
+            (k.as_str(), value)
+        })
     }
 
     pub fn build_request(
@@ -129,7 +137,6 @@ impl ToolsRegistry {
 
         // Pre-calculate capacity to minimize re-allocations
         let authority = orig_request.uri().authority();
-
         let arguments = request.params.get("arguments").and_then(|v| v.as_object());
         let has_args = arguments.is_some_and(|m| !m.is_empty());
 
@@ -150,19 +157,15 @@ impl ToolsRegistry {
         // Build query string directly using lazy iterator
         if has_args {
             uri.push('?');
-            uri = form_urlencoded::Serializer::new(uri)
-                .extend_pairs(Self::extract_arguments(request))
-                .finish();
+            uri = form_urlencoded::Serializer::new(uri).extend_pairs(Self::extract_arguments(request)).finish();
         }
 
         // Orion will override the authority with the correct upstream endpoint.
         // This is required for the match_virtual_host to work properly.
 
         let headers = orig_request.headers();
-        let user_agent = headers
-            .get(http::header::USER_AGENT)
-            .and_then(|ua| ua.to_str().ok())
-            .unwrap_or(DEFAULT_USER_AGENT);
+        let user_agent =
+            headers.get(http::header::USER_AGENT).and_then(|ua| ua.to_str().ok()).unwrap_or(DEFAULT_USER_AGENT);
 
         let mut builder = http::Request::builder()
             .method(endpoint.method.clone())

@@ -8,9 +8,7 @@ use scopeguard::defer;
 use serde::Serialize;
 use serde_json::json;
 use smol_str::{SmolStr, ToSmolStr};
-use std::{
-    sync::{atomic::AtomicUsize, Arc},
-};
+use std::sync::{atomic::AtomicUsize, Arc};
 use tokio::sync::Mutex;
 use tracing::debug;
 use url::form_urlencoded;
@@ -465,9 +463,11 @@ impl McpGateway {
                 return MessageResponse::Upstream(request);
             },
             _ => {
-                return MessageResponse::Error(
-                    self.build_rpc_error(model::ErrorData::new(model::ErrorCode::METHOD_NOT_FOUND, "Method not found", None))
-                );
+                return MessageResponse::Error(self.build_rpc_error(model::ErrorData::new(
+                    model::ErrorCode::METHOD_NOT_FOUND,
+                    "Method not found",
+                    None,
+                )));
             },
         }
     }
