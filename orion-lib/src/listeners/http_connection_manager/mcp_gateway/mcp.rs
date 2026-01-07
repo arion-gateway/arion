@@ -8,7 +8,9 @@ use scopeguard::defer;
 use serde::Serialize;
 use serde_json::json;
 use smol_str::{SmolStr, ToSmolStr};
-use std::sync::{atomic::AtomicUsize, Arc};
+use std::{
+    sync::{atomic::AtomicUsize, Arc},
+};
 use tokio::sync::Mutex;
 use tracing::debug;
 use url::form_urlencoded;
@@ -162,12 +164,7 @@ impl McpGateway {
         // collect the body...
         let Ok(body) = response.body_mut().collect().await else {
             debug!(target: "mcp_gateway", "apply_response: failed to collect response body");
-            let error = model::JsonRpcError {
-                jsonrpc: model::JsonRpcVersion2_0,
-                id: self.request_id.clone(),
-                error: model::ErrorData::internal_error("failed to collect response body", None),
-            };
-
+            let error = self.build_rpc_error(model::ErrorData::internal_error("failed to collect response body", None));
             let event = sse::transport::Event::Message(&error);
 
             if let Err(e) = self.send_message(event.to_bytes()).await {
@@ -177,7 +174,7 @@ impl McpGateway {
         };
 
         let body_string = {
-            let b = String::from_utf8(body.to_bytes().to_vec()).unwrap_or_else(|_| "".to_string());
+            let b = std::str::from_utf8(&body.to_bytes()).map(|s| s.to_string()).unwrap_or_default();
             match response.status() {
                 StatusCode::OK => {
                     if b.is_empty() {
@@ -353,7 +350,7 @@ impl McpGateway {
         });
 
         // add the session to the map
-        state.sse_map.insert(session_id.clone(), session.clone());
+        state.sse_map.insert(session_id, session.clone());
         self.session_ctx = SessionContext(Some(session));
 
         debug!(target: "mcp_gateway", "handle_sse_handshake: sending {response:?} back to client");
@@ -371,11 +368,7 @@ impl McpGateway {
     fn handle_rpc_message(&mut self, request: &Request<OrionRequestBody>, body: Bytes) -> MessageResponse {
         let Ok(message): Result<model::JsonRpcMessage, _> = serde_json::from_slice(&body) else {
             debug!("get_session_id: failed to parse JSON message: {:?}", body);
-            return MessageResponse::Error(model::JsonRpcError {
-                jsonrpc: model::JsonRpcVersion2_0,
-                id: model::RequestId::String(Arc::from("")),
-                error: model::ErrorData::parse_error("invalid JSON", None),
-            });
+            return MessageResponse::Error(self.build_rpc_error(model::ErrorData::parse_error("invalid JSON", None)));
         };
 
         match message {
@@ -410,11 +403,9 @@ impl McpGateway {
                     serde_json::from_value(serde_json::Value::Object(rpc.request.params))
                 else {
                     debug!(target: "mcp_gateway", "handle_rpc_request: invalid params");
-                    return MessageResponse::Error(model::JsonRpcError {
-                        jsonrpc: model::JsonRpcVersion2_0,
-                        id: self.request_id.clone(),
-                        error: model::ErrorData::invalid_params("invalid params", None),
-                    });
+                    return MessageResponse::Error(
+                        self.build_rpc_error(model::ErrorData::invalid_params("invalid params", None)),
+                    );
                 };
 
                 self.initialize_request_params = Some(init_params);
@@ -446,7 +437,7 @@ impl McpGateway {
                 let response = model::JsonRpcResponse {
                     jsonrpc: model::JsonRpcVersion2_0,
                     id: self.request_id.clone(),
-                    result: json!("{}"),
+                    result: json!({}),
                 };
 
                 return MessageResponse::RpcResponse(response);
@@ -465,22 +456,18 @@ impl McpGateway {
             "tools/call" => {
                 debug!(target: "mcp_gateway", "tools/call {:#?}", rpc);
                 let Some(request) = self.inner.tools.build_request(request, &rpc.request) else {
-                    return MessageResponse::Error(model::JsonRpcError {
-                        jsonrpc: model::JsonRpcVersion2_0,
-                        id: self.request_id.clone(),
-                        error: model::ErrorData::new(model::ErrorCode::INVALID_PARAMS, "Invalid parameters", None),
-                    });
+                    return MessageResponse::Error(
+                        self.build_rpc_error(model::ErrorData::invalid_params("invalid params", None)),
+                    );
                 };
 
                 debug!(target: "mcp_gateway", "UPSTREAM {:#?}", request);
                 return MessageResponse::Upstream(request);
             },
             _ => {
-                return MessageResponse::Error(model::JsonRpcError {
-                    jsonrpc: model::JsonRpcVersion2_0,
-                    id: self.request_id.clone(),
-                    error: model::ErrorData::new(model::ErrorCode::METHOD_NOT_FOUND, "Method not found", None),
-                })
+                return MessageResponse::Error(
+                    self.build_rpc_error(model::ErrorData::new(model::ErrorCode::METHOD_NOT_FOUND, "Method not found", None))
+                );
             },
         }
     }
@@ -515,5 +502,10 @@ impl McpGateway {
         };
 
         Ok(resp)
+    }
+
+    #[inline]
+    fn build_rpc_error(&self, error: model::ErrorData) -> model::JsonRpcError {
+        model::JsonRpcError { jsonrpc: model::JsonRpcVersion2_0, id: self.request_id.clone(), error }
     }
 }
