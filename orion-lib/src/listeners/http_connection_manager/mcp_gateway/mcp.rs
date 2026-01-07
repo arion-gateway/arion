@@ -63,6 +63,7 @@ pub struct McpGatewayListenerContext {
 #[derive(Debug)]
 pub struct McpGatewayInner {
     config: McpGatewayConfig,
+    tools: ToolsRegistry,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -89,18 +90,16 @@ pub struct McpGateway {
     request_id: model::RequestId,
     version: http::Version,
     initialize_request_params: Option<model::InitializeRequestParam>,
-    tools: ToolsRegistry,
 }
 
 impl From<McpGatewayConfig> for McpGateway {
     fn from(config: McpGatewayConfig) -> Self {
         Self {
-            inner: Arc::new(McpGatewayInner { config }),
+            inner: Arc::new(McpGatewayInner { config, tools: ToolsRegistry::with_dummy_tools() }),
             session_ctx: SessionContext(None),
             request_id: model::RequestId::Number(0),
             initialize_request_params: None,
             version: http::Version::default(),
-            tools: ToolsRegistry::with_dummy_tools(),
         }
     }
 }
@@ -113,7 +112,6 @@ impl FactoryFilter for McpGateway {
             request_id: model::RequestId::Number(0),
             initialize_request_params: None,
             version: http::Version::default(),
-            tools: ToolsRegistry::with_dummy_tools(),
         }
     }
 }
@@ -177,9 +175,27 @@ impl McpGateway {
             return FilterDecision::Continue;
         };
 
-        let body_string = String::from_utf8(body.to_bytes().to_vec()).unwrap_or_else(|_| "".to_string());
-        let is_error = response.status().is_server_error();
+        let body_string = {
+            let b = String::from_utf8(body.to_bytes().to_vec()).unwrap_or_else(|_| "".to_string());
+            match response.status() {
+                StatusCode::OK => {
+                    if b.is_empty() {
+                        "OK".into()
+                    } else {
+                        b
+                    }
+                },
+                _ => {
+                    if b.is_empty() {
+                        format!("Upstream Error: {}", response.status().canonical_reason().unwrap_or("Unknown"))
+                    } else {
+                        b
+                    }
+                }
+            }
+        };
 
+        let is_error = response.status().is_server_error();
         let content = RawContent::Text(RawTextContent { text: body_string, meta: None });
 
         let tool_result = CallToolResult {
@@ -234,7 +250,7 @@ impl McpGateway {
         // save the current session ID and session
         self.session_ctx = SessionContext(Some(session.value().clone()));
 
-        // shallow parsing the body of the request:
+        // collect the body of the request...
         let Ok(body) = request.body_mut().collect().await else {
             debug!(target: "mcp_gateway", "apply_request: failed to collect request body");
             return FilterDecision::internal_server_error("Failed to collect request body", self.version);
@@ -244,7 +260,7 @@ impl McpGateway {
             return FilterDecision::internal_server_error("Failed to build accepted response", self.version);
         };
 
-        let res = self.handle_rpc_message(body.to_bytes());
+        let res = self.handle_rpc_message(request, body.to_bytes());
         match res {
             MessageResponse::Error(json_rpc_error) => {
                 let event = sse::transport::Event::Message(&json_rpc_error);
@@ -357,7 +373,7 @@ impl McpGateway {
         })
     }
 
-    fn handle_rpc_message(&mut self, body: Bytes) -> MessageResponse {
+    fn handle_rpc_message(&mut self, request: &Request<OrionRequestBody>, body: Bytes) -> MessageResponse {
         let Ok(message): Result<model::JsonRpcMessage, _> = serde_json::from_slice(&body) else {
             debug!("get_session_id: failed to parse JSON message: {:?}", body);
             return MessageResponse::Error(model::JsonRpcError {
@@ -370,7 +386,7 @@ impl McpGateway {
         match message {
             model::JsonRpcMessage::Request(json_rpc_request) => {
                 self.request_id = json_rpc_request.id.clone();
-                self.handle_rpc_request(json_rpc_request)
+                self.handle_rpc_request(request, json_rpc_request)
             },
             model::JsonRpcMessage::Response(json_rpc_response) => {
                 debug!(target: "mcp_gateway", "UNSUPPORTED RESPONSE MSG: {:#?}", json_rpc_response);
@@ -387,7 +403,7 @@ impl McpGateway {
         }
     }
 
-    fn handle_rpc_request(&mut self, rpc: model::JsonRpcRequest) -> MessageResponse {
+    fn handle_rpc_request(&mut self, request: &Request<OrionRequestBody>, rpc: model::JsonRpcRequest) -> MessageResponse {
         match rpc.request.method.as_str() {
             "initialize" => {
                 debug!(target: "mcp_gateway", "rpc initialize received");
@@ -438,7 +454,7 @@ impl McpGateway {
             },
             "tools/list" => {
                 debug!(target: "mcp_gateway", "rpc tools/list received");
-                let tools = self.tools.build_list_tools();
+                let tools = self.inner.tools.build_list_tools();
                 let response = model::JsonRpcResponse {
                     jsonrpc: model::JsonRpcVersion2_0,
                     id: self.request_id.clone(),
@@ -449,13 +465,15 @@ impl McpGateway {
             },
             "tools/call" => {
                 debug!(target: "mcp_gateway", "tools/call {:#?}", rpc);
-                let Some(request) = self.tools.build_request(rpc.request) else {
+                let Some(request) = self.inner.tools.build_request(request, rpc.request) else {
                     return MessageResponse::Error(model::JsonRpcError {
                         jsonrpc: model::JsonRpcVersion2_0,
                         id: self.request_id.clone(),
                         error: model::ErrorData::new(model::ErrorCode::INVALID_PARAMS, "Invalid parameters", None),
                     })
                 };
+
+                debug!(target: "mcp_gateway", "UPSTREAM {:#?}", request);
                 return MessageResponse::Upstream(request);
             },
             _ => {

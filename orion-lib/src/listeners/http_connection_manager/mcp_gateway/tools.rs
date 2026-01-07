@@ -88,16 +88,23 @@ impl ToolsRegistry {
         ListToolsResult { tools, next_cursor: None, meta: None }
     }
 
-    pub fn build_request(&self, request: Request) -> Option<http::Request<OrionRequestBody>> {
+    pub fn build_request(&self, http_request: &http::Request<OrionRequestBody>, request: Request) -> Option<http::Request<OrionRequestBody>> {
         let name = request.params.get("name").and_then(|name| name.as_str()).unwrap_or("unknown");
-
         let endpoint = self.registry.iter().find(|e| e.name == name)?;
+        let user_agent = http_request.headers().get("User-Agent").map(|ua| ua.to_str().unwrap_or("orion/{CARGO_PKG_VERSION}")).unwrap_or("orion/{CARGO_PKG_VERSION}");
+        let authority = http_request.uri().authority();
 
-        let uri = format!("http://127.0.0.1:8000{}", endpoint.path);
+        //let uri = match authority {
+        //    Some(authority) => &format!("{}{}", authority, endpoint.path),
+        //    None => &endpoint.path,
+        //};
+
+        let uri = format!("http://127.0.0.1:8000/{}", endpoint.path);
+
         let builder = http::Request::builder()
             .method(endpoint.method.clone())
             .uri(uri)
-            .header("User-Agent", "my-awesome-agent/1.0");
+            .header("User-Agent", user_agent);
 
         let body = InstrumentedBody::new(
             BodyKind::Request,
