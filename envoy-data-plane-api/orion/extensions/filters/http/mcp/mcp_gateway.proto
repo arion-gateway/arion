@@ -9,8 +9,8 @@ import "validate/validate.proto";
 // Configuraton for McpGateway
 // [#extension: envoy.filters.network.mcp_gateway]
 message McpGateway {
-    ServerInfo server_info = 1 [(validate.rules).message = {required: true}];
-    repeated string supported_protocol_versions = 2;
+    string cluster_header = 1 [(validate.rules).string = {min_bytes: 1}];
+    ServerInfo server_info = 2 [(validate.rules).message = {required: true}];
     repeated Tool tools = 3;
 }
 
@@ -25,18 +25,22 @@ message Tool {
     string name = 1 [(validate.rules).string = {min_bytes: 1}];
     string description = 2 [(validate.rules).string = {min_bytes: 1}];
     envoy.config.core.v3.DataSource input_schema = 3;
-    oneof backend {
-        RestBackend rest = 5;
-        FunctionGraphBackend function_graph = 6;
-        McpServerBackend mcp_server = 7;
+    Backend backend = 4 [(validate.rules).message = {required: true}];
+}
+
+message Backend {
+    string cluster = 1 [(validate.rules).string = {min_bytes: 1}];
+    oneof transcoding {
+        RestTranscoding rest_transcoding = 2;
+        FunctionGraphTranscoding function_graph_transcoding = 3;
+        McpServerTranscoding mcp_server_transcoding = 4;
     }
 }
 
-message RestBackend {
-  bool enabled = 1;
-  string method = 2 [(validate.rules).string = {min_bytes: 1}];
-  string path = 3 [(validate.rules).string = {min_bytes: 1}];
-  repeated QueryParam params = 4;
+message RestTranscoding {
+  string method = 1 [(validate.rules).string = {min_bytes: 1}];
+  string path = 2 [(validate.rules).string = {min_bytes: 1}];
+  repeated QueryParam query_params = 3;
 }
 
 message QueryParam {
@@ -44,8 +48,8 @@ message QueryParam {
   string source = 2 [(validate.rules).string = {min_bytes: 1}];
 }
 
-message FunctionGraphBackend {
+message FunctionGraphTranscoding {
 }
 
-message McpServerBackend {
+message McpServerTranscoding {
 }

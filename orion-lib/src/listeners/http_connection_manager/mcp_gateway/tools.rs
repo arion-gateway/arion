@@ -5,30 +5,17 @@ use crate::{
     object, OrionRequestBody, PolyBody,
 };
 use http_body_util::Empty;
-use smol_str::SmolStr;
+use orion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::{
+    McpBackend, McpRestQueryParams, McpTool, McpTranscoding,
+};
 use std::{borrow::Cow, sync::Arc};
 use url::form_urlencoded;
 
 const DEFAULT_USER_AGENT: &str = concat!("orion/", env!("CARGO_PKG_VERSION"));
 
 #[derive(Debug, Clone)]
-pub struct Tool {
-    name: String,
-    description: String,
-    schema: serde_json::Map<String, serde_json::Value>,
-    backend: Backend,
-}
-
-#[derive(Debug, Clone)]
-enum Backend {
-    Rest { method: http::Method, path: String, params: Vec<SmolStr> },
-    FunctionGraph {},
-    Mcp {},
-}
-
-#[derive(Debug, Clone)]
 pub struct ToolsRegistry {
-    registry: Vec<Tool>,
+    registry: Vec<McpTool>,
 }
 
 impl ToolsRegistry {
@@ -36,30 +23,42 @@ impl ToolsRegistry {
         ToolsRegistry { registry: Vec::new() }
     }
 
+    pub fn with_tools(tools: Vec<McpTool>) -> Self {
+        let mut myself = ToolsRegistry::new();
+        for tool in tools {
+            myself.register(tool);
+        }
+        myself
+    }
+
+    #[allow(dead_code)]
     pub fn with_dummy_tools() -> Self {
         let mut myself = ToolsRegistry::new();
 
-        myself.register(Tool {
+        myself.register(McpTool {
             name: "get_name".into(),
             description: "Get weather information for a city".into(),
-            schema: object!({
+            input_schema: object!({
                 "type": "object",
                 "properties": {
                     "city": { "type": "string", "description": "City Name" }
                 },
                 "required": ["city"]
             }),
-            backend: Backend::Rest {
-                method: http::Method::GET,
-                path: "/weather".into(),
-                params: vec!["city".into(), "country".into()],
+            backend: McpBackend {
+                cluster: "weather_api_cluster".into(),
+                transcoding: McpTranscoding::Rest {
+                    method: http::Method::GET,
+                    path: "/weather".into(),
+                    query_params: vec![McpRestQueryParams { name: "city".into(), source: "country".into() }],
+                },
             },
         });
 
-        myself.register(Tool {
+        myself.register(McpTool {
             name: "post_user".into(),
             description: "Add a new username and email".into(),
-            schema: object!({
+            input_schema: object!({
                 "type": "object",
                 "properties": {
                     "username": { "type": "string" },
@@ -67,17 +66,20 @@ impl ToolsRegistry {
                 },
                 "required": ["username", "email"]
             }),
-            backend: Backend::Rest {
-                method: http::Method::POST,
-                path: "/user".into(),
-                params: vec!["username".into(), "email".into()],
+            backend: McpBackend {
+                cluster: "post_user_cluster".into(),
+                transcoding: McpTranscoding::Rest {
+                    method: http::Method::POST,
+                    path: "/user".into(),
+                    query_params: vec![McpRestQueryParams { name: "username".into(), source: "email".into() }],
+                },
             },
         });
 
         myself
     }
 
-    pub fn register(&mut self, endpoint: Tool) {
+    pub fn register(&mut self, endpoint: McpTool) {
         self.registry.push(endpoint);
     }
 
@@ -92,7 +94,7 @@ impl ToolsRegistry {
             tools.push(RmcpTool {
                 name: api.name.clone().into(),
                 description: Some(api.description.clone().into()),
-                input_schema: Arc::new(api.schema.clone()),
+                input_schema: Arc::new(api.input_schema.clone()),
                 title: None,
                 output_schema: None,
                 annotations: None,
@@ -127,12 +129,13 @@ impl ToolsRegistry {
     ) -> Option<http::Request<OrionRequestBody>> {
         let name = request.params.get("name")?.as_str()?;
         let endpoint = self.registry.iter().find(|e| e.name == name)?;
-        match &endpoint.backend {
-            Backend::Rest { method, path, params } => {
-                self.build_rest_request(orig_request, request, &method, &path, &params)
+
+        match &endpoint.backend.transcoding {
+            McpTranscoding::Rest { method, path, query_params } => {
+                self.build_rest_request(orig_request, request, &method, &path, &query_params)
             },
-            Backend::FunctionGraph {} => self.build_function_graph_request(orig_request, request),
-            Backend::Mcp {} => self.build_mcp_request(orig_request, request),
+            McpTranscoding::FunctionGraph {} => self.build_function_graph_request(orig_request, request),
+            McpTranscoding::Mcp {} => self.build_mcp_request(orig_request, request),
         }
     }
 
@@ -142,7 +145,7 @@ impl ToolsRegistry {
         request: &Request,
         method: &http::Method,
         path: &str,
-        _params: &Vec<SmolStr>,
+        _query_params: &Vec<McpRestQueryParams>,
     ) -> Option<http::Request<OrionRequestBody>> {
         // Pre-calculate capacity to minimize re-allocations
         let authority = orig_request.uri().authority();

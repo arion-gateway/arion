@@ -3,7 +3,9 @@ use dashmap::DashMap;
 use futures::SinkExt;
 use http::{Method, Request, Response, StatusCode};
 use http_body_util::{BodyExt, Empty, Full};
-use orion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::McpGateway as McpGatewayConfig;
+use orion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::{
+    McpGateway as McpGatewayConfig, McpServerInfo,
+};
 use scopeguard::defer;
 use serde::Serialize;
 use serde_json::json;
@@ -96,12 +98,18 @@ pub struct McpGateway {
 impl From<McpGatewayConfig> for McpGateway {
     fn from(config: McpGatewayConfig) -> Self {
         Self {
-            inner: Arc::new(McpGatewayInner { config, tools: ToolsRegistry::with_dummy_tools() }),
+            inner: Arc::new(McpGatewayInner { config: config.clone(), tools: ToolsRegistry::with_tools(config.tools) }),
             session_ctx: SessionContext(None),
             request_id: model::RequestId::Number(0),
             initialize_request_params: None,
             version: http::Version::default(),
         }
+    }
+}
+
+impl From<McpServerInfo> for Implementation {
+    fn from(info: McpServerInfo) -> Self {
+        Implementation { name: info.name, version: info.version, ..Default::default() }
     }
 }
 
@@ -417,7 +425,7 @@ impl McpGateway {
 
                 let result = InitializeResult {
                     protocol_version: ProtocolVersion::default(),
-                    server_info: Implementation::from_build_env(),
+                    server_info: self.inner.config.server_info.clone().into(),
                     instructions: None,
                     capabilities,
                 };

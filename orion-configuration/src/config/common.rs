@@ -157,6 +157,8 @@ pub enum GenericError {
     InvalidHeaderName(#[from] InvalidHeaderName),
     #[error("Invalid JSON: {0}")]
     InvalidJson(#[from] serde_json::Error),
+    #[error("Invalid HTTP method: {0}")]
+    InvalidMethod(#[from] http::method::InvalidMethod),
 }
 
 impl GenericError {

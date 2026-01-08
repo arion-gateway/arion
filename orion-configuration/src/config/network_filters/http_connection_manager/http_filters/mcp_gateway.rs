@@ -1,10 +1,12 @@
 use crate::config::core::DataSource;
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct McpGateway {
+    #[serde(with = "http_serde_ext::header_name")]
+    pub cluster_header: http::HeaderName,
     pub server_info: McpServerInfo,
-    pub supported_protocol_versions: Vec<String>,
     pub tools: Vec<McpTool>,
 }
 
@@ -18,48 +20,56 @@ pub struct McpServerInfo {
 pub struct McpTool {
     pub name: String,
     pub description: String,
-    pub input_schema: serde_json::Value,
+    pub input_schema: Map<String, Value>,
     pub backend: McpBackend,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
-pub struct McpQueryParams {
-    pub name: String,
-    pub source: String,
+pub struct McpBackend {
+    pub cluster: String,
+    pub transcoding: McpTranscoding,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
-pub enum McpBackend {
-    Rest { method: String, path: String, params: Vec<McpQueryParams> },
+pub enum McpTranscoding {
+    Rest {
+        #[serde(with = "http_serde_ext::method")]
+        method: http::Method,
+        path: String,
+        query_params: Vec<McpRestQueryParams>,
+    },
     FunctionGraph {},
     Mcp {},
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct McpRestQueryParams {
+    pub name: String,
+    pub source: String,
+}
+
 #[cfg(feature = "envoy-conversions")]
 mod envoy_conversions {
+    use std::str::FromStr;
+
     use crate::config::common::envoy_conversions::IsUsed;
     use crate::config::{required, GenericError};
 
     use super::*;
     use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::mcp::mcp_gateway::v3::{
-        tool::Backend as OrionMcpBackend, McpGateway as OrionMcpGateway, QueryParam as OrionMcpQueryParams,
-        ServerInfo as OrionMcpServerInfo, Tool as OrionTool,
+        backend::Transcoding as OrionTranscoding, Backend as OrionMcpBackend, McpGateway as OrionMcpGateway,
+        QueryParam as OrionMcpQueryParams, ServerInfo as OrionMcpServerInfo, Tool as OrionTool,
     };
 
     impl TryFrom<OrionMcpGateway> for McpGateway {
         type Error = GenericError;
         fn try_from(orion: OrionMcpGateway) -> Result<Self, Self::Error> {
-            let OrionMcpGateway { server_info, supported_protocol_versions, tools } = orion;
+            let OrionMcpGateway { cluster_header, server_info, tools } = orion;
+            let cluster_header = required!(cluster_header)?;
             let server_info = required!(server_info)?;
 
             let tools = tools.into_iter().map(TryInto::try_into).collect::<Result<Vec<_>, _>>()?;
-
-            Ok(McpGateway {
-                server_info: server_info.into(),
-                supported_protocol_versions,
-                //tools: tools.into_iter().map(TryInto::try_into)?.collect(),
-                tools,
-            })
+            Ok(McpGateway { cluster_header: cluster_header.try_into()?, server_info: server_info.into(), tools })
         }
     }
 
@@ -69,7 +79,7 @@ mod envoy_conversions {
         fn try_from(orion: OrionTool) -> Result<Self, Self::Error> {
             let OrionTool { name, description, input_schema, backend } = orion;
             let input_schema: DataSource = required!(input_schema)?.try_into()?;
-            let backend = required!(backend)?.into();
+            let backend = required!(backend)?.try_into()?;
 
             let bytes = input_schema.to_bytes_blocking()?;
             let string = String::from_utf8(bytes)?;
@@ -78,23 +88,32 @@ mod envoy_conversions {
         }
     }
 
-    impl From<OrionMcpBackend> for McpBackend {
-        fn from(orion: OrionMcpBackend) -> Self {
-            match orion {
-                OrionMcpBackend::Rest(rest_backend) => McpBackend::Rest {
-                    method: rest_backend.method,
-                    path: rest_backend.path,
-                    params: rest_backend.params.into_iter().map(Into::into).collect(),
-                },
-                OrionMcpBackend::FunctionGraph(_) => todo!(),
-                OrionMcpBackend::McpServer(_) => todo!(),
+    impl TryFrom<OrionMcpBackend> for McpBackend {
+        type Error = GenericError;
+
+        fn try_from(orion: OrionMcpBackend) -> Result<Self, GenericError> {
+            let OrionMcpBackend { cluster, transcoding } = orion;
+            let cluster = required!(cluster)?;
+            let transcoding = required!(transcoding)?;
+
+            match transcoding {
+                OrionTranscoding::RestTranscoding(trans) => Ok(McpBackend {
+                    cluster,
+                    transcoding: McpTranscoding::Rest {
+                        method: http::Method::from_str(&trans.method)?,
+                        path: trans.path,
+                        query_params: trans.query_params.into_iter().map(Into::into).collect(),
+                    },
+                }),
+                OrionTranscoding::FunctionGraphTranscoding(_) => todo!(),
+                OrionTranscoding::McpServerTranscoding(_) => todo!(),
             }
         }
     }
 
-    impl From<OrionMcpQueryParams> for McpQueryParams {
+    impl From<OrionMcpQueryParams> for McpRestQueryParams {
         fn from(orion: OrionMcpQueryParams) -> Self {
-            McpQueryParams { name: orion.name, source: orion.source }
+            McpRestQueryParams { name: orion.name, source: orion.source }
         }
     }
 
