@@ -42,9 +42,16 @@ use crate::{
 const EVENT_STREAM_MIME_BYTES: &[u8] = b"text/event-stream";
 const MIME_TEXT_EVENT_STREAM: &str = "text/event-stream";
 const MIME_APPLICATION_JSON: &str = "application/json";
+const MCP_MESSAGE_ENDPOINT: &str = "/mcp/message";
 const SESSION_ID_QUERY_KEY: &str = "sessionId";
 const SESSION_ID_QUERY_KEY_ALT: &str = "session_id";
-const MCP_MESSAGE_ENDPOINT: &str = "/mcp/message";
+
+const RPC_METHOD_INITIALIZE: &str = "initialize";
+const RPC_METHOD_PING: &str = "ping";
+const RPC_METHOD_TOOLS_LIST: &str = "tools/list";
+const RPC_METHOD_TOOLS_CALL: &str = "tools/call";
+const RPC_METHOD_NOTIFICATION_INITIALIZED: &str = "notification/initialized";
+
 const MAX_CONCURRENT_ASYNC_REQUESTS: usize = 8192;
 
 #[derive(Debug, Clone, Default, Eq, PartialEq, Hash)]
@@ -465,9 +472,9 @@ impl McpGateway {
         // create a new session
         let session = Arc::new(Session {
             sender: Some(Mutex::new(sender)),
-            listener_name: listener_name,
             transport: Transport::Sse,
             session_id: session_id.clone(),
+            listener_name,
         });
 
         // add the session to the map
@@ -516,7 +523,7 @@ impl McpGateway {
         rpc: model::JsonRpcRequest,
     ) -> MessageResponse {
         match rpc.request.method.as_str() {
-            "initialize" => {
+            RPC_METHOD_INITIALIZE => {
                 debug!(target: "mcp_gateway", "rpc initialize received (transport {transport})");
 
                 let Ok(init_params): Result<model::InitializeRequestParam, _> =
@@ -550,27 +557,27 @@ impl McpGateway {
                         let response = model::JsonRpcResponse {
                             jsonrpc: model::JsonRpcVersion2_0,
                             id: self.request_id.clone(),
-                            result: serde_json::to_value(result).unwrap(),
+                            result: serde_json::to_value(result).unwrap_or(serde_json::Value::Null),
                         };
 
-                        return MessageResponse::Response(response);
+                        MessageResponse::Response(response)
                     },
                     Transport::StreamableHttp => {
                         let response = model::JsonRpcResponse {
                             jsonrpc: model::JsonRpcVersion2_0,
                             id: self.request_id.clone(),
-                            result: serde_json::to_value(result).unwrap(),
+                            result: serde_json::to_value(result).unwrap_or(serde_json::Value::Null),
                         };
 
-                        return MessageResponse::Response(response);
+                        MessageResponse::Response(response)
                     },
                 }
             },
-            "notification/initialized" => {
+            RPC_METHOD_NOTIFICATION_INITIALIZED => {
                 debug!(target: "mcp_gateway", "rpc notification/initialized (transport {transport})");
-                return MessageResponse::Nothing;
+                MessageResponse::Nothing
             },
-            "ping" => {
+            RPC_METHOD_PING => {
                 debug!(target: "mcp_gateway", "rpc ping received");
                 let response = model::JsonRpcResponse {
                     jsonrpc: model::JsonRpcVersion2_0,
@@ -578,20 +585,20 @@ impl McpGateway {
                     result: json!({}),
                 };
 
-                return MessageResponse::Response(response);
+                MessageResponse::Response(response)
             },
-            "tools/list" => {
+            RPC_METHOD_TOOLS_LIST => {
                 debug!(target: "mcp_gateway", "rpc tools/list received");
                 let tools = self.inner.tools.build_list_tools();
                 let response = model::JsonRpcResponse {
                     jsonrpc: model::JsonRpcVersion2_0,
                     id: self.request_id.clone(),
-                    result: serde_json::to_value(tools).unwrap(),
+                    result: serde_json::to_value(tools).unwrap_or(serde_json::Value::Null),
                 };
 
-                return MessageResponse::Response(response);
+                MessageResponse::Response(response)
             },
-            "tools/call" => {
+            RPC_METHOD_TOOLS_CALL => {
                 debug!(target: "mcp_gateway", "tools/call {:#?}", rpc);
                 let Some(request) = self.inner.tools.build_request(request, &rpc.request) else {
                     return MessageResponse::Error(
@@ -600,14 +607,14 @@ impl McpGateway {
                 };
 
                 debug!(target: "mcp_gateway", "UPSTREAM {:#?}", request);
-                return MessageResponse::Upstream(request);
+                MessageResponse::Upstream(request)
             },
             _ => {
-                return MessageResponse::Error(self.build_rpc_error(model::ErrorData::new(
+                MessageResponse::Error(self.build_rpc_error(model::ErrorData::new(
                     model::ErrorCode::METHOD_NOT_FOUND,
                     "Method not found",
                     None,
-                )));
+                )))
             },
         }
     }
@@ -668,7 +675,7 @@ impl McpGateway {
             .version(self.version);
 
         for (name, value) in headers {
-            builder = builder.header(name.clone(), *value);
+            builder = builder.header(name, *value);
         }
 
         // let body = match transport {
@@ -705,7 +712,7 @@ impl McpGateway {
             .status(status);
 
         for (name, value) in headers {
-            builder = builder.header(name.clone(), *value);
+            builder = builder.header(name, *value);
         }
 
         let body = match body {
@@ -765,7 +772,7 @@ impl McpGateway {
 
     #[inline]
     fn to_json_rpc_response<T: Serialize>(&self, value: T) -> JsonRpcResponse {
-        let json_value = serde_json::to_value(value).unwrap();
+        let json_value = serde_json::to_value(value).unwrap_or(serde_json::Value::Null);
         let result = match json_value {
             serde_json::Value::Object(map) => map,
             _ => serde_json::Map::new(),
