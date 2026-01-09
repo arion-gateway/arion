@@ -9,7 +9,7 @@ use orion_configuration::config::network_filters::http_connection_manager::http_
 use orion_http_header::MCP_SESSION_ID;
 use scopeguard::defer;
 use serde::Serialize;
-use serde_json::json;
+use serde_json::{Value, json};
 use smol_str::ToSmolStr;
 use std::sync::{atomic::AtomicUsize, Arc};
 use tokio::sync::Mutex;
@@ -478,7 +478,24 @@ impl McpGateway {
         transport: Transport,
         body: Bytes,
     ) -> MessageResponse {
-        let Ok(message): Result<model::JsonRpcMessage, _> = serde_json::from_slice(&body) else {
+        // WORKAROUND: the current rmcp implementation fails to parse
+        // {"jsonrpc":"2.0", "method":"notifications/initialized"},
+        // which is a valid JSON-RPC notification according to the spec.
+        // rmcp incorrectly requires the "params" field, even though it is optional.
+        // This workaround injects an empty "params" object to satisfy rmcp.
+
+        let Ok(mut value) : Result<Value, _> = serde_json::from_slice(&body) else {
+            debug!(target: "mcp_gateway", "handle_rpc_message: failed to parse JSON message: {:?}", body);
+            return MessageResponse::Error(self.build_rpc_error(model::ErrorData::parse_error("invalid JSON", None)));
+        };
+
+        if value.get("id").is_none() && value.get("params").is_none() {
+            if let Some(obj) = value.as_object_mut() {
+                obj.insert("params".to_string(), serde_json::json!({}));
+            }
+        }
+
+        let Ok(message): Result<model::JsonRpcMessage, _> = serde_json::from_value(value) else {
             debug!(target: "mcp_gateway", "handle_rpc_message: failed to parse JSON message: {:?}", body);
             return MessageResponse::Error(self.build_rpc_error(model::ErrorData::parse_error("invalid JSON", None)));
         };
