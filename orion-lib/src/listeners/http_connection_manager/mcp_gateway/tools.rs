@@ -1,13 +1,15 @@
 use super::model::{ListToolsResult, Tool as RmcpTool};
 use crate::{
     body::{instrumented_body::InstrumentedBody, response_flags::BodyKind, timeout_body::TimeoutBody},
-    listeners::http_connection_manager::mcp_gateway::model::Request,
-    object, OrionRequestBody, PolyBody,
+    OrionRequestBody, PolyBody,
 };
 use http_body_util::Empty;
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::{
     McpBackend, McpRestQueryParams, McpTool, McpTranscoding,
 };
+use rmcp::model::{ListToolsResult, Request, Tool};
+use rmcp::object;
+use smol_str::SmolStr;
 use std::{borrow::Cow, sync::Arc};
 use url::form_urlencoded;
 

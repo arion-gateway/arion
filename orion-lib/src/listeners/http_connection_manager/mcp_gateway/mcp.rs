@@ -9,12 +9,17 @@ use orion_configuration::config::network_filters::http_connection_manager::http_
 use orion_http_header::MCP_SESSION_ID;
 use scopeguard::defer;
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use smol_str::ToSmolStr;
 use std::sync::{atomic::AtomicUsize, Arc};
 use tokio::sync::Mutex;
 use tracing::debug;
 use uuid::Uuid;
+
+use rmcp::model::{
+    self, Annotated, CallToolResult, Implementation, InitializeResult, JsonRpcResponse, ProtocolVersion, RawContent,
+    RawTextContent, ServerCapabilities, ServerResult,
+};
 
 use crate::{
     body::{
@@ -23,10 +28,6 @@ use crate::{
     },
     listeners::{
         http_connection_manager::mcp_gateway::{
-            model::{
-                self, Annotated, CallToolResult, Implementation, InitializeResult, JsonRpcResponse, ProtocolVersion,
-                RawContent, RawTextContent, ServerCapabilities, ServerResult,
-            },
             tools::ToolsRegistry,
             transport::{self, RequestExt, SessionId, Transport},
         },
@@ -484,7 +485,7 @@ impl McpGateway {
         // rmcp incorrectly requires the "params" field, even though it is optional.
         // This workaround injects an empty "params" object to satisfy rmcp.
 
-        let Ok(mut value) : Result<Value, _> = serde_json::from_slice(&body) else {
+        let Ok(mut value): Result<Value, _> = serde_json::from_slice(&body) else {
             debug!(target: "mcp_gateway", "handle_rpc_message: failed to parse JSON message: {:?}", body);
             return MessageResponse::Error(self.build_rpc_error(model::ErrorData::parse_error("invalid JSON", None)));
         };
