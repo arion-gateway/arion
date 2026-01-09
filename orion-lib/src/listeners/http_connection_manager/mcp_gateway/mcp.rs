@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use dashmap::DashMap;
 use futures::SinkExt;
-use http::{HeaderName, Method, Request, Response, StatusCode};
+use http::{HeaderName, HeaderValue, Method, Request, Response, StatusCode};
 use http_body_util::{BodyExt, Empty, Full};
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::{
     McpGateway as McpGatewayConfig, McpServerInfo,
@@ -113,6 +113,7 @@ pub struct McpGateway {
     request_id: model::RequestId,
     version: http::Version,
     initialize_request_params: Option<model::InitializeRequestParam>,
+    client_origin: Option<HeaderValue>,
 }
 
 impl From<McpGatewayConfig> for McpGateway {
@@ -123,6 +124,7 @@ impl From<McpGatewayConfig> for McpGateway {
             request_id: model::RequestId::Number(0),
             initialize_request_params: None,
             version: http::Version::default(),
+            client_origin: None,
         }
     }
 }
@@ -141,6 +143,7 @@ impl FactoryFilter for McpGateway {
             request_id: model::RequestId::Number(0),
             initialize_request_params: None,
             version: http::Version::default(),
+            client_origin: None,
         }
     }
 }
@@ -150,6 +153,7 @@ impl McpGateway {
         debug!(target: "mcp_gateway", "apply_request: processing request: {:?}", request);
 
         self.version = request.version();
+        self.client_origin = request.headers().get(http::header::ORIGIN).cloned();
 
         let Some(metadata) = request.extensions().get::<DownstreamMetadata>() else {
             debug!(target: "mcp_gateway", "apply_request: failed to retrieve metadata");
@@ -609,31 +613,38 @@ impl McpGateway {
                 debug!(target: "mcp_gateway", "UPSTREAM {:#?}", request);
                 MessageResponse::Upstream(request)
             },
-            _ => {
-                MessageResponse::Error(self.build_rpc_error(model::ErrorData::new(
-                    model::ErrorCode::METHOD_NOT_FOUND,
-                    "Method not found",
-                    None,
-                )))
-            },
+            _ => MessageResponse::Error(self.build_rpc_error(model::ErrorData::new(
+                model::ErrorCode::METHOD_NOT_FOUND,
+                "Method not found",
+                None,
+            ))),
         }
     }
 
     async fn handle_cors_options(&mut self, req: &mut Request<OrionRequestBody>) -> FilterDecision {
+        let allow_origin = self.client_origin.clone().unwrap_or_else(|| HeaderValue::from_static("*"));
+
+        let request_headers = req
+            .headers()
+            .get(http::header::ACCESS_CONTROL_REQUEST_HEADERS)
+            .cloned()
+            .unwrap_or_else(|| HeaderValue::from_static("content-type, mcp-session-id, mcp-protocol-version"));
+
         let builder = Response::builder()
-            .header(http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-            .header(http::header::ACCESS_CONTROL_ALLOW_METHODS, "GET, POST")
-            .header(http::header::ACCESS_CONTROL_ALLOW_HEADERS, "content-type, x-mcp-protocol-version")
-            .header(http::header::ACCESS_CONTROL_MAX_AGE, "86400")
+            .header(http::header::ACCESS_CONTROL_ALLOW_ORIGIN, allow_origin)
+            .header(http::header::ACCESS_CONTROL_ALLOW_CREDENTIALS, "true")
+            .header(http::header::ACCESS_CONTROL_ALLOW_METHODS, "GET, POST, OPTIONS")
+            .header(http::header::ACCESS_CONTROL_ALLOW_HEADERS, request_headers)
+            .header(http::header::ACCESS_CONTROL_EXPOSE_HEADERS, "mcp-session-id, last-event-id, mcp-protocol-version")
+            .header(http::header::VARY, "Origin, Access-Control-Request-Headers")
+            .header(http::header::CONNECTION, "keep-alive")
             .version(self.version)
             .status(StatusCode::NO_CONTENT);
 
         let Ok(response) = builder.body(TimeoutBody::new(None, PolyBody::from(Empty::new()))) else {
-            debug!(target: "mcp_gateway", "handle_cors_options: failed to build body for response");
-            return FilterDecision::internal_server_error("Failed to build body for response", req.version());
+            return FilterDecision::internal_server_error("Failed to build CORS body", req.version());
         };
 
-        debug!(target: "mcp_gateway", "handle_cors_options: sending {response:?} back to client");
         FilterDecision::DirectResponse(response)
     }
 
@@ -705,8 +716,14 @@ impl McpGateway {
         headers: &[(HeaderName, &str)],
         body: Option<Bytes>,
     ) -> Result<Response<OrionResponseBody>, FilterDecision> {
+        let allow_origin = self.client_origin
+                .clone()
+                .unwrap_or_else(|| HeaderValue::from_static("*"));
+
         let mut builder = Response::builder()
-            .header(http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+            .header(http::header::ACCESS_CONTROL_ALLOW_ORIGIN, allow_origin)
+            .header(http::header::ACCESS_CONTROL_ALLOW_CREDENTIALS, "true")
+            .header(http::header::ACCESS_CONTROL_EXPOSE_HEADERS, "mcp-session-id,last-event-id,mcp-protocol-version")
             .header(http::header::CONNECTION, "keep-alive")
             .version(self.version)
             .status(status);
