@@ -2,6 +2,10 @@ use bytes::Bytes;
 use serde::Serialize;
 use tracing::error;
 
+pub trait RequestExt {
+
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub enum Transport {
     Sse,

@@ -246,11 +246,11 @@ impl McpGateway {
                 let body = serde_json::to_string(&json_rpc_response).unwrap_or_default();
                 match self.build_mcp_response(
                     StatusCode::OK,
+                    Some(body.into()),
                     &[
                         (http::header::CONTENT_TYPE, MIME_APPLICATION_JSON),
                         (MCP_SESSION_ID, self.session_ctx.get().map(|ctx| ctx.session_id.as_str()).unwrap_or_default()),
                     ],
-                    Some(body.into()),
                 ) {
                     Ok(resp) => {
                         *response = resp;
@@ -351,7 +351,7 @@ impl McpGateway {
                     if let Err(e) = self.send_sse_message(event.to_bytes()).await {
                         return e;
                     }
-                    match self.build_mcp_response_accepted(&[]) {
+                    match self.build_mcp_response(StatusCode::ACCEPTED, None, &[]) {
                         Ok(accepted) => return FilterDecision::DirectResponse(accepted),
                         Err(e) => return e,
                     };
@@ -360,8 +360,8 @@ impl McpGateway {
                     let body = serde_json::to_string(&json_rpc_error).unwrap_or_default();
                     match self.build_mcp_response(
                         StatusCode::BAD_REQUEST,
-                        &[(http::header::CONTENT_TYPE, MIME_APPLICATION_JSON), (MCP_SESSION_ID, session_id.as_str())],
                         Some(body.into()),
+                        &[(http::header::CONTENT_TYPE, MIME_APPLICATION_JSON), (MCP_SESSION_ID, session_id.as_str())],
                     ) {
                         Ok(resp) => return FilterDecision::DirectResponse(resp),
                         Err(e) => return e,
@@ -375,7 +375,7 @@ impl McpGateway {
                         return e;
                     }
 
-                    match self.build_mcp_response_accepted(&[]) {
+                    match self.build_mcp_response(StatusCode::ACCEPTED, None, &[]) {
                         Ok(accepted) => return FilterDecision::DirectResponse(accepted),
                         Err(e) => return e,
                     };
@@ -384,8 +384,8 @@ impl McpGateway {
                     let body = serde_json::to_string(&json_rpc_response).unwrap_or_default();
                     match self.build_mcp_response(
                         StatusCode::OK,
-                        &[(http::header::CONTENT_TYPE, MIME_APPLICATION_JSON), (MCP_SESSION_ID, session_id.as_str())],
                         Some(body.into()),
+                        &[(http::header::CONTENT_TYPE, MIME_APPLICATION_JSON), (MCP_SESSION_ID, session_id.as_str())],
                     ) {
                         Ok(resp) => return FilterDecision::DirectResponse(resp),
                         Err(e) => return e,
@@ -394,13 +394,13 @@ impl McpGateway {
             },
             MessageResponse::Nothing => match transport {
                 Transport::Sse => {
-                    let Ok(accepted) = self.build_mcp_response_accepted(&[]) else {
+                    let Ok(accepted) = self.build_mcp_response(StatusCode::ACCEPTED, None, &[]) else {
                         return FilterDecision::internal_server_error("Failed to build response", self.version);
                     };
                     return FilterDecision::DirectResponse(accepted);
                 },
                 Transport::StreamableHttp => {
-                    let Ok(accepted) = self.build_mcp_response_accepted(&[(MCP_SESSION_ID, session_id.as_str())])
+                    let Ok(accepted) = self.build_mcp_response(StatusCode::ACCEPTED, None, &[(MCP_SESSION_ID, session_id.as_str())])
                     else {
                         return FilterDecision::internal_server_error("Failed to build response", self.version);
                     };
@@ -417,7 +417,7 @@ impl McpGateway {
                     }
                     ctx.active_async_requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-                    let Ok(accepted) = self.build_mcp_response_accepted(&[]) else {
+                    let Ok(accepted) = self.build_mcp_response(StatusCode::ACCEPTED, None, &[]) else {
                         return FilterDecision::internal_server_error("Failed to build response", self.version);
                     };
                     return FilterDecision::AsyncRequest(accepted, Some(req));
@@ -674,47 +674,11 @@ impl McpGateway {
         Ok(())
     }
 
-    #[inline]
-    fn build_mcp_response_accepted(
-        &self,
-        headers: &[(HeaderName, &str)],
-    ) -> Result<Response<OrionResponseBody>, FilterDecision> {
-        let mut builder = Response::builder()
-            .header(http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-            .header(http::header::CONNECTION, "keep-alive")
-            .status(StatusCode::ACCEPTED)
-            .version(self.version);
-
-        for (name, value) in headers {
-            builder = builder.header(name, *value);
-        }
-
-        // let body = match transport {
-        //     Transport::Sse => TimeoutBody::new(None, PolyBody::from(Full::from("Accepted"))),
-        //     Transport::StreamableHttp => TimeoutBody::new(None, PolyBody::from(Empty::new())),
-        // };
-
-        let body = TimeoutBody::new(None, PolyBody::from(Empty::new()));
-        let Ok(resp) = builder.body(body) else {
-            return Err(FilterDecision::internal_server_error(
-                format!(
-                    "Failed to build accepted response for session {}",
-                    self.session_ctx.get().map(|s| s.session_id.clone()).unwrap_or_default()
-                )
-                .as_str(),
-                self.version,
-            ));
-        };
-
-        Ok(resp)
-    }
-
-    #[inline]
     fn build_mcp_response(
         &self,
         status: StatusCode,
-        headers: &[(HeaderName, &str)],
         body: Option<Bytes>,
+        headers: &[(HeaderName, &str)],
     ) -> Result<Response<OrionResponseBody>, FilterDecision> {
         let allow_origin = self.client_origin
                 .clone()
