@@ -1,4 +1,3 @@
-use super::model::{ListToolsResult, Tool as RmcpTool};
 use crate::{
     body::{instrumented_body::InstrumentedBody, response_flags::BodyKind, timeout_body::TimeoutBody},
     OrionRequestBody, PolyBody,
@@ -9,7 +8,6 @@ use orion_configuration::config::network_filters::http_connection_manager::http_
 };
 use rmcp::model::{ListToolsResult, Request, Tool};
 use rmcp::object;
-use smol_str::SmolStr;
 use std::{borrow::Cow, sync::Arc};
 use url::form_urlencoded;
 
@@ -93,7 +91,7 @@ impl ToolsRegistry {
             //    api.method.to_string().to_lowercase(),
             //    api.path.replace("/", "_").trim_start_matches('_')
             //);
-            tools.push(RmcpTool {
+            tools.push(Tool {
                 name: api.name.clone().into(),
                 description: Some(api.description.clone().into()),
                 input_schema: Arc::new(api.input_schema.clone()),

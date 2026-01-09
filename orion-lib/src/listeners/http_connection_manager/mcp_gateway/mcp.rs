@@ -110,12 +110,6 @@ impl From<McpGatewayConfig> for McpGateway {
     }
 }
 
-impl From<McpServerInfo> for Implementation {
-    fn from(info: McpServerInfo) -> Self {
-        Implementation { name: info.name, version: info.version, ..Default::default() }
-    }
-}
-
 impl FactoryFilter for McpGateway {
     fn new_from(&self) -> Self {
         Self {
@@ -549,11 +543,16 @@ impl McpGateway {
                     //.enable_logging()
                     .build();
 
+                let server_info = {
+                    let info = &self.inner.config.server_info;
+                    Implementation { name: info.name.clone(), version: info.version.clone(), ..Default::default() }
+                };
+
                 let result = InitializeResult {
                     protocol_version: ProtocolVersion::default(),
-                    server_info: self.inner.config.server_info.clone().into(),
                     instructions: None,
                     capabilities,
+                    server_info,
                 };
 
                 match transport {
