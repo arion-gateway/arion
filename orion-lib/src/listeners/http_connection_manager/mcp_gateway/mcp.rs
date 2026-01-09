@@ -10,11 +10,10 @@ use orion_http_header::MCP_SESSION_ID;
 use scopeguard::defer;
 use serde::Serialize;
 use serde_json::json;
-use smol_str::{SmolStr, ToSmolStr};
+use smol_str::ToSmolStr;
 use std::sync::{atomic::AtomicUsize, Arc};
 use tokio::sync::Mutex;
 use tracing::debug;
-use url::form_urlencoded;
 use uuid::Uuid;
 
 use crate::{
@@ -29,8 +28,7 @@ use crate::{
                 RawContent, RawTextContent, ServerCapabilities, ServerResult,
             },
             tools::ToolsRegistry,
-            transport,
-            transport::Transport,
+            transport::{self, RequestExt, SessionId, Transport},
         },
         http_filters::{FactoryFilter, FilterDecision},
         listener::FilterListenerContext,
@@ -39,12 +37,9 @@ use crate::{
     OrionRequestBody, OrionResponseBody, PolyBody,
 };
 
-const EVENT_STREAM_MIME_BYTES: &[u8] = b"text/event-stream";
 const MIME_TEXT_EVENT_STREAM: &str = "text/event-stream";
 const MIME_APPLICATION_JSON: &str = "application/json";
 const MCP_MESSAGE_ENDPOINT: &str = "/mcp/message";
-const SESSION_ID_QUERY_KEY: &str = "sessionId";
-const SESSION_ID_QUERY_KEY_ALT: &str = "session_id";
 
 const RPC_METHOD_INITIALIZE: &str = "initialize";
 const RPC_METHOD_PING: &str = "ping";
@@ -53,21 +48,6 @@ const RPC_METHOD_TOOLS_CALL: &str = "tools/call";
 const RPC_METHOD_NOTIFICATION_INITIALIZED: &str = "notification/initialized";
 
 const MAX_CONCURRENT_ASYNC_REQUESTS: usize = 8192;
-
-#[derive(Debug, Clone, Default, Eq, PartialEq, Hash)]
-pub struct SessionId(pub SmolStr);
-
-impl SessionId {
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::fmt::Display for SessionId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.as_str())
-    }
-}
 
 #[derive(Debug, Default)]
 pub struct Session {
@@ -272,9 +252,10 @@ impl McpGateway {
         request: &Request<OrionRequestBody>,
         listener_name: &'static str,
     ) -> Option<SessionId> {
+        debug!(target: "mcp_gateway", "get_or_create_session_id: transport={:?}, request={:?}", transport, request);
         match transport {
             Transport::Sse => {
-                let Some(session_id) = Self::get_session_id(request) else {
+                let Some(session_id) = request.get_session_id() else {
                     return None;
                 };
 
@@ -288,7 +269,7 @@ impl McpGateway {
                 Some(session_id)
             },
             Transport::StreamableHttp => {
-                match Self::get_session_id(request) {
+                match request.get_session_id() {
                     Some(session_id) => {
                         let Some(session) = ctx.session_map.get(&session_id) else {
                             return None;
@@ -326,7 +307,7 @@ impl McpGateway {
         listener_name: &'static str,
     ) -> FilterDecision {
         // get transport type for the request
-        let Some(transport) = Self::get_transport(request) else {
+        let Some(transport) = request.get_mcp_transport() else {
             debug!(target: "mcp_gateway", "handle_message_endpoint: could not get transport type from request");
             return FilterDecision::bad_request(self.version);
         };
@@ -400,7 +381,8 @@ impl McpGateway {
                     return FilterDecision::DirectResponse(accepted);
                 },
                 Transport::StreamableHttp => {
-                    let Ok(accepted) = self.build_mcp_response(StatusCode::ACCEPTED, None, &[(MCP_SESSION_ID, session_id.as_str())])
+                    let Ok(accepted) =
+                        self.build_mcp_response(StatusCode::ACCEPTED, None, &[(MCP_SESSION_ID, session_id.as_str())])
                     else {
                         return FilterDecision::internal_server_error("Failed to build response", self.version);
                     };
@@ -438,7 +420,7 @@ impl McpGateway {
     ) -> FilterDecision {
         debug!(target: "mcp_gateway", "handle_sse_handshake: starting SSE handshake...");
 
-        if !matches!(Self::get_transport(req), Some(Transport::Sse)) {
+        if !matches!(req.get_mcp_transport(), Some(Transport::Sse)) {
             debug!(target: "mcp_gateway", "handle_sse_handshake: client does not accept SSE");
             return FilterDecision::bad_request(req.version());
         }
@@ -456,7 +438,8 @@ impl McpGateway {
             .status(StatusCode::OK);
 
         let event: transport::sse::Event = transport::sse::Event::Endpoint(&format!(
-            "{MCP_MESSAGE_ENDPOINT}?{SESSION_ID_QUERY_KEY}={}",
+            "{MCP_MESSAGE_ENDPOINT}?{}={}",
+            transport::SESSION_ID_QUERY_KEY,
             session_id.as_str()
         ));
 
@@ -680,9 +663,7 @@ impl McpGateway {
         body: Option<Bytes>,
         headers: &[(HeaderName, &str)],
     ) -> Result<Response<OrionResponseBody>, FilterDecision> {
-        let allow_origin = self.client_origin
-                .clone()
-                .unwrap_or_else(|| HeaderValue::from_static("*"));
+        let allow_origin = self.client_origin.clone().unwrap_or_else(|| HeaderValue::from_static("*"));
 
         let mut builder = Response::builder()
             .header(http::header::ACCESS_CONTROL_ALLOW_ORIGIN, allow_origin)
@@ -713,42 +694,6 @@ impl McpGateway {
         };
 
         Ok(resp)
-    }
-
-    fn get_transport(req: &Request<OrionRequestBody>) -> Option<Transport> {
-        match *req.method() {
-            Method::POST => {
-                if let Some(query) = req.uri().query() {
-                    if query.contains(SESSION_ID_QUERY_KEY) || query.contains(SESSION_ID_QUERY_KEY_ALT) {
-                        return Some(Transport::Sse);
-                    }
-                }
-                return Some(Transport::StreamableHttp);
-            },
-            Method::GET => {
-                if let Some(accept_value) = req.headers().get(http::header::ACCEPT) {
-                    let bytes = accept_value.as_bytes();
-                    if bytes.windows(EVENT_STREAM_MIME_BYTES.len()).any(|w| w == EVENT_STREAM_MIME_BYTES) {
-                        return Some(Transport::Sse);
-                    }
-                }
-                None
-            },
-
-            _ => None,
-        }
-    }
-
-    fn get_session_id(req: &Request<OrionRequestBody>) -> Option<SessionId> {
-        if let Some(id) = req.headers().get(MCP_SESSION_ID) {
-            return id.to_str().ok().map(|s| SessionId(s.to_smolstr()));
-        }
-        req.uri().query().and_then(|query| {
-            debug!(target: "mcp_gateway", "get_session_id: query: {query}..");
-            form_urlencoded::parse(query.as_bytes())
-                .find(|(key, _)| key == SESSION_ID_QUERY_KEY || key == SESSION_ID_QUERY_KEY_ALT)
-                .map(|(_, value)| SessionId(value.to_smolstr()))
-        })
     }
 
     #[inline]

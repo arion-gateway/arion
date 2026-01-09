@@ -1,16 +1,78 @@
 use bytes::Bytes;
+use http::Method;
+use orion_http_header::MCP_SESSION_ID;
 use serde::Serialize;
-use tracing::error;
+use smol_str::{SmolStr, ToSmolStr};
+use tracing::{debug, error};
+use url::form_urlencoded;
+
+pub const SESSION_ID_QUERY_KEY: &str = "sessionId";
+pub const SESSION_ID_QUERY_KEY_ALT: &str = "session_id";
+pub const EVENT_STREAM_MIME_BYTES: &[u8] = b"text/event-stream";
+
+#[derive(Debug, Clone, Default, Eq, PartialEq, Hash)]
+pub struct SessionId(pub SmolStr);
+
+impl SessionId {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for SessionId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
 
 pub trait RequestExt {
+    fn get_mcp_transport(&self) -> Option<Transport>;
+    fn get_session_id(&self) -> Option<SessionId>;
+}
 
+impl<B> RequestExt for http::Request<B> {
+    fn get_mcp_transport(&self) -> Option<Transport> {
+        match *self.method() {
+            Method::POST => {
+                if let Some(query) = self.uri().query() {
+                    if query.contains(SESSION_ID_QUERY_KEY) || query.contains(SESSION_ID_QUERY_KEY_ALT) {
+                        return Some(Transport::Sse);
+                    }
+                }
+                return Some(Transport::StreamableHttp);
+            },
+            Method::GET => {
+                if let Some(accept_value) = self.headers().get(http::header::ACCEPT) {
+                    let bytes = accept_value.as_bytes();
+                    if bytes.windows(EVENT_STREAM_MIME_BYTES.len()).any(|w| w == EVENT_STREAM_MIME_BYTES) {
+                        return Some(Transport::Sse);
+                    }
+                }
+                None
+            },
+
+            _ => None,
+        }
+    }
+
+    fn get_session_id(&self) -> Option<SessionId> {
+        if let Some(id) = self.headers().get(MCP_SESSION_ID) {
+            return id.to_str().ok().map(|s| SessionId(s.to_smolstr()));
+        }
+        self.uri().query().and_then(|query| {
+            debug!(target: "mcp_gateway", "get_session_id: query: {query}..");
+            form_urlencoded::parse(query.as_bytes())
+                .find(|(key, _)| key == SESSION_ID_QUERY_KEY || key == SESSION_ID_QUERY_KEY_ALT)
+                .map(|(_, value)| SessionId(value.to_smolstr()))
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
 pub enum Transport {
     Sse,
     #[default]
-    StreamableHttp
+    StreamableHttp,
 }
 
 impl std::fmt::Display for Transport {
@@ -50,12 +112,17 @@ pub mod sse {
 }
 
 pub mod streamable_http {
-    use std::{sync::{OnceLock, atomic::{AtomicU64, Ordering}}, time::{SystemTime, UNIX_EPOCH}};
+    use std::{
+        sync::{
+            atomic::{AtomicU64, Ordering},
+            OnceLock,
+        },
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     use bytes::Bytes;
     use serde::Serialize;
-    use smol_str::{SmolStr, format_smolstr};
-
+    use smol_str::{format_smolstr, SmolStr};
 
     // Stores the random instance prefix (initialized only once).
     // We use OnceLock for thread-safe, one-time initialization without Mutex overhead on reads.
@@ -96,9 +163,7 @@ pub mod streamable_http {
         // 1. Get the prefix in nanoseconds.
         let prefix = INSTANCE_PREFIX.get_or_init(|| {
             let start = SystemTime::now();
-            let since_the_epoch = start
-                .duration_since(UNIX_EPOCH)
-                .expect("Time went backwards");
+            let since_the_epoch = start.duration_since(UNIX_EPOCH).expect("Time went backwards");
             since_the_epoch.as_nanos()
         });
 
