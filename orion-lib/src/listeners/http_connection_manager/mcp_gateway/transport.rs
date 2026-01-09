@@ -8,7 +8,11 @@ use url::form_urlencoded;
 
 pub const SESSION_ID_QUERY_KEY: &str = "sessionId";
 pub const SESSION_ID_QUERY_KEY_ALT: &str = "session_id";
-pub const EVENT_STREAM_MIME_BYTES: &[u8] = b"text/event-stream";
+pub const MIME_TEXT_EVENT_STREAM: &str = "text/event-stream";
+pub const MIME_APPLICATION_JSON: &str = "application/json";
+
+pub const BYTES_MIME_TEXT_EVENT_STREAM: &[u8] = b"text/event-stream";
+pub const BYTES_MIME_APPLICATION_JSON: &[u8] = b"application/json";
 
 #[derive(Debug, Clone, Default, Eq, PartialEq, Hash)]
 pub struct SessionId(pub SmolStr);
@@ -28,6 +32,49 @@ impl std::fmt::Display for SessionId {
 pub trait RequestExt {
     fn get_mcp_transport(&self) -> Option<Transport>;
     fn get_session_id(&self) -> Option<SessionId>;
+    fn get_accepted_mime(&self) -> Option<AcceptedMime>;
+}
+
+pub enum AcceptedMime {
+    EventStream,
+    ApplicationJson,
+    EventStreamAndJson,
+}
+
+impl AcceptedMime {
+    #[allow(dead_code)]
+    pub fn is_app_json(&self) -> bool {
+        match self {
+            AcceptedMime::EventStream => false,
+            AcceptedMime::ApplicationJson => true,
+            AcceptedMime::EventStreamAndJson => true,
+        }
+    }
+    #[allow(dead_code)]
+    pub fn is_event_stream(&self) -> bool {
+        match self {
+            AcceptedMime::EventStream => true,
+            AcceptedMime::ApplicationJson => false,
+            AcceptedMime::EventStreamAndJson => true,
+        }
+    }
+}
+
+impl TryFrom<&str> for AcceptedMime {
+    type Error = ();
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
+        let has_event_stream = s.contains(MIME_TEXT_EVENT_STREAM);
+        let has_json = s.contains(MIME_APPLICATION_JSON);
+        if has_event_stream && has_json {
+            Ok(AcceptedMime::EventStreamAndJson)
+        } else if has_event_stream {
+            Ok(AcceptedMime::EventStream)
+        } else if has_json {
+            Ok(AcceptedMime::ApplicationJson)
+        } else {
+            Err(())
+        }
+    }
 }
 
 impl<B> RequestExt for http::Request<B> {
@@ -44,7 +91,7 @@ impl<B> RequestExt for http::Request<B> {
             Method::GET => {
                 if let Some(accept_value) = self.headers().get(http::header::ACCEPT) {
                     let bytes = accept_value.as_bytes();
-                    if bytes.windows(EVENT_STREAM_MIME_BYTES.len()).any(|w| w == EVENT_STREAM_MIME_BYTES) {
+                    if bytes.windows(BYTES_MIME_TEXT_EVENT_STREAM.len()).any(|w| w == BYTES_MIME_TEXT_EVENT_STREAM) {
                         return Some(Transport::Sse);
                     }
                 }
@@ -65,6 +112,14 @@ impl<B> RequestExt for http::Request<B> {
                 .find(|(key, _)| key == SESSION_ID_QUERY_KEY || key == SESSION_ID_QUERY_KEY_ALT)
                 .map(|(_, value)| SessionId(value.to_smolstr()))
         })
+    }
+
+    fn get_accepted_mime(&self) -> Option<AcceptedMime> {
+        if let Some(accept_value) = self.headers().get(http::header::ACCEPT) {
+            let accept = accept_value.to_str().ok()?;
+            return AcceptedMime::try_from(accept).ok();
+        }
+        None
     }
 }
 
@@ -134,10 +189,8 @@ pub mod streamable_http {
 
     #[derive(Debug)]
     pub enum Event<'a, T: Serialize = ()> {
-        Endpoint(&'a str),
         Message(&'a T),
-        Error(&'a T),
-        Ping,
+        Priming,
     }
 
     impl<'a, T: Serialize> Event<'a, T> {
@@ -145,16 +198,11 @@ pub mod streamable_http {
         pub fn to_bytes(&self) -> Bytes {
             let id = get_sse_id();
             match self {
-                Event::Endpoint(endpoint) => Bytes::from(format!("event: message\nid: {id}\ndata: {endpoint}\n\n")),
                 Event::Message(value) => {
                     let msg = serde_json::to_string(value).unwrap_or_default();
                     Bytes::from(format!("event: message\nid: {id}\ndata: {msg}\n\n"))
                 },
-                Event::Ping => Bytes::from(format!("event: ping\nid: {id}\ndata: \n\n")),
-                Event::Error(err) => {
-                    let msg = serde_json::to_string(err).unwrap_or_default();
-                    Bytes::from(format!("event: message\nid: {id}\nerror: {msg}\n\n"))
-                },
+                Event::Priming => Bytes::from(format!("event: message\nid: {id}\ndata:\n\n")),
             }
         }
     }

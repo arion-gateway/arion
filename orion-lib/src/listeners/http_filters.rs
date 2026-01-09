@@ -15,7 +15,7 @@ use crate::{
     },
     OrionRequestBody, OrionResponseBody,
 };
-use http::{Request, Response};
+use http::{Request, Response, StatusCode};
 use orion_format::types::ResponseFlags as FmtResponseFlags;
 use smol_str::SmolStr;
 use tracing::debug;
@@ -59,10 +59,24 @@ impl FilterDecision {
     }
 
     #[inline]
+    #[allow(dead_code)]
     pub fn not_found(ver: http::Version) -> FilterDecision {
         FilterDecision::DirectResponse(
             SyntheticHttpResponse::not_found(EventFailure::DirectResponse.into(), ResponseFlags::default())
                 .into_response(ver),
+        )
+    }
+
+    #[inline]
+    pub fn method_not_allowed(ver: http::Version) -> FilterDecision {
+        FilterDecision::DirectResponse(
+            SyntheticHttpResponse::custom_error(
+                StatusCode::METHOD_NOT_ALLOWED,
+                None,
+                EventFailure::RouteNotFound.into(),
+                ResponseFlags(FmtResponseFlags::NO_ROUTE_FOUND),
+            )
+            .into_response(ver),
         )
     }
 

@@ -47,6 +47,7 @@ impl ToolsRegistry {
             }),
             backend: McpBackend {
                 cluster: "weather_api_cluster".into(),
+                r#async: false,
                 transcoding: McpTranscoding::Rest {
                     method: http::Method::GET,
                     path: "/weather".into(),
@@ -68,6 +69,7 @@ impl ToolsRegistry {
             }),
             backend: McpBackend {
                 cluster: "post_user_cluster".into(),
+                r#async: false,
                 transcoding: McpTranscoding::Rest {
                     method: http::Method::POST,
                     path: "/user".into(),
@@ -126,7 +128,7 @@ impl ToolsRegistry {
         &self,
         orig_request: &http::Request<OrionRequestBody>,
         request: &Request,
-    ) -> Option<http::Request<OrionRequestBody>> {
+    ) -> Option<(http::Request<OrionRequestBody>, bool)> {
         let name = request.params.get("name")?.as_str()?;
         let endpoint = self.registry.iter().find(|e| e.name == name)?;
 
@@ -137,6 +139,7 @@ impl ToolsRegistry {
             McpTranscoding::FunctionGraph {} => self.build_function_graph_request(orig_request, request),
             McpTranscoding::Mcp {} => self.build_mcp_request(orig_request, request),
         }
+        .map(|request| (request, endpoint.backend.r#async))
     }
 
     fn build_rest_request(

@@ -30,10 +30,11 @@ message Tool {
 
 message Backend {
     string cluster = 1 [(validate.rules).string = {min_bytes: 1}];
+    bool async = 2;
     oneof transcoding {
-        RestTranscoding rest_transcoding = 2;
-        FunctionGraphTranscoding function_graph_transcoding = 3;
-        McpServerTranscoding mcp_server_transcoding = 4;
+        RestTranscoding rest_transcoding = 3;
+        FunctionGraphTranscoding function_graph_transcoding = 4;
+        McpServerTranscoding mcp_server_transcoding = 5;
     }
 }
 

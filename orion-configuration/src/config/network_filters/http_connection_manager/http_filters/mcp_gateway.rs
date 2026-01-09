@@ -27,6 +27,7 @@ pub struct McpTool {
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct McpBackend {
     pub cluster: String,
+    pub r#async: bool,
     pub transcoding: McpTranscoding,
 }
 
@@ -92,13 +93,14 @@ mod envoy_conversions {
         type Error = GenericError;
 
         fn try_from(orion: OrionMcpBackend) -> Result<Self, GenericError> {
-            let OrionMcpBackend { cluster, transcoding } = orion;
+            let OrionMcpBackend { cluster, r#async, transcoding } = orion;
             let cluster = required!(cluster)?;
             let transcoding = required!(transcoding)?;
 
             match transcoding {
                 OrionTranscoding::RestTranscoding(trans) => Ok(McpBackend {
                     cluster,
+                    r#async,
                     transcoding: McpTranscoding::Rest {
                         method: http::Method::from_str(&trans.method)?,
                         path: trans.path,
