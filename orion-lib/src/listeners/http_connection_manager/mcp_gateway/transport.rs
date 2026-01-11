@@ -31,8 +31,8 @@ impl std::fmt::Display for SessionId {
 
 pub trait RequestExt {
     fn get_mcp_transport(&self) -> Option<Transport>;
-    fn get_session_id(&self) -> Option<SessionId>;
-    fn get_accepted_mime(&self) -> Option<AcceptedMime>;
+    fn get_mcp_session_id(&self) -> Option<SessionId>;
+    fn get_mcp_accepted_mime(&self) -> Option<AcceptedMime>;
 }
 
 pub enum AcceptedMime {
@@ -102,7 +102,7 @@ impl<B> RequestExt for http::Request<B> {
         }
     }
 
-    fn get_session_id(&self) -> Option<SessionId> {
+    fn get_mcp_session_id(&self) -> Option<SessionId> {
         if let Some(id) = self.headers().get(MCP_SESSION_ID) {
             return id.to_str().ok().map(|s| SessionId(s.to_smolstr()));
         }
@@ -114,7 +114,7 @@ impl<B> RequestExt for http::Request<B> {
         })
     }
 
-    fn get_accepted_mime(&self) -> Option<AcceptedMime> {
+    fn get_mcp_accepted_mime(&self) -> Option<AcceptedMime> {
         if let Some(accept_value) = self.headers().get(http::header::ACCEPT) {
             let accept = accept_value.to_str().ok()?;
             return AcceptedMime::try_from(accept).ok();
@@ -123,7 +123,7 @@ impl<B> RequestExt for http::Request<B> {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Transport {
     Sse,
     #[default]

@@ -270,7 +270,7 @@ impl McpGateway {
         debug!(target: "mcp_gateway", "get_or_create_session_id: transport={:?}, request={:?}", transport, request);
         match transport {
             Transport::Sse => {
-                let Some(session_id) = request.get_session_id() else {
+                let Some(session_id) = request.get_mcp_session_id() else {
                     return None;
                 };
 
@@ -284,7 +284,7 @@ impl McpGateway {
                 Some(session_id)
             },
             Transport::StreamableHttp => {
-                match request.get_session_id() {
+                match request.get_mcp_session_id() {
                     Some(session_id) => {
                         let Some(session) = ctx.session_map.get(&session_id) else {
                             return None;
@@ -327,10 +327,13 @@ impl McpGateway {
             return FilterDecision::bad_request(self.version);
         };
 
-        let Some(accept) = request.get_accepted_mime() else {
-            debug!(target: "mcp_gateway", "handle_message_endpoint: could not get accepted MIME type from request");
-            return FilterDecision::bad_request(self.version);
-        };
+        if matches!(transport, Transport::StreamableHttp) {
+            let accept = request.get_mcp_accepted_mime();
+            if !matches!(accept, Some(AcceptedMime::EventStreamAndJson)) {
+                debug!(target: "mcp_gateway", "handle_message_endpoint: unsupported MIME type for StreamableHttp transport");
+                return FilterDecision::bad_request(self.version);
+            }
+        }
 
         // get session ID from the request or generate a new one
         let Some(session_id) = self.get_or_create_session_id(ctx, transport, request, listener_name) else {
@@ -381,28 +384,11 @@ impl McpGateway {
                         Err(e) => return e,
                     };
                 },
-                Transport::StreamableHttp if accept.is_app_json() => {
+                Transport::StreamableHttp => {
                     let body = serde_json::to_vec(&json_rpc_response).unwrap_or_default();
                     match self.build_mcp_response(
                         StatusCode::OK,
                         Self::build_mcp_body(Some(body.into())),
-                        &[(http::header::CONTENT_TYPE, MIME_APPLICATION_JSON), (MCP_SESSION_ID, session_id.as_str())],
-                    ) {
-                        Ok(resp) => return FilterDecision::DirectResponse(resp),
-                        Err(e) => return e,
-                    }
-                },
-                Transport::StreamableHttp => {
-                    let (body, mut sender) = SseBody::new();
-                    let body = TimeoutBody::new(None, PolyBody::from(body));
-                    let event = transport::streamable_http::Event::Message(&json_rpc_response);
-                    let Ok(_) = sender.send(event.to_bytes()).await else {
-                        return FilterDecision::internal_server_error("Failed to build body!", self.version);
-                    };
-
-                    match self.build_mcp_response(
-                        StatusCode::BAD_REQUEST,
-                        body,
                         &[(http::header::CONTENT_TYPE, MIME_APPLICATION_JSON), (MCP_SESSION_ID, session_id.as_str())],
                     ) {
                         Ok(resp) => return FilterDecision::DirectResponse(resp),
@@ -445,7 +431,7 @@ impl McpGateway {
                     };
                     return FilterDecision::AsyncRequest(accepted, Some(req));
                 },
-                Transport::StreamableHttp if matches!(accept, AcceptedMime::ApplicationJson) || !async_call => {
+                Transport::StreamableHttp if !async_call => {
                     *request = req;
                     return FilterDecision::Continue;
                 },
@@ -467,7 +453,7 @@ impl McpGateway {
                         return FilterDecision::internal_server_error("Failed to send priming event", self.version);
                     };
 
-                    // save the sender for later use (on response)
+                    // save the sender for use on response
                     self.sender = Some(Arc::new(Mutex::new(sender)));
 
                     let body = TimeoutBody::new(None, PolyBody::from(body));
