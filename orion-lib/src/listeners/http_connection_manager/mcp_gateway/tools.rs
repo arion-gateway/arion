@@ -13,6 +13,22 @@ use url::form_urlencoded;
 
 const DEFAULT_USER_AGENT: &str = concat!("orion/", env!("CARGO_PKG_VERSION"));
 
+#[derive(Debug, thiserror::Error)]
+pub enum BuildRequestError {
+    #[error("missing 'name' parameter in request")]
+    MissingName,
+    #[error("'name' parameter is not a string")]
+    NameNotString,
+    #[error("tool '{0}' not found in registry")]
+    ToolNotFound(String),
+    #[error("REST request for tool '{tool}': {reason}")]
+    RestBuildFailed { tool: String, reason: String },
+    #[error("MCP transcoding is not yet implemented")]
+    McpNotImplemented,
+    #[error("FunctionGraph transcoding is not yet implemented")]
+    FunctionGraphNotImplemented,
+}
+
 #[derive(Debug, Clone)]
 pub struct ToolsRegistry {
     registry: Vec<McpTool>,
@@ -128,18 +144,33 @@ impl ToolsRegistry {
         &self,
         orig_request: &http::Request<OrionRequestBody>,
         request: &Request,
-    ) -> Option<(http::Request<OrionRequestBody>, bool)> {
-        let name = request.params.get("name")?.as_str()?;
-        let endpoint = self.registry.iter().find(|e| e.name == name)?;
+    ) -> Result<(http::Request<OrionRequestBody>, bool), BuildRequestError> {
+        let name = request.params.get("name").ok_or(BuildRequestError::MissingName)?;
+        let name = name.as_str().ok_or(BuildRequestError::NameNotString)?;
 
-        match &endpoint.backend.transcoding {
+        let endpoint = self
+            .registry
+            .iter()
+            .find(|e| e.name == name)
+            .ok_or_else(|| BuildRequestError::ToolNotFound(name.to_string()))?;
+
+        let http_request = match &endpoint.backend.transcoding {
             McpTranscoding::Rest { method, path, query_params } => {
                 self.build_rest_request(orig_request, request, &method, &path, &query_params)
-            },
-            McpTranscoding::FunctionGraph {} => self.build_function_graph_request(orig_request, request),
-            McpTranscoding::Mcp {} => self.build_mcp_request(orig_request, request),
-        }
-        .map(|request| (request, endpoint.backend.r#async))
+                    .map_err(|e| BuildRequestError::RestBuildFailed {
+                        tool: name.to_string(),
+                        reason: e.to_string(),
+                    })?
+            }
+            McpTranscoding::FunctionGraph {} => {
+                return Err(BuildRequestError::FunctionGraphNotImplemented);
+            }
+            McpTranscoding::Mcp {} => {
+                return Err(BuildRequestError::McpNotImplemented);
+            }
+        };
+
+        Ok((http_request, endpoint.backend.r#async))
     }
 
     fn build_rest_request(
@@ -149,22 +180,19 @@ impl ToolsRegistry {
         method: &http::Method,
         path: &str,
         _query_params: &Vec<McpRestQueryParams>,
-    ) -> Option<http::Request<OrionRequestBody>> {
-        // Pre-calculate capacity to minimize re-allocations
-        let authority = orig_request.uri().authority();
+    ) -> Result<http::Request<OrionRequestBody>, http::Error> {
+        // Build a path-only URI (no authority/scheme) - Orion will route to the correct
+        // upstream cluster based on configuration. Including authority without scheme
+        // causes "invalid format" error in http::Uri parser.
         let arguments = request.params.get("arguments").and_then(|v| v.as_object());
         let has_args = arguments.is_some_and(|m| !m.is_empty());
 
-        // Estimate: base + '?' + ~24 chars per argument (key=value&)
-        let capacity = {
-            let base_len = authority.map_or(0, |a| a.as_str().len() + 1) + path.len();
-            base_len + if has_args { 1 + arguments.map_or(0, |m| m.len() * 24) } else { 0 }
-        };
+        // Estimate capacity: path + '?' + ~24 chars per argument (key=value&)
+        let capacity = path.len() + if has_args { 1 + arguments.map_or(0, |m| m.len() * 24) } else { 0 };
 
+        // Ensure path starts with '/' for a valid path-only URI
         let mut uri = String::with_capacity(capacity);
-
-        if let Some(auth) = authority {
-            uri.push_str(auth.as_str());
+        if !path.starts_with('/') {
             uri.push('/');
         }
         uri.push_str(path);
@@ -195,22 +223,6 @@ impl ToolsRegistry {
             |_, _, _| {},
         );
 
-        builder.body(body).ok()
-    }
-
-    fn build_mcp_request(
-        &self,
-        _orig_request: &http::Request<OrionRequestBody>,
-        _request: &Request,
-    ) -> Option<http::Request<OrionRequestBody>> {
-        None
-    }
-
-    fn build_function_graph_request(
-        &self,
-        _orig_request: &http::Request<OrionRequestBody>,
-        _request: &Request,
-    ) -> Option<http::Request<OrionRequestBody>> {
-        None
+        builder.body(body)
     }
 }

@@ -271,11 +271,13 @@ impl McpGateway {
         match transport {
             Transport::Sse => {
                 let Some(session_id) = request.get_mcp_session_id() else {
+                    debug!(target: "mcp_gateway", "get_or_create_session_id: SSE transport requires session ID but none found in request");
                     return None;
                 };
 
                 // search for session in map
                 let Some(session) = ctx.session_map.get(&session_id) else {
+                    debug!(target: "mcp_gateway", "get_or_create_session_id: session {} not found in session map", session_id);
                     return None;
                 };
 
@@ -287,6 +289,7 @@ impl McpGateway {
                 match request.get_mcp_session_id() {
                     Some(session_id) => {
                         let Some(session) = ctx.session_map.get(&session_id) else {
+                            debug!(target: "mcp_gateway", "get_or_create_session_id: StreamableHttp session {} not found in session map", session_id);
                             return None;
                         };
                         self.session_ctx = SessionContext(Some(session.value().clone()));
@@ -449,7 +452,8 @@ impl McpGateway {
 
                     // priming event...
                     let event: transport::streamable_http::Event = transport::streamable_http::Event::Priming;
-                    if let Err(_) = sender.send(event.to_bytes()).await {
+                    if let Err(e) = sender.send(event.to_bytes()).await {
+                        debug!(target: "mcp_gateway", "handle_mcp_message_endpoint: failed to send priming event: {e}");
                         return FilterDecision::internal_server_error("Failed to send priming event", self.version);
                     };
 
@@ -669,20 +673,27 @@ impl McpGateway {
             },
             RPC_METHOD_TOOLS_CALL => {
                 debug!(target: "mcp_gateway", "tools/call {:#?}", rpc);
-                let Some((request, r#async)) = self.inner.tools.build_request(request, &rpc.request) else {
-                    return MessageResponse::Error(
-                        self.build_rpc_error(model::ErrorData::invalid_params("invalid params", None)),
-                    );
+                let (request, r#async) = match self.inner.tools.build_request(request, &rpc.request) {
+                    Ok(result) => result,
+                    Err(e) => {
+                        debug!(target: "mcp_gateway", "handle_rpc_request: tools/call failed to build request: {e:#}");
+                        return MessageResponse::Error(
+                            self.build_rpc_error(model::ErrorData::invalid_params("invalid params", None)),
+                        );
+                    }
                 };
 
                 debug!(target: "mcp_gateway", "UPSTREAM {:#?}", request);
                 MessageResponse::Upstream((request, r#async))
             },
-            _ => MessageResponse::Error(self.build_rpc_error(model::ErrorData::new(
-                model::ErrorCode::METHOD_NOT_FOUND,
-                "Method not found",
-                None,
-            ))),
+            _ => {
+                debug!(target: "mcp_gateway", "handle_rpc_request: unknown RPC method '{}'", rpc.request.method);
+                MessageResponse::Error(self.build_rpc_error(model::ErrorData::new(
+                    model::ErrorCode::METHOD_NOT_FOUND,
+                    "Method not found",
+                    None,
+                )))
+            },
         }
     }
 
@@ -707,6 +718,7 @@ impl McpGateway {
             .status(StatusCode::NO_CONTENT);
 
         let Ok(response) = builder.body(TimeoutBody::new(None, PolyBody::from(Empty::new()))) else {
+            debug!(target: "mcp_gateway", "handle_cors_options: failed to build CORS response body");
             return FilterDecision::internal_server_error("Failed to build CORS body", req.version());
         };
 
@@ -729,10 +741,12 @@ impl McpGateway {
                     }
                 },
                 None => {
+                    debug!(target: "mcp_gateway", "send_sse_message: SSE sender not available for session {}", session.session_id);
                     return Err(FilterDecision::internal_server_error("SSE sender not available", self.version));
                 },
             },
             None => {
+                debug!(target: "mcp_gateway", "send_sse_message: session context not available");
                 return Err(FilterDecision::internal_server_error("Session context not available", self.version));
             },
         }
@@ -768,6 +782,8 @@ impl McpGateway {
         }
 
         let Ok(resp) = builder.body(body) else {
+            debug!(target: "mcp_gateway", "build_mcp_response: failed to build response body for session {}", 
+                self.session_ctx.get().map(|s| s.session_id.clone()).unwrap_or_default());
             return Err(FilterDecision::internal_server_error(
                 format!(
                     "Failed to build accepted response for session {}",
