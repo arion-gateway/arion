@@ -44,6 +44,7 @@ impl Body for SseBody {
     type Data = Bytes;
     type Error = Box<dyn std::error::Error + Send + Sync>;
 
+    #[inline]
     fn poll_frame(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -69,11 +70,13 @@ impl std::fmt::Debug for SseSender {
 }
 
 impl SseSender {
+    #[inline]
     fn new(injector: mpsc::Sender<Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>>) -> Self {
         Self { injector: Some(PollSender::new(injector)) }
     }
 
     /// Close the `SseSender` to prevent further frame injections.
+    #[inline]
     pub fn close(&mut self) {
         self.injector.take();
     }
@@ -92,6 +95,7 @@ pub enum SseSenderError {
 impl Sink<Bytes> for SseSender {
     type Error = SseSenderError;
 
+    #[inline]
     fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let this = self.project();
         match this.injector.as_pin_mut() {
@@ -100,6 +104,7 @@ impl Sink<Bytes> for SseSender {
         }
     }
 
+    #[inline]
     fn start_send(self: Pin<&mut Self>, item: Bytes) -> Result<(), Self::Error> {
         let this = self.project();
         match this.injector.as_pin_mut() {
@@ -108,6 +113,7 @@ impl Sink<Bytes> for SseSender {
         }
     }
 
+    #[inline]
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let this = self.project();
         match this.injector.as_pin_mut() {
@@ -116,6 +122,7 @@ impl Sink<Bytes> for SseSender {
         }
     }
 
+    #[inline]
     fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let this = self.project();
         match this.injector.as_pin_mut() {

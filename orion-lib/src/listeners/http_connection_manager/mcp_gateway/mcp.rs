@@ -174,8 +174,10 @@ impl McpGateway {
         };
 
         let ctx = McpGatewayListenerContext::get_filter_context(session.listener_name);
+        let is_async = { matches!(session.transport, Transport::Sse) || self.sse_sender.as_ref().is_some() };
+
         defer! {
-            if matches!(session.transport, Transport::Sse) || self.sse_sender.is_some() {
+            if is_async {
                 ctx.active_async_requests.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
             }
         };
@@ -192,16 +194,26 @@ impl McpGateway {
                     };
 
                     let event = transport::sse::Event::Message(&error);
-                    if let Err(e) = self.send_sse_message(sender, event.to_bytes()).await {
+                    let mut sender = sender.lock().await;
+                    let session_id = self.get_session_id();
+                    if let Err(e) =
+                        Self::send_sse_message(&mut sender, &session_id, event.to_bytes(), self.version).await
+                    {
                         return e;
                     }
                 },
                 Transport::StreamableHttp => {
                     let event = transport::streamable_http::Event::Message(&error);
-                    if let Some(sender) = &self.sse_sender {
-                        if let Err(e) = self.send_sse_message(sender.as_ref(), event.to_bytes()).await {
+                    let session_id = self.get_session_id();
+                    if let Some(sender) = &mut self.sse_sender {
+                        let mut sender_guard = sender.lock().await;
+                        let sender = &mut *sender_guard;
+                        if let Err(e) =
+                            Self::send_sse_message(sender, &session_id, event.to_bytes(), self.version).await
+                        {
                             return e;
                         }
+                        sender.close();
                     }
                 },
             }
@@ -242,20 +254,24 @@ impl McpGateway {
                 };
                 debug!(target: "mcp_gateway", "apply_response: SSE response...");
                 let event = transport::sse::Event::Message(&json_rpc_response);
+                let session_id = self.get_session_id();
                 debug!(target: "mcp_gateway", "SENDING SSE EVENT: {:?}", event);
-                if let Err(e) = self.send_sse_message(sender, event.to_bytes()).await {
+                let mut sender = sender.lock().await;
+                if let Err(e) = Self::send_sse_message(&mut sender, &session_id, event.to_bytes(), self.version).await {
                     return e;
                 }
                 FilterDecision::Continue
             },
-            Transport::StreamableHttp => match self.sse_sender.as_ref() {
+            Transport::StreamableHttp => match self.sse_sender.as_mut() {
                 Some(sender) => {
                     debug!(target: "mcp_gateway", "apply_response: streamable HTTP (async SSE)...");
+                    let mut sender_guard = sender.lock().await;
+                    let sender = &mut *sender_guard;
                     let event = transport::streamable_http::Event::Message(&json_rpc_response);
-                    let mut sender = sender.lock().await;
                     if let Err(e) = sender.send(event.to_bytes()).await {
                         debug!(target: "mcp_gateway", "send_streamable_http_message: failed to send message for session {}, error {e}", session.session_id);
                     }
+                    sender.close();
                     FilterDecision::Continue
                 },
                 None => {
@@ -385,7 +401,11 @@ impl McpGateway {
                         return FilterDecision::internal_server_error("SSE sender not available", self.version);
                     };
                     let event = transport::sse::Event::Message(&json_rpc_error);
-                    if let Err(e) = self.send_sse_message(sender, event.to_bytes()).await {
+                    let session_id = self.get_session_id();
+                    let mut sender = sender.lock().await;
+                    if let Err(e) =
+                        Self::send_sse_message(&mut sender, &session_id, event.to_bytes(), self.version).await
+                    {
                         return e;
                     }
                     match self.build_mcp_response(StatusCode::ACCEPTED, Self::build_mcp_body(None), &[]) {
@@ -412,7 +432,11 @@ impl McpGateway {
                         return FilterDecision::internal_server_error("SSE sender not available", self.version);
                     };
                     let event = transport::sse::Event::Message(&json_rpc_response);
-                    if let Err(e) = self.send_sse_message(sender, event.to_bytes()).await {
+                    let session_id = self.get_session_id();
+                    let mut sender = sender.lock().await;
+                    if let Err(e) =
+                        Self::send_sse_message(&mut sender, &session_id, event.to_bytes(), self.version).await
+                    {
                         return e;
                     }
 
@@ -495,13 +519,20 @@ impl McpGateway {
                     self.sse_sender = Some(Arc::new(Mutex::new(sender)));
 
                     let body = TimeoutBody::new(None, PolyBody::from(body));
-                    let Ok(okay) = self.build_mcp_response(
+                    let Ok(mut okay) = self.build_mcp_response(
                         StatusCode::OK,
                         body,
-                        &[(http::header::CONTENT_TYPE, MIME_TEXT_EVENT_STREAM)],
+                        &[
+                            (http::header::CONTENT_TYPE, MIME_TEXT_EVENT_STREAM),
+                            (http::header::CACHE_CONTROL, "no-cache"),
+                        ],
                     ) else {
                         return FilterDecision::internal_server_error("Failed to build response", self.version);
                     };
+
+                    if let Some(session_id) = request.headers().get(MCP_SESSION_ID) {
+                        okay.headers_mut().insert(MCP_SESSION_ID, session_id.clone());
+                    }
 
                     debug!(target: "mcp_gateway", "apply_request: returning async request...");
                     return FilterDecision::AsyncRequest(okay, Some(req));
@@ -714,7 +745,7 @@ impl McpGateway {
                         return MessageResponse::Error(
                             self.build_rpc_error(model::ErrorData::invalid_params("invalid params", None)),
                         );
-                    }
+                    },
                 };
 
                 debug!(target: "mcp_gateway", "UPSTREAM {:#?}", request);
@@ -759,14 +790,17 @@ impl McpGateway {
         FilterDecision::DirectResponse(response)
     }
 
-    async fn send_sse_message(&self, sender: &Mutex<SseSender>, message: Bytes) -> Result<(), FilterDecision> {
-        let mut sender = sender.lock().await;
+    async fn send_sse_message(
+        sender: &mut SseSender,
+        session_id: &SessionId,
+        message: Bytes,
+        version: http::Version,
+    ) -> Result<(), FilterDecision> {
         if let Err(e) = sender.send(message).await {
-            let session_id = self.session_ctx.get().map(|s| s.session_id.clone()).unwrap_or_default();
             debug!(target: "mcp_gateway", "send_sse_message: failed to send message for session {}, error {e}", session_id);
             return Err(FilterDecision::internal_server_error(
                 format!("Failed to send SSE message for session {}", session_id).as_str(),
-                self.version,
+                version,
             ));
         }
         Ok(())
@@ -829,5 +863,10 @@ impl McpGateway {
     #[inline]
     fn build_rpc_error(&self, error: model::ErrorData) -> model::JsonRpcError {
         model::JsonRpcError { jsonrpc: model::JsonRpcVersion2_0, id: self.request_id.clone(), error }
+    }
+
+    #[inline]
+    pub fn get_session_id(&self) -> SessionId {
+        self.session_ctx.get().map(|s| s.session_id.clone()).unwrap_or_default()
     }
 }
