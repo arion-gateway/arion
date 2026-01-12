@@ -130,8 +130,8 @@ impl ToolsRegistry {
     /// Returns an iterator over arguments as (key, value) pairs without allocating a Vec.
     /// Values are borrowed when possible (strings), owned only when conversion is needed.
     #[inline]
-    fn extract_arguments(request: &Request) -> impl Iterator<Item = (&str, Cow<'_, str>)> {
-        request.params.get("arguments").and_then(|v| v.as_object()).into_iter().flatten().map(|(k, v)| {
+    fn extract_arguments(mcp_request: &Request) -> impl Iterator<Item = (&str, Cow<'_, str>)> {
+        mcp_request.params.get("arguments").and_then(|v| v.as_object()).into_iter().flatten().map(|(k, v)| {
             let value = match v {
                 serde_json::Value::String(s) => Cow::Borrowed(s.as_str()),
                 serde_json::Value::Null => Cow::Borrowed("null"),
@@ -145,11 +145,11 @@ impl ToolsRegistry {
 
     pub fn build_request(
         &self,
-        orig_request: &http::Request<OrionRequestBody>,
-        request: &Request,
+        request: &http::Request<OrionRequestBody>,
+        mcp_request: &Request,
         cluster_header: &Option<ClusterHeader>,
     ) -> Result<(http::Request<OrionRequestBody>, bool), BuildRequestError> {
-        let name = request.params.get("name").ok_or(BuildRequestError::MissingName)?;
+        let name = mcp_request.params.get("name").ok_or(BuildRequestError::MissingName)?;
         let name = name.as_str().ok_or(BuildRequestError::NameNotString)?;
 
         let endpoint = self
@@ -160,7 +160,7 @@ impl ToolsRegistry {
 
         let mut upstream_request = match &endpoint.backend.transcoding {
             McpTranscoding::Rest { method, path, query_params } => self
-                .build_rest_request(orig_request, request, &method, &path, &query_params)
+                .build_rest_request(request, mcp_request, &method, &path, &query_params)
                 .map_err(|e| BuildRequestError::RestBuildFailed { tool: name.to_string(), reason: e.to_string() })?,
             McpTranscoding::FunctionGraph {} => {
                 return Err(BuildRequestError::FunctionGraphNotImplemented);
@@ -180,8 +180,8 @@ impl ToolsRegistry {
 
     fn build_rest_request(
         &self,
-        orig_request: &http::Request<OrionRequestBody>,
-        request: &Request,
+        request: &http::Request<OrionRequestBody>,
+        mcp_request: &Request,
         method: &http::Method,
         path: &str,
         _query_params: &Vec<McpRestQueryParams>,
@@ -189,7 +189,7 @@ impl ToolsRegistry {
         // Build a path-only URI (no authority/scheme) - Orion will route to the correct
         // upstream cluster based on configuration. Including authority without scheme
         // causes "invalid format" error in http::Uri parser.
-        let arguments = request.params.get("arguments").and_then(|v| v.as_object());
+        let arguments = mcp_request.params.get("arguments").and_then(|v| v.as_object());
         let has_args = arguments.is_some_and(|m| !m.is_empty());
 
         // Estimate capacity: path + '?' + ~24 chars per argument (key=value&)
@@ -205,13 +205,13 @@ impl ToolsRegistry {
         // Build query string directly using lazy iterator
         if has_args {
             uri.push('?');
-            uri = form_urlencoded::Serializer::new(uri).extend_pairs(Self::extract_arguments(request)).finish();
+            uri = form_urlencoded::Serializer::new(uri).extend_pairs(Self::extract_arguments(mcp_request)).finish();
         }
 
         // Orion will override the authority with the correct upstream endpoint.
         // This is required for the match_virtual_host to work properly.
 
-        let headers = orig_request.headers();
+        let headers = request.headers();
         let user_agent =
             headers.get(http::header::USER_AGENT).and_then(|ua| ua.to_str().ok()).unwrap_or(DEFAULT_USER_AGENT);
 

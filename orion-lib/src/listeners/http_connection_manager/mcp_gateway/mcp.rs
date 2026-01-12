@@ -15,8 +15,9 @@ use tracing::debug;
 use uuid::Uuid;
 
 use rmcp::model::{
-    self, Annotated, CallToolResult, Implementation, InitializeResult, JsonRpcResponse, ProtocolVersion, RawContent,
-    RawTextContent, ServerCapabilities, ServerResult,
+    self, Annotated, CallToolRequestMethod, CallToolResult, ConstString, Implementation, InitializeResult,
+    InitializeResultMethod, InitializedNotificationMethod, JsonRpcError, JsonRpcResponse, ListToolsRequestMethod,
+    PingRequestMethod, ProtocolVersion, RawContent, RawTextContent, ServerCapabilities, ServerResult,
 };
 
 use crate::{
@@ -40,14 +41,6 @@ use crate::{
 
 const MCP_MESSAGE_ENDPOINT: &str = "/mcp/message";
 
-const RPC_METHOD_INITIALIZE: &str = "initialize";
-const RPC_METHOD_PING: &str = "ping";
-const RPC_METHOD_TOOLS_LIST: &str = "tools/list";
-const RPC_METHOD_TOOLS_CALL: &str = "tools/call";
-const RPC_METHOD_NOTIFICATION_INITIALIZED: &str = "notification/initialized";
-
-const MAX_CONCURRENT_ASYNC_REQUESTS: usize = 8192;
-
 #[derive(Debug, Default)]
 pub struct Session {
     listener_name: &'static str, // to handle session eviction from listener.sse_map
@@ -60,6 +53,55 @@ pub struct Session {
 pub struct McpGatewayListenerContext {
     session_map: DashMap<SessionId, Arc<Session>>,
     active_async_requests: AtomicUsize,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum CreateSessionError {
+    #[error("Session limit reached")]
+    LimitReached,
+}
+
+impl McpGatewayListenerContext {
+    const MAX_CONCURRENT_ASYNC_REQUESTS: usize = 4096;
+    const MAX_SESSIONS_LIMIT: usize = 65536;
+
+    #[inline]
+    pub fn try_start_async_request(&self) -> bool {
+        if self.active_async_requests.load(std::sync::atomic::Ordering::Relaxed) >= Self::MAX_CONCURRENT_ASYNC_REQUESTS
+        {
+            return false;
+        }
+        self.active_async_requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        true
+    }
+
+    #[inline]
+    pub fn end_async_request(&self) {
+        self.active_async_requests.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn create_session(&self, listener_name: &'static str) -> Result<Arc<Session>, CreateSessionError> {
+        if self.session_map.len() >= Self::MAX_SESSIONS_LIMIT {
+            debug!(target: "mcp_gateway", "create_new_session: session limit reached");
+            return Err(CreateSessionError::LimitReached);
+        }
+
+        let session_id = SessionId(Uuid::new_v4().to_smolstr());
+
+        let session = Arc::new(Session {
+            listener_name,
+            session_id: session_id.clone(),
+            transport: Transport::default(),
+            session_sse_sender: None,
+        });
+        self.session_map.insert(session_id, session.clone());
+        Ok(session)
+    }
+
+    #[inline]
+    pub fn delete_session(&self, session_id: &SessionId) -> bool {
+        self.session_map.remove(session_id).is_some()
+    }
 }
 
 #[derive(Debug)]
@@ -92,7 +134,7 @@ enum MessageResponse {
 #[derive(Debug, Clone)]
 pub struct McpGateway {
     inner: Arc<McpGatewayInner>,
-    session_ctx: SessionContext,
+    session: SessionContext,
     request_id: model::RequestId,
     version: http::Version,
     initialize_request_params: Option<model::InitializeRequestParam>,
@@ -104,7 +146,7 @@ impl From<McpGatewayConfig> for McpGateway {
     fn from(config: McpGatewayConfig) -> Self {
         Self {
             inner: Arc::new(McpGatewayInner { config: config.clone(), tools: ToolsRegistry::with_tools(config.tools) }),
-            session_ctx: SessionContext(None),
+            session: SessionContext(None),
             request_id: model::RequestId::Number(0),
             initialize_request_params: None,
             version: http::Version::default(),
@@ -118,7 +160,7 @@ impl FactoryFilter for McpGateway {
     fn new_from(&self) -> Self {
         Self {
             inner: self.inner.clone(),
-            session_ctx: SessionContext(None),
+            session: SessionContext(None),
             request_id: model::RequestId::Number(0),
             initialize_request_params: None,
             version: http::Version::default(),
@@ -150,7 +192,7 @@ impl McpGateway {
                 self.handle_cors_options(request).await
             },
             (&Method::POST, "/mcp") | (&Method::POST, MCP_MESSAGE_ENDPOINT) => {
-                self.handle_mcp_message_endpoint(&ctx, request, metadata.listener_name).await
+                self.handle_mcp_post_endpoint(&ctx, request, metadata.listener_name).await
             },
             _ => {
                 debug!(target: "mcp_gateway", "apply_request: no route found");
@@ -168,7 +210,7 @@ impl McpGateway {
         debug!(target: "mcp_gateway", "apply_response: processing response...");
 
         // get global context for this listener
-        let Some(session) = self.session_ctx.get() else {
+        let Some(session) = self.session.get() else {
             debug!(target: "mcp_gateway", "apply_response: no session found!");
             return FilterDecision::Continue;
         };
@@ -178,7 +220,7 @@ impl McpGateway {
 
         defer! {
             if is_async {
-                ctx.active_async_requests.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                ctx.end_async_request();
             }
         };
 
@@ -188,29 +230,23 @@ impl McpGateway {
             let error = self.build_rpc_error(model::ErrorData::internal_error("failed to collect response body", None));
             match session.transport {
                 Transport::Sse => {
-                    let Some(sender) = self.session_ctx.get_session_sse_sender() else {
+                    let Some(sender) = self.session.get_session_sse_sender() else {
                         debug!(target: "mcp_gateway", "apply_response: SSE sender not available for session {}", session.session_id);
                         return FilterDecision::internal_server_error("SSE sender not available", self.version);
                     };
 
                     let event = transport::sse::Event::Message(&error);
                     let mut sender = sender.lock().await;
-                    let session_id = self.get_session_id();
-                    if let Err(e) =
-                        Self::send_sse_message(&mut sender, &session_id, event.to_bytes(), self.version).await
-                    {
+                    if let Err(e) = Self::send_sse_message(&mut sender, event.to_bytes(), self.version).await {
                         return e;
                     }
                 },
                 Transport::StreamableHttp => {
                     let event = transport::streamable_http::Event::Message(&error);
-                    let session_id = self.get_session_id();
                     if let Some(sender) = &mut self.sse_sender {
                         let mut sender_guard = sender.lock().await;
                         let sender = &mut *sender_guard;
-                        if let Err(e) =
-                            Self::send_sse_message(sender, &session_id, event.to_bytes(), self.version).await
-                        {
+                        if let Err(e) = Self::send_sse_message(sender, event.to_bytes(), self.version).await {
                             return e;
                         }
                         sender.close();
@@ -248,16 +284,15 @@ impl McpGateway {
 
         match session.transport {
             Transport::Sse => {
-                let Some(sender) = self.session_ctx.get_session_sse_sender() else {
+                let Some(sender) = self.session.get_session_sse_sender() else {
                     debug!(target: "mcp_gateway", "apply_response: SSE sender not available for session {}", session.session_id);
                     return FilterDecision::internal_server_error("SSE sender not available", self.version);
                 };
                 debug!(target: "mcp_gateway", "apply_response: SSE response...");
                 let event = transport::sse::Event::Message(&json_rpc_response);
-                let session_id = self.get_session_id();
                 debug!(target: "mcp_gateway", "SENDING SSE EVENT: {:?}", event);
                 let mut sender = sender.lock().await;
-                if let Err(e) = Self::send_sse_message(&mut sender, &session_id, event.to_bytes(), self.version).await {
+                if let Err(e) = Self::send_sse_message(&mut sender, event.to_bytes(), self.version).await {
                     return e;
                 }
                 FilterDecision::Continue
@@ -282,10 +317,7 @@ impl McpGateway {
                         Self::build_mcp_body(Some(body.into())),
                         &[
                             (http::header::CONTENT_TYPE, MIME_APPLICATION_JSON),
-                            (
-                                MCP_SESSION_ID,
-                                self.session_ctx.get().map(|ctx| ctx.session_id.as_str()).unwrap_or_default(),
-                            ),
+                            (MCP_SESSION_ID, self.session.get().map(|ctx| ctx.session_id.as_str()).unwrap_or_default()),
                         ],
                     ) {
                         Ok(resp) => {
@@ -302,13 +334,12 @@ impl McpGateway {
         }
     }
 
-    fn get_or_create_session_id(
+    fn get_valid_session(
         &mut self,
         ctx: &McpGatewayListenerContext,
         transport: Transport,
         request: &Request<OrionRequestBody>,
-        listener_name: &'static str,
-    ) -> Option<SessionId> {
+    ) -> Option<Arc<Session>> {
         debug!(target: "mcp_gateway", "get_or_create_session_id: transport={:?}, request={:?}", transport, request);
         match transport {
             Transport::Sse => {
@@ -323,44 +354,24 @@ impl McpGateway {
                     return None;
                 };
 
-                // save the current session ID and session
-                self.session_ctx = SessionContext(Some(session.value().clone()));
-                Some(session_id)
+                // self.session_ctx = SessionContext(Some(session.value().clone()));
+                Some(session.clone())
             },
-            Transport::StreamableHttp => {
-                match request.get_mcp_session_id() {
-                    Some(session_id) => {
-                        let Some(session) = ctx.session_map.get(&session_id) else {
-                            debug!(target: "mcp_gateway", "get_or_create_session_id: StreamableHttp session {} not found in session map", session_id);
-                            return None;
-                        };
-                        self.session_ctx = SessionContext(Some(session.value().clone()));
-                        Some(session_id)
-                    },
-                    None => {
-                        // generate a unique session ID
-                        //
-                        let new_session_id = SessionId(Uuid::new_v4().to_smolstr());
+            Transport::StreamableHttp => match request.get_mcp_session_id() {
+                Some(session_id) => {
+                    let Some(session) = ctx.session_map.get(&session_id) else {
+                        debug!(target: "mcp_gateway", "get_or_create_session_id: StreamableHttp session {} not found in session map", session_id);
+                        return None;
+                    };
 
-                        // create a new session
-                        let session = Arc::new(Session {
-                            session_sse_sender: None,
-                            listener_name: listener_name,
-                            transport: Transport::StreamableHttp,
-                            session_id: new_session_id.clone(),
-                        });
-
-                        // add the session to the map
-                        ctx.session_map.insert(new_session_id.clone(), session.clone());
-                        self.session_ctx = SessionContext(Some(session));
-                        Some(new_session_id)
-                    },
-                }
+                    Some(session.clone())
+                },
+                None => None,
             },
         }
     }
 
-    async fn handle_mcp_message_endpoint(
+    async fn handle_mcp_post_endpoint(
         &mut self,
         ctx: &McpGatewayListenerContext,
         request: &mut Request<OrionRequestBody>,
@@ -380,11 +391,8 @@ impl McpGateway {
             }
         }
 
-        // get session ID from the request or generate a new one
-        let Some(session_id) = self.get_or_create_session_id(ctx, transport, request, listener_name) else {
-            debug!(target: "mcp_gateway", "handle_message_endpoint: could not get session ID from request");
-            return FilterDecision::bad_request(self.version);
-        };
+        // get session ID from the request. It may get None, in which case we create a new session+id in the "initialize" method
+        let mut session = self.get_valid_session(ctx, transport, request);
 
         // collect the body of the request...
         let Ok(body) = request.body_mut().collect().await else {
@@ -392,20 +400,26 @@ impl McpGateway {
             return FilterDecision::internal_server_error("Failed to collect request body", self.version);
         };
 
-        let res = self.handle_rpc_message(request, transport, body.to_bytes());
-        match res {
+        //
+        // handle the JSON RPC message
+        //
+        let response =
+            self.handle_rpc_json_message(ctx, request, transport, body.to_bytes(), listener_name, &mut session);
+
+        if let Some(session) = session {
+            self.session = SessionContext(Some(session));
+        }
+
+        match response {
             MessageResponse::Error(json_rpc_error) => match transport {
                 Transport::Sse => {
-                    let Some(sender) = self.session_ctx.get_session_sse_sender() else {
+                    let Some(sender) = self.session.get_session_sse_sender() else {
                         debug!(target: "mcp_gateway", "handle_mcp_message_endpoint: SSE sender not available");
                         return FilterDecision::internal_server_error("SSE sender not available", self.version);
                     };
                     let event = transport::sse::Event::Message(&json_rpc_error);
-                    let session_id = self.get_session_id();
                     let mut sender = sender.lock().await;
-                    if let Err(e) =
-                        Self::send_sse_message(&mut sender, &session_id, event.to_bytes(), self.version).await
-                    {
+                    if let Err(e) = Self::send_sse_message(&mut sender, event.to_bytes(), self.version).await {
                         return e;
                     }
                     match self.build_mcp_response(StatusCode::ACCEPTED, Self::build_mcp_body(None), &[]) {
@@ -415,10 +429,20 @@ impl McpGateway {
                 },
                 Transport::StreamableHttp => {
                     let body = serde_json::to_string(&json_rpc_error).unwrap_or_default();
+                    let session_id = self.get_current_session_id();
+
+                    let headers: &[(http::header::HeaderName, &str)] = match session_id {
+                        Some(session_id) => &[
+                            (http::header::CONTENT_TYPE, MIME_APPLICATION_JSON),
+                            (MCP_SESSION_ID, session_id.as_str()),
+                        ],
+                        None => &[(http::header::CONTENT_TYPE, MIME_APPLICATION_JSON)],
+                    };
+
                     match self.build_mcp_response(
                         StatusCode::BAD_REQUEST,
                         Self::build_mcp_body(Some(body.into())),
-                        &[(http::header::CONTENT_TYPE, MIME_APPLICATION_JSON), (MCP_SESSION_ID, session_id.as_str())],
+                        headers,
                     ) {
                         Ok(resp) => return FilterDecision::DirectResponse(resp),
                         Err(e) => return e,
@@ -427,16 +451,13 @@ impl McpGateway {
             },
             MessageResponse::Response(json_rpc_response) => match transport {
                 Transport::Sse => {
-                    let Some(sender) = self.session_ctx.get_session_sse_sender() else {
+                    let Some(sender) = self.session.get_session_sse_sender() else {
                         debug!(target: "mcp_gateway", "handle_mcp_message_endpoint: SSE sender not available");
                         return FilterDecision::internal_server_error("SSE sender not available", self.version);
                     };
                     let event = transport::sse::Event::Message(&json_rpc_response);
-                    let session_id = self.get_session_id();
                     let mut sender = sender.lock().await;
-                    if let Err(e) =
-                        Self::send_sse_message(&mut sender, &session_id, event.to_bytes(), self.version).await
-                    {
+                    if let Err(e) = Self::send_sse_message(&mut sender, event.to_bytes(), self.version).await {
                         return e;
                     }
 
@@ -447,11 +468,16 @@ impl McpGateway {
                 },
                 Transport::StreamableHttp => {
                     let body = serde_json::to_vec(&json_rpc_response).unwrap_or_default();
-                    match self.build_mcp_response(
-                        StatusCode::OK,
-                        Self::build_mcp_body(Some(body.into())),
-                        &[(http::header::CONTENT_TYPE, MIME_APPLICATION_JSON), (MCP_SESSION_ID, session_id.as_str())],
-                    ) {
+                    let session_id = self.get_current_session_id();
+                    let headers: &[(http::header::HeaderName, &str)] = match session_id {
+                        Some(session_id) => &[
+                            (http::header::CONTENT_TYPE, MIME_APPLICATION_JSON),
+                            (MCP_SESSION_ID, session_id.as_str()),
+                        ],
+                        None => &[(http::header::CONTENT_TYPE, MIME_APPLICATION_JSON)],
+                    };
+
+                    match self.build_mcp_response(StatusCode::OK, Self::build_mcp_body(Some(body.into())), headers) {
                         Ok(resp) => return FilterDecision::DirectResponse(resp),
                         Err(e) => return e,
                     }
@@ -466,45 +492,37 @@ impl McpGateway {
                     return FilterDecision::DirectResponse(accepted);
                 },
                 Transport::StreamableHttp => {
-                    let Ok(accepted) = self.build_mcp_response(
-                        StatusCode::ACCEPTED,
-                        Self::build_mcp_body(None),
-                        &[(MCP_SESSION_ID, session_id.as_str())],
-                    ) else {
+                    let session_id = self.get_current_session_id();
+                    let headers: &[(HeaderName, &str)] =
+                        if let Some(session_id) = session_id { &[(MCP_SESSION_ID, session_id.as_str())] } else { &[] };
+                    let Ok(accepted) =
+                        self.build_mcp_response(StatusCode::ACCEPTED, Self::build_mcp_body(None), headers)
+                    else {
                         return FilterDecision::internal_server_error("Failed to build response", self.version);
                     };
                     return FilterDecision::DirectResponse(accepted);
                 },
             },
-            MessageResponse::Upstream((req, async_call)) => match transport {
+            MessageResponse::Upstream((upstream_request, async_call)) => match transport {
                 Transport::Sse => {
-                    if ctx.active_async_requests.load(std::sync::atomic::Ordering::Relaxed)
-                        >= MAX_CONCURRENT_ASYNC_REQUESTS
-                    {
+                    debug!(target: "mcp_gateway", "apply_request: legacy SSE...");
+                    if !ctx.try_start_async_request() {
                         debug!(target: "mcp_gateway", "apply_request: rate limited!");
                         return FilterDecision::rate_limited(request.version());
                     }
-                    ctx.active_async_requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
                     let Ok(accepted) = self.build_mcp_response(StatusCode::ACCEPTED, Self::build_mcp_body(None), &[])
                     else {
                         return FilterDecision::internal_server_error("Failed to build response", self.version);
                     };
-                    return FilterDecision::AsyncRequest(accepted, Some(req));
+                    return FilterDecision::AsyncRequest(accepted, Some(upstream_request));
                 },
-                Transport::StreamableHttp if !async_call => {
-                    *request = req;
-                    return FilterDecision::Continue;
-                },
-                Transport::StreamableHttp => {
+                Transport::StreamableHttp if async_call => {
                     debug!(target: "mcp_gateway", "apply_request: streamable http...");
-                    if ctx.active_async_requests.load(std::sync::atomic::Ordering::Relaxed)
-                        >= MAX_CONCURRENT_ASYNC_REQUESTS
-                    {
+                    if !ctx.try_start_async_request() {
                         debug!(target: "mcp_gateway", "apply_request: rate limited!");
                         return FilterDecision::rate_limited(request.version());
                     }
-                    ctx.active_async_requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
                     let (body, mut sender) = SseBody::new();
 
@@ -535,7 +553,11 @@ impl McpGateway {
                     }
 
                     debug!(target: "mcp_gateway", "apply_request: returning async request...");
-                    return FilterDecision::AsyncRequest(okay, Some(req));
+                    return FilterDecision::AsyncRequest(okay, Some(upstream_request));
+                },
+                Transport::StreamableHttp => {
+                    *request = upstream_request;
+                    return FilterDecision::Continue;
                 },
             },
         }
@@ -544,18 +566,15 @@ impl McpGateway {
     async fn handle_sse_handshake(
         &mut self,
         ctx: &McpGatewayListenerContext,
-        req: &mut Request<OrionRequestBody>,
+        request: &mut Request<OrionRequestBody>,
         listener_name: &'static str,
     ) -> FilterDecision {
         debug!(target: "mcp_gateway", "handle_sse_handshake: starting SSE handshake...");
 
-        if !matches!(req.get_mcp_transport(), Some(Transport::Sse)) {
+        if !matches!(request.get_mcp_transport(), Some(Transport::Sse)) {
             debug!(target: "mcp_gateway", "handle_sse_handshake: client does not accept SSE");
-            return FilterDecision::bad_request(req.version());
+            return FilterDecision::bad_request(request.version());
         }
-
-        // generate a unique session ID
-        let session_id = SessionId(Uuid::new_v4().to_smolstr());
 
         // build the SSE response...
         let builder = Response::builder()
@@ -566,10 +585,19 @@ impl McpGateway {
             .version(self.version)
             .status(StatusCode::OK);
 
+        // create a new session
+        let session = match ctx.create_session(listener_name) {
+            Ok(session) => session,
+            Err(err) => {
+                debug!(target: "mcp_gateway", "handle_sse_handshake: failed to create new session: {err}");
+                return FilterDecision::internal_server_error("Failed to create new session", request.version());
+            },
+        };
+
         let event: transport::sse::Event = transport::sse::Event::Endpoint(&format!(
             "{MCP_MESSAGE_ENDPOINT}?{}={}",
             transport::SESSION_ID_QUERY_KEY,
-            session_id.as_str()
+            session.session_id.as_str()
         ));
 
         let (body, mut sender) = SseBody::new();
@@ -577,35 +605,28 @@ impl McpGateway {
 
         let Ok(_) = sender.send(event.to_bytes()).await else {
             debug!(target: "mcp_gateway", "handle_sse_handshake: failed to send SSE payload");
-            return FilterDecision::internal_server_error("Failed to send SSE payload", req.version());
+            ctx.delete_session(&session.session_id);
+            return FilterDecision::internal_server_error("Failed to send SSE payload", request.version());
         };
 
         let Ok(response) = builder.body(body) else {
             debug!(target: "mcp_gateway", "handle_sse_handshake: failed to build body for response");
-            return FilterDecision::internal_server_error("Failed to build body for response", req.version());
+            ctx.delete_session(&session.session_id);
+            return FilterDecision::internal_server_error("Failed to build body for response", request.version());
         };
 
-        // create a new session
-        let session = Arc::new(Session {
-            session_sse_sender: Some(Mutex::new(sender)),
-            transport: Transport::Sse,
-            session_id: session_id.clone(),
-            listener_name,
-        });
-
-        // add the session to the map
-        ctx.session_map.insert(session_id, session.clone());
-        self.session_ctx = SessionContext(Some(session));
-
-        debug!(target: "mcp_gateway", "handle_sse_handshake: sending response back to client: {response:?}");
+        self.session = SessionContext(Some(session));
         FilterDecision::DirectResponse(response)
     }
 
-    fn handle_rpc_message(
+    fn handle_rpc_json_message(
         &mut self,
+        ctx: &McpGatewayListenerContext,
         request: &Request<OrionRequestBody>,
         transport: Transport,
         body: Bytes,
+        listener_name: &'static str,
+        session: &mut Option<Arc<Session>>,
     ) -> MessageResponse {
         // WORKAROUND: the current rmcp implementation fails to parse
         // {"jsonrpc":"2.0", "method":"notifications/initialized"},
@@ -632,31 +653,34 @@ impl McpGateway {
         match message {
             model::JsonRpcMessage::Request(json_rpc_request) => {
                 self.request_id = json_rpc_request.id.clone();
-                self.handle_rpc_request(request, transport, json_rpc_request)
+                self.handle_rpc_json_request(ctx, request, transport, json_rpc_request, listener_name, session)
             },
             model::JsonRpcMessage::Response(json_rpc_response) => {
-                debug!(target: "mcp_gateway", "UNSUPPORTED RESPONSE MSG: {:#?}", json_rpc_response);
+                debug!(target: "mcp_gateway", "Unsupported json rpc response: {:#?}", json_rpc_response);
                 MessageResponse::Nothing
             },
             model::JsonRpcMessage::Notification(json_rpc_notification) => {
-                debug!(target: "mcp_gateway", "UNSUPPORTED NOTIFICATION MSG: {:#?}", json_rpc_notification);
+                debug!(target: "mcp_gateway", "Unsupported json rpc notification: {:#?}", json_rpc_notification);
                 MessageResponse::Nothing
             },
             model::JsonRpcMessage::Error(json_rpc_error) => {
-                debug!(target: "mcp_gateway", "UNSUPPORTED ERROR MSG: {:#?}", json_rpc_error);
+                debug!(target: "mcp_gateway", "Unsupported json rpc error: {:#?}", json_rpc_error);
                 MessageResponse::Nothing
             },
         }
     }
 
-    fn handle_rpc_request(
+    fn handle_rpc_json_request(
         &mut self,
+        ctx: &McpGatewayListenerContext,
         request: &Request<OrionRequestBody>,
         transport: Transport,
         rpc: model::JsonRpcRequest,
+        listener_name: &'static str,
+        session: &mut Option<Arc<Session>>,
     ) -> MessageResponse {
         match rpc.request.method.as_str() {
-            RPC_METHOD_INITIALIZE => {
+            InitializeResultMethod::VALUE => {
                 debug!(target: "mcp_gateway", "rpc initialize received (transport {transport})");
 
                 let Ok(init_params): Result<model::InitializeRequestParam, _> =
@@ -689,6 +713,19 @@ impl McpGateway {
                     server_info,
                 };
 
+                //
+                // generate a new unique session ID,
+                //
+
+                let Ok(new_session) = ctx.create_session(listener_name) else {
+                    debug!(target: "mcp_gateway", "handle_sse_handshake: failed to create new session!");
+                    return MessageResponse::Error(
+                        self.build_rpc_error(model::ErrorData::parse_error("Failed to create new session", None)),
+                    );
+                };
+
+                *session = Some(new_session);
+
                 match transport {
                     Transport::Sse => {
                         // session is already created
@@ -711,11 +748,11 @@ impl McpGateway {
                     },
                 }
             },
-            RPC_METHOD_NOTIFICATION_INITIALIZED => {
+            InitializedNotificationMethod::VALUE => {
                 debug!(target: "mcp_gateway", "rpc notification/initialized (transport {transport})");
                 MessageResponse::Nothing
             },
-            RPC_METHOD_PING => {
+            PingRequestMethod::VALUE => {
                 debug!(target: "mcp_gateway", "rpc ping received");
                 let response = model::JsonRpcResponse {
                     jsonrpc: model::JsonRpcVersion2_0,
@@ -725,7 +762,7 @@ impl McpGateway {
 
                 MessageResponse::Response(response)
             },
-            RPC_METHOD_TOOLS_LIST => {
+            ListToolsRequestMethod::VALUE => {
                 debug!(target: "mcp_gateway", "rpc tools/list received");
                 let tools = self.inner.tools.build_list_tools();
                 let response = model::JsonRpcResponse {
@@ -736,7 +773,7 @@ impl McpGateway {
 
                 MessageResponse::Response(response)
             },
-            RPC_METHOD_TOOLS_CALL => {
+            CallToolRequestMethod::VALUE => {
                 debug!(target: "mcp_gateway", "tools/call {:#?}", rpc);
                 let (request, r#async) = match self.inner.tools.build_request(
                     request,
@@ -756,7 +793,7 @@ impl McpGateway {
                 MessageResponse::Upstream((request, r#async))
             },
             _ => {
-                debug!(target: "mcp_gateway", "handle_rpc_request: unknown RPC method '{}'", rpc.request.method);
+                debug!(target: "mcp_gateway", "handle_rpc_request: unknown rpc method '{}'", rpc.request.method);
                 MessageResponse::Error(self.build_rpc_error(model::ErrorData::new(
                     model::ErrorCode::METHOD_NOT_FOUND,
                     "Method not found",
@@ -766,10 +803,10 @@ impl McpGateway {
         }
     }
 
-    async fn handle_cors_options(&mut self, req: &mut Request<OrionRequestBody>) -> FilterDecision {
+    async fn handle_cors_options(&mut self, request: &mut Request<OrionRequestBody>) -> FilterDecision {
         let allow_origin = self.client_origin.clone().unwrap_or_else(|| HeaderValue::from_static("*"));
 
-        let request_headers = req
+        let request_headers = request
             .headers()
             .get(http::header::ACCESS_CONTROL_REQUEST_HEADERS)
             .cloned()
@@ -788,7 +825,7 @@ impl McpGateway {
 
         let Ok(response) = builder.body(TimeoutBody::new(None, PolyBody::from(Empty::new()))) else {
             debug!(target: "mcp_gateway", "handle_cors_options: failed to build CORS response body");
-            return FilterDecision::internal_server_error("Failed to build CORS body", req.version());
+            return FilterDecision::internal_server_error("Failed to build CORS body", request.version());
         };
 
         FilterDecision::DirectResponse(response)
@@ -796,16 +833,12 @@ impl McpGateway {
 
     async fn send_sse_message(
         sender: &mut SseSender,
-        session_id: &SessionId,
         message: Bytes,
         version: http::Version,
     ) -> Result<(), FilterDecision> {
         if let Err(e) = sender.send(message).await {
-            debug!(target: "mcp_gateway", "send_sse_message: failed to send message for session {}, error {e}", session_id);
-            return Err(FilterDecision::internal_server_error(
-                format!("Failed to send SSE message for session {}", session_id).as_str(),
-                version,
-            ));
+            debug!(target: "mcp_gateway", "send_sse_message: failed to send message: {e}");
+            return Err(FilterDecision::internal_server_error("Failed to send SSE message", version));
         }
         Ok(())
     }
@@ -840,11 +873,11 @@ impl McpGateway {
 
         let Ok(resp) = builder.body(body) else {
             debug!(target: "mcp_gateway", "build_mcp_response: failed to build response body for session {}",
-                self.session_ctx.get().map(|s| s.session_id.clone()).unwrap_or_default());
+                self.session.get().map(|s| s.session_id.clone()).unwrap_or_default());
             return Err(FilterDecision::internal_server_error(
                 format!(
                     "Failed to build accepted response for session {}",
-                    self.session_ctx.get().map(|s| s.session_id.clone()).unwrap_or_default()
+                    self.session.get().map(|s| s.session_id.clone()).unwrap_or_default()
                 )
                 .as_str(),
                 self.version,
@@ -870,7 +903,7 @@ impl McpGateway {
     }
 
     #[inline]
-    pub fn get_session_id(&self) -> SessionId {
-        self.session_ctx.get().map(|s| s.session_id.clone()).unwrap_or_default()
+    pub fn get_current_session_id(&self) -> Option<&SessionId> {
+        self.session.get().map(|s| &s.session_id)
     }
 }
