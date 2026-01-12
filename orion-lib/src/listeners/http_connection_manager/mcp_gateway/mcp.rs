@@ -244,17 +244,7 @@ impl McpGateway {
             return FilterDecision::Continue;
         };
 
-        let body_string = {
-            let b = std::str::from_utf8(&body.to_bytes()).map(|s| s.to_string()).unwrap_or_default();
-            if !b.is_empty() {
-                b
-            } else if response.status() == StatusCode::OK {
-                "OK".into()
-            } else {
-                format!("Upstream Error: {}", response.status().canonical_reason().unwrap_or("Unknown"))
-            }
-        };
-
+        let body_string = Self::extract_body_string(&body.to_bytes(), response.status());
         let content = RawContent::Text(RawTextContent { text: body_string, meta: None });
 
         let tool_result = CallToolResult {
@@ -299,13 +289,11 @@ impl McpGateway {
                 None => {
                     debug!(target: "mcp_gateway", "apply_response: streamable HTTP (application/json)...");
                     let body = serde_json::to_vec(&json_rpc_response).unwrap_or_default();
+                    let headers = self.build_json_headers_with_session();
                     match self.build_mcp_response(
                         StatusCode::OK,
                         Self::build_mcp_body(Some(body.into())),
-                        &[
-                            (http::header::CONTENT_TYPE, MIME_APPLICATION_JSON),
-                            (MCP_SESSION_ID, self.session.as_deref().map(|s| s.session_id.as_str()).unwrap_or_default()),
-                        ],
+                        &headers,
                     ) {
                         Ok(resp) => {
                             *response = resp;
@@ -416,20 +404,11 @@ impl McpGateway {
                 },
                 Transport::StreamableHttp => {
                     let body = serde_json::to_string(&json_rpc_error).unwrap_or_default();
-                    let session_id = self.get_current_session_id();
-
-                    let headers: &[(http::header::HeaderName, &str)] = match session_id {
-                        Some(session_id) => &[
-                            (http::header::CONTENT_TYPE, MIME_APPLICATION_JSON),
-                            (MCP_SESSION_ID, session_id.as_str()),
-                        ],
-                        None => &[(http::header::CONTENT_TYPE, MIME_APPLICATION_JSON)],
-                    };
-
+                    let headers = self.build_json_headers_with_session();
                     match self.build_mcp_response(
                         StatusCode::BAD_REQUEST,
                         Self::build_mcp_body(Some(body.into())),
-                        headers,
+                        &headers,
                     ) {
                         Ok(resp) => return FilterDecision::DirectResponse(resp),
                         Err(e) => return e,
@@ -455,41 +434,21 @@ impl McpGateway {
                 },
                 Transport::StreamableHttp => {
                     let body = serde_json::to_vec(&json_rpc_response).unwrap_or_default();
-                    let session_id = self.get_current_session_id();
-                    let headers: &[(http::header::HeaderName, &str)] = match session_id {
-                        Some(session_id) => &[
-                            (http::header::CONTENT_TYPE, MIME_APPLICATION_JSON),
-                            (MCP_SESSION_ID, session_id.as_str()),
-                        ],
-                        None => &[(http::header::CONTENT_TYPE, MIME_APPLICATION_JSON)],
-                    };
-
-                    match self.build_mcp_response(StatusCode::OK, Self::build_mcp_body(Some(body.into())), headers) {
+                    let headers = self.build_json_headers_with_session();
+                    match self.build_mcp_response(StatusCode::OK, Self::build_mcp_body(Some(body.into())), &headers) {
                         Ok(resp) => return FilterDecision::DirectResponse(resp),
                         Err(e) => return e,
                     }
                 },
             },
-            MessageResponse::Nothing => match transport {
-                Transport::Sse => {
-                    let Ok(accepted) = self.build_mcp_response(StatusCode::ACCEPTED, Self::build_mcp_body(None), &[])
-                    else {
-                        return FilterDecision::internal_server_error("Failed to build response", self.version);
-                    };
-                    return FilterDecision::DirectResponse(accepted);
-                },
-                Transport::StreamableHttp => {
-                    let session_id = self.get_current_session_id();
-                    let headers: &[(HeaderName, &str)] =
-                        if let Some(session_id) = session_id { &[(MCP_SESSION_ID, session_id.as_str())] } else { &[] };
-                    let Ok(accepted) =
-                        self.build_mcp_response(StatusCode::ACCEPTED, Self::build_mcp_body(None), headers)
-                    else {
-                        return FilterDecision::internal_server_error("Failed to build response", self.version);
-                    };
-                    return FilterDecision::DirectResponse(accepted);
-                },
-            },
+            MessageResponse::Nothing => {
+                let headers = self.build_session_id_headers();
+                let Ok(accepted) = self.build_mcp_response(StatusCode::ACCEPTED, Self::build_mcp_body(None), &headers)
+                else {
+                    return FilterDecision::internal_server_error("Failed to build response", self.version);
+                };
+                return FilterDecision::DirectResponse(accepted);
+            }
             MessageResponse::Upstream((upstream_request, async_call)) => match transport {
                 Transport::Sse => {
                     debug!(target: "mcp_gateway", "apply_request: legacy SSE...");
@@ -828,6 +787,39 @@ impl McpGateway {
             return Err(FilterDecision::internal_server_error("Failed to send SSE message", version));
         }
         Ok(())
+    }
+
+    /// Extract body string from response bytes, with fallback messages based on status.
+    fn extract_body_string(body: &Bytes, status: StatusCode) -> String {
+        std::str::from_utf8(body)
+            .ok()
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .unwrap_or_else(|| {
+                if status == StatusCode::OK {
+                    "OK".into()
+                } else {
+                    format!("Upstream Error: {}", status.canonical_reason().unwrap_or("Unknown"))
+                }
+            })
+    }
+
+    /// Build headers with Content-Type and optional session ID for JSON responses.
+    fn build_json_headers_with_session(&self) -> Vec<(HeaderName, &str)> {
+        let mut headers = vec![(http::header::CONTENT_TYPE, MIME_APPLICATION_JSON)];
+        if let Some(session_id) = self.get_current_session_id() {
+            headers.push((MCP_SESSION_ID, session_id.as_str()));
+        }
+        headers
+    }
+
+    /// Build headers with only session ID (no Content-Type), for accepted responses.
+    fn build_session_id_headers(&self) -> Vec<(HeaderName, &str)> {
+        if let Some(session_id) = self.get_current_session_id() {
+            vec![(MCP_SESSION_ID, session_id.as_str())]
+        } else {
+            vec![]
+        }
     }
 
     #[inline]
