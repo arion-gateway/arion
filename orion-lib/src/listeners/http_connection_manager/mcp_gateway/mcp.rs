@@ -738,7 +738,11 @@ impl McpGateway {
             },
             RPC_METHOD_TOOLS_CALL => {
                 debug!(target: "mcp_gateway", "tools/call {:#?}", rpc);
-                let (request, r#async) = match self.inner.tools.build_request(request, &rpc.request) {
+                let (request, r#async) = match self.inner.tools.build_request(
+                    request,
+                    &rpc.request,
+                    &self.inner.config.cluster_header,
+                ) {
                     Ok(result) => result,
                     Err(e) => {
                         debug!(target: "mcp_gateway", "handle_rpc_request: tools/call failed to build request: {e:#}");

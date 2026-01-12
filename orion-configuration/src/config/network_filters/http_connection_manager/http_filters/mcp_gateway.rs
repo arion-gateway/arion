@@ -3,9 +3,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct ClusterHeader(#[serde(with = "http_serde_ext::header_name")] pub http::HeaderName);
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct McpGateway {
-    #[serde(with = "http_serde_ext::header_name")]
-    pub cluster_header: http::HeaderName,
+    pub cluster_header: Option<ClusterHeader>,
     pub server_info: McpServerInfo,
     pub tools: Vec<McpTool>,
 }
@@ -66,11 +68,12 @@ mod envoy_conversions {
         type Error = GenericError;
         fn try_from(orion: OrionMcpGateway) -> Result<Self, Self::Error> {
             let OrionMcpGateway { cluster_header, server_info, tools } = orion;
-            let cluster_header = required!(cluster_header)?;
             let server_info = required!(server_info)?;
+            let cluster_header: Option<http::HeaderName> = cluster_header.map(TryInto::try_into).transpose()?;
+            let cluster_header = cluster_header.map(ClusterHeader);
 
             let tools = tools.into_iter().map(TryInto::try_into).collect::<Result<Vec<_>, _>>()?;
-            Ok(McpGateway { cluster_header: cluster_header.try_into()?, server_info: server_info.into(), tools })
+            Ok(McpGateway { cluster_header, server_info: server_info.into(), tools })
         }
     }
 

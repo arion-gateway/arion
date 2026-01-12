@@ -96,7 +96,7 @@ envoy_bootstrap:
                               cluster_header: "x-mcp-target-cluster"
 
     clusters:
-      - name: cluster_http
+      - name: weather_api_cluster
         connect_timeout: 0.25s
         type: STATIC
         lb_policy: ROUND_ROBIN

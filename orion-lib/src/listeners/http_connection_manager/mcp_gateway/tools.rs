@@ -2,9 +2,10 @@ use crate::{
     body::{instrumented_body::InstrumentedBody, response_flags::BodyKind, timeout_body::TimeoutBody},
     OrionRequestBody, PolyBody,
 };
+use http::{header::InvalidHeaderValue, HeaderValue};
 use http_body_util::Empty;
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::{
-    McpBackend, McpRestQueryParams, McpTool, McpTranscoding,
+    ClusterHeader, McpBackend, McpRestQueryParams, McpTool, McpTranscoding,
 };
 use rmcp::model::{ListToolsResult, Request, Tool};
 use rmcp::object;
@@ -27,6 +28,8 @@ pub enum BuildRequestError {
     McpNotImplemented,
     #[error("FunctionGraph transcoding is not yet implemented")]
     FunctionGraphNotImplemented,
+    #[error("HeaderValue: {0}")]
+    InvalidHeaderValue(#[from] InvalidHeaderValue),
 }
 
 #[derive(Debug, Clone)]
@@ -144,6 +147,7 @@ impl ToolsRegistry {
         &self,
         orig_request: &http::Request<OrionRequestBody>,
         request: &Request,
+        cluster_header: &Option<ClusterHeader>,
     ) -> Result<(http::Request<OrionRequestBody>, bool), BuildRequestError> {
         let name = request.params.get("name").ok_or(BuildRequestError::MissingName)?;
         let name = name.as_str().ok_or(BuildRequestError::NameNotString)?;
@@ -154,23 +158,24 @@ impl ToolsRegistry {
             .find(|e| e.name == name)
             .ok_or_else(|| BuildRequestError::ToolNotFound(name.to_string()))?;
 
-        let http_request = match &endpoint.backend.transcoding {
-            McpTranscoding::Rest { method, path, query_params } => {
-                self.build_rest_request(orig_request, request, &method, &path, &query_params)
-                    .map_err(|e| BuildRequestError::RestBuildFailed {
-                        tool: name.to_string(),
-                        reason: e.to_string(),
-                    })?
-            }
+        let mut upstream_request = match &endpoint.backend.transcoding {
+            McpTranscoding::Rest { method, path, query_params } => self
+                .build_rest_request(orig_request, request, &method, &path, &query_params)
+                .map_err(|e| BuildRequestError::RestBuildFailed { tool: name.to_string(), reason: e.to_string() })?,
             McpTranscoding::FunctionGraph {} => {
                 return Err(BuildRequestError::FunctionGraphNotImplemented);
-            }
+            },
             McpTranscoding::Mcp {} => {
                 return Err(BuildRequestError::McpNotImplemented);
-            }
+            },
         };
 
-        Ok((http_request, endpoint.backend.r#async))
+        if let Some(cluster_header) = cluster_header {
+            let headers = upstream_request.headers_mut();
+            headers.append(cluster_header.0.clone(), HeaderValue::from_str(&endpoint.backend.cluster)?);
+        }
+
+        Ok((upstream_request, endpoint.backend.r#async))
     }
 
     fn build_rest_request(

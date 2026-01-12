@@ -9,7 +9,7 @@ import "validate/validate.proto";
 // Configuraton for McpGateway
 // [#extension: envoy.filters.network.mcp_gateway]
 message McpGateway {
-    string cluster_header = 1 [(validate.rules).string = {min_bytes: 1}];
+    optional string cluster_header = 1;
     ServerInfo server_info = 2 [(validate.rules).message = {required: true}];
     repeated Tool tools = 3;
 }
