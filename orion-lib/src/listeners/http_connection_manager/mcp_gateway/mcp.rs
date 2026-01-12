@@ -110,19 +110,6 @@ pub struct McpGatewayInner {
     tools: ToolsRegistry,
 }
 
-#[derive(Debug, Default, Clone)]
-struct SessionContext(Option<Arc<Session>>);
-
-impl SessionContext {
-    pub fn get(&self) -> Option<&Session> {
-        self.0.as_ref().map(|s| s.as_ref())
-    }
-
-    pub fn get_session_sse_sender(&self) -> Option<&Mutex<SseSender>> {
-        self.get().and_then(|s| s.session_sse_sender.as_ref())
-    }
-}
-
 enum MessageResponse {
     Nothing,
     Error(model::JsonRpcError),
@@ -134,7 +121,7 @@ enum MessageResponse {
 #[derive(Debug, Clone)]
 pub struct McpGateway {
     inner: Arc<McpGatewayInner>,
-    session: SessionContext,
+    session: Option<Arc<Session>>,
     request_id: model::RequestId,
     version: http::Version,
     initialize_request_params: Option<model::InitializeRequestParam>,
@@ -146,7 +133,7 @@ impl From<McpGatewayConfig> for McpGateway {
     fn from(config: McpGatewayConfig) -> Self {
         Self {
             inner: Arc::new(McpGatewayInner { config: config.clone(), tools: ToolsRegistry::with_tools(config.tools) }),
-            session: SessionContext(None),
+            session: None,
             request_id: model::RequestId::Number(0),
             initialize_request_params: None,
             version: http::Version::default(),
@@ -160,7 +147,7 @@ impl FactoryFilter for McpGateway {
     fn new_from(&self) -> Self {
         Self {
             inner: self.inner.clone(),
-            session: SessionContext(None),
+            session: None,
             request_id: model::RequestId::Number(0),
             initialize_request_params: None,
             version: http::Version::default(),
@@ -210,7 +197,7 @@ impl McpGateway {
         debug!(target: "mcp_gateway", "apply_response: processing response...");
 
         // get global context for this listener
-        let Some(session) = self.session.get() else {
+        let Some(session) = self.session.as_deref() else {
             debug!(target: "mcp_gateway", "apply_response: no session found!");
             return FilterDecision::Continue;
         };
@@ -230,7 +217,7 @@ impl McpGateway {
             let error = self.build_rpc_error(model::ErrorData::internal_error("failed to collect response body", None));
             match session.transport {
                 Transport::Sse => {
-                    let Some(sender) = self.session.get_session_sse_sender() else {
+                    let Some(sender) = session.session_sse_sender.as_ref() else {
                         debug!(target: "mcp_gateway", "apply_response: SSE sender not available for session {}", session.session_id);
                         return FilterDecision::internal_server_error("SSE sender not available", self.version);
                     };
@@ -284,7 +271,7 @@ impl McpGateway {
 
         match session.transport {
             Transport::Sse => {
-                let Some(sender) = self.session.get_session_sse_sender() else {
+                let Some(sender) = session.session_sse_sender.as_ref() else {
                     debug!(target: "mcp_gateway", "apply_response: SSE sender not available for session {}", session.session_id);
                     return FilterDecision::internal_server_error("SSE sender not available", self.version);
                 };
@@ -317,7 +304,7 @@ impl McpGateway {
                         Self::build_mcp_body(Some(body.into())),
                         &[
                             (http::header::CONTENT_TYPE, MIME_APPLICATION_JSON),
-                            (MCP_SESSION_ID, self.session.get().map(|ctx| ctx.session_id.as_str()).unwrap_or_default()),
+                            (MCP_SESSION_ID, self.session.as_deref().map(|s| s.session_id.as_str()).unwrap_or_default()),
                         ],
                     ) {
                         Ok(resp) => {
@@ -407,13 +394,13 @@ impl McpGateway {
             self.handle_rpc_json_message(ctx, request, transport, body.to_bytes(), listener_name, &mut session);
 
         if let Some(session) = session {
-            self.session = SessionContext(Some(session));
+            self.session = Some(session);
         }
 
         match response {
             MessageResponse::Error(json_rpc_error) => match transport {
                 Transport::Sse => {
-                    let Some(sender) = self.session.get_session_sse_sender() else {
+                    let Some(sender) = self.session.as_deref().and_then(|s| s.session_sse_sender.as_ref()) else {
                         debug!(target: "mcp_gateway", "handle_mcp_message_endpoint: SSE sender not available");
                         return FilterDecision::internal_server_error("SSE sender not available", self.version);
                     };
@@ -451,7 +438,7 @@ impl McpGateway {
             },
             MessageResponse::Response(json_rpc_response) => match transport {
                 Transport::Sse => {
-                    let Some(sender) = self.session.get_session_sse_sender() else {
+                    let Some(sender) = self.session.as_deref().and_then(|s| s.session_sse_sender.as_ref()) else {
                         debug!(target: "mcp_gateway", "handle_mcp_message_endpoint: SSE sender not available");
                         return FilterDecision::internal_server_error("SSE sender not available", self.version);
                     };
@@ -615,7 +602,7 @@ impl McpGateway {
             return FilterDecision::internal_server_error("Failed to build body for response", request.version());
         };
 
-        self.session = SessionContext(Some(session));
+        self.session = Some(session);
         FilterDecision::DirectResponse(response)
     }
 
@@ -873,11 +860,11 @@ impl McpGateway {
 
         let Ok(resp) = builder.body(body) else {
             debug!(target: "mcp_gateway", "build_mcp_response: failed to build response body for session {}",
-                self.session.get().map(|s| s.session_id.clone()).unwrap_or_default());
+                self.session.as_deref().map(|s| s.session_id.clone()).unwrap_or_default());
             return Err(FilterDecision::internal_server_error(
                 format!(
                     "Failed to build accepted response for session {}",
-                    self.session.get().map(|s| s.session_id.clone()).unwrap_or_default()
+                    self.session.as_deref().map(|s| s.session_id.clone()).unwrap_or_default()
                 )
                 .as_str(),
                 self.version,
@@ -904,6 +891,6 @@ impl McpGateway {
 
     #[inline]
     pub fn get_current_session_id(&self) -> Option<&SessionId> {
-        self.session.get().map(|s| &s.session_id)
+        self.session.as_deref().map(|s| &s.session_id)
     }
 }
