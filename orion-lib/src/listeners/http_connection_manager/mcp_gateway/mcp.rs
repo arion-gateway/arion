@@ -16,8 +16,8 @@ use uuid::Uuid;
 
 use rmcp::model::{
     self, Annotated, CallToolRequestMethod, CallToolResult, ConstString, Implementation, InitializeResult,
-    InitializeResultMethod, InitializedNotificationMethod, JsonRpcResponse, ListToolsRequestMethod,
-    PingRequestMethod, ProtocolVersion, RawContent, RawTextContent, ServerCapabilities, ServerResult,
+    InitializeResultMethod, InitializedNotificationMethod, JsonRpcResponse, ListToolsRequestMethod, PingRequestMethod,
+    ProtocolVersion, RawContent, RawTextContent, ServerCapabilities, ServerResult,
 };
 
 use crate::{
@@ -39,7 +39,8 @@ use crate::{
     OrionRequestBody, OrionResponseBody, PolyBody,
 };
 
-const MCP_MESSAGE_ENDPOINT: &str = "/mcp/message";
+const MCP_MESSAGE_ENDPOINT: &str = "/mcp";
+const SSE_MESSAGE_ENDPOINT: &str = "/sse";
 
 #[derive(Debug, Default)]
 pub struct Session {
@@ -80,7 +81,12 @@ impl McpGatewayListenerContext {
         self.active_async_requests.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
     }
 
-    pub fn create_session(&self, listener_name: &'static str, sse_sender: Option<SseSender>, transport: Transport) -> Result<Arc<Session>, CreateSessionError> {
+    pub fn create_session(
+        &self,
+        listener_name: &'static str,
+        sse_sender: Option<SseSender>,
+        transport: Transport,
+    ) -> Result<Arc<Session>, CreateSessionError> {
         if self.session_map.len() >= Self::MAX_SESSIONS_LIMIT {
             debug!(target: "mcp_gateway", "create_session: session limit reached");
             return Err(CreateSessionError::LimitReached);
@@ -173,24 +179,22 @@ impl McpGateway {
         let ctx = McpGatewayListenerContext::get_filter_context(metadata.listener_name);
 
         match (request.method(), request.uri().path()) {
-            (&Method::GET, "/sse") => self.handle_sse_handshake(&ctx, request, metadata.listener_name).await,
-            (&Method::GET, "/mcp") => FilterDecision::method_not_allowed(request.version()),
-            (&Method::OPTIONS, "/sse") | (&Method::OPTIONS, "/mcp") | (&Method::OPTIONS, MCP_MESSAGE_ENDPOINT) => {
+            (&Method::GET, SSE_MESSAGE_ENDPOINT) => {
+                self.handle_sse_handshake(&ctx, request, metadata.listener_name).await
+            },
+            (&Method::GET, MCP_MESSAGE_ENDPOINT) => FilterDecision::method_not_allowed(request.version()),
+            (&Method::OPTIONS, SSE_MESSAGE_ENDPOINT) | (&Method::OPTIONS, MCP_MESSAGE_ENDPOINT) => {
                 self.handle_cors_options(request).await
             },
-            (&Method::POST, "/mcp") | (&Method::POST, MCP_MESSAGE_ENDPOINT) => {
+            (&Method::POST, MCP_MESSAGE_ENDPOINT) => {
                 self.handle_mcp_post_endpoint(&ctx, request, metadata.listener_name).await
             },
+            (&Method::DELETE, MCP_MESSAGE_ENDPOINT) => self.handle_mcp_delete_endpoint(&ctx, request).await,
             _ => {
                 debug!(target: "mcp_gateway", "apply_request: no route found");
                 FilterDecision::no_route_found(self.version)
             },
         }
-
-        // Implement request routing/filtering logic here
-        // let headers = request.headers_mut();
-        // headers.append(&self.inner.config.cluster_header, HeaderValue::from_static("cluster_http"));
-        // FilterDecision::Continue
     }
 
     pub async fn apply_response(&mut self, response: &mut Response<OrionResponseBody>) -> FilterDecision {
@@ -305,41 +309,31 @@ impl McpGateway {
         }
     }
 
-    fn get_valid_session(
+    async fn handle_mcp_delete_endpoint(
         &mut self,
         ctx: &McpGatewayListenerContext,
-        transport: Transport,
-        request: &Request<OrionRequestBody>,
-    ) -> Option<Arc<Session>> {
-        debug!(target: "mcp_gateway", "get_valid_session: transport={:?}, request={:?}", transport, request);
-        match transport {
-            Transport::Sse => {
-                let Some(session_id) = request.get_mcp_session_id() else {
-                    debug!(target: "mcp_gateway", "get_valid_session: SSE transport requires session ID but none found in request");
-                    return None;
-                };
+        request: &mut Request<OrionRequestBody>,
+    ) -> FilterDecision {
+        let Some(session_id) = request.get_mcp_session_id() else {
+            debug!(target: "mcp_gateway", "handle_mcp_delete_endpoint: session ID but none found in request");
+            return FilterDecision::bad_request(request.version());
+        };
 
-                // search for session in map
-                let Some(session) = ctx.session_map.get(&session_id) else {
-                    debug!(target: "mcp_gateway", "get_valid_session: session {} not found in session map", session_id);
-                    return None;
-                };
+        if !ctx.delete_session(&session_id) {
+            debug!(target: "mcp_gateway", "handle_mcp_delete_endpoint: StreamableHttp session {} not found in session map", session_id);
+            return FilterDecision::not_found(request.version());
+        };
 
-                debug!(target: "mcp_gateway", "get_valid_session: found session {}", session_id);
-                Some(session.clone())
-            },
-            Transport::StreamableHttp => match request.get_mcp_session_id() {
-                Some(session_id) => {
-                    let Some(session) = ctx.session_map.get(&session_id) else {
-                        debug!(target: "mcp_gateway", "get_valid_session: StreamableHttp session {} not found in session map", session_id);
-                        return None;
-                    };
+        let builder = Response::builder()
+            .header(http::header::CONNECTION, "keep-alive")
+            .version(self.version)
+            .status(StatusCode::ACCEPTED);
 
-                    Some(session.clone())
-                },
-                None => None,
-            },
-        }
+        let Ok(response) = builder.body(TimeoutBody::new(None, PolyBody::from(Empty::new()))) else {
+            unreachable!("handle_mcp_delete_endpoint: Failed to build response body");
+        };
+
+        FilterDecision::DirectResponse(response)
     }
 
     async fn handle_mcp_post_endpoint(
@@ -567,9 +561,7 @@ impl McpGateway {
         };
 
         let Ok(response) = builder.body(body) else {
-            debug!(target: "mcp_gateway", "handle_sse_handshake: failed to build body for response");
-            ctx.delete_session(&session.session_id);
-            return FilterDecision::internal_server_error("Failed to build body for response", request.version());
+            unreachable!("handle_sse_handshake: failed to build body for response");
         };
 
         self.session = Some(session);
@@ -769,11 +761,47 @@ impl McpGateway {
             .status(StatusCode::NO_CONTENT);
 
         let Ok(response) = builder.body(TimeoutBody::new(None, PolyBody::from(Empty::new()))) else {
-            debug!(target: "mcp_gateway", "handle_cors_options: failed to build CORS response body");
-            return FilterDecision::internal_server_error("Failed to build CORS body", request.version());
+            unreachable!("handle_cors_options: failed to build CORS response body");
         };
 
         FilterDecision::DirectResponse(response)
+    }
+
+    fn get_valid_session(
+        &mut self,
+        ctx: &McpGatewayListenerContext,
+        transport: Transport,
+        request: &Request<OrionRequestBody>,
+    ) -> Option<Arc<Session>> {
+        debug!(target: "mcp_gateway", "get_valid_session: transport={:?}, request={:?}", transport, request);
+        match transport {
+            Transport::Sse => {
+                let Some(session_id) = request.get_mcp_session_id() else {
+                    debug!(target: "mcp_gateway", "get_valid_session: SSE transport requires session ID but none found in request");
+                    return None;
+                };
+
+                // search for session in map
+                let Some(session) = ctx.session_map.get(&session_id) else {
+                    debug!(target: "mcp_gateway", "get_valid_session: session {} not found in session map", session_id);
+                    return None;
+                };
+
+                debug!(target: "mcp_gateway", "get_valid_session: found session {}", session_id);
+                Some(session.clone())
+            },
+            Transport::StreamableHttp => match request.get_mcp_session_id() {
+                Some(session_id) => {
+                    let Some(session) = ctx.session_map.get(&session_id) else {
+                        debug!(target: "mcp_gateway", "get_valid_session: StreamableHttp session {} not found in session map", session_id);
+                        return None;
+                    };
+
+                    Some(session.clone())
+                },
+                None => None,
+            },
+        }
     }
 
     async fn send_sse_message(
