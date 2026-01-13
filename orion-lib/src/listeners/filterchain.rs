@@ -361,9 +361,7 @@ mod tests {
         decode::from_yaml, envoy_data_plane_api::envoy::config::listener::v3::FilterChainMatch as EnvoyFilterChainMatch,
     };
     use std::net::Ipv4Addr;
-    use tracing_test::traced_test;
 
-    #[traced_test]
     #[test]
     fn filter_chain_match_empty_sni() {
         let m: EnvoyFilterChainMatch = from_yaml(
@@ -383,7 +381,6 @@ mod tests {
         assert_eq!(m.matches_server_name("host.test"), MatchResult::NoRule);
     }
 
-    #[traced_test]
     #[test]
     fn filter_chain_match_ip_prefix() {
         let m: EnvoyFilterChainMatch =
@@ -396,7 +393,6 @@ mod tests {
         assert_eq!(m.matches_source_ip(Ipv4Addr::new(192, 168, 0, 1).into()), MatchResult::NoRule);
     }
 
-    #[traced_test]
     #[test]
     fn filter_chain_wildcards() {
         let m: EnvoyFilterChainMatch = from_yaml(

@@ -629,7 +629,6 @@ mod tests {
     use orion_data_plane_api::envoy_data_plane_api::envoy::config::listener::v3::Listener as EnvoyListener;
 
     use std::{net::Ipv4Addr, str::FromStr};
-    use tracing_test::traced_test;
 
     #[test]
     fn listener_bind_device() {
@@ -700,7 +699,6 @@ socket_options:
         assert_eq!(selected.copied(), Some(1));
     }
 
-    #[traced_test]
     #[test]
     fn sni_match_without_inspector_fails() {
         const LISTENER: &str = r#"
@@ -741,7 +739,6 @@ filter_chains:
             .contains("has server_names in filter_chain_match, but no TLS inspector so matches would always fail"));
     }
 
-    #[traced_test]
     #[test]
     fn filter_chain_multiple() {
         let m: EnvoyFilterChainMatch = from_yaml(
