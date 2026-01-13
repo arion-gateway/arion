@@ -475,7 +475,7 @@ impl McpGateway {
                 match transport {
                     Transport::Sse => {
                         let Some(sender) = self.session.as_deref().and_then(|s| s.session_sse_sender.as_ref()) else {
-                            debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: SSE sender not available ***");
+                            debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: SSE sender not available");
                             return FilterDecision::internal_server_error("SSE sender not available", self.version);
                         };
                         let event = transport::sse::Event::Message(&json_rpc_response);
