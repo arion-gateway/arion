@@ -9,8 +9,9 @@ use scopeguard::defer;
 use serde::Serialize;
 use serde_json::{json, Value};
 use smol_str::ToSmolStr;
-use std::sync::{atomic::AtomicUsize, Arc};
-use tokio::sync::Mutex;
+use std::{sync::{Arc, atomic::AtomicUsize}};
+use tokio::sync::Mutex as TokioMutex;
+use parking_lot::Mutex;
 use tracing::debug;
 use uuid::Uuid;
 
@@ -41,19 +42,74 @@ use crate::{
 
 const MCP_MESSAGE_ENDPOINT: &str = "/mcp";
 const SSE_MESSAGE_ENDPOINT: &str = "/sse";
+const SESSION_IDLE_TIMEOUT: tokio::time::Duration = tokio::time::Duration::from_secs(60);
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Session {
     listener_name: &'static str, // to handle session eviction from listener.sse_map
     session_id: SessionId,
     transport: Transport,
-    session_sse_sender: Option<Mutex<SseSender>>,
+    session_sse_sender: Option<TokioMutex<SseSender>>,
+    last_activity: Mutex<tokio::time::Instant>,
 }
 
-#[derive(Debug, Default)]
+impl Default for Session {
+    fn default() -> Self {
+        Self {
+            listener_name: "",
+            session_id: SessionId::default(),
+            transport: Transport::default(),
+            session_sse_sender: None,
+            last_activity: Mutex::new(tokio::time::Instant::now()),
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct McpGatewayListenerContext {
-    session_map: DashMap<SessionId, Arc<Session>>,
+    session_map: Arc<DashMap<SessionId, Arc<Session>>>,
     active_async_requests: AtomicUsize,
+    cleanup_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+}
+
+impl McpGatewayListenerContext {
+    fn cleanup(session_map: &DashMap<SessionId, Arc<Session>>) {
+        let now = tokio::time::Instant::now();
+        debug!(target: "mcp_gateway", "ctx cleanup: {} existing sessions...", session_map.len());
+        session_map.retain(|_, session| {
+            let last_activity = session.last_activity.lock();
+            let idle = now.duration_since(*last_activity);
+            let retain = idle < SESSION_IDLE_TIMEOUT;
+            if !retain {
+                debug!(target: "mcp_gateway", "Session {} has been idle for {} seconds (dropped)", session.session_id, idle.as_secs());
+            }
+            retain
+        });
+    }
+
+    pub fn start_cleanup_task(&self) {
+        let mut clean_task = self.cleanup_task.lock();
+        if clean_task.is_none() {
+            let session_map = Arc::clone(&self.session_map);
+            let task = tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(SESSION_IDLE_TIMEOUT / 2).await;
+                    Self::cleanup(&session_map);
+                }
+            });
+            *clean_task = Some(task);
+        }
+    }
+}
+
+impl Default for McpGatewayListenerContext {
+    fn default() -> Self {
+        Self {
+            session_map: Arc::new(DashMap::default()),
+            active_async_requests: Default::default(),
+            cleanup_task: Mutex::new(None),
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -98,7 +154,8 @@ impl McpGatewayListenerContext {
             listener_name,
             session_id: session_id.clone(),
             transport,
-            session_sse_sender: sse_sender.map(Mutex::new),
+            session_sse_sender: sse_sender.map(TokioMutex::new),
+            last_activity: Mutex::new(tokio::time::Instant::now()),
         });
         self.session_map.insert(session_id, session.clone());
         Ok(session)
@@ -132,7 +189,7 @@ pub struct McpGateway {
     version: http::Version,
     initialize_request_params: Option<model::InitializeRequestParam>,
     client_origin: Option<HeaderValue>,
-    sse_sender: Option<Arc<Mutex<SseSender>>>,
+    sse_sender: Option<Arc<TokioMutex<SseSender>>>,
 }
 
 impl From<McpGatewayConfig> for McpGateway {
@@ -177,6 +234,9 @@ impl McpGateway {
 
         // get global context for this listener
         let ctx = McpGatewayListenerContext::get_filter_context(metadata.listener_name);
+
+        // ensure cleanup task is running
+        ctx.start_cleanup_task();
 
         match (request.method(), request.uri().path()) {
             (&Method::GET, SSE_MESSAGE_ENDPOINT) => {
@@ -483,7 +543,7 @@ impl McpGateway {
                         };
 
                         // save the sender for use on response
-                        self.sse_sender = Some(Arc::new(Mutex::new(sender)));
+                        self.sse_sender = Some(Arc::new(TokioMutex::new(sender)));
 
                         let body = TimeoutBody::new(None, PolyBody::from(body));
                         let Ok(mut okay) = self.build_mcp_response(
