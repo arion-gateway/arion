@@ -107,7 +107,7 @@ impl<B> RequestExt for http::Request<B> {
             return id.to_str().ok().map(|s| SessionId(s.to_smolstr()));
         }
         self.uri().query().and_then(|query| {
-            debug!(target: "mcp_gateway", "get_session_id: query: {query}..");
+            debug!(target: "mcp_gateway", "get_mcp_session_id: query: {query}...");
             form_urlencoded::parse(query.as_bytes())
                 .find(|(key, _)| key == SESSION_ID_QUERY_KEY || key == SESSION_ID_QUERY_KEY_ALT)
                 .map(|(_, value)| SessionId(value.to_smolstr()))
