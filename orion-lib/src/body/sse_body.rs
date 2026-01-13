@@ -57,7 +57,7 @@ impl Body for SseBody {
 /// Frames written from the original body must be injected into the `SseBody` for it
 /// to produce any output.
 #[pin_project]
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct SseSender {
     #[pin]
     injector: Option<PollSender<FrameResult>>,
