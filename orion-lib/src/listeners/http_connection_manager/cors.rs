@@ -32,6 +32,7 @@ impl From<CorsConfig> for Cors {
 
 impl Cors {
     pub fn apply_request(&mut self, req: &mut Request<OrionRequestBody>) -> FilterDecision {
+        debug!(target: "cors", "applying CORS filter to request");
         // 1. Extract Origin Header.
         // If missing, it's not a CORS request (or it is same-origin).
         let origin_header = match req.headers().get(ORIGIN) {
@@ -80,19 +81,25 @@ impl Cors {
             }
 
             // Validate Access-Control-Request-Headers if present
-            if let Some(req_headers_hdr) = req.headers().get(ACCESS_CONTROL_REQUEST_HEADERS) {
-                if let Ok(req_headers_str) = req_headers_hdr.to_str() {
-                    // Parse comma-separated header names and validate each
-                    for requested_header in req_headers_str.split(',').map(|s| s.trim().to_ascii_lowercase()) {
-                        if requested_header.is_empty() {
-                            continue;
-                        }
-                        // Check if the requested header is in allowed headers (case-insensitive)
-                        let is_allowed =
-                            self.inner.allow_headers.iter().any(|h| h.to_ascii_lowercase() == requested_header);
-                        if !is_allowed {
-                            debug!(target: "cors", "Preflight failed: Header '{}' not allowed", requested_header);
-                            return FilterDecision::Continue;
+            // Note: "*" wildcard in allow_headers is only valid when credentials are disabled
+            let has_headers_wildcard =
+                !self.inner.allow_credentials && self.inner.allow_headers.iter().any(|h| h == "*");
+
+            if !has_headers_wildcard {
+                if let Some(req_headers_hdr) = req.headers().get(ACCESS_CONTROL_REQUEST_HEADERS) {
+                    if let Ok(req_headers_str) = req_headers_hdr.to_str() {
+                        // Parse comma-separated header names and validate each
+                        for requested_header in req_headers_str.split(',').map(|s| s.trim().to_ascii_lowercase()) {
+                            if requested_header.is_empty() {
+                                continue;
+                            }
+                            // Check if the requested header is in allowed headers (case-insensitive)
+                            let is_allowed =
+                                self.inner.allow_headers.iter().any(|h| h.to_ascii_lowercase() == requested_header);
+                            if !is_allowed {
+                                debug!(target: "cors", "Preflight failed: Header '{}' not allowed", requested_header);
+                                return FilterDecision::Continue;
+                            }
                         }
                     }
                 }
@@ -106,6 +113,7 @@ impl Cors {
     }
 
     pub fn apply_response(&mut self, response: &mut Response<OrionResponseBody>) -> FilterDecision {
+        debug!(target: "cors", "applying CORS filter to response");
         // If we didn't validate an origin during the request phase, do nothing.
         let allowed_origin = match &self.validated_origin {
             Some(o) => o,
@@ -142,6 +150,7 @@ impl Cors {
     }
 
     fn generate_preflight_response(&self) -> FilterDecision {
+        debug!(target: "cors", "generating preflight response");
         let allowed_origin = self.validated_origin.as_ref().unwrap();
         let conf = &self.inner;
 
@@ -164,10 +173,17 @@ impl Cors {
         }
 
         // D. Headers
+        // If wildcard is configured and credentials are disabled, return "*"
+        // Otherwise, return the configured list
         if !conf.allow_headers.is_empty() {
-            let headers_str = conf.allow_headers.join(", ");
-            if let Ok(val) = HeaderValue::from_str(&headers_str) {
-                headers.insert(ACCESS_CONTROL_ALLOW_HEADERS, val);
+            let has_headers_wildcard = !conf.allow_credentials && conf.allow_headers.iter().any(|h| h == "*");
+            if has_headers_wildcard {
+                headers.insert(ACCESS_CONTROL_ALLOW_HEADERS, HeaderValue::from_static("*"));
+            } else {
+                let headers_str = conf.allow_headers.join(", ");
+                if let Ok(val) = HeaderValue::from_str(&headers_str) {
+                    headers.insert(ACCESS_CONTROL_ALLOW_HEADERS, val);
+                }
             }
         }
 
@@ -578,6 +594,110 @@ mod tests {
         let decision = cors.apply_request(&mut req);
 
         // Should succeed - header comparison is case-insensitive
-        assert!(matches!(decision, FilterDecision::DirectResponse(_)), "Header validation should be case-insensitive");
+        assert!(
+            matches!(decision, FilterDecision::DirectResponse(_)),
+            "Header validation should be case-insensitive"
+        );
+    }
+
+    #[test]
+    fn test_wildcard_allow_headers_without_credentials() {
+        // "*" in allow_headers should allow any header when credentials are disabled
+        let conf = CorsConfig {
+            allow_origins: vec!["https://allowed.com".into()],
+            allow_methods: vec![Method::POST],
+            allow_headers: vec!["*".into()],
+            allow_credentials: false,
+            ..Default::default()
+        };
+        let mut cors = Cors::from(conf);
+        let mut req = mock_req_full(
+            Method::OPTIONS,
+            Some("https://allowed.com"),
+            Some("POST"),
+            Some("X-Any-Custom-Header, X-Another-Header"),
+        );
+
+        let decision = cors.apply_request(&mut req);
+
+        if let FilterDecision::DirectResponse(resp) = decision {
+            // Should return "*" in the response
+            assert_eq!(resp.headers().get(ACCESS_CONTROL_ALLOW_HEADERS).unwrap(), "*");
+        } else {
+            panic!("Expected DirectResponse for wildcard headers");
+        }
+    }
+
+    #[test]
+    fn test_wildcard_allow_headers_with_credentials_not_wildcard() {
+        // "*" with credentials enabled should NOT act as wildcard
+        // It should be treated as a literal "*" header name
+        let conf = CorsConfig {
+            allow_origins: vec!["https://allowed.com".into()],
+            allow_methods: vec![Method::POST],
+            allow_headers: vec!["*".into()],
+            allow_credentials: true,
+            ..Default::default()
+        };
+        let mut cors = Cors::from(conf);
+        let mut req = mock_req_full(
+            Method::OPTIONS,
+            Some("https://allowed.com"),
+            Some("POST"),
+            Some("X-Custom-Header"), // This is not "*"
+        );
+
+        let decision = cors.apply_request(&mut req);
+
+        // Should FAIL because "*" is literal when credentials enabled
+        assert!(
+            matches!(decision, FilterDecision::Continue),
+            "Wildcard should not work with credentials enabled"
+        );
+    }
+
+    #[test]
+    fn test_default_config_is_permissive() {
+        // Test that the default configuration is truly permissive
+        let conf = CorsConfig::default();
+        let mut cors = Cors::from(conf);
+
+        // Test preflight with any origin, common method, and custom headers
+        let mut req = mock_req_full(
+            Method::OPTIONS,
+            Some("https://any-origin.com"),
+            Some("PUT"),
+            Some("X-Custom-Header, Authorization, Content-Type"),
+        );
+
+        let decision = cors.apply_request(&mut req);
+
+        if let FilterDecision::DirectResponse(resp) = decision {
+            assert_eq!(resp.headers().get(ACCESS_CONTROL_ALLOW_ORIGIN).unwrap(), "*");
+            assert_eq!(resp.headers().get(ACCESS_CONTROL_ALLOW_HEADERS).unwrap(), "*");
+            // Should contain PUT in methods
+            let methods = resp.headers().get(ACCESS_CONTROL_ALLOW_METHODS).unwrap().to_str().unwrap();
+            assert!(methods.contains("PUT"), "Default config should allow PUT");
+            assert!(methods.contains("PATCH"), "Default config should allow PATCH");
+            assert!(methods.contains("DELETE"), "Default config should allow DELETE");
+        } else {
+            panic!("Default config should allow permissive preflight");
+        }
+    }
+
+    #[test]
+    fn test_default_config_simple_request() {
+        let conf = CorsConfig::default();
+        let mut cors = Cors::from(conf);
+
+        // Simple GET request from any origin
+        let mut req = mock_req(Method::GET, Some("https://random-site.com"), None);
+        cors.apply_request(&mut req);
+
+        let mut resp = Response::new(OrionResponseBody::default());
+        cors.apply_response(&mut resp);
+
+        // Should allow with wildcard
+        assert_eq!(resp.headers().get(ACCESS_CONTROL_ALLOW_ORIGIN).unwrap(), "*");
     }
 }

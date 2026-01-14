@@ -75,7 +75,6 @@ pub struct McpGatewayListenerContext {
 impl McpGatewayListenerContext {
     fn cleanup(session_map: &DashMap<SessionId, Arc<Session>>) {
         let now = tokio::time::Instant::now();
-        debug!(target: "mcp_gateway", "ctx cleanup: {} existing sessions...", session_map.len());
         session_map.retain(|_, session| {
             let last_activity = session.last_activity.lock();
             let idle = now.duration_since(*last_activity);
@@ -919,7 +918,6 @@ impl McpGateway {
         body: TimeoutBody<PolyBody>,
         headers: &[(HeaderName, &str)],
     ) -> Result<Response<OrionResponseBody>, FilterDecision> {
-        let allow_origin = self.client_origin.clone().unwrap_or_else(|| HeaderValue::from_static("*"));
 
         let mut builder = Response::builder()
             //.header(http::header::ACCESS_CONTROL_ALLOW_ORIGIN, allow_origin)

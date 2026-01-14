@@ -24,11 +24,19 @@ impl Default for CorsConfig {
     fn default() -> Self {
         Self {
             allow_origins: vec!["*".into()],
-            allow_methods: vec![Method::GET, Method::POST, Method::OPTIONS],
-            allow_headers: vec![],
+            allow_methods: vec![
+                Method::GET,
+                Method::POST,
+                Method::PUT,
+                Method::PATCH,
+                Method::DELETE,
+                Method::HEAD,
+                Method::OPTIONS,
+            ],
+            allow_headers: vec!["*".into()],
             expose_headers: vec![],
             allow_credentials: false,
-            max_age: None,
+            max_age: Some(86400),
         }
     }
 }
