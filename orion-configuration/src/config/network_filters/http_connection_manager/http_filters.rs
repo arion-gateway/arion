@@ -15,6 +15,7 @@
 //
 //
 
+pub mod cors;
 pub mod ext_proc;
 pub mod http_rbac;
 pub mod jwt;
@@ -67,13 +68,14 @@ pub enum HttpFilterType {
     RateLimit(LocalRateLimit),
     ExternalProcessor(ExternalProcessor),
     JwtAuthentication(JwtAuthentication),
+    Cors(CorsConfig),
     McpGateway(McpGateway),
 }
 
 #[cfg(feature = "envoy-conversions")]
 pub(crate) use envoy_conversions::*;
 
-use crate::config::network_filters::http_connection_manager::http_filters::jwt::JwtAuthentication;
+use crate::config::network_filters::http_connection_manager::http_filters::{cors::CorsConfig, jwt::JwtAuthentication};
 
 use super::is_default;
 
@@ -84,6 +86,7 @@ mod envoy_conversions {
         ext_proc::ExtProcPerRoute, FilterConfigOverride, FilterOverride, HttpFilter, HttpFilterType, HttpRbac,
     };
     use crate::config::common::*;
+    use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::cors::v3::Cors;
     use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::mcp::mcp_gateway::v3::McpGateway as OrionMcpGateway;
     use orion_data_plane_api::envoy_data_plane_api::{
         envoy::{
@@ -153,6 +156,7 @@ mod envoy_conversions {
                     Err(GenericError::from_msg("router filter has to be the last filter in the chain"))
                 },
                 SupportedEnvoyFilter::JwtAuthentication(jwt) => jwt.try_into().map(Self::JwtAuthentication),
+                SupportedEnvoyFilter::Cors(c) => c.try_into().map(Self::Cors),
             }
         }
     }
@@ -165,6 +169,7 @@ mod envoy_conversions {
         Router(EnvoyRouter),
         ExternalProcessor(EnvoyExternalProcessor),
         JwtAuthentication(EnvoyJwtAuthentication),
+        Cors(Cors),
         McpGateway(OrionMcpGateway),
     }
 
@@ -183,6 +188,9 @@ mod envoy_conversions {
                 },
                 "type.googleapis.com/envoy.extensions.filters.http.router.v3.Router" => {
                     EnvoyRouter::decode(typed_config.value.as_slice()).map(Self::Router)
+                },
+                "type.googleapis.com/envoy.extensions.filters.http.cors.v3.Cors" => {
+                    Cors::decode(typed_config.value.as_slice()).map(Self::Cors)
                 },
                 "type.googleapis.com/envoy.extensions.filters.http.jwt_authn.v3.JwtAuthentication" => {
                     EnvoyJwtAuthentication::decode(typed_config.value.as_slice()).map(Self::JwtAuthentication)

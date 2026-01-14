@@ -243,9 +243,9 @@ impl McpGateway {
                 self.handle_sse_handshake(&ctx, request, metadata.listener_name).await
             },
             (&Method::GET, MCP_MESSAGE_ENDPOINT) => FilterDecision::method_not_allowed(request.version()),
-            (&Method::OPTIONS, SSE_MESSAGE_ENDPOINT) | (&Method::OPTIONS, MCP_MESSAGE_ENDPOINT) => {
-                self.handle_cors_options(request).await
-            },
+            // (&Method::OPTIONS, SSE_MESSAGE_ENDPOINT) | (&Method::OPTIONS, MCP_MESSAGE_ENDPOINT) => {
+            //     self.handle_cors_options(request).await
+            // },
             (&Method::POST, MCP_MESSAGE_ENDPOINT) => {
                 self.handle_mcp_post_endpoint(&ctx, request, metadata.listener_name).await
             },
@@ -588,7 +588,7 @@ impl McpGateway {
 
         // build the SSE response...
         let builder = Response::builder()
-            .header(http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+            //.header(http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
             .header(http::header::CONTENT_TYPE, MIME_TEXT_EVENT_STREAM)
             .header(http::header::CACHE_CONTROL, "no-cache, no-transform")
             .header(http::header::CONNECTION, "keep-alive")
@@ -800,32 +800,32 @@ impl McpGateway {
         }
     }
 
-    async fn handle_cors_options(&mut self, request: &mut Request<OrionRequestBody>) -> FilterDecision {
-        let allow_origin = self.client_origin.clone().unwrap_or_else(|| HeaderValue::from_static("*"));
+    // async fn handle_cors_options(&mut self, request: &mut Request<OrionRequestBody>) -> FilterDecision {
+    //     let allow_origin = self.client_origin.clone().unwrap_or_else(|| HeaderValue::from_static("*"));
 
-        let request_headers = request
-            .headers()
-            .get(http::header::ACCESS_CONTROL_REQUEST_HEADERS)
-            .cloned()
-            .unwrap_or_else(|| HeaderValue::from_static("content-type, mcp-session-id, mcp-protocol-version"));
+    //     let request_headers = request
+    //         .headers()
+    //         .get(http::header::ACCESS_CONTROL_REQUEST_HEADERS)
+    //         .cloned()
+    //         .unwrap_or_else(|| HeaderValue::from_static("content-type, mcp-session-id, mcp-protocol-version"));
 
-        let builder = Response::builder()
-            .header(http::header::ACCESS_CONTROL_ALLOW_ORIGIN, allow_origin)
-            .header(http::header::ACCESS_CONTROL_ALLOW_CREDENTIALS, "true")
-            .header(http::header::ACCESS_CONTROL_ALLOW_METHODS, "GET, POST, OPTIONS")
-            .header(http::header::ACCESS_CONTROL_ALLOW_HEADERS, request_headers)
-            .header(http::header::ACCESS_CONTROL_EXPOSE_HEADERS, "mcp-session-id, last-event-id, mcp-protocol-version")
-            .header(http::header::VARY, "Origin, Access-Control-Request-Headers")
-            .header(http::header::CONNECTION, "keep-alive")
-            .version(self.version)
-            .status(StatusCode::NO_CONTENT);
+    //     let builder = Response::builder()
+    //         .header(http::header::ACCESS_CONTROL_ALLOW_ORIGIN, allow_origin)
+    //         .header(http::header::ACCESS_CONTROL_ALLOW_CREDENTIALS, "true")
+    //         .header(http::header::ACCESS_CONTROL_ALLOW_METHODS, "GET, POST, OPTIONS")
+    //         .header(http::header::ACCESS_CONTROL_ALLOW_HEADERS, request_headers)
+    //         .header(http::header::ACCESS_CONTROL_EXPOSE_HEADERS, "mcp-session-id, last-event-id, mcp-protocol-version")
+    //         .header(http::header::VARY, "Origin, Access-Control-Request-Headers")
+    //         .header(http::header::CONNECTION, "keep-alive")
+    //         .version(self.version)
+    //         .status(StatusCode::NO_CONTENT);
 
-        let Ok(response) = builder.body(TimeoutBody::new(None, PolyBody::from(Empty::new()))) else {
-            unreachable!("handle_cors_options: failed to build CORS response body");
-        };
+    //     let Ok(response) = builder.body(TimeoutBody::new(None, PolyBody::from(Empty::new()))) else {
+    //         unreachable!("handle_cors_options: failed to build CORS response body");
+    //     };
 
-        FilterDecision::DirectResponse(response)
-    }
+    //     FilterDecision::DirectResponse(response)
+    // }
 
     fn get_valid_session(
         &mut self,
@@ -922,8 +922,8 @@ impl McpGateway {
         let allow_origin = self.client_origin.clone().unwrap_or_else(|| HeaderValue::from_static("*"));
 
         let mut builder = Response::builder()
-            .header(http::header::ACCESS_CONTROL_ALLOW_ORIGIN, allow_origin)
-            .header(http::header::ACCESS_CONTROL_ALLOW_CREDENTIALS, "true")
+            //.header(http::header::ACCESS_CONTROL_ALLOW_ORIGIN, allow_origin)
+            //.header(http::header::ACCESS_CONTROL_ALLOW_CREDENTIALS, "true")
             .header(http::header::ACCESS_CONTROL_EXPOSE_HEADERS, "mcp-session-id,last-event-id,mcp-protocol-version")
             .header(http::header::CONNECTION, "keep-alive")
             .version(self.version)

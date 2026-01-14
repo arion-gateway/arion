@@ -36,12 +36,13 @@ mod utils;
 
 use std::sync::OnceLock;
 
+use http_body_util::Empty;
 use listeners::listeners_manager;
 use orion_configuration::config::Runtime;
 use serde::Serialize;
 use tokio::sync::mpsc;
 
-use crate::body::{instrumented_body::InstrumentedBody, timeout_body::TimeoutBody};
+use crate::body::{instrumented_body::InstrumentedBody, response_flags::BodyKind, timeout_body::TimeoutBody};
 pub use crate::configuration::get_listeners_and_clusters;
 
 pub use clusters::{
@@ -72,9 +73,19 @@ use std::time::Duration;
 
 /// The Orion Request Body: a poly body with timeout and instrumentation
 pub type OrionRequestBody = InstrumentedBody<TimeoutBody<PolyBody>>;
+impl Default for OrionRequestBody {
+    fn default() -> Self {
+        InstrumentedBody::new(BodyKind::Request, TimeoutBody::new(None, PolyBody::from(Empty::new())), |_, _, _| {})
+    }
+}
 
 /// The Orion Response Body: a poly body with timeout
 pub type OrionResponseBody = TimeoutBody<PolyBody>;
+impl Default for OrionResponseBody {
+    fn default() -> Self {
+        TimeoutBody::new(None, PolyBody::from(Empty::new()))
+    }
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct RequestContext<'a> {

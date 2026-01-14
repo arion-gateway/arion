@@ -5,6 +5,7 @@ use crate::{
     event_error::EventFailure,
     listeners::{
         http_connection_manager::{
+            cors::Cors,
             ext_proc::ExternalProcessor,
             jwt_authn::{JwtAuthentication, JwtAuthenticationBuilder},
             mcp_gateway::mcp::McpGateway,
@@ -119,6 +120,7 @@ pub enum HttpFilterValue {
     Rbac(HttpRbac),
     ExternalProcessor(ExternalProcessor),
     JwtAuthentication(JwtAuthentication),
+    Cors(Cors),
     McpGateway(McpGateway),
 }
 
@@ -134,6 +136,7 @@ impl FactoryFilter for HttpFilterValue {
             HttpFilterValue::ExternalProcessor(conf) => HttpFilterValue::ExternalProcessor(conf.clone()),
             HttpFilterValue::JwtAuthentication(conf) => HttpFilterValue::JwtAuthentication(conf.clone()),
             HttpFilterValue::McpGateway(conf) => HttpFilterValue::McpGateway(conf.new_from()),
+            HttpFilterValue::Cors(conf) => HttpFilterValue::Cors(conf.clone()),
         }
     }
 }
@@ -157,6 +160,7 @@ impl TryFrom<HttpFilterConfig> for HttpFilter {
                 let builder = JwtAuthenticationBuilder::new(conf);
                 HttpFilterValue::JwtAuthentication(builder.build())
             },
+            HttpFilterType::Cors(conf) => HttpFilterValue::Cors(conf.into()),
             HttpFilterType::McpGateway(mcp) => HttpFilterValue::McpGateway(mcp.try_into()?),
         };
         Ok(Self { name, disabled, filter: Some(filter), base_config: hcm_config })
@@ -170,6 +174,7 @@ impl HttpFilterValue {
             HttpFilterValue::RateLimit(rl) => rl.run(request),
             HttpFilterValue::ExternalProcessor(ext_proc) => ext_proc.apply_request(request).await,
             HttpFilterValue::JwtAuthentication(jwt) => jwt.apply_request(request),
+            HttpFilterValue::Cors(cors) => cors.apply_request(request),
             HttpFilterValue::McpGateway(mcp) => mcp.apply_request(request).await,
         }
     }
@@ -180,6 +185,7 @@ impl HttpFilterValue {
             HttpFilterValue::ExternalProcessor(ext_proc) => ext_proc.apply_response(response).await,
             HttpFilterValue::JwtAuthentication(_) => FilterDecision::Continue,
             HttpFilterValue::McpGateway(mcp) => mcp.apply_response(response).await,
+            HttpFilterValue::Cors(cors) => cors.apply_response(response),
         }
     }
     pub(crate) fn from_filter_override(value: &FilterOverride, base_config: Option<&HttpFilterConfig>) -> Option<Self> {
