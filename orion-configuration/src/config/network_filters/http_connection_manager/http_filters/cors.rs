@@ -34,7 +34,7 @@ impl Default for CorsConfig {
                 Method::OPTIONS,
             ],
             allow_headers: vec!["*".into()],
-            expose_headers: vec![],
+            expose_headers: vec!["*".into()],
             allow_credentials: false,
             max_age: Some(86400),
         }
