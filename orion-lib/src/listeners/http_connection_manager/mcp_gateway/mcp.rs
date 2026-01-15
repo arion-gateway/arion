@@ -887,11 +887,8 @@ impl McpGateway {
         body: TimeoutBody<PolyBody>,
         headers: &[(HeaderName, &str)],
     ) -> Result<Response<OrionResponseBody>, FilterDecision> {
-
-        let mut builder = Response::builder()
-            .header(http::header::CONNECTION, "keep-alive")
-            .version(self.version)
-            .status(status);
+        let mut builder =
+            Response::builder().header(http::header::CONNECTION, "keep-alive").version(self.version).status(status);
 
         for (name, value) in headers {
             builder = builder.header(name, *value);

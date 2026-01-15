@@ -594,10 +594,7 @@ mod tests {
         let decision = cors.apply_request(&mut req);
 
         // Should succeed - header comparison is case-insensitive
-        assert!(
-            matches!(decision, FilterDecision::DirectResponse(_)),
-            "Header validation should be case-insensitive"
-        );
+        assert!(matches!(decision, FilterDecision::DirectResponse(_)), "Header validation should be case-insensitive");
     }
 
     #[test]
@@ -650,10 +647,7 @@ mod tests {
         let decision = cors.apply_request(&mut req);
 
         // Should FAIL because "*" is literal when credentials enabled
-        assert!(
-            matches!(decision, FilterDecision::Continue),
-            "Wildcard should not work with credentials enabled"
-        );
+        assert!(matches!(decision, FilterDecision::Continue), "Wildcard should not work with credentials enabled");
     }
 
     #[test]
