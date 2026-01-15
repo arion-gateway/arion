@@ -40,39 +40,33 @@ envoy_bootstrap:
                   statPrefix: ingress_http
                   codecType: HTTP1
                   httpFilters:
-                    - name: orion.filters.http.mcp
+                    - name: envoy.filters.http.jwt_authn
                       typed_config:
-                        "@type": type.googleapis.com/orion.extensions.filters.http.mcp.mcp_gateway.v3.McpGateway
-                        server_info:
-                          name: "orion-mcp-gateway"
-                          version: "0.0.1"
-                        cluster_header: "x-mcp-target-cluster"
-                        tools:
-                          - name: "weather_get_forecast"
-                            description: "Get weather forecast for a location"
-                            backend:
-                              cluster: weather_api_cluster
-                              rest_transcoding:
-                                method: GET
-                                path: "/v1/forecast"
-                            input_schema:
-                              inline_string: >-
-                                {
-                                  "type": "object",
-                                  "properties": {
-                                    "latitude": {
-                                      "type": "number"
-                                    },
-                                    "longitude": {
-                                      "type": "number"
-                                    },
-                                    "days": {
-                                      "type": "integer",
-                                      "default": 7
-                                    }
-                                  },
-                                  "required": ["latitude", "longitude"]
-                                }
+                           "@type": "type.googleapis.com/envoy.extensions.filters.http.jwt_authn.v3.JwtAuthentication"
+                           rules:
+                              - match:
+                                    prefix: "/"
+                                requires:
+                                    provider_name: oauth_provider
+                           providers:
+                               oauth_provider:
+                                 from_headers:
+                                   - name: Authorization
+                                     value_prefix: "Bearer "
+                                 #issuer: "https://auth.example.com"
+                                 audiences: ["mcp-gateway"]
+                                 local_jwks:
+                                     inline_string: >-
+                                         {"keys": [
+                                             {
+                                                 "kty": "RSA",
+                                                 "e": "AQAB",
+                                                 "use": "sig",
+                                                 "kid": "sig-2025-12-12T15:52:22Z",
+                                                 "alg": "RS256",
+                                                 "n": "hi3pcXuRrhy2gHjkHCq6JBcxpeC5udojlLukmsyAZ7x1vHwHTx_9c6s73XhfJoRBnd3V3SL1JAUuBiVJ68Pnrtuztp5j8Cdw33S5jKf-8PranMucG_4wWejWm1gbKomZBm79Baf_fJkDOwumsTXvO9dgX7c2dHtA0oO15eVdzSDf7azgLU7OvVukiE71tqoQwnPgK47xDvjw83ZN8eWZzDPGpA9DVoEjhwOeasDgUdVv1L-b2uOqCMYcLixYJ58O48cQSEOreIi1FbIJGoT19VKtJ528JrTkKihZb-BmFIvyIu36lGRpeJ1pbarIMx-sC_-UfKEawHmYQp7MwB1dnQ"
+                                             }
+                                         ]}
                     - name: envoy.filters.http.router
                       typedConfig:
                         "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
@@ -86,10 +80,10 @@ envoy_bootstrap:
                           - match:
                               prefix: "/"
                             route:
-                              cluster_header: "x-mcp-target-cluster"
+                              cluster: cluster_http
 
     clusters:
-      - name: weather_api_cluster
+      - name: cluster_http
         connect_timeout: 0.25s
         type: STATIC
         lb_policy: ROUND_ROBIN

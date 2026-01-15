@@ -5,13 +5,13 @@ use http::{HeaderName, HeaderValue, Method, Request, Response, StatusCode};
 use http_body_util::{BodyExt, Empty, Full};
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::McpGateway as McpGatewayConfig;
 use orion_http_header::MCP_SESSION_ID;
+use parking_lot::Mutex;
 use scopeguard::defer;
 use serde::Serialize;
 use serde_json::{json, Value};
 use smol_str::ToSmolStr;
-use std::{sync::{Arc, atomic::AtomicUsize}};
+use std::sync::{atomic::AtomicUsize, Arc};
 use tokio::sync::Mutex as TokioMutex;
-use parking_lot::Mutex;
 use tracing::debug;
 use uuid::Uuid;
 
