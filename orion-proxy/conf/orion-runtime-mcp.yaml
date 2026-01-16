@@ -73,6 +73,49 @@ envoy_bootstrap:
                                   },
                                   "required": ["latitude", "longitude"]
                                 }
+                          - name: "user_profile_get"
+                            description: "Get user profile information"
+                            backend:
+                              cluster: weather_api_cluster
+                              rest_transcoding:
+                                method: GET
+                                path: "/v1/user/profile"
+                            input_schema:
+                              inline_string: >-
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "user_id": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": ["user_id"]
+                                }
+                          - name: "admin_delete_user"
+                            description: "Delete a user account (admin only)"
+                            backend:
+                              cluster: weather_api_cluster
+                              rest_transcoding:
+                                method: DELETE
+                                path: "/v1/admin/user"
+                            rbac:
+                              action: ALLOW
+                              permissions:
+                                - jwt_claim:
+                                    field: "role"
+                                    value: "admin"
+                            input_schema:
+                              inline_string: >-
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "user_id": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": ["user_id"]
+                                }
+
                     - name: envoy.filters.http.router
                       typedConfig:
                         "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router

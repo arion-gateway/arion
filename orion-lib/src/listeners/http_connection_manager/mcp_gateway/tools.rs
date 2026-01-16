@@ -1,5 +1,9 @@
 use crate::{
     body::{instrumented_body::InstrumentedBody, response_flags::BodyKind, timeout_body::TimeoutBody},
+    listeners::http_connection_manager::mcp_gateway::rbac::{
+        Action as RbacAction, JwtClaimField, JwtHeaderField, JwtHeaderMatcher, JwtPayloadMatcher,
+        Permission as RbacPermission, ToolRbac,
+    },
     OrionRequestBody, PolyBody,
 };
 use http::{header::InvalidHeaderValue, HeaderValue};
@@ -22,6 +26,8 @@ pub enum BuildRequestError {
     NameNotString,
     #[error("tool '{0}' not found in registry")]
     ToolNotFound(String),
+    #[error("access to tool '{0}' denied by RBAC policy")]
+    RbacDenied(String),
     #[error("REST request for tool '{tool}': {reason}")]
     RestBuildFailed { tool: String, reason: String },
     #[error("MCP transcoding is not yet implemented")]
@@ -34,7 +40,13 @@ pub enum BuildRequestError {
 
 #[derive(Debug, Clone)]
 pub struct ToolsRegistry {
-    registry: Vec<McpTool>,
+    registry: Vec<ToolEntry>,
+}
+
+#[derive(Debug, Clone)]
+struct ToolEntry {
+    tool: McpTool,
+    rbac: Option<ToolRbac>,
 }
 
 impl ToolsRegistry {
@@ -43,11 +55,14 @@ impl ToolsRegistry {
     }
 
     pub fn with_tools(tools: Vec<McpTool>) -> Self {
-        let mut myself = ToolsRegistry::new();
-        for tool in tools {
-            myself.register(tool);
-        }
-        myself
+        let registry = tools
+            .into_iter()
+            .map(|tool| {
+                let rbac = tool.rbac.as_ref().map(convert_config_rbac_to_runtime);
+                ToolEntry { tool, rbac }
+            })
+            .collect();
+        ToolsRegistry { registry }
     }
 
     #[allow(dead_code)]
@@ -64,6 +79,7 @@ impl ToolsRegistry {
                 },
                 "required": ["city"]
             }),
+            rbac: None,
             backend: McpBackend {
                 cluster: "weather_api_cluster".into(),
                 r#async: false,
@@ -86,6 +102,7 @@ impl ToolsRegistry {
                 },
                 "required": ["username", "email"]
             }),
+            rbac: None,
             backend: McpBackend {
                 cluster: "post_user_cluster".into(),
                 r#async: false,
@@ -100,22 +117,18 @@ impl ToolsRegistry {
         myself
     }
 
-    pub fn register(&mut self, endpoint: McpTool) {
-        self.registry.push(endpoint);
+    pub fn register(&mut self, tool: McpTool) {
+        let rbac = tool.rbac.as_ref().map(convert_config_rbac_to_runtime);
+        self.registry.push(ToolEntry { tool, rbac });
     }
 
     pub fn build_list_tools(&self) -> ListToolsResult {
         let mut tools = Vec::with_capacity(self.registry.len());
-        for api in self.registry.iter() {
-            //let tool_name = format!(
-            //    "{}_{}",
-            //    api.method.to_string().to_lowercase(),
-            //    api.path.replace("/", "_").trim_start_matches('_')
-            //);
+        for entry in self.registry.iter() {
             tools.push(Tool {
-                name: api.name.clone().into(),
-                description: Some(api.description.clone().into()),
-                input_schema: Arc::new(api.input_schema.clone()),
+                name: entry.tool.name.clone().into(),
+                description: Some(entry.tool.description.clone().into()),
+                input_schema: Arc::new(entry.tool.input_schema.clone()),
                 title: None,
                 output_schema: None,
                 annotations: None,
@@ -152,11 +165,19 @@ impl ToolsRegistry {
         let name = mcp_request.params.get("name").ok_or(BuildRequestError::MissingName)?;
         let name = name.as_str().ok_or(BuildRequestError::NameNotString)?;
 
-        let endpoint = self
+        let entry = self
             .registry
             .iter()
-            .find(|e| e.name == name)
+            .find(|e| e.tool.name == name)
             .ok_or_else(|| BuildRequestError::ToolNotFound(name.to_string()))?;
+
+        if let Some(rbac) = &entry.rbac {
+            if !rbac.is_permitted(request) {
+                return Err(BuildRequestError::RbacDenied(name.to_string()));
+            }
+        }
+
+        let endpoint = &entry.tool;
 
         let mut upstream_request = match &endpoint.backend.transcoding {
             McpTranscoding::Rest { method, path, query_params } => self
@@ -230,4 +251,61 @@ impl ToolsRegistry {
 
         builder.body(body)
     }
+}
+
+/// Convert configuration RBAC to runtime RBAC
+fn convert_config_rbac_to_runtime(
+    config_rbac: &orion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::McpToolRbac,
+) -> ToolRbac {
+    use orion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::McpRbacPermission;
+
+    let action = match config_rbac.action {
+        orion_configuration::config::network_filters::network_rbac::Action::Allow => RbacAction::Allow,
+        orion_configuration::config::network_filters::network_rbac::Action::Deny => RbacAction::Deny,
+    };
+
+    let permissions = config_rbac
+        .permissions
+        .iter()
+        .map(|p| match p {
+            McpRbacPermission::JwtHeader { field, value } => {
+                let header_field = match field.as_str() {
+                    "alg" | "algorithm" => JwtHeaderField::Algorithm,
+                    "typ" | "type" => JwtHeaderField::Type,
+                    "cty" | "content_type" => JwtHeaderField::ContentType,
+                    "jku" | "json_key_url" => JwtHeaderField::JsonKeyURL,
+                    "jwk" | "json_web_key" => JwtHeaderField::JsonWebKey,
+                    "kid" | "key_id" => JwtHeaderField::KeyID,
+                    "x5u" | "x509_url" => JwtHeaderField::X509URL,
+                    "x5c" | "x509_certificate_chain" => JwtHeaderField::X509CertificateChain,
+                    "x5t" | "x509_certificate_sha1_thumbprint" => JwtHeaderField::X509CertificateSHA1Thumbprint,
+                    "x5t#S256" | "x509_certificate_sha256_thumbprint" => {
+                        JwtHeaderField::X509CertificateSHA256Thumbprint
+                    },
+                    "crit" | "critical" => JwtHeaderField::Critical,
+                    "enc" | "encryption" => JwtHeaderField::Encryption,
+                    "zip" => JwtHeaderField::Zip,
+                    "url" => JwtHeaderField::Url,
+                    "nonce" => JwtHeaderField::Nonce,
+                    _ => JwtHeaderField::KeyID, // default fallback
+                };
+                RbacPermission::JwtHeader(JwtHeaderMatcher { field: header_field, value: value.clone() })
+            },
+            McpRbacPermission::JwtClaim { field, value } => {
+                let claim_field = match field.as_str() {
+                    "iss" | "issuer" => JwtClaimField::Issuer,
+                    "sub" | "subject" => JwtClaimField::Subject,
+                    "aud" | "audience" => JwtClaimField::Audience,
+                    "exp" | "expiration" => JwtClaimField::Expiration,
+                    "iat" | "issued_at" => JwtClaimField::IssuedAt,
+                    "nbf" | "not_before" => JwtClaimField::NotBefore,
+                    "jti" | "jwt_id" => JwtClaimField::JWTID,
+                    custom => JwtClaimField::Extra(custom.into()),
+                };
+                RbacPermission::JwtClaim(JwtPayloadMatcher { field: claim_field, value: value.clone() })
+            },
+        })
+        .collect();
+
+    ToolRbac { action, permissions }
 }

@@ -28,7 +28,7 @@ use crate::{
     },
     listeners::{
         http_connection_manager::mcp_gateway::{
-            tools::ToolsRegistry,
+            tools::{BuildRequestError::RbacDenied, ToolsRegistry},
             transport::{
                 self, AcceptedMime, RequestExt, SessionId, Transport, MIME_APPLICATION_JSON, MIME_TEXT_EVENT_STREAM,
             },
@@ -767,7 +767,8 @@ impl McpGateway {
             },
             CallToolRequestMethod::VALUE => {
                 debug!(target: "mcp_gateway", "handle_rpc_json_request: tools/call {:#?}", rpc);
-                let (request, r#async) = match self.inner.tools.build_request(
+
+                let (upstream_request, r#async) = match self.inner.tools.build_request(
                     request,
                     &rpc.request,
                     &self.inner.config.cluster_header,
@@ -775,14 +776,22 @@ impl McpGateway {
                     Ok(result) => result,
                     Err(e) => {
                         debug!(target: "mcp_gateway", "handle_rpc_json_request: tools/call failed to build request: {e:#}");
-                        return MessageResponse::Error(
-                            self.build_rpc_error(model::ErrorData::invalid_params("invalid params", None)),
-                        );
+                        let error_data = if matches!(e, RbacDenied(_)) {
+                            model::ErrorData::new(
+                                model::ErrorCode::INVALID_REQUEST,
+                                "Access denied by RBAC policy",
+                                None,
+                            )
+                        } else {
+                            model::ErrorData::invalid_params("invalid params", None)
+                        };
+
+                        return MessageResponse::Error(self.build_rpc_error(error_data));
                     },
                 };
 
-                debug!(target: "mcp_gateway", "handle_rpc_json_request: UPSTREAM {:#?}", request);
-                MessageResponse::Upstream((request, r#async))
+                debug!(target: "mcp_gateway", "handle_rpc_json_request: UPSTREAM {:#?}", upstream_request);
+                MessageResponse::Upstream((upstream_request, r#async))
             },
             _ => {
                 debug!(target: "mcp_gateway", "handle_rpc_json_request: unknown rpc method '{}'", rpc.request.method);
