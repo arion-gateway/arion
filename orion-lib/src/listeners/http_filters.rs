@@ -161,6 +161,7 @@ impl TryFrom<HttpFilterConfig> for HttpFilter {
                 HttpFilterValue::JwtAuthentication(builder.build())
             },
             HttpFilterType::Cors(conf) => HttpFilterValue::Cors(conf.into()),
+            HttpFilterType::CorsPolicy(conf) => HttpFilterValue::Cors(conf.into()),
             HttpFilterType::McpGateway(mcp) => HttpFilterValue::McpGateway(mcp.try_into()?),
         };
         Ok(Self { name, disabled, filter: Some(filter), base_config: hcm_config })

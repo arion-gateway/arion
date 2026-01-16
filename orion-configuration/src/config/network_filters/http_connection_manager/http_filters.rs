@@ -69,6 +69,7 @@ pub enum HttpFilterType {
     ExternalProcessor(ExternalProcessor),
     JwtAuthentication(JwtAuthentication),
     Cors(CorsConfig),
+    CorsPolicy(CorsConfig),
     McpGateway(McpGateway),
 }
 
@@ -87,6 +88,7 @@ mod envoy_conversions {
     };
     use crate::config::common::*;
     use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::cors::v3::Cors;
+    use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::cors::v3::CorsPolicy;
     use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::mcp::mcp_gateway::v3::McpGateway as OrionMcpGateway;
     use orion_data_plane_api::envoy_data_plane_api::{
         envoy::{
@@ -157,6 +159,7 @@ mod envoy_conversions {
                 },
                 SupportedEnvoyFilter::JwtAuthentication(jwt) => jwt.try_into().map(Self::JwtAuthentication),
                 SupportedEnvoyFilter::Cors(c) => c.try_into().map(Self::Cors),
+                SupportedEnvoyFilter::CorsPolicy(c) => c.try_into().map(Self::CorsPolicy),
             }
         }
     }
@@ -170,6 +173,7 @@ mod envoy_conversions {
         ExternalProcessor(EnvoyExternalProcessor),
         JwtAuthentication(EnvoyJwtAuthentication),
         Cors(Cors),
+        CorsPolicy(CorsPolicy),
         McpGateway(OrionMcpGateway),
     }
 
@@ -191,6 +195,9 @@ mod envoy_conversions {
                 },
                 "type.googleapis.com/envoy.extensions.filters.http.cors.v3.Cors" => {
                     Cors::decode(typed_config.value.as_slice()).map(Self::Cors)
+                },
+                "type.googleapis.com/envoy.extensions.filters.http.cors.v3.CorsPolicy" => {
+                    CorsPolicy::decode(typed_config.value.as_slice()).map(Self::CorsPolicy)
                 },
                 "type.googleapis.com/envoy.extensions.filters.http.jwt_authn.v3.JwtAuthentication" => {
                     EnvoyJwtAuthentication::decode(typed_config.value.as_slice()).map(Self::JwtAuthentication)

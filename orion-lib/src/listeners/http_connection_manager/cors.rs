@@ -216,13 +216,13 @@ impl Cors {
 
         // Case A: Wildcard allowed AND credentials disabled.
         // We return "*" literally.
-        if !conf.allow_credentials && conf.allow_origins.iter().any(|o| o == "*") {
+        if !conf.allow_credentials && conf.allow_origins.iter().any(|o| o.matches("*")) {
             return Some((HeaderValue::from_static("*"), true));
         }
 
         // Case B: Exact match (or Reflection if wildcard is used WITH credentials).
         // We return the specific request origin.
-        if conf.allow_origins.iter().any(|o| o == "*" || o == request_origin) {
+        if conf.allow_origins.iter().any(|o| o.matches("*") || o.matches(request_origin)) {
             match HeaderValue::from_str(request_origin) {
                 Ok(v) => return Some((v, false)),
                 Err(_) => return None,
