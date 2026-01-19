@@ -237,7 +237,9 @@ impl Cors {
 mod tests {
     use super::*;
     use crate::OrionRequestBody;
+    use hickory_resolver::proto::rr::rdata::tlsa::Matching;
     use http::{Request, Response};
+    use orion_configuration::config::core::StringMatcher;
 
     fn mock_req(method: Method, origin: Option<&str>, acr_method: Option<&str>) -> Request<OrionRequestBody> {
         mock_req_full(method, origin, acr_method, None)
@@ -268,7 +270,7 @@ mod tests {
     // Helper config
     fn basic_config() -> CorsConfig {
         CorsConfig {
-            allow_origins: vec!["https://allowed.com".into()],
+            allow_origins: vec![StringMatcher::new("https://allowed.com")],
             allow_methods: vec![Method::GET, Method::POST, Method::OPTIONS],
             allow_credentials: true,
             ..Default::default()
@@ -340,7 +342,8 @@ mod tests {
 
     #[test]
     fn test_wildcard_no_credentials() {
-        let conf = CorsConfig { allow_origins: vec!["*".into()], allow_credentials: false, ..Default::default() };
+        let conf =
+            CorsConfig { allow_origins: vec![StringMatcher::new("*")], allow_credentials: false, ..Default::default() };
         let mut cors = Cors::from(conf);
         let mut req = mock_req(Method::GET, Some("https://anyone.com"), None);
 
@@ -371,7 +374,7 @@ mod tests {
     fn test_wildcard_with_credentials_echoes_origin() {
         // When wildcard is used WITH credentials, we must echo the origin, not "*"
         let conf = CorsConfig {
-            allow_origins: vec!["*".into()],
+            allow_origins: vec![StringMatcher::new("*")],
             allow_credentials: true,
             allow_methods: vec![Method::GET],
             ..Default::default()
@@ -406,7 +409,7 @@ mod tests {
     #[test]
     fn test_preflight_with_allowed_headers() {
         let conf = CorsConfig {
-            allow_origins: vec!["https://allowed.com".into()],
+            allow_origins: vec![StringMatcher::new("https://allowed.com")],
             allow_methods: vec![Method::POST],
             allow_headers: vec!["X-Custom-Header".into(), "Content-Type".into()],
             allow_credentials: false,
@@ -432,7 +435,7 @@ mod tests {
     #[test]
     fn test_preflight_rejects_disallowed_header() {
         let conf = CorsConfig {
-            allow_origins: vec!["https://allowed.com".into()],
+            allow_origins: vec![StringMatcher::new("https://allowed.com")],
             allow_methods: vec![Method::POST],
             allow_headers: vec!["Content-Type".into()],
             allow_credentials: false,
@@ -450,7 +453,7 @@ mod tests {
     #[test]
     fn test_preflight_with_max_age() {
         let conf = CorsConfig {
-            allow_origins: vec!["https://allowed.com".into()],
+            allow_origins: vec![StringMatcher::new("https://allowed.com")],
             allow_methods: vec![Method::GET],
             max_age: Some(3600),
             ..Default::default()
@@ -470,7 +473,7 @@ mod tests {
     #[test]
     fn test_response_with_expose_headers() {
         let conf = CorsConfig {
-            allow_origins: vec!["https://allowed.com".into()],
+            allow_origins: vec![StringMatcher::new("https://allowed.com")],
             allow_methods: vec![Method::GET],
             expose_headers: vec!["X-Request-Id".into(), "X-Trace-Id".into()],
             ..Default::default()
@@ -526,7 +529,11 @@ mod tests {
     #[test]
     fn test_multiple_allowed_origins() {
         let conf = CorsConfig {
-            allow_origins: vec!["https://first.com".into(), "https://second.com".into(), "https://third.com".into()],
+            allow_origins: vec![
+                StringMatcher::new("https://first.com"),
+                StringMatcher::new("https://second.com"),
+                StringMatcher::new("https://third.com"),
+            ],
             allow_methods: vec![Method::GET],
             ..Default::default()
         };
@@ -555,7 +562,7 @@ mod tests {
         // Even without credentials, if we echo a specific origin (not "*"),
         // we need Vary: Origin for caching correctness
         let conf = CorsConfig {
-            allow_origins: vec!["https://specific.com".into()],
+            allow_origins: vec![StringMatcher::new("https://specific.com")],
             allow_credentials: false,
             allow_methods: vec![Method::GET],
             ..Default::default()
@@ -576,7 +583,7 @@ mod tests {
     #[test]
     fn test_preflight_header_validation_case_insensitive() {
         let conf = CorsConfig {
-            allow_origins: vec!["https://allowed.com".into()],
+            allow_origins: vec![StringMatcher::new("https://allowed.com")],
             allow_methods: vec![Method::POST],
             allow_headers: vec!["Content-Type".into()],
             allow_credentials: false,
@@ -601,7 +608,7 @@ mod tests {
     fn test_wildcard_allow_headers_without_credentials() {
         // "*" in allow_headers should allow any header when credentials are disabled
         let conf = CorsConfig {
-            allow_origins: vec!["https://allowed.com".into()],
+            allow_origins: vec![StringMatcher::new("https://allowed.com")],
             allow_methods: vec![Method::POST],
             allow_headers: vec!["*".into()],
             allow_credentials: false,
@@ -630,7 +637,7 @@ mod tests {
         // "*" with credentials enabled should NOT act as wildcard
         // It should be treated as a literal "*" header name
         let conf = CorsConfig {
-            allow_origins: vec!["https://allowed.com".into()],
+            allow_origins: vec![StringMatcher::new("https://allowed.com")],
             allow_methods: vec![Method::POST],
             allow_headers: vec!["*".into()],
             allow_credentials: true,
