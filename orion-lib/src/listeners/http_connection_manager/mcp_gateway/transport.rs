@@ -12,7 +12,6 @@ pub const MIME_TEXT_EVENT_STREAM: &str = "text/event-stream";
 pub const MIME_APPLICATION_JSON: &str = "application/json";
 
 pub const BYTES_MIME_TEXT_EVENT_STREAM: &[u8] = b"text/event-stream";
-pub const BYTES_MIME_APPLICATION_JSON: &[u8] = b"application/json";
 
 #[derive(Debug, Clone, Default, Eq, PartialEq, Hash)]
 pub struct SessionId(pub SmolStr);

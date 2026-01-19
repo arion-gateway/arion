@@ -237,7 +237,6 @@ impl Cors {
 mod tests {
     use super::*;
     use crate::OrionRequestBody;
-    use hickory_resolver::proto::rr::rdata::tlsa::Matching;
     use http::{Request, Response};
     use orion_configuration::config::core::StringMatcher;
 

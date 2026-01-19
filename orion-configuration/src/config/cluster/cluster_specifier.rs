@@ -21,7 +21,6 @@ use smol_str::SmolStr;
 use std::{borrow::Cow, num::NonZeroU32};
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(untagged)]
 pub enum ClusterSpecifier {
     Cluster(SmolStr),
     WeightedCluster(Vec<WeightedClusterSpecifier>),
