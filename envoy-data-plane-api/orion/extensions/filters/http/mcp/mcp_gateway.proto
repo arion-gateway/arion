@@ -26,6 +26,7 @@ message Tool {
     string description = 2 [(validate.rules).string = {min_bytes: 1}];
     envoy.config.core.v3.DataSource input_schema = 3;
     Backend backend = 4 [(validate.rules).message = {required: true}];
+    optional ToolRbac rbac = 5;
 }
 
 message Backend {
@@ -53,4 +54,48 @@ message FunctionGraphTranscoding {
 }
 
 message McpServerTranscoding {
+}
+
+// RBAC configuration for individual MCP tools
+// Specifies JWT-based access control rules for tool access
+message ToolRbac {
+  // Action to take when permissions are evaluated
+  enum Action {
+    // Allow access if any permission matches (default deny)
+    ALLOW = 0;
+    // Deny access if any permission matches (default allow)
+    DENY = 1;
+  }
+
+  // The action to take (ALLOW or DENY)
+  Action action = 1;
+
+  // List of permissions (OR logic - any permission can match)
+  // At least one permission must be specified
+  repeated Permission permissions = 2 [(validate.rules).repeated = {min_items: 1}];
+}
+
+// Permission - defines JWT requirements for tool access
+message Permission {
+  oneof permission_type {
+    option (validate.required) = true;
+    
+    // Match based on JWT header field
+    JwtHeaderMatcher jwt_header = 1;
+    
+    // Match based on JWT claim field
+    JwtClaimMatcher jwt_claim = 2;
+  }
+}
+
+// JWT header field matcher
+message JwtHeaderMatcher {
+  string field = 1 [(validate.rules).string = {min_bytes: 1}];
+  string value = 2 [(validate.rules).string = {min_bytes: 1}];
+}
+
+// JWT claim field matcher
+message JwtClaimMatcher {
+  string field = 1 [(validate.rules).string = {min_bytes: 1}];
+  string value = 2 [(validate.rules).string = {min_bytes: 1}];
 }
