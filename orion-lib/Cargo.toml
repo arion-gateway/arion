@@ -85,6 +85,7 @@ pastey = "0.2.1"
 owning_ref = "0.4.1"
 rmcp = "0.12.0"
 moka = { version = "0.12.12", features = ["sync"] }
+hyperlocal = "0.9.1"
 
 
 [dev-dependencies]

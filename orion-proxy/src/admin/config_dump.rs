@@ -338,6 +338,7 @@ mod config_dump_tests {
         let cluster = Cluster {
             name: SmolStr::new_static("cluster1"),
             discovery_settings: ClusterDiscoveryType::Static(ClusterLoadAssignment {
+                cluster_name: "cluster1".into(),
                 endpoints: vec![LocalityLbEndpoints {
                     priority: 0,
                     lb_endpoints: vec![LbEndpoint {
@@ -391,6 +392,7 @@ mod config_dump_tests {
         let cluster = Cluster {
             name: SmolStr::new_static("cluster1"),
             discovery_settings: ClusterDiscoveryType::Static(ClusterLoadAssignment {
+                cluster_name: "cluster1".into(),
                 endpoints: vec![LocalityLbEndpoints {
                     priority: 0,
                     lb_endpoints: vec![LbEndpoint {

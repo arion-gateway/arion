@@ -334,7 +334,8 @@ impl Endpoint {
         } else {
             builder
         };
-        let http_channel = builder.with_http_protocol_options(http_config.http_protocol_options.clone()).build()?;
+        let http_channel =
+            builder.with_http_protocol_options(http_config.http_protocol_options.clone()).build_with_no_address()?;
         let tcp_channel = TcpChannelConnector::new(
             authority,
             "original_dst_cluster",

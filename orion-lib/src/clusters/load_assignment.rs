@@ -18,10 +18,13 @@
 use std::{sync::Arc, time::Duration};
 
 use http::uri::Authority;
-use orion_configuration::config::cluster::{
-    ClusterLoadAssignment as ClusterLoadAssignmentConfig, ExtendedLbPolicy, HealthStatus, HttpProtocolOptions,
-    LbEndpoint as LbEndpointConfig, LbPolicy, LocalityLbEndpoints as LocalityLbEndpointsConfig, OverrideHostSource,
-    StandardLbPolicy,
+use orion_configuration::config::{
+    cluster::{
+        ClusterLoadAssignment as ClusterLoadAssignmentConfig, ExtendedLbPolicy, HealthStatus, HttpProtocolOptions,
+        LbEndpoint as LbEndpointConfig, LbPolicy, LocalityLbEndpoints as LocalityLbEndpointsConfig, OverrideHostSource,
+        StandardLbPolicy,
+    },
+    core::envoy_conversions::Address,
 };
 use tracing::debug;
 use typed_builder::TypedBuilder;
@@ -49,6 +52,7 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct LbEndpoint {
     pub name: &'static str,
+    pub address: Address,
     pub authority: http::uri::Authority,
     pub bind_device: Option<BindDevice>,
     pub weight: u32,
@@ -110,6 +114,7 @@ impl LbEndpoint {
 
 #[derive(Debug, Clone)]
 pub struct PartialLbEndpoint {
+    pub address: Address,
     pub authority: http::uri::Authority,
     pub bind_device: Option<BindDevice>,
     pub weight: u32,
@@ -119,6 +124,7 @@ pub struct PartialLbEndpoint {
 impl PartialLbEndpoint {
     fn new(value: &LbEndpoint) -> Self {
         PartialLbEndpoint {
+            address: value.address.clone(),
             authority: value.authority.clone(),
             bind_device: value.bind_device.clone(),
             weight: value.weight,
@@ -154,9 +160,10 @@ impl LbEndpointBuilder {
 
     pub fn build(self) -> Result<Arc<LbEndpoint>> {
         let cluster_name = self.cluster_name;
-        let PartialLbEndpoint { authority, bind_device, weight, health_status } = self.endpoint;
+        let PartialLbEndpoint { address, authority, bind_device, weight, health_status } = self.endpoint;
 
         let builder = HttpChannelBuilder::new(bind_device.clone())
+            .with_address(address.clone())
             .with_authority(authority.clone())
             .with_timeout(self.connect_timeout)
             .with_cluster_name(cluster_name);
@@ -179,6 +186,7 @@ impl LbEndpointBuilder {
         Ok(Arc::new(LbEndpoint {
             name: cluster_name,
             authority,
+            address,
             bind_device,
             weight,
             health_status,
@@ -194,9 +202,12 @@ impl TryFrom<LbEndpointConfig> for PartialLbEndpoint {
     fn try_from(lb_endpoint: LbEndpointConfig) -> Result<Self> {
         let health_status = lb_endpoint.health_status;
         let address = lb_endpoint.address;
-        let authority = http::uri::Authority::try_from(format!("{address}"))?;
+        let authority = match &address {
+            Address::Socket(_, _) => http::uri::Authority::try_from(format!("{address}"))?,
+            Address::Pipe(_, _) => http::uri::Authority::from_static("pipe_dream"),
+        };
         let weight = lb_endpoint.load_balancing_weight.into();
-        Ok(PartialLbEndpoint { authority, bind_device: None, weight, health_status })
+        Ok(PartialLbEndpoint { address, authority, bind_device: None, weight, health_status })
     }
 }
 
@@ -489,6 +500,7 @@ impl ClusterLoadAssignmentBuilder {
 
         let PartialClusterLoadAssignment { endpoints } = self.cla;
 
+        dbg!(&endpoints);
         let endpoints = endpoints
             .into_iter()
             .map(|e| {
@@ -560,6 +572,7 @@ impl TryFrom<ClusterLoadAssignmentConfig> for PartialClusterLoadAssignment {
 #[cfg(test)]
 mod test {
     use http::uri::Authority;
+    use orion_configuration::config::core::envoy_conversions::Address;
 
     use super::LbEndpoint;
     use crate::{
@@ -573,6 +586,7 @@ mod test {
         /// This function is used by unit tests in other modules
         pub fn new(
             authority: Authority,
+            address: Address,
             cluster_name: &'static str,
             bind_device: Option<BindDevice>,
             weight: u32,
@@ -580,6 +594,7 @@ mod test {
         ) -> Self {
             let http_channel = HttpChannelBuilder::new(bind_device.clone())
                 .with_authority(authority.clone())
+                .with_address(address.clone())
                 .with_cluster_name(cluster_name)
                 .build()
                 .unwrap();
@@ -591,7 +606,7 @@ mod test {
                 UpstreamTransportSocketConfigurator::default(),
             );
 
-            Self { name: "Cluster", authority, bind_device, weight, health_status, http_channel, tcp_channel }
+            Self { name: "Cluster", authority, address, bind_device, weight, health_status, http_channel, tcp_channel }
         }
     }
 }
