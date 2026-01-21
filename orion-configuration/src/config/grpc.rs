@@ -35,7 +35,7 @@ pub struct GoogleGrpc {
 
 #[cfg(feature = "envoy-conversions")]
 mod envoy_conversions {
-    use crate::config::core::Duration;
+    use crate::config::core::OrionDuration;
 
     use super::*;
 
@@ -92,7 +92,7 @@ mod envoy_conversions {
                 None => None,
             };
 
-            let timeout = timeout.map(|t| Duration::try_from(t).map(|t| t.0)).transpose()?;
+            let timeout = timeout.map(|t| OrionDuration::try_from(t).map(OrionDuration::into_inner)).transpose()?;
             Ok(Self { google_grpc, timeout })
         }
     }

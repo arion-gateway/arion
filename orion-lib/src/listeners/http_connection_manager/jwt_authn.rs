@@ -1,4 +1,5 @@
 pub mod claims;
+use arc_swap::ArcSwap;
 use claims::JwtClaims;
 
 use std::{
@@ -7,6 +8,7 @@ use std::{
     str::FromStr,
     string::FromUtf8Error,
     sync::Arc,
+    time::Instant,
 };
 
 use crate::{
@@ -52,21 +54,50 @@ pub struct ValidationKey {
     validation: Validation,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
+enum Asset<T> {
+    Permanent(T),
+    Expiring((T, Instant)),
+    Pending,
+}
+
+type ValidationKeyMap = Asset<HashMap<Kid, Arc<ValidationKey>, ahash::RandomState>>;
+
+#[derive(Debug)]
 struct ProviderContext {
     /// Valid keys from static config or remote endpoint derived from Jwk
-    keys: HashMap<Kid, ValidationKey, ahash::RandomState>,
+    key_map: ArcSwap<ValidationKeyMap>,
 }
 
 impl ProviderContext {
-    pub fn validation_key_lookup(&self, kid: Option<&KidStr>) -> Option<&ValidationKey> {
+    pub fn validation_key_lookup(&self, kid: Option<&KidStr>) -> Option<Asset<Arc<ValidationKey>>> {
         match kid {
-            Some(kid) => self.keys.get(kid),
+            Some(kid) => {
+                let m = self.key_map.load_full();
+                match m.as_ref() {
+                    Asset::Permanent(keys) => keys.get(kid).cloned().map(Asset::Permanent),
+                    Asset::Expiring((keys, expiration)) => {
+                        if Instant::now() < *expiration {
+                            keys.get(kid).cloned().map(|x| Asset::Expiring((x, *expiration)))
+                        } else {
+                            Some(Asset::Pending) // validation key is expired, hence a new key is pending...
+                        }
+                    },
+                    Asset::Pending => Some(Asset::Pending), // validation key is pending...
+                }
+            },
             None => {
-                if self.keys.len() == 1 {
-                    self.keys.values().next()
-                } else {
-                    None
+                let m = self.key_map.load_full();
+                match m.as_ref() {
+                    Asset::Permanent(keys) => keys.values().next().cloned().map(Asset::Permanent),
+                    Asset::Expiring((keys, expiration)) => {
+                        if Instant::now() < *expiration {
+                            keys.values().next().cloned().map(|x| Asset::Expiring((x, *expiration)))
+                        } else {
+                            Some(Asset::Pending) // validation key is expired, hence a new key is pending...
+                        }
+                    },
+                    Asset::Pending => Some(Asset::Pending), // validation key is pending...
                 }
             },
         }
@@ -98,6 +129,9 @@ enum JwkError {
 
     #[error("No validation key found")]
     NoValidationKey,
+
+    #[error("No such provider: {0}")]
+    NoProvider(String),
 }
 
 #[derive(Debug, Clone)]
@@ -144,15 +178,13 @@ impl JwtAuthenticationBuilder {
         validation
     }
 
-    fn parse_and_validate_keys(
-        provider: &JwtProvider,
-    ) -> Result<HashMap<Kid, ValidationKey, ahash::RandomState>, JwkError> {
+    fn parse_and_validate_keys(provider: &JwtProvider) -> Result<ValidationKeyMap, JwkError> {
         match &provider.jwks_source_specifier {
             JwksSourceSpecifier::LocalJwks(data_src) => {
                 let bytes = data_src.to_bytes_blocking()?;
                 let string = String::from_utf8(bytes)?;
                 let jwks: serde_json::Value = serde_json::from_str(&string)?;
-                let mut keys = HashMap::<Kid, ValidationKey, ahash::RandomState>::default();
+                let mut keys = HashMap::<Kid, Arc<ValidationKey>, ahash::RandomState>::default();
                 if let Some(keys_array) = jwks.get("keys").and_then(|v| v.as_array()) {
                     for key_value in keys_array {
                         info!(target: "jwt", "JWK: {:?}", key_value);
@@ -163,17 +195,18 @@ impl JwtAuthenticationBuilder {
                         let alg = Algorithm::from_str(&key_alg.to_string())?;
                         let decoding_key = DecodingKey::from_jwk(&jwk)?;
                         let validation = Self::build_validation(alg, provider);
-                        keys.insert(kid, ValidationKey { decoding_key, validation });
+                        keys.insert(kid, Arc::new(ValidationKey { decoding_key, validation }));
                     }
                 } else {
                     return Err(JwkError::MissingKeysArray);
                 }
 
-                Ok(keys)
+                info!(target: "jwt", "Using permanent LocalJwks...");
+                Ok(Asset::Permanent(keys))
             },
             JwksSourceSpecifier::RemoteJwks(_conf) => {
-                warn!(target: "jwt", "RemoteJwks not implemented yet");
-                Ok(HashMap::default())
+                info!(target: "jwt", "Using RemoteJwks...");
+                Ok(Asset::Pending)
             },
         }
     }
@@ -186,7 +219,7 @@ impl JwtAuthenticationBuilder {
         for (provider, prov_config) in &config.providers {
             match Self::parse_and_validate_keys(prov_config) {
                 Ok(keys) => {
-                    providers.insert(provider.to_owned(), ProviderContext { keys });
+                    providers.insert(provider.to_owned(), ProviderContext { key_map: ArcSwap::new(Arc::new(keys)) });
                 },
                 Err(e) => {
                     error!(target: "jwt", "Provider '{}'. {}", provider, e);
@@ -198,7 +231,7 @@ impl JwtAuthenticationBuilder {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct JwtAuthenticationInner {
     config: JwtAuthenticationConfig,
     context: HashMap<SmolStr, ProviderContext, ahash::RandomState>,
@@ -389,7 +422,13 @@ impl JwtAuthentication {
         }
     }
 
-    fn decode_jwt_token(&self, token: &str, provider_name: &str) -> Result<Arc<JwtCachedEntry>, JwkError> {
+    async fn fetch_remote_validation_keys(&self, provider_name: &str) -> Result<(), JwkError> {
+        let _context = self.inner.context.get(provider_name).ok_or(JwkError::NoProvider(provider_name.to_string()))?;
+        // TODO: implement fetching validation keys
+        Ok(())
+    }
+
+    async fn decode_jwt_token(&self, token: &str, provider_name: &str) -> Result<Arc<JwtCachedEntry>, JwkError> {
         // using the last part of the token as the cache key improves lookup performance significantly
         //
         let cache_key = match token.rsplit_once('.') {
@@ -401,22 +440,36 @@ impl JwtAuthentication {
             return Ok(result);
         }
 
-        //JWT_CACHE.get(cache_key) {
-        //    return Ok(result);
-        //};
-
         // decode the header token...
         let header = decode_header(token).inspect_err(|err| {
             info!(target: "jwt", "JWT failed to decode token header: {err}");
         })?;
 
         // get the validation_key for this provider...
-        let validation_key = self.inner.context.get(provider_name).and_then(|context| {
-            let kid_ref = header.kid.as_ref().map(|kid| KidStr::ref_cast(kid));
-            context.validation_key_lookup(kid_ref)
-        });
+        //
 
-        let validation_key = validation_key.ok_or(JwkError::NoValidationKey)?;
+        let validation_key = match self.inner.context.get(provider_name) {
+            Some(context) => {
+                let kid_ref = header.kid.as_ref().map(|kid| KidStr::ref_cast(kid));
+                match context.validation_key_lookup(kid_ref) {
+                    Some(Asset::Permanent(key)) | Some(Asset::Expiring ((key, _))) => Ok(key),
+                    Some(Asset::Pending) => {
+                        self.fetch_remote_validation_keys(provider_name).await?;
+                        match context.validation_key_lookup(kid_ref) {
+                            Some(Asset::Permanent(key)) | Some(Asset::Expiring ((key, _))) => Ok(key),
+                            _ => Err(JwkError::NoValidationKey),
+                        }
+                    },
+                    None => Err(JwkError::NoValidationKey),
+                }
+            },
+            None => Err(JwkError::NoValidationKey),
+        }?;
+
+        //let validation_key = self.inner.context.get(provider_name).and_then(|context| {
+        //});
+
+        //let validation_key = validation_key.ok_or(JwkError::NoValidationKey)?;
 
         // finally decode the JWT token...
         let res = Arc::new(JwtCachedEntry {
@@ -432,7 +485,7 @@ impl JwtAuthentication {
     }
 
     #[allow(clippy::too_many_lines)]
-    pub fn apply_request(&mut self, req: &mut Request<OrionRequestBody>) -> FilterDecision {
+    pub async fn apply_request(&mut self, req: &mut Request<OrionRequestBody>) -> FilterDecision {
         debug!(target: "jwt", "Applying JWT authentication filter: {:#?}", self.inner.config);
 
         // lookup the provider name...
@@ -450,7 +503,7 @@ impl JwtAuthentication {
         //
         // heavy computation part: decode header + decode token
         //
-        let entry = match self.decode_jwt_token(jwt_extract.token(), provider_name) {
+        let entry = match self.decode_jwt_token(jwt_extract.token(), provider_name).await {
             Ok(a) => a,
             Err(err) => {
                 info!(target: "jwt", "JWT failed to decode token: {err}");

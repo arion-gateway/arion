@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap};
 
 use crate::config::{
     core::{DataSource, StringMatcher},
@@ -49,11 +49,14 @@ pub struct JwtProvider {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HttpUri {
     pub uri: String,
+    pub cluster: Option<String>,
+    pub timeout: Option<std::time::Duration>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RemoteJwks {
     pub http_uri: Option<HttpUri>,
+    pub cache_duration: Option<std::time::Duration>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -96,9 +99,11 @@ mod envoy_conversions {
     use std::str::FromStr;
 
     use crate::config::common::envoy_conversions::IsUsed;
+    use crate::config::core::OrionDuration;
     use crate::config::{required, unsupported_field, GenericError};
     use http::HeaderName;
     use orion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::HttpUri as EnvoyHttpUri;
+    use orion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::http_uri::HttpUpstreamType as EnvoyHttpClusterType;
     use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::jwt_authn::v3::jwt_provider::JwksSourceSpecifier as EnvoyJwksSourceSpecifier;
     use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::jwt_authn::v3::jwt_requirement::RequiresType as EnvoyRequiresType;
     use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::jwt_authn::v3::requirement_rule::RequirementType as EnvoyRequirementType;
@@ -114,9 +119,15 @@ mod envoy_conversions {
         type Error = GenericError;
         fn try_from(value: EnvoyHttpUri) -> Result<Self, Self::Error> {
             let EnvoyHttpUri { uri, timeout, http_upstream_type } = value;
-            unsupported_field!(timeout, http_upstream_type)?;
-
-            Ok(HttpUri { uri })
+            let timeout = timeout.map(TryInto::try_into).transpose()?.map(OrionDuration::into_inner);
+            Ok(HttpUri {
+                uri,
+                cluster: http_upstream_type.map(|cl| {
+                    let EnvoyHttpClusterType::Cluster(cluster) = cl;
+                    cluster
+                }),
+                timeout,
+            })
         }
     }
 
@@ -126,11 +137,12 @@ mod envoy_conversions {
             let EnvoyRemoteJwks { http_uri, cache_duration, async_fetch, retry_policy } = value;
             unsupported_field!(
                 // http_uri,
-                cache_duration,
+                // cache_duration,
                 async_fetch,
                 retry_policy
             )?;
-            Ok(RemoteJwks { http_uri: http_uri.map(TryInto::try_into).transpose()? })
+            let cache_dur : Option<OrionDuration> = cache_duration.map(TryInto::try_into).transpose()?;
+            Ok(RemoteJwks { http_uri: http_uri.map(TryInto::try_into).transpose()?, cache_duration: cache_dur.map(OrionDuration::into_inner) })
         }
     }
 

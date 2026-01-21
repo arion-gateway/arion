@@ -235,7 +235,13 @@ impl Hash for StringMatcherPattern {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-pub struct Duration(pub std::time::Duration);
+pub struct OrionDuration(pub std::time::Duration);
+
+impl OrionDuration {
+    pub fn into_inner(self) -> std::time::Duration {
+        self.0
+    }
+}
 
 #[cfg(feature = "envoy-conversions")]
 pub(crate) use envoy_conversions::*;
@@ -243,7 +249,7 @@ pub(crate) use envoy_conversions::*;
 #[cfg(feature = "envoy-conversions")]
 pub mod envoy_conversions {
     #![allow(deprecated)]
-    use super::{DataSource, Duration, StringMatcher, StringMatcherPattern};
+    use super::{DataSource, OrionDuration, StringMatcher, StringMatcherPattern};
     use crate::config::common::*;
     use http::uri::Authority;
     use ipnet::IpNet;
@@ -264,7 +270,7 @@ pub mod envoy_conversions {
 
     use orion_data_plane_api::envoy_data_plane_api::google::protobuf::Duration as EnvoyDuration;
 
-    impl TryFrom<EnvoyDuration> for Duration {
+    impl TryFrom<EnvoyDuration> for OrionDuration {
         type Error = GenericError;
 
         fn try_from(value: EnvoyDuration) -> Result<Self, Self::Error> {
@@ -273,7 +279,7 @@ pub mod envoy_conversions {
             if seconds < 0 || nanos < 0 {
                 return Err(GenericError::from_msg("duration with negative values".to_owned()));
             }
-            Ok(Duration(std::time::Duration::new(seconds as u64, nanos as u32)))
+            Ok(OrionDuration(std::time::Duration::new(seconds as u64, nanos as u32)))
         }
     }
 
