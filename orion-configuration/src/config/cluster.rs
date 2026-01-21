@@ -64,6 +64,7 @@ pub struct ClusterLoadAssignment {
         deserialize_with = "deser_through::<LocalityLbEndpointsDeser,_,_>"
     )]
     pub endpoints: Vec<LocalityLbEndpoints>,
+    pub cluster_name: SmolStr,
 }
 
 fn simplify_locality_lb_endpoints<S: Serializer>(
@@ -664,7 +665,7 @@ mod envoy_conversions {
                         .with_node("endpoints");
                     }
                 }
-                Ok(Self { endpoints })
+                Ok(Self { cluster_name: cluster_name.clone().into(), endpoints })
             })();
             if !cluster_name.is_empty() {
                 return ret.with_name(cluster_name);
@@ -755,7 +756,15 @@ mod envoy_conversions {
                     if cla
                         .endpoints
                         .iter()
-                        .flat_map(|e| e.lb_endpoints.iter().map(|e| e.address.clone().into_addr()).collect::<Vec<_>>())
+                        .flat_map(|e| {
+                            e.lb_endpoints
+                                .iter()
+                                .map(|e| match e.address {
+                                    Address::Socket(_, _) => e.address.clone().into_addr().and(Ok(())),
+                                    Address::Pipe(_, _) => Ok(()),
+                                })
+                                .collect::<Vec<_>>()
+                        })
                         .filter(Result::is_err)
                         .collect::<Vec<_>>()
                         .is_empty()
