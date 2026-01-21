@@ -87,7 +87,7 @@ pub struct StaticResources {
 mod envoy_conversions {
     #![allow(deprecated)]
     use super::{Admin, Bootstrap, DynamicResources, Node, StaticResources};
-    use crate::config::{common::*, grpc::Duration, metrics::StatsSink};
+    use crate::config::{common::*, core::Duration, metrics::StatsSink};
     use orion_data_plane_api::envoy_data_plane_api::envoy::config::{
         bootstrap::v3::{
             bootstrap::{DynamicResources as EnvoyDynamicResources, StaticResources as EnvoyStaticResources},

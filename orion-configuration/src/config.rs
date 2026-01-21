@@ -173,6 +173,10 @@ mod envoy_conversions {
             for path in paths {
                 let path = path?.path();
 
+                if path.file_stem().and_then(|s| s.to_str()).map(|s| s.ends_with("-test")).unwrap_or(false) {
+                    continue;
+                }
+
                 if Some("yaml") == path.extension().map(|os| os.to_str().unwrap())
                     && path.file_name().is_some_and(|os| {
                         let as_str = os.to_str().unwrap();
@@ -190,20 +194,19 @@ mod envoy_conversions {
                     })?;
                     let serialized = serde_yaml::to_string(&new_conf)?;
                     tracing::info!("\n{serialized}\n");
-                    if !path.ends_with("new.yaml") {
-                        let new_path = format!(
-                            "../orion-proxy/conf/{}-new.yaml",
-                            path.file_name()
-                                .unwrap()
-                                .to_str()
-                                .unwrap()
-                                .trim_end_matches(".yaml")
-                                .replace("envoy-", "orion-")
-                        );
-                        std::fs::write(new_path, serialized.as_bytes())?;
-                    }
+                    let test_path = format!(
+                        "../orion-proxy/conf/{}-test.yaml",
+                        path.file_name()
+                            .unwrap()
+                            .to_str()
+                            .unwrap()
+                            .trim_end_matches(".yaml")
+                            .replace("envoy-", "orion-")
+                    );
+                    std::fs::write(test_path.clone(), serialized.as_bytes())?;
                     let deserialized: Config = serde_yaml::from_str(&serialized)?;
                     assert_eq!(new_conf, deserialized, "failed to roundtrip config transcoding");
+                    std::fs::remove_file(test_path)?;
                 } else {
                     tracing::info!("skipping {}", path.display())
                 }

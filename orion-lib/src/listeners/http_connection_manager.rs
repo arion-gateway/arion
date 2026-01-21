@@ -23,15 +23,17 @@
 // https://rust-lang.github.io/rust-clippy/master/index.html#mutable_key_type
 #![allow(clippy::mutable_key_type)]
 
+pub mod cors;
 mod direct_response;
-mod ext_proc;
-use ext_proc::ExternalProcessor;
-use smallvec::SmallVec;
+pub mod ext_proc;
 pub mod http_modifiers;
+pub mod jwt_authn;
+pub mod mcp_gateway;
 mod redirect;
 mod route;
 mod upgrades;
 
+use smallvec::SmallVec;
 #[cfg(any(feature = "tracing", feature = "access-log"))]
 use std::sync::atomic::AtomicUsize;
 
@@ -80,25 +82,24 @@ use arc_swap::ArcSwap;
 use core::time::Duration;
 use futures::future::BoxFuture;
 use hyper::{body::Incoming, service::Service, Request, Response};
-use orion_configuration::config::network_filters::http_connection_manager::http_filters::{
-    FilterConfigOverride, FilterOverride,
-};
 use orion_configuration::config::network_filters::http_connection_manager::route::RouteMatch;
 use orion_configuration::config::network_filters::http_connection_manager::{
-    http_filters::{http_rbac::HttpRbac, HttpFilter as HttpFilterConfig, HttpFilterType},
     route::{Action, RouteMatchResult},
     CodecType, ConfigSource, ConfigSourceSpecifier, HttpConnectionManager as HttpConnectionManagerConfig, RdsSpecifier,
     RouteSpecifier, UpgradeType,
 };
+
 use orion_configuration::config::network_filters::http_connection_manager::{Route, VirtualHost, XffSettings};
 use orion_configuration::config::network_filters::tracing::{TracingConfig, TracingKey};
-use orion_configuration::config::GenericError;
 use orion_format::types::ResponseFlags as FmtResponseFlags;
-use route::MatchedRequest;
+use route::RouteContext;
 use scopeguard::defer;
 use smol_str::SmolStr;
-use std::collections::{HashMap, HashSet};
 use std::thread::ThreadId;
+use std::{
+    collections::HashMap,
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+};
 use std::{fmt, future::Future, result::Result as StdResult, sync::Arc};
 use tokio::sync::watch;
 use tracing::debug;
@@ -112,9 +113,12 @@ use crate::{
     },
     event_error::EventFailure,
     listeners::{
-        filter_state::DownstreamMetadata, rate_limiter::LocalRateLimit, synthetic_http_response::SyntheticHttpResponse,
+        http_filters::{per_route_http_filters, FactoryFilter, FilterDecision, HttpFilter, HttpFilterValue},
+        metadata::DownstreamMetadata,
+        synthetic_http_response::SyntheticHttpResponse,
     },
-    with_client_span, with_metric, with_server_span, ConversionContext, PolyBody, Result, RouteConfiguration,
+    with_client_span, with_metric, with_server_span, ConversionContext, OrionRequestBody, OrionResponseBody, PolyBody,
+    Result, RouteConfiguration,
 };
 
 use orion_tracing::http_tracer::HttpTracer;
@@ -194,107 +198,6 @@ pub struct PartialHttpConnectionManager {
     access_log: Vec<AccessLog>,
 }
 
-#[derive(Debug, Clone)]
-pub struct HttpFilter {
-    pub name: SmolStr,
-    pub disabled: bool,
-    pub filter: Option<HttpFilterValue>,
-    pub base_config: Option<HttpFilterConfig>,
-}
-
-#[derive(Debug, Clone)]
-pub enum HttpFilterValue {
-    // todo(francesco): In this enum the RateLimit variant uses a runtime type
-    // while Rbac uses a configuration type - we might want to revisit this
-    RateLimit(LocalRateLimit),
-    Rbac(HttpRbac),
-    ExternalProcessor(ExternalProcessor),
-}
-
-impl From<HttpFilterConfig> for HttpFilter {
-    fn from(value: HttpFilterConfig) -> Self {
-        let hcm_config = match &value.filter {
-            HttpFilterType::ExternalProcessor(_) => Some(value.clone()),
-            _ => None,
-        };
-
-        let HttpFilterConfig { name, disabled, filter } = value;
-
-        let filter = match filter {
-            HttpFilterType::RateLimit(r) => HttpFilterValue::RateLimit(r.into()),
-            HttpFilterType::Rbac(rbac) => HttpFilterValue::Rbac(rbac),
-            HttpFilterType::ExternalProcessor(ext_proc) => HttpFilterValue::ExternalProcessor(ext_proc.into()),
-        };
-        Self { name, disabled, filter: Some(filter), base_config: hcm_config }
-    }
-}
-
-impl HttpFilterValue {
-    pub async fn apply_request(
-        &mut self,
-        request: &mut Request<InstrumentedBody<TimeoutBody<PolyBody>>>,
-    ) -> FilterDecision {
-        match self {
-            HttpFilterValue::Rbac(rbac) => apply_authorization_rules(rbac, request),
-            HttpFilterValue::RateLimit(rl) => rl.run(request),
-            HttpFilterValue::ExternalProcessor(ext_proc) => ext_proc.apply_request(request).await,
-        }
-    }
-    pub async fn apply_response(&mut self, response: &mut Response<TimeoutBody<PolyBody>>) -> FilterDecision {
-        match self {
-            // RBAC and RateLimit do not apply on the response path
-            HttpFilterValue::Rbac(_) | HttpFilterValue::RateLimit(_) => FilterDecision::Continue,
-            HttpFilterValue::ExternalProcessor(ext_proc) => ext_proc.apply_response(response).await,
-        }
-    }
-    fn from_filter_override(value: &FilterOverride, base_config: Option<&HttpFilterConfig>) -> Option<Self> {
-        match &value.filter_settings {
-            Some(filter_settings) => match filter_settings {
-                FilterConfigOverride::LocalRateLimit(rl) => Some(HttpFilterValue::RateLimit((*rl).into())),
-                FilterConfigOverride::Rbac(Some(rbac)) => Some(HttpFilterValue::Rbac(rbac.clone())),
-                FilterConfigOverride::Rbac(None) => None,
-                FilterConfigOverride::ExternalProcessor(ext_proc_per_route) => {
-                    if let Some(HttpFilterConfig { filter: HttpFilterType::ExternalProcessor(base_config), .. }) =
-                        base_config
-                    {
-                        let filter_value = HttpFilterValue::ExternalProcessor(
-                            (base_config.clone(), Some(ext_proc_per_route.clone()), None).into(),
-                        );
-                        Some(filter_value)
-                    } else {
-                        None
-                    }
-                },
-            },
-            None => None,
-        }
-    }
-}
-
-fn per_route_http_filters(
-    route_config: &RouteConfiguration,
-    hcm_filters: &[Arc<HttpFilter>],
-) -> HashMap<RouteMatch, Vec<Arc<HttpFilter>>> {
-    let mut per_route_filters: HashMap<RouteMatch, Vec<Arc<HttpFilter>>> = HashMap::new();
-    for vh in &route_config.virtual_hosts {
-        for route in &vh.routes {
-            for hcm_filter in hcm_filters {
-                let effective_filter = match route.typed_per_filter_config.get(&hcm_filter.name) {
-                    Some(override_config) => Arc::new(HttpFilter {
-                        name: hcm_filter.name.clone(),
-                        disabled: override_config.disabled,
-                        filter: HttpFilterValue::from_filter_override(override_config, hcm_filter.base_config.as_ref()),
-                        base_config: hcm_filter.base_config.clone(),
-                    }),
-                    None => Arc::clone(hcm_filter),
-                };
-                per_route_filters.entry(route.route_match.clone()).or_default().push(effective_filter);
-            }
-        }
-    }
-    per_route_filters
-}
-
 impl TryFrom<ConversionContext<'_, HttpConnectionManagerConfig>> for PartialHttpConnectionManager {
     type Error = crate::Error;
     fn try_from(ctx: ConversionContext<HttpConnectionManagerConfig>) -> Result<Self> {
@@ -304,8 +207,8 @@ impl TryFrom<ConversionContext<'_, HttpConnectionManagerConfig>> for PartialHttp
         let http_filters_hcm = configuration
             .http_filters
             .into_iter()
-            .map(|f| Arc::new(HttpFilter::from(f)))
-            .collect::<Vec<Arc<HttpFilter>>>();
+            .map(|f| -> Result<Arc<HttpFilter>> { Ok(Arc::new(HttpFilter::try_from(f)?)) })
+            .collect::<Result<Vec<Arc<HttpFilter>>>>()?;
         let request_timeout = configuration.request_timeout;
         let xff_settings = configuration.xff_settings;
         let generate_request_id = configuration.generate_request_id;
@@ -418,38 +321,27 @@ impl HttpConnectionManager {
         self: &Arc<Self>,
     ) -> Box<
         dyn Service<
-                ExtendedRequest<Incoming>,
-                Response = Response<InstrumentedBody<TimeoutBody<PolyBody>>>,
+                Request<Incoming>,
+                Response = Response<OrionRequestBody>,
                 Error = crate::Error,
-                Future = BoxFuture<'static, StdResult<Response<InstrumentedBody<TimeoutBody<PolyBody>>>, crate::Error>>,
+                Future = BoxFuture<'static, StdResult<Response<OrionRequestBody>, crate::Error>>,
             > + Send
             + Sync,
     > {
         Box::new(HttpRequestHandler { manager: Arc::clone(self), router: self.router_sender.subscribe() })
             as Box<
                 dyn Service<
-                        ExtendedRequest<Incoming>,
-                        Response = Response<InstrumentedBody<TimeoutBody<PolyBody>>>,
+                        Request<Incoming>,
+                        Response = Response<OrionRequestBody>,
                         Error = crate::Error,
-                        Future = BoxFuture<
-                            'static,
-                            StdResult<Response<InstrumentedBody<TimeoutBody<PolyBody>>>, crate::Error>,
-                        >,
+                        Future = BoxFuture<'static, StdResult<Response<OrionRequestBody>, crate::Error>>,
                     > + Send
                     + Sync,
             >
     }
 }
 
-#[derive(Debug, Default)]
-#[allow(dead_code)]
-pub enum FilterDecision {
-    #[default]
-    Continue,
-    Reroute,
-    DirectResponse(Response<TimeoutBody<PolyBody>>),
-}
-
+#[derive(Debug)]
 pub struct CachedRoute<'a> {
     route: &'a Route,
     route_match: RouteMatchResult,
@@ -459,11 +351,6 @@ pub struct CachedRoute<'a> {
 pub(crate) struct HttpRequestHandler {
     manager: Arc<HttpConnectionManager>,
     router: watch::Receiver<Option<Arc<RouteConfiguration>>>,
-}
-
-pub struct ExtendedRequest<B> {
-    pub request: Request<B>,
-    pub downstream_metadata: Arc<DownstreamMetadata>,
 }
 
 #[cfg(feature = "access-log")]
@@ -583,28 +470,23 @@ impl TransactionHandler {
         self: Arc<Self>,
         route_conf: RC,
         manager: Arc<HttpConnectionManager>,
-        mut request: Request<InstrumentedBody<TimeoutBody<Incoming>>>,
-        downstream_metadata: Arc<DownstreamMetadata>,
+        mut request: Request<OrionRequestBody>,
         #[cfg(feature = "access-log")] permit: Option<ShareableAccessLogPermit>,
-    ) -> Result<Response<InstrumentedBody<TimeoutBody<PolyBody>>>>
+    ) -> Result<Response<OrionRequestBody>>
     where
-        RC: RequestHandler<(
-                Request<InstrumentedBody<TimeoutBody<Incoming>>>,
-                Arc<HttpConnectionManager>,
-                Arc<DownstreamMetadata>,
-            )> + Clone,
+        RC: RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> + Clone,
     {
         let _listener_name = manager.listener_name;
+        let metadata = request.extensions().get::<DownstreamMetadata>();
+        let downstream_addr = metadata
+            .map(|md| md.connection.peer_address())
+            .unwrap_or_else(|| SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0));
 
         // apply the request header modifiers
-        http_modifiers::apply_prerouting_functions(
-            &mut request,
-            downstream_metadata.connection.peer_address(),
-            manager.xff_settings,
-        );
+        http_modifiers::apply_prerouting_functions(&mut request, downstream_addr, manager.xff_settings);
 
         // process request, get the response..
-        let result = route_conf.to_response(&self, (request, manager.clone(), downstream_metadata.clone())).await;
+        let result = route_conf.to_response(&self, request, manager.clone()).await;
 
         // calculate the time to first byte..
         #[cfg(feature = "access-log")]
@@ -690,9 +572,9 @@ impl TransactionHandler {
 
     fn trace_status_code(
         self: Arc<Self>,
-        res: Result<Response<InstrumentedBody<TimeoutBody<PolyBody>>>>,
+        res: Result<Response<OrionRequestBody>>,
         _listener_name: &'static str,
-    ) -> Result<Response<InstrumentedBody<TimeoutBody<PolyBody>>>> {
+    ) -> Result<Response<OrionRequestBody>> {
         if let Ok(response) = &res {
             let status_code = response.status().as_u16();
 
@@ -788,12 +670,13 @@ fn select_virtual_host<'a, T>(request: &Request<T>, virtual_hosts: &'a [VirtualH
 }
 
 // has to be a trait due to foreign impl rules.
-pub trait RequestHandler<R>: Sized {
+pub trait RequestHandler<R, A>: Sized {
     fn to_response(
         self,
         trans_handler: &TransactionHandler,
         request: R,
-    ) -> impl Future<Output = Result<Response<TimeoutBody<PolyBody>>>> + Send;
+        arg: A,
+    ) -> impl Future<Output = Result<Response<OrionResponseBody>>> + Send;
 }
 
 #[inline]
@@ -807,149 +690,320 @@ fn match_request_route<'a, B>(request: &Request<B>, route_config: &'a RouteConfi
     Some(CachedRoute { route: chosen_route, route_match: route_match_result, vh: chosen_vh })
 }
 
-impl
-    RequestHandler<(
-        Request<InstrumentedBody<TimeoutBody<Incoming>>>,
-        Arc<HttpConnectionManager>,
-        Arc<DownstreamMetadata>,
-    )> for Arc<RouteConfiguration>
+struct AsyncExecution(Arc<RouteConfiguration>);
+
+impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usize, HttpFilterValue)>
+    for AsyncExecution
 {
     #[allow(clippy::too_many_lines)]
     async fn to_response(
         self,
         trans_handler: &TransactionHandler,
-        (request, connection_manager, downstream_metadata): (
-            Request<InstrumentedBody<TimeoutBody<Incoming>>>,
-            Arc<HttpConnectionManager>,
-            Arc<DownstreamMetadata>,
-        ),
-    ) -> Result<Response<TimeoutBody<PolyBody>>> {
-        let mut processed_routes: HashSet<&RouteMatch> = HashSet::new();
-        let mut cached_route = match_request_route(&request, &self);
-        let mut request: Request<InstrumentedBody<TimeoutBody<PolyBody>>> =
-            request.map(|body| body.map_inner(|timeout_body| timeout_body.map_into()));
-        let mut active_filters: SmallVec<[HttpFilterValue; 2]> = SmallVec::new();
-        loop {
-            if let Some(ref chosen_route) = cached_route {
-                if processed_routes.contains(&chosen_route.route.route_match) {
-                    // we are in routing loop, processing the same route twice is not permitted
-                    return Err(GenericError::from_msg("Routing loop detected").into());
-                }
+        mut request: Request<OrionRequestBody>,
+        (connection_manager, mut filter_idx, http_filter): (Arc<HttpConnectionManager>, usize, HttpFilterValue),
+    ) -> Result<Response<OrionResponseBody>> {
+        let mut cached_route = match_request_route(&request, &self.0);
+        let mut active_filters: SmallVec<[HttpFilterValue; 4]> = SmallVec::new();
 
-                let guard = connection_manager.http_filters_per_route.load();
-                let route_filters = guard.get(&chosen_route.route.route_match);
-                if let Some(route_filters) = route_filters {
-                    let mut is_reroute = false;
-                    for filter in route_filters {
-                        if filter.disabled {
-                            continue;
-                        }
-                        if let Some(filter_value) = &filter.filter {
-                            let mut filter_value = filter_value.clone();
-                            let filter_res = filter_value.apply_request(&mut request).await;
-                            active_filters.push(filter_value);
-                            if matches!(filter_res, FilterDecision::Reroute) {
-                                // stop processing filters and re-evaluate the route
-                                is_reroute = true;
-                                break;
-                            }
-                            if let FilterDecision::DirectResponse(response) = filter_res {
-                                return Ok(response);
-                            }
-                        }
-                    }
-                    if !is_reroute {
-                        break;
-                    }
-                    debug!("rerouting enabled; active_filters dropped!");
-                    active_filters.clear();
-                    processed_routes.insert(&chosen_route.route.route_match);
-                    cached_route = match_request_route(&request, &self);
-                } else {
-                    // there are no filters to process
-                    break;
+        active_filters.push(http_filter);
+
+        let filter_response = 'filter_loop: loop {
+            let Some(ref chosen_route) = cached_route else {
+                // No route found - return 404 immediately
+                break 'filter_loop FilterDecision::DirectResponse(
+                    SyntheticHttpResponse::not_found(
+                        EventFailure::RouteNotFound.into(),
+                        ResponseFlags(FmtResponseFlags::NO_ROUTE_FOUND),
+                    )
+                    .into_response(request.version()),
+                );
+            };
+
+            let guard = connection_manager.http_filters_per_route.load();
+            let route_filters = guard.get(&chosen_route.route.route_match);
+
+            let Some(route_filters) = route_filters else {
+                // No filters to process
+                break 'filter_loop FilterDecision::Continue;
+            };
+
+            let mut reroute = false;
+
+            while filter_idx < route_filters.len() {
+                let filter = &route_filters[filter_idx];
+                filter_idx += 1;
+                if filter.disabled {
+                    continue;
                 }
+                if let Some(filter_value) = &filter.filter {
+                    let mut filter_value = filter_value.new_from();
+                    let filter_res = filter_value.apply_request(&mut request).await;
+
+                    match filter_res {
+                        FilterDecision::Continue => {
+                            active_filters.push(filter_value);
+                        },
+                        FilterDecision::DirectResponse(_) => {
+                            // interrupt processing filters with this DirectResponse
+                            break 'filter_loop filter_res;
+                        },
+                        FilterDecision::AsyncRequest(_, _) => {
+                            unimplemented!()
+                        },
+                        FilterDecision::Reroute => {
+                            // stop processing filters and re-evaluate the route
+                            active_filters.push(filter_value);
+                            reroute = true;
+                            break;
+                        },
+                    }
+                }
+            }
+
+            if reroute {
+                debug!("rerouting request...");
+                cached_route = match_request_route(&request, &self.0);
             } else {
-                return Ok(SyntheticHttpResponse::not_found(
+                // All filters processed successfully
+                break 'filter_loop FilterDecision::Continue;
+            }
+        };
+
+        let mut response = match filter_response {
+            FilterDecision::DirectResponse(resp) | FilterDecision::AsyncRequest(resp, _) => resp,
+            _ => match cached_route {
+                None => SyntheticHttpResponse::not_found(
                     EventFailure::RouteNotFound.into(),
                     ResponseFlags(FmtResponseFlags::NO_ROUTE_FOUND),
                 )
-                .into_response(request.version()));
-            }
-        }
+                .into_response(request.version()),
+                Some(chosen_route) => {
+                    let websocket_enabled_by_default =
+                        upgrade_utils::is_websocket_enabled_by_hcm(&connection_manager.enabled_upgrades);
 
-        if let Some(chosen_route) = cached_route {
-            let websocket_enabled_by_default =
-                upgrade_utils::is_websocket_enabled_by_hcm(&connection_manager.enabled_upgrades);
-
-            let mut response = match &chosen_route.route.action {
-                Action::DirectResponse(dr) => dr.to_response(trans_handler, (request, &chosen_route.route.name)).await,
-                Action::Redirect(rd) => {
-                    rd.to_response(trans_handler, (request, chosen_route.route_match, &chosen_route.route.name)).await
-                },
-                Action::Route(route) => {
-                    route
-                        .to_response(
-                            trans_handler,
-                            (
-                                MatchedRequest {
+                    match &chosen_route.route.action {
+                        Action::DirectResponse(dr) => {
+                            dr.to_response(trans_handler, request, &chosen_route.route.name).await
+                        },
+                        Action::Redirect(rd) => {
+                            rd.to_response(trans_handler, request, (chosen_route.route_match, &chosen_route.route.name))
+                                .await
+                        },
+                        Action::Route(route) => {
+                            let remote_address = request
+                                .extensions()
+                                .get::<DownstreamMetadata>()
+                                .map(|md| md.connection.peer_address())
+                                .unwrap_or_else(|| SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0));
+                            route
+                                .to_response(
+                                    trans_handler,
                                     request,
-                                    route_name: &chosen_route.route.name,
-                                    retry_policy: chosen_route.vh.retry_policy.as_ref(),
-                                    route_match: chosen_route.route_match,
-                                    remote_address: downstream_metadata.connection.peer_address(),
-                                    websocket_enabled_by_default,
-                                },
-                                &connection_manager,
-                            ),
-                        )
-                        .await
+                                    (
+                                        RouteContext {
+                                            route_name: &chosen_route.route.name,
+                                            retry_policy: chosen_route.vh.retry_policy.as_ref(),
+                                            route_match: chosen_route.route_match,
+                                            remote_address,
+                                            websocket_enabled_by_default,
+                                        },
+                                        &connection_manager,
+                                    ),
+                                )
+                                .await
+                        },
+                    }?
                 },
-            }?;
+            },
+        };
 
-            // Process filters on response...
-            //
-            for filter in &mut active_filters {
-                let filter_res = filter.apply_response(&mut response).await;
-                if let FilterDecision::DirectResponse(direct_response) = filter_res {
-                    response = direct_response;
-                    break;
-                }
+        // let's process the active filters on response in the reverse order...
+        //
+        for filter in &mut active_filters.iter_mut().rev() {
+            let filter_res = filter.apply_response(&mut response).await;
+            if let FilterDecision::DirectResponse(direct_response) = filter_res {
+                response = direct_response;
             }
-
-            let resp_headers = response.headers_mut();
-            if self.most_specific_header_mutations_wins {
-                self.response_header_modifier.modify(resp_headers);
-                chosen_route.vh.response_header_modifier.modify(resp_headers);
-                chosen_route.route.response_header_modifier.modify(resp_headers);
-            } else {
-                chosen_route.route.response_header_modifier.modify(resp_headers);
-                chosen_route.vh.response_header_modifier.modify(resp_headers);
-                self.response_header_modifier.modify(resp_headers);
-            }
-
-            Ok(response)
-        } else {
-            // We should not be here
-            Ok(SyntheticHttpResponse::not_found(
-                EventFailure::RouteNotFound.into(),
-                ResponseFlags(FmtResponseFlags::NO_ROUTE_FOUND),
-            )
-            .into_response(request.version()))
         }
+
+        Ok(response)
     }
 }
 
-impl Service<ExtendedRequest<Incoming>> for HttpRequestHandler {
-    type Response = Response<InstrumentedBody<TimeoutBody<PolyBody>>>;
+impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for Arc<RouteConfiguration> {
+    #[allow(clippy::too_many_lines)]
+    async fn to_response(
+        self,
+        trans_handler: &TransactionHandler,
+        mut request: Request<OrionRequestBody>,
+        connection_manager: Arc<HttpConnectionManager>,
+    ) -> Result<Response<OrionResponseBody>> {
+        let mut cached_route = match_request_route(&request, &self);
+        // let mut request: Request<HttpBody> = request.map(|body| body.map_inner(TimeoutBody::map_into));
+        let mut active_filters: SmallVec<[HttpFilterValue; 4]> = SmallVec::new();
+
+        let mut filter_idx = 0;
+
+        let filter_response = 'filter_loop: loop {
+            let Some(ref chosen_route) = cached_route else {
+                // No route found - return 404 immediately
+                break 'filter_loop FilterDecision::DirectResponse(
+                    SyntheticHttpResponse::not_found(
+                        EventFailure::RouteNotFound.into(),
+                        ResponseFlags(FmtResponseFlags::NO_ROUTE_FOUND),
+                    )
+                    .into_response(request.version()),
+                );
+            };
+
+            let guard = connection_manager.http_filters_per_route.load();
+            let route_filters = guard.get(&chosen_route.route.route_match);
+
+            let Some(route_filters) = route_filters else {
+                // No filters to process
+                break 'filter_loop FilterDecision::Continue;
+            };
+
+            let mut reroute = false;
+
+            while filter_idx < route_filters.len() {
+                let filter = &route_filters[filter_idx];
+                filter_idx += 1;
+                if filter.disabled {
+                    continue;
+                }
+                if let Some(filter_value) = &filter.filter {
+                    let mut filter_value = filter_value.new_from();
+                    let filter_res = filter_value.apply_request(&mut request).await;
+
+                    match filter_res {
+                        FilterDecision::Continue => {
+                            active_filters.push(filter_value);
+                        },
+                        FilterDecision::DirectResponse(_) => {
+                            // interrupt processing filters with this DirectResponse
+                            break 'filter_loop filter_res;
+                        },
+                        FilterDecision::AsyncRequest(resp, Some(request)) => {
+                            // Handle asynchronous request
+                            //
+                            let async_exec = AsyncExecution(self.clone());
+                            let conn_manager = connection_manager.clone();
+
+                            tokio::spawn(async move {
+                                let trans_handler = TransactionHandler::default();
+                                _ = async_exec
+                                    .to_response(&trans_handler, request, (conn_manager, filter_idx, filter_value))
+                                    .await;
+                            });
+
+                            break 'filter_loop FilterDecision::AsyncRequest(resp, None);
+                        },
+                        FilterDecision::AsyncRequest(resp, None) => {
+                            break 'filter_loop FilterDecision::AsyncRequest(resp, None);
+                        },
+                        FilterDecision::Reroute => {
+                            // stop processing filters and re-evaluate the route
+                            active_filters.push(filter_value);
+                            reroute = true;
+                            break;
+                        },
+                    }
+                }
+            }
+
+            if reroute {
+                debug!("rerouting request...");
+                cached_route = match_request_route(&request, &self);
+            } else {
+                // All filters processed successfully
+                break 'filter_loop FilterDecision::Continue;
+            }
+        };
+
+        let mut response = match filter_response {
+            FilterDecision::DirectResponse(resp) | FilterDecision::AsyncRequest(resp, _) => resp,
+            _ => match cached_route {
+                None => SyntheticHttpResponse::not_found(
+                    EventFailure::RouteNotFound.into(),
+                    ResponseFlags(FmtResponseFlags::NO_ROUTE_FOUND),
+                )
+                .into_response(request.version()),
+                Some(chosen_route) => {
+                    let websocket_enabled_by_default =
+                        upgrade_utils::is_websocket_enabled_by_hcm(&connection_manager.enabled_upgrades);
+
+                    let mut response = match &chosen_route.route.action {
+                        Action::DirectResponse(dr) => {
+                            dr.to_response(trans_handler, request, &chosen_route.route.name).await
+                        },
+                        Action::Redirect(rd) => {
+                            rd.to_response(trans_handler, request, (chosen_route.route_match, &chosen_route.route.name))
+                                .await
+                        },
+                        Action::Route(route) => {
+                            let remote_address = request
+                                .extensions()
+                                .get::<DownstreamMetadata>()
+                                .map(|md| md.connection.peer_address())
+                                .unwrap_or_else(|| SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0));
+                            route
+                                .to_response(
+                                    trans_handler,
+                                    request,
+                                    (
+                                        RouteContext {
+                                            route_name: &chosen_route.route.name,
+                                            retry_policy: chosen_route.vh.retry_policy.as_ref(),
+                                            route_match: chosen_route.route_match,
+                                            remote_address,
+                                            websocket_enabled_by_default,
+                                        },
+                                        &connection_manager,
+                                    ),
+                                )
+                                .await
+                        },
+                    }?;
+
+                    let resp_headers = response.headers_mut();
+                    if self.most_specific_header_mutations_wins {
+                        self.response_header_modifier.modify(resp_headers);
+                        chosen_route.vh.response_header_modifier.modify(resp_headers);
+                        chosen_route.route.response_header_modifier.modify(resp_headers);
+                    } else {
+                        chosen_route.route.response_header_modifier.modify(resp_headers);
+                        chosen_route.vh.response_header_modifier.modify(resp_headers);
+                        self.response_header_modifier.modify(resp_headers);
+                    }
+
+                    response
+                },
+            },
+        };
+
+        // let's process the active filters on response in the reverse order...
+        //
+        for filter in &mut active_filters.iter_mut().rev() {
+            let filter_res = filter.apply_response(&mut response).await;
+            if let FilterDecision::DirectResponse(direct_response) = filter_res {
+                response = direct_response;
+            }
+        }
+
+        Ok(response)
+    }
+}
+
+impl Service<Request<Incoming>> for HttpRequestHandler {
+    type Response = Response<OrionRequestBody>;
     type Error = crate::Error;
     type Future = BoxFuture<'static, StdResult<Self::Response, Self::Error>>;
 
     #[allow(clippy::too_many_lines)]
-    fn call(&self, req: ExtendedRequest<Incoming>) -> Self::Future {
-        // destructure the ExtendedRequest to get the request and addresses
-        let ExtendedRequest { request, downstream_metadata } = req;
-        let incoming_request_id = RequestId::from_request(&request);
+    fn call(&self, incoming_request: Request<Incoming>) -> Self::Future {
+        // destructure the Request to get the request and addresses
+        let incoming_request_id = RequestId::from_request(&incoming_request);
 
         let access_log_enabled = {
             #[cfg(feature = "access-log")]
@@ -962,28 +1016,29 @@ impl Service<ExtendedRequest<Incoming>> for HttpRequestHandler {
 
         // apply x_request_id policy...
         #[allow(unused_mut)]
-        let (mut updated_request, request_id) =
-            self.manager.request_id_handler.apply_policy(request, access_log_enabled, incoming_request_id.as_ref());
+        let (mut request, request_id) = self.manager.request_id_handler.apply_policy(
+            incoming_request,
+            access_log_enabled,
+            incoming_request_id.as_ref(),
+        );
 
         // create a trace context and SERVER span, if enabled...
         #[cfg(feature = "tracing")]
-        let trace_context = self
-            .manager
-            .http_tracer
-            .try_build_trace_context(&updated_request, incoming_request_id.or(request_id.clone()));
+        let trace_context =
+            self.manager.http_tracer.try_build_trace_context(&request, incoming_request_id.or(request_id.clone()));
 
         #[cfg(feature = "tracing")]
         let mut server_span = self.manager.http_tracer.try_create_span(
             trace_context.as_ref(),
             &self.manager.get_tracing_key(),
             SpanKind::Server,
-            SpanName::Host(&updated_request),
+            SpanName::Host(&request),
         );
 
         // set default attributes to span, using downstream request information...
         #[cfg(feature = "tracing")]
         if let Some(span) = server_span.as_mut() {
-            set_attributes_from_request(span, &updated_request);
+            set_attributes_from_request(span, &request);
         }
 
         // create the transaction context
@@ -1001,11 +1056,8 @@ impl Service<ExtendedRequest<Incoming>> for HttpRequestHandler {
         // update tracing headers...
         #[cfg(feature = "tracing")]
         if let Some(trace_ctx) = trans_handler.trace_ctx.as_ref() {
-            self.manager.http_tracer.update_tracing_headers(trace_ctx, &mut updated_request);
+            self.manager.http_tracer.update_tracing_headers(trace_ctx, &mut request);
         }
-
-        // update the incoming request...
-        let req = ExtendedRequest { request: updated_request, downstream_metadata };
 
         let req_timeout = self.manager.request_timeout;
         let listener_name = self.manager.listener_name;
@@ -1034,10 +1086,6 @@ impl Service<ExtendedRequest<Incoming>> for HttpRequestHandler {
         }
 
         Box::pin(async move {
-            let ExtendedRequest { request, downstream_metadata } = req;
-            let (parts, body) = request.into_parts();
-            let request = Request::from_parts(parts, TimeoutBody::new(req_timeout, body));
-
             #[cfg(feature = "access-log")]
             #[allow(clippy::if_then_some_else_none)] // avoid clippy false positive
             let permit: Option<ShareableAccessLogPermit> = {
@@ -1057,11 +1105,17 @@ impl Service<ExtendedRequest<Incoming>> for HttpRequestHandler {
             //  note that we can still time-out a request due to e.g. the filters taking a long time to compute, or the proxy being overwhelmed
             // not just due to the downstream being slow.
             // todo(hayley): this timeout is incorrect (checks for time between frames not total time), and doesn't seem to get converted into
-            //  http response
+            // http response
 
             //
             // evaluate InitHttpContext...
-            eval_http_init_context(&request, &trans_handler, downstream_metadata.server_name.as_deref());
+
+            let metadata = request.extensions().get::<DownstreamMetadata>();
+            eval_http_init_context(
+                &request,
+                &trans_handler,
+                metadata.and_then(|md| md.sni.as_ref().map(|s| s.as_str())),
+            );
 
             //
             // create the InstrumentedBody which will track the size of the request body
@@ -1076,6 +1130,7 @@ impl Service<ExtendedRequest<Incoming>> for HttpRequestHandler {
             let request = request.map(|body| {
                 #[cfg(any(feature = "access-log", feature = "tracing", feature = "metrics"))]
                 let trans_handler = Arc::clone(&trans_handler);
+                let body = TimeoutBody::new(req_timeout, PolyBody::from(body));
 
                 InstrumentedBody::new(BodyKind::Request, body, move |_nbytes, _body_error, _body_flags| {
                     with_metric!(
@@ -1136,7 +1191,7 @@ impl Service<ExtendedRequest<Incoming>> for HttpRequestHandler {
             });
 
             let Some(route_conf) = route_conf else {
-                // immediately return a SyntheticHttpResponse, and calcuate the first byte instant
+                // immediately return a SyntheticHttpResponse, and calculate the first byte instant
                 let resp = SyntheticHttpResponse::not_found(
                     EventFailure::RouteNotFound.into(),
                     ResponseFlags(FmtResponseFlags::NO_ROUTE_FOUND),
@@ -1240,7 +1295,6 @@ impl Service<ExtendedRequest<Incoming>> for HttpRequestHandler {
                     route_conf,
                     manager,
                     request,
-                    downstream_metadata,
                     #[cfg(feature = "access-log")]
                     permit,
                 )
@@ -1310,22 +1364,6 @@ fn eval_http_finish_context(
         let loggers: Vec<LogFormatterLocal> = std::mem::take(access_loggers);
         let messages = loggers.into_iter().map(LogFormatterLocal::into_message).collect::<Vec<_>>();
         log_access(permit, Target::Listener(_listener_name.into()), messages);
-    }
-}
-
-fn apply_authorization_rules<B>(rbac: &HttpRbac, req: &Request<B>) -> FilterDecision {
-    debug!("Applying authorization rules {rbac:?} {:?}", &req.headers());
-    let (permitted, enforced_policy) = rbac.is_permitted(req);
-    if permitted {
-        FilterDecision::Continue
-    } else {
-        FilterDecision::DirectResponse(
-            SyntheticHttpResponse::forbidden(
-                EventFailure::RbacAccessDenied(enforced_policy.unwrap_or(SmolStr::new_static("unknown"))).into(),
-                "RBAC: access denied",
-            )
-            .into_response(req.version()),
-        )
     }
 }
 

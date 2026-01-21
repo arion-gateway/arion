@@ -16,9 +16,8 @@
 //
 
 use crate::config::{common::envoy_conversions::IsUsed, unsupported_field, GenericError};
-use orion_data_plane_api::envoy_data_plane_api::{
-    envoy::config::core::v3::{grpc_service::GoogleGrpc as EnvoyGoogleGrpc, GrpcService as EnvoyGrpcService},
-    google::protobuf::Duration as EnvoyDuration,
+use orion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::{
+    grpc_service::GoogleGrpc as EnvoyGoogleGrpc, GrpcService as EnvoyGrpcService,
 };
 use serde::{Deserialize, Serialize};
 
@@ -34,25 +33,11 @@ pub struct GoogleGrpc {
     pub stat_prefix: String,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-pub struct Duration(pub std::time::Duration);
-
 #[cfg(feature = "envoy-conversions")]
 mod envoy_conversions {
+    use crate::config::core::Duration;
+
     use super::*;
-
-    impl TryFrom<EnvoyDuration> for Duration {
-        type Error = GenericError;
-
-        fn try_from(value: EnvoyDuration) -> Result<Self, Self::Error> {
-            let seconds = value.seconds;
-            let nanos = value.nanos;
-            if seconds < 0 || nanos < 0 {
-                return Err(GenericError::from_msg("duration with negative values".to_owned()));
-            }
-            Ok(Duration(std::time::Duration::new(seconds as u64, nanos as u32)))
-        }
-    }
 
     impl TryFrom<EnvoyGoogleGrpc> for GoogleGrpc {
         type Error = GenericError;

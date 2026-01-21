@@ -180,6 +180,6 @@ impl TryFrom<&DynamicCluster> for ClusterLoadAssignmentConfig {
                 Ok(LocalityLbEndpointsConfig { priority: lep.priority, lb_endpoints })
             })
             .collect::<crate::Result<Vec<_>>>()?;
-        Ok(ClusterLoadAssignmentConfig { endpoints })
+        Ok(ClusterLoadAssignmentConfig { cluster_name: cluster.name.into(), endpoints })
     }
 }

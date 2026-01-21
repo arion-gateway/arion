@@ -12,6 +12,7 @@ members = [
   "orion-proxy",
   "orion-tracing",
   "orion-xds",
+  "tools/hyper_unix_listener",
 ]
 
 resolver = "2"
@@ -40,6 +41,7 @@ orion-metrics        = { path = "orion-metrics" }
 orion-tracing        = { path = "orion-tracing" }
 orion-xds            = { path = "orion-xds" }
 
+dashmap             = "6.1.0"
 abort-on-drop       = "0.2"
 bounded-integer     = "0.6.1"
 bytes               = "1"

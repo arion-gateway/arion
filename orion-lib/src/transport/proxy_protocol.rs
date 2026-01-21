@@ -16,7 +16,7 @@
 //
 
 use crate::{
-    listeners::filter_state::DownstreamConnectionMetadata,
+    listeners::metadata::DownstreamConnectionMetadata,
     secrets::{TlsConfigurator, WantsToBuildClient},
     transport::AsyncReadWrite,
     utils::rewindable_stream::RewindableHeadAsyncStream,
@@ -315,26 +315,26 @@ impl ProxyProtocolConfigurator {
     pub async fn write_proxy_header<S>(
         &self,
         stream: &mut S,
-        downstream_metadata: &DownstreamConnectionMetadata,
+        connection_metadata: &DownstreamConnectionMetadata,
     ) -> Result<()>
     where
         S: AsyncWrite + Unpin,
     {
-        let header = self.build_proxy_header(downstream_metadata)?;
+        let header = self.build_proxy_header(connection_metadata)?;
         stream.write_all(&header).await.with_context_msg("Failed to write proxy protocol header")?;
         Ok(())
     }
 
-    fn build_proxy_header(&self, downstream_metadata: &DownstreamConnectionMetadata) -> Result<Vec<u8>> {
+    fn build_proxy_header(&self, connection_metadata: &DownstreamConnectionMetadata) -> Result<Vec<u8>> {
         match self.version {
-            ProxyProtocolVersion::V1 => Self::build_v1_header(downstream_metadata),
-            ProxyProtocolVersion::V2 => self.build_v2_header(downstream_metadata),
+            ProxyProtocolVersion::V1 => Self::build_v1_header(connection_metadata),
+            ProxyProtocolVersion::V2 => self.build_v2_header(connection_metadata),
         }
     }
 
-    fn build_v1_header(downstream_metadata: &DownstreamConnectionMetadata) -> Result<Vec<u8>> {
-        let peer_address = downstream_metadata.peer_address();
-        let local_address = downstream_metadata.local_address();
+    fn build_v1_header(connection_metadata: &DownstreamConnectionMetadata) -> Result<Vec<u8>> {
+        let peer_address = connection_metadata.peer_address();
+        let local_address = connection_metadata.local_address();
         let header = match (peer_address, local_address) {
             (SocketAddr::V4(src), SocketAddr::V4(dst)) => {
                 format!("PROXY TCP4 {} {} {} {}\r\n", src.ip(), dst.ip(), src.port(), dst.port())
@@ -349,9 +349,9 @@ impl ProxyProtocolConfigurator {
         Ok(header.into_bytes())
     }
 
-    fn build_v2_header(&self, downstream_metadata: &DownstreamConnectionMetadata) -> Result<Vec<u8>> {
-        let peer_address = downstream_metadata.peer_address();
-        let local_address = downstream_metadata.local_address();
+    fn build_v2_header(&self, connection_metadata: &DownstreamConnectionMetadata) -> Result<Vec<u8>> {
+        let peer_address = connection_metadata.peer_address();
+        let local_address = connection_metadata.local_address();
         let mut builder = ppp::v2::Builder::with_addresses(
             ppp::v2::Version::Two | ppp::v2::Command::Proxy,
             ppp::v2::Protocol::Stream,
@@ -363,7 +363,7 @@ impl ProxyProtocolConfigurator {
                 .write_tlv(tlv_type, &tlv_entry.value)
                 .map_err(|e| Error::new(format!("Failed to add configured TLV: {e}")))?;
         }
-        if let DownstreamConnectionMetadata::FromProxyProtocol { tlv_data, .. } = downstream_metadata {
+        if let DownstreamConnectionMetadata::FromProxyProtocol { tlv_data, .. } = connection_metadata {
             if let Some(pass_through_config) = &self.pass_through_tlvs {
                 for (tlv_type, value) in tlv_data {
                     let should_pass_through = match pass_through_config.match_type {

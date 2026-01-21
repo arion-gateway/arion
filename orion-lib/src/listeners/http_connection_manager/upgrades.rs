@@ -17,11 +17,9 @@
 
 use super::{RequestHandler, TransactionHandler};
 use crate::{
-    body::{instrumented_body::InstrumentedBody, response_flags::ResponseFlags, timeout_body::TimeoutBody},
-    event_error::EventFailure,
-    listeners::synthetic_http_response::SyntheticHttpResponse,
-    transport::{policy::RequestExt, HttpChannels},
-    PolyBody, Result,
+    body::response_flags::ResponseFlags, event_error::EventFailure,
+    listeners::synthetic_http_response::SyntheticHttpResponse, transport::HttpChannels, OrionRequestBody,
+    OrionResponseBody, RequestContext, Result,
 };
 use orion_format::types::ResponseFlags as FmtResponseFlags;
 
@@ -72,14 +70,14 @@ pub fn is_websocket_enabled_by_hcm(hcm_enabled_upgrades: &[UpgradeType]) -> bool
 
 pub async fn handle_websocket_upgrade(
     trans_handler: &TransactionHandler,
-    mut request: Request<InstrumentedBody<TimeoutBody<PolyBody>>>,
+    mut request: Request<OrionRequestBody>,
     svc_channel: &HttpChannels,
-) -> Result<Response<TimeoutBody<PolyBody>>> {
+) -> Result<Response<OrionResponseBody>> {
     let version = request.version();
     match version {
         Version::HTTP_11 => {
             let request_upgrade = hyper::upgrade::on(&mut request);
-            match svc_channel.to_response(trans_handler, RequestExt::new(request)).await {
+            match svc_channel.to_response(trans_handler, request, RequestContext::default()).await {
                 Ok(mut upstream_response) if upstream_response.status() == StatusCode::SWITCHING_PROTOCOLS => {
                     let response_upgrade = hyper::upgrade::on(&mut upstream_response);
                     tokio::spawn(async move {

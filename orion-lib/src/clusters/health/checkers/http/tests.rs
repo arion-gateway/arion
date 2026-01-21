@@ -41,8 +41,8 @@ use crate::{
 /// Channels to report every time an HTTP request is made, `requests`,
 /// and will respond with the items in `responses`.
 struct HttpActionTrace {
-    requests: mpsc::UnboundedSender<http::Request<InstrumentedBody<TimeoutBody<PolyBody>>>>,
-    responses: mpsc::UnboundedReceiver<http::Response<TimeoutBody<PolyBody>>>,
+    requests: mpsc::UnboundedSender<http::Request<OrionRequestBody>>,
+    responses: mpsc::UnboundedReceiver<http::Response<OrionResponseBody>>,
 }
 
 #[derive(Clone)]
@@ -50,22 +50,23 @@ struct MockHttpStack(Arc<Mutex<HttpActionTrace>>);
 
 impl MockHttpStack {
     pub fn new(
-        requests: mpsc::UnboundedSender<http::Request<InstrumentedBody<TimeoutBody<PolyBody>>>>,
-        responses: mpsc::UnboundedReceiver<http::Response<TimeoutBody<PolyBody>>>,
+        requests: mpsc::UnboundedSender<http::Request<OrionRequestBody>>,
+        responses: mpsc::UnboundedReceiver<http::Response<OrionResponseBody>>,
     ) -> Self {
         MockHttpStack(Arc::new(Mutex::new(HttpActionTrace { requests, responses })))
     }
 }
 
-impl<'a> RequestHandler<RequestExt<'a, Request<InstrumentedBody<TimeoutBody<PolyBody>>>>> for &MockHttpStack {
+impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &MockHttpStack {
     async fn to_response(
         self,
         _trans_handler: &TransactionHandler,
-        request: RequestExt<'a, Request<InstrumentedBody<TimeoutBody<PolyBody>>>>,
-    ) -> Result<Response<TimeoutBody<PolyBody>>> {
+        request: Request<OrionRequestBody>,
+        _ctx: RequestContext<'a>,
+    ) -> Result<Response<OrionResponseBody>> {
         let state = &mut self.0.lock();
         // Log this request
-        state.requests.send(request.req).unwrap();
+        state.requests.send(request).unwrap();
         // Return the predefined response, if any
         let response = state.responses.try_recv()?;
         Ok(response)
@@ -73,12 +74,8 @@ impl<'a> RequestHandler<RequestExt<'a, Request<InstrumentedBody<TimeoutBody<Poly
 }
 
 struct HttpTestFixture {
-    inner: TestFixture<
-        HttpHealthCheck,
-        MockHttpStack,
-        http::Request<InstrumentedBody<TimeoutBody<PolyBody>>>,
-        http::Response<TimeoutBody<PolyBody>>,
-    >,
+    inner:
+        TestFixture<HttpHealthCheck, MockHttpStack, http::Request<OrionRequestBody>, http::Response<OrionResponseBody>>,
 }
 
 #[allow(clippy::panic)]
@@ -109,10 +106,7 @@ impl HttpTestFixture {
         self.inner.enqueue_response(response);
     }
 
-    pub async fn request_expected(
-        &mut self,
-        timeout_value: Duration,
-    ) -> http::Request<InstrumentedBody<TimeoutBody<PolyBody>>> {
+    pub async fn request_expected(&mut self, timeout_value: Duration) -> http::Request<OrionRequestBody> {
         let req = self.inner.request_expected(timeout_value).await;
 
         assert_eq!(
@@ -144,7 +138,7 @@ impl HttpTestFixture {
     }
 }
 
-deref!(HttpTestFixture => inner as TestFixture<HttpHealthCheck, MockHttpStack, http::Request<InstrumentedBody<TimeoutBody<PolyBody>>>, http::Response<TimeoutBody<PolyBody>>>);
+deref!(HttpTestFixture => inner as TestFixture<HttpHealthCheck, MockHttpStack, http::Request<OrionRequestBody>, http::Response<OrionResponseBody>>);
 
 const HEALTHY_THRESHOLD: u16 = 5;
 const UNHEALTHY_THRESHOLD: u16 = 10;

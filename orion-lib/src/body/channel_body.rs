@@ -2,6 +2,7 @@ use bytes::Bytes;
 use futures::{Stream, StreamExt};
 use http_body::{Body, Frame, SizeHint};
 use std::collections::VecDeque;
+use std::num::NonZeroUsize;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::sync::mpsc;
@@ -12,8 +13,9 @@ type FrameResult = Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>
 /// A wrapper for any Body that allows observing and modifying frames in real-time.
 pub struct ChannelBody {
     prefetch: VecDeque<Option<FrameResult>>,
-    prefetch_num_frames: usize,
+    prefetch_num_frames: NonZeroUsize,
     stream: ReceiverStream<FrameResult>,
+    is_end_stream: bool,
 }
 
 impl ChannelBody {
@@ -22,7 +24,7 @@ impl ChannelBody {
     /// Returns a tuple of (`ChannelBody`, `FrameBridge`). `FrameBridge` must be used
     /// to inject frames (either manually or via `complete()`), otherwise the `ChannelBody`
     /// will never produce any frames.
-    pub fn new<B>(body: B, prefetch_num_frames: usize) -> (Self, FrameBridge)
+    pub fn new<B>(body: B, prefetch_num_frames: NonZeroUsize) -> (Self, FrameBridge)
     where
         B: Body<Data = Bytes> + Send + 'static,
         B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
@@ -36,19 +38,27 @@ impl ChannelBody {
         // Create the bridge with the original body
         let bridge = FrameBridge::new(body, tx);
 
-        (ChannelBody { stream: stream_of_body, prefetch: VecDeque::new(), prefetch_num_frames }, bridge)
+        (
+            ChannelBody {
+                stream: stream_of_body,
+                prefetch: VecDeque::new(),
+                prefetch_num_frames,
+                is_end_stream: false,
+            },
+            bridge,
+        )
     }
 
     /// Asynchronously waits until the given number of frames are available in the body.
     ///
     /// This method does not consume the frame.
     pub async fn prefetch_frames(&mut self) {
-        self.prefetch.reserve(self.prefetch_num_frames);
-        for _ in 0..self.prefetch_num_frames {
+        self.prefetch.reserve(self.prefetch_num_frames.get());
+        for _ in 0..self.prefetch_num_frames.get() {
             let r = Pin::new(&mut self.stream).next().await;
-            let end_of_stream = r.is_none();
+            self.is_end_stream = r.is_none();
             self.prefetch.push_back(r);
-            if end_of_stream {
+            if self.is_end_stream {
                 return;
             }
         }
@@ -69,9 +79,13 @@ impl Body for ChannelBody {
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        while self.prefetch.len() < self.prefetch_num_frames {
+        while self.prefetch.len() < self.prefetch_num_frames.get() {
             if let Poll::Ready(something) = Pin::new(&mut self.stream).poll_next(cx) {
+                self.is_end_stream = something.is_none();
                 self.prefetch.push_back(something);
+                if self.is_end_stream {
+                    break;
+                }
             } else {
                 break;
             }
@@ -81,15 +95,36 @@ impl Body for ChannelBody {
             return Poll::Ready(frame);
         }
 
+        if self.is_end_stream {
+            return Poll::Ready(None);
+        }
+
         Poll::Pending
     }
 
     fn is_end_stream(&self) -> bool {
-        false
+        self.is_end_stream && self.prefetch.is_empty()
     }
 
     fn size_hint(&self) -> SizeHint {
-        SizeHint::default()
+        // Calculates the length of all data frames currently in the prefetch buffer.
+        // Iterates over options, flattens them, extracts data frames, and sums their lengths.
+        let prefetched_len: u64 = self
+            .prefetch
+            .iter()
+            .flatten()
+            .filter_map(|res| res.as_ref().ok()) // ignoring any Err in the buffer for the size calculation.
+            .filter_map(|f| f.data_ref()) // Keeps only frames with some data (ignores trailers), returns &Data
+            .map(|b| b.len() as u64)
+            .sum();
+
+        if self.is_end_stream {
+            SizeHint::with_exact(prefetched_len)
+        } else {
+            let mut sh = SizeHint::new();
+            sh.set_lower(prefetched_len);
+            sh
+        }
     }
 }
 
@@ -102,7 +137,7 @@ impl Body for ChannelBody {
 pub struct FrameBridge {
     body_stream: Pin<Box<dyn Stream<Item = FrameResult> + Send>>,
     injector: Option<mpsc::Sender<FrameResult>>,
-    is_empty_body: bool,
+    orig_empty_body: bool,
 }
 
 impl std::fmt::Debug for FrameBridge {
@@ -113,7 +148,7 @@ impl std::fmt::Debug for FrameBridge {
 
 impl Default for FrameBridge {
     fn default() -> Self {
-        Self { body_stream: Box::pin(futures::stream::empty()), injector: None, is_empty_body: true }
+        Self { body_stream: Box::pin(futures::stream::empty()), injector: None, orig_empty_body: true }
     }
 }
 
@@ -129,7 +164,7 @@ impl FrameBridge {
         let body_stream: Pin<Box<dyn Stream<Item = FrameResult> + Send>> =
             Box::pin(http_body_util::BodyStream::new(body).map(|result| result.map_err(Into::into)));
 
-        Self { body_stream, injector: Some(injector), is_empty_body: end_of_stream }
+        Self { body_stream, injector: Some(injector), orig_empty_body: end_of_stream }
     }
 
     /// Close the `FrameBridge` to prevent further frame injections.
@@ -245,8 +280,8 @@ impl FrameBridge {
     }
 
     /// Check if the `FrameBridge` has been constructed with an empty body.
-    pub fn is_empty_body(&self) -> bool {
-        self.is_empty_body
+    pub fn is_orig_empty_body(&self) -> bool {
+        self.orig_empty_body
     }
 }
 
@@ -263,12 +298,15 @@ mod tests {
     use super::*;
     use futures::future;
     use http_body_util::Full;
-    use std::task::{Context, Poll, Waker};
+    use std::{
+        num::NonZeroUsize,
+        task::{Context, Poll, Waker},
+    };
 
     #[tokio::test]
     async fn test_complete() {
         let body = Full::new(Bytes::from("Hello, World!"));
-        let (mut channel_body, mut bridge) = ChannelBody::new(body, 1);
+        let (mut channel_body, mut bridge) = ChannelBody::new(body, NonZeroUsize::new(1).unwrap());
 
         // Spawn bridge task
         let bridge_handle = tokio::spawn(async move {
@@ -290,7 +328,7 @@ mod tests {
     #[tokio::test]
     async fn test_manual_injection() {
         let body = Full::new(Bytes::from("Test"));
-        let (mut channel_body, mut bridge) = ChannelBody::new(body, 1);
+        let (mut channel_body, mut bridge) = ChannelBody::new(body, NonZeroUsize::new(1).unwrap());
 
         // Spawn a task that consumes the ChannelBody
         let consumer_handle = tokio::spawn(async move {
@@ -326,7 +364,7 @@ mod tests {
     #[tokio::test]
     async fn test_channel_body_debug() {
         let body = Full::new(Bytes::from("Debug Test"));
-        let (mut channel_body, mut bridge) = ChannelBody::new(body, 1);
+        let (mut channel_body, mut bridge) = ChannelBody::new(body, NonZeroUsize::new(1).unwrap());
         assert!(!channel_body.is_end_stream());
         let mut ctx = dummy_context();
         assert!(matches!(Pin::new(&mut channel_body).poll_frame(&mut ctx), Poll::Pending));

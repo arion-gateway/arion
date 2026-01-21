@@ -21,7 +21,7 @@ use super::{
     bind_device::BindDevice, connector::LocalConnectorWithDNSResolver, AsyncStream, UpstreamTransportSocketConfigurator,
 };
 use crate::{
-    listeners::filter_state::DownstreamConnectionMetadata,
+    listeners::metadata::DownstreamConnectionMetadata,
     secrets::{TlsConfigurator, WantsToBuildClient},
 };
 use futures::future::BoxFuture;
@@ -60,11 +60,11 @@ impl TcpChannelConnector {
 
     pub fn connect(
         &self,
-        downstream_metadata: Option<&DownstreamConnectionMetadata>,
+        connection_metadata: Option<&DownstreamConnectionMetadata>,
     ) -> BoxFuture<'static, crate::Result<TcpChannel>> {
         let connector = self.connector.clone();
         let transport_socket = self.transport_socket.clone();
-        let downstream_metadata = downstream_metadata.cloned();
+        let connection_metadata = connection_metadata.cloned();
 
         Box::pin(async move {
             let (mut stream, cluster_name) = connector
@@ -80,7 +80,7 @@ impl TcpChannelConnector {
                     configure_tls(tls_configurator, stream).await?
                 },
                 UpstreamTransportSocketConfigurator::ProxyProtocol(proxy_configurator) => {
-                    if let Some(metadata) = &downstream_metadata {
+                    if let Some(metadata) = &connection_metadata {
                         proxy_configurator.write_proxy_header(&mut stream, metadata).await.map_err(
                             |e| -> crate::Error { format!("Failed to write proxy protocol header: {e}").into() },
                         )?;

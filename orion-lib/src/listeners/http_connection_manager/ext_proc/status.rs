@@ -1,4 +1,4 @@
-use crate::{body::timeout_body::TimeoutBody, PolyBody};
+use crate::OrionResponseBody;
 
 use orion_data_plane_api::envoy_data_plane_api::envoy::service::ext_proc::v3::HeaderMutation;
 
@@ -15,7 +15,7 @@ pub enum ProcessingStatus {
     RequestReady(ReadyStatus),
     ResponseReady(ReadyStatus),
     HaltedOnError,
-    EndWithDirectResponse(http::Response<TimeoutBody<PolyBody>>),
+    EndWithDirectResponse(http::Response<OrionResponseBody>),
 }
 
 impl ProcessingStatus {

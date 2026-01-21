@@ -15,18 +15,17 @@
 //
 //
 use super::{http_modifiers, upgrades as upgrade_utils, RequestHandler, TransactionHandler};
-use crate::body::timeout_body::TimeoutBody;
 use crate::event_error::{EventError, EventFailure, EventKind, TryInferFrom};
 use crate::{
-    body::{instrumented_body::InstrumentedBody, response_flags::ResponseFlags},
+    body::response_flags::ResponseFlags,
     clusters::{
         balancers::hash_policy::HashState,
         clusters_manager::{self, RoutingContext},
     },
     listeners::{http_connection_manager::HttpConnectionManager, synthetic_http_response::SyntheticHttpResponse},
-    transport::policy::{RequestContext, RequestExt},
-    PolyBody, Result,
+    Result,
 };
+use crate::{OrionRequestBody, OrionResponseBody, RequestContext};
 
 use http::{uri::Parts as UriParts, Uri};
 use hyper::{Request, Response};
@@ -42,7 +41,7 @@ use {
     orion_format::context::{UpstreamContext, UpstreamRequest},
 };
 
-use orion_format::types::{ResponseFlagsLong, ResponseFlagsShort};
+use orion_format::types::{ResponseFlags as FmtResponseFlags, ResponseFlagsLong, ResponseFlagsShort};
 
 #[cfg(feature = "tracing")]
 use {
@@ -57,8 +56,7 @@ use smol_str::ToSmolStr;
 use std::net::SocketAddr;
 use tracing::debug;
 
-pub struct MatchedRequest<'a> {
-    pub request: Request<InstrumentedBody<TimeoutBody<PolyBody>>>,
+pub struct RouteContext<'a> {
     pub retry_policy: Option<&'a RetryPolicy>,
     pub route_name: &'a str,
     pub remote_address: SocketAddr,
@@ -66,25 +64,30 @@ pub struct MatchedRequest<'a> {
     pub websocket_enabled_by_default: bool,
 }
 
-impl<'a> RequestHandler<(MatchedRequest<'a>, &HttpConnectionManager)> for &RouteAction {
+impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConnectionManager)> for &RouteAction {
     #[allow(clippy::too_many_lines)]
     async fn to_response(
         self,
         trans_handler: &TransactionHandler,
-        (request, _connection_manager): (MatchedRequest<'a>, &HttpConnectionManager),
-    ) -> Result<Response<TimeoutBody<PolyBody>>> {
+        downstream_request: Request<OrionRequestBody>,
+        (route_context, _connection_manager): (RouteContext<'a>, &HttpConnectionManager),
+    ) -> Result<Response<OrionResponseBody>> {
         #[allow(unused_variables)]
-        let MatchedRequest {
-            request: downstream_request,
-            route_name,
-            retry_policy,
-            remote_address,
-            route_match,
-            websocket_enabled_by_default,
-        } = request;
+        let RouteContext { route_name, retry_policy, remote_address, route_match, websocket_enabled_by_default } =
+            route_context;
 
-        let cluster_id = clusters_manager::resolve_cluster(&self.cluster_specifier)
-            .ok_or_else(|| "Failed to resolve cluster from specifier".to_owned())?;
+        let Some(cluster_id) =
+            clusters_manager::resolve_cluster(&self.cluster_specifier, Some(downstream_request.headers()))
+        else {
+            debug!("Failed to resolve cluster from specifier {:?}", self.cluster_specifier);
+            return Ok(SyntheticHttpResponse::internal_server_error(
+                EventKind::Failure(EventFailure::ClusterNotFound),
+                ResponseFlags(FmtResponseFlags::NO_CLUSTER_FOUND),
+                "Failed to resolve cluster",
+            )
+            .into_response(downstream_request.version()));
+        };
+
         let routing_requirement = clusters_manager::get_cluster_routing_requirements(cluster_id);
         let hash_state = HashState::new(self.hash_policy.as_slice(), &downstream_request, remote_address);
         let routing_context = RoutingContext::try_from((&routing_requirement, &downstream_request, hash_state))?;
@@ -103,7 +106,7 @@ impl<'a> RequestHandler<(MatchedRequest<'a>, &HttpConnectionManager)> for &Route
 
                 let ver = downstream_request.version();
 
-                let mut upstream_request: Request<InstrumentedBody<TimeoutBody<PolyBody>>> = {
+                let mut upstream_request: Request<OrionRequestBody> = {
                     let (mut parts, body) = downstream_request.into_parts();
                     let path_and_query_replacement = if let Some(rewrite) = &self.rewrite {
                         rewrite
@@ -185,10 +188,8 @@ impl<'a> RequestHandler<(MatchedRequest<'a>, &HttpConnectionManager)> for &Route
                 let resp = svc_channel
                     .to_response(
                         trans_handler,
-                        RequestExt::with_context(
-                            RequestContext { route_timeout: self.timeout, retry_policy },
-                            upstream_request,
-                        ),
+                        upstream_request,
+                        RequestContext { route_timeout: self.timeout, retry_policy },
                     )
                     .await;
                 match resp {
@@ -208,7 +209,7 @@ impl<'a> RequestHandler<(MatchedRequest<'a>, &HttpConnectionManager)> for &Route
                     resp => resp,
                 }
             },
-            // http connection not avaiable from cluster...
+            // http connection not available from cluster...
             Err(err) => {
                 let err = err.into_inner();
                 let event_error = EventError::try_infer_from(&err);
@@ -220,7 +221,12 @@ impl<'a> RequestHandler<(MatchedRequest<'a>, &HttpConnectionManager)> for &Route
                     ResponseFlagsLong(&flags.0).to_smolstr(),
                     ResponseFlagsShort(&flags.0).to_smolstr()
                 );
-                Ok(SyntheticHttpResponse::internal_error(event_kind, flags).into_response(downstream_request.version()))
+                Ok(SyntheticHttpResponse::internal_server_error(
+                    event_kind,
+                    flags,
+                    "Failed to connect to upstream cluster",
+                )
+                .into_response(downstream_request.version()))
             },
         }
     }

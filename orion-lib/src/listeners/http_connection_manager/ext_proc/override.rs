@@ -76,6 +76,17 @@ pub struct OverridableModes<K: kind::MsgKind> {
     _kind: std::marker::PhantomData<K>,
 }
 
+impl<K: kind::MsgKind> Clone for OverridableModes<K> {
+    fn clone(&self) -> Self {
+        Self {
+            header_mode: AtomicOverridableHeaderMode::new(self.header_mode.load(Ordering::Relaxed)),
+            body_mode: AtomicOverridableBodyMode::new(self.body_mode.load(Ordering::Relaxed)),
+            trailer_mode: AtomicOverridableTrailerMode::new(self.trailer_mode.load(Ordering::Relaxed)),
+            _kind: std::marker::PhantomData,
+        }
+    }
+}
+
 impl<K: kind::MsgKind> OverridableModes<K> {
     #[inline]
     #[allow(dead_code)]
@@ -157,7 +168,7 @@ impl<K: kind::MsgKind> std::fmt::Debug for OverridableModes<K> {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct OverridableGlobalModes {
     pub request: OverridableModes<kind::RequestMsg>,
     pub response: OverridableModes<kind::ResponseMsg>,

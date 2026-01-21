@@ -11,7 +11,7 @@ metrics  = []
 
 [dependencies]
 ahash = "0.8.12"
-dashmap = "6.1.0"
+dashmap.workspace = true
 http.workspace = true
 memory-stats = "1.2.0"
 nohash = "0.2.0"

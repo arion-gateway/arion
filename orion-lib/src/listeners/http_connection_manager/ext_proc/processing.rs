@@ -520,7 +520,7 @@ impl<M: kind::Mode + Default, Msg: kind::MsgKind + OverridableModeSelector> Proc
             ));
         };
 
-        let end_of_stream = self.frame_bridge.is_empty_body()
+        let end_of_stream = self.frame_bridge.is_orig_empty_body()
             || (!override_mode.should_process_body::<Msg>() && !override_mode.should_process_trailers::<Msg>());
 
         let envmap: EnvoyHeaderMap = headers.into();
@@ -653,10 +653,10 @@ impl<M: kind::Mode + Default, Msg: kind::MsgKind + OverridableModeSelector> Proc
         } else {
             let http_version = self.http_version.unwrap_or(http::Version::HTTP_11);
             ProcessingStatus::EndWithDirectResponse(
-                SyntheticHttpResponse::internal_error_with_msg(
-                    msg,
+                SyntheticHttpResponse::internal_server_error(
                     EventFailure::ExtProcError.into(),
                     ResponseFlags(FmtResponseFlags::NO_FILTER_CONFIG_FOUND),
+                    msg,
                 )
                 .into_response(http_version),
             )
@@ -666,10 +666,10 @@ impl<M: kind::Mode + Default, Msg: kind::MsgKind + OverridableModeSelector> Proc
     pub fn status_internal_error(&mut self, msg: &str) -> ProcessingStatus {
         let http_version = self.http_version.unwrap_or(http::Version::HTTP_11);
         ProcessingStatus::EndWithDirectResponse(
-            SyntheticHttpResponse::internal_error_with_msg(
-                msg,
+            SyntheticHttpResponse::internal_server_error(
                 EventFailure::ExtProcError.into(),
                 ResponseFlags(FmtResponseFlags::UNAUTHORIZED_EXTERNAL_SERVICE),
+                msg,
             )
             .into_response(http_version),
         )
