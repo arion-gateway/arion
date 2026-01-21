@@ -184,6 +184,10 @@ impl CaseSensitive<'_> {
 }
 
 impl StringMatcher {
+    pub fn new(s: &str) -> Self {
+        StringMatcher { ignore_case: false, pattern: StringMatcherPattern::Exact(s.into()) }
+    }
+
     pub fn matches(&self, to_match: &str) -> bool {
         let casematcher = CaseSensitive(!self.ignore_case, to_match);
         match &self.pattern {

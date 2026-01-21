@@ -1,0 +1,146 @@
+#                                       /proxy/    ---> (cluster1) 192.168.2.10:80
+#                                      |
+#  http request ---> 192.168.1.1:8080 -|
+#                                      |
+#                                       (default)  ---> (cluster2) 127.0.0.1:80
+#
+#                                       /proxy/    ---> (cluster3) 192.168.2.10:81 (h2)
+#                                      |
+#  http request ---> 192.168.1.1:8081 -|
+#                                      |
+#                                      / 404
+#
+
+runtime:
+  num_cpus: 2
+  num_runtimes: 2
+  event_interval: 31          # estimated optimal value
+  global_queue_interval: null   # default
+  max_io_events_per_tick: null  # default
+
+logging:
+  log_level: "debug"
+#  log_directory: "."
+#  log_file: "orion.log"
+
+envoy_bootstrap:
+  static_resources:
+    listeners:
+      - name: listener_http
+        address:
+          socket_address: { address: 0.0.0.0, port_value: 8000 }
+        filterChains:
+          - name: filter_chain_http
+            filter_chain_match:
+              destination_port: 8000
+            filters:
+              - name: http_gateway
+                typedConfig:
+                  "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                  statPrefix: ingress_http
+                  codecType: HTTP1
+                  httpFilters:
+                    - name: orion.filters.http.mcp
+                      typed_config:
+                        "@type": type.googleapis.com/orion.extensions.filters.http.mcp.mcp_gateway.v3.McpGateway
+                        server_info:
+                          name: "orion-mcp-gateway"
+                          version: "0.0.1"
+                        cluster_header: "x-mcp-target-cluster"
+                        tools:
+                          - name: "weather_get_forecast"
+                            description: "Get weather forecast for a location"
+                            backend:
+                              cluster: weather_api_cluster
+                              rest_transcoding:
+                                method: GET
+                                path: "/v1/forecast"
+                            input_schema:
+                              inline_string: >-
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "latitude": {
+                                      "type": "number"
+                                    },
+                                    "longitude": {
+                                      "type": "number"
+                                    },
+                                    "days": {
+                                      "type": "integer",
+                                      "default": 7
+                                    }
+                                  },
+                                  "required": ["latitude", "longitude"]
+                                }
+                          - name: "user_profile_get"
+                            description: "Get user profile information"
+                            backend:
+                              cluster: weather_api_cluster
+                              rest_transcoding:
+                                method: GET
+                                path: "/v1/user/profile"
+                            input_schema:
+                              inline_string: >-
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "user_id": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": ["user_id"]
+                                }
+                          - name: "admin_delete_user"
+                            description: "Delete a user account (admin only)"
+                            backend:
+                              cluster: weather_api_cluster
+                              rest_transcoding:
+                                method: DELETE
+                                path: "/v1/admin/user"
+                            rbac:
+                              action: ALLOW
+                              permissions:
+                                - jwt_claim:
+                                    field: "role"
+                                    value: "admin"
+                            input_schema:
+                              inline_string: >-
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "user_id": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": ["user_id"]
+                                }
+
+                    - name: envoy.filters.http.router
+                      typedConfig:
+                        "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                        start_child_span: false
+                  routeConfig:
+                    name: basic_http_route
+                    virtual_hosts:
+                      - name: mcp_gateway
+                        domains: ["*"]
+                        routes:
+                          - match:
+                              prefix: "/"
+                            route:
+                              cluster_header: "x-mcp-target-cluster"
+
+    clusters:
+      - name: weather_api_cluster
+        connect_timeout: 0.25s
+        type: STATIC
+        lb_policy: ROUND_ROBIN
+        load_assignment:
+          endpoints:
+            - lb_endpoints:
+                - endpoint:
+                    address:
+                      socket_address:
+                        address: 127.0.0.1
+                        port_value: 4001

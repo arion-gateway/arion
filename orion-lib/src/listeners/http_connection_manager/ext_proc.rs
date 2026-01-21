@@ -10,6 +10,7 @@ mod worker_config;
 use crate::body::channel_body::{ChannelBody, FrameBridge};
 use crate::body::timeout_body::TimeoutBody;
 use crate::event_error::EventFailure;
+use crate::{OrionRequestBody, OrionResponseBody};
 use http_body_util::{BodyExt, Collected, LengthLimitError, Limited};
 
 use crate::listeners::http_connection_manager::ext_proc::mutation::{
@@ -24,9 +25,9 @@ use crate::listeners::http_connection_manager::ext_proc::status::ReadyStatus;
 use crate::listeners::http_connection_manager::ext_proc::worker_config::ExternalProcessingWorkerConfig;
 use crate::utils::truncated_debug::TruncatedDebug;
 use crate::{
-    body::{instrumented_body::InstrumentedBody, response_flags::ResponseFlags},
+    body::response_flags::ResponseFlags,
     clusters::clusters_manager::{self, RoutingContext},
-    listeners::{http_connection_manager::FilterDecision, synthetic_http_response::SyntheticHttpResponse},
+    listeners::{http_filters::FilterDecision, synthetic_http_response::SyntheticHttpResponse},
     Error, PolyBody,
 };
 use bytes::Bytes;
@@ -61,12 +62,13 @@ use pingora_timeout::fast_timeout;
 use scopeguard::defer;
 use std::convert::Infallible;
 use std::future::ready;
+use std::num::NonZeroUsize;
 use std::{sync::Arc, time::Duration};
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, error, info, warn};
 
-const CHANNEL_BODY_PREFETCH_FRAMES: usize = 4;
+const CHANNEL_BODY_PREFETCH_FRAMES: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(4) };
 const EXT_PROC_FRAME_MERGE_LIMIT: u32 = 4; // max number of frames to merge in streaming mode
 const EXT_PROC_MERGE_WINDOW: Duration = tokio::time::Duration::from_millis(1); // time window to wait for more frames to merge
 const EXT_PROC_BUFFERED_BODY_LIMIT: usize = 4 * 1024 * 1024; // this is the default limit for GRPC payload lenght
@@ -256,10 +258,7 @@ impl ExternalProcessor {
     }
 
     #[allow(clippy::too_many_lines)]
-    pub async fn apply_request(
-        &mut self,
-        request: &mut Request<InstrumentedBody<TimeoutBody<PolyBody>>>,
-    ) -> FilterDecision {
+    pub async fn apply_request(&mut self, request: &mut Request<OrionRequestBody>) -> FilterDecision {
         let modes = &self.overridable_modes.request;
         let process_headers = modes.should_process_headers();
         let process_body = modes.should_process_body();
@@ -404,7 +403,7 @@ impl ExternalProcessor {
     }
 
     #[allow(clippy::too_many_lines)]
-    pub async fn apply_response(&mut self, response: &mut Response<TimeoutBody<PolyBody>>) -> FilterDecision {
+    pub async fn apply_response(&mut self, response: &mut Response<OrionResponseBody>) -> FilterDecision {
         let modes = &self.overridable_modes.response;
         let process_headers = modes.should_process_headers();
         let process_body = modes.should_process_body();
@@ -1347,7 +1346,7 @@ impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
         let response_stream = match grpc_service_specifier {
             GrpcServiceSpecifier::Cluster(cluster_name) => {
                 let cluster_spec = ClusterSpecifier::Cluster(cluster_name.clone());
-                let cluster_id = clusters_manager::resolve_cluster(&cluster_spec).ok_or_else(|| {
+                let cluster_id = clusters_manager::resolve_cluster(&cluster_spec, None).ok_or_else(|| {
                     Error::from(format!("Failed to resolve cluster '{cluster_name}' for external processor"))
                 })?;
                 let grpc_service = clusters_manager::get_grpc_connection(cluster_id, RoutingContext::None)?;
@@ -1469,7 +1468,7 @@ impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
     }
 
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    fn build_direct_response(&mut self, response_attempt: &ImmediateResponse) -> Response<TimeoutBody<PolyBody>> {
+    fn build_direct_response(&mut self, response_attempt: &ImmediateResponse) -> Response<OrionResponseBody> {
         let status = response_attempt
             .status
             .as_ref()

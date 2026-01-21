@@ -16,11 +16,12 @@
 //
 
 pub(crate) mod access_log;
-pub(crate) mod filter_state;
 pub(crate) mod filterchain;
 pub(crate) mod http_connection_manager;
+pub(crate) mod http_filters;
 pub(crate) mod listener;
 pub(crate) mod listeners_manager;
+pub(crate) mod metadata;
 pub(crate) mod rate_limiter;
 pub(crate) mod rbac;
 pub(crate) mod synthetic_http_response;

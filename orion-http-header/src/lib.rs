@@ -99,3 +99,7 @@ custom_header!(
 custom_header!(
     /// The `lb-header` header is used for load balancing decisions
     LB_HEADER, "lb-header");
+
+custom_header!(
+    /// The `mcp-session-id` header is used to pass the MCP session ID
+    MCP_SESSION_ID, "mcp-session-id");

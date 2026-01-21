@@ -20,10 +20,7 @@ use super::{RequestHandler, TransactionHandler};
 #[cfg(feature = "access-log")]
 use {crate::listeners::access_log::AccessLogContext, orion_format::context::UpstreamContext};
 
-use crate::{
-    body::{instrumented_body::InstrumentedBody, timeout_body::TimeoutBody},
-    Error, PolyBody, Result,
-};
+use crate::{body::timeout_body::TimeoutBody, Error, OrionRequestBody, OrionResponseBody, PolyBody, Result};
 use http::{
     header::LOCATION,
     uri::{Authority, Parts as UriParts, PathAndQuery, Scheme},
@@ -37,18 +34,13 @@ use orion_error::Context;
 
 use std::str::FromStr;
 
-impl<'a> RequestHandler<(Request<InstrumentedBody<TimeoutBody<PolyBody>>>, RouteMatchResult, &'a str)>
-    for &RedirectAction
-{
+impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteMatchResult, &'a str)> for &RedirectAction {
     async fn to_response(
         self,
         _trans_handler: &TransactionHandler,
-        (request, route_match_result, _route_name): (
-            Request<InstrumentedBody<TimeoutBody<PolyBody>>>,
-            RouteMatchResult,
-            &'a str,
-        ),
-    ) -> Result<Response<TimeoutBody<PolyBody>>> {
+        request: Request<OrionRequestBody>,
+        (route_match_result, _route_name): (RouteMatchResult, &'a str),
+    ) -> Result<Response<OrionResponseBody>> {
         #[cfg(feature = "access-log")]
         if let Some(ctx) = _trans_handler.access_log_ctx.as_ref() {
             ctx.lock().loggers.with_context(&UpstreamContext {

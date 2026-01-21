@@ -29,7 +29,7 @@ use crate::{body::response_flags::ResponseFlags, event_error::EventFailure};
 use orion_format::types::ResponseFlags as FmtResponseFlags;
 
 use crate::{
-    listeners::{http_connection_manager::FilterDecision, synthetic_http_response::SyntheticHttpResponse},
+    listeners::{http_filters::FilterDecision, synthetic_http_response::SyntheticHttpResponse},
     runtime_config,
 };
 

@@ -23,6 +23,7 @@ use std::{
     borrow::Cow,
     error::Error,
     fmt::{Debug, Display},
+    num::ParseIntError,
     string::FromUtf8Error,
 };
 
@@ -155,6 +156,12 @@ pub enum GenericError {
     Utf8(#[from] FromUtf8Error),
     #[error("HeaderName: {0}")]
     InvalidHeaderName(#[from] InvalidHeaderName),
+    #[error("Invalid JSON: {0}")]
+    InvalidJson(#[from] serde_json::Error),
+    #[error("Invalid HTTP method: {0}")]
+    InvalidMethod(#[from] http::method::InvalidMethod),
+    #[error("Invalid integer: {0}")]
+    InvalidInt(#[from] ParseIntError),
 }
 
 impl GenericError {

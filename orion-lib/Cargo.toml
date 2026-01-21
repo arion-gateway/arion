@@ -6,6 +6,7 @@ rust-version.workspace = true
 version.workspace      = true
 
 [dependencies]
+dashmap.workspace = true
 abort-on-drop.workspace = true
 ahash = "0.8.12"
 arc-swap = "1.7.1"
@@ -77,6 +78,13 @@ assert_matches = "1.5.0"
 tokio-util = "0.7.17"
 jsonwebtoken = { version = "10.2.0", features = ["rust_crypto"] }
 serde_json.workspace = true
+chrono = { version = "0.4.42", features = ["serde"] }
+base64 = "0.22.1"
+schemars = { version = "1.1.0", features = ["std", "derive", "chrono04"] }
+pastey = "0.2.1"
+owning_ref = "0.4.1"
+rmcp = "0.12.0"
+moka = { version = "0.12.12", features = ["sync"] }
 
 
 [dev-dependencies]
@@ -88,10 +96,18 @@ test-log                       = { version = "0.2.18", features = ["trace"] }
 [features]
 # making sure we are not using pure ring
 aws_lc_rs = ["rustls/aws_lc_rs"]
-default   = ["aws_lc_rs"]
+default   = ["aws_lc_rs","server", "macros", "elicitation", "base64", "schemars"]
 metrics   = ["dep:orion-metrics"]
 tracing   = []
 access-log = []
+
+# mcp gateway model features:
+
+schemars = []
+server = []
+macros = []
+elicitation = []
+base64 = []
 
 [lints]
 workspace = true

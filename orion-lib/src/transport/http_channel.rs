@@ -15,11 +15,7 @@
 //
 //
 
-use super::{
-    bind_device::BindDevice,
-    connector::LocalConnectorWithDNSResolver,
-    policy::{RequestContext, RequestExt},
-};
+use super::{bind_device::BindDevice, connector::LocalConnectorWithDNSResolver};
 use crate::{
     body::{instrumented_body::InstrumentedBody, response_flags::ResponseFlags, timeout_body::TimeoutBody},
     clusters::retry_policy::RetryCondition,
@@ -31,7 +27,7 @@ use crate::{
     secrets::{TlsConfigurator, WantsToBuildClient},
     thread_local::{LocalBuilder, LocalObject},
     transport::timer::PingoraTimer,
-    Error, PolyBody, Result,
+    Error, OrionRequestBody, OrionResponseBody, RequestContext, Result,
 };
 use http::{
     uri::{Authority, Parts},
@@ -82,8 +78,8 @@ const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 type IncomingResult = (std::result::Result<Response<Incoming>, Error>, Duration);
 
-type HttpClient = Client<LocalConnectorWithDNSResolver, InstrumentedBody<TimeoutBody<PolyBody>>>;
-type HttpsClient = Client<HttpsConnector<LocalConnectorWithDNSResolver>, InstrumentedBody<TimeoutBody<PolyBody>>>;
+type HttpClient = Client<LocalConnectorWithDNSResolver, OrionRequestBody>;
+type HttpsClient = Client<HttpsConnector<LocalConnectorWithDNSResolver>, OrionRequestBody>;
 
 // Rationale: The outer Arc is necessary to avoid building a new Client when cloning the HttpChannel.
 // The inner Arc, instead, is used to pass the client to async code, so it's already wrapped by the Arc.
@@ -402,18 +398,18 @@ fn update_upstream_stats(event: PoolEvent, tag: &dyn Any, keys: &[&PoolKey]) {
     }
 }
 
-impl<'a> RequestHandler<RequestExt<'a, Request<InstrumentedBody<TimeoutBody<PolyBody>>>>> for &HttpChannels {
+impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &HttpChannels {
     async fn to_response(
         self,
         trans_handler: &TransactionHandler,
-        request: RequestExt<'a, Request<InstrumentedBody<TimeoutBody<PolyBody>>>>,
-    ) -> Result<Response<TimeoutBody<PolyBody>>> {
+        request: Request<OrionRequestBody>,
+        ctx: RequestContext<'a>,
+    ) -> Result<Response<OrionResponseBody>> {
         match self {
-            HttpChannels::Single(channel) => channel.to_response(trans_handler, request).await,
+            HttpChannels::Single(channel) => channel.to_response(trans_handler, request, ctx).await,
             HttpChannels::MultiWithFailover { channel, failover_channels } => {
-                let RequestExt { req, ctx } = request;
                 let RequestContext { route_timeout, .. } = ctx;
-                let (parts, body) = req.into_parts();
+                let (parts, body) = request.into_parts();
                 let InstrumentedBody { inner, guard, state } = body;
 
                 let body_timeout = inner.timeout;
@@ -422,7 +418,7 @@ impl<'a> RequestHandler<RequestExt<'a, Request<InstrumentedBody<TimeoutBody<Poly
 
                 let total_attempts = 1 + failover_channels.len();
                 let mut last_error: Option<Error> = None;
-                let mut last_response: Option<Response<TimeoutBody<PolyBody>>> = None;
+                let mut last_response: Option<Response<OrionResponseBody>> = None;
 
                 for (attempt, channel) in std::iter::once(channel).chain(failover_channels.iter()).enumerate() {
                     let has_more = attempt + 1 < total_attempts;
@@ -434,9 +430,8 @@ impl<'a> RequestHandler<RequestExt<'a, Request<InstrumentedBody<TimeoutBody<Poly
                     };
                     let rebuilt_req = Request::from_parts(parts.clone(), cloned_body);
                     let attempt_ctx = RequestContext { route_timeout, retry_policy: None };
-                    let attempt_request = RequestExt::with_context(attempt_ctx, rebuilt_req);
 
-                    match channel.to_response(trans_handler, attempt_request).await {
+                    match channel.to_response(trans_handler, rebuilt_req, attempt_ctx).await {
                         Ok(response) => {
                             if has_more {
                                 debug!(
@@ -473,19 +468,20 @@ impl<'a> RequestHandler<RequestExt<'a, Request<InstrumentedBody<TimeoutBody<Poly
     }
 }
 
-impl<'a> RequestHandler<RequestExt<'a, Request<InstrumentedBody<TimeoutBody<PolyBody>>>>> for &HttpChannel {
+impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &HttpChannel {
     async fn to_response(
         self,
         _trans_handler: &TransactionHandler,
-        request: RequestExt<'a, Request<InstrumentedBody<TimeoutBody<PolyBody>>>>,
-    ) -> Result<Response<TimeoutBody<PolyBody>>> {
-        let version = request.req.version();
+        request: Request<OrionRequestBody>,
+        ctx: RequestContext<'a>,
+    ) -> Result<Response<OrionResponseBody>> {
+        let version = request.version();
         let cluster_name = self.cluster_name;
         match &self.client {
             HttpChannelClient::Plain(sender) => {
-                let RequestContext { route_timeout, retry_policy } = request.ctx;
+                let RequestContext { route_timeout, retry_policy } = ctx;
                 let client = sender.get_or_build();
-                let req = maybe_normalize_uri(request.req, false)?;
+                let req = maybe_normalize_uri(request, false)?;
 
                 let result = if let Some(t) = route_timeout {
                     match fast_timeout(t, self.send_request(retry_policy, client, req, cluster_name)).await {
@@ -499,13 +495,13 @@ impl<'a> RequestHandler<RequestExt<'a, Request<InstrumentedBody<TimeoutBody<Poly
             },
             HttpChannelClient::Tls(context) => {
                 let ClientContext { configured_upstream_http_version, client: sender } = context;
-                let RequestContext { route_timeout, retry_policy } = request.ctx;
+                let RequestContext { route_timeout, retry_policy } = ctx;
                 let configured_version = *configured_upstream_http_version;
                 let client = sender.get_or_build();
 
                 //FIXME(hayley): apply http protocol translation for plaintext too
                 debug!("Using TLS incoming http {version:?} configured {configured_version:?}");
-                let req = maybe_normalize_uri(request.req, true)?;
+                let req = maybe_normalize_uri(request, true)?;
                 let req = maybe_change_http_protocol_version(req, configured_version)?;
                 let result = if let Some(t) = route_timeout {
                     match fast_timeout(t, self.send_request(retry_policy, client, req, cluster_name)).await {
@@ -529,8 +525,8 @@ impl HttpChannel {
     async fn send_request<C>(
         &self,
         retry_policy: Option<&RetryPolicy>,
-        sender: &Client<C, InstrumentedBody<TimeoutBody<PolyBody>>>,
-        mut req: Request<InstrumentedBody<TimeoutBody<PolyBody>>>,
+        sender: &Client<C, OrionRequestBody>,
+        mut req: Request<OrionRequestBody>,
         cluster_name: &'static str,
     ) -> (StdResult<Response<Incoming>, Error>, Duration)
     where
@@ -580,8 +576,8 @@ impl HttpChannel {
     async fn send_with_retry<C>(
         &self,
         retry_policy: &RetryPolicy,
-        sender: &Client<C, InstrumentedBody<TimeoutBody<PolyBody>>>,
-        req: Request<InstrumentedBody<TimeoutBody<PolyBody>>>,
+        sender: &Client<C, OrionRequestBody>,
+        req: Request<OrionRequestBody>,
         _thread_id: ThreadId,
         _cluster_name: &'static str,
     ) -> (StdResult<Response<Incoming>, Error>, Duration, usize)
@@ -611,8 +607,7 @@ impl HttpChannel {
                 state: state.clone(),
             };
 
-            let cloned_req: Request<InstrumentedBody<TimeoutBody<PolyBody>>> =
-                Request::from_parts(parts.clone(), cloned_body);
+            let cloned_req: Request<OrionRequestBody> = Request::from_parts(parts.clone(), cloned_body);
 
             // actually send the request and wait for the response...
             let result: StdResult<Response<Incoming>, Error> = if let Some(t) = retry_policy.per_try_timeout() {
@@ -665,7 +660,7 @@ impl HttpChannel {
         result: IncomingResult,
         route_timeout: Option<Duration>,
         version: http::Version,
-    ) -> StdResult<hyper::Response<TimeoutBody<PolyBody>>, Error> {
+    ) -> StdResult<hyper::Response<OrionResponseBody>, Error> {
         match result {
             (Ok(response), elapsed) => {
                 // calculate the remaining timeout (relative to the route timeout) for receiving
@@ -750,17 +745,14 @@ fn select_scheme(version: http::Version, is_tls: bool) -> Option<http::uri::Sche
 }
 
 fn maybe_change_http_protocol_version(
-    request: Request<InstrumentedBody<TimeoutBody<PolyBody>>>,
+    request: Request<OrionRequestBody>,
     version: Codec,
-) -> Result<Request<InstrumentedBody<TimeoutBody<PolyBody>>>> {
+) -> Result<Request<OrionRequestBody>> {
     let request = maybe_update_host(request, version)?;
     Ok(maybe_rewrite_version(request, version))
 }
 
-fn maybe_rewrite_version(
-    mut request: Request<InstrumentedBody<TimeoutBody<PolyBody>>>,
-    version: Codec,
-) -> Request<InstrumentedBody<TimeoutBody<PolyBody>>> {
+fn maybe_rewrite_version(mut request: Request<OrionRequestBody>, version: Codec) -> Request<OrionRequestBody> {
     *request.version_mut() = match version {
         Codec::Http1 => Version::HTTP_11,
         Codec::Http2 => Version::HTTP_2,
@@ -768,10 +760,7 @@ fn maybe_rewrite_version(
     request
 }
 
-fn maybe_update_host(
-    mut request: Request<InstrumentedBody<TimeoutBody<PolyBody>>>,
-    version: Codec,
-) -> Result<Request<InstrumentedBody<TimeoutBody<PolyBody>>>> {
+fn maybe_update_host(mut request: Request<OrionRequestBody>, version: Codec) -> Result<Request<OrionRequestBody>> {
     let request_version = request.version();
     match (request_version, version) {
         (Version::HTTP_11, Codec::Http2) => {
@@ -793,9 +782,9 @@ fn maybe_update_host(
 }
 
 fn maybe_normalize_uri(
-    mut request: Request<InstrumentedBody<TimeoutBody<PolyBody>>>,
+    mut request: Request<OrionRequestBody>,
     is_tls: bool,
-) -> crate::Result<Request<InstrumentedBody<TimeoutBody<PolyBody>>>> {
+) -> crate::Result<Request<OrionRequestBody>> {
     let uri = request.uri();
     if !is_absolute(uri) {
         if let Some(host_header) = request.headers().get("host") {

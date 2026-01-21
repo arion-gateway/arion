@@ -1,0 +1,101 @@
+syntax = "proto3";
+
+package orion.extensions.filters.http.mcp.mcp_gateway.v3;
+
+import "envoy/config/core/v3/base.proto";
+import "validate/validate.proto";
+
+// [#protodoc-title: McpGateway Filter]
+// Configuraton for McpGateway
+// [#extension: envoy.filters.network.mcp_gateway]
+message McpGateway {
+    optional string cluster_header = 1;
+    ServerInfo server_info = 2 [(validate.rules).message = {required: true}];
+    repeated Tool tools = 3;
+}
+
+// Server info
+message ServerInfo {
+    string name = 1 [(validate.rules).string = {min_bytes: 1}];
+    string version = 2 [(validate.rules).string = {min_bytes: 1}];
+}
+
+// Tool configuration
+message Tool {
+    string name = 1 [(validate.rules).string = {min_bytes: 1}];
+    string description = 2 [(validate.rules).string = {min_bytes: 1}];
+    envoy.config.core.v3.DataSource input_schema = 3;
+    Backend backend = 4 [(validate.rules).message = {required: true}];
+    optional ToolRbac rbac = 5;
+}
+
+message Backend {
+    string cluster = 1 [(validate.rules).string = {min_bytes: 1}];
+    bool async = 2;
+    oneof transcoding {
+        RestTranscoding rest_transcoding = 3;
+        FunctionGraphTranscoding function_graph_transcoding = 4;
+        McpServerTranscoding mcp_server_transcoding = 5;
+    }
+}
+
+message RestTranscoding {
+  string method = 1 [(validate.rules).string = {min_bytes: 1}];
+  string path = 2 [(validate.rules).string = {min_bytes: 1}];
+  repeated QueryParam query_params = 3;
+}
+
+message QueryParam {
+  string name = 1 [(validate.rules).string = {min_bytes: 1}];
+  string source = 2 [(validate.rules).string = {min_bytes: 1}];
+}
+
+message FunctionGraphTranscoding {
+}
+
+message McpServerTranscoding {
+}
+
+// RBAC configuration for individual MCP tools
+// Specifies JWT-based access control rules for tool access
+message ToolRbac {
+  // Action to take when permissions are evaluated
+  enum Action {
+    // Allow access if any permission matches (default deny)
+    ALLOW = 0;
+    // Deny access if any permission matches (default allow)
+    DENY = 1;
+  }
+
+  // The action to take (ALLOW or DENY)
+  Action action = 1;
+
+  // List of permissions (OR logic - any permission can match)
+  // At least one permission must be specified
+  repeated Permission permissions = 2 [(validate.rules).repeated = {min_items: 1}];
+}
+
+// Permission - defines JWT requirements for tool access
+message Permission {
+  oneof permission_type {
+    option (validate.required) = true;
+    
+    // Match based on JWT header field
+    JwtHeaderMatcher jwt_header = 1;
+    
+    // Match based on JWT claim field
+    JwtClaimMatcher jwt_claim = 2;
+  }
+}
+
+// JWT header field matcher
+message JwtHeaderMatcher {
+  string field = 1 [(validate.rules).string = {min_bytes: 1}];
+  string value = 2 [(validate.rules).string = {min_bytes: 1}];
+}
+
+// JWT claim field matcher
+message JwtClaimMatcher {
+  string field = 1 [(validate.rules).string = {min_bytes: 1}];
+  string value = 2 [(validate.rules).string = {min_bytes: 1}];
+}

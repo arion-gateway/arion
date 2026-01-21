@@ -22,7 +22,7 @@ use http_body_util::Full;
 use crate::{
     body::{response_flags::ResponseFlags, timeout_body::TimeoutBody},
     event_error::EventKind,
-    PolyBody,
+    OrionResponseBody,
 };
 
 #[derive(Clone, Debug)]
@@ -37,21 +37,11 @@ pub struct SyntheticHttpResponse {
 // === impl SyntheticHttpResponse ===
 
 impl SyntheticHttpResponse {
-    pub fn internal_error(event_kind: EventKind, response_flags: ResponseFlags) -> Self {
+    pub fn internal_server_error(event_kind: EventKind, response_flags: ResponseFlags, msg: &str) -> Self {
         Self {
             http_status: StatusCode::INTERNAL_SERVER_ERROR,
             event_kind,
             response_flags,
-            body: Bytes::default(),
-            close_connection: true,
-        }
-    }
-
-    pub fn internal_error_with_msg(msg: &str, event_kind: EventKind, response_flags: ResponseFlags) -> Self {
-        Self {
-            http_status: StatusCode::INTERNAL_SERVER_ERROR,
-            response_flags,
-            event_kind,
             body: Bytes::copy_from_slice(msg.as_bytes()),
             close_connection: true,
         }
@@ -167,7 +157,7 @@ impl SyntheticHttpResponse {
     }
 
     #[inline]
-    pub fn into_response(self, version: http::Version) -> Response<TimeoutBody<PolyBody>> {
+    pub fn into_response(self, version: http::Version) -> Response<OrionResponseBody> {
         let mut rsp = Response::new(TimeoutBody::new(None, Full::from(self.body).into()));
         *rsp.status_mut() = self.http_status;
         *rsp.version_mut() = version;

@@ -215,7 +215,7 @@ impl PartialEq for DirectResponseBody {
 }
 impl Eq for DirectResponseBody {}
 
-//todo: impl serialize, deserialize on DirectResponsebody to prepare the bytes at deserialization
+//todo: impl serialize, deserialize on DirectResponse body to prepare the bytes at deserialization
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct RouteAction {
@@ -375,7 +375,7 @@ impl Default for RouteMatch {
     }
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct RouteMatchResult {
     path_match: Option<PathMatcherResult>,
     headers_matched: bool,
@@ -446,6 +446,7 @@ pub struct PathMatcher {
     pub ignore_case: bool,
 }
 
+#[derive(Debug, Clone)]
 pub struct PathMatcherResult {
     inner: Option<usize>,
 }

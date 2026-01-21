@@ -24,7 +24,6 @@ mod http_channel;
 mod resolver;
 pub mod tcp_channel;
 pub use resolver::resolve;
-pub mod policy;
 pub mod proxy_protocol;
 pub mod timer;
 pub mod tls_inspector;

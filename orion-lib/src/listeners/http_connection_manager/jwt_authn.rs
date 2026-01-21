@@ -10,13 +10,12 @@ use std::{
 };
 
 use crate::{
-    body::{instrumented_body::InstrumentedBody, timeout_body::TimeoutBody},
     event_error::EventFailure,
-    listeners::{http_connection_manager::FilterDecision, synthetic_http_response::SyntheticHttpResponse},
-    PolyBody,
+    listeners::{http_filters::FilterDecision, synthetic_http_response::SyntheticHttpResponse},
+    OrionRequestBody,
 };
 use http::{HeaderMap, HeaderName, HeaderValue, Request};
-use jsonwebtoken::{decode, decode_header, jwk::Jwk, Algorithm, DecodingKey, TokenData, Validation};
+use jsonwebtoken::{decode, decode_header, jwk::Jwk, Algorithm, DecodingKey, Header, TokenData, Validation};
 use orion_configuration::config::{
     core::DataSourceReadError,
     network_filters::http_connection_manager::http_filters::jwt::{
@@ -96,11 +95,26 @@ enum JwkError {
 
     #[error("Utf8: {0}")]
     FromUtf8Error(#[from] FromUtf8Error),
+
+    #[error("No validation key found")]
+    NoValidationKey,
 }
 
 #[derive(Debug, Clone)]
 pub struct JwtAuthenticationBuilder {
     config: JwtAuthenticationConfig,
+}
+
+struct JwtCachedEntry {
+    header: Header,
+    jwt: TokenData<JwtClaims>,
+}
+
+thread_local! {
+    static JWT_CACHE: moka::sync::Cache<String, Arc<JwtCachedEntry>, ahash::RandomState> =
+        moka::sync::CacheBuilder::new(128)
+            .time_to_live(std::time::Duration::from_secs(1))
+            .build_with_hasher(ahash::RandomState::new());
 }
 
 impl JwtAuthenticationBuilder {
@@ -375,8 +389,50 @@ impl JwtAuthentication {
         }
     }
 
+    fn decode_jwt_token(&self, token: &str, provider_name: &str) -> Result<Arc<JwtCachedEntry>, JwkError> {
+        // using the last part of the token as the cache key improves lookup performance significantly
+        //
+        let cache_key = match token.rsplit_once('.') {
+            Some((_, signature)) => signature,
+            None => token,
+        };
+
+        if let Some(result) = JWT_CACHE.with(|cache| cache.get(cache_key)) {
+            return Ok(result);
+        }
+
+        //JWT_CACHE.get(cache_key) {
+        //    return Ok(result);
+        //};
+
+        // decode the header token...
+        let header = decode_header(token).inspect_err(|err| {
+            info!(target: "jwt", "JWT failed to decode token header: {err}");
+        })?;
+
+        // get the validation_key for this provider...
+        let validation_key = self.inner.context.get(provider_name).and_then(|context| {
+            let kid_ref = header.kid.as_ref().map(|kid| KidStr::ref_cast(kid));
+            context.validation_key_lookup(kid_ref)
+        });
+
+        let validation_key = validation_key.ok_or(JwkError::NoValidationKey)?;
+
+        // finally decode the JWT token...
+        let res = Arc::new(JwtCachedEntry {
+            header,
+            jwt: decode(token, &validation_key.decoding_key, &validation_key.validation)?,
+        });
+
+        // JWT_CACHE.insert(cache_key.to_owned(), res.clone());
+        JWT_CACHE.with(|cache| {
+            cache.insert(cache_key.to_owned(), res.clone());
+        });
+        Ok(res)
+    }
+
     #[allow(clippy::too_many_lines)]
-    pub fn apply_request(&mut self, req: &mut Request<InstrumentedBody<TimeoutBody<PolyBody>>>) -> FilterDecision {
+    pub fn apply_request(&mut self, req: &mut Request<OrionRequestBody>) -> FilterDecision {
         debug!(target: "jwt", "Applying JWT authentication filter: {:#?}", self.inner.config);
 
         // lookup the provider name...
@@ -391,30 +447,11 @@ impl JwtAuthentication {
             return Self::unauthorized(req.version(), &format!("JWT no token found for provider {provider_name}"));
         };
 
-        // decode the header token...
-        let header = match decode_header(jwt_extract.token()) {
-            Ok(header) => header,
-            Err(err) => {
-                info!(target: "jwt", "JWT failed to decode token header: {err}");
-                return Self::unauthorized(req.version(), &format!("JWT failed to decode token header: {err}"));
-            }
-        };
-
-        // get the validation_key for this provider...
-        let validation_key = self.inner.context.get(provider_name).and_then(|context| {
-            let kid_ref = header.kid.as_ref().map(|kid| KidStr::ref_cast(kid));
-            context.validation_key_lookup(kid_ref)
-        });
-
-        // get the associated validation key...
-        let Some(val_key) = validation_key else {
-            info!(target: "jwt", "JWT no validation key found");
-            return Self::unauthorized(req.version(), "JWT no validation key found");
-        };
-
-        // finally decode the JWT token...
-        let jwt: TokenData<JwtClaims> = match decode(jwt_extract.token(), &val_key.decoding_key, &val_key.validation) {
-            Ok(jwt) => jwt,
+        //
+        // heavy computation part: decode header + decode token
+        //
+        let entry = match self.decode_jwt_token(jwt_extract.token(), provider_name) {
+            Ok(a) => a,
             Err(err) => {
                 info!(target: "jwt", "JWT failed to decode token: {err}");
                 return Self::unauthorized(req.version(), &format!("JWT failed to decode token: {err}"));
@@ -476,18 +513,18 @@ impl JwtAuthentication {
         // handle claim_to_headers
 
         if !jwt_provider.claim_to_headers.is_empty() {
-            Self::claims_to_headers(jwt_provider, &jwt.claims, req.headers_mut());
+            Self::claims_to_headers(jwt_provider, &entry.jwt.claims, req.headers_mut());
         }
 
         if jwt_provider.header_in_metadata.is_some() {
-            req.extensions_mut().insert(header);
+            req.extensions_mut().insert(entry.header.clone());
         }
 
         if jwt_provider.payload_in_metadata.is_some() {
-            req.extensions_mut().insert(jwt.claims.clone());
+            req.extensions_mut().insert(entry.jwt.claims.clone());
         }
 
-        debug!(target: "jwt", "{:#?}", jwt);
+        debug!(target: "jwt", "{:#?}", entry.jwt);
 
         // handle clear_route_cache
         if jwt_provider.clear_route_cache {

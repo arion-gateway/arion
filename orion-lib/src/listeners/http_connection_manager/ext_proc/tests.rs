@@ -42,6 +42,7 @@ use std::{collections::VecDeque, convert::Infallible, net::SocketAddr, str::From
 use tokio::{net::TcpListener, task::JoinHandle};
 use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
 
+use crate::OrionRequestBody;
 use tokio::select;
 use tokio::sync::mpsc::Sender;
 use tokio_util::sync::CancellationToken;
@@ -252,7 +253,7 @@ impl<M: MsgKind> Mock<M> {
     }
 }
 
-async fn build_request_from_mock(mock_request: &Mock<RequestMsg>) -> Request<InstrumentedBody<TimeoutBody<PolyBody>>> {
+async fn build_request_from_mock(mock_request: &Mock<RequestMsg>) -> Request<OrionRequestBody> {
     let mut req = Request::builder().method(Method::GET).uri("http://example.com/test").version(Version::HTTP_11);
 
     if let Some(headers) = transform(mock_request.headers.clone()) {
@@ -286,7 +287,7 @@ async fn build_request_from_mock(mock_request: &Mock<RequestMsg>) -> Request<Ins
     req.body(InstrumentedBody::new(BodyKind::Request, TimeoutBody::new(None, body), |_, _, _| {})).unwrap()
 }
 
-async fn build_response_from_mock(mock_response: &Mock<ResponseMsg>) -> Response<TimeoutBody<PolyBody>> {
+async fn build_response_from_mock(mock_response: &Mock<ResponseMsg>) -> Response<OrionResponseBody> {
     let mut resp = Response::builder().version(Version::HTTP_11);
 
     if let Some(headers) = transform(mock_response.headers.clone()) {
@@ -2859,17 +2860,17 @@ async fn test_request_multichunk_not_merged_body_streaming_mode() {
 }
 
 use futures::task::noop_waker;
-use http_body::Body as HttpBody;
+use http_body::Body;
 use std::pin::Pin;
 use std::task::Context;
 
-async fn assert_body_frames<B: HttpBody + Unpin>(
+async fn assert_body_frames<B: Body + Unpin>(
     mut body: B,
     expected_data: &[Bytes],
     expected_trailers: Option<http::HeaderMap>,
 ) -> Result<(), String>
 where
-    B: HttpBody<Data = Bytes>,
+    B: Body<Data = Bytes>,
     B::Error: Sized + Unpin + std::fmt::Debug,
 {
     // Setup for manual polling
