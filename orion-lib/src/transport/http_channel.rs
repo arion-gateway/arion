@@ -131,7 +131,7 @@ impl HttpChannels {
 
 #[derive(Clone, Debug)]
 pub struct HttpChannel {
-    pub client: HttpChannelClient,
+    pub channel_client: HttpChannelClient,
     pub http_version: Codec,
     pub enable_trailers: bool,
     pub upstream_authority: Authority, // upstream authority
@@ -270,7 +270,7 @@ impl HttpChannelBuilder {
         }
     }
 
-    fn build_channel_from_authority(self) -> crate::Result<HttpChannel> {
+     fn build_channel_from_authority(self) -> crate::Result<HttpChannel> {
         let authority = self.authority.clone().ok_or_else(|| Error::from("Authority is mandatory"))?;
         let client_builder = self.configure_hyper_client();
 
@@ -308,7 +308,7 @@ impl HttpChannelBuilder {
             };
 
             Ok(HttpChannel {
-                client: HttpChannelClient::Tls(ClientContext::new(
+                channel_client: HttpChannelClient::Tls(ClientContext::new(
                     self.http_protocol_options.codec,
                     Arc::new(LocalObject::new(client_builder, http_connector)),
                 )),
@@ -327,7 +327,7 @@ impl HttpChannelBuilder {
             };
 
             Ok(HttpChannel {
-                client: HttpChannelClient::Plain(Arc::new(LocalObject::new(client_builder, connector))),
+                channel_client: HttpChannelClient::Plain(Arc::new(LocalObject::new(client_builder, connector))),
                 http_version: self.http_protocol_options.codec,
                 enable_trailers,
                 upstream_authority: authority,
@@ -526,7 +526,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
     ) -> Result<Response<OrionResponseBody>> {
         let version = request.version();
         let cluster_name = self.cluster_name;
-        match &self.client {
+        match &self.channel_client {
             HttpChannelClient::Plain(sender) => {
                 let RequestContext { route_timeout, retry_policy } = ctx;
                 let client = sender.get_or_build();
@@ -587,7 +587,7 @@ impl HttpChannel {
     /// Send the request and return the Result, either the Response or an Error,
     /// along with the time spent for possible retransmissions. Note: the returned
     /// duration does not include the time spent receiving the Body of the Response.
-    async fn send_request<C>(
+    pub async fn send_request<C>(
         &self,
         retry_policy: Option<&RetryPolicy>,
         sender: &Client<C, OrionRequestBody>,
@@ -772,7 +772,7 @@ impl HttpChannel {
     }
 
     pub fn is_https(&self) -> bool {
-        match &self.client {
+        match &self.channel_client {
             HttpChannelClient::Plain(_) => false,
             HttpChannelClient::Tls(_) => true,
             HttpChannelClient::Unix(_, _) => false,
@@ -784,7 +784,7 @@ impl HttpChannel {
     }
 
     pub fn load(&self) -> u32 {
-        let load = match &self.client {
+        let load = match &self.channel_client {
             HttpChannelClient::Plain(sender) => Arc::strong_count(sender.get_or_build()),
             HttpChannelClient::Tls(sender) => Arc::strong_count(sender.client.get_or_build()),
             HttpChannelClient::Unix(_, sender) => Arc::strong_count(sender),

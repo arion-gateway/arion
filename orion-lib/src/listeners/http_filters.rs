@@ -124,17 +124,17 @@ pub enum HttpFilterValue {
     McpGateway(McpGateway),
 }
 
-pub trait FactoryFilter {
+pub trait FilterFactory {
     fn new_from(&self) -> Self;
 }
 
-impl FactoryFilter for HttpFilterValue {
+impl FilterFactory for HttpFilterValue {
     fn new_from(&self) -> Self {
         match self {
             HttpFilterValue::RateLimit(conf) => HttpFilterValue::RateLimit(conf.clone()),
             HttpFilterValue::Rbac(conf) => HttpFilterValue::Rbac(conf.clone()),
             HttpFilterValue::ExternalProcessor(conf) => HttpFilterValue::ExternalProcessor(conf.clone()),
-            HttpFilterValue::JwtAuthentication(conf) => HttpFilterValue::JwtAuthentication(conf.clone()),
+            HttpFilterValue::JwtAuthentication(conf) => HttpFilterValue::JwtAuthentication(conf.new_from()),
             HttpFilterValue::McpGateway(conf) => HttpFilterValue::McpGateway(conf.new_from()),
             HttpFilterValue::Cors(conf) => HttpFilterValue::Cors(conf.clone()),
         }

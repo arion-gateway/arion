@@ -8,28 +8,13 @@ version.workspace      = true
 [dependencies]
 dashmap.workspace = true
 abort-on-drop.workspace = true
-ahash = "0.8.12"
-arc-swap = "1.7.1"
-arrayvec = "0.7.6"
-async-stream = "0.3"
-atomic-time = "0.1.5"
 bytes.workspace = true
 smol_str.workspace = true
-enum_dispatch = "0.3.13"
 exponential-backoff.workspace = true
 futures.workspace = true
-futures-util = { version = "0.3", default-features = false }
-h2 = "0.4.12"
-hickory-resolver = { version = "0.24", features = ["system-config"] }
 http.workspace = true
 http-body.workspace = true
 http-body-util.workspace = true
-hyper = { version = "1", features = ["full"] }
-hyper-rustls = { version = "0.27.7", features = ["default", "http2"] }
-ipnet = "2.11"
-lru_time_cache = "0.11.11"
-once_cell = { version = "1.21" }
-opentelemetry = "0.29.0"
 hyper-util.workspace = true
 orion-configuration.workspace = true
 orion-data-plane-api.workspace = true
@@ -37,47 +22,62 @@ orion-error.workspace = true
 orion-format.workspace = true
 orion-http-header.workspace = true
 orion-interner.workspace = true
-orion-metrics = { workspace = true, optional = true }
 orion-tracing.workspace = true
 orion-xds.workspace = true
-parking_lot = "0.12.5"
 bounded-integer.workspace = true
+ppp.workspace = true
+regex.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+tower.workspace = true
+tracing.workspace = true
+url.workspace = true
+atomic_enum.workspace = true
+serde_json.workspace = true
+ahash = "0.8.12"
+arc-swap = "1.7.1"
+arrayvec = "0.7.6"
+async-stream = "0.3"
+atomic-time = "0.1.5"
+enum_dispatch = "0.3.13"
+futures-util = { version = "0.3", default-features = false }
+h2 = "0.4.12"
+hickory-resolver = { version = "0.24", features = ["system-config"] }
+hyper = { version = "1", features = ["full"] }
+hyper-rustls = { version = "0.27.7", features = ["default", "http2"] }
+ipnet = "2.11"
+lru_time_cache = "0.11.11"
+once_cell = { version = "1.21" }
+opentelemetry = "0.29.0"
+orion-metrics = { workspace = true, optional = true }
+parking_lot = "0.12.5"
 pin-project = "1.1.10"
 pingora-timeout = "0.3.0"
-ppp.workspace = true
 pretty-duration = "0.1.1"
 rand = { version = "0.8.5", features = ["small_rng"] }
-regex.workspace = true
 rustc-hash = "1.1.0"
 rustls = "0.23"
 rustls-pemfile = "2.2"
 rustls-platform-verifier = { version = "0.3" }
 rustls-webpki = "0.102"
 scopeguard = "1.2.0"
-serde.workspace = true
-thiserror.workspace = true
 thread-id = "5.0.0"
 thread_local = "1.1.9"
-tokio.workspace = true
 tokio-rustls = "0.26"
-tokio-stream.workspace = true
-tower.workspace = true
 tower-service = "0.3.3"
 traceparent = "0.0.3"
-tracing.workspace = true
 tracing-appender = "0.2.3"
 twox-hash = "1.6.3"
 typed-builder = "0.18.2"
-url.workspace = true
 uuid = { version = "1.18.1", features = ["v4"] }
 x509-parser = { version = "0.17", features = ["default"] }
 ref-cast = "1.0.25"
 smallvec = "1.15.1"
-atomic_enum.workspace = true
 assert_matches = "1.5.0"
-tokio-util = "0.7.17"
+tokio-util = { version = "0.7.17", features = ["rt"] }
 jsonwebtoken = { version = "10.2.0", features = ["rust_crypto"] }
-serde_json.workspace = true
 chrono = { version = "0.4.42", features = ["serde"] }
 base64 = "0.22.1"
 schemars = { version = "1.1.0", features = ["std", "derive", "chrono04"] }

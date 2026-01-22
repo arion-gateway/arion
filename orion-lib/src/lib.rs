@@ -31,7 +31,7 @@ pub mod metrics;
 mod secrets;
 pub(crate) mod thread_local;
 pub mod tracing_attributes;
-mod transport;
+pub(crate) mod transport;
 mod utils;
 
 use std::sync::OnceLock;

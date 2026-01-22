@@ -1,4 +1,4 @@
-use std::{collections::HashMap};
+use std::{collections::HashMap, sync::Arc};
 
 use crate::config::{
     core::{DataSource, StringMatcher},
@@ -49,14 +49,14 @@ pub struct JwtProvider {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HttpUri {
     pub uri: String,
-    pub cluster: Option<String>,
-    pub timeout: Option<std::time::Duration>,
+    pub cluster: String,
+    pub timeout: std::time::Duration,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RemoteJwks {
-    pub http_uri: Option<HttpUri>,
-    pub cache_duration: Option<std::time::Duration>,
+    pub http_uri: HttpUri,
+    pub cache_duration: std::time::Duration,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -89,7 +89,7 @@ pub struct RequirementRule {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct JwtAuthentication {
-    pub providers: HashMap<SmolStr, JwtProvider>,
+    pub providers: HashMap<SmolStr, Arc<JwtProvider>>,
     pub rules: Vec<RequirementRule>,
 }
 
@@ -97,6 +97,7 @@ pub struct JwtAuthentication {
 mod envoy_conversions {
     use super::*;
     use std::str::FromStr;
+    use std::time::Duration;
 
     use crate::config::common::envoy_conversions::IsUsed;
     use crate::config::core::OrionDuration;
@@ -120,12 +121,14 @@ mod envoy_conversions {
         fn try_from(value: EnvoyHttpUri) -> Result<Self, Self::Error> {
             let EnvoyHttpUri { uri, timeout, http_upstream_type } = value;
             let timeout = timeout.map(TryInto::try_into).transpose()?.map(OrionDuration::into_inner);
+            let timeout = required!(timeout)?;
+            let http_upstream_type = required!(http_upstream_type)?;
             Ok(HttpUri {
                 uri,
-                cluster: http_upstream_type.map(|cl| {
-                    let EnvoyHttpClusterType::Cluster(cluster) = cl;
+                cluster: {
+                    let EnvoyHttpClusterType::Cluster(cluster) = http_upstream_type;
                     cluster
-                }),
+                },
                 timeout,
             })
         }
@@ -141,8 +144,11 @@ mod envoy_conversions {
                 async_fetch,
                 retry_policy
             )?;
-            let cache_dur : Option<OrionDuration> = cache_duration.map(TryInto::try_into).transpose()?;
-            Ok(RemoteJwks { http_uri: http_uri.map(TryInto::try_into).transpose()?, cache_duration: cache_dur.map(OrionDuration::into_inner) })
+            let cache_dur : OrionDuration = cache_duration.map(TryInto::try_into).transpose()?.unwrap_or(OrionDuration(Duration::from_secs(60)));
+            let http_uri = http_uri.map(TryInto::try_into).transpose()?;
+            let http_uri = required!(http_uri)?;
+
+            Ok(RemoteJwks { http_uri, cache_duration: cache_dur.into_inner() })
         }
     }
 
@@ -338,9 +344,9 @@ mod envoy_conversions {
                 stat_prefix
             )?;
 
-            let providers: HashMap<SmolStr, JwtProvider> = providers
+            let providers: HashMap<SmolStr, Arc<JwtProvider>> = providers
                 .into_iter()
-                .map(|(k, v)| -> Result<_, GenericError> { Ok((k.into(), JwtProvider::try_from(v)?)) })
+                .map(|(k, v)| -> Result<_, GenericError> { Ok((k.into(), Arc::new(JwtProvider::try_from(v)?))) })
                 .collect::<Result<HashMap<_, _>, _>>()?;
 
             let rules: Vec<RequirementRule> =

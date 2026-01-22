@@ -1,6 +1,9 @@
 pub mod claims;
+mod jwks;
+
 use arc_swap::ArcSwap;
 use claims::JwtClaims;
+use tokio::sync::OnceCell;
 
 use std::{
     borrow::{Borrow, Cow},
@@ -12,12 +15,19 @@ use std::{
 };
 
 use crate::{
+    body::{poly_body::PolyBodyError, timeout_body::TimeoutBodyError},
+    listeners::http_connection_manager::jwt_authn::jwks::{fetch_remote_jwks, parse_jwks},
+};
+use crate::{
     event_error::EventFailure,
-    listeners::{http_filters::FilterDecision, synthetic_http_response::SyntheticHttpResponse},
+    listeners::{
+        http_filters::{FilterDecision, FilterFactory},
+        synthetic_http_response::SyntheticHttpResponse,
+    },
     OrionRequestBody,
 };
 use http::{HeaderMap, HeaderName, HeaderValue, Request};
-use jsonwebtoken::{decode, decode_header, jwk::Jwk, Algorithm, DecodingKey, Header, TokenData, Validation};
+use jsonwebtoken::{decode, decode_header, DecodingKey, Header, TokenData, Validation};
 use orion_configuration::config::{
     core::DataSourceReadError,
     network_filters::http_connection_manager::http_filters::jwt::{
@@ -130,8 +140,17 @@ enum JwkError {
     #[error("No validation key found")]
     NoValidationKey,
 
-    #[error("No such provider: {0}")]
-    NoProvider(String),
+    #[error("Cluster resolution failed: {0}")]
+    ClusterResolutionFailed(SmolStr),
+
+    #[error("Error: {0}")]
+    OrionError(#[from] crate::Error),
+
+    #[error("HTTP error: {0}")]
+    HttpError(#[from] http::Error),
+
+    #[error("HTTP timeout error: {0}")]
+    HttpTimeoutError(#[from] TimeoutBodyError<PolyBodyError>),
 }
 
 #[derive(Debug, Clone)]
@@ -156,53 +175,13 @@ impl JwtAuthenticationBuilder {
         JwtAuthenticationBuilder { config }
     }
 
-    pub fn build_validation(alg: Algorithm, provider: &JwtProvider) -> Validation {
-        let mut validation = Validation::new(alg);
-
-        validation.leeway = u64::from(provider.clock_skew_seconds);
-        validation.validate_exp = true;
-
-        if !provider.issuer.is_empty() {
-            validation.required_spec_claims.insert("iss".into());
-            validation.set_issuer(std::slice::from_ref(&provider.issuer));
-        }
-
-        if provider.audiences.is_empty() {
-            validation.validate_aud = false;
-        } else {
-            validation.required_spec_claims.insert("aud".into());
-            validation.set_audience(&provider.audiences);
-            validation.validate_aud = true;
-        }
-
-        validation
-    }
-
     fn parse_and_validate_keys(provider: &JwtProvider) -> Result<ValidationKeyMap, JwkError> {
         match &provider.jwks_source_specifier {
             JwksSourceSpecifier::LocalJwks(data_src) => {
                 let bytes = data_src.to_bytes_blocking()?;
-                let string = String::from_utf8(bytes)?;
-                let jwks: serde_json::Value = serde_json::from_str(&string)?;
-                let mut keys = HashMap::<Kid, Arc<ValidationKey>, ahash::RandomState>::default();
-                if let Some(keys_array) = jwks.get("keys").and_then(|v| v.as_array()) {
-                    for key_value in keys_array {
-                        info!(target: "jwt", "JWK: {:?}", key_value);
-                        let jwk: Jwk = serde_json::from_str(&key_value.to_string())?;
-                        let kid = Kid(jwk.common.key_id.as_ref().ok_or(JwkError::MissingKeyId)?.into());
-                        debug!(target: "jwt", "Kid: {}", kid);
-                        let key_alg = jwk.common.key_algorithm.ok_or(JwkError::NoAlgInJwk)?;
-                        let alg = Algorithm::from_str(&key_alg.to_string())?;
-                        let decoding_key = DecodingKey::from_jwk(&jwk)?;
-                        let validation = Self::build_validation(alg, provider);
-                        keys.insert(kid, Arc::new(ValidationKey { decoding_key, validation }));
-                    }
-                } else {
-                    return Err(JwkError::MissingKeysArray);
-                }
-
+                let parsed_keys = parse_jwks(&bytes, provider)?;
                 info!(target: "jwt", "Using permanent LocalJwks...");
-                Ok(Asset::Permanent(keys))
+                Ok(Asset::Permanent(parsed_keys))
             },
             JwksSourceSpecifier::RemoteJwks(_conf) => {
                 info!(target: "jwt", "Using RemoteJwks...");
@@ -215,31 +194,64 @@ impl JwtAuthenticationBuilder {
         debug!(target: "jwt", "Creating new JWT authentication filter");
         let config = self.config;
 
-        let mut providers = HashMap::<SmolStr, ProviderContext, ahash::RandomState>::default();
+        let mut providers = HashMap::<SmolStr, Arc<ProviderContext>, ahash::RandomState>::default();
+        let mut has_remote_jwks = false;
         for (provider, prov_config) in &config.providers {
             match Self::parse_and_validate_keys(prov_config) {
                 Ok(keys) => {
-                    providers.insert(provider.to_owned(), ProviderContext { key_map: ArcSwap::new(Arc::new(keys)) });
+                    if matches!(keys, Asset::Expiring(_)) || matches!(keys, Asset::Pending) {
+                        has_remote_jwks = true;
+                    }
+                    providers.insert(
+                        provider.to_owned(),
+                        Arc::new(ProviderContext { key_map: ArcSwap::new(Arc::new(keys)) }),
+                    );
                 },
                 Err(e) => {
-                    error!(target: "jwt", "Provider '{}'. {}", provider, e);
+                    error!(target: "jwt", "Provider '{}': {}", provider, e);
                 },
             }
         }
 
-        JwtAuthentication { inner: Arc::new(JwtAuthenticationInner { config, context: providers }) }
+        let inner = Arc::new(JwtAuthenticationInner {
+            config,
+            context: JwtAuthenticationContext { providers },
+            has_remote_jwks,
+            jwks_fetchers: OnceCell::new(),
+        });
+
+        JwtAuthentication { inner }
     }
+}
+
+#[derive(Debug)]
+pub struct JwtAuthenticationContext {
+    providers: HashMap<SmolStr, Arc<ProviderContext>, ahash::RandomState>,
 }
 
 #[derive(Debug)]
 pub struct JwtAuthenticationInner {
     config: JwtAuthenticationConfig,
-    context: HashMap<SmolStr, ProviderContext, ahash::RandomState>,
+    context: JwtAuthenticationContext,
+    has_remote_jwks: bool,
+    jwks_fetchers: OnceCell<HashMap<SmolStr, tokio_util::task::AbortOnDropHandle<()>>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct JwtAuthentication {
     inner: Arc<JwtAuthenticationInner>,
+}
+
+impl FilterFactory for JwtAuthentication {
+    fn new_from(&self) -> Self {
+        JwtAuthentication { inner: self.inner.clone() }
+    }
+}
+
+impl Clone for JwtAuthentication {
+    fn clone(&self) -> Self {
+        JwtAuthentication { inner: self.inner.clone() }
+    }
 }
 
 pub enum JwtExtract<'a, 'b> {
@@ -343,15 +355,7 @@ impl JwtAuthentication {
         None
     }
 
-    #[inline]
-    fn unauthorized(ver: http::Version, msg: &str) -> FilterDecision {
-        FilterDecision::DirectResponse(
-            SyntheticHttpResponse::unauthorized(EventFailure::RbacAccessDenied(msg.into()).into(), msg)
-                .into_response(ver),
-        )
-    }
-
-    fn claims_to_headers(jwt_provider: &JwtProvider, claims: &JwtClaims, headers: &mut HeaderMap<HeaderValue>) {
+    fn write_claims_to_headers(jwt_provider: &JwtProvider, claims: &JwtClaims, headers: &mut HeaderMap<HeaderValue>) {
         for claim_to_header in &jwt_provider.claim_to_headers {
             match claim_to_header.claim_name.as_str() {
                 "iss" => {
@@ -422,10 +426,67 @@ impl JwtAuthentication {
         }
     }
 
-    async fn fetch_remote_validation_keys(&self, provider_name: &str) -> Result<(), JwkError> {
-        let _context = self.inner.context.get(provider_name).ok_or(JwkError::NoProvider(provider_name.to_string()))?;
-        // TODO: implement fetching validation keys
-        Ok(())
+    async fn start_jwks_fetcher(&mut self) {
+        let inner_clone = self.inner.clone();
+        let _ = self
+            .inner
+            .jwks_fetchers
+            .get_or_init(|| async move {
+                debug!(target: "jwt", "Starting JWKS fetchers...");
+                let mut fetchers = HashMap::new();
+                for (provider, context) in &inner_clone.context.providers {
+                    if let Some(conf) = inner_clone.config.providers.get(provider) {
+                        let provider_name = provider.clone();
+                        let provider_config = conf.clone();
+                        let context = context.clone();
+
+                        let remote = match inner_clone
+                            .config
+                            .providers
+                            .get(&provider_name)
+                            .and_then(|config| Some(&config.jwks_source_specifier))
+                        {
+                            Some(JwksSourceSpecifier::RemoteJwks(remote)) => remote.clone(),
+                            _ => continue,
+                        };
+
+                        let task = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
+                            let mut interval = tokio::time::interval(tokio::time::Duration::from(remote.cache_duration));
+
+                            loop {
+                                match context.key_map.load().as_ref() {
+                                    Asset::Expiring(_) | Asset::Pending => {
+                                        debug!(target: "jwt", "{provider_name}: updating remote provider JWKS...");
+
+                                        let new_keys = match fetch_remote_jwks(&remote, &provider_name, &provider_config).await {
+                                            Ok(res) => res,
+                                            Err(err) => {
+                                                error!(target: "jwt", "{provider_name}: failed to fetch JWKS from {}: {}", remote.http_uri.uri, err);
+                                                interval.tick().await;
+                                                continue;
+                                            }
+                                        };
+
+                                        // store the new keys...
+
+                                        let deadline = Instant::now() + remote.cache_duration;
+                                        context.key_map.store(Arc::new(Asset::Expiring((new_keys, deadline))));
+
+                                        // sleep until next tick
+                                        interval.tick().await;
+                                    },
+                                    Asset::Permanent(_) => continue, // let's skip this
+                                }
+                            }
+                        }));
+
+                        fetchers.insert(provider.clone(), task);
+                    }
+                }
+
+                fetchers
+            })
+            .await;
     }
 
     async fn decode_jwt_token(&self, token: &str, provider_name: &str) -> Result<Arc<JwtCachedEntry>, JwkError> {
@@ -442,34 +503,23 @@ impl JwtAuthentication {
 
         // decode the header token...
         let header = decode_header(token).inspect_err(|err| {
-            info!(target: "jwt", "JWT failed to decode token header: {err}");
+            info!(target: "jwt", "failed to decode token header: {err}");
         })?;
 
         // get the validation_key for this provider...
         //
 
-        let validation_key = match self.inner.context.get(provider_name) {
+        let validation_key = match self.inner.context.providers.get(provider_name) {
             Some(context) => {
                 let kid_ref = header.kid.as_ref().map(|kid| KidStr::ref_cast(kid));
                 match context.validation_key_lookup(kid_ref) {
-                    Some(Asset::Permanent(key)) | Some(Asset::Expiring ((key, _))) => Ok(key),
-                    Some(Asset::Pending) => {
-                        self.fetch_remote_validation_keys(provider_name).await?;
-                        match context.validation_key_lookup(kid_ref) {
-                            Some(Asset::Permanent(key)) | Some(Asset::Expiring ((key, _))) => Ok(key),
-                            _ => Err(JwkError::NoValidationKey),
-                        }
-                    },
+                    Some(Asset::Permanent(key)) | Some(Asset::Expiring((key, _))) => Ok(key),
+                    Some(Asset::Pending) => Err(JwkError::NoValidationKey),
                     None => Err(JwkError::NoValidationKey),
                 }
             },
             None => Err(JwkError::NoValidationKey),
         }?;
-
-        //let validation_key = self.inner.context.get(provider_name).and_then(|context| {
-        //});
-
-        //let validation_key = validation_key.ok_or(JwkError::NoValidationKey)?;
 
         // finally decode the JWT token...
         let res = Arc::new(JwtCachedEntry {
@@ -477,7 +527,6 @@ impl JwtAuthentication {
             jwt: decode(token, &validation_key.decoding_key, &validation_key.validation)?,
         });
 
-        // JWT_CACHE.insert(cache_key.to_owned(), res.clone());
         JWT_CACHE.with(|cache| {
             cache.insert(cache_key.to_owned(), res.clone());
         });
@@ -486,17 +535,22 @@ impl JwtAuthentication {
 
     #[allow(clippy::too_many_lines)]
     pub async fn apply_request(&mut self, req: &mut Request<OrionRequestBody>) -> FilterDecision {
-        debug!(target: "jwt", "Applying JWT authentication filter: {:#?}", self.inner.config);
+        debug!(target: "jwt", "Applying JWT authentication filter...");
+
+        // start jwks fetcher if not started yet..
+        if self.inner.has_remote_jwks && !self.inner.jwks_fetchers.initialized() {
+            self.start_jwks_fetcher().await;
+        }
 
         // lookup the provider name...
         let Some(provider_name) = self.provider_lookup(req) else {
-            info!(target: "jwt", "JWT no provider found for request");
+            info!(target: "jwt", "no provider found for request");
             return Self::unauthorized(req.version(), "JWT no provider found for request");
         };
 
         // extract token from the request...
         let Some(jwt_extract) = self.extract_token(provider_name, req) else {
-            info!(target: "jwt", "JWT no token found for provider {provider_name}");
+            info!(target: "jwt", "could not extract JWT token for provider from request ({provider_name})");
             return Self::unauthorized(req.version(), &format!("JWT no token found for provider {provider_name}"));
         };
 
@@ -506,14 +560,14 @@ impl JwtAuthentication {
         let entry = match self.decode_jwt_token(jwt_extract.token(), provider_name).await {
             Ok(a) => a,
             Err(err) => {
-                info!(target: "jwt", "JWT failed to decode token: {err}");
+                info!(target: "jwt", "failed to decode token: {err}");
                 return Self::unauthorized(req.version(), &format!("JWT failed to decode token: {err}"));
             },
         };
 
         // retrieve configuration for this provider...
         let Some(jwt_provider) = self.inner.config.providers.get(provider_name) else {
-            info!(target: "jwt", "JWT no provider found: {provider_name}");
+            info!(target: "jwt", "no provider found: {provider_name}");
             return Self::unauthorized(req.version(), &format!("JWT no provider found: {provider_name}"));
         };
 
@@ -566,7 +620,7 @@ impl JwtAuthentication {
         // handle claim_to_headers
 
         if !jwt_provider.claim_to_headers.is_empty() {
-            Self::claims_to_headers(jwt_provider, &entry.jwt.claims, req.headers_mut());
+            Self::write_claims_to_headers(jwt_provider, &entry.jwt.claims, req.headers_mut());
         }
 
         if jwt_provider.header_in_metadata.is_some() {
@@ -585,5 +639,13 @@ impl JwtAuthentication {
         } else {
             FilterDecision::Continue
         }
+    }
+
+    #[inline]
+    fn unauthorized(ver: http::Version, msg: &str) -> FilterDecision {
+        FilterDecision::DirectResponse(
+            SyntheticHttpResponse::unauthorized(EventFailure::RbacAccessDenied(msg.into()).into(), msg)
+                .into_response(ver),
+        )
     }
 }

@@ -33,7 +33,7 @@ use crate::{
                 self, AcceptedMime, RequestExt, SessionId, Transport, MIME_APPLICATION_JSON, MIME_TEXT_EVENT_STREAM,
             },
         },
-        http_filters::{FactoryFilter, FilterDecision},
+        http_filters::{FilterFactory, FilterDecision},
         listener::FilterListenerContext,
         metadata::DownstreamMetadata,
     },
@@ -203,7 +203,7 @@ impl From<McpGatewayConfig> for McpGateway {
     }
 }
 
-impl FactoryFilter for McpGateway {
+impl FilterFactory for McpGateway {
     fn new_from(&self) -> Self {
         Self {
             inner: self.inner.clone(),
