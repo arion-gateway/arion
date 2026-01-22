@@ -500,7 +500,6 @@ impl ClusterLoadAssignmentBuilder {
 
         let PartialClusterLoadAssignment { endpoints } = self.cla;
 
-        dbg!(&endpoints);
         let endpoints = endpoints
             .into_iter()
             .map(|e| {

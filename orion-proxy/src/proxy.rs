@@ -53,13 +53,16 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 pub fn run_orion(bootstrap: Bootstrap, access_log_config: Option<AccessLogConfig>) {
     debug!("Starting on thread {:?}", std::thread::current().name());
 
     // launch the runtimes...
-    _ = launch_runtimes(bootstrap, access_log_config).with_context_msg("failed to launch runtimes");
+    if let Err(e) = launch_runtimes(bootstrap, access_log_config) {
+        error!("Failed to launch runtimes: {e:?}");
+        std::process::exit(1);
+    }
 }
 
 fn calculate_num_threads_per_runtime(num_cpus: usize, num_runtimes: usize) -> Result<usize> {
