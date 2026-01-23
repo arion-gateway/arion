@@ -123,6 +123,10 @@ impl HttpChannels {
     pub fn cluster_name(&self) -> &'static str {
         self.channel().cluster_name
     }
+
+    pub fn http_version(&self) -> Codec {
+        self.channel().http_version
+    }
 }
 
 #[derive(Clone, Debug)]

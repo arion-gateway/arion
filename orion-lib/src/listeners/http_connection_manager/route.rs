@@ -29,6 +29,7 @@ use crate::{OrionRequestBody, OrionResponseBody, RequestContext};
 
 use http::{uri::Parts as UriParts, Uri};
 use hyper::{Request, Response};
+use orion_configuration::config::cluster::health_check::Codec;
 use orion_configuration::config::network_filters::http_connection_manager::{
     route::{RouteAction, RouteMatchResult},
     RetryPolicy,
@@ -125,6 +126,10 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
                             Uri::from_parts(new_parts).with_context_msg("failed to replace request path_and_query")?
                         }
                     }
+                    parts.version = match svc_channel.http_version() {
+                        Codec::Http1 => http::Version::HTTP_11,
+                        Codec::Http2 => http::Version::HTTP_2,
+                    };
                     Request::from_parts(parts, body.map_into())
                 };
 
