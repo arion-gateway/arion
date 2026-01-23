@@ -1,4 +1,5 @@
 pub mod claims;
+mod error;
 mod jwks;
 
 use arc_swap::ArcSwap;
@@ -9,14 +10,13 @@ use std::{
     borrow::{Borrow, Cow},
     collections::HashMap,
     str::FromStr,
-    string::FromUtf8Error,
     sync::Arc,
     time::Instant,
 };
 
-use crate::{
-    body::{poly_body::PolyBodyError, timeout_body::TimeoutBodyError},
-    listeners::http_connection_manager::jwt_authn::jwks::{fetch_remote_jwks, parse_jwks},
+use crate::listeners::http_connection_manager::jwt_authn::{
+    error::JwkError,
+    jwks::{fetch_remote_jwks, parse_jwks},
 };
 use crate::{
     event_error::EventFailure,
@@ -28,15 +28,11 @@ use crate::{
 };
 use http::{HeaderMap, HeaderName, HeaderValue, Request};
 use jsonwebtoken::{decode, decode_header, DecodingKey, Header, TokenData, Validation};
-use orion_configuration::config::{
-    core::DataSourceReadError,
-    network_filters::http_connection_manager::http_filters::jwt::{
-        JwksSourceSpecifier, JwtAuthentication as JwtAuthenticationConfig, JwtProvider, RequirementType, RequiresType,
-    },
+use orion_configuration::config::network_filters::http_connection_manager::http_filters::jwt::{
+    JwksSourceSpecifier, JwtAuthentication as JwtAuthenticationConfig, JwtProvider, RequirementType, RequiresType,
 };
 use ref_cast::RefCast;
 use smol_str::SmolStr;
-use thiserror::Error;
 use tracing::{debug, error, info, warn};
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
@@ -137,48 +133,6 @@ impl ProviderContext {
             },
         }
     }
-}
-
-#[derive(Debug, Error)]
-enum JwkError {
-    #[error("Invalid JWK: {0}")]
-    InvalidJWK(#[from] serde_json::Error),
-
-    #[error("MissingKeyId")]
-    MissingKeyId,
-
-    #[error("No alg in JWK")]
-    NoAlgInJwk,
-
-    #[error("Missing keys array")]
-    MissingKeysArray,
-
-    #[error("JsonWebToken: {0}")]
-    JsonWebToken(#[from] jsonwebtoken::errors::Error),
-
-    #[error("Data source: {0}")]
-    DataSourceError(#[from] DataSourceReadError),
-
-    #[error("Utf8: {0}")]
-    FromUtf8Error(#[from] FromUtf8Error),
-
-    #[error("No validation key found")]
-    NoValidationKey,
-
-    #[error("No provider found: {0}")]
-    NoProviderFound(SmolStr),
-
-    #[error("Cluster resolution failed: {0}")]
-    ClusterResolutionFailed(SmolStr),
-
-    #[error("Error: {0}")]
-    OrionError(#[from] crate::Error),
-
-    #[error("HTTP error: {0}")]
-    HttpError(#[from] http::Error),
-
-    #[error("HTTP timeout error: {0}")]
-    HttpTimeoutError(#[from] TimeoutBodyError<PolyBodyError>),
 }
 
 #[derive(Debug, Clone)]
@@ -484,7 +438,7 @@ impl JwtAuthentication {
                             loop {
                                 match context.key_map.load().as_ref() {
                                     Asset::Expiring(_) | Asset::Pending => {
-                                        debug!(target: "jwt", "{provider_name}: updating remote provider JWKS");
+                                        debug!(target: "jwt", "{provider_name}: updating remote provider JWKS...");
 
                                         let new_keys = match fetch_remote_jwks(&remote, &provider_name, &provider_config).await {
                                             Ok(res) => res,

@@ -103,8 +103,8 @@ mod envoy_conversions {
     use crate::config::core::OrionDuration;
     use crate::config::{required, unsupported_field, GenericError};
     use http::HeaderName;
-    use orion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::HttpUri as EnvoyHttpUri;
     use orion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::http_uri::HttpUpstreamType as EnvoyHttpClusterType;
+    use orion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::HttpUri as EnvoyHttpUri;
     use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::jwt_authn::v3::jwt_provider::JwksSourceSpecifier as EnvoyJwksSourceSpecifier;
     use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::jwt_authn::v3::jwt_requirement::RequiresType as EnvoyRequiresType;
     use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::jwt_authn::v3::requirement_rule::RequirementType as EnvoyRequirementType;
@@ -144,7 +144,8 @@ mod envoy_conversions {
                 async_fetch,
                 retry_policy
             )?;
-            let cache_dur : OrionDuration = cache_duration.map(TryInto::try_into).transpose()?.unwrap_or(OrionDuration(Duration::from_secs(60)));
+            let cache_dur: OrionDuration =
+                cache_duration.map(TryInto::try_into).transpose()?.unwrap_or(OrionDuration(Duration::from_secs(60)));
             let http_uri = http_uri.map(TryInto::try_into).transpose()?;
             let http_uri = required!(http_uri)?;
 

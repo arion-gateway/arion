@@ -87,6 +87,32 @@ impl Default for OrionResponseBody {
     }
 }
 
+/// Example with Result:
+/// Captures the error in 'e' and returns early from the function main()
+///    let _v1 = unwrap_or_run!(result_val, |e| {
+///        println!("Error handled: {}", e);
+///        return; // This returns from main(), unlike a closure!
+///    });
+#[macro_export]
+macro_rules! unwrap_or_run {
+    // Case for Result: expects pattern `|err_name| { code }`
+    // Using simple token matching for the pipe syntax to allow variable binding.
+    ($target:expr, |$err:ident| $block:block) => {
+        match $target {
+            Ok(v) => v,
+            Err($err) => $block,
+        }
+    };
+
+    // Case for Option: expects just `{ code }`
+    ($target:expr, $block:block) => {
+        match $target {
+            Some(v) => v,
+            None => $block,
+        }
+    };
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct RequestContext<'a> {
     pub route_timeout: Option<Duration>,

@@ -33,7 +33,7 @@ use crate::{
                 self, AcceptedMime, RequestExt, SessionId, Transport, MIME_APPLICATION_JSON, MIME_TEXT_EVENT_STREAM,
             },
         },
-        http_filters::{FilterFactory, FilterDecision},
+        http_filters::{FilterDecision, FilterFactory},
         listener::FilterListenerContext,
         metadata::DownstreamMetadata,
     },
