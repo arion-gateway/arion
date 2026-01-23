@@ -23,10 +23,10 @@ use std::{ops::Range, sync::Arc};
 use bytes::Bytes;
 use http::{
     uri::{Authority, PathAndQuery, Scheme},
-    Request, Response, Version,
+    Request, Response,
 };
 use http_body_util::Empty;
-use orion_configuration::config::cluster::health_check::{ClusterHealthCheck, Codec, HttpHealthCheck};
+use orion_configuration::config::cluster::health_check::{ClusterHealthCheck, HttpHealthCheck};
 use tokio::{
     sync::{mpsc, Notify},
     task::JoinHandle,
@@ -94,11 +94,7 @@ where
 
     let (http_client, interval_waiter) = dependencies;
 
-    let http_version = match protocol_config.http_version {
-        Codec::Http1 => Version::HTTP_11,
-        Codec::Http2 => Version::HTTP_2,
-    };
-
+    let http_version = protocol_config.http_version.into();
     let scheme = if is_https { Scheme::HTTPS } else { Scheme::HTTP };
 
     let host = protocol_config.host(&endpoint.cluster)?;

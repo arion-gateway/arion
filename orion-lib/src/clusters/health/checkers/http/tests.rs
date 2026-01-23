@@ -23,8 +23,8 @@
  */
 
 use std::{sync::Arc, time::Duration};
-
-use http::{Request, Response, Version};
+use orion_configuration::config::cluster::http_protocol_options::Codec;
+use http::{Request, Response};
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
 
@@ -96,10 +96,7 @@ impl HttpTestFixture {
 
     pub fn enqueue_response(&self, code: http::StatusCode) {
         let response = hyper::Response::builder()
-            .version(match self.inner.protocol_config.http_version {
-                Codec::Http1 => Version::HTTP_11,
-                Codec::Http2 => Version::HTTP_2,
-            })
+            .version(self.inner.protocol_config.http_version.into())
             .status(code)
             .body(TimeoutBody::new(None, PolyBody::default()))
             .unwrap();
@@ -109,13 +106,7 @@ impl HttpTestFixture {
     pub async fn request_expected(&mut self, timeout_value: Duration) -> http::Request<OrionRequestBody> {
         let req = self.inner.request_expected(timeout_value).await;
 
-        assert_eq!(
-            req.version(),
-            match self.inner.protocol_config.http_version {
-                Codec::Http1 => Version::HTTP_11,
-                Codec::Http2 => Version::HTTP_2,
-            }
-        );
+        assert_eq!(req.version(), self.inner.protocol_config.http_version.into());
         assert_eq!(req.method(), self.inner.protocol_config.method, "Wrong HTTP method");
         assert_eq!(req.uri().host(), Some(self.inner.endpoint.cluster.as_str()), "Wrong HTTP host");
 

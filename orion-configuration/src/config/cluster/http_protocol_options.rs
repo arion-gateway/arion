@@ -36,6 +36,15 @@ impl Codec {
     }
 }
 
+impl From<Codec> for http::Version {
+    fn from(codec: Codec) -> Self {
+        match codec {
+            Codec::Http1 => http::Version::HTTP_11,
+            Codec::Http2 => http::Version::HTTP_2,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
 pub struct HttpProtocolOptions {
     #[serde(skip_serializing_if = "is_default", default)]

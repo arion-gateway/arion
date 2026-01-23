@@ -820,10 +820,7 @@ fn maybe_change_http_protocol_version(
 }
 
 fn maybe_rewrite_version(mut request: Request<OrionRequestBody>, version: Codec) -> Request<OrionRequestBody> {
-    *request.version_mut() = match version {
-        Codec::Http1 => Version::HTTP_11,
-        Codec::Http2 => Version::HTTP_2,
-    };
+    *request.version_mut() = version.into();
     request
 }
 
