@@ -1,0 +1,120 @@
+
+runtime:
+  num_cpus: 2
+  num_runtimes: 2
+  event_interval: 31          # estimated optimal value
+  global_queue_interval: null   # default
+  max_io_events_per_tick: null  # default
+
+logging:
+  log_level: "debug"
+#  log_directory: "."
+#  log_file: "orion.log"
+
+envoy_bootstrap:
+  static_resources:
+    listeners:
+      - name: listener_http1
+        address:
+          socket_address: { address: 0.0.0.0, port_value: 8000 }
+        filterChains:
+          - name: filter_chain_http
+            filter_chain_match:
+              destination_port: 8000
+            filters:
+              - name: http1_listener
+                typedConfig:
+                  "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                  statPrefix: ingress_http
+                  codecType: HTTP1
+                  httpFilters:
+                    - name: envoy.filters.http.router
+                      typedConfig:
+                        "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                        start_child_span: false
+                  routeConfig:
+                    name: basic_http1_route
+                    virtual_hosts:
+                      - name: backend
+                        domains: ["*"]
+                        routes:
+                          - match:
+                              prefix: "/http1cluster/"
+                            route:
+                              cluster: http1_cluster
+                          - match:
+                              prefix: "/http2cluster/"
+                            route:
+                              cluster: http2_cluster
+
+      - name: listener_http2
+        address:
+          socket_address: { address: 0.0.0.0, port_value: 8001 }
+        filterChains:
+          - name: filter_chain_http2
+            filter_chain_match:
+              destination_port: 8001
+            filters:
+              - name: http2_listener
+                typedConfig:
+                  "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                  statPrefix: ingress_http2
+                  codecType: HTTP2
+                  httpFilters:
+                    - name: envoy.filters.http.router
+                      typedConfig:
+                        "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                        start_child_span: false
+                  routeConfig:
+                    name: basic_http2_route
+                    virtual_hosts:
+                      - name: backend
+                        domains: ["*"]
+                        routes:
+                          - match:
+                              prefix: "/http1cluster/"
+                            route:
+                              cluster: http1_cluster
+                          - match:
+                              prefix: "/http2cluster/"
+                            route:
+                              cluster: http2_cluster
+
+    clusters:
+      - name: http1_cluster
+        connect_timeout: 0.25s
+        type: STATIC
+        lb_policy: ROUND_ROBIN
+        typed_extension_protocol_options:
+          envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+            "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+            explicit_http_config:
+              # force http1
+              http_protocol_options: {}
+        load_assignment:
+          endpoints:
+            - lb_endpoints:
+                - endpoint:
+                    address:
+                      socket_address:
+                        address: 127.0.0.1
+                        port_value: 4001
+
+      - name: http2_cluster
+        connect_timeout: 0.25s
+        type: STATIC
+        lb_policy: ROUND_ROBIN
+        typed_extension_protocol_options:
+          envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+            "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+            explicit_http_config:
+              # force http2
+              http2_protocol_options: {}
+        load_assignment:
+          endpoints:
+            - lb_endpoints:
+                - endpoint:
+                    address:
+                      socket_address:
+                        address: 127.0.0.1
+                        port_value: 4002
