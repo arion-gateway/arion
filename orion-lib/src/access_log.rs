@@ -278,5 +278,6 @@ mod tests {
         }
 
         _ = timeout(Duration::from_secs(2), handles.join_all()).await;
+        std::fs::remove_file("test-access.log").unwrap();
     }
 }
