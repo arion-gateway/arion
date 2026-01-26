@@ -637,6 +637,7 @@ impl HttpChannel {
 
         let body = inner.collect().await?;
         let body = http_body_util::Full::new(body.to_bytes());
+        let mut last_error: Option<Error> = None;
 
         for (index, back_off) in retry_policy.exponential_back_off().iter().enumerate() {
             let back_off = back_off.unwrap_or(Duration::from_secs(1));
@@ -686,9 +687,14 @@ impl HttpChannel {
 
                 tokio::time::sleep(back_off).await;
             }
+
+            last_error = Some(result.err().unwrap());
         }
 
-        Err(std::io::Error::new(ErrorKind::InvalidData, "invalid retry_policy configuration").into())
+        match last_error {
+            Some(err) => Err(err),
+            None => Err(std::io::Error::new(ErrorKind::InvalidData, "invalid retry_policy configuration").into()),
+        }
     }
 
     fn map_upstream_result(
