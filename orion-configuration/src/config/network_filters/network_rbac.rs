@@ -210,7 +210,8 @@ mod tests {
 mod envoy_conversions {
     #![allow(deprecated)]
     use super::{Action, NetworkRbac, Permission, Policy, Principal};
-    use crate::config::{common::*, core::CidrRange, util::u32_to_u16};
+    use crate::config::{common::*, core::RustType};
+    use ipnet::IpNet;
     use orion_data_plane_api::envoy_data_plane_api::envoy::{
         config::rbac::v3::{
             permission::Rule as EnvoyPermissionRule, principal::Identifier as EnvoyPrincipalIdentifier,
@@ -305,9 +306,12 @@ mod envoy_conversions {
                 EnvoyPermissionRule::Any(true) => Ok(Self::Any),
                 EnvoyPermissionRule::Any(false) => Err(GenericError::from_msg("Any has to be true")),
                 EnvoyPermissionRule::DestinationIp(destination_ip) => {
-                    CidrRange::try_from(destination_ip).map(CidrRange::into_ipnet).map(Self::DestinationIp)
+                    RustType::<IpNet>::try_from(destination_ip).map(RustType::into_inner).map(Self::DestinationIp)
                 },
-                EnvoyPermissionRule::DestinationPort(port) => u32_to_u16(port).map(Self::DestinationPort),
+                EnvoyPermissionRule::DestinationPort(port) => {
+                    let x: u16 = port.try_into()?;
+                    Ok(Self::DestinationPort(x))
+                },
                 EnvoyPermissionRule::DestinationPortRange(Int32Range { start, end }) => {
                     match (start.try_into(), end.try_into()) {
                         (Ok(start), Ok(end)) if start < end => Ok(Self::DestinationPortRange(start..end)),
@@ -334,7 +338,7 @@ mod envoy_conversions {
                 EnvoyPrincipalIdentifier::Any(true) => Ok(Self::Any),
                 EnvoyPrincipalIdentifier::Any(false) => Err(GenericError::from_msg("Any has to be true")),
                 EnvoyPrincipalIdentifier::DirectRemoteIp(cidr) => {
-                    CidrRange::try_from(cidr).map(CidrRange::into_ipnet).map(Self::DownstreamRemoteIp)
+                    RustType::<IpNet>::try_from(cidr).map(RustType::into_inner).map(Self::DownstreamRemoteIp)
                 },
                 _ => return Err(GenericError::unsupported_variant("[Unsupported Principal Identifier]")),
             }

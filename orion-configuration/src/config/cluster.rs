@@ -301,11 +301,10 @@ mod envoy_conversions {
     };
     use crate::config::{
         common::*,
-        core::Address,
+        core::{Address, RustType},
         transport::{
             BindDevice, CommonTlsContext, Secrets, SupportedEnvoyTransportSocket, UpstreamTransportSocketConfig,
         },
-        util::duration_from_envoy,
     };
     use http::HeaderName;
     use orion_data_plane_api::envoy_data_plane_api::prost::Message;
@@ -345,7 +344,7 @@ mod envoy_conversions {
     };
     use smol_str::SmolStr;
 
-    use std::{collections::BTreeSet, num::NonZeroU32};
+    use std::{collections::BTreeSet, num::NonZeroU32, time::Duration};
 
     impl TryFrom<EnvoyCluster> for Cluster {
         type Error = GenericError;
@@ -621,15 +620,15 @@ mod envoy_conversions {
                 }
 
                 let connect_timeout = connect_timeout
-                    .map(duration_from_envoy)
+                    .map(RustType::<Duration>::try_from)
                     .transpose()
                     .map_err(|_| GenericError::from_msg("Failed to convert connect_timeout into Duration"))
-                    .with_node("connect_timeout")?;
+                    .with_node("connect_timeout")?.map(RustType::into_inner);
                 let cleanup_interval = cleanup_interval
-                    .map(duration_from_envoy)
+                    .map(RustType::<Duration>::try_from)
                     .transpose()
                     .map_err(|_| GenericError::from_msg("Failed to convert cleanup_interval into Duration"))
-                    .with_node("cleanup_interval")?;
+                    .with_node("cleanup_interval")?.map(RustType::into_inner);
                 Ok(Self {
                     name: SmolStr::from(&name),
                     discovery_settings,

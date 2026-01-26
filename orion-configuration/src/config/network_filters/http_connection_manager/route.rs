@@ -652,13 +652,12 @@ mod envoy_conversions {
     };
     use crate::config::{
         common::*,
-        core::{regex_from_envoy, DataSource},
+        core::{regex_from_envoy, DataSource, RustType},
         network_filters::http_connection_manager::RetryPolicy,
-        util::{duration_from_envoy, http_status_from, parse_cluster_not_found_response_code},
     };
     use http::{
         uri::{Authority, PathAndQuery, Scheme},
-        HeaderName,
+        HeaderName, StatusCode,
     };
     use orion_data_plane_api::envoy_data_plane_api::envoy::{
         config::route::v3::{
@@ -683,7 +682,7 @@ mod envoy_conversions {
     };
 
     use orion_data_plane_api::envoy_data_plane_api::google::protobuf::BoolValue;
-    use std::{num::NonZeroU16, str::FromStr};
+    use std::{num::NonZeroU16, str::FromStr, time::Duration};
 
     impl TryFrom<EnvoyHashPolicy> for HashPolicy {
         type Error = GenericError;
@@ -827,7 +826,8 @@ mod envoy_conversions {
         type Error = GenericError;
         fn try_from(value: EnvoyDirectResponseAction) -> Result<Self, Self::Error> {
             let EnvoyDirectResponseAction { status, body } = value;
-            let status = http_status_from(required!(status)?).with_node("status")?;
+            let status_u16: u16 = status.try_into().map_err(|_| GenericError::from_msg("invalid status code"))?;
+            let status = RustType::<StatusCode>::try_from(status_u16).with_node("status")?.into_inner();
             let body = if let Some(source) = body.map(DataSource::try_from).transpose().with_node("body")? {
                 let data = source
                     .to_bytes_blocking()
@@ -839,6 +839,19 @@ mod envoy_conversions {
                 None
             };
             Ok(Self { status, body })
+        }
+    }
+
+    struct ClusterNotFoundResponseCode(i32);
+    impl TryFrom<ClusterNotFoundResponseCode> for StatusCode {
+        type Error = GenericError;
+        fn try_from(value: ClusterNotFoundResponseCode) -> Result<Self, Self::Error> {
+            match value.0 {
+                0 => Ok(StatusCode::SERVICE_UNAVAILABLE),
+                1 => Ok(StatusCode::NOT_FOUND),
+                2 => Ok(StatusCode::INTERNAL_SERVER_ERROR),
+                _ => Err(GenericError::from_msg("invalid cluster not found response code")),
+            }
         }
     }
 
@@ -903,9 +916,17 @@ mod envoy_conversions {
                 // cluster_specifier,
                 host_rewrite_specifier
             )?;
-            let cluster_not_found_response_code =
-                parse_cluster_not_found_response_code(cluster_not_found_response_code)?;
-            let timeout = timeout.map(duration_from_envoy).unwrap_or(Ok(DEFAULT_TIMEOUT)).with_node("timeout")?;
+
+            let cluster_not_found_response_code: StatusCode =
+                ClusterNotFoundResponseCode(cluster_not_found_response_code).try_into()?;
+
+            // parse_cluster_not_found_response_code(cluster_not_found_response_code)?;
+
+            let timeout = timeout
+                .map(RustType::<Duration>::try_from)
+                .unwrap_or(Ok(RustType(DEFAULT_TIMEOUT)))
+                .with_node("timeout")?
+                .into_inner();
             // in envoy, the default value for the timeout (if not set) is 15s, but setting the timeout disables it.
             // in order to better match the rest of the code/rust, we map disabled to None and the default to Some(15s)
             let timeout = if timeout.is_zero() { None } else { Some(timeout) };

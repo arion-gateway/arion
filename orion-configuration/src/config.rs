@@ -35,8 +35,6 @@ pub mod grpc;
 pub mod secret;
 pub mod transport;
 
-pub(crate) mod util;
-
 pub use crate::config::common::*;
 use crate::{options::Options, Result};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};

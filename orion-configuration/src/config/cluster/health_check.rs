@@ -264,7 +264,7 @@ mod envoy_conversions {
         default_expected_statuses, Codec, GrpcHealthCheck, HealthCheck, HealthCheckProtocol, HttpHealthCheck,
         TcpHealthCheck,
     };
-    use crate::config::{common::*, util::duration_from_envoy};
+    use crate::config::{common::*, core::RustType};
     use http::{
         uri::{Authority, PathAndQuery},
         Method,
@@ -280,7 +280,7 @@ mod envoy_conversions {
         },
         r#type::v3::{CodecClientType, Int64Range},
     };
-    use std::{ops::Range, str::FromStr};
+    use std::{ops::Range, str::FromStr, time::Duration};
 
     impl TryFrom<EnvoyHealthCheck> for HealthCheck {
         type Error = GenericError;
@@ -332,22 +332,34 @@ mod envoy_conversions {
                 transport_socket_match_criteria,
                 always_log_health_check_success // health_checker
             )?;
-            let timeout = duration_from_envoy(required!(timeout)?).map_err(|e| {
-                GenericError::from_msg_with_cause("failed to convert {timeout} to std::time::Duration", e)
-                    .with_node("timeout")
-            })?;
-            let interval = duration_from_envoy(required!(interval)?).map_err(|e| {
-                GenericError::from_msg_with_cause("failed to convert {interval} to std::time::Duration", e)
-                    .with_node("interval")
-            })?;
-            let initial_jitter = initial_jitter.map(duration_from_envoy).transpose().map_err(|e| {
-                GenericError::from_msg_with_cause("failed to convert {initial_jitter} to std::time::Duration", e)
-                    .with_node("initial_jitter")
-            })?;
-            let interval_jitter = interval_jitter.map(duration_from_envoy).transpose().map_err(|e| {
-                GenericError::from_msg_with_cause("failed to convert {interval_jitter} to std::time::Duration", e)
-                    .with_node("interval_jitter")
-            })?;
+            let timeout = RustType::<Duration>::try_from(required!(timeout)?)
+                .map_err(|e| {
+                    GenericError::from_msg_with_cause("failed to convert {timeout} to std::time::Duration", e)
+                        .with_node("timeout")
+                })?
+                .into_inner();
+            let interval = RustType::<Duration>::try_from(required!(interval)?)
+                .map_err(|e| {
+                    GenericError::from_msg_with_cause("failed to convert {interval} to std::time::Duration", e)
+                        .with_node("interval")
+                })?
+                .into_inner();
+            let initial_jitter = initial_jitter
+                .map(RustType::<Duration>::try_from)
+                .transpose()
+                .map_err(|e| {
+                    GenericError::from_msg_with_cause("failed to convert {initial_jitter} to std::time::Duration", e)
+                        .with_node("initial_jitter")
+                })?
+                .map(RustType::into_inner);
+            let interval_jitter = interval_jitter
+                .map(RustType::<Duration>::try_from)
+                .transpose()
+                .map_err(|e| {
+                    GenericError::from_msg_with_cause("failed to convert {interval_jitter} to std::time::Duration", e)
+                        .with_node("interval_jitter")
+                })?
+                .map(RustType::into_inner);
             let interval_jitter_percent = {
                 #[allow(clippy::cast_precision_loss)]
                 let as_float = interval_jitter_percent as f32;
@@ -374,22 +386,39 @@ mod envoy_conversions {
                     GenericError::from_msg(format!("invalid value {healthy_threshold}. Must be less than 65536."))
                 })
                 .with_node("healthy_threshold")?;
-            let unhealthy_interval = unhealthy_interval.map(duration_from_envoy).transpose().map_err(|e| {
-                GenericError::from_msg_with_cause("failed to convert {unhealthy_interval} to std::time::Duration", e)
+            let unhealthy_interval = unhealthy_interval
+                .map(RustType::<Duration>::try_from)
+                .transpose()
+                .map_err(|e| {
+                    GenericError::from_msg_with_cause(
+                        "failed to convert {unhealthy_interval} to std::time::Duration",
+                        e,
+                    )
                     .with_node("unhealthy_interval")
-            })?;
-            let unhealthy_edge_interval =
-                unhealthy_edge_interval.map(duration_from_envoy).transpose().map_err(|e| {
+                })?
+                .map(RustType::into_inner);
+            let unhealthy_edge_interval = unhealthy_edge_interval
+                .map(RustType::<Duration>::try_from)
+                .transpose()
+                .map_err(|e| {
                     GenericError::from_msg_with_cause(
                         "failed to convert {unhealthy_edge_interval} to std::time::Duration",
                         e,
                     )
                     .with_node("unhealthy_edge_interval")
-                })?;
-            let healthy_edge_interval = healthy_edge_interval.map(duration_from_envoy).transpose().map_err(|e| {
-                GenericError::from_msg_with_cause("failed to convert {healthy_edge_interval} to std::time::Duration", e)
+                })?
+                .map(RustType::into_inner);
+            let healthy_edge_interval = healthy_edge_interval
+                .map(RustType::<Duration>::try_from)
+                .transpose()
+                .map_err(|e| {
+                    GenericError::from_msg_with_cause(
+                        "failed to convert {healthy_edge_interval} to std::time::Duration",
+                        e,
+                    )
                     .with_node("healthy_edge_interval")
-            })?;
+                })?
+                .map(RustType::into_inner);
             let protocol = convert_opt!(health_checker)?;
             Ok(Self {
                 cluster: super::ClusterHealthCheck {

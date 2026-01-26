@@ -235,10 +235,10 @@ impl Hash for StringMatcherPattern {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-pub struct OrionDuration(pub std::time::Duration);
+pub struct RustType<T>(pub T);
 
-impl OrionDuration {
-    pub fn into_inner(self) -> std::time::Duration {
+impl<T> RustType<T> {
+    pub fn into_inner(self) -> T {
         self.0
     }
 }
@@ -249,9 +249,9 @@ pub(crate) use envoy_conversions::*;
 #[cfg(feature = "envoy-conversions")]
 pub mod envoy_conversions {
     #![allow(deprecated)]
-    use super::{DataSource, OrionDuration, StringMatcher, StringMatcherPattern};
+    use super::{DataSource, RustType, StringMatcher, StringMatcherPattern};
     use crate::config::common::*;
-    use http::uri::Authority;
+    use http::{uri::Authority, StatusCode};
     use ipnet::IpNet;
     use orion_data_plane_api::envoy_data_plane_api::envoy::{
         config::core::v3::{
@@ -259,35 +259,60 @@ pub mod envoy_conversions {
             Address as EnvoyOuterAddress, CidrRange as EnvoyCidrRange, DataSource as EnvoyDataSource,
             Pipe as EnvoyPipe, SocketAddress as EnvoySocketAddress,
         },
-        r#type::matcher::v3::{
-            string_matcher::MatchPattern as EnvoyStringMatcherPattern, RegexMatcher as EnvoyRegexMatcher,
-            StringMatcher as EnvoyStringMatcher,
+        r#type::{
+            matcher::v3::{
+                string_matcher::MatchPattern as EnvoyStringMatcherPattern, RegexMatcher as EnvoyRegexMatcher,
+                StringMatcher as EnvoyStringMatcher,
+            },
+            v3::HttpStatus,
         },
     };
     use regex::{Regex, RegexBuilder};
     use serde::{Deserialize, Serialize};
-    use std::net::SocketAddr;
+    use std::{net::SocketAddr, time::Duration};
 
     use orion_data_plane_api::envoy_data_plane_api::google::protobuf::Duration as EnvoyDuration;
 
-    impl TryFrom<EnvoyDuration> for OrionDuration {
+    impl TryFrom<EnvoyDuration> for RustType<Duration> {
         type Error = GenericError;
 
         fn try_from(value: EnvoyDuration) -> Result<Self, Self::Error> {
-            let seconds = value.seconds;
-            let nanos = value.nanos;
-            if seconds < 0 || nanos < 0 {
-                return Err(GenericError::from_msg("duration with negative values".to_owned()));
+            match (u64::try_from(value.seconds), u32::try_from(value.nanos)) {
+                (Ok(seconds), Ok(nanos)) => Ok(RustType(Duration::new(seconds, nanos))),
+                (_, _) => Err(GenericError::from_msg(format!("Failed to convert envoy {value:?} into a Duration"))),
             }
-            Ok(OrionDuration(std::time::Duration::new(seconds as u64, nanos as u32)))
+        }
+    }
+    impl TryFrom<u16> for RustType<StatusCode> {
+        type Error = GenericError;
+        fn try_from(value: u16) -> Result<Self, Self::Error> {
+            StatusCode::from_u16(value)
+                .map(RustType)
+                .map_err(|e| GenericError::from_msg(format!("Failed to convert {value} into a StatusCode: {e}")))
         }
     }
 
-    pub struct CidrRange(IpNet);
+    impl TryFrom<u32> for RustType<StatusCode> {
+        type Error = GenericError;
+        fn try_from(value: u32) -> Result<Self, Self::Error> {
+            let code: u16 =
+                value.try_into().map_err(|_| GenericError::from_msg(format!("invalid envoy status code {value:?}")))?;
+            StatusCode::from_u16(code)
+                .map(RustType)
+                .map_err(|e| GenericError::from_msg(format!("Failed to convert {code} into a StatusCode: {e}")))
+        }
+    }
 
-    impl CidrRange {
-        pub fn into_ipnet(self) -> IpNet {
-            self.0
+    impl TryFrom<HttpStatus> for RustType<StatusCode> {
+        type Error = GenericError;
+        fn try_from(value: HttpStatus) -> Result<Self, Self::Error> {
+            let code: u16 = value
+                .code
+                .try_into()
+                .map_err(|_| GenericError::from_msg(format!("invalid envoy status code {value:?}")))?;
+            StatusCode::from_u16(code)
+                .map(RustType)
+                .map_err(|e| GenericError::from_msg(format!("Failed to convert {code} into a StatusCode: {e}")))
         }
     }
 
@@ -304,7 +329,7 @@ pub mod envoy_conversions {
                 Self::Socket(address, port) => format!("{address}:{port}")
                     .parse()
                     .map_err(|e| {
-                        GenericError::from_msg_with_cause(format!("failed to parse \"{address}\" as an ip adress"), e)
+                        GenericError::from_msg_with_cause(format!("failed to parse \"{address}\" as an ip address"), e)
                     })
                     .with_node(address),
                 _ => Err(GenericError::from_msg("only socket addresses are supported currently")),
@@ -321,12 +346,12 @@ pub mod envoy_conversions {
         }
     }
 
-    impl TryFrom<EnvoyCidrRange> for CidrRange {
+    impl TryFrom<EnvoyCidrRange> for RustType<IpNet> {
         type Error = GenericError;
         fn try_from(value: EnvoyCidrRange) -> Result<Self, Self::Error> {
             let EnvoyCidrRange { address_prefix, prefix_len } = value;
             let address_prefix = address_prefix.parse::<std::net::IpAddr>().map_err(|e| {
-                GenericError::from_msg_with_cause("failed to parse \"{address_prefix}\" as an ip adress", e)
+                GenericError::from_msg_with_cause("failed to parse \"{address_prefix}\" as an ip address", e)
                     .with_node("address_prefix")
             })?;
             // defaults to 0 when unset

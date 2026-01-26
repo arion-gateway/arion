@@ -578,12 +578,8 @@ mod envoy_conversions {
         CodecType, ConfigSource, ConfigSourceSpecifier, HttpConnectionManager, RdsSpecifier, RetryBackoff, RetryOn,
         RetryPolicy, Route, RouteConfiguration, RouteSpecifier, UpgradeType, VirtualHost, XffSettings,
     };
-    use crate::config::{
-        common::*,
-        network_filters::access_log::AccessLog,
-        util::{duration_from_envoy, http_status_from},
-    };
-    use http::HeaderName;
+    use crate::config::{common::*, core::RustType, network_filters::access_log::AccessLog};
+    use http::{HeaderName, StatusCode};
     use orion_data_plane_api::envoy_data_plane_api::envoy::{
         config::{
             core::v3::{
@@ -749,10 +745,11 @@ mod envoy_conversions {
             let codec_type = codec_type.try_into().with_node("codec")?;
             let route_specifier = RouteSpecifier::try_from(route_specifier)?;
             let request_timeout = request_timeout
-                .map(duration_from_envoy)
+                .map(RustType::<Duration>::try_from)
                 .transpose()
                 .map_err(|_| GenericError::from_msg("failed to convert into Duration"))
-                .with_node("request_timeout")?;
+                .with_node("request_timeout")?
+                .map(RustType::into_inner);
             let enabled_upgrades = upgrade_configs
                 .iter()
                 .filter(|upgrade_config| upgrade_config.enabled.map(|enabled| enabled.value).unwrap_or(true))
@@ -1091,14 +1088,18 @@ mod envoy_conversions {
             // do we do that? if not we should require this field first.
             // and, if we do use this field, do/should we ignore the route action timeout?
             let per_try_timeout = per_try_timeout
-                .map(duration_from_envoy)
+                .map(RustType::<Duration>::try_from)
                 .transpose()
-                .map_err(|_| GenericError::from_msg("failed to convert into Duration").with_node("per_try_timeout"))?;
+                .map_err(|_| GenericError::from_msg("failed to convert into Duration").with_node("per_try_timeout"))?
+                .map(RustType::into_inner);
             let retriable_status_codes = retriable_status_codes
                 .into_iter()
-                .map(http_status_from)
+                .map(RustType::<StatusCode>::try_from)
                 .collect::<Result<Vec<_>, _>>()
-                .with_node("retriable_status_codes")?;
+                .with_node("retriable_status_codes")?
+                .into_iter()
+                .map(RustType::into_inner)
+                .collect();
             let retry_backoff =
                 retry_back_off.map(RetryBackoff::try_from).transpose().with_node("retry_backoff")?.unwrap_or_default();
             let retriable_headers = convert_vec!(retriable_headers)?;
@@ -1121,14 +1122,16 @@ mod envoy_conversions {
             let EnvoyRetryBackoff { base_interval, max_interval } = value;
             //note: envoy docs says this can't be zero, but also that less than 1ms gets rounded up
             // so for simplicity we just round up zero too.
-            let base_interval = duration_from_envoy(required!(base_interval)?)
+            let base_interval = RustType::<Duration>::try_from(required!(base_interval)?)
                 .with_node("base_interval")?
+                .into_inner()
                 .max(Duration::from_millis(1));
             let max_interval = max_interval
-                .map(duration_from_envoy)
+                .map(RustType::<Duration>::try_from)
                 .transpose()
                 .map_err(|_| GenericError::from_msg("failed to convert into Duration"))
                 .with_node("max_interval")?
+                .map(RustType::into_inner)
                 .unwrap_or(base_interval * 10);
             if max_interval < base_interval {
                 return Err(GenericError::from_msg(format!(

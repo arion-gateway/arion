@@ -131,11 +131,13 @@ pub struct Http2KeepAliveSettings {
 #[cfg(feature = "envoy-conversions")]
 mod envoy_conversions {
     #![allow(deprecated)]
+    use std::time::Duration;
+
     use super::{
         Codec, CommonHttpOptions, ExplicitProtocolOptions, Http1ProtocolOptions, Http2KeepAliveSettings,
         Http2ProtocolOptions, HttpProtocolOptions, UpstreamHttpProtocolOptions,
     };
-    use crate::config::{common::*, util::duration_from_envoy};
+    use crate::config::{common::*, core::RustType};
     use orion_data_plane_api::envoy_data_plane_api::{
         envoy::{
             config::core::v3::{
@@ -216,9 +218,10 @@ mod envoy_conversions {
                 max_response_headers_kb
             )?;
             let idle_timeout = idle_timeout
-                .map(duration_from_envoy)
+                .map(RustType::<Duration>::try_from)
                 .transpose()
-                .map_err(|_| GenericError::from_msg("Failed to convert to duration"))?;
+                .map_err(|_| GenericError::from_msg("Failed to convert to duration"))?
+                .map(RustType::into_inner);
             Ok(Self { idle_timeout })
         }
     }
@@ -382,14 +385,16 @@ mod envoy_conversions {
                 .map(|KeepaliveSettings { interval, timeout, interval_jitter, connection_idle_interval }| {
                     unsupported_field!(interval_jitter, connection_idle_interval)?;
                     Ok(Http2KeepAliveSettings {
-                        keep_alive_interval: duration_from_envoy(required!(interval)?)
+                        keep_alive_interval: RustType::<Duration>::try_from(required!(interval)?)
                             .map_err(|_| GenericError::from_msg("failed to convert into Duration"))
-                            .with_node("keep_alive_interval")?,
+                            .with_node("keep_alive_interval")?
+                            .into_inner(),
                         keep_alive_timeout: timeout
-                            .map(duration_from_envoy)
+                            .map(RustType::<Duration>::try_from)
                             .transpose()
                             .map_err(|_| GenericError::from_msg("failed to convert into Duration"))
-                            .with_node("keep_alive_timeout")?,
+                            .with_node("keep_alive_timeout")?
+                            .map(RustType::into_inner),
                     })
                 })
                 .transpose()

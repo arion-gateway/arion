@@ -86,8 +86,10 @@ pub struct StaticResources {
 #[cfg(feature = "envoy-conversions")]
 mod envoy_conversions {
     #![allow(deprecated)]
+    use std::time::Duration;
+
     use super::{Admin, Bootstrap, DynamicResources, Node, StaticResources};
-    use crate::config::{common::*, core::OrionDuration, metrics::StatsSink};
+    use crate::config::{common::*, core::RustType, metrics::StatsSink};
     use orion_data_plane_api::envoy_data_plane_api::envoy::config::{
         bootstrap::v3::{
             bootstrap::{DynamicResources as EnvoyDynamicResources, StaticResources as EnvoyStaticResources},
@@ -203,7 +205,7 @@ mod envoy_conversions {
             let node = node.map(Node::try_from).transpose().with_node("node")?;
             let admin = admin.map(Admin::try_from).transpose().with_node("admin")?;
             let stats_flush_interval = stats_flush_interval
-                .map(|d| OrionDuration::try_from(d).map(OrionDuration::into_inner))
+                .map(|d| RustType::<Duration>::try_from(d).map(RustType::into_inner))
                 .transpose()
                 .with_node("stats_flush_interval")?;
 

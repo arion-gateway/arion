@@ -23,7 +23,7 @@ use std::{
     borrow::Cow,
     error::Error,
     fmt::{Debug, Display},
-    num::ParseIntError,
+    num::{ParseIntError, TryFromIntError},
     string::FromUtf8Error,
 };
 
@@ -162,6 +162,8 @@ pub enum GenericError {
     InvalidMethod(#[from] http::method::InvalidMethod),
     #[error("Invalid integer: {0}")]
     InvalidInt(#[from] ParseIntError),
+    #[error("Invalid try_from integer: {0}")]
+    TryFromInt(#[from] TryFromIntError),
 }
 
 impl GenericError {
