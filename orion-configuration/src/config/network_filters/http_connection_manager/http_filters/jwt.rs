@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use crate::config::{
     core::{DataSource, StringMatcher},
-    network_filters::http_connection_manager::route::RouteMatch,
+    network_filters::http_connection_manager::{route::RouteMatch, RetryPolicy},
 };
 use http::HeaderName;
 use serde::{Deserialize, Serialize};
@@ -57,6 +57,7 @@ pub struct HttpUri {
 pub struct RemoteJwks {
     pub http_uri: HttpUri,
     pub cache_duration: std::time::Duration,
+    pub retry_policy: Option<RetryPolicy>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -100,11 +101,14 @@ mod envoy_conversions {
     use std::time::Duration;
 
     use crate::config::common::envoy_conversions::IsUsed;
-    use crate::config::core::OrionDuration;
-    use crate::config::{required, unsupported_field, GenericError};
+    use crate::config::core::RustType;
+    use crate::config::network_filters::http_connection_manager::{RetryBackoff, RetryOn};
+    use crate::config::{required, unsupported_field, GenericError, WithNodeOnResult};
     use http::HeaderName;
     use orion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::http_uri::HttpUpstreamType as EnvoyHttpClusterType;
+    use orion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::BackoffStrategy as EnvoyCoreBackoffStrategy;
     use orion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::HttpUri as EnvoyHttpUri;
+    use orion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::RetryPolicy as EnvoyCoreRetryPolicy;
     use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::jwt_authn::v3::jwt_provider::JwksSourceSpecifier as EnvoyJwksSourceSpecifier;
     use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::jwt_authn::v3::jwt_requirement::RequiresType as EnvoyRequiresType;
     use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::jwt_authn::v3::requirement_rule::RequirementType as EnvoyRequirementType;
@@ -120,7 +124,7 @@ mod envoy_conversions {
         type Error = GenericError;
         fn try_from(value: EnvoyHttpUri) -> Result<Self, Self::Error> {
             let EnvoyHttpUri { uri, timeout, http_upstream_type } = value;
-            let timeout = timeout.map(TryInto::try_into).transpose()?.map(OrionDuration::into_inner);
+            let timeout = timeout.map(TryInto::try_into).transpose()?.map(RustType::<Duration>::into_inner);
             let timeout = required!(timeout)?;
             let http_upstream_type = required!(http_upstream_type)?;
             Ok(HttpUri {
@@ -134,6 +138,79 @@ mod envoy_conversions {
         }
     }
 
+    // NOTE: envoy makes use of two different retry policies: one for route and one for core.
+    // Core is much simpler than route, as it only supports only a subset of fields.
+    // The good news is that we can use the same orion RetryPolicy for both, defaulting few missing fields.
+    // See for more information:
+    // https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/core/v3/base.proto#envoy-v3-api-msg-config-core-v3-retrypolicy
+    // https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/route/v3/route_components.proto#envoy-v3-api-msg-config-route-v3-retrypolicy-retrypriority
+    //
+    impl TryFrom<EnvoyCoreRetryPolicy> for RetryPolicy {
+        type Error = GenericError;
+        fn try_from(value: EnvoyCoreRetryPolicy) -> Result<Self, Self::Error> {
+            let EnvoyCoreRetryPolicy {
+                retry_back_off,
+                num_retries,
+                retry_on,
+                retry_priority,
+                retry_host_predicate,
+                host_selection_retry_max_attempts,
+            } = value;
+            unsupported_field!(
+                // retry_on,
+                // num_retries,
+                // retry_back_off,
+                retry_priority,
+                retry_host_predicate,
+                host_selection_retry_max_attempts
+            )?;
+
+            let retry_on =
+                retry_on.split(',').map(RetryOn::from_str).collect::<Result<Vec<_>, _>>().with_node("retry_on")?;
+            let num_retries = num_retries.map(|v| v.value).unwrap_or(1);
+            let retry_backoff =
+                retry_back_off.map(RetryBackoff::try_from).transpose().with_node("retry_backoff")?.unwrap_or_default();
+
+            Ok(Self {
+                retry_on,
+                num_retries,
+                retry_backoff,
+                per_try_timeout: None,
+                retriable_status_codes: vec![],
+                retriable_request_headers: vec![],
+                retriable_headers: vec![],
+            })
+        }
+    }
+
+    impl TryFrom<EnvoyCoreBackoffStrategy> for RetryBackoff {
+        type Error = GenericError;
+        fn try_from(value: EnvoyCoreBackoffStrategy) -> Result<Self, Self::Error> {
+            let EnvoyCoreBackoffStrategy { base_interval, max_interval } = value;
+            //note: envoy docs says this can't be zero, but also that less than 1ms gets rounded up
+            // so for simplicity we just round up zero too.
+            let base_interval = RustType::<Duration>::try_from(required!(base_interval)?)
+                .with_node("base_interval")?
+                .into_inner()
+                .max(Duration::from_millis(1));
+            let max_interval = max_interval
+                .map(RustType::<Duration>::try_from)
+                .transpose()
+                .map_err(|_| GenericError::from_msg("failed to convert into Duration"))
+                .with_node("max_interval")?
+                .map(RustType::into_inner)
+                .unwrap_or(base_interval * 10);
+            if max_interval < base_interval {
+                return Err(GenericError::from_msg(format!(
+                    "max_interval ({}ms) is less than base_interval ({}ms)",
+                    max_interval.as_millis(),
+                    base_interval.as_millis()
+                )));
+            }
+            Ok(Self { base_interval, max_interval })
+        }
+    }
+
     impl TryFrom<EnvoyRemoteJwks> for RemoteJwks {
         type Error = GenericError;
         fn try_from(value: EnvoyRemoteJwks) -> Result<Self, Self::Error> {
@@ -141,15 +218,15 @@ mod envoy_conversions {
             unsupported_field!(
                 // http_uri,
                 // cache_duration,
-                async_fetch,
-                retry_policy
+                async_fetch // retry_policy
             )?;
-            let cache_dur: OrionDuration =
-                cache_duration.map(TryInto::try_into).transpose()?.unwrap_or(OrionDuration(Duration::from_secs(60)));
+            let cache_dur: RustType<Duration> =
+                cache_duration.map(TryInto::try_into).transpose()?.unwrap_or(RustType(Duration::from_secs(60)));
             let http_uri = http_uri.map(TryInto::try_into).transpose()?;
             let http_uri = required!(http_uri)?;
+            let retry_policy = retry_policy.map(TryInto::try_into).transpose()?;
 
-            Ok(RemoteJwks { http_uri, cache_duration: cache_dur.into_inner() })
+            Ok(RemoteJwks { http_uri, cache_duration: cache_dur.into_inner(), retry_policy })
         }
     }
 
