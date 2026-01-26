@@ -62,14 +62,7 @@ use pretty_duration::pretty_duration;
 use rustls::ClientConfig;
 use scopeguard::defer;
 use smol_str::ToSmolStr;
-use std::{
-    io::ErrorKind,
-    mem,
-    result::Result as StdResult,
-    sync::Arc,
-    thread::ThreadId,
-    time::{Duration, Instant},
-};
+use std::{io::ErrorKind, mem, result::Result as StdResult, sync::Arc, time::Duration};
 use tracing::debug;
 use webpki::types::ServerName;
 
@@ -80,8 +73,6 @@ use {
     std::any::Any,
 };
 const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
-
-type IncomingResult = (std::result::Result<Response<Incoming>, Error>, Duration);
 
 type HttpClient = Client<LocalConnectorWithDNSResolver, OrionRequestBody>;
 type HttpsClient = Client<HttpsConnector<LocalConnectorWithDNSResolver>, OrionRequestBody>;
@@ -517,6 +508,12 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
     }
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Retries {
+    pub requests: u32,
+    pub timeouts: u32,
+}
+
 impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &HttpChannel {
     async fn to_response(
         self,
@@ -525,147 +522,125 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
         ctx: RequestContext<'a>,
     ) -> Result<Response<OrionResponseBody>> {
         let version = request.version();
-        let cluster_name = self.cluster_name;
-        match &self.channel_client {
-            HttpChannelClient::Plain(sender) => {
-                let RequestContext { route_timeout, retry_policy } = ctx;
-                let client = sender.get_or_build();
-                let req = maybe_normalize_uri(request, false)?;
+        let _thread_id = std::thread::current().id();
 
-                let result = if let Some(t) = route_timeout {
-                    match fast_timeout(t, self.send_request(retry_policy, client, req, cluster_name)).await {
-                        Ok(result) => result,
-                        Err(_) => (Err(EventError::RouteTimeout.into()), t),
-                    }
-                } else {
-                    self.send_request(retry_policy, client, req, cluster_name).await
-                };
-                HttpChannel::handle_response(result, route_timeout, version)
-            },
-            HttpChannelClient::Tls(context) => {
-                let ClientContext { configured_upstream_http_version, client: sender } = context;
-                let RequestContext { route_timeout, retry_policy } = ctx;
-                let configured_version = *configured_upstream_http_version;
-                let client = sender.get_or_build();
-
-                //FIXME(hayley): apply http protocol translation for plaintext too
-                debug!("Using TLS incoming http {version:?} configured {configured_version:?}");
-                let req = maybe_normalize_uri(request, true)?;
-                let req = maybe_change_http_protocol_version(req, configured_version)?;
-                let result = if let Some(t) = route_timeout {
-                    match fast_timeout(t, self.send_request(retry_policy, client, req, cluster_name)).await {
-                        Ok(result) => result,
-                        Err(_) => (Err(EventError::RouteTimeout.into()), t),
-                    }
-                } else {
-                    self.send_request(retry_policy, client, req, cluster_name).await
-                };
-
-                HttpChannel::handle_response(result, route_timeout, version)
-            },
-            HttpChannelClient::Unix(uri, sender) => {
-                let RequestContext { route_timeout, retry_policy } = ctx;
-                let client = sender;
-                let mut req = request;
-                *req.uri_mut() = uri.clone();
-
-                let result = if let Some(t) = route_timeout {
-                    match fast_timeout(t, self.send_request(retry_policy, client, req, cluster_name)).await {
-                        Ok(result) => result,
-                        Err(_) => (Err(EventError::RouteTimeout.into()), t),
-                    }
-                } else {
-                    self.send_request(retry_policy, client, req, cluster_name).await
-                };
-                HttpChannel::handle_response(result, route_timeout, version)
-            },
+        with_metric!(clusters::UPSTREAM_RQ_ACTIVE, add, 1, _thread_id, &[KeyValue::new("cluster", self.cluster_name)]);
+        defer! {
+            with_metric!(clusters::UPSTREAM_RQ_ACTIVE, sub, 1, _thread_id, &[KeyValue::new("cluster", self.cluster_name)]);
         }
+
+        let RequestContext { route_timeout, retry_policy } = ctx;
+
+        let mut retries = Retries::default();
+        let start_time = std::time::Instant::now();
+        let result = self.send_request(request, route_timeout, retry_policy, Some(&mut retries)).await;
+        if result.is_ok() {
+            with_metric!(
+                clusters::UPSTREAM_RQ_TOTAL,
+                add,
+                1,
+                _thread_id,
+                &[KeyValue::new("cluster", self.cluster_name)]
+            );
+        }
+
+        with_metric!(
+            clusters::UPSTREAM_RQ_RETRY,
+            add,
+            retries.requests as u64,
+            _thread_id,
+            &[KeyValue::new("cluster", self.cluster_name)]
+        );
+
+        with_metric!(
+            clusters::UPSTREAM_RQ_PER_TRY_TIMEOUT,
+            add,
+            retries.timeouts as u64,
+            _thread_id,
+            &[KeyValue::new("cluster", self.cluster_name)]
+        );
+
+        HttpChannel::map_upstream_result(result, start_time.elapsed(), route_timeout, version)
     }
 }
 
 impl HttpChannel {
+    pub async fn send_request(
+        &self,
+        request: Request<OrionRequestBody>,
+        timeout: Option<Duration>,
+        retry_policy: Option<&RetryPolicy>,
+        output: Option<&mut Retries>,
+    ) -> Result<Response<Incoming>> {
+        let req = maybe_normalize_uri(request, false)?;
+
+        match &self.channel_client {
+            HttpChannelClient::Plain(sender) => {
+                let client = sender.get_or_build();
+                if let Some(t) = timeout {
+                    fast_timeout(t, self.send_with_policy(req, retry_policy, client, output)).await?
+                } else {
+                    self.send_with_policy(req, retry_policy, client, output).await
+                }
+            },
+            HttpChannelClient::Tls(context) => {
+                let ClientContext { configured_upstream_http_version, client: sender } = context;
+                let configured_version = *configured_upstream_http_version;
+                let client = sender.get_or_build();
+                //FIXME(hayley): apply http protocol translation for plaintext too
+                let req = maybe_change_http_protocol_version(req, configured_version)?;
+
+                if let Some(t) = timeout {
+                    fast_timeout(t, self.send_with_policy(req, retry_policy, client, output)).await?
+                } else {
+                    self.send_with_policy(req, retry_policy, client, output).await
+                }
+            },
+        }
+    }
+
     /// Send the request and return the Result, either the Response or an Error,
     /// along with the time spent for possible retransmissions. Note: the returned
     /// duration does not include the time spent receiving the Body of the Response.
-    pub async fn send_request<C>(
+    async fn send_with_policy<C>(
         &self,
+        mut req: Request<OrionRequestBody>,
         retry_policy: Option<&RetryPolicy>,
         sender: &Client<C, OrionRequestBody>,
-        mut req: Request<OrionRequestBody>,
-        cluster_name: &'static str,
-    ) -> (StdResult<Response<Incoming>, Error>, Duration)
+        output: Option<&mut Retries>,
+    ) -> Result<Response<Incoming>>
     where
         C: Connect + Clone + Send + Sync + 'static,
     {
-        let thread_id = std::thread::current().id();
-
-        with_metric!(clusters::UPSTREAM_RQ_ACTIVE, add, 1, thread_id, &[KeyValue::new("cluster", cluster_name)]);
-        defer! {
-            with_metric!(clusters::UPSTREAM_RQ_ACTIVE, sub, 1, thread_id, &[KeyValue::new("cluster", cluster_name)]);
+        if !self.enable_trailers {
+            strip_trailers_headers(self.http_version, req.headers_mut());
         }
 
         match retry_policy {
-            Some(policy) if policy.is_retriable(&req) => {
-                let (resp, dur, _total_request) =
-                    self.send_with_retry(policy, sender, req, thread_id, cluster_name).await;
-                with_metric!(
-                    clusters::UPSTREAM_RQ_TOTAL,
-                    add,
-                    _total_request as u64,
-                    thread_id,
-                    &[KeyValue::new("cluster", cluster_name)]
-                );
-                with_metric!(
-                    clusters::UPSTREAM_RQ_RETRY,
-                    add,
-                    (_total_request - 1) as u64,
-                    thread_id,
-                    &[KeyValue::new("cluster", cluster_name)]
-                );
-                (resp, dur)
-            },
-            _ => {
-                with_metric!(clusters::UPSTREAM_RQ_TOTAL, add, 1, thread_id, &[KeyValue::new("cluster", cluster_name)]);
-                let start_time = Instant::now();
-
-                if !self.enable_trailers {
-                    strip_trailers_headers(self.http_version, req.headers_mut());
-                }
-
-                let resp = sender.request(req).await.map_err(Error::from);
-                (resp, start_time.elapsed())
-            },
+            Some(policy) if policy.is_retriable(&req) => self.send_with_retry(req, policy, sender, output).await,
+            _ => sender.request(req).await.map_err(Error::from),
         }
     }
 
     async fn send_with_retry<C>(
         &self,
+        req: Request<OrionRequestBody>,
         retry_policy: &RetryPolicy,
         sender: &Client<C, OrionRequestBody>,
-        req: Request<OrionRequestBody>,
-        _thread_id: ThreadId,
-        _cluster_name: &'static str,
-    ) -> (StdResult<Response<Incoming>, Error>, Duration, usize)
+        mut output: Option<&mut Retries>,
+    ) -> Result<Response<Incoming>>
     where
         C: Connect + Clone + Send + Sync + 'static,
     {
         let (parts, body) = req.into_parts();
         let InstrumentedBody { inner, guard, state } = body;
 
-        let body = match inner.collect().await {
-            Ok(body) => body,
-            Err(e) => {
-                return (Err(e.into()), Duration::default(), 0);
-            },
-        };
-
+        let body = inner.collect().await?;
         let body = http_body_util::Full::new(body.to_bytes());
-        let start_time = Instant::now();
 
-        let mut total_requests = 0;
         for (index, back_off) in retry_policy.exponential_back_off().iter().enumerate() {
             let back_off = back_off.unwrap_or(Duration::from_secs(1));
-            total_requests += 1;
+
             let cloned_body = InstrumentedBody {
                 inner: TimeoutBody::new(None, body.clone().into()),
                 guard: guard.clone(),
@@ -686,23 +661,19 @@ impl HttpChannel {
 
             // generate a possible retry condition...
             let Some(condition) = RetryCondition::try_infer_from(&result) else {
-                return (result, start_time.elapsed(), total_requests);
+                return result;
             };
 
             if condition.is_per_try_timeout() {
-                with_metric!(
-                    clusters::UPSTREAM_RQ_PER_TRY_TIMEOUT,
-                    add,
-                    1,
-                    _thread_id,
-                    &[KeyValue::new("cluster", _cluster_name)]
-                );
+                output.as_mut().map(|output| output.timeouts += 1);
             }
 
             // check for a possible retry...
             if !condition.should_retry(retry_policy) {
-                return (result, start_time.elapsed(), total_requests);
+                return result;
             }
+
+            output.as_mut().map(|output| output.requests += 1);
 
             // take an exponential back off break and retry...
             if index < retry_policy.num_retries() as usize {
@@ -717,16 +688,16 @@ impl HttpChannel {
             }
         }
 
-        let result = Err(std::io::Error::new(ErrorKind::InvalidData, "invalid retry_policy configuration").into());
-        (result, start_time.elapsed(), total_requests)
+        Err(std::io::Error::new(ErrorKind::InvalidData, "invalid retry_policy configuration").into())
     }
 
-    fn handle_response(
-        result: IncomingResult,
+    fn map_upstream_result(
+        result: std::result::Result<Response<Incoming>, Error>,
+        elapsed: Duration,
         route_timeout: Option<Duration>,
         version: http::Version,
     ) -> StdResult<hyper::Response<OrionResponseBody>, Error> {
-        match result {
+        match (result, elapsed) {
             (Ok(response), elapsed) => {
                 // calculate the remaining timeout (relative to the route timeout) for receiving
                 // the body of the incoming response...

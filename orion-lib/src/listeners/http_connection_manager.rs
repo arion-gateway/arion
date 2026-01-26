@@ -113,7 +113,7 @@ use crate::{
     },
     event_error::EventFailure,
     listeners::{
-        http_filters::{per_route_http_filters, FilterFactory, FilterDecision, HttpFilter, HttpFilterValue},
+        http_filters::{per_route_http_filters, FilterDecision, FilterFactory, HttpFilter, HttpFilterValue},
         metadata::DownstreamMetadata,
         synthetic_http_response::SyntheticHttpResponse,
     },
