@@ -337,7 +337,7 @@ impl HttpChannelBuilder {
                 let authority = uri.authority().cloned().unwrap_or(Authority::from_static("none"));
                 debug!("Building address from a pipe {uri:?}");
                 Ok(HttpChannel {
-                    client: HttpChannelClient::Unix(uri, Arc::new(Client::unix())),
+                    channel_client: HttpChannelClient::Unix(uri, Arc::new(Client::unix())),
                     http_version: self.http_protocol_options.codec,
                     enable_trailers: self.http_protocol_options.http1_options.enable_trailers,
                     upstream_authority: authority,
@@ -572,7 +572,7 @@ impl HttpChannel {
         retry_policy: Option<&RetryPolicy>,
         output: Option<&mut Retries>,
     ) -> Result<Response<Incoming>> {
-        let req = maybe_normalize_uri(request, false)?;
+        let mut req = maybe_normalize_uri(request, false)?;
 
         match &self.channel_client {
             HttpChannelClient::Plain(sender) => {
@@ -589,6 +589,16 @@ impl HttpChannel {
                 let client = sender.get_or_build();
                 //FIXME(hayley): apply http protocol translation for plaintext too
                 let req = maybe_change_http_protocol_version(req, configured_version)?;
+
+                if let Some(t) = timeout {
+                    fast_timeout(t, self.send_with_policy(req, retry_policy, client, output)).await?
+                } else {
+                    self.send_with_policy(req, retry_policy, client, output).await
+                }
+            },
+            HttpChannelClient::Unix(uri, sender) => {
+                let client = sender;
+                *req.uri_mut() = uri.clone();
 
                 if let Some(t) = timeout {
                     fast_timeout(t, self.send_with_policy(req, retry_policy, client, output)).await?
