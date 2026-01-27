@@ -15,6 +15,7 @@
 //
 //
 
+mod no_cert_verification;
 mod secrets_manager;
 mod tls_configurator;
 pub use secrets_manager::{CertificateSecret, SecretManager, TransportSecret};

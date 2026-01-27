@@ -17,6 +17,7 @@
 
 use std::sync::Arc;
 
+use orion_configuration::config::secret::TrustChainVerification;
 use rustls::{
     client::WebPkiServerVerifier, server::WebPkiClientVerifier, sign::CertifiedKey, ClientConfig, RootCertStore,
     ServerConfig, SupportedProtocolVersion,
@@ -108,6 +109,7 @@ pub struct WantsToBuildClient {
     pub validation_context_secret_id: Option<String>,
     pub certificate_store: Arc<RootCertStore>,
     pub certificate_secret_id: Option<String>,
+    pub trust_chain_verification: TrustChainVerification,
     pub client_certificate: Option<Arc<ClientCert>>,
     pub sni: String,
 }
@@ -117,7 +119,7 @@ pub struct TlsContextBuilder<S> {
     pub state: S,
 }
 
-use crate::Result;
+use crate::{secrets::no_cert_verification::NoCertificateVerification, Result};
 
 impl TlsContextBuilder<()> {
     pub fn with_supported_versions(
@@ -232,6 +234,7 @@ impl TlsContextBuilder<WantsSni> {
                 validation_context_secret_id: self.state.validation_context_secret_id,
                 client_certificate: self.state.client_certificate,
                 certificate_secret_id: self.state.certificate_secret_id,
+                trust_chain_verification: TrustChainVerification::default(),
                 sni,
             },
         }
@@ -307,8 +310,17 @@ impl TlsContextBuilder<WantsToBuildClient> {
     pub fn build(&self) -> Result<ClientConfig> {
         let builder = ClientConfig::builder_with_protocol_versions(&self.state.supported_versions.clone());
 
-        let verifier = WebPkiServerVerifier::builder(Arc::clone(&self.state.certificate_store)).build()?;
-        let builder = builder.with_webpki_verifier(verifier);
+        let builder = match self.state.trust_chain_verification {
+            TrustChainVerification::VerifyTrustChain => {
+                let verifier = WebPkiServerVerifier::builder(Arc::clone(&self.state.certificate_store)).build()?;
+                builder.with_webpki_verifier(verifier)
+            },
+            TrustChainVerification::AcceptUntrusted => {
+                let verifier = Arc::new(NoCertificateVerification {});
+                warn!("TrustChainVerification::AcceptUntrusted : dangerous not verifying upstream certificate for cluster with sni: {}", self.state.sni);
+                builder.dangerous().with_custom_certificate_verifier(verifier)
+            },
+        };
 
         if let Some(ClientCert { key, certs: auth_certs }) = self.state.client_certificate.as_deref() {
             debug!("UpstreamContext :  Selected Client Cert");
@@ -317,5 +329,10 @@ impl TlsContextBuilder<WantsToBuildClient> {
         } else {
             Ok(builder.with_no_client_auth())
         }
+    }
+
+    pub fn with_trust_chain_verification(mut self, trust_chain_verification: TrustChainVerification) -> Self {
+        self.state.trust_chain_verification = trust_chain_verification;
+        self
     }
 }
