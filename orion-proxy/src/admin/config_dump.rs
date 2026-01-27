@@ -264,7 +264,8 @@ mod config_dump_tests {
                             route_specifier: RouteSpecifier::RouteConfig(RouteConfiguration {
                                 name: SmolStr::new_static("route_config1"),
                                 most_specific_header_mutations_wins: false,
-                                response_header_modifier: HeaderModifier::default(),
+                                response_headers_to_remove: vec![],
+                                response_headers_to_add: vec![],
                                 request_headers_to_add: vec![],
                                 request_headers_to_remove: vec![],
                                 virtual_hosts: vec![VirtualHost {
@@ -272,7 +273,8 @@ mod config_dump_tests {
                                     domains: vec![],
                                     routes: vec![Route {
                                         name: "test_route".to_owned(),
-                                        response_header_modifier: HeaderModifier::default(),
+                                        response_headers_to_remove: vec![],
+                                        response_headers_to_add: vec![],
                                         request_headers_to_add: vec![],
                                         request_headers_to_remove: vec![],
                                         route_match: RouteMatch::default(),
@@ -284,7 +286,8 @@ mod config_dump_tests {
                                             }
                                         ),
                                     }],
-                                    response_header_modifier: HeaderModifier::default(),
+                                    response_headers_to_remove: vec![],
+                                    response_headers_to_add: vec![],
                                     request_headers_to_add: vec![],
                                     request_headers_to_remove: vec![],
                                     retry_policy: None,
