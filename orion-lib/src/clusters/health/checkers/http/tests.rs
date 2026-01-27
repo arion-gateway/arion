@@ -22,10 +22,10 @@
  * connections are done. It's a bit more code, but worth in the long run.
  */
 
-use std::{sync::Arc, time::Duration};
-use orion_configuration::config::cluster::http_protocol_options::Codec;
 use http::{Request, Response};
+use orion_configuration::config::cluster::http_protocol_options::Codec;
 use parking_lot::Mutex;
+use std::{sync::Arc, time::Duration};
 use tokio::sync::mpsc;
 
 use super::*;

@@ -34,12 +34,12 @@ use orion_error::Context;
 
 use std::str::FromStr;
 
-impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteMatchResult, &'a str)> for &RedirectAction {
+impl<'a> RequestHandler<Request<OrionRequestBody>, (&'a RouteMatchResult, &'a str)> for &RedirectAction {
     async fn to_response(
         self,
         _trans_handler: &TransactionHandler,
         request: Request<OrionRequestBody>,
-        (route_match_result, _route_name): (RouteMatchResult, &'a str),
+        (route_match_result, _route_name): (&'a RouteMatchResult, &'a str),
     ) -> Result<Response<OrionResponseBody>> {
         #[cfg(feature = "access-log")]
         if let Some(ctx) = _trans_handler.access_log_ctx.as_ref() {

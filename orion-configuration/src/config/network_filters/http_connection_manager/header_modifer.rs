@@ -15,30 +15,95 @@
 //
 //
 
-use super::{is_default, GenericError};
-use http::{HeaderMap, HeaderName, HeaderValue};
+use crate::config::network_filters::http_connection_manager::{Route, RouteConfiguration, VirtualHost};
+
+use super::GenericError;
+use http::{HeaderMap, HeaderName, HeaderValue, Request, Response};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 
-#[derive(Default, Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HeaderModifier {
-    #[serde(with = "http_serde_ext::header_name::vec", default, skip_serializing_if = "is_default")]
-    remove: Vec<HeaderName>,
-    #[serde(default, skip_serializing_if = "is_default")]
-    add: Vec<HeaderValueOption>,
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct HeaderModifiersRemove(
+    #[serde(with = "http_serde_ext::header_name::vec", default, skip_serializing_if = "is_default")] pub Vec<HeaderName>,
+);
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct HeaderModifiersAdd(
+    #[serde(skip_serializing_if = "Vec::is_empty", default = "Default::default")] pub Vec<HeaderValueOption>,
+);
+
+pub trait HeaderMapModifier<M> {
+    fn apply(&mut self, modifier: M);
 }
 
-impl HeaderModifier {
-    pub fn new(remove: Vec<HeaderName>, add: Vec<HeaderValueOption>) -> Self {
-        Self { remove, add }
+impl HeaderMapModifier<&HeaderModifiersRemove> for HeaderMap {
+    fn apply(&mut self, modifier: &HeaderModifiersRemove) {
+        for name in &modifier.0 {
+            self.remove(name);
+        }
     }
-    pub fn modify(&self, header_map: &mut HeaderMap) {
-        for name in &self.remove {
-            header_map.remove(name);
+}
+
+impl HeaderMapModifier<&HeaderModifiersAdd> for HeaderMap {
+    fn apply(&mut self, modifier: &HeaderModifiersAdd) {
+        for modifier in &modifier.0 {
+            modifier.apply_to(self);
         }
-        for value in &self.add {
-            value.apply(header_map);
-        }
+    }
+}
+
+impl<'m1, 'm2, M1, M2> HeaderMapModifier<(&'m1 M1, &'m2 M2)> for HeaderMap
+where
+    HeaderMap: HeaderMapModifier<&'m1 M1>,
+    HeaderMap: HeaderMapModifier<&'m2 M2>,
+{
+    fn apply(&mut self, (m1, m2): (&'m1 M1, &'m2 M2)) {
+        self.apply(m1);
+        self.apply(m2);
+    }
+}
+
+pub trait ModifierType {}
+impl<B> ModifierType for Request<B> {}
+impl<B> ModifierType for Response<B> {}
+
+pub trait ModifiersExtractor<T: ModifierType> {
+    fn extract(&self) -> (&HeaderModifiersRemove, &HeaderModifiersAdd);
+}
+
+impl<B> ModifiersExtractor<Request<B>> for Route {
+    fn extract(&self) -> (&HeaderModifiersRemove, &HeaderModifiersAdd) {
+        (&self.request_headers_to_remove, &self.request_headers_to_add)
+    }
+}
+
+impl<B> ModifiersExtractor<Response<B>> for Route {
+    fn extract(&self) -> (&HeaderModifiersRemove, &HeaderModifiersAdd) {
+        (&self.response_headers_to_remove, &self.response_headers_to_add)
+    }
+}
+
+impl<B> ModifiersExtractor<Request<B>> for VirtualHost {
+    fn extract(&self) -> (&HeaderModifiersRemove, &HeaderModifiersAdd) {
+        (&self.request_headers_to_remove, &self.request_headers_to_add)
+    }
+}
+
+impl<B> ModifiersExtractor<Response<B>> for VirtualHost {
+    fn extract(&self) -> (&HeaderModifiersRemove, &HeaderModifiersAdd) {
+        (&self.response_headers_to_remove, &self.response_headers_to_add)
+    }
+}
+
+impl<B> ModifiersExtractor<Request<B>> for RouteConfiguration {
+    fn extract(&self) -> (&HeaderModifiersRemove, &HeaderModifiersAdd) {
+        (&self.request_headers_to_remove, &self.request_headers_to_add)
+    }
+}
+
+impl<B> ModifiersExtractor<Response<B>> for RouteConfiguration {
+    fn extract(&self) -> (&HeaderModifiersRemove, &HeaderModifiersAdd) {
+        (&self.response_headers_to_remove, &self.response_headers_to_add)
     }
 }
 
@@ -50,7 +115,7 @@ pub struct HeaderValueOption {
 }
 
 impl HeaderValueOption {
-    pub fn apply(&self, header_map: &mut HeaderMap) -> bool {
+    pub fn apply_to(&self, header_map: &mut HeaderMap) -> bool {
         if self.header.value.is_empty() && !self.keep_empty_value {
             header_map.remove(&self.header.key).is_some()
         } else {
@@ -96,7 +161,7 @@ pub enum HeaderAppendAction {
 pub struct HeaderKeyValue {
     #[serde(with = "http_serde_ext::header_name")]
     pub key: HeaderName,
-    //todo(hayley): this macro is too restricive. It only accepts headervalues that have printable ascii characters but
+    //todo(hayley): this macro is too restrictive. It only accepts header values that have printable ascii characters but
     // the struct accepts opaque bytes too.
     #[serde(with = "http_serde_ext::header_value")]
     pub value: HeaderValue,
@@ -147,7 +212,7 @@ mod tests {
             append_action: HeaderAppendAction::AppendIfExistsOrAdd,
             keep_empty_value: false,
         }
-        .apply(header_map);
+        .apply_to(header_map);
 
         assert_eq!(header_map.get(LOCATION), Some(&hello));
         assert_eq!(header_map.len(), 1);
@@ -157,7 +222,7 @@ mod tests {
             append_action: HeaderAppendAction::AppendIfExistsOrAdd,
             keep_empty_value: false,
         }
-        .apply(header_map);
+        .apply_to(header_map);
 
         assert_eq!(header_map.len(), 2);
 
@@ -179,7 +244,7 @@ mod tests {
             append_action: HeaderAppendAction::AppendIfExistsOrAdd,
             keep_empty_value: false,
         }
-        .apply(header_map);
+        .apply_to(header_map);
 
         assert_eq!(header_map.get(USER_AGENT), Some(&hello));
         assert_eq!(header_map.len(), 1);
@@ -189,7 +254,7 @@ mod tests {
             append_action: HeaderAppendAction::AppendIfExistsOrAdd,
             keep_empty_value: false,
         }
-        .apply(header_map);
+        .apply_to(header_map);
 
         assert_eq!(header_map.len(), 2);
     }
@@ -206,7 +271,7 @@ mod tests {
             append_action: HeaderAppendAction::AppendIfExistsOrAdd,
             keep_empty_value: false,
         }
-        .apply(header_map);
+        .apply_to(header_map);
 
         assert_eq!(header_map.get(COOKIE), Some(&hello));
         assert_eq!(header_map.len(), 1);
@@ -216,7 +281,7 @@ mod tests {
             append_action: HeaderAppendAction::AppendIfExistsOrAdd,
             keep_empty_value: false,
         }
-        .apply(header_map);
+        .apply_to(header_map);
 
         assert_eq!(header_map.len(), 2);
     }
@@ -232,7 +297,7 @@ mod tests {
             append_action: HeaderAppendAction::AppendIfAbsent,
             keep_empty_value: false,
         }
-        .apply(header_map);
+        .apply_to(header_map);
 
         assert_eq!(header_map.get(USER_AGENT), Some(&hello));
         assert_eq!(header_map.len(), 1);
@@ -242,7 +307,7 @@ mod tests {
             append_action: HeaderAppendAction::AppendIfAbsent,
             keep_empty_value: false,
         }
-        .apply(header_map);
+        .apply_to(header_map);
 
         assert_eq!(header_map.get(USER_AGENT), Some(&hello));
         assert_eq!(header_map.len(), 1);
@@ -260,7 +325,7 @@ mod tests {
             append_action: HeaderAppendAction::OverwriteIfExistsOrAdd,
             keep_empty_value: false,
         }
-        .apply(header_map);
+        .apply_to(header_map);
 
         assert_eq!(header_map.get(USER_AGENT), Some(&hello));
         assert_eq!(header_map.len(), 1);
@@ -270,7 +335,7 @@ mod tests {
             append_action: HeaderAppendAction::OverwriteIfExistsOrAdd,
             keep_empty_value: false,
         }
-        .apply(header_map);
+        .apply_to(header_map);
 
         assert_eq!(header_map.get(USER_AGENT), Some(&world));
         assert_eq!(header_map.len(), 1);
@@ -288,7 +353,7 @@ mod tests {
             append_action: HeaderAppendAction::OverwriteIfExists,
             keep_empty_value: false,
         }
-        .apply(header_map);
+        .apply_to(header_map);
 
         assert_eq!(header_map.get(USER_AGENT), None);
         assert!(header_map.is_empty());
@@ -297,7 +362,7 @@ mod tests {
             append_action: HeaderAppendAction::AppendIfAbsent,
             keep_empty_value: false,
         }
-        .apply(header_map);
+        .apply_to(header_map);
 
         assert_eq!(header_map.get(USER_AGENT), Some(&hello));
         assert_eq!(header_map.len(), 1);
@@ -307,7 +372,7 @@ mod tests {
             append_action: HeaderAppendAction::OverwriteIfExists,
             keep_empty_value: false,
         }
-        .apply(header_map);
+        .apply_to(header_map);
 
         assert_eq!(header_map.get(USER_AGENT), Some(&world));
         assert_eq!(header_map.len(), 1);
@@ -325,7 +390,7 @@ mod tests {
             append_action: HeaderAppendAction::AppendIfExistsOrAdd,
             keep_empty_value: true,
         }
-        .apply(header_map);
+        .apply_to(header_map);
 
         assert_eq!(header_map.get(USER_AGENT), Some(&test));
         assert_eq!(header_map.len(), 1);
@@ -335,7 +400,7 @@ mod tests {
             append_action: HeaderAppendAction::AppendIfExistsOrAdd,
             keep_empty_value: true,
         }
-        .apply(header_map);
+        .apply_to(header_map);
 
         assert_eq!(header_map.get(USER_AGENT), Some(&test));
         assert_eq!(header_map.len(), 2);

@@ -81,8 +81,11 @@ use {
 use arc_swap::ArcSwap;
 use core::time::Duration;
 use futures::future::BoxFuture;
-use hyper::{body::Incoming, service::Service, Request, Response};
-use orion_configuration::config::network_filters::http_connection_manager::route::RouteMatch;
+use hyper::{body::Incoming, service::Service, HeaderMap, Request, Response};
+use orion_configuration::config::network_filters::http_connection_manager::{
+    header_modifer::{HeaderMapModifier, ModifierType, ModifiersExtractor},
+    route::RouteMatch,
+};
 use orion_configuration::config::network_filters::http_connection_manager::{
     route::{Action, RouteMatchResult},
     CodecType, ConfigSource, ConfigSourceSpecifier, HttpConnectionManager as HttpConnectionManagerConfig, RdsSpecifier,
@@ -769,27 +772,48 @@ impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usiz
             }
         };
 
-        let mut response = match filter_response {
-            FilterDecision::DirectResponse(resp) | FilterDecision::AsyncRequest(resp, _) => resp,
-            _ => match cached_route {
-                None => SyntheticHttpResponse::not_found(
-                    EventFailure::RouteNotFound.into(),
-                    ResponseFlags(FmtResponseFlags::NO_ROUTE_FOUND),
-                )
-                .into_response(request.version()),
-                Some(chosen_route) => {
+        let mut response = match cached_route {
+            None => SyntheticHttpResponse::not_found(
+                EventFailure::RouteNotFound.into(),
+                ResponseFlags(FmtResponseFlags::NO_ROUTE_FOUND),
+            )
+            .into_response(request.version()),
+            Some(cached_route) => match filter_response {
+                FilterDecision::DirectResponse(mut response) | FilterDecision::AsyncRequest(mut response, _) => {
+                    let res_headers = response.headers_mut();
+                    apply_mutations::<Response<()>>(
+                        res_headers,
+                        &self.0,
+                        &cached_route,
+                        self.0.most_specific_header_mutations_wins,
+                    );
+                    response
+                },
+                _ => {
                     let websocket_enabled_by_default =
                         upgrade_utils::is_websocket_enabled_by_hcm(&connection_manager.enabled_upgrades);
 
-                    match &chosen_route.route.action {
+                    let mut response = match &cached_route.route.action {
                         Action::DirectResponse(dr) => {
-                            dr.to_response(trans_handler, request, &chosen_route.route.name).await
+                            dr.to_response(trans_handler, request, &cached_route.route.name).await
                         },
                         Action::Redirect(rd) => {
-                            rd.to_response(trans_handler, request, (chosen_route.route_match, &chosen_route.route.name))
-                                .await
+                            rd.to_response(
+                                trans_handler,
+                                request,
+                                (&cached_route.route_match, &cached_route.route.name),
+                            )
+                            .await
                         },
                         Action::Route(route) => {
+                            let req_headers = request.headers_mut();
+                            apply_mutations::<Request<()>>(
+                                req_headers,
+                                &self.0,
+                                &cached_route,
+                                self.0.most_specific_header_mutations_wins,
+                            );
+
                             let remote_address = request
                                 .extensions()
                                 .get::<DownstreamMetadata>()
@@ -801,9 +825,9 @@ impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usiz
                                     request,
                                     (
                                         RouteContext {
-                                            route_name: &chosen_route.route.name,
-                                            retry_policy: chosen_route.vh.retry_policy.as_ref(),
-                                            route_match: chosen_route.route_match,
+                                            route_name: &cached_route.route.name,
+                                            retry_policy: cached_route.vh.retry_policy.as_ref(),
+                                            route_match: &cached_route.route_match,
                                             remote_address,
                                             websocket_enabled_by_default,
                                         },
@@ -812,7 +836,16 @@ impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usiz
                                 )
                                 .await
                         },
-                    }?
+                    }?;
+
+                    let res_headers = response.headers_mut();
+                    apply_mutations::<Response<()>>(
+                        res_headers,
+                        &self.0,
+                        &cached_route,
+                        self.0.most_specific_header_mutations_wins,
+                    );
+                    response
                 },
             },
         };
@@ -921,27 +954,48 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
             }
         };
 
-        let mut response = match filter_response {
-            FilterDecision::DirectResponse(resp) | FilterDecision::AsyncRequest(resp, _) => resp,
-            _ => match cached_route {
-                None => SyntheticHttpResponse::not_found(
-                    EventFailure::RouteNotFound.into(),
-                    ResponseFlags(FmtResponseFlags::NO_ROUTE_FOUND),
-                )
-                .into_response(request.version()),
-                Some(chosen_route) => {
+        let mut response = match cached_route {
+            None => SyntheticHttpResponse::not_found(
+                EventFailure::RouteNotFound.into(),
+                ResponseFlags(FmtResponseFlags::NO_ROUTE_FOUND),
+            )
+            .into_response(request.version()),
+            Some(cached_route) => match filter_response {
+                FilterDecision::DirectResponse(mut response) | FilterDecision::AsyncRequest(mut response, _) => {
+                    let res_headers = response.headers_mut();
+                    apply_mutations::<Response<()>>(
+                        res_headers,
+                        &self,
+                        &cached_route,
+                        self.most_specific_header_mutations_wins,
+                    );
+                    response
+                },
+                _ => {
                     let websocket_enabled_by_default =
                         upgrade_utils::is_websocket_enabled_by_hcm(&connection_manager.enabled_upgrades);
 
-                    let mut response = match &chosen_route.route.action {
+                    let mut response = match &cached_route.route.action {
                         Action::DirectResponse(dr) => {
-                            dr.to_response(trans_handler, request, &chosen_route.route.name).await
+                            dr.to_response(trans_handler, request, &cached_route.route.name).await
                         },
                         Action::Redirect(rd) => {
-                            rd.to_response(trans_handler, request, (chosen_route.route_match, &chosen_route.route.name))
-                                .await
+                            rd.to_response(
+                                trans_handler,
+                                request,
+                                (&cached_route.route_match, &cached_route.route.name),
+                            )
+                            .await
                         },
                         Action::Route(route) => {
+                            let req_headers = request.headers_mut();
+                            apply_mutations::<Request<()>>(
+                                req_headers,
+                                &self,
+                                &cached_route,
+                                self.most_specific_header_mutations_wins,
+                            );
+
                             let remote_address = request
                                 .extensions()
                                 .get::<DownstreamMetadata>()
@@ -953,9 +1007,9 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
                                     request,
                                     (
                                         RouteContext {
-                                            route_name: &chosen_route.route.name,
-                                            retry_policy: chosen_route.vh.retry_policy.as_ref(),
-                                            route_match: chosen_route.route_match,
+                                            route_name: &cached_route.route.name,
+                                            retry_policy: cached_route.vh.retry_policy.as_ref(),
+                                            route_match: &cached_route.route_match,
                                             remote_address,
                                             websocket_enabled_by_default,
                                         },
@@ -966,17 +1020,13 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
                         },
                     }?;
 
-                    let resp_headers = response.headers_mut();
-                    if self.most_specific_header_mutations_wins {
-                        self.response_header_modifier.modify(resp_headers);
-                        chosen_route.vh.response_header_modifier.modify(resp_headers);
-                        chosen_route.route.response_header_modifier.modify(resp_headers);
-                    } else {
-                        chosen_route.route.response_header_modifier.modify(resp_headers);
-                        chosen_route.vh.response_header_modifier.modify(resp_headers);
-                        self.response_header_modifier.modify(resp_headers);
-                    }
-
+                    let res_headers = response.headers_mut();
+                    apply_mutations::<Response<()>>(
+                        res_headers,
+                        &self,
+                        &cached_route,
+                        self.most_specific_header_mutations_wins,
+                    );
                     response
                 },
             },
@@ -992,6 +1042,28 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
         }
 
         Ok(response)
+    }
+}
+
+fn apply_mutations<T>(
+    target: &mut HeaderMap,
+    route_config: &RouteConfiguration,
+    cached_route: &CachedRoute<'_>,
+    most_specific_header_mutations_wins: bool,
+) where
+    T: ModifierType,
+    Route: ModifiersExtractor<T>,
+    VirtualHost: ModifiersExtractor<T>,
+    RouteConfiguration: ModifiersExtractor<T>,
+{
+    if most_specific_header_mutations_wins {
+        target.apply(ModifiersExtractor::<T>::extract(route_config));
+        target.apply(ModifiersExtractor::<T>::extract(cached_route.vh));
+        target.apply(ModifiersExtractor::<T>::extract(cached_route.route));
+    } else {
+        target.apply(ModifiersExtractor::<T>::extract(cached_route.route));
+        target.apply(ModifiersExtractor::<T>::extract(cached_route.vh));
+        target.apply(ModifiersExtractor::<T>::extract(route_config));
     }
 }
 

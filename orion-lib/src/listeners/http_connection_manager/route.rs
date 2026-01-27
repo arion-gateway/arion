@@ -60,7 +60,7 @@ pub struct RouteContext<'a> {
     pub retry_policy: Option<&'a RetryPolicy>,
     pub route_name: &'a str,
     pub remote_address: SocketAddr,
-    pub route_match: RouteMatchResult,
+    pub route_match: &'a RouteMatchResult,
     pub websocket_enabled_by_default: bool,
 }
 

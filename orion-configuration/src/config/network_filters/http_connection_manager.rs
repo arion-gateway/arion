@@ -22,8 +22,8 @@ pub mod route;
 
 use exponential_backoff::Backoff;
 use header_matcher::HeaderMatcher;
-use header_modifer::{HeaderModifier, HeaderValueOption};
-use http::{HeaderName, HeaderValue, StatusCode};
+use header_modifer::{HeaderModifiersAdd, HeaderModifiersRemove};
+use http::{HeaderValue, StatusCode};
 use http_filters::{FilterOverride, HttpFilter};
 use route::{Action, RouteMatch};
 use serde::{Deserialize, Serialize};
@@ -99,13 +99,10 @@ pub struct RouteConfiguration {
     pub name: SmolStr,
     #[serde(skip_serializing_if = "std::ops::Not::not", default = "Default::default")]
     pub most_specific_header_mutations_wins: bool,
-    #[serde(skip_serializing_if = "is_default", default)]
-    pub response_header_modifier: HeaderModifier,
-    #[serde(skip_serializing_if = "Vec::is_empty", default = "Default::default")]
-    pub request_headers_to_add: Vec<HeaderValueOption>,
-    #[serde(skip_serializing_if = "Vec::is_empty", default = "Default::default")]
-    #[serde(with = "http_serde_ext::header_name::vec")]
-    pub request_headers_to_remove: Vec<HeaderName>,
+    pub request_headers_to_add: HeaderModifiersAdd,
+    pub request_headers_to_remove: HeaderModifiersRemove,
+    pub response_headers_to_add: HeaderModifiersAdd,
+    pub response_headers_to_remove: HeaderModifiersRemove,
     pub virtual_hosts: Vec<VirtualHost>,
 }
 
@@ -252,13 +249,10 @@ pub struct VirtualHost {
     pub domains: Vec<MatchHost>,
     #[serde(skip_serializing_if = "Vec::is_empty", default = "Default::default")]
     pub routes: Vec<Route>,
-    #[serde(skip_serializing_if = "is_default", default)]
-    pub response_header_modifier: HeaderModifier,
-    #[serde(skip_serializing_if = "Vec::is_empty", default = "Default::default")]
-    pub request_headers_to_add: Vec<HeaderValueOption>,
-    #[serde(with = "http_serde_ext::header_name::vec")]
-    #[serde(skip_serializing_if = "Vec::is_empty", default = "Default::default")]
-    pub request_headers_to_remove: Vec<HeaderName>,
+    pub request_headers_to_add: HeaderModifiersAdd,
+    pub request_headers_to_remove: HeaderModifiersRemove,
+    pub response_headers_to_add: HeaderModifiersAdd,
+    pub response_headers_to_remove: HeaderModifiersRemove,
     #[serde(skip_serializing_if = "Option::is_none", default = "Default::default")]
     pub retry_policy: Option<RetryPolicy>,
 }
@@ -363,13 +357,10 @@ impl FromStr for RetryOn {
 pub struct Route {
     #[serde(skip_serializing_if = "is_default", default)]
     pub name: String,
-    #[serde(skip_serializing_if = "is_default", default)]
-    pub response_header_modifier: HeaderModifier,
-    #[serde(skip_serializing_if = "Vec::is_empty", default = "Default::default")]
-    pub request_headers_to_add: Vec<HeaderValueOption>,
-    #[serde(skip_serializing_if = "Vec::is_empty", default = "Default::default")]
-    #[serde(with = "http_serde_ext::header_name::vec")]
-    pub request_headers_to_remove: Vec<HeaderName>,
+    pub request_headers_to_add: HeaderModifiersAdd,
+    pub request_headers_to_remove: HeaderModifiersRemove,
+    pub response_headers_to_add: HeaderModifiersAdd,
+    pub response_headers_to_remove: HeaderModifiersRemove,
     #[serde(rename = "match")]
     pub route_match: RouteMatch,
     #[serde(skip_serializing_if = "HashMap::is_empty", default = "Default::default")]
@@ -570,7 +561,8 @@ mod tests {
 mod envoy_conversions {
     #![allow(deprecated)]
     use super::{
-        header_modifer::HeaderModifier,
+        header_modifer::HeaderModifiersAdd,
+        header_modifer::HeaderModifiersRemove,
         http_filters::{
             router::Router, FilterConfigOverride, FilterOverride, HttpFilter, HttpFilterType, SupportedEnvoyFilter,
             SupportedEnvoyHttpFilter,
@@ -942,14 +934,14 @@ mod envoy_conversions {
                     })
                     .collect::<Result<Vec<_>, _>>()?;
                 let virtual_hosts = convert_non_empty_vec!(virtual_hosts)?;
-                let response_header_modifier = HeaderModifier::new(response_headers_to_remove, response_headers_to_add);
                 Ok(Self {
                     name: SmolStr::from(&name),
                     virtual_hosts,
                     most_specific_header_mutations_wins,
-                    response_header_modifier,
-                    request_headers_to_add,
-                    request_headers_to_remove,
+                    request_headers_to_add: HeaderModifiersAdd(request_headers_to_add),
+                    request_headers_to_remove: HeaderModifiersRemove(request_headers_to_remove),
+                    response_headers_to_add: HeaderModifiersAdd(response_headers_to_add),
+                    response_headers_to_remove: HeaderModifiersRemove(response_headers_to_remove),
                 })
             })()
             .with_name(name)
@@ -1034,15 +1026,16 @@ mod envoy_conversions {
                 let routes = convert_vec!(routes)?;
 
                 let retry_policy = retry_policy.map(RetryPolicy::try_from).transpose().with_node("retry_policy")?;
-                let response_header_modifier = HeaderModifier::new(response_headers_to_remove, response_headers_to_add);
+
                 Ok(Self {
                     name: SmolStr::from(&name),
                     routes,
                     domains,
-                    request_headers_to_add,
-                    request_headers_to_remove,
                     retry_policy,
-                    response_header_modifier,
+                    request_headers_to_add: HeaderModifiersAdd(request_headers_to_add),
+                    request_headers_to_remove: HeaderModifiersRemove(request_headers_to_remove),
+                    response_headers_to_add: HeaderModifiersAdd(response_headers_to_add),
+                    response_headers_to_remove: HeaderModifiersRemove(response_headers_to_remove),
                 })
             })()
             .with_name(name)
@@ -1205,15 +1198,15 @@ mod envoy_conversions {
                     .collect::<Result<HashMap<_, _>, GenericError>>()
             }
             .with_node("typed_per_filter_config")?;
-            let response_header_modifier = HeaderModifier::new(response_headers_to_remove, response_headers_to_add);
             Ok(Self {
                 name,
                 route_match,
                 action,
                 typed_per_filter_config,
-                request_headers_to_add,
-                request_headers_to_remove,
-                response_header_modifier,
+                request_headers_to_add: HeaderModifiersAdd(request_headers_to_add),
+                request_headers_to_remove: HeaderModifiersRemove(request_headers_to_remove),
+                response_headers_to_add: HeaderModifiersAdd(response_headers_to_add),
+                response_headers_to_remove: HeaderModifiersRemove(response_headers_to_remove),
             })
         }
     }
