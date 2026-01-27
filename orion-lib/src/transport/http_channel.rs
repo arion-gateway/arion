@@ -276,7 +276,7 @@ impl HttpChannelBuilder {
         if let Some(tls_context) = self.tls {
             // Build TLS client inline to avoid ownership issues
             let mut builder =
-                hyper_rustls::HttpsConnectorBuilder::new().with_tls_config(tls_context.into_inner()).https_or_http();
+                hyper_rustls::HttpsConnectorBuilder::new().with_tls_config(tls_context.into_inner()).https_only();
 
             builder = if let Some(server_name) = self.server_name {
                 builder.with_server_name_resolver(FixedServerNameResolver::new(server_name))
@@ -567,16 +567,15 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
 impl HttpChannel {
     pub async fn send_request(
         &self,
-        request: Request<OrionRequestBody>,
+        mut request: Request<OrionRequestBody>,
         timeout: Option<Duration>,
         retry_policy: Option<&RetryPolicy>,
         output: Option<&mut Retries>,
     ) -> Result<Response<Incoming>> {
-        let mut req = maybe_normalize_uri(request, false)?;
-
         match &self.channel_client {
             HttpChannelClient::Plain(sender) => {
                 let client = sender.get_or_build();
+                let req = maybe_normalize_uri(request, false)?;
                 if let Some(t) = timeout {
                     fast_timeout(t, self.send_with_policy(req, retry_policy, client, output)).await?
                 } else {
@@ -587,6 +586,7 @@ impl HttpChannel {
                 let ClientContext { configured_upstream_http_version, client: sender } = context;
                 let configured_version = *configured_upstream_http_version;
                 let client = sender.get_or_build();
+                let req = maybe_normalize_uri(request, true)?;
                 //FIXME(hayley): apply http protocol translation for plaintext too
                 let req = maybe_change_http_protocol_version(req, configured_version)?;
 
@@ -598,12 +598,12 @@ impl HttpChannel {
             },
             HttpChannelClient::Unix(uri, sender) => {
                 let client = sender;
-                *req.uri_mut() = uri.clone();
+                *request.uri_mut() = uri.clone();
 
                 if let Some(t) = timeout {
-                    fast_timeout(t, self.send_with_policy(req, retry_policy, client, output)).await?
+                    fast_timeout(t, self.send_with_policy(request, retry_policy, client, output)).await?
                 } else {
-                    self.send_with_policy(req, retry_policy, client, output).await
+                    self.send_with_policy(request, retry_policy, client, output).await
                 }
             },
         }
@@ -785,19 +785,6 @@ fn is_absolute(uri: &Uri) -> bool {
     uri.authority().is_some() && uri.scheme().is_some()
 }
 
-fn select_scheme(version: http::Version, is_tls: bool) -> Option<http::uri::Scheme> {
-    match (version, is_tls) {
-        (http::Version::HTTP_09 | http::Version::HTTP_10 | http::Version::HTTP_11, false) => {
-            Some(http::uri::Scheme::HTTP)
-        },
-        (http::Version::HTTP_09 | http::Version::HTTP_10 | http::Version::HTTP_11, true) => {
-            Some(http::uri::Scheme::HTTPS)
-        },
-        (http::Version::HTTP_2, _) => Some(http::uri::Scheme::HTTPS),
-        _ => None,
-    }
-}
-
 fn maybe_change_http_protocol_version(
     request: Request<OrionRequestBody>,
     version: Codec,
@@ -842,11 +829,10 @@ fn maybe_normalize_uri(
             let authority = host_header.to_str().map_err(|e| format!("Can't parse Host header {e:?}"))?;
             let authority = authority.parse::<Authority>().map_err(|e| format!("Can't parse uri {e:?}"))?;
 
-            let version = request.version();
             let uri = request.uri_mut();
             let mut parts = Parts::from(mem::take(uri));
             if parts.scheme.is_none() {
-                parts.scheme = select_scheme(version, is_tls);
+                parts.scheme = if is_tls { Some(http::uri::Scheme::HTTPS) } else { Some(http::uri::Scheme::HTTP) };
             }
             parts.authority = Some(authority);
             let new = Uri::from_parts(parts).map_err(|_| format!("Can't normalize uri: {uri}"))?;
