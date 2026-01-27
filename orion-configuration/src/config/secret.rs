@@ -48,14 +48,26 @@ pub enum Type {
     ValidationContext(ValidationContext),
 }
 
+#[derive(Debug, Default, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+pub enum TrustChainVerification {
+    #[default]
+    VerifyTrustChain,
+    AcceptUntrusted,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct ValidationContext {
     trusted_ca: DataSource,
+    trust_chain_verification: TrustChainVerification,
 }
 
 impl ValidationContext {
     pub fn trusted_ca(&self) -> &DataSource {
         &self.trusted_ca
+    }
+
+    pub fn trust_chain_verification(&self) -> TrustChainVerification {
+        self.trust_chain_verification
     }
 }
 
@@ -99,8 +111,9 @@ impl TlsCertificate {
 mod envoy_conversions {
     #![allow(deprecated)]
     use super::{Secret, TlsCertificate, Type, ValidationContext};
-    use crate::config::common::*;
+    use crate::config::{common::*, secret::TrustChainVerification};
     use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::transport_sockets::tls::v3::{
+        certificate_validation_context::TrustChainVerification as EnvoyTrustChainVerification,
         secret::Type as EnvoyType, CertificateValidationContext as EnvoyCertificateValidationContext,
         Secret as EnvoySecret, TlsCertificate as EnvoyTlsCertificate,
     };
@@ -186,14 +199,19 @@ mod envoy_conversions {
                 require_signed_certificate_timestamp,
                 crl,
                 allow_expired_certificate,
-                trust_chain_verification,
+                //trust_chain_verification,
                 custom_validator_config,
                 only_verify_leaf_cert_crl,
                 max_verify_depth,
                 system_root_certs
             )?;
             let trusted_ca = convert_opt!(trusted_ca)?;
-            Ok(Self { trusted_ca })
+            let trust_chain_verification = match EnvoyTrustChainVerification::from_i32(trust_chain_verification) {
+                Some(EnvoyTrustChainVerification::VerifyTrustChain) => TrustChainVerification::VerifyTrustChain,
+                Some(EnvoyTrustChainVerification::AcceptUntrusted) => TrustChainVerification::AcceptUntrusted,
+                None => return Err(GenericError::from_msg("Invalid trust chain verification value")),
+            };
+            Ok(Self { trusted_ca, trust_chain_verification })
         }
     }
 }

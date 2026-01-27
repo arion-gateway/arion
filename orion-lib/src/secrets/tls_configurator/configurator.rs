@@ -27,7 +27,7 @@ use crate::{
 use orion_configuration::config::{
     cluster::{TlsConfig as TlsClientConfig, TlsSecret},
     listener::TlsConfig as TlsServerConfig,
-    secret::TlsCertificate as TlsCertificateConfig,
+    secret::{TlsCertificate as TlsCertificateConfig, TrustChainVerification},
     transport::{CommonTlsValidationContext, Secrets, TlsVersion},
 };
 use rustls::{
@@ -210,17 +210,19 @@ impl TlsConfigurator<ClientConfig, WantsToBuildClient> {
             validation_context_secret_id,
             certificate_store,
             certificate_secret_id,
+            trust_chain_verification,
             client_certificate,
             sni,
         } = state;
         let new_builder = match secret {
             TransportSecret::Certificate(certificate) => {
-                if Some(secret_id.to_owned()) == certificate_secret_id {
+                if Some(secret_id) == certificate_secret_id.as_deref() {
                     let client_cert: ClientCert = certificate.as_ref().to_owned().into();
                     TlsContextBuilder::with_supported_versions(supported_versions)
                         .with_client_certificate_store(validation_context_secret_id, certificate_store)
                         .with_client_certificate(certificate_secret_id, Arc::new(client_cert))
                         .with_sni(sni)
+                        .with_trust_chain_verification(trust_chain_verification)
                 } else {
                     let msg = format!("Secret name doesn't match {secret_id}  {:?}", certificate_secret_id.as_deref());
                     warn!("{msg}");
@@ -228,7 +230,7 @@ impl TlsConfigurator<ClientConfig, WantsToBuildClient> {
                 }
             },
             TransportSecret::ValidationContext(cert_store) => {
-                if Some(secret_id.to_owned()) == validation_context_secret_id {
+                if Some(secret_id) == validation_context_secret_id.as_deref() {
                     let cert_store = cert_store.as_ref().clone().into();
                     let builder = TlsContextBuilder::with_supported_versions(supported_versions)
                         .with_client_certificate_store(validation_context_secret_id, cert_store);
@@ -238,6 +240,7 @@ impl TlsConfigurator<ClientConfig, WantsToBuildClient> {
                         builder.with_no_client_auth()
                     }
                     .with_sni(sni)
+                    .with_trust_chain_verification(trust_chain_verification)
                 } else {
                     let msg = format!("Secret name doesn't match {secret_id} {validation_context_secret_id:?}",);
                     warn!("{msg}");
@@ -382,6 +385,14 @@ impl TryFrom<(TlsClientConfig, &SecretManager)> for TlsConfigurator<ClientConfig
             })
             .collect();
         debug!("DownstreamTlsContext : Selected TLS versions {supported_versions:?}");
+
+        let trust_chain_verification = match context.validation_context.as_ref() {
+            Some(CommonTlsValidationContext::ValidationContext(validation_context)) => {
+                validation_context.trust_chain_verification()
+            },
+            _ => TrustChainVerification::default(),
+        };
+
         let (certificate_store_secret_id, certificate_store) =
             TlsConfigurator::create_certificate_store(secret_manager, context.validation_context)?;
 
@@ -405,7 +416,8 @@ impl TryFrom<(TlsClientConfig, &SecretManager)> for TlsConfigurator<ClientConfig
         } else {
             ctx_builder.with_no_client_auth()
         }
-        .with_sni(sni.into());
+        .with_sni(sni.into())
+        .with_trust_chain_verification(trust_chain_verification);
 
         let config = ctx_builder.build()?;
 

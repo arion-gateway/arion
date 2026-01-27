@@ -1,4 +1,4 @@
-use rustls::{SignatureScheme, pki_types::ServerName};
+use rustls::{pki_types::ServerName, SignatureScheme};
 
 #[derive(Debug)]
 pub struct NoCertificateVerification {}
