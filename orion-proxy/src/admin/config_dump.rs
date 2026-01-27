@@ -106,7 +106,7 @@ mod config_dump_tests {
     use axum_test::TestServer;
     use orion_configuration::config::{
         core::DataSource,
-        network_filters::http_connection_manager::header_modifer::HeaderModifier,
+        network_filters::http_connection_manager::header_modifer::{HeaderModifiersAdd, HeaderModifiersRemove},
         secret::{Secret, TlsCertificate, Type, ValidationContext},
         Bootstrap, Listener,
     };
@@ -264,19 +264,19 @@ mod config_dump_tests {
                             route_specifier: RouteSpecifier::RouteConfig(RouteConfiguration {
                                 name: SmolStr::new_static("route_config1"),
                                 most_specific_header_mutations_wins: false,
-                                response_headers_to_remove: vec![],
-                                response_headers_to_add: vec![],
-                                request_headers_to_add: vec![],
-                                request_headers_to_remove: vec![],
+                                response_headers_to_remove: HeaderModifiersRemove(vec![]),
+                                response_headers_to_add: HeaderModifiersAdd(vec![]),
+                                request_headers_to_add: HeaderModifiersAdd(vec![]),
+                                request_headers_to_remove: HeaderModifiersRemove(vec![]),
                                 virtual_hosts: vec![VirtualHost {
                                     name: SmolStr::new_static("vh1"),
                                     domains: vec![],
                                     routes: vec![Route {
                                         name: "test_route".to_owned(),
-                                        response_headers_to_remove: vec![],
-                                        response_headers_to_add: vec![],
-                                        request_headers_to_add: vec![],
-                                        request_headers_to_remove: vec![],
+                                        response_headers_to_remove: HeaderModifiersRemove(vec![]),
+                                        response_headers_to_add: HeaderModifiersAdd(vec![]),
+                                        request_headers_to_add: HeaderModifiersAdd(vec![]),
+                                        request_headers_to_remove: HeaderModifiersRemove(vec![]),
                                         route_match: RouteMatch::default(),
                                         typed_per_filter_config: HashMap::new(),
                                         action: Action::DirectResponse(
@@ -286,10 +286,10 @@ mod config_dump_tests {
                                             }
                                         ),
                                     }],
-                                    response_headers_to_remove: vec![],
-                                    response_headers_to_add: vec![],
-                                    request_headers_to_add: vec![],
-                                    request_headers_to_remove: vec![],
+                                    response_headers_to_remove: HeaderModifiersRemove(vec![]),
+                                    response_headers_to_add: HeaderModifiersAdd(vec![]),
+                                    request_headers_to_add: HeaderModifiersAdd(vec![]),
+                                    request_headers_to_remove: HeaderModifiersRemove(vec![]),
                                     retry_policy: None,
                                 }],
                             }),
