@@ -20,7 +20,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 pub mod bind_device;
 pub mod connector;
 mod grpc_channel;
-mod http_channel;
+pub(crate) mod http_channel;
 mod resolver;
 pub mod tcp_channel;
 pub use resolver::resolve;

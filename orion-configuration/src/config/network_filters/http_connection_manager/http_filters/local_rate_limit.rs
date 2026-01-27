@@ -50,11 +50,10 @@ fn is_default_statuscode(code: &StatusCode) -> bool {
 
 #[cfg(feature = "envoy-conversions")]
 mod envoy_conversions {
+    use std::time::Duration;
+
     use super::{LocalRateLimit, TokenBucket};
-    use crate::config::{
-        common::*,
-        util::{duration_from_envoy, http_status_from_envoy},
-    };
+    use crate::config::{common::*, core::RustType};
     use http::StatusCode;
     use orion_data_plane_api::envoy_data_plane_api::envoy::{
         extensions::filters::http::local_ratelimit::v3::LocalRateLimit as EnvoyLocalRateLimit,
@@ -106,10 +105,12 @@ mod envoy_conversions {
             }
             //note(hayley): envoy sets status codes <400 to 429 here.
             // we might want to do some validation too
+            //
             let status = status
-                .map(http_status_from_envoy)
+                .map(RustType::<StatusCode>::try_from)
                 .transpose()
                 .with_node("status")?
+                .map(RustType::into_inner)
                 .unwrap_or(StatusCode::TOO_MANY_REQUESTS);
             if let Some(tb) = token_bucket {
                 let EnvoyTokenBucket { max_tokens, tokens_per_fill, fill_interval } = tb;
@@ -120,9 +121,10 @@ mod envoy_conversions {
                         .with_node("tokens_per_fill")
                         .with_node("token_bucket"));
                 }
-                let fill_interval = duration_from_envoy(required!(fill_interval)?)
+                let fill_interval = RustType::<Duration>::try_from(required!(fill_interval)?)
                     .with_node("fill_interval")
-                    .with_node("token_bucket")?;
+                    .with_node("token_bucket")?
+                    .into_inner();
                 return Ok(Self {
                     status,
                     token_bucket: Some(TokenBucket { max_tokens, tokens_per_fill, fill_interval }),

@@ -221,7 +221,10 @@ pub enum RouteCacheAction {
 mod envoy_conversions {
     #![allow(deprecated)]
     use super::*;
-    use crate::config::{common::*, core::regex_from_envoy, util::duration_from_envoy};
+    use crate::config::{
+        common::*,
+        core::{regex_from_envoy, RustType},
+    };
     use orion_data_plane_api::envoy_data_plane_api::envoy::{
         config::{
             common::mutation_rules::v3::HeaderMutationRules as EnvoyHeaderMutationRules,
@@ -292,14 +295,24 @@ mod envoy_conversions {
             )?;
 
             let grpc_service: GrpcService = required!(grpc_service)?.try_into().with_node("grpc_service")?;
-            let message_timeout = message_timeout.map(duration_from_envoy).transpose().with_node("message_timeout")?;
-            let max_message_timeout =
-                max_message_timeout.map(duration_from_envoy).transpose().with_node("max_message_timeout")?;
+            let message_timeout = message_timeout
+                .map(RustType::<Duration>::try_from)
+                .transpose()
+                .with_node("message_timeout")?
+                .map(RustType::into_inner);
+            let max_message_timeout = max_message_timeout
+                .map(RustType::<Duration>::try_from)
+                .transpose()
+                .with_node("max_message_timeout")?
+                .map(RustType::into_inner);
             let processing_mode = processing_mode.map(TryInto::try_into).transpose().with_node("processing_mode")?;
             let mutation_rules = mutation_rules.map(TryInto::try_into).transpose().with_node("mutation_rules")?;
             let forward_rules = forward_rules.map(TryInto::try_into).transpose().with_node("forward_rules")?;
-            let deferred_close_timeout =
-                deferred_close_timeout.map(duration_from_envoy).transpose().with_node("deferred_close_timeout")?;
+            let deferred_close_timeout = deferred_close_timeout
+                .map(RustType::<Duration>::try_from)
+                .transpose()
+                .with_node("deferred_close_timeout")?
+                .map(RustType::into_inner);
             let allowed_override_modes = convert_vec!(allowed_override_modes)?;
 
             let route_cache_action = RouteCacheAction::try_from(route_cache_action).with_node("route_cache_action")?;
@@ -343,7 +356,8 @@ mod envoy_conversions {
                 },
             };
 
-            let timeout = timeout.map(duration_from_envoy).transpose().with_node("timeout")?;
+            let timeout =
+                timeout.map(RustType::<Duration>::try_from).transpose().with_node("timeout")?.map(RustType::into_inner);
 
             Ok(Self { service_specifier, timeout })
         }

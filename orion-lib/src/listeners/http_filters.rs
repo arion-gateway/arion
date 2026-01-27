@@ -124,17 +124,17 @@ pub enum HttpFilterValue {
     McpGateway(McpGateway),
 }
 
-pub trait FactoryFilter {
+pub trait FilterFactory {
     fn new_from(&self) -> Self;
 }
 
-impl FactoryFilter for HttpFilterValue {
+impl FilterFactory for HttpFilterValue {
     fn new_from(&self) -> Self {
         match self {
             HttpFilterValue::RateLimit(conf) => HttpFilterValue::RateLimit(conf.clone()),
             HttpFilterValue::Rbac(conf) => HttpFilterValue::Rbac(conf.clone()),
             HttpFilterValue::ExternalProcessor(conf) => HttpFilterValue::ExternalProcessor(conf.clone()),
-            HttpFilterValue::JwtAuthentication(conf) => HttpFilterValue::JwtAuthentication(conf.clone()),
+            HttpFilterValue::JwtAuthentication(conf) => HttpFilterValue::JwtAuthentication(conf.new_from()),
             HttpFilterValue::McpGateway(conf) => HttpFilterValue::McpGateway(conf.new_from()),
             HttpFilterValue::Cors(conf) => HttpFilterValue::Cors(conf.clone()),
         }
@@ -174,7 +174,7 @@ impl HttpFilterValue {
             HttpFilterValue::Rbac(rbac) => apply_authorization_rules(rbac, request),
             HttpFilterValue::RateLimit(rl) => rl.run(request),
             HttpFilterValue::ExternalProcessor(ext_proc) => ext_proc.apply_request(request).await,
-            HttpFilterValue::JwtAuthentication(jwt) => jwt.apply_request(request),
+            HttpFilterValue::JwtAuthentication(jwt) => jwt.apply_request(request).await,
             HttpFilterValue::Cors(cors) => cors.apply_request(request),
             HttpFilterValue::McpGateway(mcp) => mcp.apply_request(request).await,
         }

@@ -317,13 +317,14 @@ mod envoy_conversions {
     use std::str::FromStr;
 
     use super::{FilterChain, FilterChainMatch, Listener, MainFilter, ServerNameMatch, TlsConfig};
+    use crate::config::core::RustType;
     use crate::config::{
         common::*,
-        core::{Address, CidrRange},
+        core::Address,
         listener_filters::{ListenerFilter, ListenerFilterConfig},
         transport::SupportedEnvoyTransportSocket,
-        util::{envoy_u32_to_u16, u32_to_u16},
     };
+    use ipnet::IpNet;
     use orion_data_plane_api::envoy_data_plane_api::{
         envoy::{
             config::{
@@ -632,17 +633,25 @@ mod envoy_conversions {
                     GenericError::from_msg("full wildcard entries ('*') are not supported").with_node("server_names")
                 );
             }
-            let destination_port = destination_port.map(envoy_u32_to_u16).transpose().with_node("destination_port")?;
-            let source_ports =
-                source_ports.into_iter().map(u32_to_u16).collect::<Result<_, _>>().with_node("source_ports")?;
+            let destination_port = destination_port
+                .map(|x| x.value.try_into())
+                .transpose()
+                .map_err(|_| GenericError::from_msg("invalid destination port").with_node("destination_port"))?;
+
+            let source_ports = source_ports
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<Result<_, _>>()
+                .map_err(|_| GenericError::from_msg("invalid source port").with_node("source_ports"))?;
+
             let destination_prefix_ranges = prefix_ranges
                 .into_iter()
-                .map(|envoy| CidrRange::try_from(envoy).map(CidrRange::into_ipnet))
+                .map(|envoy| RustType::<IpNet>::try_from(envoy).map(RustType::into_inner))
                 .collect::<Result<_, _>>()
                 .with_node("prefix_ranges")?;
             let source_prefix_ranges = source_prefix_ranges
                 .into_iter()
-                .map(|envoy| CidrRange::try_from(envoy).map(CidrRange::into_ipnet))
+                .map(|envoy| RustType::<IpNet>::try_from(envoy).map(RustType::into_inner))
                 .collect::<Result<_, _>>()
                 .with_node("source_prefix_ranges")?;
             Ok(Self { server_names, destination_port, source_ports, destination_prefix_ranges, source_prefix_ranges })
