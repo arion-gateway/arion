@@ -261,7 +261,7 @@ impl HttpChannelBuilder {
         }
     }
 
-     fn build_channel_from_authority(self) -> crate::Result<HttpChannel> {
+    fn build_channel_from_authority(self) -> crate::Result<HttpChannel> {
         let authority = self.authority.clone().ok_or_else(|| Error::from("Authority is mandatory"))?;
         let client_builder = self.configure_hyper_client();
 
