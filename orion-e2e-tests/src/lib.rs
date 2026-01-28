@@ -23,7 +23,7 @@ pub mod xds_server;
 
 pub use error::{Error, Result};
 pub use orion_instance::{OrionInstance, SpawnOptions};
-pub use port_allocator::{allocate_port, PortAllocator};
+pub use port_allocator::PortBlock;
 pub use test_backend::{CapturedRequest, PreConfiguredResponse, TestBackend};
-pub use test_client::TestClient;
+pub use test_client::{RequestBuilder, TestClient};
 pub use xds_harness::{HarnessError, HarnessTimeouts, XdsEnabledHarness, XdsHarnessOptions};

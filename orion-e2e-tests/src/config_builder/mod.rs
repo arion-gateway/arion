@@ -35,7 +35,7 @@ pub use filter_chain::{FilterChain, FilterChainBuilder};
 pub use hcm::{CodecType, Hcm, HcmBuilder};
 pub use listener::{Listener, ListenerBuilder};
 pub use retry::{RetryOn, RetryPolicy, RetryPolicyBuilder};
-pub use route::{Route, RouteBuilder};
+pub use route::{RedirectBuilder, Route, RouteBuilder};
 pub use route_config::{RouteConfig, RouteConfigBuilder};
 pub use secret::{Secret, SecretBuilder};
 pub use tls::{DownstreamTls, DownstreamTlsBuilder, UpstreamTls, UpstreamTlsBuilder};

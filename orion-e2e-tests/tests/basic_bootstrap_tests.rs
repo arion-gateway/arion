@@ -12,11 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::net::SocketAddr;
-
 use http::StatusCode;
 use orion_e2e_tests::config_builder::presets;
-use orion_e2e_tests::{OrionInstance, PreConfiguredResponse, TestBackend, TestClient};
+use orion_e2e_tests::{OrionInstance, PreConfiguredResponse, SpawnOptions, TestBackend, TestClient};
 
 #[tokio::test]
 #[ignore]
@@ -26,14 +24,14 @@ async fn test_basic_http_proxy() {
 
     backend.set_default_response(PreConfiguredResponse::with_body("Hello from backend!")).await;
 
-    let (bootstrap, listener_port) =
-        presets::simple_proxy("backend", backend_addr).expect("Failed to create proxy config");
+    let bootstrap = presets::simple_proxy("backend", backend_addr);
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
 
-    let listener_addr = SocketAddr::from(([127, 0, 0, 1], listener_port));
-    let orion = OrionInstance::spawn(&config_path, listener_addr).await.expect("Failed to spawn Orion");
+    let orion = OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default())
+        .await
+        .expect("Failed to spawn Orion");
 
-    let client = TestClient::new(listener_addr);
+    let client = TestClient::new(orion.listener_addr().unwrap());
     let response = client.get("/hello").await.expect("Failed to send request");
 
     response.assert_status(StatusCode::OK);
@@ -52,14 +50,14 @@ async fn test_multiple_requests() {
     let mut backend = TestBackend::start().await.expect("Failed to start test backend");
     backend.set_default_response(PreConfiguredResponse::with_body("response")).await;
 
-    let (bootstrap, listener_port) =
-        presets::simple_proxy("backend", backend.addr()).expect("Failed to create proxy config");
+    let bootstrap = presets::simple_proxy("backend", backend.addr());
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
 
-    let listener_addr = SocketAddr::from(([127, 0, 0, 1], listener_port));
-    let orion = OrionInstance::spawn(&config_path, listener_addr).await.expect("Failed to spawn Orion");
+    let orion = OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default())
+        .await
+        .expect("Failed to spawn Orion");
 
-    let client = TestClient::new(listener_addr);
+    let client = TestClient::new(orion.listener_addr().unwrap());
 
     for i in 0..5 {
         let response = client.get(&format!("/request/{i}")).await.expect("Failed to send request");
@@ -76,19 +74,17 @@ async fn test_multiple_requests() {
 #[tokio::test]
 #[ignore]
 async fn test_direct_response() {
-    use orion_e2e_tests::config_builder::*;
-
-    let (bootstrap, listener_port) = presets::routed_proxy(
+    let bootstrap = presets::routed_proxy(
         [presets::direct_response_route("/health", 200, "OK"), presets::default_route("dummy_backend")],
         [presets::static_cluster("dummy_backend", "127.0.0.1:9999".parse().unwrap())],
-    )
-    .expect("Failed to create proxy config");
+    );
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
 
-    let listener_addr = SocketAddr::from(([127, 0, 0, 1], listener_port));
-    let orion = OrionInstance::spawn(&config_path, listener_addr).await.expect("Failed to spawn Orion");
+    let orion = OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default())
+        .await
+        .expect("Failed to spawn Orion");
 
-    let client = TestClient::new(listener_addr);
+    let client = TestClient::new(orion.listener_addr().unwrap());
     let response = client.get("/health").await.expect("Failed to send request");
 
     response.assert_status(StatusCode::OK);
@@ -104,14 +100,14 @@ async fn test_post_with_body() {
     let mut backend = TestBackend::start().await.expect("Failed to start test backend");
     backend.set_default_response(PreConfiguredResponse::with_status(StatusCode::CREATED)).await;
 
-    let (bootstrap, listener_port) =
-        presets::simple_proxy("backend", backend.addr()).expect("Failed to create proxy config");
+    let bootstrap = presets::simple_proxy("backend", backend.addr());
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
 
-    let listener_addr = SocketAddr::from(([127, 0, 0, 1], listener_port));
-    let orion = OrionInstance::spawn(&config_path, listener_addr).await.expect("Failed to spawn Orion");
+    let orion = OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default())
+        .await
+        .expect("Failed to spawn Orion");
 
-    let client = TestClient::new(listener_addr);
+    let client = TestClient::new(orion.listener_addr().unwrap());
     let body = r#"{"name": "test", "value": 42}"#;
     let response = client.post("/api/data", body).await.expect("Failed to send request");
 

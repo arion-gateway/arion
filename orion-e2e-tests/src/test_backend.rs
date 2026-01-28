@@ -27,7 +27,6 @@ use tokio::net::TcpListener;
 use tokio::sync::{mpsc, Mutex, Notify};
 use tracing::{debug, error, info, warn};
 
-use crate::port_allocator::allocate_port;
 use crate::{Error, Result};
 
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
@@ -45,6 +44,11 @@ impl CapturedRequest {
     #[must_use]
     pub fn header(&self, name: &str) -> Option<&str> {
         self.headers.get(name).and_then(|v| v.to_str().ok())
+    }
+
+    #[must_use]
+    pub fn header_all(&self, name: &str) -> Vec<&str> {
+        self.headers.get_all(name).iter().filter_map(|v| v.to_str().ok()).collect()
     }
 
     #[must_use]
@@ -118,13 +122,17 @@ pub struct TestBackend {
 
 impl TestBackend {
     pub async fn start() -> Result<Self> {
-        let port = allocate_port()?;
-        Self::start_on_port(port).await
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        Self::start_with_listener(listener).await
     }
 
     pub async fn start_on_port(port: u16) -> Result<Self> {
         let addr = SocketAddr::from(([127, 0, 0, 1], port));
         let listener = TcpListener::bind(addr).await?;
+        Self::start_with_listener(listener).await
+    }
+
+    pub async fn start_with_listener(listener: TcpListener) -> Result<Self> {
         let addr = listener.local_addr()?;
 
         info!(?addr, "Starting test backend server");

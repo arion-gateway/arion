@@ -42,10 +42,9 @@ TestClient  ──────►  OrionInstance  ──────────
 The simplest way to test proxy functionality using the preset helpers:
 
 ```rust
-use std::net::SocketAddr;
 use http::StatusCode;
 use orion_e2e_tests::config_builder::presets;
-use orion_e2e_tests::{OrionInstance, PreConfiguredResponse, TestBackend, TestClient};
+use orion_e2e_tests::{OrionInstance, PreConfiguredResponse, SpawnOptions, TestBackend, TestClient};
 
 #[tokio::test]
 #[ignore]
@@ -53,13 +52,13 @@ async fn test_basic_proxy() {
     let mut backend = TestBackend::start().await.unwrap();
     backend.set_default_response(PreConfiguredResponse::with_body("Hello!")).await;
 
-    let (bootstrap, port) = presets::simple_proxy("backend", backend.addr()).unwrap();
+    let bootstrap = presets::simple_proxy("backend", backend.addr());
     let config_path = bootstrap.build_to_temp().unwrap();
 
-    let listener_addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
-    let orion = OrionInstance::spawn(&config_path, listener_addr).await.unwrap();
+    // spawn_auto_port discovers the actual port from Orion's logs
+    let orion = OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default()).await.unwrap();
 
-    let client = TestClient::new(orion.listener_addr());
+    let client = TestClient::new(orion.listener_addr().unwrap());
     let response = client.get("/test").await.unwrap();
 
     response.assert_status(StatusCode::OK);
@@ -78,11 +77,10 @@ async fn test_basic_proxy() {
 For complex configurations, use the full composable builder API:
 
 ```rust
-use std::net::SocketAddr;
 use std::time::Duration;
 use http::StatusCode;
 use orion_e2e_tests::config_builder::*;
-use orion_e2e_tests::{OrionInstance, PreConfiguredResponse, TestBackend, TestClient};
+use orion_e2e_tests::{OrionInstance, PreConfiguredResponse, SpawnOptions, TestBackend, TestClient};
 
 #[tokio::test]
 #[ignore]
@@ -119,10 +117,10 @@ async fn test_with_custom_config() {
         .hcm(hcm)
         .build();
 
-    let (listener, port) = ListenerBuilder::new("http")
-        .auto_port()
-        .unwrap();
-    let listener = listener.filter_chain(filter_chain).build();
+    let listener = ListenerBuilder::new("http")
+        .port(0)
+        .filter_chain(filter_chain)
+        .build();
 
     let config_path = BootstrapBuilder::new()
         .listener(listener)
@@ -130,10 +128,10 @@ async fn test_with_custom_config() {
         .build_to_temp()
         .unwrap();
 
-    let listener_addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
-    let orion = OrionInstance::spawn(&config_path, listener_addr).await.unwrap();
+    // spawn_auto_port discovers the actual port from Orion's logs
+    let orion = OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default()).await.unwrap();
 
-    let client = TestClient::new(orion.listener_addr());
+    let client = TestClient::new(orion.listener_addr().unwrap());
     let response = client.get("/api/users").await.unwrap();
     response.assert_status(StatusCode::OK);
 
@@ -145,6 +143,7 @@ async fn test_with_custom_config() {
 ### Multiple Routes
 
 ```rust
+use std::net::SocketAddr;
 use orion_e2e_tests::config_builder::presets;
 
 let api_backend: SocketAddr = "127.0.0.1:8080".parse().unwrap();
@@ -161,21 +160,24 @@ let clusters = vec![
     presets::static_cluster("static-cluster", static_backend),
 ];
 
-let (bootstrap, port) = presets::routed_proxy(routes, clusters).unwrap();
+let bootstrap = presets::routed_proxy(routes, clusters);
 ```
 
 ### Direct Response (Health Check)
 
 ```rust
+use std::net::SocketAddr;
 use orion_e2e_tests::config_builder::presets;
 
-let (bootstrap, port) = presets::routed_proxy(
+let backend_addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+
+let bootstrap = presets::routed_proxy(
     [
         presets::direct_response_route("/health", 200, "OK"),
         presets::default_route("backend"),
     ],
     [presets::static_cluster("backend", backend_addr)],
-).unwrap();
+);
 ```
 
 ### With Retry Policy
@@ -217,7 +219,6 @@ Use `XdsEnabledHarness` for dynamic configuration via xDS. It handles xDS server
 use std::net::SocketAddr;
 use std::time::Duration;
 use http::StatusCode;
-use orion_e2e_tests::allocate_port;
 use orion_e2e_tests::config_builder::{
     ClusterBuilder, EndpointBuilder, FilterChainBuilder, HcmBuilder,
     ListenerBuilder, RouteBuilder, RouteConfigBuilder, VirtualHostBuilder,
@@ -233,7 +234,7 @@ async fn test_dynamic_xds_config() {
     // Start harness (spawns xDS server and Orion, waits for connection)
     let mut harness = XdsEnabledHarness::start().await.unwrap();
 
-    let listener_port = allocate_port().unwrap();
+    let listener_port = harness.allocate_listener_port().unwrap();
     let listener_addr = SocketAddr::from(([127, 0, 0, 1], listener_port));
 
     // Build and push configuration
@@ -369,30 +370,43 @@ response.assert_body("expected");
 response.assert_header("x-custom", "value");
 ```
 
-### PortAllocator
+### PortBlock (for xDS tests)
+
+For xDS tests that need explicit ports before configuration is pushed, use `PortBlock` to reserve a block of ports:
 
 ```rust
-use orion_e2e_tests::{allocate_port, PortAllocator};
+use orion_e2e_tests::PortBlock;
 
-let port = allocate_port()?;
+// Reserve a block of 50 ports (uses file-based locking for parallel safety)
+let block = PortBlock::reserve()?;
+let port1 = block.allocate()?;
+let port2 = block.allocate()?;
+// Block is released when dropped
 
-let allocator = PortAllocator::new();
-let port = allocator.allocate()?;
-let addr = allocator.allocate_addr()?;
+// Or use XdsEnabledHarness which manages PortBlock automatically:
+let mut harness = XdsEnabledHarness::start().await?;
+let listener_port = harness.allocate_listener_port()?;
 ```
 
 ### OrionInstance
 
 ```rust
-use orion_e2e_tests::orion_instance::{OrionInstance, SpawnOptions};
+use std::time::Duration;
+use orion_e2e_tests::{OrionInstance, SpawnOptions};
 
-let orion = OrionInstance::spawn(&config_path, listener_addr).await?;
+// Recommended: Use port 0 in config and discover port from logs
+let orion = OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default()).await?;
+let listener_addr = orion.listener_addr().unwrap();
 
+// With custom options
 let options = SpawnOptions::default()
     .with_ready_timeout(Duration::from_secs(30))
     .with_num_cpus(4)
     .with_cleanup();
-let orion = OrionInstance::spawn_with_options(&config_path, listener_addr, options).await?;
+let orion = OrionInstance::spawn_auto_port(&config_path, "http", options).await?;
+
+// For xDS tests where no listener is configured initially
+let orion = OrionInstance::spawn_no_listener(&config_path, SpawnOptions::default()).await?;
 
 orion.shutdown();
 ```
@@ -499,10 +513,9 @@ XdsEnabledHarness
 
 | Function | Description |
 |----------|-------------|
-| `presets::simple_proxy(name, addr)` | Single cluster, catch-all route |
-| `presets::routed_proxy(routes, clusters)` | Multiple routes and clusters |
+| `presets::simple_proxy(name, addr)` | Single cluster, catch-all route (port 0) |
+| `presets::routed_proxy(routes, clusters)` | Multiple routes and clusters (port 0) |
 | `presets::http_listener(name, port)` | HTTP listener with HCM |
-| `presets::http_listener_auto(name)` | Auto-allocate port |
 | `presets::static_cluster(name, addr)` | Single-endpoint cluster |
 | `presets::static_cluster_multi(name, addrs)` | Multi-endpoint cluster |
 | `presets::default_route(cluster)` | Catch-all `/` route |

@@ -243,7 +243,8 @@ impl Listener {
             Err(e) => return e,
         };
 
-        info!("listener '{name}' started: {local_address}");
+        let actual_address = listener.local_addr().unwrap_or(local_address);
+        info!("listener '{name}' started: {actual_address}");
         let mut filter_chains = Arc::new(filter_chains);
         let proxy_protocol_config = proxy_protocol_config.map(Arc::new);
         let _listener_name = name;

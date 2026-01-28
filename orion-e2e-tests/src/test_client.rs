@@ -47,6 +47,11 @@ impl TestResponse {
     }
 
     #[must_use]
+    pub fn header_all(&self, name: &str) -> Vec<&str> {
+        self.headers.get_all(name).iter().filter_map(|v| v.to_str().ok()).collect()
+    }
+
+    #[must_use]
     pub fn body_str(&self) -> Option<&str> {
         std::str::from_utf8(&self.body).ok()
     }

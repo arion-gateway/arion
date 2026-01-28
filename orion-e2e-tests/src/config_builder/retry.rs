@@ -27,6 +27,7 @@ pub enum RetryOn {
     Reset,
     ConnectFailure,
     RefusedStream,
+    RetriableStatusCodes,
 }
 
 impl RetryOn {
@@ -38,6 +39,7 @@ impl RetryOn {
             Self::Reset => "reset",
             Self::ConnectFailure => "connect-failure",
             Self::RefusedStream => "refused-stream",
+            Self::RetriableStatusCodes => "retriable-status-codes",
         }
     }
 }
@@ -107,6 +109,9 @@ impl RetryPolicyBuilder {
 
     #[must_use]
     pub fn retriable_status_code(mut self, code: u32) -> Self {
+        if !self.retry_on.contains(&RetryOn::RetriableStatusCodes) {
+            self.retry_on.push(RetryOn::RetriableStatusCodes);
+        }
         if !self.retriable_status_codes.contains(&code) {
             self.retriable_status_codes.push(code);
         }
@@ -118,6 +123,9 @@ impl RetryPolicyBuilder {
     where
         I: IntoIterator<Item = u32>,
     {
+        if !self.retry_on.contains(&RetryOn::RetriableStatusCodes) {
+            self.retry_on.push(RetryOn::RetriableStatusCodes);
+        }
         for code in codes {
             if !self.retriable_status_codes.contains(&code) {
                 self.retriable_status_codes.push(code);

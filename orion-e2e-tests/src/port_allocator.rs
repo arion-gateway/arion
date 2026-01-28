@@ -12,63 +12,101 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::net::{SocketAddr, TcpListener};
+use std::fs::{self, OpenOptions};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU16, Ordering};
 
 use crate::{Error, Result};
 
 const BASE_PORT: u16 = 40000;
 const MAX_PORT: u16 = 50000;
+const PORT_BLOCK_SIZE: u16 = 50;
+const NUM_BLOCKS: u16 = (MAX_PORT - BASE_PORT) / PORT_BLOCK_SIZE;
 
-static NEXT_PORT: AtomicU16 = AtomicU16::new(BASE_PORT);
+/// A reserved block of ports for a single test runner.
+///
+/// Reserves a contiguous block of ports using file-based locking.
+/// Other test runners cannot use the same block until this is dropped.
+///
+/// # Example
+///
+/// ```no_run
+/// use orion_e2e_tests::PortBlock;
+///
+/// let block = PortBlock::reserve().expect("Failed to reserve port block");
+/// let port1 = block.allocate().expect("Failed to allocate port");
+/// let port2 = block.allocate().expect("Failed to allocate port");
+/// // Block is released when dropped
+/// ```
+#[derive(Debug)]
+pub struct PortBlock {
+    block_id: u16,
+    start_port: u16,
+    next_offset: AtomicU16,
+    lock_file: PathBuf,
+}
 
-#[derive(Debug, Default)]
-pub struct PortAllocator;
+impl PortBlock {
+    pub fn reserve() -> Result<Self> {
+        let lock_dir = std::env::temp_dir().join("orion-port-locks");
+        fs::create_dir_all(&lock_dir)
+            .map_err(|e| Error::PortAllocationFailed(format!("Failed to create lock directory: {}", e)))?;
 
-impl PortAllocator {
-    #[must_use]
-    pub fn new() -> Self {
-        Self
+        for block_id in 0..NUM_BLOCKS {
+            let lock_path = lock_dir.join(format!("block_{}.lock", block_id));
+
+            match OpenOptions::new().write(true).create_new(true).open(&lock_path) {
+                Ok(_file) => {
+                    let start_port = BASE_PORT + (block_id * PORT_BLOCK_SIZE);
+                    tracing::debug!(block_id, start_port, "Reserved port block");
+                    return Ok(Self { block_id, start_port, next_offset: AtomicU16::new(0), lock_file: lock_path });
+                },
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    continue;
+                },
+                Err(e) => {
+                    return Err(Error::PortAllocationFailed(format!("Lock file error: {}", e)));
+                },
+            }
+        }
+
+        Err(Error::PortAllocationFailed("All port blocks are reserved - too many parallel test runners".into()))
     }
 
     pub fn allocate(&self) -> Result<u16> {
-        let listener = TcpListener::bind("127.0.0.1:0")?;
-        let port = listener.local_addr()?.port();
+        let offset = self.next_offset.fetch_add(1, Ordering::SeqCst);
+        if offset >= PORT_BLOCK_SIZE {
+            return Err(Error::PortAllocationFailed(format!(
+                "Port block {} exhausted (used all {} ports)",
+                self.block_id, PORT_BLOCK_SIZE
+            )));
+        }
+        let port = self.start_port + offset;
+        tracing::trace!(port, block_id = self.block_id, "Allocated port from block");
         Ok(port)
     }
 
-    pub fn allocate_addr(&self) -> Result<SocketAddr> {
-        let port = self.allocate()?;
-        Ok(SocketAddr::from(([127, 0, 0, 1], port)))
+    pub fn allocate_many(&self, count: u16) -> Result<Vec<u16>> {
+        (0..count).map(|_| self.allocate()).collect()
     }
 
-    pub fn allocate_many(&self, count: usize) -> Result<Vec<u16>> {
-        let mut ports = Vec::with_capacity(count);
-        for _ in 0..count {
-            ports.push(self.allocate()?);
-        }
-        Ok(ports)
+    #[must_use]
+    pub fn range(&self) -> (u16, u16) {
+        (self.start_port, self.start_port + PORT_BLOCK_SIZE - 1)
     }
 
-    pub fn allocate_sequential(&self) -> Result<u16> {
-        loop {
-            let port = NEXT_PORT.fetch_add(1, Ordering::SeqCst);
-            if port > MAX_PORT {
-                NEXT_PORT.store(BASE_PORT, Ordering::SeqCst);
-                return Err(Error::PortAllocationFailed("Exhausted port range, resetting".to_string()));
-            }
-
-            if TcpListener::bind(("127.0.0.1", port)).is_ok() {
-                return Ok(port);
-            }
-        }
+    #[must_use]
+    pub fn block_id(&self) -> u16 {
+        self.block_id
     }
 }
 
-pub fn allocate_port() -> Result<u16> {
-    PortAllocator::new().allocate()
-}
-
-pub fn allocate_ports(count: usize) -> Result<Vec<u16>> {
-    PortAllocator::new().allocate_many(count)
+impl Drop for PortBlock {
+    fn drop(&mut self) {
+        if let Err(e) = fs::remove_file(&self.lock_file) {
+            tracing::warn!(block_id = self.block_id, error = %e, "Failed to remove port block lock file");
+        } else {
+            tracing::debug!(block_id = self.block_id, "Released port block");
+        }
+    }
 }

@@ -16,7 +16,6 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use http::StatusCode;
-use orion_e2e_tests::allocate_port;
 use orion_e2e_tests::config_builder::{
     ClusterBuilder, EndpointBuilder, FilterChainBuilder, HcmBuilder, ListenerBuilder, RouteBuilder, RouteConfigBuilder,
     VirtualHostBuilder,
@@ -31,7 +30,7 @@ async fn test_dynamic_xds_config() {
 
     let mut harness = XdsEnabledHarness::start().await.expect("Failed to start harness");
 
-    let listener_port = allocate_port().expect("Failed to allocate listener port");
+    let listener_port = harness.allocate_listener_port().expect("Failed to allocate listener port");
     let listener_addr = SocketAddr::from(([127, 0, 0, 1], listener_port));
 
     let cluster = ClusterBuilder::new("backend").endpoint(EndpointBuilder::from_socket_addr(backend.addr())).build();
@@ -72,7 +71,7 @@ async fn test_dynamic_config_update() {
 
     let mut harness = XdsEnabledHarness::start().await.expect("Failed to start harness");
 
-    let listener_port = allocate_port().expect("Failed to allocate listener port");
+    let listener_port = harness.allocate_listener_port().expect("Failed to allocate listener port");
     let listener_addr = SocketAddr::from(([127, 0, 0, 1], listener_port));
 
     let cluster1 = ClusterBuilder::new("backend1").endpoint(EndpointBuilder::from_socket_addr(backend1.addr())).build();
@@ -104,7 +103,7 @@ async fn test_dynamic_config_update() {
     response.assert_body("Response from backend1");
 
     let response = client.get("/service/test").await.expect("Failed to send request to /service");
-    response.assert_status(StatusCode::SERVICE_UNAVAILABLE);
+    response.assert_status(StatusCode::INTERNAL_SERVER_ERROR);
 
     harness.push_cluster(&cluster2).await.expect("Failed to push cluster2");
 

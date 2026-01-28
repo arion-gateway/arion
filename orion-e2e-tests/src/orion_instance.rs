@@ -20,6 +20,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use tokio::sync::oneshot;
 use tracing::{debug, info, warn};
 
 use crate::{Error, Result};
@@ -64,6 +65,92 @@ impl OrionInstance {
     #[allow(clippy::unused_async)]
     pub async fn spawn_no_listener(config_path: impl AsRef<Path>, options: SpawnOptions) -> Result<Self> {
         Self::spawn_internal(config_path, None, options).await
+    }
+
+    pub async fn spawn_auto_port(
+        config_path: impl AsRef<Path>,
+        listener_name: impl Into<String>,
+        options: SpawnOptions,
+    ) -> Result<Self> {
+        let listener_name = listener_name.into();
+        let config_path = config_path.as_ref().to_path_buf();
+        let shutdown_requested = Arc::new(AtomicBool::new(false));
+
+        info!(?config_path, ?listener_name, "Spawning Orion instance with auto port discovery");
+
+        let orion_bin = find_orion_binary()?;
+        debug!(?orion_bin, "Found Orion binary");
+
+        let mut cmd = Command::new(&orion_bin);
+        cmd.arg("--config").arg(&config_path);
+
+        if let Some(cpus) = options.num_cpus {
+            cmd.arg("--num-cpus").arg(cpus.to_string());
+        }
+
+        let log_level = options.log_level.as_deref().unwrap_or("info");
+        cmd.env("RUST_LOG", log_level);
+
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+
+        let mut process = cmd
+            .spawn()
+            .map_err(|e| Error::ProcessStartFailed(format!("Failed to spawn orion binary at {orion_bin:?}: {e}")))?;
+
+        let stdout = process.stdout.take();
+
+        let (port_tx, port_rx) = oneshot::channel();
+        let shutdown_flag = Arc::clone(&shutdown_requested);
+        let verbose = options.verbose_output;
+        let name_for_parser = listener_name.clone();
+
+        let output_reader = stdout.map(|stdout| {
+            std::thread::spawn(move || {
+                let reader = BufReader::new(stdout);
+                let mut port_tx = Some(port_tx);
+                for line in reader.lines() {
+                    if shutdown_flag.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    match line {
+                        Ok(line) => {
+                            if let Some(tx) = port_tx.take() {
+                                if let Some(addr) = parse_listener_started(&line, &name_for_parser) {
+                                    let _ = tx.send(addr);
+                                } else {
+                                    port_tx = Some(tx); // Put it back
+                                }
+                            }
+                            if verbose {
+                                eprintln!("[ORION] {}", line);
+                            }
+                            debug!(target: "orion_output", "{}", line);
+                        },
+                        Err(e) => {
+                            warn!("Error reading orion output: {}", e);
+                            break;
+                        },
+                    }
+                }
+            })
+        });
+
+        let listener_addr = tokio::time::timeout(options.ready_timeout, port_rx)
+            .await
+            .map_err(|_| Error::ReadyTimeout(options.ready_timeout))?
+            .map_err(|_| Error::Config("Failed to discover listener port from logs".into()))?;
+
+        info!(?listener_addr, "Discovered Orion listener address");
+
+        Ok(Self {
+            process: Some(process),
+            config_path,
+            cleanup_config: options.cleanup_config,
+            listener_addr: Some(listener_addr),
+            shutdown_requested,
+            _output_reader: output_reader,
+        })
     }
 
     #[allow(clippy::unused_async)]
@@ -254,6 +341,12 @@ impl SpawnOptions {
         self.num_cpus = Some(cpus);
         self
     }
+
+    #[must_use]
+    pub fn with_verbose(mut self) -> Self {
+        self.verbose_output = true;
+        self
+    }
 }
 
 fn find_orion_binary() -> Result<PathBuf> {
@@ -289,4 +382,13 @@ fn find_orion_binary() -> Result<PathBuf> {
     }
 
     Err(Error::ProcessStartFailed("Could not find orion binary. Run `cargo build -p orion-proxy` first.".to_string()))
+}
+
+fn parse_listener_started(line: &str, name: &str) -> Option<SocketAddr> {
+    let pattern = format!("listener '{}' started: ", name);
+    line.find(&pattern).and_then(|idx| {
+        let addr_start = idx + pattern.len();
+        let addr_end = line[addr_start..].find(' ').map(|i| addr_start + i).unwrap_or(line.len());
+        line[addr_start..addr_end].parse().ok()
+    })
 }

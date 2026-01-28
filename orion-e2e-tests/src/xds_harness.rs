@@ -22,8 +22,9 @@ use tracing::info;
 
 use crate::config_builder::xds::{ConfigPusher, PushResult, ServerEventReceiver, XdsError};
 use crate::config_builder::{BootstrapBuilder, Cluster, Endpoint, Listener, RouteConfig, Secret};
+use crate::port_allocator::PortBlock;
 use crate::xds_server::{start_tracked_aggregate_server, ServerAction, TrackedXdsServer};
-use crate::{allocate_port, OrionInstance, SpawnOptions};
+use crate::{OrionInstance, SpawnOptions};
 
 #[derive(Debug, Error)]
 pub enum HarnessError {
@@ -63,6 +64,7 @@ impl Default for XdsHarnessOptions {
 }
 
 pub struct XdsEnabledHarness {
+    port_block: PortBlock,
     pusher: ConfigPusher,
     orion: OrionInstance,
     config_path: PathBuf,
@@ -77,9 +79,10 @@ impl XdsEnabledHarness {
     }
 
     pub async fn start_with_options(options: XdsHarnessOptions) -> Result<Self, HarnessError> {
-        let xds_port = allocate_port()?;
+        let port_block = PortBlock::reserve()?;
+        let xds_port = port_block.allocate()?;
 
-        info!(xds_port, "Starting xDS enabled harness");
+        info!(xds_port, block_id = port_block.block_id(), "Starting xDS enabled harness");
 
         let (stream_tx, stream_rx) = mpsc::channel::<ServerAction>(128);
         let xds_addr = SocketAddr::from(([127, 0, 0, 1], xds_port));
@@ -97,6 +100,7 @@ impl XdsEnabledHarness {
         info!("Orion connected to xDS server");
 
         Ok(Self {
+            port_block,
             pusher,
             orion,
             config_path,
@@ -153,6 +157,15 @@ impl XdsEnabledHarness {
 
     pub fn shutdown(self) {
         self.orion.shutdown();
+    }
+
+    pub fn allocate_listener_port(&self) -> Result<u16, HarnessError> {
+        Ok(self.port_block.allocate()?)
+    }
+
+    #[must_use]
+    pub fn port_block(&self) -> &PortBlock {
+        &self.port_block
     }
 
     fn check_result(result: PushResult) -> Result<(), HarnessError> {

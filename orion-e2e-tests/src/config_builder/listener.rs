@@ -19,9 +19,6 @@ use orion_data_plane_api::envoy_data_plane_api::envoy::config::{
     listener::v3::{FilterChain, Listener as EnvoyListener},
 };
 
-use crate::port_allocator::allocate_port;
-use crate::Result;
-
 #[derive(Debug, Clone)]
 pub struct ListenerBuilder {
     proto: EnvoyListener,
@@ -60,12 +57,6 @@ impl ListenerBuilder {
     pub fn port(mut self, port: u16) -> Self {
         self.port = port;
         self
-    }
-
-    pub fn auto_port(mut self) -> Result<(Self, u16)> {
-        let port = allocate_port()?;
-        self.port = port;
-        Ok((self, port))
     }
 
     #[must_use]

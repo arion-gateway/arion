@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use orion_data_plane_api::envoy_data_plane_api::envoy::config::{
-    core::v3::{HeaderValue, HeaderValueOption},
+    core::v3::{header_value_option::HeaderAppendAction, HeaderValue, HeaderValueOption},
     route::v3::{RetryPolicy, Route, VirtualHost as EnvoyVirtualHost},
 };
 
@@ -78,6 +78,61 @@ impl VirtualHostBuilder {
     #[must_use]
     pub fn remove_request_header(mut self, name: impl Into<String>) -> Self {
         self.proto.request_headers_to_remove.push(name.into());
+        self
+    }
+
+    #[must_use]
+    pub fn add_response_header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.proto.response_headers_to_add.push(HeaderValueOption {
+            header: Some(HeaderValue { key: name.into(), value: value.into(), ..Default::default() }),
+            ..Default::default()
+        });
+        self
+    }
+
+    #[must_use]
+    pub fn add_response_header_if_absent(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.proto.response_headers_to_add.push(HeaderValueOption {
+            header: Some(HeaderValue { key: name.into(), value: value.into(), ..Default::default() }),
+            append_action: HeaderAppendAction::AddIfAbsent as i32,
+            ..Default::default()
+        });
+        self
+    }
+
+    #[must_use]
+    pub fn overwrite_response_header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.proto.response_headers_to_add.push(HeaderValueOption {
+            header: Some(HeaderValue { key: name.into(), value: value.into(), ..Default::default() }),
+            append_action: HeaderAppendAction::OverwriteIfExistsOrAdd as i32,
+            ..Default::default()
+        });
+        self
+    }
+
+    #[must_use]
+    pub fn remove_response_header(mut self, name: impl Into<String>) -> Self {
+        self.proto.response_headers_to_remove.push(name.into());
+        self
+    }
+
+    #[must_use]
+    pub fn add_request_header_if_absent(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.proto.request_headers_to_add.push(HeaderValueOption {
+            header: Some(HeaderValue { key: name.into(), value: value.into(), ..Default::default() }),
+            append_action: HeaderAppendAction::AddIfAbsent as i32,
+            ..Default::default()
+        });
+        self
+    }
+
+    #[must_use]
+    pub fn overwrite_request_header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.proto.request_headers_to_add.push(HeaderValueOption {
+            header: Some(HeaderValue { key: name.into(), value: value.into(), ..Default::default() }),
+            append_action: HeaderAppendAction::OverwriteIfExistsOrAdd as i32,
+            ..Default::default()
+        });
         self
     }
 

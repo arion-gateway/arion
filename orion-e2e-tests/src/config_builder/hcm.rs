@@ -16,12 +16,15 @@ use std::time::Duration;
 
 use orion_data_plane_api::envoy_data_plane_api::{
     envoy::{
-        config::route::v3::RouteConfiguration,
+        config::{
+            core::v3::{config_source::ConfigSourceSpecifier, AggregatedConfigSource, ConfigSource},
+            route::v3::RouteConfiguration,
+        },
         extensions::filters::{
             http::router::v3::Router,
             network::http_connection_manager::v3::{
                 http_connection_manager::{CodecType as ProtoCodecType, RouteSpecifier},
-                HttpConnectionManager as EnvoyHcm, HttpFilter,
+                HttpConnectionManager as EnvoyHcm, HttpFilter, Rds,
             },
         },
     },
@@ -88,6 +91,19 @@ impl HcmBuilder {
     #[must_use]
     pub fn route_config(mut self, config: impl Into<RouteConfiguration>) -> Self {
         self.proto.route_specifier = Some(RouteSpecifier::RouteConfig(config.into()));
+        self
+    }
+
+    #[must_use]
+    pub fn rds(mut self, route_config_name: impl Into<String>) -> Self {
+        self.proto.route_specifier = Some(RouteSpecifier::Rds(Rds {
+            route_config_name: route_config_name.into(),
+            config_source: Some(ConfigSource {
+                config_source_specifier: Some(ConfigSourceSpecifier::Ads(AggregatedConfigSource {})),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }));
         self
     }
 
