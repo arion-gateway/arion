@@ -695,7 +695,7 @@ impl HttpChannel {
                     pretty_duration(&back_off, None)
                 );
 
-                tokio::time::sleep(back_off).await;
+                pingora_timeout::sleep(back_off).await;
             }
 
             last_error = Some(result.err().unwrap());

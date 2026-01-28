@@ -92,7 +92,7 @@ impl McpGatewayListenerContext {
             let session_map = Arc::clone(&self.session_map);
             let task = tokio::spawn(async move {
                 loop {
-                    tokio::time::sleep(SESSION_IDLE_TIMEOUT / 2).await;
+                    pingora_timeout::sleep(SESSION_IDLE_TIMEOUT / 2).await;
                     Self::cleanup(&session_map);
                 }
             });
