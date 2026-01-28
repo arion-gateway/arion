@@ -106,7 +106,7 @@ impl TryFrom<TransportSecret> for Arc<RootCertStore> {
     fn try_from(value: TransportSecret) -> Result<Self> {
         match value {
             TransportSecret::ValidationContext(context) => {
-                let cert_store = context.as_ref().clone();
+                let cert_store = Arc::unwrap_or_clone(context);
                 Ok(cert_store.into())
             },
             TransportSecret::Certificate(_) => {
@@ -121,7 +121,7 @@ impl TryFrom<TransportSecret> for ServerCert {
     fn try_from(value: TransportSecret) -> Result<Self> {
         match value {
             TransportSecret::Certificate(certificate) => {
-                let certificate = certificate.as_ref().clone();
+                let certificate = Arc::unwrap_or_clone(certificate);
                 ServerCert::try_from(certificate)
             },
             TransportSecret::ValidationContext(_) => {
@@ -136,7 +136,7 @@ impl TryFrom<TransportSecret> for ClientCert {
     fn try_from(value: TransportSecret) -> Result<Self> {
         match value {
             TransportSecret::Certificate(certificate) => {
-                let certificate = certificate.as_ref().clone();
+                let certificate = Arc::unwrap_or_clone(certificate);
                 Ok(ClientCert::from(certificate))
             },
             TransportSecret::ValidationContext(_) => {
@@ -286,8 +286,8 @@ impl TlsConfigurator<ServerConfig, WantsToBuildServer> {
                 }
             },
             TransportSecret::ValidationContext(cert_store) => {
-                if Some(secret_id.to_owned()) == validation_context_secret_id {
-                    let cert_store = cert_store.as_ref().to_owned().into();
+                if Some(secret_id) == validation_context_secret_id.as_deref() {
+                    let cert_store = Arc::clone(&cert_store.store);
                     TlsContextBuilder::with_supported_versions(supported_versions)
                         .with_server_certificate_store(validation_context_secret_id, cert_store)
                         .with_certificates(server_ids_and_certificates)

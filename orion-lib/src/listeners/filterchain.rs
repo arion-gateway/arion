@@ -303,7 +303,7 @@ async fn start_tls(
     match acceptor.as_mut().await {
         Ok(accepted) => {
             let client_hello = accepted.client_hello();
-            let server_name = client_hello.server_name().unwrap_or("No Address").to_owned();
+            let server_name = client_hello.server_name().unwrap_or("No Address");
             debug!(
                 "{listener_name} server_name {server_name} {codec_type:?} {:?}",
                 client_hello

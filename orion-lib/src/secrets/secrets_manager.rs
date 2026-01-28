@@ -107,17 +107,16 @@ impl TryFrom<&TlsCertificate> for CertificateSecret {
         };
 
         let mut server_name = None;
-        let cloned_cert = cert.clone();
-        let (_, x509_cert) = x509_parser::parse_x509_certificate(&cloned_cert)?;
+        let (_, x509_cert) = x509_parser::parse_x509_certificate(cert)?;
         let subject = x509_cert.subject();
         if let Ok(Some(san)) = x509_cert.subject_alternative_name() {
             for san_name in &san.value.general_names {
                 let name = match *san_name {
-                    GeneralName::DNSName(name) => name.to_owned(),
+                    GeneralName::DNSName(name) => name,
                     _ => continue,
                 };
 
-                let is_server_name = ServerName::try_from(name.clone()).is_ok();
+                let is_server_name = ServerName::try_from(name).is_ok();
                 debug!("Certificate SAN name {san_name} {name } is server name {is_server_name}");
                 if is_server_name {
                     server_name = Some(name.to_smolstr());
@@ -173,6 +172,7 @@ impl SecretManager {
         }
         Ok(value.map(|s| TransportSecret::Certificate(Arc::clone(s))))
     }
+
     pub fn get_validation_context(&self, secret_id: &str) -> Result<Option<TransportSecret>> {
         let value = self.validation_contexts.get(secret_id);
         Ok(value.map(|s| TransportSecret::ValidationContext(Arc::clone(s))))
