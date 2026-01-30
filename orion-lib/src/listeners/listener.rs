@@ -252,6 +252,8 @@ impl Listener {
                     match maybe_stream {
                         Ok((stream, peer_addr)) => {
                             let start = std::time::Instant::now();
+                            _ = stream.set_nodelay(true);
+                            _ = stream.set_quickack(true);
 
                             // This is a new downstream connection...
                             let _shard_id = std::thread::current().id();

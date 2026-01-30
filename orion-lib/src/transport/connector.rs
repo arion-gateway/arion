@@ -175,6 +175,9 @@ impl LocalConnectorWithDNSResolver {
                     })?
             };
 
+            _ = stream.set_nodelay(true);
+            _ = stream.set_quickack(true);
+
             Ok((stream, cluster_name))
         }
     }
