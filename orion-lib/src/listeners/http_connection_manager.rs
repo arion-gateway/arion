@@ -397,6 +397,8 @@ pub struct TransactionHandler {
     span_state: Option<Arc<SpanState>>,
     #[cfg(any(feature = "access-log", feature = "tracing"))]
     trans_state: TransactionPhases,
+    #[cfg(feature = "instrumentation")]
+    pub clock: quanta::Clock,
 }
 
 #[derive(Debug)]
@@ -433,6 +435,8 @@ impl Default for TransactionHandler {
             span_state: None,
             #[cfg(any(feature = "access-log", feature = "tracing"))]
             trans_state: TransactionPhases::new(),
+            #[cfg(feature = "instrumentation")]
+            clock: quanta::Clock::new(),
         }
     }
 }
@@ -465,6 +469,8 @@ impl TransactionHandler {
             shard_id: thread_id,
             #[cfg(any(feature = "access-log", feature = "tracing"))]
             trans_state: TransactionPhases::new(),
+            #[cfg(feature = "instrumentation")]
+            clock: quanta::Clock::new(),
         }
     }
 
@@ -707,7 +713,7 @@ impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usiz
     #[allow(clippy::too_many_lines)]
     async fn to_response(
         self,
-        trans_handler: &TransactionHandler,
+        trans_handle: &TransactionHandler,
         mut request: Request<OrionRequestBody>,
         (connection_manager, mut filter_idx, http_filter): (Arc<HttpConnectionManager>, usize, HttpFilterValue),
     ) -> Result<Response<OrionResponseBody>> {
@@ -801,15 +807,11 @@ impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usiz
 
                     let mut response = match &cached_route.route.action {
                         Action::DirectResponse(dr) => {
-                            dr.to_response(trans_handler, request, &cached_route.route.name).await
+                            dr.to_response(trans_handle, request, &cached_route.route.name).await
                         },
                         Action::Redirect(rd) => {
-                            rd.to_response(
-                                trans_handler,
-                                request,
-                                (&cached_route.route_match, &cached_route.route.name),
-                            )
-                            .await
+                            rd.to_response(trans_handle, request, (&cached_route.route_match, &cached_route.route.name))
+                                .await
                         },
                         Action::Route(route) => {
                             let req_headers = request.headers_mut();
@@ -827,7 +829,7 @@ impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usiz
                                 .unwrap_or_else(|| SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0));
                             route
                                 .to_response(
-                                    trans_handler,
+                                    trans_handle,
                                     request,
                                     (
                                         RouteContext {

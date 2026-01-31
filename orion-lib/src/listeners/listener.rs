@@ -20,7 +20,7 @@ use super::{
     listeners_manager::TlsContextChange,
 };
 use crate::{
-    get_shard_id,
+    get_shard_id, instrumentation,
     listeners::{
         http_connection_manager::mcp_gateway::mcp::McpGatewayListenerContext,
         metadata::{DownstreamConnectionMetadata, DownstreamMetadata},
@@ -245,6 +245,9 @@ impl Listener {
         let proxy_protocol_config = proxy_protocol_config.map(Arc::new);
         let _listener_name = name;
 
+        #[cfg(feature = "instrumentation")]
+        let clock = quanta::Clock::new();
+
         loop {
             tokio::select! {
                 biased;
@@ -253,6 +256,12 @@ impl Listener {
                 maybe_stream = listener.accept() => {
                     match maybe_stream {
                         Ok((stream, peer_addr)) => {
+                            #[cfg(feature = "instrumentation")]
+                            instrumentation::CONNECTIONS.add(1);
+
+                            #[cfg(feature = "instrumentation")]
+                            let start_clock = clock.raw();
+
                             let filter_chains = Arc::clone(&filter_chains);
                             let proxy_protocol_config = proxy_protocol_config.clone();
                             tokio::spawn(async move {
@@ -276,6 +285,12 @@ impl Listener {
                                 // or pick a specific filter_chain to run, or we could simply if-else on the with_tls_inspector variable.
                                 _ = tokio::spawn(Self::process_listener_update(name, filter_chains, with_tls_inspector, proxy_protocol_config, local_address, peer_addr, Box::new(stream), start)).await;
                             });
+
+                            #[cfg(feature = "instrumentation")]
+                            {
+                                let nanos = clock.delta_as_nanos(start_clock, clock.raw());
+                                instrumentation::CONNECTION_SETUP_TIME.observe(nanos as usize);
+                            }
                         },
                         Err(e) => {
                             warn!("failed to accept tcp connection: {e}");

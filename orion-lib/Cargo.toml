@@ -85,6 +85,8 @@ pastey = "0.2.1"
 owning_ref = "0.4.1"
 rmcp = "0.12.0"
 moka = { version = "0.12.12", features = ["sync"] }
+contatori = { version = "0.7.5", optional = true }
+quanta = { version = "0.12.6", optional = true }
 hyperlocal = "0.9.1"
 
 
@@ -97,10 +99,14 @@ test-log                       = { version = "0.2.18", features = ["trace"] }
 [features]
 # making sure we are not using pure ring
 aws_lc_rs = ["rustls/aws_lc_rs"]
+
 default   = ["aws_lc_rs","server", "macros", "elicitation", "base64", "schemars"]
 metrics   = ["dep:orion-metrics"]
 tracing   = []
 access-log = []
+
+# performance instrumentation
+instrumentation = ["dep:contatori", "dep:quanta"]
 
 # mcp gateway model features:
 

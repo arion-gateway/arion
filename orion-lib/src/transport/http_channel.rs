@@ -23,7 +23,7 @@ use crate::{
     },
     clusters::retry_policy::RetryCondition,
     event_error::{EventError, EventKind, TryInferFrom},
-    get_shard_id,
+    get_shard_id, instrument_block, instrument_function,
     listeners::{
         http_connection_manager::{http_modifiers::strip_trailers_headers, RequestHandler, TransactionHandler},
         synthetic_http_response::SyntheticHttpResponse,
@@ -522,6 +522,10 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
         request: Request<OrionRequestBody>,
         ctx: RequestContext<'a>,
     ) -> Result<Response<OrionResponseBody>> {
+        instrument_function!(_trans_handler.clock, |nanos| {
+            crate::instrumentation::REQUEST_TO_RESPONSE_TIME.observe(nanos as usize)
+        });
+
         let version = request.version();
         let _shard_id = get_shard_id!();
 
@@ -534,7 +538,16 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
 
         let mut retries = Retries::default();
         let start_time = std::time::Instant::now();
-        let result = self.send_request(request, route_timeout, retry_policy, Some(&mut retries)).await;
+        let result = instrument_block!(
+            _trans_handler.clock,
+            |nanos| {
+                crate::instrumentation::SEND_REQUEST_WAIT_RESPONSE.observe(nanos as usize);
+            },
+            {
+                self.send_request(request, route_timeout, retry_policy, Some(&mut retries), &_trans_handler.clock).await
+            }
+        );
+
         if result.is_ok() {
             with_metric!(
                 clusters::UPSTREAM_RQ_TOTAL,
@@ -572,15 +585,35 @@ impl HttpChannel {
         timeout: Option<Duration>,
         retry_policy: Option<&RetryPolicy>,
         output: Option<&mut Retries>,
+        #[cfg(feature = "instrumentation")] clock: &quanta::Clock,
     ) -> Result<Response<Incoming>> {
         match &self.channel_client {
             HttpChannelClient::Plain(sender) => {
                 let client = sender.get_or_build();
                 let req = maybe_normalize_uri(request, false)?;
                 if let Some(t) = timeout {
-                    fast_timeout(t, self.send_with_policy(req, retry_policy, client, output)).await?
+                    fast_timeout(
+                        t,
+                        self.send_with_policy(
+                            req,
+                            retry_policy,
+                            client,
+                            output,
+                            #[cfg(feature = "instrumentation")]
+                            clock,
+                        ),
+                    )
+                    .await?
                 } else {
-                    self.send_with_policy(req, retry_policy, client, output).await
+                    self.send_with_policy(
+                        req,
+                        retry_policy,
+                        client,
+                        output,
+                        #[cfg(feature = "instrumentation")]
+                        clock,
+                    )
+                    .await
                 }
             },
             HttpChannelClient::Tls(context) => {
@@ -592,9 +625,28 @@ impl HttpChannel {
                 let req = maybe_change_http_protocol_version(req, configured_version)?;
 
                 if let Some(t) = timeout {
-                    fast_timeout(t, self.send_with_policy(req, retry_policy, client, output)).await?
+                    fast_timeout(
+                        t,
+                        self.send_with_policy(
+                            req,
+                            retry_policy,
+                            client,
+                            output,
+                            #[cfg(feature = "instrumentation")]
+                            clock,
+                        ),
+                    )
+                    .await?
                 } else {
-                    self.send_with_policy(req, retry_policy, client, output).await
+                    self.send_with_policy(
+                        req,
+                        retry_policy,
+                        client,
+                        output,
+                        #[cfg(feature = "instrumentation")]
+                        clock,
+                    )
+                    .await
                 }
             },
             HttpChannelClient::Unix(uri, sender) => {
@@ -602,9 +654,28 @@ impl HttpChannel {
                 *request.uri_mut() = uri.clone();
 
                 if let Some(t) = timeout {
-                    fast_timeout(t, self.send_with_policy(request, retry_policy, client, output)).await?
+                    fast_timeout(
+                        t,
+                        self.send_with_policy(
+                            request,
+                            retry_policy,
+                            client,
+                            output,
+                            #[cfg(feature = "instrumentation")]
+                            clock,
+                        ),
+                    )
+                    .await?
                 } else {
-                    self.send_with_policy(request, retry_policy, client, output).await
+                    self.send_with_policy(
+                        request,
+                        retry_policy,
+                        client,
+                        output,
+                        #[cfg(feature = "instrumentation")]
+                        clock,
+                    )
+                    .await
                 }
             },
         }
@@ -619,6 +690,7 @@ impl HttpChannel {
         retry_policy: Option<&RetryPolicy>,
         sender: &Client<C, OrionRequestBody>,
         output: Option<&mut Retries>,
+        #[cfg(feature = "instrumentation")] clock: &quanta::Clock,
     ) -> Result<Response<Incoming>>
     where
         C: Connect + Clone + Send + Sync + 'static,
@@ -628,8 +700,26 @@ impl HttpChannel {
         }
 
         match retry_policy {
-            Some(policy) if policy.is_retriable(&req) => self.send_with_retry(req, policy, sender, output).await,
-            _ => sender.request(req).await.map_err(Error::from),
+            Some(policy) if policy.is_retriable(&req) => {
+                self.send_with_retry(
+                    req,
+                    policy,
+                    sender,
+                    output,
+                    #[cfg(feature = "instrumentation")]
+                    clock,
+                )
+                .await
+            },
+            _ => {
+                instrument_block!(
+                    clock,
+                    |nanos| {
+                        crate::instrumentation::SEND_REQUEST.observe(nanos as usize);
+                    },
+                    { sender.request(req).await.map_err(Error::from) }
+                )
+            },
         }
     }
 
@@ -639,10 +729,15 @@ impl HttpChannel {
         retry_policy: &RetryPolicy,
         sender: &Client<C, OrionRequestBody>,
         mut output: Option<&mut Retries>,
+        #[cfg(feature = "instrumentation")] clock: &quanta::Clock,
     ) -> Result<Response<Incoming>>
     where
         C: Connect + Clone + Send + Sync + 'static,
     {
+        instrument_function!(clock, |nanos| {
+            crate::instrumentation::SEND_REQUEST_WITH_RETRY.observe(nanos as usize)
+        });
+
         let (parts, body) = req.into_parts();
         let InstrumentedBody { inner, guard, state } = body;
 
