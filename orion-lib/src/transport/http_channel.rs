@@ -23,6 +23,7 @@ use crate::{
     },
     clusters::retry_policy::RetryCondition,
     event_error::{EventError, EventKind, TryInferFrom},
+    get_shard_id,
     listeners::{
         http_connection_manager::{http_modifiers::strip_trailers_headers, RequestHandler, TransactionHandler},
         synthetic_http_response::SyntheticHttpResponse,
@@ -354,7 +355,7 @@ impl HttpChannelBuilder {
 fn update_upstream_stats(event: PoolEvent, tag: &dyn Any, keys: &[&PoolKey]) {
     use tracing::debug;
     let cluster_name = *(tag.downcast_ref::<&str>().unwrap_or(&""));
-    let shard_id = std::thread::current().id();
+    let shard_id = get_shard_id!();
 
     for key in keys {
         debug!("HttpClient: {:?} for cluster {:?} (pool_key: {:?})", event, cluster_name, key);
@@ -522,11 +523,11 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
         ctx: RequestContext<'a>,
     ) -> Result<Response<OrionResponseBody>> {
         let version = request.version();
-        let _thread_id = std::thread::current().id();
+        let _shard_id = get_shard_id!();
 
-        with_metric!(clusters::UPSTREAM_RQ_ACTIVE, add, 1, _thread_id, &[KeyValue::new("cluster", self.cluster_name)]);
+        with_metric!(clusters::UPSTREAM_RQ_ACTIVE, add, 1, _shard_id, &[KeyValue::new("cluster", self.cluster_name)]);
         defer! {
-            with_metric!(clusters::UPSTREAM_RQ_ACTIVE, sub, 1, _thread_id, &[KeyValue::new("cluster", self.cluster_name)]);
+            with_metric!(clusters::UPSTREAM_RQ_ACTIVE, sub, 1, _shard_id, &[KeyValue::new("cluster", self.cluster_name)]);
         }
 
         let RequestContext { route_timeout, retry_policy } = ctx;
@@ -539,7 +540,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
                 clusters::UPSTREAM_RQ_TOTAL,
                 add,
                 1,
-                _thread_id,
+                _shard_id,
                 &[KeyValue::new("cluster", self.cluster_name)]
             );
         }
@@ -548,7 +549,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
             clusters::UPSTREAM_RQ_RETRY,
             add,
             retries.requests as u64,
-            _thread_id,
+            _shard_id,
             &[KeyValue::new("cluster", self.cluster_name)]
         );
 
@@ -556,7 +557,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
             clusters::UPSTREAM_RQ_PER_TRY_TIMEOUT,
             add,
             retries.timeouts as u64,
-            _thread_id,
+            _shard_id,
             &[KeyValue::new("cluster", self.cluster_name)]
         );
 
