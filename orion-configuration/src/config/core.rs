@@ -196,6 +196,7 @@ impl StringMatcher {
             StringMatcherPattern::Suffix(suffix) => casematcher.ends_with(suffix),
             StringMatcherPattern::Contains(needle) => casematcher.contains(needle),
             StringMatcherPattern::Regex(r) => r.matches_full(to_match),
+            StringMatcherPattern::Present => true,
         }
     }
 }
@@ -208,6 +209,7 @@ pub enum StringMatcherPattern {
     Suffix(SmolStr),
     Contains(SmolStr),
     Regex(#[serde(with = "serde_regex")] Regex),
+    Present,
 }
 
 impl PartialEq for StringMatcherPattern {
@@ -218,6 +220,7 @@ impl PartialEq for StringMatcherPattern {
             | (Self::Prefix(s1), Self::Prefix(s2))
             | (Self::Suffix(s1), Self::Suffix(s2))
             | (Self::Contains(s1), Self::Contains(s2)) => s1.eq(s2),
+            (Self::Present, Self::Present) => true,
             _ => false,
         }
     }
@@ -230,6 +233,7 @@ impl Hash for StringMatcherPattern {
         match self {
             Self::Regex(r) => r.as_str().hash(state),
             Self::Exact(s) | Self::Prefix(s) | Self::Suffix(s) | Self::Contains(s) => s.hash(state),
+            Self::Present => "present".hash(state),
         }
     }
 }
