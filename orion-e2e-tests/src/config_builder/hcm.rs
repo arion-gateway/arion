@@ -121,6 +121,12 @@ impl HcmBuilder {
     }
 
     #[must_use]
+    pub fn preserve_external_request_id(mut self, preserve: bool) -> Self {
+        self.proto.preserve_external_request_id = preserve;
+        self
+    }
+
+    #[must_use]
     pub fn with_proto<F: FnOnce(&mut EnvoyHcm)>(mut self, f: F) -> Self {
         f(&mut self.proto);
         self

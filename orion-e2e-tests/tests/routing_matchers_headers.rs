@@ -308,7 +308,7 @@ async fn test_header_regex_match() {
 
     let bootstrap = presets::routed_proxy(
         [
-            RouteBuilder::new().match_prefix("/").match_header_regex("x-request-id", "[0-9]+").cluster("matched"),
+            RouteBuilder::new().match_prefix("/").match_header_regex("x-custom-header", "[0-9]+").cluster("matched"),
             RouteBuilder::new().match_prefix("/").cluster("fallback"),
         ],
         [presets::static_cluster("matched", matched.addr()), presets::static_cluster("fallback", fallback.addr())],
@@ -319,12 +319,13 @@ async fn test_header_regex_match() {
 
     let client = TestClient::new(orion.listener_addr().unwrap());
 
-    let response = client.send(RequestBuilder::get("/test").header("x-request-id", "5508400440000")).await.unwrap();
+    let response = client.send(RequestBuilder::get("/test").header("x-custom-header", "5508400440000")).await.unwrap();
     response.assert_status(StatusCode::OK);
     response.assert_body("matched");
     matched.await_request().await.unwrap();
 
-    let response = client.send(RequestBuilder::get("/test").header("x-request-id", "not-matching-IDX")).await.unwrap();
+    let response =
+        client.send(RequestBuilder::get("/test").header("x-custom-header", "not-matching-IDX")).await.unwrap();
     response.assert_status(StatusCode::OK);
     response.assert_body("fallback");
     fallback.await_request().await.unwrap();
