@@ -45,6 +45,9 @@ pub async fn fetch_remote_jwks(
     provider_name: &str,
     provider_config: &JwtProvider,
 ) -> Result<HashMap<Kid, Arc<ValidationKey>, RandomState>, JwkError> {
+    #[cfg(feature = "instrumentation")]
+    let clock = quanta::Clock::new();
+
     let cluster_spec = ClusterSpecifier::Cluster(remote.http_uri.cluster.clone().into());
 
     let cluster_id = clusters_manager::resolve_cluster(&cluster_spec, None).ok_or(
@@ -62,7 +65,16 @@ pub async fn fetch_remote_jwks(
     let channel = http_service.channel();
 
     let start_time = Instant::now();
-    let res = channel.send_request(request, Some(remote.http_uri.timeout), remote.retry_policy.as_ref(), None).await?;
+    let res = channel
+        .send_request(
+            request,
+            Some(remote.http_uri.timeout),
+            remote.retry_policy.as_ref(),
+            None,
+            #[cfg(feature = "instrumentation")]
+            &clock,
+        )
+        .await?;
 
     if res.status() != StatusCode::OK {
         return Err(JwkError::BadStatus(res.status()));

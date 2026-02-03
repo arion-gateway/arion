@@ -25,7 +25,7 @@ use crate::{
     listeners::{http_connection_manager::HttpConnectionManager, synthetic_http_response::SyntheticHttpResponse},
     Result,
 };
-use crate::{OrionRequestBody, OrionResponseBody, RequestContext};
+use crate::{instrument_block, instrument_function, OrionRequestBody, OrionResponseBody, RequestContext};
 
 use http::{uri::Parts as UriParts, Uri};
 use hyper::{Request, Response};
@@ -34,6 +34,8 @@ use orion_configuration::config::network_filters::http_connection_manager::{
     RetryPolicy,
 };
 use orion_error::Context;
+#[cfg(feature = "instrumentation")]
+use scopeguard::defer;
 
 #[cfg(feature = "access-log")]
 use {
@@ -72,6 +74,10 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
         downstream_request: Request<OrionRequestBody>,
         (route_context, _connection_manager): (RouteContext<'a>, &HttpConnectionManager),
     ) -> Result<Response<OrionResponseBody>> {
+        instrument_function!(trans_handler.clock, |nanos| {
+            crate::instrumentation::metrics::TOTAL_ROUTE_ACTION.observe(nanos as usize)
+        });
+
         #[allow(unused_variables)]
         let RouteContext { route_name, retry_policy, remote_address, route_match, websocket_enabled_by_default } =
             route_context;
@@ -91,7 +97,14 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
         let routing_requirement = clusters_manager::get_cluster_routing_requirements(cluster_id);
         let hash_state = HashState::new(self.hash_policy.as_slice(), &downstream_request, remote_address);
         let routing_context = RoutingContext::try_from((&routing_requirement, &downstream_request, hash_state))?;
-        let maybe_channel = clusters_manager::get_http_connection(cluster_id, routing_context);
+
+        let maybe_channel = instrument_block!(
+            trans_handler.clock,
+            |nanos| {
+                crate::instrumentation::metrics::LOAD_BALANCING_SRV.observe(nanos as usize);
+            },
+            { clusters_manager::get_http_connection(cluster_id, routing_context) }
+        );
 
         match maybe_channel {
             Ok(svc_channel) => {

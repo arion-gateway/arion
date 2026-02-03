@@ -98,7 +98,6 @@ use orion_format::types::ResponseFlags as FmtResponseFlags;
 use route::RouteContext;
 use scopeguard::defer;
 use smol_str::SmolStr;
-use std::thread::ThreadId;
 use std::{
     collections::HashMap,
     net::{IpAddr, Ipv4Addr, SocketAddr},
@@ -115,6 +114,7 @@ use crate::{
         timeout_body::TimeoutBody,
     },
     event_error::EventFailure,
+    get_shard_id,
     listeners::{
         http_filters::{per_route_http_filters, FilterDecision, FilterFactory, HttpFilter, HttpFilterValue},
         metadata::DownstreamMetadata,
@@ -377,12 +377,18 @@ impl AccessLoggersContext {
     }
 }
 
+#[cfg(feature = "metrics")]
+pub type ShardId = std::thread::ThreadId;
+
+#[cfg(not(feature = "metrics"))]
+pub type ShardId = ();
+
 #[derive(Debug)]
 pub struct TransactionHandler {
     #[allow(dead_code)]
     start_instant: std::time::Instant,
     request_id: Option<RequestId>,
-    thread_id: ThreadId,
+    shard_id: ShardId,
     #[cfg(feature = "access-log")]
     access_log_ctx: Option<Mutex<AccessLoggersContext>>,
     #[cfg(feature = "tracing")]
@@ -391,6 +397,8 @@ pub struct TransactionHandler {
     span_state: Option<Arc<SpanState>>,
     #[cfg(any(feature = "access-log", feature = "tracing"))]
     trans_state: TransactionPhases,
+    #[cfg(feature = "instrumentation")]
+    pub clock: quanta::Clock,
 }
 
 #[derive(Debug)]
@@ -418,7 +426,7 @@ impl Default for TransactionHandler {
         TransactionHandler {
             start_instant: std::time::Instant::now(),
             request_id: None,
-            thread_id: std::thread::current().id(),
+            shard_id: get_shard_id!(),
             #[cfg(feature = "access-log")]
             access_log_ctx: None,
             #[cfg(feature = "tracing")]
@@ -427,6 +435,8 @@ impl Default for TransactionHandler {
             span_state: None,
             #[cfg(any(feature = "access-log", feature = "tracing"))]
             trans_state: TransactionPhases::new(),
+            #[cfg(feature = "instrumentation")]
+            clock: quanta::Clock::new(),
         }
     }
 }
@@ -442,7 +452,7 @@ struct EventInfo {
 impl TransactionHandler {
     pub fn new(
         request_id: Option<RequestId>,
-        thread_id: ThreadId,
+        thread_id: ShardId,
         #[cfg(feature = "access-log")] access_log: &[AccessLog],
         #[cfg(feature = "tracing")] trace_ctx: Option<TraceContext>,
         #[cfg(feature = "tracing")] server_span: Option<BoxedSpan>,
@@ -456,16 +466,18 @@ impl TransactionHandler {
             trace_ctx,
             #[cfg(feature = "tracing")]
             span_state: server_span.map(|span| Arc::new(SpanState::new(Some(span)))),
-            thread_id,
+            shard_id: thread_id,
             #[cfg(any(feature = "access-log", feature = "tracing"))]
             trans_state: TransactionPhases::new(),
+            #[cfg(feature = "instrumentation")]
+            clock: quanta::Clock::new(),
         }
     }
 
     #[inline]
     #[allow(dead_code)]
-    pub fn thread_id(&self) -> ThreadId {
-        self.thread_id
+    pub fn shard_id(&self) -> ShardId {
+        self.shard_id
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -520,7 +532,7 @@ impl TransactionHandler {
                         http::DOWNSTREAM_CX_TX_BYTES_TOTAL,
                         add,
                         _nbytes + resp_head_size as u64,
-                        self.thread_id(),
+                        self.shard_id(),
                         &[KeyValue::new("listener", _listener_name)]
                     );
 
@@ -590,7 +602,7 @@ impl TransactionHandler {
                         http::DOWNSTREAM_RQ_1XX,
                         add,
                         1,
-                        self.thread_id(),
+                        self.shard_id(),
                         &[KeyValue::new("listener", _listener_name)]
                     );
                 },
@@ -599,7 +611,7 @@ impl TransactionHandler {
                         http::DOWNSTREAM_RQ_2XX,
                         add,
                         1,
-                        self.thread_id(),
+                        self.shard_id(),
                         &[KeyValue::new("listener", _listener_name)]
                     );
                 },
@@ -608,7 +620,7 @@ impl TransactionHandler {
                         http::DOWNSTREAM_RQ_3XX,
                         add,
                         1,
-                        self.thread_id(),
+                        self.shard_id(),
                         &[KeyValue::new("listener", _listener_name)]
                     );
                 },
@@ -617,7 +629,7 @@ impl TransactionHandler {
                         http::DOWNSTREAM_RQ_4XX,
                         add,
                         1,
-                        self.thread_id(),
+                        self.shard_id(),
                         &[KeyValue::new("listener", _listener_name)]
                     );
                 },
@@ -626,7 +638,7 @@ impl TransactionHandler {
                         http::DOWNSTREAM_RQ_5XX,
                         add,
                         1,
-                        self.thread_id(),
+                        self.shard_id(),
                         &[KeyValue::new("listener", _listener_name)]
                     );
 
@@ -645,7 +657,7 @@ impl TransactionHandler {
                 http::DOWNSTREAM_RQ_5XX,
                 add,
                 1,
-                self.thread_id(),
+                self.shard_id(),
                 &[KeyValue::new("listener", _listener_name)]
             );
 
@@ -701,7 +713,7 @@ impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usiz
     #[allow(clippy::too_many_lines)]
     async fn to_response(
         self,
-        trans_handler: &TransactionHandler,
+        trans_handle: &TransactionHandler,
         mut request: Request<OrionRequestBody>,
         (connection_manager, mut filter_idx, http_filter): (Arc<HttpConnectionManager>, usize, HttpFilterValue),
     ) -> Result<Response<OrionResponseBody>> {
@@ -795,15 +807,11 @@ impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usiz
 
                     let mut response = match &cached_route.route.action {
                         Action::DirectResponse(dr) => {
-                            dr.to_response(trans_handler, request, &cached_route.route.name).await
+                            dr.to_response(trans_handle, request, &cached_route.route.name).await
                         },
                         Action::Redirect(rd) => {
-                            rd.to_response(
-                                trans_handler,
-                                request,
-                                (&cached_route.route_match, &cached_route.route.name),
-                            )
-                            .await
+                            rd.to_response(trans_handle, request, (&cached_route.route_match, &cached_route.route.name))
+                                .await
                         },
                         Action::Route(route) => {
                             let req_headers = request.headers_mut();
@@ -821,7 +829,7 @@ impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usiz
                                 .unwrap_or_else(|| SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0));
                             route
                                 .to_response(
-                                    trans_handler,
+                                    trans_handle,
                                     request,
                                     (
                                         RouteContext {
@@ -1116,7 +1124,7 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
         // create the transaction context
         let trans_handler = Arc::new(TransactionHandler::new(
             request_id,
-            std::thread::current().id(),
+            get_shard_id!(),
             #[cfg(feature = "access-log")]
             &self.manager.access_log,
             #[cfg(feature = "tracing")]
@@ -1140,19 +1148,19 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
             http::DOWNSTREAM_RQ_TOTAL,
             add,
             1,
-            trans_handler.thread_id(),
+            trans_handler.shard_id(),
             &[KeyValue::new("listener", listener_name)]
         );
         with_metric!(
             http::DOWNSTREAM_RQ_ACTIVE,
             add,
             1,
-            trans_handler.thread_id(),
+            trans_handler.shard_id(),
             &[KeyValue::new("listener", listener_name)]
         );
 
         #[cfg(feature = "metrics")]
-        let thread_id = trans_handler.thread_id();
+        let thread_id = trans_handler.shard_id();
         defer! {
             with_metric!(http::DOWNSTREAM_RQ_ACTIVE, sub, 1, thread_id, &[KeyValue::new("listener", listener_name)]);
         }
@@ -1209,7 +1217,7 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
                         http::DOWNSTREAM_CX_RX_BYTES_TOTAL,
                         add,
                         _nbytes + req_head_size as u64,
-                        trans_handler.thread_id(),
+                        trans_handler.shard_id(),
                         &[KeyValue::new("listener", listener_name)]
                     );
 
@@ -1277,7 +1285,7 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
                     http::DOWNSTREAM_RQ_4XX,
                     add,
                     1,
-                    trans_handler.thread_id(),
+                    trans_handler.shard_id(),
                     &[KeyValue::new("listener", listener_name)]
                 );
 
@@ -1307,7 +1315,7 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
                             http::DOWNSTREAM_CX_TX_BYTES_TOTAL,
                             add,
                             _nbytes + resp_head_size as u64,
-                            trans_handler.thread_id(),
+                            trans_handler.shard_id(),
                             &[KeyValue::new("listener", listener_name)]
                         );
 

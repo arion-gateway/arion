@@ -19,7 +19,11 @@ use super::{
     filterchain::{ConnectionHandler, FilterchainBuilder, FilterchainType},
     listeners_manager::TlsContextChange,
 };
+#[cfg(feature = "instrumentation")]
+use crate::instrumentation;
+
 use crate::{
+    get_shard_id,
     listeners::{
         http_connection_manager::mcp_gateway::mcp::McpGatewayListenerContext,
         metadata::{DownstreamConnectionMetadata, DownstreamMetadata},
@@ -244,32 +248,56 @@ impl Listener {
         let proxy_protocol_config = proxy_protocol_config.map(Arc::new);
         let _listener_name = name;
 
+        #[cfg(feature = "instrumentation")]
+        let clock = quanta::Clock::new();
+
         loop {
             tokio::select! {
+                biased;
                 // here we accept a connection, and then start processing it.
                 //  we spawn early so that we don't block other connections from being accepted due to a slow client
                 maybe_stream = listener.accept() => {
                     match maybe_stream {
                         Ok((stream, peer_addr)) => {
-                            let start = std::time::Instant::now();
+                            #[cfg(feature = "instrumentation")]
+                            instrumentation::metrics::CONNECTIONS.add(1);
 
-                            // This is a new downstream connection...
-                            let _shard_id = std::thread::current().id();
-                            with_metric!(listeners::DOWNSTREAM_CX_TOTAL, add, 1, _shard_id,&[KeyValue::new("listener", _listener_name)]);
-                            with_metric!(listeners::DOWNSTREAM_CX_ACTIVE, add, 1, _shard_id,&[KeyValue::new("listener", _listener_name)]);
+                            #[cfg(feature = "instrumentation")]
+                            let start_clock = clock.raw();
 
                             let filter_chains = Arc::clone(&filter_chains);
                             let proxy_protocol_config = proxy_protocol_config.clone();
-                            // spawn a separate task for handling this client<->proxy connection
-                            // we spawn before we know if we want to process this route because we might need to run the tls_inspector which could
-                            // stall if the client is slow to send the ClientHello and end up blocking the acceptance of new connections
-                            //
-                            //  we could optimize a little here by either splitting up the filter_chain selection and rbac into the parts that can run
-                            // before we have the ClientHello and the ones after. since we might already have enough info to decide to drop the connection
-                            // or pick a specific filter_chain to run, or we could simply if-else on the with_tls_inspector variable.
-                            tokio::spawn(Self::process_listener_update(name, filter_chains, with_tls_inspector, proxy_protocol_config, local_address, peer_addr, Box::new(stream), start));
+                            tokio::spawn(async move {
+                                let start = std::time::Instant::now();
+
+                                _ = stream.set_nodelay(true);
+                                _ = stream.set_quickack(true);
+
+                                // This is a new downstream connection...
+                                //
+                                let _shard_id = get_shard_id!();
+                                with_metric!(listeners::DOWNSTREAM_CX_TOTAL, add, 1, _shard_id,&[KeyValue::new("listener", _listener_name)]);
+                                with_metric!(listeners::DOWNSTREAM_CX_ACTIVE, add, 1, _shard_id,&[KeyValue::new("listener", _listener_name)]);
+
+                                // spawn a separate task for handling this client<->proxy connection
+                                // we spawn before we know if we want to process this route because we might need to run the tls_inspector which could
+                                // stall if the client is slow to send the ClientHello and end up blocking the acceptance of new connections
+                                //
+                                //  we could optimize a little here by either splitting up the filter_chain selection and rbac into the parts that can run
+                                // before we have the ClientHello and the ones after. since we might already have enough info to decide to drop the connection
+                                // or pick a specific filter_chain to run, or we could simply if-else on the with_tls_inspector variable.
+                                _ = tokio::spawn(Self::process_listener_update(name, filter_chains, with_tls_inspector, proxy_protocol_config, local_address, peer_addr, Box::new(stream), start)).await;
+                            });
+
+                            #[cfg(feature = "instrumentation")]
+                            {
+                                let nanos = clock.delta_as_nanos(start_clock, clock.raw());
+                                instrumentation::metrics::CONNECTION_SETUP_TIME.observe(nanos as usize);
+                            }
                         },
-                        Err(e) => {warn!("failed to accept tcp connection: {e}");}
+                        Err(e) => {
+                            warn!("failed to accept tcp connection: {e}");
+                        }
                     }
                 },
                 maybe_route_update = route_updates_receiver.recv() => {
@@ -395,14 +423,14 @@ impl Listener {
         mut stream: AsyncStream,
         start_instant: std::time::Instant,
     ) -> Result<()> {
-        let shard_id = std::thread::current().id();
+        let _shard_id = get_shard_id!();
 
         let ssl = AtomicBool::new(false);
         defer! {
-            with_metric!(listeners::DOWNSTREAM_CX_DESTROY, add, 1, shard_id, &[KeyValue::new("listener", listener_name)]);
-            with_metric!(listeners::DOWNSTREAM_CX_ACTIVE, sub, 1, shard_id, &[KeyValue::new("listener", listener_name)]);
+            with_metric!(listeners::DOWNSTREAM_CX_DESTROY, add, 1, _shard_id, &[KeyValue::new("listener", listener_name)]);
+            with_metric!(listeners::DOWNSTREAM_CX_ACTIVE, sub, 1, _shard_id, &[KeyValue::new("listener", listener_name)]);
             if ssl.load(Ordering::Relaxed) {
-                with_metric!(http::DOWNSTREAM_CX_SSL_ACTIVE, add, 1, shard_id, &[KeyValue::new("listener", listener_name)]);
+                with_metric!(http::DOWNSTREAM_CX_SSL_ACTIVE, add, 1, _shard_id, &[KeyValue::new("listener", listener_name)]);
             }
             let _ms = u64::try_from(start_instant.elapsed().as_millis()).unwrap_or(u64::MAX);
             with_histogram!(listeners::DOWNSTREAM_CX_LENGTH_MS, record, _ms, &[KeyValue::new("listener", listener_name)]);
@@ -418,14 +446,14 @@ impl Listener {
                         http::DOWNSTREAM_CX_SSL_TOTAL,
                         add,
                         1,
-                        shard_id,
+                        _shard_id,
                         &[KeyValue::new("listener", listener_name)]
                     );
                     with_metric!(
                         http::DOWNSTREAM_CX_SSL_ACTIVE,
                         add,
                         1,
-                        shard_id,
+                        _shard_id,
                         &[KeyValue::new("listener", listener_name)]
                     );
                     ssl.store(true, Ordering::Relaxed);
@@ -437,14 +465,14 @@ impl Listener {
                         http::DOWNSTREAM_CX_SSL_TOTAL,
                         add,
                         1,
-                        shard_id,
+                        _shard_id,
                         &[KeyValue::new("listener", listener_name)]
                     );
                     with_metric!(
                         http::DOWNSTREAM_CX_SSL_ACTIVE,
                         add,
                         1,
-                        shard_id,
+                        _shard_id,
                         &[KeyValue::new("listener", listener_name)]
                     );
                     ssl.store(true, Ordering::Relaxed);
@@ -480,7 +508,6 @@ impl Listener {
                     .start_filterchain(
                         stream,
                         DownstreamMetadata::new(connection_metadata, sni, listener_name),
-                        shard_id,
                         listener_name,
                         start_instant,
                     )
@@ -492,7 +519,7 @@ impl Listener {
                 listeners::NO_FILTER_CHAIN_MATCH,
                 add,
                 1,
-                shard_id,
+                _shard_id,
                 &[KeyValue::new("listener", listener_name)]
             );
             warn!("{listener_name} : No match for {peer_addr} {local_address}");

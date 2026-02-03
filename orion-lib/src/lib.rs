@@ -26,6 +26,7 @@ pub mod event_error;
 pub mod access_log;
 mod body;
 pub mod clusters;
+pub mod instrumentation;
 mod listeners;
 pub mod metrics;
 mod secrets;

@@ -229,6 +229,12 @@ fn launch_runtimes(bootstrap: Bootstrap, _access_log_config: Option<AccessLogCon
             warn!("Closing handler with error {err:?}");
         }
     }
+
+    #[cfg(feature = "instrumentation")]
+    {
+        orion_lib::instrumentation::dump_instrumentation_counters();
+    }
+
     Ok(sender_guards)
 }
 

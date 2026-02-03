@@ -20,6 +20,7 @@ use super::{
     tcp_proxy::{TcpProxy, TcpProxyBuilder},
 };
 use crate::{
+    get_shard_id,
     listeners::metadata::{DownstreamConnectionMetadata, DownstreamMetadata},
     secrets::{TlsConfigurator, WantsToBuildServer},
     transport::AsyncReadWrite,
@@ -48,7 +49,7 @@ use crate::{with_histogram, with_metric};
 use rustls::{server::Acceptor, ServerConfig};
 use scopeguard::defer;
 use smol_str::SmolStr;
-use std::{sync::Arc, thread::ThreadId};
+use std::sync::Arc;
 use tracing::{debug, warn};
 
 #[derive(Debug, Clone)]
@@ -175,10 +176,10 @@ impl FilterchainType {
         &self,
         stream: AsyncStream,
         metadata: DownstreamMetadata,
-        _shard_id: ThreadId,
         listener_name: &'static str,
         start_instant: std::time::Instant,
     ) -> Result<()> {
+        let _shard_id = get_shard_id!();
         let Self { config, handler } = self;
         match handler {
             ConnectionHandler::Http(http_connection_manager) => {
