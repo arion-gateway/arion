@@ -26,7 +26,6 @@ pub mod event_error;
 pub mod access_log;
 mod body;
 pub mod clusters;
-#[cfg(feature = "instrumentation")]
 pub mod instrumentation;
 mod listeners;
 pub mod metrics;

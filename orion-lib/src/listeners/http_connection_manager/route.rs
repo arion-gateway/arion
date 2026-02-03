@@ -34,6 +34,7 @@ use orion_configuration::config::network_filters::http_connection_manager::{
     RetryPolicy,
 };
 use orion_error::Context;
+#[cfg(feature = "instrumentation")]
 use scopeguard::defer;
 
 #[cfg(feature = "access-log")]
@@ -74,7 +75,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
         (route_context, _connection_manager): (RouteContext<'a>, &HttpConnectionManager),
     ) -> Result<Response<OrionResponseBody>> {
         instrument_function!(trans_handler.clock, |nanos| {
-            crate::instrumentation::TOTAL_ROUTE_ACTION.observe(nanos as usize)
+            crate::instrumentation::metrics::TOTAL_ROUTE_ACTION.observe(nanos as usize)
         });
 
         #[allow(unused_variables)]
@@ -100,7 +101,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
         let maybe_channel = instrument_block!(
             trans_handler.clock,
             |nanos| {
-                crate::instrumentation::LOAD_BALANCING_SRV.observe(nanos as usize);
+                crate::instrumentation::metrics::LOAD_BALANCING_SRV.observe(nanos as usize);
             },
             { clusters_manager::get_http_connection(cluster_id, routing_context) }
         );

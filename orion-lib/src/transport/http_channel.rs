@@ -523,7 +523,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
         ctx: RequestContext<'a>,
     ) -> Result<Response<OrionResponseBody>> {
         instrument_function!(_trans_handler.clock, |nanos| {
-            crate::instrumentation::REQUEST_TO_RESPONSE_TIME.observe(nanos as usize)
+            crate::instrumentation::metrics::REQUEST_TO_RESPONSE_TIME.observe(nanos as usize)
         });
 
         let version = request.version();
@@ -541,10 +541,10 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
         let result = instrument_block!(
             _trans_handler.clock,
             |nanos| {
-                crate::instrumentation::SEND_REQUEST_WAIT_RESPONSE.observe(nanos as usize);
+                crate::instrumentation::metrics::SEND_REQUEST_WAIT_RESPONSE.observe(nanos as usize);
             },
             {
-                self.send_request(request, route_timeout, retry_policy, Some(&mut retries), &_trans_handler.clock).await
+                self.send_request(request, route_timeout, retry_policy, Some(&mut retries), #[cfg(feature = "instrumentation")] &_trans_handler.clock).await
             }
         );
 
@@ -715,7 +715,7 @@ impl HttpChannel {
                 instrument_block!(
                     clock,
                     |nanos| {
-                        crate::instrumentation::SEND_REQUEST.observe(nanos as usize);
+                        crate::instrumentation::metrics::SEND_REQUEST.observe(nanos as usize);
                     },
                     { sender.request(req).await.map_err(Error::from) }
                 )
@@ -735,7 +735,7 @@ impl HttpChannel {
         C: Connect + Clone + Send + Sync + 'static,
     {
         instrument_function!(clock, |nanos| {
-            crate::instrumentation::SEND_REQUEST_WITH_RETRY.observe(nanos as usize)
+            crate::instrumentation::metrics::SEND_REQUEST_WITH_RETRY.observe(nanos as usize)
         });
 
         let (parts, body) = req.into_parts();

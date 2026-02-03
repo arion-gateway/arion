@@ -19,8 +19,11 @@ use super::{
     filterchain::{ConnectionHandler, FilterchainBuilder, FilterchainType},
     listeners_manager::TlsContextChange,
 };
+#[cfg(feature = "instrumentation")]
+use crate::instrumentation;
+
 use crate::{
-    get_shard_id, instrumentation,
+    get_shard_id,
     listeners::{
         http_connection_manager::mcp_gateway::mcp::McpGatewayListenerContext,
         metadata::{DownstreamConnectionMetadata, DownstreamMetadata},
@@ -257,7 +260,7 @@ impl Listener {
                     match maybe_stream {
                         Ok((stream, peer_addr)) => {
                             #[cfg(feature = "instrumentation")]
-                            instrumentation::CONNECTIONS.add(1);
+                            instrumentation::metrics::CONNECTIONS.add(1);
 
                             #[cfg(feature = "instrumentation")]
                             let start_clock = clock.raw();
@@ -289,7 +292,7 @@ impl Listener {
                             #[cfg(feature = "instrumentation")]
                             {
                                 let nanos = clock.delta_as_nanos(start_clock, clock.raw());
-                                instrumentation::CONNECTION_SETUP_TIME.observe(nanos as usize);
+                                instrumentation::metrics::CONNECTION_SETUP_TIME.observe(nanos as usize);
                             }
                         },
                         Err(e) => {
