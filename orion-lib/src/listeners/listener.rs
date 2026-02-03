@@ -68,6 +68,7 @@ struct PartialListener {
     filter_chains: HashMap<FilterChainMatch, FilterchainBuilder>,
     with_tls_inspector: bool,
     proxy_protocol_config: Option<DownstreamProxyProtocolConfig>,
+    tcp_backlog_size: u32,
 }
 #[derive(Debug, Clone)]
 pub struct ListenerFactory {
@@ -107,6 +108,7 @@ impl TryFrom<ConversionContext<'_, ListenerConfig>> for PartialListener {
             filter_chains,
             with_tls_inspector,
             proxy_protocol_config,
+            tcp_backlog_size: listener.tcp_backlog_size,
         })
     }
 }
@@ -124,6 +126,7 @@ impl ListenerFactory {
             filter_chains,
             with_tls_inspector,
             proxy_protocol_config,
+            tcp_backlog_size,
         } = self.listener;
 
         let filter_chains = filter_chains
@@ -140,6 +143,7 @@ impl ListenerFactory {
             proxy_protocol_config,
             route_updates_receiver,
             secret_updates_receiver,
+            tcp_backlog_size,
         })
     }
 }
@@ -187,6 +191,7 @@ pub struct Listener {
     proxy_protocol_config: Option<DownstreamProxyProtocolConfig>,
     route_updates_receiver: broadcast::Receiver<RouteConfigurationChange>,
     secret_updates_receiver: broadcast::Receiver<TlsContextChange>,
+    tcp_backlog_size: u32,
 }
 
 impl Listener {
@@ -206,6 +211,7 @@ impl Listener {
             proxy_protocol_config: None,
             route_updates_receiver: route_rx,
             secret_updates_receiver: secret_rx,
+            tcp_backlog_size: 128,
         }
     }
 
@@ -226,8 +232,9 @@ impl Listener {
             proxy_protocol_config,
             mut route_updates_receiver,
             mut secret_updates_receiver,
+            tcp_backlog_size,
         } = self;
-        let listener = match configure_and_start_tcp_listener(local_address, bind_device.as_ref()) {
+        let listener = match configure_and_start_tcp_listener(local_address, bind_device.as_ref(), tcp_backlog_size) {
             Ok(x) => x,
             Err(e) => return e,
         };
@@ -562,7 +569,11 @@ impl Listener {
     }
 }
 
-fn configure_and_start_tcp_listener(addr: SocketAddr, device: Option<&BindDevice>) -> Result<TcpListener> {
+fn configure_and_start_tcp_listener(
+    addr: SocketAddr,
+    device: Option<&BindDevice>,
+    tcp_backlog_size: u32,
+) -> Result<TcpListener> {
     let socket = if addr.is_ipv4() { TcpSocket::new_v4()? } else { TcpSocket::new_v6()? };
     socket.set_reuseaddr(true)?;
     socket.set_keepalive(true)?;
@@ -575,7 +586,7 @@ fn configure_and_start_tcp_listener(addr: SocketAddr, device: Option<&BindDevice
     socket.set_reuseport(true)?;
     socket.bind(addr)?;
 
-    Ok(socket.listen(128)?)
+    Ok(socket.listen(tcp_backlog_size)?)
 }
 
 #[cfg(test)]

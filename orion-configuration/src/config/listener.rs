@@ -26,6 +26,7 @@ use super::{
 use crate::config::listener;
 use crate::config::network_filters::tracing::{TracingConfig, TracingKey};
 use ipnet::IpNet;
+use orion_data_plane_api::envoy_data_plane_api::google::protobuf::UInt32Value;
 use serde::{Deserialize, Serialize, Serializer};
 use smol_str::SmolStr;
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -36,6 +37,8 @@ use std::{
 };
 
 use orion_interner::StringInterner;
+
+const DEFAULT_TCP_BACKLOG_SIZE: UInt32Value = UInt32Value { value: 128 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Listener {
@@ -49,6 +52,8 @@ pub struct Listener {
     pub with_tls_inspector: bool,
     #[serde(skip_serializing_if = "Option::is_none", default = "Default::default")]
     pub proxy_protocol_config: Option<super::listener_filters::DownstreamProxyProtocolConfig>,
+    #[serde(default = "Default::default")]
+    pub tcp_backlog_size: u32,
 }
 
 impl Listener {
@@ -318,6 +323,7 @@ mod envoy_conversions {
 
     use super::{FilterChain, FilterChainMatch, Listener, MainFilter, ServerNameMatch, TlsConfig};
     use crate::config::core::RustType;
+    use crate::config::listener::DEFAULT_TCP_BACKLOG_SIZE;
     use crate::config::{
         common::*,
         core::Address,
@@ -413,7 +419,7 @@ mod envoy_conversions {
                 reuse_port,
                 enable_reuse_port,
                 access_log,
-                tcp_backlog_size,
+                //tcp_backlog_size,
                 max_connections_to_accept_per_socket_event,
                 bind_to_port,
                 enable_mptcp,
@@ -463,6 +469,7 @@ mod envoy_conversions {
                         .with_node("socket_options");
                 }
                 let bind_device = bind_device.into_iter().next();
+                let tcp_backlog_size = tcp_backlog_size.unwrap_or(DEFAULT_TCP_BACKLOG_SIZE).value;
                 Ok(Self {
                     name: name.into(),
                     address,
@@ -470,6 +477,7 @@ mod envoy_conversions {
                     bind_device,
                     with_tls_inspector,
                     proxy_protocol_config,
+                    tcp_backlog_size,
                 })
             }())
             .with_name(name)

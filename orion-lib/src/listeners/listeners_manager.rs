@@ -181,6 +181,7 @@ mod tests {
             bind_device: None,
             with_tls_inspector: false,
             proxy_protocol_config: None,
+            tcp_backlog_size: 128,
         };
         man.start_listener(l1, l1_info.clone()).unwrap();
         assert!(routeb_tx1.send(RouteConfigurationChange::Removed("n/a".into())).is_ok());
@@ -220,6 +221,7 @@ mod tests {
             bind_device: None,
             with_tls_inspector: false,
             proxy_protocol_config: None,
+            tcp_backlog_size: 128,
         };
         man.start_listener(l1, l1_info).unwrap();
 

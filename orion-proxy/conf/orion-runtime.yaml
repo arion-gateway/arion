@@ -3,13 +3,13 @@
 #  http request ---> 192.168.1.1:8080 -|
 #                                      |
 #                                       (default)  ---> (cluster2) 127.0.0.1:80
-# 
+#
 #                                       /proxy/    ---> (cluster3) 192.168.2.10:81 (h2)
 #                                      |
 #  http request ---> 192.168.1.1:8081 -|
 #                                      |
 #                                      / 404
-#  
+#
 
 runtime:
   num_cpus: 2
@@ -29,6 +29,7 @@ envoy_bootstrap:
       - name: listener_http
         address:
           socket_address: { address: 0.0.0.0, port_value: 8000 }
+        tcp_backlog_size: 1024
         filterChains:
           - name: filter_chain_http
             filter_chain_match:
@@ -83,12 +84,12 @@ envoy_bootstrap:
                   "@type": type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy
                   statPrefix: ingress_tcp
                   cluster: cluster_tcp
-                                    
+
     clusters:
       - name: cluster_http
         connect_timeout: 0.25s
         type: STATIC
-        lb_policy: ROUND_ROBIN      
+        lb_policy: ROUND_ROBIN
         load_assignment:
           endpoints:
             - lb_endpoints:
@@ -119,7 +120,4 @@ envoy_bootstrap:
                     address:
                       socket_address:
                         address: 10.206.137.58
-                        port_value: 4004                        
-
-
-
+                        port_value: 4004

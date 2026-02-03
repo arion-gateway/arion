@@ -307,6 +307,7 @@ mod config_dump_tests {
             bind_device: None,
             proxy_protocol_config: None,
             with_tls_inspector: false,
+            tcp_backlog_size: 128,
         };
         let (configuration_senders, handle) = spawn_mock_listener_manager(Some(vec![listener]));
         let admin_state = AdminState {
