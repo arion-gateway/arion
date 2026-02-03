@@ -398,6 +398,7 @@ mod envoy_conversions {
                 lb_config,
                 dns_jitter,
                 lrs_report_endpoint_metrics,
+                transport_socket_matcher,
             } = envoy;
             let name = required!(name)?;
             (|| -> Result<Self, GenericError> {
@@ -447,9 +448,9 @@ mod envoy_conversions {
                     preconnect_policy,
                     connection_pool_per_downstream_connection,
                     dns_jitter, // cluster_discovery_type,
-                    lrs_report_endpoint_metrics
+                    lrs_report_endpoint_metrics,
                     // lb_config
-
+                    transport_socket_matcher
                 )?;
 
                 let original_dst_config = if let Some(lb_config_type) = &lb_config {

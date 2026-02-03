@@ -129,10 +129,19 @@ mod envoy_conversions {
                     enable_ja3_fingerprinting,
                     initial_read_buffer_size,
                     enable_ja4_fingerprinting,
+                    close_connection_on_client_hello_parsing_errors,
+                    max_client_hello_size,
                 }) => {
-                    // both fields are optional, and unsupported, but serde_yaml requires that at least one field is populated
-                    // so allow for enable_ja3_fingerprinting: false
-                    unsupported_field!(initial_read_buffer_size, enable_ja4_fingerprinting)?;
+                    // initial_read_buffer size and enablefields are optional,
+                    // and unsupported, but serde_yaml requires that at least
+                    // one field is populated so allow for
+                    // enable_ja3_fingerprinting: false
+                    unsupported_field!(
+                        initial_read_buffer_size,
+                        enable_ja4_fingerprinting,
+                        close_connection_on_client_hello_parsing_errors,
+                        max_client_hello_size
+                    )?;
                     if enable_ja3_fingerprinting.is_some_and(|b| b.value) {
                         return Err(GenericError::UnsupportedField("enable_ja3_fingerprinting"));
                     }
@@ -156,8 +165,9 @@ mod envoy_conversions {
                 pass_through_tlvs,
                 disallowed_versions,
                 stat_prefix,
+                tlv_location,
             } = value;
-            unsupported_field!(rules)?;
+            unsupported_field!(rules, tlv_location)?;
             let stat_prefix = if stat_prefix.is_empty() { None } else { Some(stat_prefix) };
             let disallowed_versions = disallowed_versions
                 .into_iter()

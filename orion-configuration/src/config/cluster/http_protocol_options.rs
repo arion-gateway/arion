@@ -235,12 +235,21 @@ mod envoy_conversions {
                 http_filters,
                 header_validation_config,
                 upstream_protocol_options,
+                outlier_detection,
+                request_mirror_policies,
+                hash_policy,
+                retry_policy,
             } = value;
             unsupported_field!(
                 // common_http_protocol_options,
                 upstream_http_protocol_options,
                 http_filters,
-                header_validation_config // upstream_protocol_options
+                header_validation_config,
+                // upstream_protocol_options
+                outlier_detection,
+                request_mirror_policies,
+                hash_policy,
+                retry_policy
             )?;
             let upstream_protocol_options = upstream_protocol_options
                 .map(UpstreamHttpProtocolOptions::try_from)
@@ -350,6 +359,7 @@ mod envoy_conversions {
                 connection_keepalive,
                 use_oghttp2_codec,
                 max_metadata_size,
+                enable_huffman_encoding,
             } = value;
             unsupported_field!(
                 hpack_table_size,
@@ -368,7 +378,8 @@ mod envoy_conversions {
                 custom_settings_parameters,
                 // connection_keepalive,
                 use_oghttp2_codec,
-                max_metadata_size
+                max_metadata_size,
+                enable_huffman_encoding
             )?;
             let max_concurrent_streams = max_concurrent_streams.map(|v| v.value as usize);
             let initial_stream_window_size = initial_stream_window_size

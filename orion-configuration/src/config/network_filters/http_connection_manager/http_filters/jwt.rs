@@ -365,6 +365,9 @@ mod envoy_conversions {
                     Err(GenericError::unsupported_variant("AllowMissingOrFailed"))
                 },
                 EnvoyRequiresType::AllowMissing(_) => Err(GenericError::unsupported_variant("AllowMissing")),
+                EnvoyRequiresType::ExtractOnlyWithoutValidation(_) => {
+                    Err(GenericError::unsupported_variant("ExtractOnlyWithoutValidation"))
+                },
             }
         }
     }

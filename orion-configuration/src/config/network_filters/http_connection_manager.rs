@@ -672,6 +672,9 @@ mod envoy_conversions {
                 strip_port_mode,
                 http1_safe_max_connection_duration,
                 append_local_overload,
+                stream_flush_timeout,
+                forward_client_cert_matcher,
+                forward_proto_config,
             } = envoy;
             unsupported_field!(
                 // codec_type,
@@ -727,7 +730,10 @@ mod envoy_conversions {
                 // route_specifier,
                 strip_port_mode,
                 http1_safe_max_connection_duration,
-                append_local_overload
+                append_local_overload,
+                stream_flush_timeout,
+                forward_client_cert_matcher,
+                forward_proto_config
             )?;
             if stat_prefix.is_used() {
                 tracing::warn!(
@@ -888,6 +894,7 @@ mod envoy_conversions {
                 ignore_path_parameters_in_path_matching,
                 typed_per_filter_config,
                 metadata,
+                vhost_header,
             } = envoy;
             unsupported_field!(
                 // name,
@@ -906,7 +913,8 @@ mod envoy_conversions {
                 ignore_port_in_host_matching,
                 ignore_path_parameters_in_path_matching,
                 typed_per_filter_config,
-                metadata
+                metadata,
+                vhost_header
             )?;
             let name: String = required!(name)?;
             (|| -> Result<_, GenericError> {
