@@ -54,6 +54,8 @@ mod envoy_conversions {
                 config,
                 per_stream_buffer_limit_bytes,
                 channel_args,
+                channel_credentials_plugin,
+                call_credentials_plugin,
             } = value;
             unsupported_field!(
                 // target_uri,
@@ -63,7 +65,9 @@ mod envoy_conversions {
                 credentials_factory_name,
                 config,
                 per_stream_buffer_limit_bytes,
-                channel_args
+                channel_args,
+                channel_credentials_plugin,
+                call_credentials_plugin
             )?;
 
             Ok(GoogleGrpc { target_uri, stat_prefix })

@@ -57,6 +57,9 @@ mod envoy_conversions {
                 cluster_specifier,
                 backoff_options,
                 proxy_protocol_tlvs,
+                max_downstream_connection_duration_jitter_percentage,
+                upstream_connect_mode,
+                max_early_data_bytes,
             } = value;
             unsupported_field!(
                 // stat_prefix,
@@ -73,8 +76,12 @@ mod envoy_conversions {
                 access_log_flush_interval,
                 flush_access_log_on_connected,
                 access_log_options,
-                backoff_options, // cluster_specifier
-                proxy_protocol_tlvs
+                backoff_options,
+                // cluster_specifier,
+                proxy_protocol_tlvs,
+                max_downstream_connection_duration_jitter_percentage,
+                upstream_connect_mode,
+                max_early_data_bytes
             )?;
             if stat_prefix.is_used() {
                 tracing::warn!("unsupported field stat_prefix used in tcp_proxy. This field will be ignored.");

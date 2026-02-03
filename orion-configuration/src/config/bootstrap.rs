@@ -348,8 +348,16 @@ mod envoy_conversions {
                 address,
                 socket_options,
                 ignore_global_conn_limit,
+                allow_paths,
             } = envoy;
-            unsupported_field!(access_log, access_log_path, profile_path, socket_options, ignore_global_conn_limit)?;
+            unsupported_field!(
+                access_log,
+                access_log_path,
+                profile_path,
+                socket_options,
+                ignore_global_conn_limit,
+                allow_paths
+            )?;
             let address = match required!(address)?
                 .address
                 .ok_or(GenericError::MissingField("address is mandatory to setup admin interface"))?

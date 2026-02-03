@@ -825,7 +825,8 @@ mod envoy_conversions {
     impl TryFrom<EnvoyDirectResponseAction> for DirectResponseAction {
         type Error = GenericError;
         fn try_from(value: EnvoyDirectResponseAction) -> Result<Self, Self::Error> {
-            let EnvoyDirectResponseAction { status, body } = value;
+            let EnvoyDirectResponseAction { status, body, body_format } = value;
+            unsupported_field!(body_format)?;
             let status_u16: u16 = status.try_into().map_err(|_| GenericError::from_msg("invalid status code"))?;
             let status = RustType::<StatusCode>::try_from(status_u16).with_node("status")?.into_inner();
             let body = if let Some(source) = body.map(DataSource::try_from).transpose().with_node("body")? {
@@ -886,6 +887,8 @@ mod envoy_conversions {
                 max_stream_duration,
                 cluster_specifier,
                 host_rewrite_specifier,
+                path_rewrite,
+                flush_timeout,
             } = value;
             unsupported_field!(
                 // cluster_not_found_response_code,
@@ -914,7 +917,9 @@ mod envoy_conversions {
                 hedge_policy,
                 max_stream_duration,
                 // cluster_specifier,
-                host_rewrite_specifier
+                host_rewrite_specifier,
+                path_rewrite,
+                flush_timeout
             )?;
 
             let cluster_not_found_response_code: StatusCode =
@@ -1039,6 +1044,7 @@ mod envoy_conversions {
                 dynamic_metadata,
                 path_specifier,
                 filter_state,
+                cookies,
             } = value;
             unsupported_field!(
                 // case_sensitive,
@@ -1048,7 +1054,8 @@ mod envoy_conversions {
                 grpc,
                 tls_context,
                 dynamic_metadata, // path_specifier
-                filter_state
+                filter_state,
+                cookies
             )?;
             let ignore_case = !case_sensitive.map(|v| v.value).unwrap_or(true);
             let path_specifier = path_specifier.map(PathSpecifier::try_from).transpose().with_node("path_specifier")?;

@@ -267,6 +267,8 @@ mod envoy_conversions {
                 response_attributes,
                 allowed_override_modes,
                 on_processing_response,
+                processing_request_modifier,
+                status_on_error,
             } = value;
 
             unsupported_field!(
@@ -291,7 +293,9 @@ mod envoy_conversions {
                 request_attributes,
                 response_attributes,
                 // allowed_override_modes,
-                on_processing_response
+                on_processing_response,
+                processing_request_modifier,
+                status_on_error
             )?;
 
             let grpc_service: GrpcService = required!(grpc_service)?.try_into().with_node("grpc_service")?;
@@ -375,6 +379,8 @@ mod envoy_conversions {
                 config,
                 per_stream_buffer_limit_bytes,
                 channel_args,
+                channel_credentials_plugin,
+                call_credentials_plugin,
             } = value;
 
             unsupported_field!(
@@ -385,7 +391,9 @@ mod envoy_conversions {
                 credentials_factory_name,
                 config,
                 per_stream_buffer_limit_bytes,
-                channel_args
+                channel_args,
+                channel_credentials_plugin,
+                call_credentials_plugin
             )?;
 
             Ok(Self { target_uri })
@@ -448,6 +456,7 @@ mod envoy_conversions {
                 Ok(EnvoyBodySendMode::Buffered) => Ok(Self::Buffered),
                 Ok(EnvoyBodySendMode::BufferedPartial) => Ok(Self::BufferedPartial),
                 Ok(EnvoyBodySendMode::FullDuplexStreamed) => Ok(Self::FullDuplexStreamed),
+                Ok(EnvoyBodySendMode::Grpc) => Err(GenericError::from_msg(format!("unsupported body send mode: Grpc"))),
                 Err(_) => Err(GenericError::from_msg(format!("unknown body send mode: {value}"))),
             }
         }
@@ -578,6 +587,7 @@ mod envoy_conversions {
                 request_attributes,
                 response_attributes,
                 failure_mode_allow,
+                processing_request_modifier,
             } = value;
 
             unsupported_field!(
@@ -585,7 +595,8 @@ mod envoy_conversions {
                 metadata_options,
                 async_mode,
                 request_attributes,
-                response_attributes
+                response_attributes,
+                processing_request_modifier
             )?;
 
             let processing_mode = processing_mode.map(TryInto::try_into).transpose().with_node("processing_mode")?;

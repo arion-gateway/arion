@@ -574,7 +574,15 @@ impl<M: kind::Mode + Default, Msg: kind::MsgKind + OverridableModeSelector> Proc
             // DATA
             let data = std::mem::take(bytes);
 
-            let http_body = HttpBody { body: data.into(), end_of_stream };
+            let http_body = HttpBody {
+                body: data.into(),
+                end_of_stream,
+                // todo(francesco): additional fields appeared after first
+                // ext_proc development, currently not handled, verify if they
+                // are useful
+                end_of_stream_without_message: false,
+                grpc_message_compressed: false,
+            };
             if Msg::IS_REQUEST {
                 ProcessingRequest {
                     request: Some(ProcessingRequestType::RequestBody(http_body)),

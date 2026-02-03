@@ -324,8 +324,8 @@ mod envoy_conversions {
     impl TryFrom<EnvoySocketOption> for BindDevice {
         type Error = GenericError;
         fn try_from(value: EnvoySocketOption) -> Result<Self, Self::Error> {
-            let EnvoySocketOption { description, level, name, state, value, r#type } = value;
-            unsupported_field!(state, r#type)?;
+            let EnvoySocketOption { description, level, name, state, value, r#type, ip_version } = value;
+            unsupported_field!(state, r#type, ip_version)?;
             // this field is
             // > An optional name to give this socket option for debugging, etc.
             // > Uniqueness is not required and no special meaning is assumed.
@@ -619,7 +619,8 @@ mod envoy_conversions {
         type Error = GenericError;
         #[allow(clippy::cast_possible_truncation)]
         fn try_from(envoy: EnvoyTlvEntry) -> Result<Self, Self::Error> {
-            let EnvoyTlvEntry { r#type, value } = envoy;
+            let EnvoyTlvEntry { r#type, value, format_string } = envoy;
+            unsupported_field!(format_string)?;
             if r#type > 255 {
                 return Err(GenericError::from_msg(format!("TLV type {type} is out of range (0-255)")));
             }

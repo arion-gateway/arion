@@ -391,6 +391,7 @@ mod envoy_conversions {
                 listener_specifier,
                 bypass_overload_manager,
                 fcds_config,
+                tcp_keepalive,
             } = envoy;
             unsupported_field!(
                 // name,
@@ -426,7 +427,8 @@ mod envoy_conversions {
                 ignore_global_conn_limit,
                 listener_specifier,
                 bypass_overload_manager,
-                fcds_config
+                fcds_config,
+                tcp_keepalive
             )?;
             let name: String = required!(name)?;
             (|| -> Result<_, GenericError> {

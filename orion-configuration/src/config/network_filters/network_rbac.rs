@@ -290,8 +290,8 @@ mod envoy_conversions {
     impl TryFrom<EnvoyPolicy> for Policy {
         type Error = GenericError;
         fn try_from(envoy: EnvoyPolicy) -> Result<Self, Self::Error> {
-            let EnvoyPolicy { permissions, principals, condition, checked_condition } = envoy;
-            unsupported_field!(condition, checked_condition)?;
+            let EnvoyPolicy { permissions, principals, condition, checked_condition, cel_config } = envoy;
+            unsupported_field!(condition, checked_condition, cel_config)?;
             let permissions = convert_non_empty_vec!(permissions)?;
             let principals = convert_non_empty_vec!(principals)?;
             Ok(Self { permissions, principals })
