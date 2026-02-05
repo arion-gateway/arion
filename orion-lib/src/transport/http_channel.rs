@@ -853,6 +853,12 @@ impl HttpChannel {
                             Ok(SyntheticHttpResponse::bad_gateway(EventKind::Error(event_error), response_flags)
                                 .into_response(version))
                         },
+                        EventError::Error(_) => Ok(SyntheticHttpResponse::internal_server_error(
+                            EventKind::Error(event_error),
+                            response_flags,
+                            "internal server error",
+                        )
+                        .into_response(version)),
                     }
                 } else {
                     debug!("Route: error occurred after {:?}: {err}", pretty_duration(&dur, None));

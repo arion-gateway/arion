@@ -92,6 +92,22 @@ use orion_configuration::config::network_filters::http_connection_manager::{
     RouteSpecifier, UpgradeType,
 };
 
+use crate::{
+    body::{
+        instrumented_body::InstrumentedBody,
+        response_flags::{BodyKind, ResponseFlags},
+        timeout_body::TimeoutBody,
+    },
+    event_error::{EventFailure, EventKind},
+    get_shard_id,
+    listeners::{
+        http_filters::{per_route_http_filters, FilterDecision, FilterFactory, HttpFilter, HttpFilterValue},
+        metadata::DownstreamMetadata,
+        synthetic_http_response::SyntheticHttpResponse,
+    },
+    with_client_span, with_metric, with_server_span, ConversionContext, OrionRequestBody, OrionResponseBody, PolyBody,
+    Result, RouteConfiguration,
+};
 use orion_configuration::config::network_filters::http_connection_manager::{Route, VirtualHost, XffSettings};
 use orion_configuration::config::network_filters::tracing::{TracingConfig, TracingKey};
 use orion_format::types::ResponseFlags as FmtResponseFlags;
@@ -104,25 +120,8 @@ use std::{
 };
 use std::{fmt, future::Future, result::Result as StdResult, sync::Arc};
 use tokio::sync::watch;
-use tracing::debug;
+use tracing::{debug, error};
 use upgrades as upgrade_utils;
-
-use crate::{
-    body::{
-        instrumented_body::InstrumentedBody,
-        response_flags::{BodyKind, ResponseFlags},
-        timeout_body::TimeoutBody,
-    },
-    event_error::EventFailure,
-    get_shard_id,
-    listeners::{
-        http_filters::{per_route_http_filters, FilterDecision, FilterFactory, HttpFilter, HttpFilterValue},
-        metadata::DownstreamMetadata,
-        synthetic_http_response::SyntheticHttpResponse,
-    },
-    with_client_span, with_metric, with_server_span, ConversionContext, OrionRequestBody, OrionResponseBody, PolyBody,
-    Result, RouteConfiguration,
-};
 
 use orion_tracing::http_tracer::HttpTracer;
 use orion_tracing::request_id::{RequestId, RequestIdManager};
@@ -585,11 +584,7 @@ impl TransactionHandler {
         })
     }
 
-    fn trace_status_code(
-        self: Arc<Self>,
-        res: Result<Response<OrionRequestBody>>,
-        _listener_name: &'static str,
-    ) -> Result<Response<OrionRequestBody>> {
+    fn trace_status_code(self: Arc<Self>, res: &Result<Response<OrionRequestBody>>, _listener_name: &'static str) {
         if let Ok(response) = &res {
             let status_code = response.status().as_u16();
 
@@ -670,7 +665,6 @@ impl TransactionHandler {
                 clt_span.set_status(Status::error("5xx"));
             });
         }
-        res
     }
 }
 
@@ -1084,6 +1078,7 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
     fn call(&self, incoming_request: Request<Incoming>) -> Self::Future {
         // destructure the Request to get the request and addresses
         let incoming_request_id = RequestId::from_request(&incoming_request);
+        let incoming_version = incoming_request.version();
 
         let access_log_enabled = {
             #[cfg(feature = "access-log")]
@@ -1380,7 +1375,21 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
                 )
                 .await;
 
-            trans_handler.trace_status_code(response, listener_name)
+            trans_handler.trace_status_code(&response, listener_name);
+            if let Err(err) = response {
+                error!("Error during handling HTTP transaction: {}", err);
+                let msg = err.to_string();
+                let response = SyntheticHttpResponse::internal_server_error(
+                    EventKind::Error(err.into()),
+                    ResponseFlags(FmtResponseFlags::LOCAL_RESET),
+                    &msg,
+                )
+                .into_response(incoming_version);
+
+                Ok(response.map(|body| InstrumentedBody::new(BodyKind::Response, body, |_, _, _| {})))
+            } else {
+                response
+            }
         })
     }
 }

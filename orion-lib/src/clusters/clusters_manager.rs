@@ -66,7 +66,7 @@ pub enum RoutingContext<'a> {
 
 #[derive(Debug, thiserror::Error)]
 pub enum RoutingContextError {
-    #[error("RoutingRequirement: missing metadata key 'dynamic_dest'")]
+    #[error("Missing metadata key DynamicDest for ORIGINAL_DST cluster")]
     MissingMetadataKey,
     #[error("Missing required header '{0}' for ORIGINAL_DST cluster")]
     MissingHeader(HeaderName),
@@ -83,6 +83,7 @@ impl<'a> TryFrom<(&'a RoutingRequirement, &'a Request<OrionRequestBody>, HashSta
         let (routing_requirement, request, hash_state) = value;
         match routing_requirement {
             RoutingRequirement::OverrideHost { header, fallback_requires_hash } => {
+                debug!("RoutingContext via override host header: {}", header);
                 if let Some(header_value) = request.headers().get(header) {
                     let fallback_hash = fallback_requires_hash.then_some(hash_state);
                     Ok(RoutingContext::OverrideHost { header: header_value, fallback_hash })
@@ -92,22 +93,33 @@ impl<'a> TryFrom<(&'a RoutingRequirement, &'a Request<OrionRequestBody>, HashSta
                     Ok(RoutingContext::None)
                 }
             },
-            RoutingRequirement::MetadataKey(_) => {
+            RoutingRequirement::MetadataKey(key) => {
+                debug!("RoutingContext via metadata key: {}", key.0);
                 // it doesn't matter the value of the key, we always use the dynamic destination
                 let dynamic_dest =
                     request.extensions().get::<DynamicDest>().ok_or_else(|| RoutingContextError::MissingMetadataKey)?;
                 Ok(RoutingContext::DynamicDest(dynamic_dest))
             },
             RoutingRequirement::Header(header_name) => {
+                debug!("RoutingContext via header name: {}", header_name);
                 let header_value = request
                     .headers()
                     .get(header_name)
                     .ok_or_else(|| RoutingContextError::MissingHeader(header_name.clone()))?;
                 Ok(RoutingContext::Header(header_value))
             },
-            RoutingRequirement::Authority => Err(RoutingContextError::UnsupportedAuthority),
-            RoutingRequirement::Hash => Ok(RoutingContext::Hash(hash_state)),
-            RoutingRequirement::None => Ok(RoutingContext::None),
+            RoutingRequirement::Authority => {
+                debug!("RoutingContext via authority is not supported");
+                Err(RoutingContextError::UnsupportedAuthority)
+            },
+            RoutingRequirement::Hash => {
+                debug!("RoutingContext via hash: {:?}", hash_state);
+                Ok(RoutingContext::Hash(hash_state))
+            },
+            RoutingRequirement::None => {
+                debug!("RoutingContext with no requirements");
+                Ok(RoutingContext::None)
+            },
         }
     }
 }

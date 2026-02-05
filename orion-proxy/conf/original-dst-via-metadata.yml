@@ -1,0 +1,55 @@
+runtime:
+  num_cpus: 4
+  num_runtimes: 4
+  event_interval: 31          # estimated optimal value
+  global_queue_interval: null   # default
+  max_io_events_per_tick: null  # default
+
+logging:
+  log_level: "info"
+
+envoy_bootstrap:
+  static_resources:
+    listeners:
+      - name: listener_http
+        address:
+          socket_address: { address: 0.0.0.0, port_value: 8000 }
+        filterChains:
+          - name: filter_chain_http
+            filter_chain_match:
+              destination_port: 8000
+            filters:
+              - name: http_gateway
+                typedConfig:
+                  "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                  statPrefix: ingress_http
+                  codecType: HTTP1
+                  http_filters:
+                    # To use the ORIGINAL_DST via metadata key, a filter is expected to set the
+                    # upstream IP and port in DynamicDest key (via Request extensions). 
+                    # This configuration is only demonstrative, since the client will receive 
+                    # a 500 response if the endpoint is not set.
+                    - name: envoy.filters.http.router
+                      typedConfig:
+                        "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                        start_child_span: false
+
+                  route_config:
+                    name: basic_http_route
+                    virtual_hosts:
+                      - name: backend
+                        domains: ["*"]
+                        routes:
+                          - match:
+                              prefix: "/"
+                            route:
+                               cluster: original_dst_cluster
+
+    clusters:
+      - name: original_dst_cluster
+        type: ORIGINAL_DST
+        lb_policy: CLUSTER_PROVIDED
+        connect_timeout: 5s
+        original_dst_lb_config:
+          metadata_key:
+            key: "dynamic_dest"          
