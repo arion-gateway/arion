@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use dashmap::DashMap;
 use futures::SinkExt;
-use http::{HeaderName, Method, Request, Response, StatusCode};
+use http::{HeaderName, Method, Response, StatusCode};
 use http_body_util::{BodyExt, Empty, Full};
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::McpGateway as McpGatewayConfig;
 use orion_http_header::MCP_SESSION_ID;
@@ -176,7 +176,7 @@ enum MessageResponse {
     Nothing,
     Error(model::JsonRpcError),
     Response(model::JsonRpcResponse<serde_json::Value>),
-    Upstream((Request<OrionRequestBody>, bool)),
+    Upstream((http::Request<OrionRequestBody>, bool)),
 }
 
 /// McpGateway filter
@@ -186,7 +186,7 @@ pub struct McpGateway {
     session: Option<Arc<Session>>,
     request_id: model::RequestId,
     version: http::Version,
-    initialize_request_params: Option<model::InitializeRequestParam>,
+    initialize_request_params: Option<model::InitializeRequestParams>,
     sse_sender: Option<Arc<TokioMutex<SseSender>>>,
 }
 
@@ -217,7 +217,7 @@ impl FilterFactory for McpGateway {
 }
 
 impl McpGateway {
-    pub async fn apply_request(&mut self, request: &mut Request<OrionRequestBody>) -> FilterDecision {
+    pub async fn apply_request(&mut self, request: &mut http::Request<OrionRequestBody>) -> FilterDecision {
         debug!(target: "mcp_gateway", "apply_request: processing request: {:?}", request);
 
         self.version = request.version();
@@ -367,7 +367,7 @@ impl McpGateway {
     async fn handle_mcp_delete_endpoint(
         &mut self,
         ctx: &McpGatewayListenerContext,
-        request: &mut Request<OrionRequestBody>,
+        request: &mut http::Request<OrionRequestBody>,
     ) -> FilterDecision {
         let Some(session_id) = request.get_mcp_session_id() else {
             debug!(target: "mcp_gateway", "handle_mcp_delete_endpoint: session ID but none found in request");
@@ -394,7 +394,7 @@ impl McpGateway {
     async fn handle_mcp_post_endpoint(
         &mut self,
         ctx: &McpGatewayListenerContext,
-        request: &mut Request<OrionRequestBody>,
+        request: &mut http::Request<OrionRequestBody>,
         listener_name: &'static str,
     ) -> FilterDecision {
         // get transport type for the request
@@ -571,7 +571,7 @@ impl McpGateway {
     async fn handle_sse_handshake(
         &mut self,
         ctx: &McpGatewayListenerContext,
-        request: &mut Request<OrionRequestBody>,
+        request: &mut http::Request<OrionRequestBody>,
         listener_name: &'static str,
     ) -> FilterDecision {
         debug!(target: "mcp_gateway", "handle_sse_handshake: starting SSE handshake...");
@@ -626,7 +626,7 @@ impl McpGateway {
     fn handle_rpc_json_message(
         &mut self,
         ctx: &McpGatewayListenerContext,
-        request: &Request<OrionRequestBody>,
+        request: &http::Request<OrionRequestBody>,
         transport: Transport,
         body: Bytes,
         listener_name: &'static str,
@@ -677,7 +677,7 @@ impl McpGateway {
     fn handle_rpc_json_request(
         &mut self,
         ctx: &McpGatewayListenerContext,
-        request: &Request<OrionRequestBody>,
+        request: &http::Request<OrionRequestBody>,
         transport: Transport,
         rpc: model::JsonRpcRequest,
         listener_name: &'static str,
@@ -687,7 +687,7 @@ impl McpGateway {
             InitializeResultMethod::VALUE => {
                 debug!(target: "mcp_gateway", "handle_rpc_json_request: initialize received (transport {transport})");
 
-                let Ok(init_params): Result<model::InitializeRequestParam, _> =
+                let Ok(init_params): Result<model::InitializeRequestParams, _> =
                     serde_json::from_value(serde_json::Value::Object(rpc.request.params))
                 else {
                     debug!(target: "mcp_gateway", "handle_rpc_json_request: invalid params");
@@ -768,27 +768,24 @@ impl McpGateway {
             CallToolRequestMethod::VALUE => {
                 debug!(target: "mcp_gateway", "handle_rpc_json_request: tools/call {:#?}", rpc);
 
-                let (upstream_request, r#async) = match self.inner.tools.build_request(
-                    request,
-                    &rpc.request,
-                    &self.inner.config.cluster_header,
-                ) {
-                    Ok(result) => result,
-                    Err(e) => {
-                        debug!(target: "mcp_gateway", "handle_rpc_json_request: tools/call failed: {e:#}");
-                        let error_data = if matches!(e, RbacDenied(_)) {
-                            model::ErrorData::new(
-                                model::ErrorCode::INVALID_REQUEST,
-                                "Access denied by RBAC policy",
-                                None,
-                            )
-                        } else {
-                            model::ErrorData::invalid_params("Invalid params", None)
-                        };
+                let (upstream_request, r#async) =
+                    match self.inner.tools.build_request(request, &rpc.request, &self.inner.config.cluster_header) {
+                        Ok(result) => result,
+                        Err(e) => {
+                            debug!(target: "mcp_gateway", "handle_rpc_json_request: tools/call failed: {e:#}");
+                            let error_data = if matches!(e, RbacDenied(_)) {
+                                model::ErrorData::new(
+                                    model::ErrorCode::INVALID_REQUEST,
+                                    "Access denied by RBAC policy",
+                                    None,
+                                )
+                            } else {
+                                model::ErrorData::invalid_params("Invalid params", None)
+                            };
 
-                        return MessageResponse::Error(self.build_rpc_error(error_data));
-                    },
-                };
+                            return MessageResponse::Error(self.build_rpc_error(error_data));
+                        },
+                    };
 
                 debug!(target: "mcp_gateway", "handle_rpc_json_request: UPSTREAM {:#?}", upstream_request);
                 MessageResponse::Upstream((upstream_request, r#async))
@@ -808,7 +805,7 @@ impl McpGateway {
         &mut self,
         ctx: &McpGatewayListenerContext,
         transport: Transport,
-        request: &Request<OrionRequestBody>,
+        request: &http::Request<OrionRequestBody>,
     ) -> Option<Arc<Session>> {
         debug!(target: "mcp_gateway", "get_valid_session: transport={:?}, request={:?}", transport, request);
         match transport {
