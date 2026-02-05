@@ -544,7 +544,15 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
                 crate::instrumentation::metrics::SEND_REQUEST_WAIT_RESPONSE.observe(nanos as usize);
             },
             {
-                self.send_request(request, route_timeout, retry_policy, Some(&mut retries), #[cfg(feature = "instrumentation")] &_trans_handler.clock).await
+                self.send_request(
+                    request,
+                    route_timeout,
+                    retry_policy,
+                    Some(&mut retries),
+                    #[cfg(feature = "instrumentation")]
+                    &_trans_handler.clock,
+                )
+                .await
             }
         );
 

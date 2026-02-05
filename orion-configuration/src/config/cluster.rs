@@ -173,7 +173,7 @@ impl Display for HealthStatus {
 pub enum ClusterDiscoveryType {
     #[serde(rename = "static")]
     Static(ClusterLoadAssignment),
-    #[serde(rename = "stict_dns")]
+    #[serde(rename = "strict_dns")]
     StrictDns(ClusterLoadAssignment),
     // The ClusterLoadAssignment is optional for EDS clusters since it cannot be
     // configured statically in the bootstrap, but we need to assign it to the

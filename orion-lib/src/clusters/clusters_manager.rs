@@ -23,7 +23,7 @@ use super::{
     load_assignment::{ClusterLoadAssignmentBuilder, PartialClusterLoadAssignment},
 };
 use crate::{
-    clusters::cluster::{ClusterOps, PartialClusterType},
+    clusters::cluster::{original_dst::DynamicDest, ClusterOps, PartialClusterType},
     secrets::TransportSecret,
     transport::{GrpcService, HttpChannel, HttpChannels, TcpChannelConnector},
     OrionRequestBody, Result,
@@ -32,6 +32,7 @@ use http::{uri::Authority, HeaderMap, HeaderName, HeaderValue, Request};
 use orion_configuration::config::cluster::{Cluster as ClusterConfig, ClusterSpecifier};
 use orion_interner::StringInterner;
 use rand::{prelude::SliceRandom, thread_rng};
+use smol_str::SmolStr;
 use std::{
     cell::RefCell,
     collections::{btree_map::Entry as BTreeEntry, BTreeMap},
@@ -41,10 +42,14 @@ use tracing::{debug, warn};
 type ClusterID = &'static str;
 type ClustersMap = BTreeMap<ClusterID, ClusterType>;
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MetadataKey(pub SmolStr);
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum RoutingRequirement {
     None,
     Header(HeaderName),
+    MetadataKey(MetadataKey),
     Authority,
     Hash,
     OverrideHost { header: HeaderName, fallback_requires_hash: bool },
@@ -53,13 +58,24 @@ pub enum RoutingRequirement {
 pub enum RoutingContext<'a> {
     None,
     Header(&'a HeaderValue),
+    DynamicDest(&'a DynamicDest),
     Authority(&'a Authority),
     Hash(HashState<'a>),
     OverrideHost { header: &'a HeaderValue, fallback_hash: Option<HashState<'a>> },
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum RoutingContextError {
+    #[error("RoutingRequirement: missing metadata key 'dynamic_dest'")]
+    MissingMetadataKey,
+    #[error("Missing required header '{0}' for ORIGINAL_DST cluster")]
+    MissingHeader(HeaderName),
+    #[error("Routing by Authority is not currently supported")]
+    UnsupportedAuthority,
+}
+
 impl<'a> TryFrom<(&'a RoutingRequirement, &'a Request<OrionRequestBody>, HashState<'a>)> for RoutingContext<'a> {
-    type Error = String;
+    type Error = RoutingContextError;
 
     fn try_from(
         value: (&'a RoutingRequirement, &'a Request<OrionRequestBody>, HashState<'a>),
@@ -76,18 +92,20 @@ impl<'a> TryFrom<(&'a RoutingRequirement, &'a Request<OrionRequestBody>, HashSta
                     Ok(RoutingContext::None)
                 }
             },
+            RoutingRequirement::MetadataKey(_) => {
+                // it doesn't matter the value of the key, we always use the dynamic destination
+                let dynamic_dest =
+                    request.extensions().get::<DynamicDest>().ok_or_else(|| RoutingContextError::MissingMetadataKey)?;
+                Ok(RoutingContext::DynamicDest(dynamic_dest))
+            },
             RoutingRequirement::Header(header_name) => {
                 let header_value = request
                     .headers()
                     .get(header_name)
-                    .ok_or_else(|| format!("Missing required header '{header_name}' for ORIGINAL_DST cluster"))?;
+                    .ok_or_else(|| RoutingContextError::MissingHeader(header_name.clone()))?;
                 Ok(RoutingContext::Header(header_value))
             },
-            RoutingRequirement::Authority => {
-                let msg = "Routing by Authority is not currently supported, coming soon".to_owned();
-                warn!(msg);
-                Err(msg)
-            },
+            RoutingRequirement::Authority => Err(RoutingContextError::UnsupportedAuthority),
             RoutingRequirement::Hash => Ok(RoutingContext::Hash(hash_state)),
             RoutingRequirement::None => Ok(RoutingContext::None),
         }

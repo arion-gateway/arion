@@ -15,9 +15,9 @@
 //
 //
 
-mod dynamic;
-mod original_dst;
-mod r#static;
+pub(crate) mod dynamic;
+pub(crate) mod original_dst;
+pub(crate) mod r#static;
 
 use enum_dispatch::enum_dispatch;
 use http::uri::Authority;
