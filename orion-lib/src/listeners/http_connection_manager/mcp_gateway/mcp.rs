@@ -756,7 +756,7 @@ impl McpGateway {
             },
             ListToolsRequestMethod::VALUE => {
                 debug!(target: "mcp_gateway", "handle_rpc_json_request: tools/list received");
-                let tools = self.inner.tools.build_list_tools();
+                let tools = self.inner.tools.build_list_tools(request);
                 let response = model::JsonRpcResponse {
                     jsonrpc: model::JsonRpcVersion2_0,
                     id: self.request_id.clone(),
@@ -775,7 +775,7 @@ impl McpGateway {
                 ) {
                     Ok(result) => result,
                     Err(e) => {
-                        debug!(target: "mcp_gateway", "handle_rpc_json_request: tools/call failed to build request: {e:#}");
+                        debug!(target: "mcp_gateway", "handle_rpc_json_request: tools/call failed: {e:#}");
                         let error_data = if matches!(e, RbacDenied(_)) {
                             model::ErrorData::new(
                                 model::ErrorCode::INVALID_REQUEST,
@@ -783,7 +783,7 @@ impl McpGateway {
                                 None,
                             )
                         } else {
-                            model::ErrorData::invalid_params("invalid params", None)
+                            model::ErrorData::invalid_params("Invalid params", None)
                         };
 
                         return MessageResponse::Error(self.build_rpc_error(error_data));

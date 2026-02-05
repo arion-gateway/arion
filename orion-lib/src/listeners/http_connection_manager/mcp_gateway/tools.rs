@@ -122,9 +122,14 @@ impl ToolsRegistry {
         self.registry.push(ToolEntry { tool, rbac });
     }
 
-    pub fn build_list_tools(&self) -> ListToolsResult {
+    pub fn build_list_tools(&self, request: &http::Request<OrionRequestBody>) -> ListToolsResult {
         let mut tools = Vec::with_capacity(self.registry.len());
         for entry in self.registry.iter() {
+            if let Some(rbac) = &entry.rbac {
+                if !rbac.is_permitted(request) {
+                    continue;
+                }
+            }
             tools.push(Tool {
                 name: entry.tool.name.clone().into(),
                 description: Some(entry.tool.description.clone().into()),
