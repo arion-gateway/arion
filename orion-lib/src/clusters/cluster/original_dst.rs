@@ -33,12 +33,13 @@ use orion_configuration::config::{
 
 use orion_http_header::X_ENVOY_ORIGINAL_DST_HOST;
 
-use tracing::{debug, warn};
+use smol_str::SmolStr;
+use tracing::debug;
 use webpki::types::ServerName;
 
 use crate::{
     clusters::{
-        clusters_manager::{RoutingContext, RoutingRequirement},
+        clusters_manager::{MetadataKey, RoutingContext, RoutingRequirement},
         health::HealthStatus,
     },
     secrets::{TlsConfigurator, TransportSecret, WantsToBuildClient},
@@ -85,9 +86,9 @@ impl OriginalDstClusterBuilder {
                         debug!("ORIGINAL_DST cluster {name} routing by header {header_name}");
                         RoutingRequirement::Header(header_name)
                     },
-                    OriginalDstRoutingMethod::MetadataKey(_) => {
-                        warn!("Routing by metadata is not supported yet for ORIGINAL_DST cluster");
-                        RoutingRequirement::Authority
+                    OriginalDstRoutingMethod::MetadataKey(meta) => {
+                        debug!("ORIGINAL_DST cluster {name} routing by metadata {}", meta.key);
+                        RoutingRequirement::MetadataKey(MetadataKey(meta.key.to_owned()))
                     },
                     OriginalDstRoutingMethod::Default => RoutingRequirement::Authority,
                 };
@@ -124,6 +125,9 @@ struct HttpChannelConfig {
     server_name: Option<ServerName<'static>>,
     http_protocol_options: HttpProtocolOptions,
 }
+
+#[derive(Clone, Debug)]
+pub struct DynamicDest(pub SmolStr);
 
 #[derive(Clone)]
 pub struct OriginalDstCluster {
@@ -182,6 +186,10 @@ impl ClusterOps for OriginalDstCluster {
             RoutingContext::Header(header_value) => {
                 debug!("get HTTP connection by header {header_value:?}...");
                 self.get_http_connection_by_header(header_value).map(HttpChannels::Single)
+            },
+            RoutingContext::DynamicDest(dynamic_dest) => {
+                debug!("get HTTP connection by {dynamic_dest:?}...");
+                self.get_http_connection_by_dynamic_dest(dynamic_dest).map(HttpChannels::Single)
             },
             _ => Err(format!("ORIGINAL_DST cluster {} requires authority or header routing context", self.name).into()),
         }
@@ -260,7 +268,19 @@ impl OriginalDstCluster {
         Ok(tcp_connector)
     }
 
-    pub fn get_http_connection_by_header(&mut self, header_value: &HeaderValue) -> Result<HttpChannel> {
+    #[inline]
+    fn get_http_connection_by_dynamic_dest(&mut self, dynamic_dest: &DynamicDest) -> Result<HttpChannel> {
+        let authority = Authority::try_from(dynamic_dest.0.as_str()).map_err(|_| {
+            format!(
+                "Invalid Authority in dynamic_dest metadata ({}) for ORIGINAL_DST cluster {}",
+                dynamic_dest.0, self.name
+            )
+        })?;
+        self.get_http_connection_by_authority(&authority)
+    }
+
+    #[inline]
+    fn get_http_connection_by_header(&mut self, header_value: &HeaderValue) -> Result<HttpChannel> {
         let authority = Authority::try_from(header_value.as_bytes())
             .map_err(|_| format!("Invalid authority in header for ORIGINAL_DST cluster {}", self.name))?;
         self.get_http_connection_by_authority(&authority)

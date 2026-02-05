@@ -1,9 +1,5 @@
 #[cfg(feature = "instrumentation")]
-use {
-    contatori::counters::average::Average,
-    contatori::counters::monotone::Monotone,
-    contatori::counters::Observable,
-};
+use {contatori::counters::average::Average, contatori::counters::monotone::Monotone, contatori::counters::Observable};
 
 #[cfg(feature = "instrumentation")]
 pub mod metrics {

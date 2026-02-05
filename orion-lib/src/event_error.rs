@@ -1,4 +1,5 @@
 use http::Response;
+use orion_error::Error;
 use orion_format::types::ResponseFlags as FmtResponseFlags;
 use orion_interner::StringInterner;
 use smol_str::SmolStr;
@@ -26,6 +27,8 @@ pub enum EventError {
     #[allow(unused)]
     #[error("Http3PostConnectFailure")]
     Http3PostConnectFailure,
+    #[error("Error: {0}")]
+    Error(#[from] Error),
 }
 
 #[derive(Debug, Clone)]
@@ -75,6 +78,7 @@ impl EventKind {
                 EventError::Reset => Some(ResponseCodeDetails("upstream_reset_after_response_started{TCP_RESET}")),
                 EventError::RefusedStream => Some(ResponseCodeDetails("http2.remote_refuse")),
                 EventError::Http3PostConnectFailure => Some(ResponseCodeDetails("http3.remote_reset")),
+                EventError::Error(_) => Some(ResponseCodeDetails("internal_error")),
             },
             EventKind::Failure(fail) => match fail {
                 EventFailure::AdminFilterResponse => Some(ResponseCodeDetails("admin_filter_response")),
@@ -184,14 +188,14 @@ impl TryFrom<&EventError> for UpstreamTransportEventError {
     }
 }
 
-// DISCLAIMER: This is a workaround for the fact that `EventError` can't implement `Clone`.
+// DISCLAIMER: This is a workaround for the fact that `EventError` cannot implement `Clone`.
 // Cloning is not possible because `Elapsed` and `io::Error` do not implement `Clone`.
-// Their presence in `EventError` is required by the `hyper_util` crate, as it needs
-// to traverse the `EventError` to extract either the underlying `io::Error` or `Elapsed`
-// in order to produce a more specific error message.
-// In this case, we create a new `EventError` by reconstructing the `io::Error`
-// with the same kind and message as the original. It's a kind of "shallow clone" of the error,
-// which is not perfect, but sufficient for our use case.
+// Their presence in `EventError` is required by the `hyper_util` crate, which needs to
+// traverse `EventError` to extract the underlying `io::Error` or `Elapsed` in order to
+// produce a more specific error message.
+// In this case, we create a new `EventError` by reconstructing the `io::Error` with the
+// same kind and message as the original. This effectively acts as a "shallow clone" of
+// the error: not perfect, but sufficient for our use case.
 
 impl Clone for EventError {
     fn clone(&self) -> Self {
@@ -206,6 +210,7 @@ impl Clone for EventError {
             EventError::Reset => EventError::Reset,
             EventError::RefusedStream => EventError::RefusedStream,
             EventError::Http3PostConnectFailure => EventError::Http3PostConnectFailure,
+            EventError::Error(err) => EventError::Error(Error::new(err.to_string())),
         }
     }
 }
@@ -221,6 +226,7 @@ impl From<EventError> for ResponseFlags {
             EventError::Reset | EventError::RefusedStream | EventError::Http3PostConnectFailure => {
                 ResponseFlags(FmtResponseFlags::UPSTREAM_REMOTE_RESET)
             },
+            EventError::Error(_) => ResponseFlags(FmtResponseFlags::LOCAL_RESET),
         }
     }
 }

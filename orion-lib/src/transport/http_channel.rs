@@ -544,7 +544,15 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
                 crate::instrumentation::metrics::SEND_REQUEST_WAIT_RESPONSE.observe(nanos as usize);
             },
             {
-                self.send_request(request, route_timeout, retry_policy, Some(&mut retries), #[cfg(feature = "instrumentation")] &_trans_handler.clock).await
+                self.send_request(
+                    request,
+                    route_timeout,
+                    retry_policy,
+                    Some(&mut retries),
+                    #[cfg(feature = "instrumentation")]
+                    &_trans_handler.clock,
+                )
+                .await
             }
         );
 
@@ -845,6 +853,12 @@ impl HttpChannel {
                             Ok(SyntheticHttpResponse::bad_gateway(EventKind::Error(event_error), response_flags)
                                 .into_response(version))
                         },
+                        EventError::Error(_) => Ok(SyntheticHttpResponse::internal_server_error(
+                            EventKind::Error(event_error),
+                            response_flags,
+                            "internal server error",
+                        )
+                        .into_response(version)),
                     }
                 } else {
                     debug!("Route: error occurred after {:?}: {err}", pretty_duration(&dur, None));

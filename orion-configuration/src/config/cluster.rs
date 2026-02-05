@@ -173,7 +173,7 @@ impl Display for HealthStatus {
 pub enum ClusterDiscoveryType {
     #[serde(rename = "static")]
     Static(ClusterLoadAssignment),
-    #[serde(rename = "stict_dns")]
+    #[serde(rename = "strict_dns")]
     StrictDns(ClusterLoadAssignment),
     // The ClusterLoadAssignment is optional for EDS clusters since it cannot be
     // configured statically in the bootstrap, but we need to assign it to the
@@ -538,7 +538,7 @@ mod envoy_conversions {
                 .with_node("cluster_discovery_type")?;
                 //fixme(hayley): the envoy protobuf documentation says:
                 // > If the address and port are empty, no bind will be performed.
-                // but its unclear what adress this is refering to. For now we will always bind.
+                // but its unclear what adress this is referring to. For now we will always bind.
                 let bind_device = upstream_bind_config
                     .map(bind_device_from_bind_config)
                     .transpose()
