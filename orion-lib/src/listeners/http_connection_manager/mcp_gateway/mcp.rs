@@ -414,6 +414,9 @@ impl McpGateway {
         // get session ID from the request. It may get None, in which case we create a new session+id in the "initialize" method
         let mut session = self.get_valid_session(ctx, transport, request);
 
+        let req_ext = request.extensions().clone();
+        let req_headers = request.headers().clone();
+
         // collect the body of the request...
         let Ok(body) = request.body_mut().collect().await else {
             debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: failed to collect request body");
@@ -423,8 +426,9 @@ impl McpGateway {
         //
         // handle the JSON RPC message
         //
-        let response =
-            self.handle_rpc_json_message(ctx, request, transport, body.to_bytes(), listener_name, &mut session);
+        let response = self
+            .handle_rpc_json_message(ctx, req_ext, req_headers, transport, body.to_bytes(), listener_name, &mut session)
+            .await;
 
         if let Some(session) = session {
             debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: saving current session {}", session.session_id);
@@ -623,10 +627,11 @@ impl McpGateway {
         FilterDecision::DirectResponse(response)
     }
 
-    fn handle_rpc_json_message(
+    async fn handle_rpc_json_message(
         &mut self,
         ctx: &McpGatewayListenerContext,
-        request: &http::Request<OrionRequestBody>,
+        req_ext: http::Extensions,
+        req_headers: http::HeaderMap,
         transport: Transport,
         body: Bytes,
         listener_name: &'static str,
@@ -657,7 +662,16 @@ impl McpGateway {
         match message {
             model::JsonRpcMessage::Request(json_rpc_request) => {
                 self.request_id = json_rpc_request.id.clone();
-                self.handle_rpc_json_request(ctx, request, transport, json_rpc_request, listener_name, session)
+                self.handle_rpc_json_request(
+                    ctx,
+                    req_ext,
+                    req_headers,
+                    transport,
+                    json_rpc_request,
+                    listener_name,
+                    session,
+                )
+                .await
             },
             model::JsonRpcMessage::Response(json_rpc_response) => {
                 debug!(target: "mcp_gateway", "handle_rpc_json_message: Unsupported json rpc response: {:#?}", json_rpc_response);
@@ -674,10 +688,11 @@ impl McpGateway {
         }
     }
 
-    fn handle_rpc_json_request(
+    async fn handle_rpc_json_request(
         &mut self,
         ctx: &McpGatewayListenerContext,
-        request: &http::Request<OrionRequestBody>,
+        req_ext: http::Extensions,
+        req_headers: http::HeaderMap,
         transport: Transport,
         rpc: model::JsonRpcRequest,
         listener_name: &'static str,
@@ -707,7 +722,11 @@ impl McpGateway {
 
                 let server_info = {
                     let info = &self.inner.config.server_info;
-                    Implementation { name: info.name.clone(), version: info.version.clone(), ..Default::default() }
+                    Implementation {
+                        name: info.name.to_string(),
+                        version: info.version.to_string(),
+                        ..Default::default()
+                    }
                 };
 
                 let result = InitializeResult {
@@ -756,7 +775,7 @@ impl McpGateway {
             },
             ListToolsRequestMethod::VALUE => {
                 debug!(target: "mcp_gateway", "handle_rpc_json_request: tools/list received");
-                let tools = self.inner.tools.build_list_tools(request);
+                let tools = self.inner.tools.build_list_tools(req_ext).await;
                 let response = model::JsonRpcResponse {
                     jsonrpc: model::JsonRpcVersion2_0,
                     id: self.request_id.clone(),
@@ -768,24 +787,28 @@ impl McpGateway {
             CallToolRequestMethod::VALUE => {
                 debug!(target: "mcp_gateway", "handle_rpc_json_request: tools/call {:#?}", rpc);
 
-                let (upstream_request, r#async) =
-                    match self.inner.tools.build_request(request, &rpc.request, &self.inner.config.cluster_header) {
-                        Ok(result) => result,
-                        Err(e) => {
-                            debug!(target: "mcp_gateway", "handle_rpc_json_request: tools/call failed: {e:#}");
-                            let error_data = if matches!(e, RbacDenied(_)) {
-                                model::ErrorData::new(
-                                    model::ErrorCode::INVALID_REQUEST,
-                                    "Access denied by RBAC policy",
-                                    None,
-                                )
-                            } else {
-                                model::ErrorData::invalid_params("Invalid params", None)
-                            };
+                let (upstream_request, r#async) = match self.inner.tools.build_request(
+                    req_ext,
+                    req_headers,
+                    &rpc.request,
+                    &self.inner.config.cluster_header,
+                ) {
+                    Ok(result) => result,
+                    Err(e) => {
+                        debug!(target: "mcp_gateway", "handle_rpc_json_request: tools/call failed: {e:#}");
+                        let error_data = if matches!(e, RbacDenied(_)) {
+                            model::ErrorData::new(
+                                model::ErrorCode::INVALID_REQUEST,
+                                "Access denied by RBAC policy",
+                                None,
+                            )
+                        } else {
+                            model::ErrorData::invalid_params("Invalid params", None)
+                        };
 
-                            return MessageResponse::Error(self.build_rpc_error(error_data));
-                        },
-                    };
+                        return MessageResponse::Error(self.build_rpc_error(error_data));
+                    },
+                };
 
                 debug!(target: "mcp_gateway", "handle_rpc_json_request: UPSTREAM {:#?}", upstream_request);
                 MessageResponse::Upstream((upstream_request, r#async))

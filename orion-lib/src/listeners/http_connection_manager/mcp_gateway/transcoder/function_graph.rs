@@ -6,7 +6,7 @@ impl Transcoder for FunctionGraphTranscoder {
     fn encode(
         &self,
         _input_schema: &JsonObject,
-        _http_request: &http::Request<OrionRequestBody>,
+        _http_headers: http::HeaderMap,
         _mcp_request: &Request,
     ) -> Result<http::Request<OrionRequestBody>, TranscoderError> {
         todo!()

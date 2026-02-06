@@ -1,4 +1,3 @@
-use http::Request;
 use serde_json::Value;
 use smol_str::SmolStr;
 use std::str::FromStr;
@@ -50,8 +49,8 @@ pub struct JwtHeaderMatcher {
 }
 
 impl JwtHeaderMatcher {
-    pub fn matches<B>(&self, req: &Request<B>) -> bool {
-        let header = req.extensions().get::<jsonwebtoken::Header>();
+    pub fn matches(&self, ext: &http::Extensions) -> bool {
+        let header = ext.get::<jsonwebtoken::Header>();
 
         if let Some(header) = header {
             match &self.field {
@@ -83,8 +82,8 @@ pub struct JwtPayloadMatcher {
 }
 
 impl JwtPayloadMatcher {
-    pub fn matches<B>(&self, req: &Request<B>) -> bool {
-        let claims = req.extensions().get::<JwtClaims>();
+    pub fn matches(&self, ext: &http::Extensions) -> bool {
+        let claims = ext.get::<JwtClaims>();
 
         if let Some(claims) = claims {
             match &self.field {
@@ -121,10 +120,10 @@ pub enum Permission {
 }
 
 impl Permission {
-    pub fn is_applicable<B>(&self, req: &Request<B>) -> bool {
+    pub fn is_applicable(&self, ext: &http::Extensions) -> bool {
         match self {
-            Permission::JwtHeader(matcher) => matcher.matches(req),
-            Permission::JwtClaim(matcher) => matcher.matches(req),
+            Permission::JwtHeader(matcher) => matcher.matches(ext),
+            Permission::JwtClaim(matcher) => matcher.matches(ext),
         }
     }
 }
@@ -141,8 +140,8 @@ impl ToolRbac {
         Self { action: Action::Allow, permissions: Vec::new() }
     }
 
-    pub fn is_permitted<B>(&self, req: &Request<B>) -> bool {
-        let any_permission_matched = self.permissions.iter().any(|p| p.is_applicable(req));
+    pub fn is_permitted(&self, ext: &http::Extensions) -> bool {
+        let any_permission_matched = self.permissions.iter().any(|p| p.is_applicable(ext));
 
         let permitted = match self.action {
             Action::Allow => any_permission_matched,
@@ -215,7 +214,7 @@ mod tool_rbac_tests {
         let header = create_test_header(Some("key-1"), jsonwebtoken::Algorithm::HS256);
         let req = create_request_with_claims(claims, header);
 
-        let permitted = rbac.is_permitted(&req);
+        let permitted = rbac.is_permitted(req.extensions());
         assert!(permitted);
     }
 
@@ -233,7 +232,7 @@ mod tool_rbac_tests {
         let header = create_test_header(Some("key-1"), jsonwebtoken::Algorithm::HS256);
         let req = create_request_with_claims(claims, header);
 
-        let permitted = rbac.is_permitted(&req);
+        let permitted = rbac.is_permitted(req.extensions());
         assert!(!permitted);
     }
 
@@ -251,7 +250,7 @@ mod tool_rbac_tests {
         let header = create_test_header(Some("key-1"), jsonwebtoken::Algorithm::HS256);
         let req = create_request_with_claims(claims, header);
 
-        let permitted = rbac.is_permitted(&req);
+        let permitted = rbac.is_permitted(req.extensions());
         assert!(!permitted);
     }
 
@@ -269,7 +268,7 @@ mod tool_rbac_tests {
         let header = create_test_header(Some("key-1"), jsonwebtoken::Algorithm::HS256);
         let req = create_request_with_claims(claims, header);
 
-        let permitted = rbac.is_permitted(&req);
+        let permitted = rbac.is_permitted(req.extensions());
         assert!(permitted);
     }
 
@@ -293,21 +292,21 @@ mod tool_rbac_tests {
         let claims = create_test_claims("user@example.com", Some("admin"));
         let header = create_test_header(Some("key-1"), jsonwebtoken::Algorithm::HS256);
         let req = create_request_with_claims(claims, header);
-        let permitted = rbac.is_permitted(&req);
+        let permitted = rbac.is_permitted(req.extensions());
         assert!(permitted);
 
         // Test with moderator role
         let claims = create_test_claims("user@example.com", Some("moderator"));
         let header = create_test_header(Some("key-1"), jsonwebtoken::Algorithm::HS256);
         let req = create_request_with_claims(claims, header);
-        let permitted = rbac.is_permitted(&req);
+        let permitted = rbac.is_permitted(req.extensions());
         assert!(permitted);
 
         // Test with user role (should be denied)
         let claims = create_test_claims("user@example.com", Some("user"));
         let header = create_test_header(Some("key-1"), jsonwebtoken::Algorithm::HS256);
         let req = create_request_with_claims(claims, header);
-        let permitted = rbac.is_permitted(&req);
+        let permitted = rbac.is_permitted(req.extensions());
         assert!(!permitted);
     }
 
@@ -325,14 +324,14 @@ mod tool_rbac_tests {
         let claims = create_test_claims("alice@example.com", None);
         let header = create_test_header(Some("key-1"), jsonwebtoken::Algorithm::HS256);
         let req = create_request_with_claims(claims, header);
-        let permitted = rbac.is_permitted(&req);
+        let permitted = rbac.is_permitted(req.extensions());
         assert!(permitted);
 
         // Bob should be denied
         let claims = create_test_claims("bob@example.com", None);
         let header = create_test_header(Some("key-1"), jsonwebtoken::Algorithm::HS256);
         let req = create_request_with_claims(claims, header);
-        let permitted = rbac.is_permitted(&req);
+        let permitted = rbac.is_permitted(req.extensions());
         assert!(!permitted);
     }
 
@@ -351,13 +350,13 @@ mod tool_rbac_tests {
         // Request with trusted key
         let header = create_test_header(Some("trusted-key-123"), jsonwebtoken::Algorithm::HS256);
         let req = create_request_with_claims(claims.clone(), header);
-        let permitted = rbac.is_permitted(&req);
+        let permitted = rbac.is_permitted(req.extensions());
         assert!(permitted);
 
         // Request with untrusted key
         let header = create_test_header(Some("untrusted-key"), jsonwebtoken::Algorithm::HS256);
         let req = create_request_with_claims(claims, header);
-        let permitted = rbac.is_permitted(&req);
+        let permitted = rbac.is_permitted(req.extensions());
         assert!(!permitted);
     }
 
@@ -376,13 +375,13 @@ mod tool_rbac_tests {
         // Request with RS256 algorithm
         let header = create_test_header(Some("key-1"), jsonwebtoken::Algorithm::RS256);
         let req = create_request_with_claims(claims.clone(), header);
-        let permitted = rbac.is_permitted(&req);
+        let permitted = rbac.is_permitted(req.extensions());
         assert!(permitted);
 
         // Request with HS256 algorithm
         let header = create_test_header(Some("key-1"), jsonwebtoken::Algorithm::HS256);
         let req = create_request_with_claims(claims, header);
-        let permitted = rbac.is_permitted(&req);
+        let permitted = rbac.is_permitted(req.extensions());
         assert!(!permitted);
     }
 
@@ -398,7 +397,7 @@ mod tool_rbac_tests {
 
         // Request without JWT claims
         let req = Request::builder().uri("/test").body(()).unwrap();
-        let permitted = rbac.is_permitted(&req);
+        let permitted = rbac.is_permitted(req.extensions());
         assert!(!permitted);
     }
 
@@ -410,7 +409,7 @@ mod tool_rbac_tests {
         let header = create_test_header(Some("key-1"), jsonwebtoken::Algorithm::HS256);
         let req = create_request_with_claims(claims, header);
 
-        let permitted = rbac.is_permitted(&req);
+        let permitted = rbac.is_permitted(req.extensions());
         assert!(!permitted);
     }
 }
