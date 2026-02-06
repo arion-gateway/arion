@@ -27,35 +27,30 @@ pub struct McpTool {
     pub name: String,
     pub description: String,
     pub input_schema: Map<String, Value>,
-    pub backend: McpBackend,
+    pub backend: UpstreamBackend,
     pub rbac: Option<McpToolRbac>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
-pub struct McpBackend {
-    pub cluster: String,
-    pub r#async: bool,
-    pub transcoding: McpTranscoding,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
-pub enum McpTranscoding {
+pub enum UpstreamBackend {
     Rest {
         #[serde(with = "http_serde_ext::method")]
         method: http::Method,
         path: String,
         query_params: Vec<McpRestQueryParams>,
+        cluster: String,
+        r#async: bool,
     },
-    FunctionGraph {},
     McpServer {
-        transport: McpTransportUpstream,
+        transport: McpBackendTransportUpstream,
         url: String,
         cache_duration: Option<Duration>,
     },
+    FunctionGraph {},
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
-pub enum McpTransportUpstream {
+pub enum McpBackendTransportUpstream {
     Sse,
     StreamableHttp,
 }
@@ -89,16 +84,17 @@ mod envoy_conversions {
 
     use super::*;
     use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::mcp::mcp_gateway::v3::{
-        backend::Transcoding as OrionTranscoding, mcp_server_transcoding::TransportUpstream as OrionTransportUpstream,
-        Backend as OrionMcpBackend, McpGateway as OrionMcpGateway, QueryParam as OrionMcpQueryParams,
-        ServerInfo as OrionMcpServerInfo, Tool as OrionTool,
+        mcp_server_backend::TransportUpstream as OrionTransportUpstream,
+        McpGateway as OrionMcpGateway, QueryParam as OrionMcpQueryParams, ServerInfo as OrionMcpServerInfo,
+        Tool as OrionTool,
+        tool::UpstreamBackend as OrionUpstreamBackend,
     };
 
-    impl From<OrionTransportUpstream> for McpTransportUpstream {
+    impl From<OrionTransportUpstream> for McpBackendTransportUpstream {
         fn from(trans: OrionTransportUpstream) -> Self {
             match trans {
-                OrionTransportUpstream::Sse => McpTransportUpstream::Sse,
-                OrionTransportUpstream::StreamableHttp => McpTransportUpstream::StreamableHttp,
+                OrionTransportUpstream::Sse => McpBackendTransportUpstream::Sse,
+                OrionTransportUpstream::StreamableHttp => McpBackendTransportUpstream::StreamableHttp,
             }
         }
     }
@@ -120,9 +116,9 @@ mod envoy_conversions {
         type Error = GenericError;
 
         fn try_from(orion: OrionTool) -> Result<Self, Self::Error> {
-            let OrionTool { name, description, input_schema, backend, rbac } = orion;
+            let OrionTool { name, description, input_schema, upstream_backend, rbac } = orion;
             let input_schema: DataSource = required!(input_schema)?.try_into()?;
-            let backend = required!(backend)?.try_into()?;
+            let backend = required!(upstream_backend)?.try_into()?;
 
             let bytes = input_schema.to_bytes_blocking()?;
             let string = String::from_utf8(bytes)?;
@@ -132,40 +128,34 @@ mod envoy_conversions {
         }
     }
 
-    impl TryFrom<OrionMcpBackend> for McpBackend {
+    impl TryFrom<OrionUpstreamBackend> for UpstreamBackend {
         type Error = GenericError;
 
-        fn try_from(orion: OrionMcpBackend) -> Result<Self, GenericError> {
-            let OrionMcpBackend { cluster, r#async, transcoding } = orion;
-            let cluster = required!(cluster)?;
-            let transcoding = required!(transcoding)?;
-
-            match transcoding {
-                OrionTranscoding::RestTranscoding(trans) => Ok(McpBackend {
-                    cluster,
-                    r#async,
-                    transcoding: McpTranscoding::Rest {
-                        method: http::Method::from_str(&trans.method)?,
-                        path: trans.path,
-                        query_params: trans.query_params.into_iter().map(Into::into).collect(),
-                    },
+        fn try_from(value: OrionUpstreamBackend) -> Result<Self, GenericError> {
+            match value {
+                OrionUpstreamBackend::RestBackend(be) => {
+                    let cluster = be.cluster;
+                    let cluster = required!(cluster)?;
+                    Ok(UpstreamBackend::Rest {
+                        method: http::Method::from_str(&be.method)?,
+                        path: be.path,
+                        query_params: be.query_params.into_iter().map(Into::into).collect(),
+                        cluster,
+                        r#async: be.r#async,
+                    })
+                },
+                OrionUpstreamBackend::McpServerBackend(trans) => Ok(UpstreamBackend::McpServer {
+                    transport: trans.transport().into(),
+                    url: trans.url,
+                    cache_duration: trans
+                        .cache_duration
+                        .map(|d| -> Result<Duration, GenericError> {
+                            let dur: RustType<Duration> = d.try_into()?;
+                            Ok(dur.into_inner())
+                        })
+                        .transpose()?,
                 }),
-                OrionTranscoding::McpServerTranscoding(trans) => Ok(McpBackend {
-                    cluster,
-                    r#async,
-                    transcoding: McpTranscoding::McpServer {
-                        transport: trans.transport().into(),
-                        url: trans.url,
-                        cache_duration: trans
-                            .cache_duration
-                            .map(|d| -> Result<Duration, GenericError> {
-                                let dur: RustType<Duration> = d.try_into()?;
-                                Ok(dur.into_inner())
-                            })
-                            .transpose()?,
-                    },
-                }),
-                OrionTranscoding::FunctionGraphTranscoding(_) => todo!(),
+                OrionUpstreamBackend::FunctionGraphBackend(_) => todo!(),
             }
         }
     }

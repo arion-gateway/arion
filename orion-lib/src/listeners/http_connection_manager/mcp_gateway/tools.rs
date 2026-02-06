@@ -10,7 +10,7 @@ use crate::{
 };
 use http::{header::InvalidHeaderValue, HeaderValue};
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::{
-    ClusterHeader, McpBackend, McpRestQueryParams, McpTool, McpTranscoding,
+    ClusterHeader, UpstreamBackend, McpRestQueryParams, McpTool,
 };
 use rmcp::model::{ListToolsResult, Request, Tool};
 use rmcp::object;
@@ -80,14 +80,12 @@ impl ToolsRegistry {
                 "required": ["city"]
             }),
             rbac: None,
-            backend: McpBackend {
+            backend: UpstreamBackend::Rest {
                 cluster: "weather_api_cluster".into(),
                 r#async: false,
-                transcoding: McpTranscoding::Rest {
-                    method: http::Method::GET,
-                    path: "/weather".into(),
-                    query_params: vec![McpRestQueryParams { name: "city".into(), source: "country".into() }],
-                },
+                method: http::Method::GET,
+                path: "/weather".into(),
+                query_params: vec![McpRestQueryParams { name: "city".into(), source: "country".into() }],
             },
         });
 
@@ -103,14 +101,12 @@ impl ToolsRegistry {
                 "required": ["username", "email"]
             }),
             rbac: None,
-            backend: McpBackend {
+            backend: UpstreamBackend::Rest {
                 cluster: "post_user_cluster".into(),
                 r#async: false,
-                transcoding: McpTranscoding::Rest {
-                    method: http::Method::POST,
-                    path: "/user".into(),
-                    query_params: vec![McpRestQueryParams { name: "username".into(), source: "email".into() }],
-                },
+                method: http::Method::POST,
+                path: "/user".into(),
+                query_params: vec![McpRestQueryParams { name: "username".into(), source: "email".into() }],
             },
         });
 
@@ -166,29 +162,31 @@ impl ToolsRegistry {
             }
         }
 
-        let endpoint = &entry.tool;
+        let tool = &entry.tool;
+        let mut async_api = false;
 
-        let mut upstream_request = match &endpoint.backend.transcoding {
-            McpTranscoding::Rest { method, path, query_params } => {
+        let upstream_request = match &tool.backend {
+            UpstreamBackend::Rest { method, path, query_params, cluster, r#async } => {
                 let transcoder = RestTranscoder { method, path, query_params };
-                transcoder
+                let mut upstream_request = transcoder
                     .encode(&entry.tool.input_schema, request, mcp_request)
-                    .map_err(|e| BuildRequestError::TranscoderError { tool: name.to_string(), reason: e.to_string() })?
+                    .map_err(|e| BuildRequestError::TranscoderError { tool: name.to_string(), reason: e.to_string() })?;
+                if let Some(cluster_header) = cluster_header {
+                    let headers = upstream_request.headers_mut();
+                    headers.append(cluster_header.0.clone(), HeaderValue::from_str(&cluster)?);
+                    async_api = *r#async;
+                }
+                upstream_request
             },
-            McpTranscoding::FunctionGraph {} => {
-                return Err(BuildRequestError::FunctionGraphNotImplemented);
-            },
-            McpTranscoding::McpServer { .. } => {
+            UpstreamBackend::McpServer { .. } => {
                 return Err(BuildRequestError::McpNotImplemented);
+            },
+            UpstreamBackend::FunctionGraph {} => {
+                return Err(BuildRequestError::FunctionGraphNotImplemented);
             },
         };
 
-        if let Some(cluster_header) = cluster_header {
-            let headers = upstream_request.headers_mut();
-            headers.append(cluster_header.0.clone(), HeaderValue::from_str(&endpoint.backend.cluster)?);
-        }
-
-        Ok((upstream_request, endpoint.backend.r#async))
+        Ok((upstream_request, async_api))
     }
 }
 
