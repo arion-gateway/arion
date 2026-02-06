@@ -2,6 +2,7 @@ mod kind;
 mod mutation;
 mod r#override;
 mod processing;
+mod pseudo_header;
 mod status;
 #[cfg(test)]
 mod tests;
@@ -10,8 +11,10 @@ mod worker_config;
 use crate::body::channel_body::{ChannelBody, FrameBridge};
 use crate::body::timeout_body::TimeoutBody;
 use crate::event_error::EventFailure;
+use crate::listeners::http_connection_manager::ext_proc::pseudo_header::CombinedHeaderMap;
 use crate::{OrionRequestBody, OrionResponseBody};
 use http_body_util::{BodyExt, Collected, LengthLimitError, Limited};
+use smol_str::{SmolStr, ToSmolStr};
 
 use crate::listeners::http_connection_manager::ext_proc::mutation::{
     apply_request_header_mutations, apply_response_header_mutations,
@@ -272,7 +275,22 @@ impl ExternalProcessor {
 
         if process_headers {
             debug!(target: "ext_proc", "request processing headers");
-            ext_proc_headers = Some(self.filter_header_map(request.headers()));
+            let uri = request.uri();
+            let pseudo: Vec<_> = {
+                let mut v = Vec::with_capacity(4);
+                v.extend(
+                    [
+                        Some((pseudo_header::METHOD, request.method().as_str().into())),
+                        uri.scheme().map(|s| (pseudo_header::SCHEME, s.as_str().into())),
+                        uri.authority().map(|a| (pseudo_header::AUTHORITY, a.as_str().into())),
+                        Some((pseudo_header::PATH, uri.path_and_query().map_or(uri.path(), |f| f.as_str()).into())),
+                    ]
+                    .into_iter()
+                    .flatten(),
+                );
+                v
+            };
+            ext_proc_headers = Some(CombinedHeaderMap { regular: self.filter_header_map(request.headers()), pseudo });
         }
 
         let body: PolyBody = std::mem::take(&mut request.body_mut().inner.inner);
@@ -417,7 +435,10 @@ impl ExternalProcessor {
 
         if process_headers {
             debug!(target: "ext_proc", "response processing headers");
-            ext_proc_headers = Some(self.filter_header_map(response.headers()));
+            ext_proc_headers = Some(CombinedHeaderMap {
+                regular: self.filter_header_map(response.headers()),
+                pseudo: vec![(pseudo_header::STATUS, response.status().as_u16().to_smolstr())],
+            });
         }
 
         let body: PolyBody = std::mem::take(&mut response.body_mut().inner);
@@ -668,6 +689,20 @@ impl From<&http::HeaderMap> for EnvoyHeaderMap {
     }
 }
 
+impl From<&CombinedHeaderMap> for EnvoyHeaderMap {
+    fn from(headers: &CombinedHeaderMap) -> Self {
+        let regular = EnvoyHeaderMap::from(&headers.regular);
+        let mut headers_pseudo = Vec::with_capacity(headers.pseudo.len());
+        for (name, value) in &headers.pseudo {
+            headers_pseudo.push(HeaderValue { key: (*name).into(), value: (*value).to_string(), raw_value: vec![] });
+        }
+
+        let mut headers = regular.0.headers;
+        headers.extend(headers_pseudo);
+        EnvoyHeaderMap(HeaderMap { headers })
+    }
+}
+
 impl From<EnvoyHeaderMap> for http::HeaderMap {
     fn from(envoy_headers: EnvoyHeaderMap) -> Self {
         let mut headers = http::HeaderMap::with_capacity(envoy_headers.0.headers.len());
@@ -703,8 +738,8 @@ struct ProcessingTask {
 
 #[derive(Debug)]
 enum ProcessingData {
-    Request(Option<http::HeaderMap>, FrameBridge),
-    Response(Option<http::HeaderMap>, FrameBridge),
+    Request(Option<CombinedHeaderMap>, FrameBridge),
+    Response(Option<CombinedHeaderMap>, FrameBridge),
 }
 
 struct BidiStream {

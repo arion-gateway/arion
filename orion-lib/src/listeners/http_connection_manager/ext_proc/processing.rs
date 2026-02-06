@@ -2,6 +2,7 @@ use crate::body::channel_body::FrameBridge;
 use crate::event_error::EventFailure;
 use crate::listeners::http_connection_manager::ext_proc::kind;
 use crate::listeners::http_connection_manager::ext_proc::mutation::apply_trailer_mutations;
+use crate::listeners::http_connection_manager::ext_proc::pseudo_header::CombinedHeaderMap;
 use crate::listeners::http_connection_manager::ext_proc::r#override::{
     OverridableGlobalModes, OverridableModeSelector,
 };
@@ -147,7 +148,7 @@ impl FramesBuffer {
 
 #[allow(clippy::struct_excessive_bools)]
 pub struct Processing<M: kind::Mode, Msg: kind::MsgKind> {
-    http_headers: Option<http::HeaderMap>,
+    http_headers: Option<CombinedHeaderMap>,
     pub trailers: Option<http::HeaderMap>,
     pub frame_bridge: FrameBridge,
     pub reply_channel: Option<oneshot::Sender<ProcessingStatus>>,
@@ -483,7 +484,7 @@ impl<M: kind::Mode + Default, Msg: kind::MsgKind + OverridableModeSelector> Proc
     #[allow(clippy::too_many_arguments)]
     pub fn process(
         &mut self,
-        headers: Option<http::HeaderMap>,
+        headers: Option<CombinedHeaderMap>,
         frame_bridge: FrameBridge,
         reply_channel: oneshot::Sender<ProcessingStatus>,
         http_version: http::Version,

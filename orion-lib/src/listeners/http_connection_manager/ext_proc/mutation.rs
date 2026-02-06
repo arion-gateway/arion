@@ -11,12 +11,6 @@ use tracing::warn;
 
 use crate::Error;
 
-const PSEUDO_HEADER_METHOD: &str = ":method";
-const PSEUDO_HEADER_SCHEME: &str = ":scheme";
-const PSEUDO_HEADER_AUTHORITY: &str = ":authority";
-const PSEUDO_HEADER_PATH: &str = ":path";
-const PSEUDO_HEADER_STATUS: &str = ":status";
-
 /// Extracts the string value from a `HeaderValueOption`.
 /// Returns:
 /// - None if the header is not present
@@ -58,11 +52,11 @@ impl<'a> From<&'a HeaderMutation> for PseudoHeaders<'a> {
             let Some(header) = &header_to_set.header else { continue };
 
             match header.key.as_str() {
-                PSEUDO_HEADER_METHOD => pseudo_headers.method = Some(header_to_set),
-                PSEUDO_HEADER_SCHEME => pseudo_headers.scheme = Some(header_to_set),
-                PSEUDO_HEADER_AUTHORITY => pseudo_headers.authority = Some(header_to_set),
-                PSEUDO_HEADER_PATH => pseudo_headers.path = Some(header_to_set),
-                PSEUDO_HEADER_STATUS => pseudo_headers.status = Some(header_to_set),
+                super::pseudo_header::METHOD => pseudo_headers.method = Some(header_to_set),
+                super::pseudo_header::SCHEME => pseudo_headers.scheme = Some(header_to_set),
+                super::pseudo_header::AUTHORITY => pseudo_headers.authority = Some(header_to_set),
+                super::pseudo_header::PATH => pseudo_headers.path = Some(header_to_set),
+                super::pseudo_header::STATUS => pseudo_headers.status = Some(header_to_set),
                 _ => {},
             }
         }
@@ -86,7 +80,7 @@ pub fn apply_request_header_mutations<B>(
         if let Some(method_opt) = pseudo_headers.method {
             // NOTE: if mutation rules is not specified, we allow any modification. This is not the
             // same behavior as envoy, but is more permissive for users who don't set mutation rules.
-            if mutation_rules.map(|r| r.is_modification_permitted(PSEUDO_HEADER_METHOD)).unwrap_or(true) {
+            if mutation_rules.map(|r| r.is_modification_permitted(super::pseudo_header::METHOD)).unwrap_or(true) {
                 match try_extract_header_value_as_str(method_opt) {
                     Some(Ok(method)) => {
                         if let Ok(new_method) = http::Method::from_bytes(method.as_bytes()) {
@@ -108,7 +102,7 @@ pub fn apply_request_header_mutations<B>(
             let mut parts = req.uri().clone().into_parts();
 
             if let Some(scheme_opt) = pseudo_headers.scheme {
-                if mutation_rules.map(|r| r.is_modification_permitted(PSEUDO_HEADER_SCHEME)).unwrap_or(true) {
+                if mutation_rules.map(|r| r.is_modification_permitted(super::pseudo_header::SCHEME)).unwrap_or(true) {
                     match try_extract_header_value_as_str(scheme_opt) {
                         Some(Ok(scheme)) => {
                             if let Ok(scheme) = Scheme::try_from(scheme) {
@@ -126,7 +120,8 @@ pub fn apply_request_header_mutations<B>(
             }
 
             if let Some(authority_opt) = pseudo_headers.authority {
-                if mutation_rules.map(|r| r.is_modification_permitted(PSEUDO_HEADER_AUTHORITY)).unwrap_or(true) {
+                if mutation_rules.map(|r| r.is_modification_permitted(super::pseudo_header::AUTHORITY)).unwrap_or(true)
+                {
                     match try_extract_header_value_as_str(authority_opt) {
                         Some(Ok(authority)) => {
                             if let Ok(authority) = Authority::try_from(authority) {
@@ -144,7 +139,7 @@ pub fn apply_request_header_mutations<B>(
             }
 
             if let Some(path_opt) = pseudo_headers.path {
-                if mutation_rules.map(|r| r.is_modification_permitted(PSEUDO_HEADER_PATH)).unwrap_or(true) {
+                if mutation_rules.map(|r| r.is_modification_permitted(super::pseudo_header::PATH)).unwrap_or(true) {
                     match try_extract_header_value_as_str(path_opt) {
                         Some(Ok(path)) => {
                             if let Ok(path_and_query) = PathAndQuery::try_from(path) {
@@ -180,7 +175,7 @@ pub fn apply_response_header_mutations<B>(
 
     // Handle :status pseudo-header
     if let Some(status_opt) = pseudo_headers.status {
-        if mutation_rules.map(|r| r.is_modification_permitted(PSEUDO_HEADER_STATUS)).unwrap_or(true) {
+        if mutation_rules.map(|r| r.is_modification_permitted(super::pseudo_header::STATUS)).unwrap_or(true) {
             match try_extract_header_value_as_str(status_opt) {
                 Some(Ok(status_str)) => {
                     if let Ok(status_code) = status_str.parse::<u16>() {
