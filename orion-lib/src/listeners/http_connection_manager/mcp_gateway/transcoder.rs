@@ -14,6 +14,8 @@ pub enum TranscoderError {
     InvalidHeaderValue(#[from] InvalidHeaderValue),
     #[error("Http: {0}")]
     HttpError(#[from] http::Error),
+    #[error("Validation error: {0}")]
+    ValidationError(String),
 }
 
 pub struct RestTranscoder<'a> {

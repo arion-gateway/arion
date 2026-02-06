@@ -1,6 +1,8 @@
 use super::{RestTranscoder, Transcoder, TranscoderError};
 use crate::{body::instrumented_body::InstrumentedBody, OrionRequestBody};
+use jsonschema::Validator;
 use rmcp::model::{JsonObject, Request};
+use serde_json::Value;
 use std::borrow::Cow;
 use url::form_urlencoded;
 
@@ -18,7 +20,18 @@ impl Transcoder for RestTranscoder<'_> {
         // causes "invalid format" error in http::Uri parser.
         let arguments = mcp_request.params.get("arguments").and_then(|v| v.as_object());
 
-        // TODO: validate arguments against input schema!
+        // Validate arguments against input schema
+        if !input_schema.is_empty() {
+            let schema_value = Value::Object(input_schema.clone());
+            let validator = Validator::new(&schema_value)
+                .map_err(|e| TranscoderError::ValidationError(format!("Invalid input schema: {e}")))?;
+            let args_to_validate =
+                arguments.map_or_else(|| Value::Object(serde_json::Map::new()), |a| Value::Object(a.clone()));
+            let errors: Vec<String> = validator.iter_errors(&args_to_validate).map(|e| e.to_string()).collect();
+            if !errors.is_empty() {
+                return Err(TranscoderError::ValidationError(errors.join("; ")));
+            }
+        }
 
         let has_args = arguments.is_some_and(|m| !m.is_empty());
 
@@ -35,7 +48,7 @@ impl Transcoder for RestTranscoder<'_> {
         // Build query string directly using lazy iterator
         if has_args {
             uri.push('?');
-            uri = form_urlencoded::Serializer::new(uri).extend_pairs(extract_arguments(&mcp_request)).finish();
+            uri = form_urlencoded::Serializer::new(uri).extend_pairs(extract_arguments(mcp_request)).finish();
         }
 
         // Orion will override the authority with the correct upstream endpoint.
@@ -82,3 +95,119 @@ fn extract_arguments(mcp_request: &Request) -> impl Iterator<Item = (&str, Cow<'
 //) -> Result<http::Request<OrionRequestBody>, http::Error> {
 //    todo!()
 //}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rmcp::model::Request;
+    use serde_json::json;
+
+    fn create_test_request(arguments: Option<serde_json::Map<String, Value>>) -> Request {
+        let mut params = serde_json::Map::new();
+        params.insert("name".to_string(), json!("test_tool"));
+        if let Some(args) = arguments {
+            params.insert("arguments".to_string(), Value::Object(args));
+        }
+        Request { method: "tools/call".into(), params, extensions: Default::default() }
+    }
+
+    fn create_http_request() -> http::Request<OrionRequestBody> {
+        http::Request::builder().method(http::Method::GET).uri("/test").body(OrionRequestBody::default()).unwrap()
+    }
+
+    #[test]
+    fn test_validation_fails_when_required_field_missing() {
+        // Schema requires "username" field
+        let input_schema: JsonObject = serde_json::from_value(json!({
+            "type": "object",
+            "properties": {
+                "username": { "type": "string" }
+            },
+            "required": ["username"]
+        }))
+        .unwrap();
+
+        // Request with empty arguments - missing required "username"
+        let mcp_request = create_test_request(Some(serde_json::Map::new()));
+        let http_request = create_http_request();
+        let query_params: Vec<super::super::McpRestQueryParams> = vec![];
+        let transcoder = RestTranscoder { method: &http::Method::GET, path: "/api/test", query_params: &query_params };
+
+        let result = transcoder.encode(&input_schema, &http_request, &mcp_request);
+
+        assert!(matches!(result, Err(TranscoderError::ValidationError(_))));
+        if let Err(TranscoderError::ValidationError(msg)) = result {
+            assert!(msg.contains("username"), "Error message should mention missing field: {}", msg);
+        }
+    }
+
+    #[test]
+    fn test_validation_fails_when_wrong_type() {
+        // Schema requires "count" to be a number
+        let input_schema: JsonObject = serde_json::from_value(json!({
+            "type": "object",
+            "properties": {
+                "count": { "type": "number" }
+            }
+        }))
+        .unwrap();
+
+        // Request with string instead of number
+        let mut args = serde_json::Map::new();
+        args.insert("count".to_string(), json!("not a number"));
+        let mcp_request = create_test_request(Some(args));
+        let http_request = create_http_request();
+        let query_params: Vec<super::super::McpRestQueryParams> = vec![];
+        let transcoder = RestTranscoder { method: &http::Method::GET, path: "/api/test", query_params: &query_params };
+
+        let result = transcoder.encode(&input_schema, &http_request, &mcp_request);
+
+        assert!(matches!(result, Err(TranscoderError::ValidationError(_))));
+        if let Err(TranscoderError::ValidationError(msg)) = result {
+            assert!(msg.contains("number"), "Error message should mention type mismatch: {}", msg);
+        }
+    }
+
+    #[test]
+    fn test_validation_passes_with_valid_arguments() {
+        // Schema with required fields
+        let input_schema: JsonObject = serde_json::from_value(json!({
+            "type": "object",
+            "properties": {
+                "username": { "type": "string" },
+                "age": { "type": "integer" }
+            },
+            "required": ["username"]
+        }))
+        .unwrap();
+
+        // Valid request with all required fields and correct types
+        let mut args = serde_json::Map::new();
+        args.insert("username".to_string(), json!("john_doe"));
+        args.insert("age".to_string(), json!(25));
+        let mcp_request = create_test_request(Some(args));
+        let http_request = create_http_request();
+        let query_params: Vec<super::super::McpRestQueryParams> = vec![];
+        let transcoder = RestTranscoder { method: &http::Method::GET, path: "/api/test", query_params: &query_params };
+
+        let result = transcoder.encode(&input_schema, &http_request, &mcp_request);
+
+        assert!(result.is_ok(), "Expected validation to pass but got: {:?}", result);
+    }
+
+    #[test]
+    fn test_empty_schema_skips_validation() {
+        // Empty schema - no validation should occur
+        let input_schema: JsonObject = serde_json::Map::new();
+        let mut args = serde_json::Map::new();
+        args.insert("any_field".to_string(), json!("any_value"));
+        let mcp_request = create_test_request(Some(args));
+        let http_request = create_http_request();
+        let query_params: Vec<super::super::McpRestQueryParams> = vec![];
+        let transcoder = RestTranscoder { method: &http::Method::GET, path: "/api/test", query_params: &query_params };
+
+        let result = transcoder.encode(&input_schema, &http_request, &mcp_request);
+
+        assert!(result.is_ok(), "Expected no validation for empty schema but got: {:?}", result);
+    }
+}
