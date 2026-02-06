@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use crate::config::core::DataSource;
 use crate::config::network_filters::network_rbac::Action;
 use serde::{Deserialize, Serialize};
@@ -45,7 +47,17 @@ pub enum McpTranscoding {
         query_params: Vec<McpRestQueryParams>,
     },
     FunctionGraph {},
-    Mcp {},
+    McpServer {
+        transport: McpTransportUpstream,
+        url: String,
+        cache_duration: Option<Duration>,
+    },
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub enum McpTransportUpstream {
+    Sse,
+    StreamableHttp,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
@@ -72,13 +84,24 @@ mod envoy_conversions {
     use std::str::FromStr;
 
     use crate::config::common::envoy_conversions::IsUsed;
+    use crate::config::core::RustType;
     use crate::config::{required, GenericError};
 
     use super::*;
     use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::mcp::mcp_gateway::v3::{
-        backend::Transcoding as OrionTranscoding, Backend as OrionMcpBackend, McpGateway as OrionMcpGateway,
-        QueryParam as OrionMcpQueryParams, ServerInfo as OrionMcpServerInfo, Tool as OrionTool,
+        backend::Transcoding as OrionTranscoding, mcp_server_transcoding::TransportUpstream as OrionTransportUpstream,
+        Backend as OrionMcpBackend, McpGateway as OrionMcpGateway, QueryParam as OrionMcpQueryParams,
+        ServerInfo as OrionMcpServerInfo, Tool as OrionTool,
     };
+
+    impl From<OrionTransportUpstream> for McpTransportUpstream {
+        fn from(trans: OrionTransportUpstream) -> Self {
+            match trans {
+                OrionTransportUpstream::Sse => McpTransportUpstream::Sse,
+                OrionTransportUpstream::StreamableHttp => McpTransportUpstream::StreamableHttp,
+            }
+        }
+    }
 
     impl TryFrom<OrionMcpGateway> for McpGateway {
         type Error = GenericError;
@@ -127,8 +150,22 @@ mod envoy_conversions {
                         query_params: trans.query_params.into_iter().map(Into::into).collect(),
                     },
                 }),
+                OrionTranscoding::McpServerTranscoding(trans) => Ok(McpBackend {
+                    cluster,
+                    r#async,
+                    transcoding: McpTranscoding::McpServer {
+                        transport: trans.transport().into(),
+                        url: trans.url,
+                        cache_duration: trans
+                            .cache_duration
+                            .map(|d| -> Result<Duration, GenericError> {
+                                let dur: RustType<Duration> = d.try_into()?;
+                                Ok(dur.into_inner())
+                            })
+                            .transpose()?,
+                    },
+                }),
                 OrionTranscoding::FunctionGraphTranscoding(_) => todo!(),
-                OrionTranscoding::McpServerTranscoding(_) => todo!(),
             }
         }
     }
@@ -146,20 +183,24 @@ mod envoy_conversions {
     }
 
     use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::mcp::mcp_gateway::v3::{
-        permission, JwtClaimMatcher, JwtHeaderMatcher, Permission as OrionPermission, ToolRbac as OrionToolRbac,
+        permission, tool_rbac::Action as OrionAction, JwtClaimMatcher, JwtHeaderMatcher, Permission as OrionPermission,
+        ToolRbac as OrionToolRbac,
     };
+
+    impl From<OrionAction> for Action {
+        fn from(action: OrionAction) -> Self {
+            match action {
+                OrionAction::Allow => Action::Allow,
+                OrionAction::Deny => Action::Deny,
+            }
+        }
+    }
 
     impl TryFrom<OrionToolRbac> for McpToolRbac {
         type Error = GenericError;
         fn try_from(orion: OrionToolRbac) -> Result<Self, Self::Error> {
-            let OrionToolRbac { action, permissions } = orion;
-
-            let action = match action {
-                0 => Action::Allow, // ALLOW
-                1 => Action::Deny,  // DENY
-                _ => return Err(GenericError::from_msg("Invalid RBAC action")),
-            };
-
+            let action = orion.action().into();
+            let permissions = orion.permissions;
             if permissions.is_empty() {
                 return Err(GenericError::from_msg("Tool RBAC must have at least one permission"));
             }

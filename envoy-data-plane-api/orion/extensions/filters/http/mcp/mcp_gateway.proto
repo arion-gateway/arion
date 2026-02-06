@@ -3,6 +3,7 @@ syntax = "proto3";
 package orion.extensions.filters.http.mcp.mcp_gateway.v3;
 
 import "envoy/config/core/v3/base.proto";
+import "google/protobuf/duration.proto";
 import "validate/validate.proto";
 
 // [#protodoc-title: McpGateway Filter]
@@ -54,6 +55,14 @@ message FunctionGraphTranscoding {
 }
 
 message McpServerTranscoding {
+// Use a oneof to represent the transport type
+  enum TransportUpstream {
+    Sse = 0;
+    StreamableHttp = 1;
+  }
+  TransportUpstream transport = 1;
+  string url = 2 [(validate.rules).string = {min_bytes: 1}];
+  google.protobuf.Duration cache_duration = 3;
 }
 
 // RBAC configuration for individual MCP tools
@@ -79,10 +88,10 @@ message ToolRbac {
 message Permission {
   oneof permission_type {
     option (validate.required) = true;
-    
+
     // Match based on JWT header field
     JwtHeaderMatcher jwt_header = 1;
-    
+
     // Match based on JWT claim field
     JwtClaimMatcher jwt_claim = 2;
   }

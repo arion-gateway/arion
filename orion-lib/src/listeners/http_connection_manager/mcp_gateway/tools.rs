@@ -178,7 +178,7 @@ impl ToolsRegistry {
             McpTranscoding::FunctionGraph {} => {
                 return Err(BuildRequestError::FunctionGraphNotImplemented);
             },
-            McpTranscoding::Mcp {} => {
+            McpTranscoding::McpServer { .. } => {
                 return Err(BuildRequestError::McpNotImplemented);
             },
         };
