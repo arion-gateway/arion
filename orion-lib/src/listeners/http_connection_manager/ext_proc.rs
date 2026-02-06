@@ -14,7 +14,7 @@ use crate::event_error::EventFailure;
 use crate::listeners::http_connection_manager::ext_proc::pseudo_header::CombinedHeaderMap;
 use crate::{OrionRequestBody, OrionResponseBody};
 use http_body_util::{BodyExt, Collected, LengthLimitError, Limited};
-use smol_str::{SmolStr, ToSmolStr};
+use smol_str::ToSmolStr;
 
 use crate::listeners::http_connection_manager::ext_proc::mutation::{
     apply_request_header_mutations, apply_response_header_mutations,

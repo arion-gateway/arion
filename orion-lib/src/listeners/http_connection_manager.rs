@@ -54,8 +54,6 @@ use {
     },
 };
 
-#[cfg(feature = "access-log")]
-use crate::event_error::EventKind;
 #[cfg(any(feature = "access-log", feature = "metrics"))]
 use crate::utils::http::{request_head_size, response_head_size};
 
