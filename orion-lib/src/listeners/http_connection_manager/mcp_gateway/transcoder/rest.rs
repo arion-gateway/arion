@@ -12,7 +12,7 @@ impl Transcoder for RestTranscoder<'_> {
     fn encode(
         &self,
         input_schema: &JsonObject,
-        http_headers: http::HeaderMap,
+        http_headers: &http::HeaderMap,
         mcp_request: &Request,
     ) -> Result<http::Request<OrionRequestBody>, TranscoderError> {
         // Build a path-only URI (no authority/scheme) - Orion will route to the correct
@@ -132,7 +132,7 @@ mod tests {
         let query_params: Vec<super::super::McpRestQueryParams> = vec![];
         let transcoder = RestTranscoder { method: &http::Method::GET, path: "/api/test", query_params: &query_params };
 
-        let result = transcoder.encode(&input_schema, &http_request, &mcp_request);
+        let result = transcoder.encode(&input_schema, http_request.headers(), &mcp_request);
 
         assert!(matches!(result, Err(TranscoderError::ValidationError(_))));
         if let Err(TranscoderError::ValidationError(msg)) = result {
@@ -159,7 +159,7 @@ mod tests {
         let query_params: Vec<super::super::McpRestQueryParams> = vec![];
         let transcoder = RestTranscoder { method: &http::Method::GET, path: "/api/test", query_params: &query_params };
 
-        let result = transcoder.encode(&input_schema, &http_request, &mcp_request);
+        let result = transcoder.encode(&input_schema, http_request.headers(), &mcp_request);
 
         assert!(matches!(result, Err(TranscoderError::ValidationError(_))));
         if let Err(TranscoderError::ValidationError(msg)) = result {
@@ -189,7 +189,7 @@ mod tests {
         let query_params: Vec<super::super::McpRestQueryParams> = vec![];
         let transcoder = RestTranscoder { method: &http::Method::GET, path: "/api/test", query_params: &query_params };
 
-        let result = transcoder.encode(&input_schema, &http_request, &mcp_request);
+        let result = transcoder.encode(&input_schema, http_request.headers(), &mcp_request);
 
         assert!(result.is_ok(), "Expected validation to pass but got: {:?}", result);
     }
@@ -205,7 +205,7 @@ mod tests {
         let query_params: Vec<super::super::McpRestQueryParams> = vec![];
         let transcoder = RestTranscoder { method: &http::Method::GET, path: "/api/test", query_params: &query_params };
 
-        let result = transcoder.encode(&input_schema, &http_request, &mcp_request);
+        let result = transcoder.encode(&input_schema, http_request.headers(), &mcp_request);
 
         assert!(result.is_ok(), "Expected no validation for empty schema but got: {:?}", result);
     }

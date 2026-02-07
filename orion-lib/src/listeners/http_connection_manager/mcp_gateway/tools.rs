@@ -246,8 +246,8 @@ impl ToolsRegistry {
 
     pub fn build_request(
         &self,
-        req_ext: http::Extensions,
-        req_headers: http::HeaderMap,
+        req_ext: &http::Extensions,
+        req_headers: &http::HeaderMap,
         mcp_request: &Request,
         cluster_header: &Option<ClusterHeader>,
     ) -> Result<(http::Request<OrionRequestBody>, bool), BuildRequestError> {
@@ -261,7 +261,7 @@ impl ToolsRegistry {
             .ok_or_else(|| BuildRequestError::ToolNotFound(name.to_string()))?;
 
         if let Some(rbac) = &entry.rbac {
-            if !rbac.is_permitted(&req_ext) {
+            if !rbac.is_permitted(req_ext) {
                 return Err(BuildRequestError::RbacDenied(name.to_string()));
             }
         }

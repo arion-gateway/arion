@@ -6,7 +6,7 @@ impl Transcoder for McpTranscoder {
     fn encode(
         &self,
         _input_schema: &JsonObject,
-        _http_headers: http::HeaderMap,
+        _http_headers: &http::HeaderMap,
         _mcp_request: &Request,
     ) -> Result<http::Request<OrionRequestBody>, TranscoderError> {
         todo!()

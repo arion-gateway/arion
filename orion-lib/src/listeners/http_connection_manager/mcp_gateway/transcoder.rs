@@ -32,7 +32,7 @@ pub trait Transcoder {
     fn encode(
         &self,
         input_schema: &JsonObject,
-        http_headers: http::HeaderMap,
+        http_headers: &http::HeaderMap,
         mcp_request: &Request,
     ) -> Result<http::Request<OrionRequestBody>, TranscoderError>;
 }

@@ -788,8 +788,8 @@ impl McpGateway {
                 debug!(target: "mcp_gateway", "handle_rpc_json_request: tools/call {:#?}", rpc);
 
                 let (upstream_request, r#async) = match self.inner.tools.build_request(
-                    req_ext,
-                    req_headers,
+                    &req_ext,
+                    &req_headers,
                     &rpc.request,
                     &self.inner.config.cluster_header,
                 ) {
