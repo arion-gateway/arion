@@ -84,10 +84,9 @@ mod envoy_conversions {
 
     use super::*;
     use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::mcp::mcp_gateway::v3::{
-        mcp_server_backend::TransportUpstream as OrionTransportUpstream,
+        mcp_server_backend::TransportUpstream as OrionTransportUpstream, tool::UpstreamBackend as OrionUpstreamBackend,
         McpGateway as OrionMcpGateway, QueryParam as OrionMcpQueryParams, ServerInfo as OrionMcpServerInfo,
         Tool as OrionTool,
-        tool::UpstreamBackend as OrionUpstreamBackend,
     };
 
     impl From<OrionTransportUpstream> for McpBackendTransportUpstream {
