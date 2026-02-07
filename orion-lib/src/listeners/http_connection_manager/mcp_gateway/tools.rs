@@ -10,8 +10,7 @@ use crate::{
 use dashmap::DashMap;
 use http::{header::InvalidHeaderValue, HeaderValue};
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::{
-    ClusterHeader, McpBackendTransportUpstream, McpRestQueryParams, McpTool, UpstreamBackend
-};
+    ClusterHeader, McpBackendTransportUpstream, McpRestQueryParams, McpTool, UpstreamBackend, };
 use rmcp::{
     ServiceError, ServiceExt, model::{CallToolRequestParams, ClientCapabilities, ClientInfo, Implementation}, service::ClientInitializeError, transport::StreamableHttpClientTransport
 };
@@ -272,9 +271,10 @@ impl ToolsRegistry {
         let upstream_request = match &tool.backend {
             UpstreamBackend::Rest { method, path, query_params, cluster, r#async } => {
                 let transcoder = RestTranscoder { method, path, query_params };
-                let mut upstream_request = transcoder
-                    .encode(&entry.tool.input_schema, req_headers, mcp_request)
-                    .map_err(|e| BuildRequestError::TranscoderError { tool: name.to_string(), reason: e.to_string() })?;
+                let mut upstream_request =
+                    transcoder.encode(&entry.tool.input_schema, req_headers, mcp_request).map_err(|e| {
+                        BuildRequestError::TranscoderError { tool: name.to_string(), reason: e.to_string() }
+                    })?;
                 if let Some(cluster_header) = cluster_header {
                     let headers = upstream_request.headers_mut();
                     headers.append(cluster_header.0.clone(), HeaderValue::from_str(&cluster)?);
