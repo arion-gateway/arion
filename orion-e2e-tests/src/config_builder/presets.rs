@@ -22,6 +22,7 @@ use super::hcm::HcmBuilder;
 use super::listener::ListenerBuilder;
 use super::route::RouteBuilder;
 use super::route_config::RouteConfigBuilder;
+use super::tls::DownstreamTlsBuilder;
 use super::virtual_host::VirtualHostBuilder;
 
 #[must_use]
@@ -35,6 +36,23 @@ pub fn http_listener(name: impl Into<String>, port: u16) -> ListenerBuilder {
 #[must_use]
 pub fn http_listener_auto(name: impl Into<String>) -> ListenerBuilder {
     http_listener(name, 0)
+}
+
+#[must_use]
+pub fn https_listener(
+    name: impl Into<String>,
+    downstream_tls: DownstreamTlsBuilder,
+    cluster_name: impl Into<String>,
+) -> ListenerBuilder {
+    let cluster_name = cluster_name.into();
+    ListenerBuilder::new(name).port(0).filter_chain(
+        FilterChainBuilder::new("main").downstream_tls(downstream_tls).hcm(
+            HcmBuilder::new().route_config(
+                RouteConfigBuilder::new("routes")
+                    .virtual_host(VirtualHostBuilder::new("default").route(default_route(cluster_name))),
+            ),
+        ),
+    )
 }
 
 #[must_use]

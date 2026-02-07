@@ -14,14 +14,17 @@
 
 use orion_data_plane_api::envoy_data_plane_api::{
     envoy::{
-        config::listener::v3::{filter::ConfigType, Filter, FilterChain as EnvoyFilterChain},
+        config::{
+            core::v3::{transport_socket::ConfigType as TransportSocketConfigType, TransportSocket},
+            listener::v3::{filter::ConfigType, Filter, FilterChain as EnvoyFilterChain, FilterChainMatch},
+        },
         extensions::filters::network::http_connection_manager::v3::HttpConnectionManager,
     },
-    google::protobuf::Any,
+    google::protobuf::{Any, UInt32Value},
     prost::Message,
 };
 
-use super::hcm::Hcm;
+use super::{hcm::Hcm, tls::DownstreamTls};
 
 #[derive(Debug, Clone)]
 pub struct FilterChainBuilder {
@@ -53,6 +56,45 @@ impl FilterChainBuilder {
     }
 
     #[must_use]
+    pub fn downstream_tls(mut self, tls: impl Into<DownstreamTls>) -> Self {
+        let tls_proto = tls.into();
+        let transport_socket = TransportSocket {
+            name: "envoy.transport_sockets.tls".to_string(),
+            config_type: Some(TransportSocketConfigType::TypedConfig(Any {
+                type_url: "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext"
+                    .to_string(),
+                value: tls_proto.encode_to_vec(),
+            })),
+        };
+        self.proto.transport_socket = Some(transport_socket);
+        self
+    }
+
+    #[must_use]
+    pub fn server_names(mut self, names: &[&str]) -> Self {
+        self.ensure_filter_chain_match();
+        if let Some(ref mut m) = self.proto.filter_chain_match {
+            m.server_names = names.iter().map(|s| (*s).to_string()).collect();
+        }
+        self
+    }
+
+    #[must_use]
+    pub fn server_name(self, name: impl Into<String>) -> Self {
+        let name_str = name.into();
+        self.server_names(&[name_str.as_str()])
+    }
+
+    #[must_use]
+    pub fn destination_port(mut self, port: u32) -> Self {
+        self.ensure_filter_chain_match();
+        if let Some(ref mut m) = self.proto.filter_chain_match {
+            m.destination_port = Some(UInt32Value { value: port });
+        }
+        self
+    }
+
+    #[must_use]
     pub fn with_proto<F: FnOnce(&mut EnvoyFilterChain)>(mut self, f: F) -> Self {
         f(&mut self.proto);
         self
@@ -61,6 +103,12 @@ impl FilterChainBuilder {
     #[must_use]
     pub fn build(self) -> EnvoyFilterChain {
         self.proto
+    }
+
+    fn ensure_filter_chain_match(&mut self) {
+        if self.proto.filter_chain_match.is_none() {
+            self.proto.filter_chain_match = Some(FilterChainMatch::default());
+        }
     }
 }
 

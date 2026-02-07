@@ -38,5 +38,5 @@ pub use retry::{RetryOn, RetryPolicy, RetryPolicyBuilder};
 pub use route::{RedirectBuilder, Route, RouteBuilder};
 pub use route_config::{RouteConfig, RouteConfigBuilder};
 pub use secret::{Secret, SecretBuilder};
-pub use tls::{DownstreamTls, DownstreamTlsBuilder, UpstreamTls, UpstreamTlsBuilder};
+pub use tls::{DownstreamTls, DownstreamTlsBuilder, TlsVersion, UpstreamTls, UpstreamTlsBuilder};
 pub use virtual_host::{VirtualHost, VirtualHostBuilder};

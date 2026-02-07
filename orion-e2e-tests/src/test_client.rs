@@ -235,4 +235,24 @@ impl RequestBuilder {
     pub fn host(self, host: impl Into<String>) -> Self {
         self.header("host", host)
     }
+
+    #[must_use]
+    pub fn method(&self) -> &Method {
+        &self.method
+    }
+
+    #[must_use]
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    #[must_use]
+    pub fn headers(&self) -> &[(String, String)] {
+        &self.headers
+    }
+
+    #[must_use]
+    pub fn body_bytes(&self) -> &Bytes {
+        &self.body
+    }
 }

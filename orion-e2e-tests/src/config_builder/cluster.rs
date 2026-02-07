@@ -21,14 +21,17 @@ use orion_data_plane_api::envoy_data_plane_api::{
             cluster::{ClusterDiscoveryType, DiscoveryType, LbPolicy as EnvoyLbPolicy},
             Cluster as EnvoyCluster,
         },
-        core::v3::{Http1ProtocolOptions, Http2ProtocolOptions},
+        core::v3::{
+            transport_socket::ConfigType as TransportSocketConfigType, Http1ProtocolOptions, Http2ProtocolOptions,
+            TransportSocket,
+        },
         endpoint::v3::{ClusterLoadAssignment, LbEndpoint, LocalityLbEndpoints},
     },
     google::protobuf::{Any, Duration as ProtoDuration},
     prost::Message,
 };
 
-use super::endpoint::EndpointBuilder;
+use super::{endpoint::EndpointBuilder, tls::UpstreamTls};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum LbPolicy {
@@ -151,6 +154,21 @@ impl ClusterBuilder {
     #[must_use]
     pub fn http2(mut self) -> Self {
         self.http_version = HttpVersion::Http2;
+        self
+    }
+
+    #[must_use]
+    pub fn upstream_tls(mut self, tls: impl Into<UpstreamTls>) -> Self {
+        let tls_proto = tls.into();
+        let transport_socket = TransportSocket {
+            name: "envoy.transport_sockets.tls".to_string(),
+            config_type: Some(TransportSocketConfigType::TypedConfig(Any {
+                type_url: "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext"
+                    .to_string(),
+                value: tls_proto.encode_to_vec(),
+            })),
+        };
+        self.proto.transport_socket = Some(transport_socket);
         self
     }
 
