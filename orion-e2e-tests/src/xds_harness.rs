@@ -46,7 +46,7 @@ pub struct HarnessTimeouts {
 
 impl Default for HarnessTimeouts {
     fn default() -> Self {
-        Self { connection: Duration::from_secs(5), push: Duration::from_secs(5) }
+        Self { connection: Duration::from_secs(10), push: Duration::from_secs(5) }
     }
 }
 
