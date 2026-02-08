@@ -17,7 +17,7 @@ use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use tokio::sync::oneshot;
@@ -99,27 +99,65 @@ impl OrionInstance {
             .map_err(|e| Error::ProcessStartFailed(format!("Failed to spawn orion binary at {orion_bin:?}: {e}")))?;
 
         let stdout = process.stdout.take();
+        let stderr = process.stderr.take();
 
-        let (port_tx, port_rx) = oneshot::channel();
-        let shutdown_flag = Arc::clone(&shutdown_requested);
+        let (result_tx, result_rx) = oneshot::channel::<std::result::Result<SocketAddr, String>>();
         let verbose = options.verbose_output;
         let name_for_parser = listener_name.clone();
 
+        const MAX_CAPTURED_LINES: usize = 75;
+        let captured_lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::with_capacity(MAX_CAPTURED_LINES)));
+
+        let stderr_lines = Arc::clone(&captured_lines);
+        let stderr_shutdown = Arc::clone(&shutdown_requested);
+        let _stderr_reader = stderr.map(|stderr| {
+            std::thread::spawn(move || {
+                let reader = BufReader::new(stderr);
+                for line in reader.lines() {
+                    if stderr_shutdown.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    if let Ok(line) = line {
+                        if let Ok(mut lines) = stderr_lines.lock() {
+                            if lines.len() >= MAX_CAPTURED_LINES {
+                                lines.remove(0);
+                            }
+                            lines.push(line.clone());
+                        }
+                        if verbose {
+                            eprintln!("[ORION-ERR] {}", line);
+                        }
+                        debug!(target: "orion_stderr", "{}", line);
+                    }
+                }
+            })
+        });
+
+        let stdout_lines = Arc::clone(&captured_lines);
+        let stdout_shutdown = Arc::clone(&shutdown_requested);
         let output_reader = stdout.map(|stdout| {
             std::thread::spawn(move || {
                 let reader = BufReader::new(stdout);
-                let mut port_tx = Some(port_tx);
+                let mut result_tx = Some(result_tx);
+
                 for line in reader.lines() {
-                    if shutdown_flag.load(Ordering::SeqCst) {
+                    if stdout_shutdown.load(Ordering::SeqCst) {
                         break;
                     }
                     match line {
                         Ok(line) => {
-                            if let Some(tx) = port_tx.take() {
+                            if let Ok(mut lines) = stdout_lines.lock() {
+                                if lines.len() >= MAX_CAPTURED_LINES {
+                                    lines.remove(0);
+                                }
+                                lines.push(line.clone());
+                            }
+
+                            if let Some(tx) = result_tx.take() {
                                 if let Some(addr) = parse_listener_started(&line, &name_for_parser) {
-                                    let _ = tx.send(addr);
+                                    let _ = tx.send(Ok(addr));
                                 } else {
-                                    port_tx = Some(tx); // Put it back
+                                    result_tx = Some(tx); // Put it back
                                 }
                             }
                             if verbose {
@@ -133,13 +171,20 @@ impl OrionInstance {
                         },
                     }
                 }
+
+                if let Some(tx) = result_tx.take() {
+                    std::thread::sleep(Duration::from_millis(100));
+                    let output = stdout_lines.lock().map(|lines| lines.join("\n")).unwrap_or_default();
+                    let _ = tx.send(Err(output));
+                }
             })
         });
 
-        let listener_addr = tokio::time::timeout(options.ready_timeout, port_rx)
+        let listener_addr = tokio::time::timeout(options.ready_timeout, result_rx)
             .await
             .map_err(|_| Error::ReadyTimeout(options.ready_timeout))?
-            .map_err(|_| Error::Config("Failed to discover listener port from logs".into()))?;
+            .map_err(|_| Error::Config("Channel closed unexpectedly".into()))?
+            .map_err(|output| Error::StartupFailed { exit_code: None, output })?;
 
         info!(?listener_addr, "Discovered Orion listener address");
 

@@ -27,6 +27,9 @@ pub enum Error {
     #[error("Orion process exited unexpectedly with code: {0:?}")]
     ProcessExitedUnexpectedly(Option<i32>),
 
+    #[error("Orion startup failed (exit code: {exit_code:?}):\n{output}")]
+    StartupFailed { exit_code: Option<i32>, output: String },
+
     #[error("Orion process did not become ready within {0:?}")]
     ReadyTimeout(std::time::Duration),
 
