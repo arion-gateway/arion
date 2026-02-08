@@ -337,13 +337,15 @@ impl RouteBuilder {
         self.proto.action = Some(Action::DirectResponse(DirectResponseAction {
             status,
             body: Some(DataSource { specifier: Some(Specifier::InlineString(body.into())), watched_directory: None }),
+            body_format: None,
         }));
         self
     }
 
     #[must_use]
     pub fn direct_response_empty(mut self, status: u32) -> Self {
-        self.proto.action = Some(Action::DirectResponse(DirectResponseAction { status, body: None }));
+        self.proto.action =
+            Some(Action::DirectResponse(DirectResponseAction { status, body: None, body_format: None }));
         self
     }
 
