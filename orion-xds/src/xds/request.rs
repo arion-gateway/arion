@@ -108,10 +108,14 @@ impl DeltaDiscoveryRequestBuilder {
     }
 
     pub fn build(self) -> DeltaDiscoveryRequest {
-        let Node { id, cluster_id } = self.node.unwrap_or_default();
+        let node = self.node.map(|Node { id, cluster_id }| EnvoyNode {
+            id: id.into(),
+            cluster: cluster_id.into(),
+            ..Default::default()
+        });
         let nounce = self.nounce.unwrap_or_default();
         DeltaDiscoveryRequest {
-            node: Some(EnvoyNode { id: id.into(), cluster: cluster_id.into(), ..Default::default() }),
+            node,
             response_nonce: nounce,
             type_url: self.type_url.to_string(),
             resource_names_subscribe: self.resource_names_subscribe,

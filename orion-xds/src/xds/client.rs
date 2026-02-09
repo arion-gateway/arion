@@ -351,6 +351,7 @@ impl<C: bindings::TypedXdsBinding> DeltaClientBackgroundWorker<C> {
                                     Some(StatusBuilder::invalid_argument().with_message(error_msg).build())
                                 };
                                 let upstream_response = DeltaDiscoveryRequestBuilder::for_resource(type_url)
+                                    .with_node_id(self.node.clone())
                                     .with_nounce(nonce.clone())
                                     .with_error_detail(maybe_error)
                                     .build();
@@ -370,6 +371,7 @@ impl<C: bindings::TypedXdsBinding> DeltaClientBackgroundWorker<C> {
                                 .join("; ");
                         let error_msg = format!("timed out trying to apply resource updates for [{version_info}]");
                         let upstream_response = DeltaDiscoveryRequestBuilder::for_resource(type_url)
+                            .with_node_id(self.node.clone())
                             .with_nounce(nonce.clone())
                             .with_error_detail(Some(StatusBuilder::unspecified_error().with_message(error_msg).build()))
                             .build();
@@ -386,6 +388,7 @@ impl<C: bindings::TypedXdsBinding> DeltaClientBackgroundWorker<C> {
                     error_msg, nonce, "decoding error, rejecting configs with nack response"
                 );
                 let upstream_nack_response = DeltaDiscoveryRequestBuilder::for_resource(type_url)
+                    .with_node_id(self.node.clone())
                     .with_nounce(nonce)
                     .with_error_detail(Some(StatusBuilder::invalid_argument().with_message(error_msg).build()))
                     .build();
