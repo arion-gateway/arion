@@ -1,18 +1,24 @@
 use crate::{
-    OrionRequestBody, listeners::http_connection_manager::mcp_gateway::{
+    listeners::http_connection_manager::mcp_gateway::{
+        mcp::{MessageResponse, Session},
         rbac::{
             Action as RbacAction, JwtClaimField, JwtHeaderField, JwtHeaderMatcher, JwtPayloadMatcher,
             Permission as RbacPermission, ToolRbac,
         },
-        transcoder::{RestTranscoder, Transcoder, rest::DEFAULT_USER_AGENT},
-    }
+        transcoder::{rest::DEFAULT_USER_AGENT, RestTranscoder, Transcoder},
+    },
+    OrionRequestBody,
 };
 use dashmap::DashMap;
 use http::{header::InvalidHeaderValue, HeaderValue};
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::{
-    ClusterHeader, McpBackendTransportUpstream, McpRestQueryParams, McpTool, UpstreamBackend, };
+    ClusterHeader, McpBackendTransportUpstream, McpRestQueryParams, McpTool, UpstreamBackend,
+};
 use rmcp::{
-    ServiceError, ServiceExt, model::{CallToolRequestParams, ClientCapabilities, ClientInfo, Implementation}, service::ClientInitializeError, transport::StreamableHttpClientTransport
+    model::{CallToolRequestParams, ClientCapabilities, ClientInfo, Implementation},
+    service::ClientInitializeError,
+    transport::StreamableHttpClientTransport,
+    ServiceError, ServiceExt,
 };
 
 use rmcp::model::{ListToolsResult, Request, Tool};
@@ -30,7 +36,7 @@ struct CachedEntry<T> {
 #[derive(Debug, Clone)]
 pub struct ToolsRegistry {
     registry: Vec<ToolEntry>,
-    cache: DashMap<SmolStr, CachedEntry<Vec<Tool>>>,
+    cache: DashMap<SmolStr, CachedEntry<Vec<Tool>>, ahash::RandomState>,
 }
 
 #[derive(Debug, Clone)]
@@ -70,12 +76,12 @@ pub enum ListToolsError {
     #[error("Client: {0}")]
     ClientError(#[from] ClientInitializeError),
     #[error("ServiceError: {0}")]
-    ServiceError(#[from] ServiceError)
+    ServiceError(#[from] ServiceError),
 }
 
 impl ToolsRegistry {
     pub fn new() -> Self {
-        ToolsRegistry { registry: Vec::new(), cache: DashMap::new() }
+        ToolsRegistry { registry: Vec::new(), cache: DashMap::with_hasher(ahash::RandomState::new()) }
     }
 
     pub fn with_tools(tools: Vec<McpTool>) -> Self {
@@ -86,7 +92,7 @@ impl ToolsRegistry {
                 ToolEntry { tool, rbac }
             })
             .collect();
-        ToolsRegistry { registry, cache: DashMap::new() }
+        ToolsRegistry { registry, cache: DashMap::with_hasher(ahash::RandomState::new()) }
     }
 
     #[allow(dead_code)]
@@ -211,7 +217,11 @@ impl ToolsRegistry {
         }
     }
 
-    pub async fn get_list_tools_streamable_http(&self, url: &str, namespace: &str) -> Result<Vec<Tool>, ListToolsError> {
+    pub async fn get_list_tools_streamable_http(
+        &self,
+        url: &str,
+        namespace: &str,
+    ) -> Result<Vec<Tool>, ListToolsError> {
         let transport = StreamableHttpClientTransport::from_uri(url);
         let client_info = ClientInfo {
             meta: None,
@@ -236,20 +246,21 @@ impl ToolsRegistry {
         let mut tools = client.list_tools(Default::default()).await?;
 
         for tool in &mut tools.tools {
-            let name : String = tool.name.clone().into_owned();
+            let name: String = tool.name.clone().into_owned();
             tool.name = Cow::Owned(format!("{namespace}__{name}"));
         }
 
         Ok(tools.tools)
     }
 
-    pub fn build_request(
+    pub fn call(
         &self,
         req_ext: &http::Extensions,
         req_headers: &http::HeaderMap,
         mcp_request: &Request,
         cluster_header: &Option<ClusterHeader>,
-    ) -> Result<(http::Request<OrionRequestBody>, bool), BuildRequestError> {
+        session: &Session,
+    ) -> Result<MessageResponse, BuildRequestError> {
         let name = mcp_request.params.get("name").ok_or(BuildRequestError::MissingName)?;
         let name = name.as_str().ok_or(BuildRequestError::NameNotString)?;
 
@@ -268,7 +279,7 @@ impl ToolsRegistry {
         let tool = &entry.tool;
         let mut async_api = false;
 
-        let upstream_request = match &tool.backend {
+        match &tool.backend {
             UpstreamBackend::Rest { method, path, query_params, cluster, r#async } => {
                 let transcoder = RestTranscoder { method, path, query_params };
                 let mut upstream_request =
@@ -280,7 +291,7 @@ impl ToolsRegistry {
                     headers.append(cluster_header.0.clone(), HeaderValue::from_str(&cluster)?);
                     async_api = *r#async;
                 }
-                upstream_request
+                Ok(MessageResponse::Upstream((upstream_request, async_api)))
             },
             UpstreamBackend::McpServer { .. } => {
                 return Err(BuildRequestError::McpNotImplemented);
@@ -288,9 +299,7 @@ impl ToolsRegistry {
             UpstreamBackend::FunctionGraph {} => {
                 return Err(BuildRequestError::FunctionGraphNotImplemented);
             },
-        };
-
-        Ok((upstream_request, async_api))
+        }
     }
 }
 

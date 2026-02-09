@@ -15,10 +15,15 @@ use tokio::sync::Mutex as TokioMutex;
 use tracing::debug;
 use uuid::Uuid;
 
-use rmcp::model::{
-    self, Annotated, CallToolRequestMethod, CallToolResult, ConstString, Implementation, InitializeResult,
-    InitializeResultMethod, InitializedNotificationMethod, JsonRpcResponse, ListToolsRequestMethod, PingRequestMethod,
-    ProtocolVersion, RawContent, RawTextContent, ServerCapabilities, ServerResult,
+use rmcp::{
+    model::{
+        self, Annotated, CallToolRequestMethod, CallToolResult, ConstString, Implementation, InitializeRequestParams,
+        InitializeResult, InitializeResultMethod, InitializedNotificationMethod, JsonRpcResponse,
+        ListToolsRequestMethod, PingRequestMethod, ProtocolVersion, RawContent, RawTextContent, ServerCapabilities,
+        ServerResult,
+    },
+    service::RunningService,
+    RoleClient,
 };
 
 use crate::{
@@ -51,6 +56,7 @@ pub struct Session {
     transport: Transport,
     session_sse_sender: Option<TokioMutex<SseSender>>,
     last_activity: Mutex<tokio::time::Instant>,
+    mcp_upstreams: DashMap<String, RunningService<RoleClient, InitializeRequestParams>, ahash::RandomState>,
 }
 
 impl Default for Session {
@@ -61,19 +67,20 @@ impl Default for Session {
             transport: Transport::default(),
             session_sse_sender: None,
             last_activity: Mutex::new(tokio::time::Instant::now()),
+            mcp_upstreams: DashMap::with_hasher(ahash::RandomState::default()),
         }
     }
 }
 
 #[derive(Debug)]
 pub struct McpGatewayListenerContext {
-    session_map: Arc<DashMap<SessionId, Arc<Session>>>,
+    session_map: Arc<DashMap<SessionId, Arc<Session>, ahash::RandomState>>,
     active_async_requests: AtomicUsize,
     cleanup_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl McpGatewayListenerContext {
-    fn cleanup(session_map: &DashMap<SessionId, Arc<Session>>) {
+    fn cleanup(session_map: &DashMap<SessionId, Arc<Session>, ahash::RandomState>) {
         let now = tokio::time::Instant::now();
         session_map.retain(|_, session| {
             let last_activity = session.last_activity.lock();
@@ -155,6 +162,7 @@ impl McpGatewayListenerContext {
             transport,
             session_sse_sender: sse_sender.map(TokioMutex::new),
             last_activity: Mutex::new(tokio::time::Instant::now()),
+            mcp_upstreams: DashMap::with_hasher(ahash::RandomState::default()),
         });
         self.session_map.insert(session_id, session.clone());
         Ok(session)
@@ -172,7 +180,7 @@ pub struct McpGatewayInner {
     tools: ToolsRegistry,
 }
 
-enum MessageResponse {
+pub enum MessageResponse {
     Nothing,
     Error(model::JsonRpcError),
     Response(model::JsonRpcResponse<serde_json::Value>),
@@ -787,11 +795,20 @@ impl McpGateway {
             CallToolRequestMethod::VALUE => {
                 debug!(target: "mcp_gateway", "handle_rpc_json_request: tools/call {:#?}", rpc);
 
-                let (upstream_request, r#async) = match self.inner.tools.build_request(
+                let Some(session) = self.session.as_ref() else {
+                    return MessageResponse::Error(self.build_rpc_error(model::ErrorData::new(
+                        model::ErrorCode::INVALID_REQUEST,
+                        "Access denied by RBAC policy",
+                        None,
+                    )));
+                };
+
+                let resp = match self.inner.tools.call(
                     &req_ext,
                     &req_headers,
                     &rpc.request,
                     &self.inner.config.cluster_header,
+                    &session,
                 ) {
                     Ok(result) => result,
                     Err(e) => {
@@ -810,8 +827,7 @@ impl McpGateway {
                     },
                 };
 
-                debug!(target: "mcp_gateway", "handle_rpc_json_request: UPSTREAM {:#?}", upstream_request);
-                MessageResponse::Upstream((upstream_request, r#async))
+                resp
             },
             _ => {
                 debug!(target: "mcp_gateway", "handle_rpc_json_request: unknown rpc method '{}'", rpc.request.method);
