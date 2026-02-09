@@ -567,7 +567,8 @@ impl Listener {
         route_update: RouteConfigurationChange,
     ) {
         match route_update {
-            RouteConfigurationChange::Added((id, route)) => {
+            RouteConfigurationChange::Added((id, route), notify) => {
+                let mut applied = false;
                 for chain in filter_chains.values() {
                     if let ConnectionHandler::Http(http_manager) = &chain.handler {
                         let route_id = http_manager.get_route_id();
@@ -575,21 +576,34 @@ impl Listener {
                             if route_id == &id {
                                 debug!("{listener_name} Route updated {id} {route:?}");
                                 http_manager.update_route(route.clone());
+                                applied = true;
                             }
                         } else {
                             debug!("{listener_name} Got route update but id doesn't match {route_id:?} {id}");
                         }
                     }
                 }
+                if applied {
+                    if let Some(notify) = notify {
+                        notify.notify_one();
+                    }
+                }
             },
-            RouteConfigurationChange::Removed(id) => {
+            RouteConfigurationChange::Removed(id, notify) => {
+                let mut applied = false;
                 for chain in filter_chains.values() {
                     if let ConnectionHandler::Http(http_manager) = &chain.handler {
                         if let Some(route_id) = http_manager.get_route_id() {
                             if route_id == &id {
                                 http_manager.remove_route();
+                                applied = true;
                             }
                         }
+                    }
+                }
+                if applied {
+                    if let Some(notify) = notify {
+                        notify.notify_one();
                     }
                 }
             },

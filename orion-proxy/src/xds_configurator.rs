@@ -35,16 +35,21 @@ use orion_xds::{
     },
 };
 use parking_lot::RwLock;
+use pingora_timeout::fast_timeout::fast_timeout;
 #[cfg(feature = "tracing")]
 use smol_str::ToSmolStr;
 use std::{sync::Arc, time::Duration};
 use tokio::{
     select,
-    sync::mpsc::{self, Receiver, Sender},
+    sync::{
+        mpsc::{self, Receiver, Sender},
+        Notify,
+    },
 };
 use tracing::{debug, info, warn};
 
 const RETRY_INTERVAL: Duration = Duration::from_secs(10);
+const ROUTE_UPDATE_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct XdsConfigurationHandler {
     secret_manager: Arc<RwLock<SecretManager>>,
@@ -204,9 +209,16 @@ impl XdsConfigurationHandler {
                 Ok(())
             },
             orion_xds::xds::model::TypeUrl::RouteConfiguration => {
-                let change = RouteConfigurationChange::Removed(id.to_owned());
+                let notify = Arc::new(Notify::new());
+                let change = RouteConfigurationChange::Removed(id.to_owned(), Some(notify.clone()));
                 let _ = send_change_to_runtimes(&self.route_senders, change).await;
-                Ok(())
+                match fast_timeout(ROUTE_UPDATE_TIMEOUT, notify.notified()).await {
+                    Ok(()) => Ok(()),
+                    Err(_) => {
+                        Err(format!("RouteConfiguration '{id}' removal timedout waiting to be applied by runtime(s)")
+                            .into())
+                    },
+                }
             },
             orion_xds::xds::model::TypeUrl::Secret => {
                 let msg = "Secret removal is not supported";
@@ -255,9 +267,16 @@ impl XdsConfigurationHandler {
             },
             XdsResourcePayload::RouteConfiguration(id, route) => {
                 debug!("Got update for route configuration {id}: {:#?}", route);
-                let change = RouteConfigurationChange::Added((id.clone(), route));
+                let notify = Arc::new(Notify::new());
+                let change = RouteConfigurationChange::Added((id.clone(), route), Some(notify.clone()));
                 let _ = send_change_to_runtimes(&self.route_senders, change).await;
-                Ok(())
+                match fast_timeout(ROUTE_UPDATE_TIMEOUT, notify.notified()).await {
+                    Ok(()) => Ok(()),
+                    Err(_) => {
+                        Err(format!("RouteConfiguration '{id}' update timedout waiting to be applied by runtime(s)")
+                            .into())
+                    },
+                }
             },
             XdsResourcePayload::Endpoints(id, cla) => {
                 debug!("Got update for cluster load assignment {id}: {:#?}", cla);
