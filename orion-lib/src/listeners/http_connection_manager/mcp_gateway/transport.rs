@@ -133,7 +133,7 @@ impl std::fmt::Display for Transport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Transport::Sse => write!(f, "SSE"),
-            Transport::StreamableHttp => write!(f, "Streamable HTTP"),
+            Transport::StreamableHttp => write!(f, "StreamableHTTP"),
         }
     }
 }

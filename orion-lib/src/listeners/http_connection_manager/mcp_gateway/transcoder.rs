@@ -5,7 +5,6 @@ use rmcp::model::{JsonObject, Request};
 use crate::OrionRequestBody;
 
 pub mod function_graph;
-pub mod mcp_upstream;
 pub mod rest;
 
 #[derive(Debug, thiserror::Error)]
@@ -32,7 +31,7 @@ pub trait Transcoder {
     fn encode(
         &self,
         input_schema: &JsonObject,
-        http_request: &http::Request<OrionRequestBody>,
+        http_headers: &http::HeaderMap,
         mcp_request: &Request,
     ) -> Result<http::Request<OrionRequestBody>, TranscoderError>;
 }

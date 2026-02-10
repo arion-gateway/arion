@@ -6,13 +6,13 @@ use serde_json::Value;
 use std::borrow::Cow;
 use url::form_urlencoded;
 
-const DEFAULT_USER_AGENT: &str = concat!("orion/", env!("CARGO_PKG_VERSION"));
+pub const DEFAULT_USER_AGENT: &str = concat!("orion/", env!("CARGO_PKG_VERSION"));
 
 impl Transcoder for RestTranscoder<'_> {
     fn encode(
         &self,
         input_schema: &JsonObject,
-        http_request: &http::Request<OrionRequestBody>,
+        http_headers: &http::HeaderMap,
         mcp_request: &Request,
     ) -> Result<http::Request<OrionRequestBody>, TranscoderError> {
         // Build a path-only URI (no authority/scheme) - Orion will route to the correct
@@ -54,14 +54,13 @@ impl Transcoder for RestTranscoder<'_> {
         // Orion will override the authority with the correct upstream endpoint.
         // This is required for the match_virtual_host to work properly.
 
-        let headers = http_request.headers();
         let user_agent =
-            headers.get(http::header::USER_AGENT).and_then(|ua| ua.to_str().ok()).unwrap_or(DEFAULT_USER_AGENT);
+            http_headers.get(http::header::USER_AGENT).and_then(|ua| ua.to_str().ok()).unwrap_or(DEFAULT_USER_AGENT);
 
         let mut builder =
             http::Request::builder().method(self.method.clone()).uri(uri).header(http::header::USER_AGENT, user_agent);
 
-        if let Some(host) = headers.get(http::header::HOST).and_then(|h| h.to_str().ok()) {
+        if let Some(host) = http_headers.get(http::header::HOST).and_then(|h| h.to_str().ok()) {
             builder = builder.header(http::header::HOST, host);
         }
 
@@ -133,7 +132,7 @@ mod tests {
         let query_params: Vec<super::super::McpRestQueryParams> = vec![];
         let transcoder = RestTranscoder { method: &http::Method::GET, path: "/api/test", query_params: &query_params };
 
-        let result = transcoder.encode(&input_schema, &http_request, &mcp_request);
+        let result = transcoder.encode(&input_schema, http_request.headers(), &mcp_request);
 
         assert!(matches!(result, Err(TranscoderError::ValidationError(_))));
         if let Err(TranscoderError::ValidationError(msg)) = result {
@@ -160,7 +159,7 @@ mod tests {
         let query_params: Vec<super::super::McpRestQueryParams> = vec![];
         let transcoder = RestTranscoder { method: &http::Method::GET, path: "/api/test", query_params: &query_params };
 
-        let result = transcoder.encode(&input_schema, &http_request, &mcp_request);
+        let result = transcoder.encode(&input_schema, http_request.headers(), &mcp_request);
 
         assert!(matches!(result, Err(TranscoderError::ValidationError(_))));
         if let Err(TranscoderError::ValidationError(msg)) = result {
@@ -190,7 +189,7 @@ mod tests {
         let query_params: Vec<super::super::McpRestQueryParams> = vec![];
         let transcoder = RestTranscoder { method: &http::Method::GET, path: "/api/test", query_params: &query_params };
 
-        let result = transcoder.encode(&input_schema, &http_request, &mcp_request);
+        let result = transcoder.encode(&input_schema, http_request.headers(), &mcp_request);
 
         assert!(result.is_ok(), "Expected validation to pass but got: {:?}", result);
     }
@@ -206,7 +205,7 @@ mod tests {
         let query_params: Vec<super::super::McpRestQueryParams> = vec![];
         let transcoder = RestTranscoder { method: &http::Method::GET, path: "/api/test", query_params: &query_params };
 
-        let result = transcoder.encode(&input_schema, &http_request, &mcp_request);
+        let result = transcoder.encode(&input_schema, http_request.headers(), &mcp_request);
 
         assert!(result.is_ok(), "Expected no validation for empty schema but got: {:?}", result);
     }

@@ -24,7 +24,7 @@ pub struct McpServerInfo {
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct McpTool {
-    pub name: String,
+    pub name: SmolStr,
     pub description: String,
     pub input_schema: Map<String, Value>,
     pub backend: UpstreamBackend,
@@ -123,7 +123,7 @@ mod envoy_conversions {
             let string = String::from_utf8(bytes)?;
             let input_schema = serde_json::from_str(&string)?;
             let rbac = rbac.map(TryInto::try_into).transpose()?;
-            Ok(McpTool { name, description, input_schema, backend, rbac })
+            Ok(McpTool { name: name.into(), description, input_schema, backend, rbac })
         }
     }
 
