@@ -6,8 +6,7 @@ use crate::{
             Permission as RbacPermission, ToolRbac,
         },
         transcoder::{rest::DEFAULT_USER_AGENT, RestTranscoder, Transcoder},
-    },
-    OrionRequestBody,
+    }
 };
 use dashmap::DashMap;
 use http::{header::InvalidHeaderValue, HeaderValue};
@@ -22,7 +21,7 @@ use rmcp::{
 };
 
 use rmcp::model;
-use rmcp::model::{ListToolsResult, Request, Tool};
+use rmcp::model::{ListToolsResult, Tool};
 use rmcp::object;
 use rmcp::service::{RoleClient, RunningService};
 use smol_str::{SmolStr, ToSmolStr};
@@ -57,8 +56,6 @@ pub enum CallToolError {
     ToolNotFound(String),
     #[error("access to tool '{0}' denied by RBAC policy")]
     RbacDenied(String),
-    #[error("MCP transcoding is not yet implemented")]
-    McpNotImplemented,
     #[error("FunctionGraph transcoding is not yet implemented")]
     FunctionGraphNotImplemented,
     #[error("HeaderValue: {0}")]
@@ -77,8 +74,6 @@ pub enum CallToolError {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ListToolsError {
-    #[error("Upstream: error {0}")]
-    UpstreamError(String),
     #[error("Unsupported transport")]
     UnsupportedTransport,
     #[error("Client: {0}")]

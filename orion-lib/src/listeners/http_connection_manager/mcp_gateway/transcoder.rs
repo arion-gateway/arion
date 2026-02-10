@@ -23,8 +23,6 @@ pub struct RestTranscoder<'a> {
     pub query_params: &'a Vec<McpRestQueryParams>,
 }
 
-pub struct McpTranscoder {}
-
 pub struct FunctionGraphTranscoder {}
 
 pub trait Transcoder {

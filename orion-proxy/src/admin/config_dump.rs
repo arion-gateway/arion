@@ -112,7 +112,6 @@ mod config_dump_tests {
     };
     use orion_lib::{ConfigDump, ListenerConfigurationChange};
     use parking_lot::RwLock;
-    use serde_json::json;
     use smol_str::SmolStr;
     use std::{sync::Arc, time::Instant};
     use tokio::sync::mpsc;
