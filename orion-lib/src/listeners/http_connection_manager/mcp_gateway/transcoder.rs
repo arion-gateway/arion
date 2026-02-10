@@ -1,4 +1,5 @@
 use http::header::InvalidHeaderValue;
+use orion_configuration::config::core::DataSource;
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::McpRestQueryParams;
 use rmcp::model::{JsonObject, Request};
 
@@ -21,6 +22,7 @@ pub struct RestTranscoder<'a> {
     pub method: &'a http::Method,
     pub path: &'a str,
     pub query_params: &'a Vec<McpRestQueryParams>,
+    pub body_template: Option<&'a DataSource>,
 }
 
 pub struct FunctionGraphTranscoder {}

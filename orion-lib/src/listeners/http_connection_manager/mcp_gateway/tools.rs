@@ -1,13 +1,10 @@
-use crate::{
-    listeners::http_connection_manager::mcp_gateway::{
-        mcp::{MessageResult, Session},
-        rbac::{
-            Action as RbacAction, JwtClaimField, JwtHeaderField, JwtHeaderMatcher, JwtPayloadMatcher,
-            Permission as RbacPermission, ToolRbac,
-        },
-        transcoder::{rest::DEFAULT_USER_AGENT, RestTranscoder, Transcoder},
+use crate::listeners::http_connection_manager::mcp_gateway::{
+    mcp::{MessageResult, Session},
+    rbac::{
+        Action as RbacAction, JwtClaimField, JwtHeaderField, JwtHeaderMatcher, JwtPayloadMatcher,
+        Permission as RbacPermission, ToolRbac,
     },
-    OrionRequestBody,
+    transcoder::{rest::DEFAULT_USER_AGENT, RestTranscoder, Transcoder},
 };
 use dashmap::DashMap;
 use http::{header::InvalidHeaderValue, HeaderValue};
@@ -116,6 +113,7 @@ impl ToolsRegistry {
                 method: http::Method::GET,
                 path: "/weather".into(),
                 query_params: vec![McpRestQueryParams { name: "city".into(), source: "country".into() }],
+                body_template: None,
             },
         });
 
@@ -137,6 +135,7 @@ impl ToolsRegistry {
                 method: http::Method::POST,
                 path: "/user".into(),
                 query_params: vec![McpRestQueryParams { name: "username".into(), source: "email".into() }],
+                body_template: None,
             },
         });
 
@@ -293,8 +292,8 @@ impl ToolsRegistry {
         let mut async_api = false;
 
         match &tool.backend {
-            UpstreamBackend::Rest { method, path, query_params, cluster, r#async } => {
-                let transcoder = RestTranscoder { method, path, query_params };
+            UpstreamBackend::Rest { method, path, query_params, cluster, r#async, body_template } => {
+                let transcoder = RestTranscoder { method, path, query_params, body_template: body_template.as_ref() };
                 let mut upstream_request =
                     transcoder.encode(&entry.tool.input_schema, req_headers, &rpc.request).map_err(|e| {
                         CallToolError::TranscoderError { tool: backend_name.to_owned(), reason: e.to_string() }

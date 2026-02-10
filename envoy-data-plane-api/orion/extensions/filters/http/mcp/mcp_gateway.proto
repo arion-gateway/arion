@@ -40,6 +40,7 @@ message RestBackend {
   repeated QueryParam query_params = 3;
   string cluster = 4 [(validate.rules).string = {min_bytes: 1}];
   bool async = 5;
+  envoy.config.core.v3.DataSource body_template = 6;
 }
 
 message QueryParam {
