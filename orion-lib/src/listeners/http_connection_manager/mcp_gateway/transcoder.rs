@@ -5,7 +5,6 @@ use rmcp::model::{JsonObject, Request};
 use crate::OrionRequestBody;
 
 pub mod function_graph;
-pub mod mcp_upstream;
 pub mod rest;
 
 #[derive(Debug, thiserror::Error)]
