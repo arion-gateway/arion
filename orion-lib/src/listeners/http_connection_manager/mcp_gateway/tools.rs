@@ -1,24 +1,17 @@
 use crate::{
-    listeners::http_connection_manager::mcp_gateway::{
-        mcp::{MessageResponse, Session},
-        rbac::{
+    OrionRequestBody, listeners::http_connection_manager::mcp_gateway::{
+        mcp::{MessageResult, Session}, rbac::{
             Action as RbacAction, JwtClaimField, JwtHeaderField, JwtHeaderMatcher, JwtPayloadMatcher,
             Permission as RbacPermission, ToolRbac,
-        },
-        transcoder::{rest::DEFAULT_USER_AGENT, RestTranscoder, Transcoder},
-    },
-    OrionRequestBody,
+        }, transcoder::{RestTranscoder, Transcoder, rest::DEFAULT_USER_AGENT}
+    }
 };
 use dashmap::DashMap;
 use http::{header::InvalidHeaderValue, HeaderValue};
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::{
-    ClusterHeader, McpBackendTransportUpstream, McpRestQueryParams, McpTool, UpstreamBackend,
-};
+    ClusterHeader, McpBackendTransportUpstream, McpRestQueryParams, McpTool, UpstreamBackend, };
 use rmcp::{
-    model::{CallToolRequestParams, ClientCapabilities, ClientInfo, Implementation},
-    service::ClientInitializeError,
-    transport::StreamableHttpClientTransport,
-    ServiceError, ServiceExt,
+    ServiceError, ServiceExt, model::{CallToolRequestParams, ClientCapabilities, ClientInfo, Implementation, InitializeRequestParams}, service::ClientInitializeError, transport::StreamableHttpClientTransport
 };
 
 use rmcp::model::{ListToolsResult, Request, Tool};
@@ -26,6 +19,8 @@ use rmcp::object;
 use smol_str::{SmolStr, ToSmolStr};
 use std::{borrow::Cow, sync::Arc, time::Instant};
 use tracing::{debug, error, warn};
+use rmcp::service::{RunningService, RoleClient};
+use rmcp::model;
 
 #[derive(Debug, Clone)]
 struct CachedEntry<T> {
@@ -46,7 +41,7 @@ struct ToolEntry {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum BuildRequestError {
+pub enum CallToolError {
     #[error("missing 'name' parameter in request")]
     MissingName,
     #[error("'name' parameter is not a string")]
@@ -65,6 +60,12 @@ pub enum BuildRequestError {
     HttpError(#[from] http::Error),
     #[error("Transcoder: tool: {tool} reason: {reason}")]
     TranscoderError { tool: String, reason: String },
+    #[error("Client initialization error: {0}")]
+    InitializeError(#[from] ClientInitializeError),
+    #[error("ServiceError: {0}")]
+    ServiceError(#[from] ServiceError),
+    #[error("SerdeError: {0}")]
+    SerdeError(#[from] serde_json::Error),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -217,11 +218,23 @@ impl ToolsRegistry {
         }
     }
 
-    pub async fn get_list_tools_streamable_http(
-        &self,
-        url: &str,
-        namespace: &str,
-    ) -> Result<Vec<Tool>, ListToolsError> {
+    pub async fn get_list_tools_streamable_http(&self, url: &str, namespace: &str) -> Result<Vec<Tool>, ListToolsError> {
+        let client = Self::get_mcp_client(url).await?;
+        let server_info = client.peer_info();
+        tracing::info!("Connected to server: {server_info:#?}");
+
+        // List tools
+        let mut tools = client.list_tools(Default::default()).await?;
+
+        for tool in &mut tools.tools {
+            let name : String = tool.name.clone().into_owned();
+            tool.name = Cow::Owned(format!("{namespace}__{name}"));
+        }
+
+        Ok(tools.tools)
+    }
+
+    async fn get_mcp_client(url: &str) -> Result<RunningService<RoleClient, InitializeRequestParams>, ClientInitializeError> {
         let transport = StreamableHttpClientTransport::from_uri(url);
         let client_info = ClientInfo {
             meta: None,
@@ -235,44 +248,40 @@ impl ToolsRegistry {
                 icons: None,
             },
         };
-        let client = client_info.serve(transport).await.inspect_err(|e| {
+        client_info.serve(transport).await.inspect_err(|e| {
             error!("client error: {:?}", e);
-        })?;
-
-        let server_info = client.peer_info();
-        tracing::info!("Connected to server: {server_info:#?}");
-
-        // List tools
-        let mut tools = client.list_tools(Default::default()).await?;
-
-        for tool in &mut tools.tools {
-            let name: String = tool.name.clone().into_owned();
-            tool.name = Cow::Owned(format!("{namespace}__{name}"));
-        }
-
-        Ok(tools.tools)
+        })
     }
 
-    pub fn call(
+    pub async fn call(
         &self,
         req_ext: &http::Extensions,
         req_headers: &http::HeaderMap,
-        mcp_request: &Request,
+        rpc: &model::JsonRpcRequest,
         cluster_header: &Option<ClusterHeader>,
         session: &Session,
-    ) -> Result<MessageResponse, BuildRequestError> {
-        let name = mcp_request.params.get("name").ok_or(BuildRequestError::MissingName)?;
-        let name = name.as_str().ok_or(BuildRequestError::NameNotString)?;
+    ) -> Result<MessageResult, CallToolError> {
+        // get tool name, and in case of upstream MCP, sub-tool name as well...
+        let (backend_name, tool_name) = {
+            let name = rpc.request.params.get("name").ok_or(CallToolError::MissingName)?;
+            let name = name.as_str().ok_or(CallToolError::NameNotString)?;
+            match name.split_once("__") {
+                Some((tool, sub_name)) => (tool, sub_name),
+                None => (name, name),
+            }
+        };
+
+        debug!(target: "mcp_gateway", ">>>> call: method:{} tool{tool_name}@backend{backend_name}", rpc.request.method);
 
         let entry = self
             .registry
             .iter()
-            .find(|e| e.tool.name == name)
-            .ok_or_else(|| BuildRequestError::ToolNotFound(name.to_string()))?;
+            .find(|e| e.tool.name == backend_name)
+            .ok_or_else(|| CallToolError::ToolNotFound(backend_name.to_string()))?;
 
         if let Some(rbac) = &entry.rbac {
             if !rbac.is_permitted(req_ext) {
-                return Err(BuildRequestError::RbacDenied(name.to_string()));
+                return Err(CallToolError::RbacDenied(backend_name.to_string()));
             }
         }
 
@@ -283,21 +292,54 @@ impl ToolsRegistry {
             UpstreamBackend::Rest { method, path, query_params, cluster, r#async } => {
                 let transcoder = RestTranscoder { method, path, query_params };
                 let mut upstream_request =
-                    transcoder.encode(&entry.tool.input_schema, req_headers, mcp_request).map_err(|e| {
-                        BuildRequestError::TranscoderError { tool: name.to_string(), reason: e.to_string() }
+                    transcoder.encode(&entry.tool.input_schema, req_headers, &rpc.request).map_err(|e| {
+                        CallToolError::TranscoderError { tool: backend_name.to_owned(), reason: e.to_string() }
                     })?;
                 if let Some(cluster_header) = cluster_header {
                     let headers = upstream_request.headers_mut();
                     headers.append(cluster_header.0.clone(), HeaderValue::from_str(&cluster)?);
                     async_api = *r#async;
                 }
-                Ok(MessageResponse::Upstream((upstream_request, async_api)))
+                Ok(MessageResult::UpstreamRequest((upstream_request, async_api)))
             },
-            UpstreamBackend::McpServer { .. } => {
-                return Err(BuildRequestError::McpNotImplemented);
+            UpstreamBackend::McpServer { url, .. } => {
+                let client = if let Some(existing) = session.mcp_upstreams.get_mut(url) {
+                    existing
+                } else {
+                    let new_client = Self::get_mcp_client(url).await?;
+                    session.mcp_upstreams
+                        .entry(url.to_owned())
+                        .or_insert(new_client)
+                };
+
+                debug!(target: "mcp_gateway", "Calling tool{backend_name}@{tool_name} with arguments {:?}", rpc.request.params);
+
+                let arguments = match &rpc.request.params.clone().get("arguments") {
+                    Some(&serde_json::Value::Object(ref o)) => Some(o.clone()),
+                    _ => None,
+                };
+
+                let tool_result = client
+                        .call_tool(CallToolRequestParams {
+                            meta: None,
+                            name: tool_name.to_owned().into(),
+                            arguments,
+                            task: None,
+                        })
+                        .await?;
+
+                let json_result = serde_json::to_value(tool_result)?;
+
+                let json_rcp_response = model::JsonRpcResponse {
+                    jsonrpc: model::JsonRpcVersion2_0,
+                    id: rpc.id.clone(),
+                    result: json_result,
+                };
+
+                Ok(MessageResult::JsonRcpResponse(json_rcp_response))
             },
             UpstreamBackend::FunctionGraph {} => {
-                return Err(BuildRequestError::FunctionGraphNotImplemented);
+                return Err(CallToolError::FunctionGraphNotImplemented);
             },
         }
     }
