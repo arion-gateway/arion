@@ -2758,7 +2758,6 @@ dependencies = [
  "jsonwebtoken",
  "lru_time_cache",
  "moka",
- "once_cell",
  "opentelemetry",
  "orion-configuration",
  "orion-data-plane-api",
