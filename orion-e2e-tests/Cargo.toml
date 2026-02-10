@@ -25,6 +25,8 @@ orion-data-plane-api.workspace = true
 orion-xds.workspace = true
 prost.workspace = true
 tonic.workspace = true
+tonic-health.workspace = true
+tonic-prost.workspace = true
 uuid = { version = "1", features = ["v4"] }
 pingora-timeout = "0.3.0"
 dashmap = "6"
@@ -35,6 +37,9 @@ rustls-pemfile = "2"
 
 [dev-dependencies]
 tracing-test.workspace = true
+
+[build-dependencies]
+tonic-prost-build.workspace = true
 
 [lints]
 workspace = true

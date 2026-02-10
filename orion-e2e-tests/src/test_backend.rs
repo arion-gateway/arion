@@ -24,12 +24,13 @@ use hyper::body::Incoming;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use tokio::net::TcpListener;
-use tokio::sync::{mpsc, Mutex, Notify};
+use tokio::sync::{mpsc, Mutex, Notify, RwLock};
 use tracing::{debug, error, info, warn};
 
 use crate::{Error, Result};
 
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+const DEFAULT_CHANNEL_CAPACITY: usize = 100;
 
 #[derive(Debug, Clone)]
 pub struct CapturedRequest {
@@ -115,31 +116,39 @@ pub struct TestBackend {
     addr: SocketAddr,
     request_rx: mpsc::Receiver<CapturedRequest>,
     responses: Arc<Mutex<VecDeque<PreConfiguredResponse>>>,
-    default_response: Arc<Mutex<PreConfiguredResponse>>,
+    default_response: Arc<RwLock<PreConfiguredResponse>>,
     shutdown: Arc<Notify>,
     _server_handle: tokio::task::JoinHandle<()>,
 }
 
 impl TestBackend {
     pub async fn start() -> Result<Self> {
+        Self::start_with_capacity(DEFAULT_CHANNEL_CAPACITY).await
+    }
+
+    pub async fn start_with_capacity(channel_capacity: usize) -> Result<Self> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
-        Self::start_with_listener(listener).await
+        Self::start_with_listener_and_capacity(listener, channel_capacity).await
     }
 
     pub async fn start_on_port(port: u16) -> Result<Self> {
         let addr = SocketAddr::from(([127, 0, 0, 1], port));
         let listener = TcpListener::bind(addr).await?;
-        Self::start_with_listener(listener).await
+        Self::start_with_listener_and_capacity(listener, DEFAULT_CHANNEL_CAPACITY).await
     }
 
     pub async fn start_with_listener(listener: TcpListener) -> Result<Self> {
+        Self::start_with_listener_and_capacity(listener, DEFAULT_CHANNEL_CAPACITY).await
+    }
+
+    pub async fn start_with_listener_and_capacity(listener: TcpListener, channel_capacity: usize) -> Result<Self> {
         let addr = listener.local_addr()?;
 
         info!(?addr, "Starting test backend server");
 
-        let (request_tx, request_rx) = mpsc::channel(100);
+        let (request_tx, request_rx) = mpsc::channel(channel_capacity);
         let responses = Arc::new(Mutex::new(VecDeque::new()));
-        let default_response = Arc::new(Mutex::new(PreConfiguredResponse::default()));
+        let default_response = Arc::new(RwLock::new(PreConfiguredResponse::default()));
         let shutdown = Arc::new(Notify::new());
 
         let server_handle = {
@@ -159,7 +168,7 @@ impl TestBackend {
         listener: TcpListener,
         request_tx: mpsc::Sender<CapturedRequest>,
         responses: Arc<Mutex<VecDeque<PreConfiguredResponse>>>,
-        default_response: Arc<Mutex<PreConfiguredResponse>>,
+        default_response: Arc<RwLock<PreConfiguredResponse>>,
         shutdown: Arc<Notify>,
     ) {
         loop {
@@ -208,7 +217,7 @@ impl TestBackend {
         req: Request<Incoming>,
         request_tx: mpsc::Sender<CapturedRequest>,
         responses: Arc<Mutex<VecDeque<PreConfiguredResponse>>>,
-        default_response: Arc<Mutex<PreConfiguredResponse>>,
+        default_response: Arc<RwLock<PreConfiguredResponse>>,
     ) -> std::result::Result<Response<Full<Bytes>>, hyper::Error> {
         let method = req.method().clone();
         let uri = req.uri().clone();
@@ -237,7 +246,7 @@ impl TestBackend {
 
         let response = match mock_response {
             Some(r) => r,
-            None => default_response.lock().await.clone(),
+            None => default_response.read().await.clone(),
         };
 
         if let Some(delay) = response.delay {
@@ -267,15 +276,15 @@ impl TestBackend {
     }
 
     pub async fn set_default_response(&self, response: PreConfiguredResponse) {
-        *self.default_response.lock().await = response;
+        *self.default_response.write().await = response;
     }
 
     pub async fn await_request(&mut self) -> Result<CapturedRequest> {
-        self.await_request_timeout(DEFAULT_REQUEST_TIMEOUT).await
+        self.await_request_with_timeout(DEFAULT_REQUEST_TIMEOUT).await
     }
 
     #[allow(clippy::disallowed_methods)]
-    pub async fn await_request_timeout(&mut self, timeout: Duration) -> Result<CapturedRequest> {
+    pub async fn await_request_with_timeout(&mut self, timeout: Duration) -> Result<CapturedRequest> {
         match tokio::time::timeout(timeout, self.request_rx.recv()).await {
             Ok(Some(req)) => Ok(req),
             Ok(None) | Err(_) => Err(Error::NoRequestReceived(timeout)),
@@ -284,6 +293,48 @@ impl TestBackend {
 
     pub fn try_recv_request(&mut self) -> Option<CapturedRequest> {
         self.request_rx.try_recv().ok()
+    }
+
+    pub async fn await_request_to_path(&mut self, path: &str, timeout: Duration) -> Result<CapturedRequest> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return Err(Error::NoRequestReceived(timeout));
+            }
+            match tokio::time::timeout(remaining, self.request_rx.recv()).await {
+                Ok(Some(req)) if req.path() == path => return Ok(req),
+                Ok(Some(_)) => continue, // Discard non-matching request
+                Ok(None) | Err(_) => return Err(Error::NoRequestReceived(timeout)),
+            }
+        }
+    }
+
+    pub async fn await_path_request_count(&mut self, path: &str, count: usize, timeout: Duration) -> Result<()> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        let mut received = 0;
+        while received < count {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return Err(Error::NoRequestReceived(timeout));
+            }
+            match tokio::time::timeout(remaining, self.request_rx.recv()).await {
+                Ok(Some(req)) if req.path() == path => received += 1,
+                Ok(Some(_)) => continue,
+                Ok(None) | Err(_) => return Err(Error::NoRequestReceived(timeout)),
+            }
+        }
+        Ok(())
+    }
+
+    pub fn drain_requests_for_path(&mut self, path: &str) -> usize {
+        let mut count = 0;
+        while let Some(req) = self.request_rx.try_recv().ok() {
+            if req.path() == path {
+                count += 1;
+            }
+        }
+        count
     }
 
     pub fn shutdown(&self) {

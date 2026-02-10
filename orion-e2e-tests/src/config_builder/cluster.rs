@@ -16,22 +16,36 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use orion_data_plane_api::envoy_data_plane_api::{
-    envoy::config::{
-        cluster::v3::{
-            cluster::{ClusterDiscoveryType, DiscoveryType, LbPolicy as EnvoyLbPolicy},
-            Cluster as EnvoyCluster,
+    envoy::{
+        config::{
+            cluster::v3::{
+                cluster::{
+                    ClusterDiscoveryType, DiscoveryType, LbConfig, LbPolicy as EnvoyLbPolicy, OriginalDstLbConfig,
+                },
+                load_balancing_policy::Policy,
+                Cluster as EnvoyCluster, LoadBalancingPolicy,
+            },
+            core::v3::{
+                transport_socket::ConfigType as TransportSocketConfigType, HealthCheck as ProtoHealthCheck,
+                Http1ProtocolOptions, Http2ProtocolOptions, TransportSocket, TypedExtensionConfig,
+            },
+            endpoint::v3::{ClusterLoadAssignment, LbEndpoint, LocalityLbEndpoints},
         },
-        core::v3::{
-            transport_socket::ConfigType as TransportSocketConfigType, Http1ProtocolOptions, Http2ProtocolOptions,
-            TransportSocket,
+        extensions::load_balancing_policies::{
+            override_host::v3::{override_host::OverrideHostSource, OverrideHost},
+            random::v3::Random as EnvoyRandom,
+            round_robin::v3::RoundRobin as EnvoyRoundRobin,
         },
-        endpoint::v3::{ClusterLoadAssignment, LbEndpoint, LocalityLbEndpoints},
     },
-    google::protobuf::{Any, Duration as ProtoDuration},
+    google::protobuf::{Any, Duration as ProtoDuration, UInt32Value},
     prost::Message,
 };
 
-use super::{endpoint::EndpointBuilder, tls::UpstreamTls};
+use super::{
+    endpoint::EndpointBuilder,
+    health_check::{GrpcHealthCheckBuilder, HttpHealthCheckBuilder, TcpHealthCheckBuilder},
+    tls::UpstreamTls,
+};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum LbPolicy {
@@ -143,6 +157,163 @@ impl ClusterBuilder {
     #[must_use]
     pub fn least_request(self) -> Self {
         self.lb_policy(LbPolicy::LeastRequest)
+    }
+
+    #[must_use]
+    pub fn ring_hash(self) -> Self {
+        self.lb_policy(LbPolicy::RingHash)
+    }
+
+    #[must_use]
+    pub fn maglev(self) -> Self {
+        self.lb_policy(LbPolicy::Maglev)
+    }
+
+    #[must_use]
+    pub fn override_host(mut self, header_name: &str, fallback_policy: LbPolicy) -> Self {
+        let fallback_typed_config = Self::build_lb_policy_typed_config(fallback_policy);
+        let fallback_lb_policy = LoadBalancingPolicy {
+            policies: vec![Policy {
+                typed_extension_config: Some(TypedExtensionConfig {
+                    name: "fallback".to_string(),
+                    typed_config: Some(fallback_typed_config),
+                }),
+            }],
+        };
+
+        let override_host = OverrideHost {
+            override_host_sources: vec![OverrideHostSource { header: header_name.to_string(), metadata: None }],
+            fallback_policy: Some(fallback_lb_policy),
+        };
+
+        let override_host_typed_config = Any {
+            type_url: "type.googleapis.com/envoy.extensions.load_balancing_policies.override_host.v3.OverrideHost"
+                .to_string(),
+            value: override_host.encode_to_vec(),
+        };
+
+        self.proto.load_balancing_policy = Some(LoadBalancingPolicy {
+            policies: vec![Policy {
+                typed_extension_config: Some(TypedExtensionConfig {
+                    name: "override_host".to_string(),
+                    typed_config: Some(override_host_typed_config),
+                }),
+            }],
+        });
+
+        self
+    }
+
+    fn build_lb_policy_typed_config(policy: LbPolicy) -> Any {
+        match policy {
+            LbPolicy::RoundRobin => Any {
+                type_url: "type.googleapis.com/envoy.extensions.load_balancing_policies.round_robin.v3.RoundRobin"
+                    .to_string(),
+                value: EnvoyRoundRobin::default().encode_to_vec(),
+            },
+            LbPolicy::Random => Any {
+                type_url: "type.googleapis.com/envoy.extensions.load_balancing_policies.random.v3.Random".to_string(),
+                value: EnvoyRandom::default().encode_to_vec(),
+            },
+            LbPolicy::LeastRequest => {
+                use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::load_balancing_policies::least_request::v3::LeastRequest;
+                Any {
+                    type_url:
+                        "type.googleapis.com/envoy.extensions.load_balancing_policies.least_request.v3.LeastRequest"
+                            .to_string(),
+                    value: LeastRequest::default().encode_to_vec(),
+                }
+            },
+            LbPolicy::RingHash => {
+                use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::load_balancing_policies::ring_hash::v3::RingHash;
+                Any {
+                    type_url: "type.googleapis.com/envoy.extensions.load_balancing_policies.ring_hash.v3.RingHash"
+                        .to_string(),
+                    value: RingHash::default().encode_to_vec(),
+                }
+            },
+            LbPolicy::Maglev => {
+                use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::load_balancing_policies::maglev::v3::Maglev;
+                Any {
+                    type_url: "type.googleapis.com/envoy.extensions.load_balancing_policies.maglev.v3.Maglev"
+                        .to_string(),
+                    value: Maglev::default().encode_to_vec(),
+                }
+            },
+        }
+    }
+
+    #[must_use]
+    pub fn eds(mut self) -> Self {
+        self.proto.cluster_discovery_type = Some(ClusterDiscoveryType::Type(DiscoveryType::Eds.into()));
+        self.proto.load_assignment = None;
+        self
+    }
+
+    #[must_use]
+    pub fn original_dst_via_header(mut self, header_name: &str) -> Self {
+        self.proto.cluster_discovery_type = Some(ClusterDiscoveryType::Type(DiscoveryType::OriginalDst.into()));
+        self.proto.lb_policy = EnvoyLbPolicy::ClusterProvided.into();
+        self.proto.load_assignment = None;
+        self.proto.lb_config = Some(LbConfig::OriginalDstLbConfig(OriginalDstLbConfig {
+            use_http_header: true,
+            http_header_name: header_name.to_string(),
+            upstream_port_override: None,
+            metadata_key: None,
+        }));
+        self
+    }
+
+    #[must_use]
+    pub fn original_dst_via_default_header(self) -> Self {
+        self.original_dst_via_header("")
+    }
+
+    #[must_use]
+    pub fn original_dst_port_override(mut self, port: u16) -> Self {
+        if let Some(LbConfig::OriginalDstLbConfig(ref mut config)) = self.proto.lb_config {
+            config.upstream_port_override = Some(UInt32Value { value: port as u32 });
+        }
+        self
+    }
+
+    #[must_use]
+    pub fn locality_endpoints<I, E>(mut self, priority: u32, endpoints: I) -> Self
+    where
+        I: IntoIterator<Item = E>,
+        E: Into<LbEndpoint>,
+    {
+        self.ensure_load_assignment();
+        if let Some(la) = self.proto.load_assignment.as_mut() {
+            let lb_endpoints: Vec<LbEndpoint> = endpoints.into_iter().map(Into::into).collect();
+            if let Some(existing) = la.endpoints.iter_mut().find(|e| e.priority == priority) {
+                existing.lb_endpoints.extend(lb_endpoints);
+            } else {
+                la.endpoints.push(LocalityLbEndpoints { priority, lb_endpoints, ..Default::default() });
+            }
+        }
+        self
+    }
+
+    #[must_use]
+    pub fn health_check(mut self, health_check: impl Into<ProtoHealthCheck>) -> Self {
+        self.proto.health_checks.push(health_check.into());
+        self
+    }
+
+    #[must_use]
+    pub fn http_health_check(self, path: &str, interval: Duration, timeout: Duration) -> Self {
+        self.health_check(HttpHealthCheckBuilder::new(path, interval, timeout))
+    }
+
+    #[must_use]
+    pub fn tcp_health_check(self, interval: Duration, timeout: Duration) -> Self {
+        self.health_check(TcpHealthCheckBuilder::new(interval, timeout))
+    }
+
+    #[must_use]
+    pub fn grpc_health_check(self, interval: Duration, timeout: Duration) -> Self {
+        self.health_check(GrpcHealthCheckBuilder::new(interval, timeout))
     }
 
     #[must_use]

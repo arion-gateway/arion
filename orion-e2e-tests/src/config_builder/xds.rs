@@ -110,6 +110,22 @@ fn build_cluster_load_assignment(cluster_name: &str, endpoints: &[Endpoint]) -> 
     }
 }
 
+fn build_cluster_load_assignment_with_priorities(
+    cluster_name: &str,
+    priority_endpoints: &[(u32, Vec<Endpoint>)],
+) -> ClusterLoadAssignment {
+    let endpoints: Vec<LocalityLbEndpoints> = priority_endpoints
+        .iter()
+        .map(|(priority, eps)| LocalityLbEndpoints {
+            lb_endpoints: eps.clone(),
+            priority: *priority,
+            ..Default::default()
+        })
+        .collect();
+
+    ClusterLoadAssignment { cluster_name: cluster_name.to_owned(), endpoints, ..Default::default() }
+}
+
 fn create_removal_resource(name: &str, type_url: TypeUrl) -> Resource {
     let any = Any { type_url: type_url.to_string(), value: vec![] };
     Resource { name: name.to_owned(), resource: Some(any), ..Default::default() }
@@ -199,6 +215,17 @@ impl ConfigPusher {
         timeout: Duration,
     ) -> Result<PushResult, XdsError> {
         let cla = build_cluster_load_assignment(cluster_name, endpoints);
+        let resource = cla.to_xds_resource();
+        self.send(ServerAction::Add(resource), timeout).await
+    }
+
+    pub async fn push_endpoints_with_priorities(
+        &self,
+        cluster_name: &str,
+        priority_endpoints: &[(u32, Vec<Endpoint>)],
+        timeout: Duration,
+    ) -> Result<PushResult, XdsError> {
+        let cla = build_cluster_load_assignment_with_priorities(cluster_name, priority_endpoints);
         let resource = cla.to_xds_resource();
         self.send(ServerAction::Add(resource), timeout).await
     }

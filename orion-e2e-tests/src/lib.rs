@@ -14,8 +14,12 @@
 
 pub mod config_builder;
 mod error;
+mod grpc_test_backend;
+mod grpc_test_client;
 pub mod orion_instance;
 pub(crate) mod port_allocator;
+mod tcp_test_backend;
+mod tcp_test_client;
 mod test_backend;
 mod test_certs;
 mod test_client;
@@ -25,8 +29,13 @@ mod xds_harness;
 pub mod xds_server;
 
 pub use error::{Error, Result};
+pub use grpc_test_backend::test_proto::EchoResponse;
+pub use grpc_test_backend::{GrpcTestBackend, GrpcTestBackendBuilder};
+pub use grpc_test_client::GrpcTestClient;
 pub use orion_instance::{OrionInstance, SpawnOptions};
 pub use port_allocator::PortBlock;
+pub use tcp_test_backend::{CapturedTcpConnection, TcpTestBackend};
+pub use tcp_test_client::TcpTestClient;
 pub use test_backend::{CapturedRequest, PreConfiguredResponse, TestBackend};
 pub use test_certs::TestCerts;
 pub use test_client::{RequestBuilder, TestClient, TestResponse};

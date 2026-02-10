@@ -18,7 +18,7 @@ use orion_data_plane_api::envoy_data_plane_api::{
             core::v3::{transport_socket::ConfigType as TransportSocketConfigType, TransportSocket},
             listener::v3::{filter::ConfigType, Filter, FilterChain as EnvoyFilterChain, FilterChainMatch},
         },
-        extensions::filters::network::http_connection_manager::v3::HttpConnectionManager,
+        extensions::filters::network::{http_connection_manager::v3::HttpConnectionManager, tcp_proxy::v3::TcpProxy},
     },
     google::protobuf::{Any, UInt32Value},
     prost::Message,
@@ -50,6 +50,22 @@ impl FilterChainBuilder {
         self.proto.filters.push(Filter {
             name: "envoy.filters.network.http_connection_manager".into(),
             config_type: Some(ConfigType::TypedConfig(hcm_any)),
+            ..Default::default()
+        });
+        self
+    }
+
+    #[must_use]
+    pub fn tcp_proxy(mut self, tcp_proxy: impl Into<TcpProxy>) -> Self {
+        let tcp_proxy_proto: TcpProxy = tcp_proxy.into();
+        let tcp_proxy_any = Any {
+            type_url: "type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy".into(),
+            value: tcp_proxy_proto.encode_to_vec(),
+        };
+
+        self.proto.filters.push(Filter {
+            name: "envoy.filters.network.tcp_proxy".into(),
+            config_type: Some(ConfigType::TypedConfig(tcp_proxy_any)),
             ..Default::default()
         });
         self

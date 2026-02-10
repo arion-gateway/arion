@@ -308,11 +308,11 @@ impl TlsTestBackend {
     }
 
     pub async fn await_request(&mut self) -> Result<CapturedRequest> {
-        self.await_request_timeout(DEFAULT_REQUEST_TIMEOUT).await
+        self.await_request_with_timeout(DEFAULT_REQUEST_TIMEOUT).await
     }
 
     #[allow(clippy::disallowed_methods)]
-    pub async fn await_request_timeout(&mut self, timeout: Duration) -> Result<CapturedRequest> {
+    pub async fn await_request_with_timeout(&mut self, timeout: Duration) -> Result<CapturedRequest> {
         match tokio::time::timeout(timeout, self.request_rx.recv()).await {
             Ok(Some(req)) => Ok(req),
             Ok(None) | Err(_) => Err(Error::NoRequestReceived(timeout)),
