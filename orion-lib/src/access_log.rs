@@ -23,12 +23,12 @@ pub mod logger;
 mod pool;
 
 use logger::AccessLogger;
-use std::sync::OnceLock;
 use orion_configuration::config::network_filters::access_log::AccessLogConf;
 use orion_format::FormattedMessage;
 use parking_lot::Mutex;
 use pool::LoggerPool;
 use smol_str::SmolStr;
+use std::sync::OnceLock;
 use tracing_appender::rolling::Rotation;
 
 use std::{fmt::Display, hash::Hash, sync::Arc};
