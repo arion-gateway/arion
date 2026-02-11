@@ -71,7 +71,14 @@ envoy_bootstrap:
                             rest_backend:
                              cluster: weather_api_cluster
                              method: GET
-                             path: "/v1/forecast"
+                             path: "/v1/forecast/{{days}}"
+                             query_params:
+                               - name: "days"
+                                 source: "days"
+                               - name: "lat"
+                                 source: "latitude"
+                               - name: "lon"
+                                 source: "longitude"
                              body_template:
                                inline_string: >-
                                    "latitude": "{{latitude}}",
