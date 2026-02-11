@@ -882,8 +882,8 @@ impl HttpChannel {
 
     pub fn load(&self) -> u32 {
         let load = match &self.channel_client {
-            HttpChannelClient::Plain(sender) => Arc::strong_count(sender.get_or_build()),
-            HttpChannelClient::Tls(sender) => Arc::strong_count(sender.client.get_or_build()),
+            HttpChannelClient::Plain(sender) => Arc::strong_count(sender),
+            HttpChannelClient::Tls(sender) => Arc::strong_count(&sender.client),
             HttpChannelClient::Unix(_, sender) => Arc::strong_count(sender),
         };
         u32::try_from(load).unwrap_or(u32::MAX)
