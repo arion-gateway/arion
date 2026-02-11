@@ -17,6 +17,7 @@
 
 pub mod context;
 pub mod grammar;
+pub mod header_formatter;
 pub mod operator;
 pub mod types;
 
@@ -27,7 +28,6 @@ use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 use std::{
     fmt::{self, Display, Formatter, Write},
-    io::Write as IoWrite,
     sync::Arc,
 };
 use thiserror::Error;
@@ -54,7 +54,6 @@ pub enum FormatError {
     InvalidRequestArg(String),
     #[error("invalid response argument `{0}`")]
     InvalidResponseArg(String),
-
     #[error("invalid operator index `{0}`")]
     InvalidOperatorIndex(#[from] std::num::TryFromIntError),
 }
@@ -98,7 +97,7 @@ impl Eq for LogFormatter {}
 
 impl Clone for LogFormatter {
     fn clone(&self) -> Self {
-       LogFormatter { conf: Arc::clone(&self.conf), format: self.format.clone() }
+        LogFormatter { conf: Arc::clone(&self.conf), format: self.format.clone() }
     }
 }
 
@@ -124,10 +123,7 @@ impl LogFormatter {
             }
         }
 
-        Ok(LogFormatter {
-            conf: Arc::new(LogFormatterConf { templates, indices, omit_empty_values }),
-            format,
-        })
+        Ok(LogFormatter { conf: Arc::new(LogFormatterConf { templates, indices, omit_empty_values }), format })
     }
 
     #[inline]
@@ -169,19 +165,27 @@ impl FormattedMessage {
     pub fn write_to<W: std::io::Write>(&self, w: &mut W) -> std::io::Result<usize> {
         let mut total_bytes = 0;
         for out in &self.format {
-            total_bytes += match out {
-                StringType::Smol(s) => IoWrite::write(w, s.as_bytes())?,
+            let mut write_chunk = |data: &[u8]| -> std::io::Result<()> {
+                w.write_all(data)?;
+                total_bytes += data.len();
+                Ok(())
+            };
+
+            match out {
+                StringType::Smol(s) => {
+                    write_chunk(s.as_bytes())?;
+                },
                 StringType::Char(c) => {
                     let mut buf = [0u8; 4];
                     let bytes = c.encode_utf8(&mut buf).as_bytes();
-                    IoWrite::write(w, bytes)?
+                    write_chunk(bytes)?;
                 },
-                StringType::Bytes(v) => IoWrite::write(w, v.as_ref())?,
+                StringType::Bytes(v) => {
+                    write_chunk(v.as_ref())?;
+                },
                 StringType::None => {
-                    if self.omit_empty_values {
-                        0
-                    } else {
-                        IoWrite::write(w, "-".as_bytes())?
+                    if !self.omit_empty_values {
+                        write_chunk("-".as_bytes())?;
                     }
                 },
             };
@@ -385,6 +389,14 @@ mod tests {
         let formatter = source.clone();
         let actual = format!("{}", &formatter.into_message());
         println!("{actual}");
+    }
+
+    #[test]
+    fn test_raw_string() {
+        let source = LogFormatter::try_new("raw string", false).unwrap();
+        let formatter = source.clone();
+        let actual = format!("{}", &formatter.into_message());
+        assert_eq!(actual, "raw string");
     }
 
     #[test]
