@@ -15,7 +15,7 @@
 //
 //
 
-use orion_format::{context::Context, LogFormatterLocal};
+use orion_format::{context::Context, LogFormatter};
 
 pub trait AccessLogContext {
     type Type;
@@ -27,7 +27,7 @@ pub trait AccessLogContext {
         Ctx: Context;
 }
 
-impl AccessLogContext for Vec<LogFormatterLocal> {
+impl AccessLogContext for Vec<LogFormatter> {
     type Type = Self;
 
     /// Applies the given context to each `LogFormatter` in the vector.

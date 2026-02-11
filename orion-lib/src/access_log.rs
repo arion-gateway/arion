@@ -237,7 +237,7 @@ mod tests {
         let resp = build_response();
 
         let formatter = LogFormatter::try_new(DEFAULT_ACCESS_LOG_FORMAT, false).unwrap();
-        let mut fmt = formatter.local_clone();
+        let mut fmt = formatter.clone();
 
         fmt.with_context(&InitContext { start_time: std::time::SystemTime::now() });
         fmt.with_context(&DownstreamContext { request: &req, trace_id: None, request_head_size: 0, server_name: None });

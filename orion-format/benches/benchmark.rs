@@ -21,7 +21,7 @@ use http::{HeaderMap, HeaderValue, Request, Response, StatusCode, Version};
 use orion_format::{
     context::{Context, DownstreamContext, DownstreamResponse, FinishContext, InitContext},
     types::{ResponseFlags, ResponseFlagsShort},
-    LogFormatter, LogFormatterLocal, DEFAULT_ACCESS_LOG_FORMAT,
+    LogFormatter, DEFAULT_ACCESS_LOG_FORMAT,
 };
 use orion_http_header::X_ENVOY_ORIGINAL_PATH;
 use smol_str::ToSmolStr;
@@ -32,7 +32,7 @@ use std::time::Duration;
 static ALLOC: dhat::Alloc = dhat::Alloc;
 
 #[inline]
-fn eval_format<C1, C2, C3, C4>(req: &C1, resp: &C2, start: &C3, end: &C4, fmt: &mut LogFormatterLocal)
+fn eval_format<C1, C2, C3, C4>(req: &C1, resp: &C2, start: &C3, end: &C4, fmt: &mut LogFormatter)
 where
     C1: Context,
     C2: Context,
@@ -188,7 +188,7 @@ fn benchmark_log_formatter(c: &mut Criterion) {
 
     c.bench_function("log_formatter_full", |b| {
         b.iter(|| {
-            let mut fmt = fmt.local_clone();
+            let mut fmt = fmt.clone();
             black_box(eval_format(
                 &DownstreamContext { request: &request, trace_id: None, request_head_size: 0, server_name: None },
                 &DownstreamResponse { response: &response, response_head_size: 0 },
@@ -201,7 +201,7 @@ fn benchmark_log_formatter(c: &mut Criterion) {
 
     c.bench_function("log_formatter_full_write", |b| {
         b.iter(|| {
-            let mut fmt = fmt.local_clone();
+            let mut fmt = fmt.clone();
             black_box(eval_format(
                 &DownstreamContext { request: &request, trace_id: None, request_head_size: 0, server_name: None },
                 &DownstreamResponse { response: &response, response_head_size: 0 },
@@ -215,11 +215,11 @@ fn benchmark_log_formatter(c: &mut Criterion) {
 
     c.bench_function("log_formatter_clone_only", |b| {
         b.iter(|| {
-            black_box(fmt.local_clone());
+            black_box(fmt.clone());
         })
     });
 
-    let mut formatted = fmt.local_clone();
+    let mut formatted = fmt.clone();
     eval_format(
         &DownstreamContext { request: &request, trace_id: None, request_head_size: 0, server_name: None },
         &DownstreamResponse { response: &response, response_head_size: 0 },
@@ -259,7 +259,7 @@ fn benchmark_request_parts(c: &mut Criterion) {
     let fmt = LogFormatter::try_new("%START_TIME%", false).stealth_unwrap();
     c.bench_function("%START_TIME%", |b| {
         b.iter(|| {
-            let mut fmt = fmt.local_clone();
+            let mut fmt = fmt.clone();
             black_box(eval_format(
                 &DownstreamContext { request: &request, trace_id: None, request_head_size: 0, server_name: None },
                 &DownstreamResponse { response: &response, response_head_size: 0 },
@@ -273,7 +273,7 @@ fn benchmark_request_parts(c: &mut Criterion) {
     let fmt = LogFormatter::try_new("%REQ(:PATH)%", false).stealth_unwrap();
     c.bench_function("REQ(:PATH)", |b| {
         b.iter(|| {
-            let mut fmt = fmt.local_clone();
+            let mut fmt = fmt.clone();
             black_box(eval_format(
                 &DownstreamContext { request: &request, trace_id: None, request_head_size: 0, server_name: None },
                 &DownstreamResponse { response: &response, response_head_size: 0 },
@@ -287,7 +287,7 @@ fn benchmark_request_parts(c: &mut Criterion) {
     let fmt = LogFormatter::try_new("%REQ(:METHOD)%", false).stealth_unwrap();
     c.bench_function("REQ(:METHOD)", |b| {
         b.iter(|| {
-            let mut fmt = fmt.local_clone();
+            let mut fmt = fmt.clone();
             black_box(eval_format(
                 &DownstreamContext { request: &request, trace_id: None, request_head_size: 0, server_name: None },
                 &DownstreamResponse { response: &response, response_head_size: 0 },
@@ -301,7 +301,7 @@ fn benchmark_request_parts(c: &mut Criterion) {
     let fmt = LogFormatter::try_new("%REQ(USER-AGENT)%", false).stealth_unwrap();
     c.bench_function("REQ(USER-AGENT)", |b| {
         b.iter(|| {
-            let mut fmt = fmt.local_clone();
+            let mut fmt = fmt.clone();
             black_box(eval_format(
                 &DownstreamContext { request: &request, trace_id: None, request_head_size: 0, server_name: None },
                 &DownstreamResponse { response: &response, response_head_size: 0 },
@@ -376,7 +376,7 @@ fn benchmark_log_headers(c: &mut Criterion) {
 
     c.bench_function("log_format_headers", |b| {
         b.iter(|| {
-            let mut fmt = fmt.local_clone();
+            let mut fmt = fmt.clone();
             black_box(eval_format(
                 &DownstreamContext { request: &request, trace_id: None, request_head_size: 0, server_name: None },
                 &DownstreamResponse { response: &response, response_head_size: 0 },

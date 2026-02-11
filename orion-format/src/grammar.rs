@@ -271,9 +271,9 @@ static ENVOY_PATTERNS: LazyLock<Trie<u8, (Operator, Category, usize, bool)>> = L
     trie
 });
 
-pub struct EnvoyGrammar;
+pub struct AccessLogGrammar;
 
-impl EnvoyGrammar {
+impl AccessLogGrammar {
     fn parse_request(arg: &str) -> Result<ReqArgument, FormatError> {
         if let Some((t, _, _, _)) = ENVOY_REQ_ARGS.find_longest_prefix(arg.bytes()) {
             Ok(t.clone())
@@ -309,7 +309,7 @@ impl EnvoyGrammar {
     }
 }
 
-impl Grammar for EnvoyGrammar {
+impl Grammar for AccessLogGrammar {
     #[allow(clippy::too_many_lines)]
     fn parse(input: &str) -> Result<Vec<Template>, FormatError> {
         let mut parts = Vec::new();
@@ -470,7 +470,7 @@ mod tests {
     fn test_parse_only_literals() {
         let input = "This is a plain literal string.";
         let expected = vec![Template::Literal("This is a plain literal string.".into())];
-        let actual = EnvoyGrammar::parse(input).unwrap();
+        let actual = AccessLogGrammar::parse(input).unwrap();
         assert_eq!(actual, expected);
     }
 
@@ -482,7 +482,7 @@ mod tests {
             Template::Placeholder(Operator::Protocol, Category::DOWNSTREAM_REQUEST),
         ];
 
-        let actual = EnvoyGrammar::parse(input).unwrap();
+        let actual = AccessLogGrammar::parse(input).unwrap();
         assert_eq!(actual, expected);
     }
 
@@ -496,7 +496,7 @@ mod tests {
             Template::Placeholder(Operator::Protocol, Category::DOWNSTREAM_REQUEST),
             Template::Literal(" end.".into()),
         ];
-        let actual = EnvoyGrammar::parse(input).unwrap();
+        let actual = AccessLogGrammar::parse(input).unwrap();
         assert_eq!(actual, expected);
     }
 
@@ -507,7 +507,7 @@ mod tests {
             Template::Placeholder(Operator::StartTime, Category::INIT_CONTEXT),
             Template::Literal(" literal after.".into()),
         ];
-        let actual = EnvoyGrammar::parse(input).unwrap();
+        let actual = AccessLogGrammar::parse(input).unwrap();
         assert_eq!(actual, expected);
     }
 
@@ -518,7 +518,7 @@ mod tests {
             Template::Literal("Literal before ".into()),
             Template::Placeholder(Operator::Protocol, Category::DOWNSTREAM_REQUEST),
         ];
-        let actual = EnvoyGrammar::parse(input).unwrap();
+        let actual = AccessLogGrammar::parse(input).unwrap();
         assert_eq!(actual, expected);
     }
 
@@ -526,7 +526,7 @@ mod tests {
     fn test_parse_empty_string() {
         let input = "";
         let expected: Vec<Template> = vec![]; // Expect an empty vector
-        let actual = EnvoyGrammar::parse(input).unwrap();
+        let actual = AccessLogGrammar::parse(input).unwrap();
         assert_eq!(actual, expected);
     }
 
@@ -534,7 +534,7 @@ mod tests {
     fn test_parse_with_special_chars_in_literal() {
         let input = "Literal with \"quotes\" and %%percent signs%% not placeholders.";
         let expected = vec![Template::Literal("Literal with \"quotes\" and %percent signs% not placeholders.".into())];
-        let actual = EnvoyGrammar::parse(input).unwrap();
+        let actual = AccessLogGrammar::parse(input).unwrap();
         assert_eq!(actual, expected);
     }
 
@@ -552,14 +552,14 @@ mod tests {
             Template::Placeholder(Operator::Protocol, Category::DOWNSTREAM_REQUEST),
             Template::Char('"'),
         ];
-        let actual = EnvoyGrammar::parse(input).unwrap();
+        let actual = AccessLogGrammar::parse(input).unwrap();
         assert_eq!(actual, expected);
     }
 
     #[test]
     fn test_parse_request_header_bytes() {
         let input = "%REQUEST_HEADERS_BYTES%";
-        let actual = EnvoyGrammar::parse(input).unwrap();
+        let actual = AccessLogGrammar::parse(input).unwrap();
         let expected = vec![Template::Placeholder(Operator::RequestHeadersBytes, Category::DOWNSTREAM_REQUEST)];
         assert_eq!(actual, expected);
     }
@@ -567,14 +567,14 @@ mod tests {
     #[test]
     fn test_parse_response_header_bytes() {
         let input = "%RESPONSE_HEADERS_BYTES%";
-        let actual = EnvoyGrammar::parse(input).unwrap();
+        let actual = AccessLogGrammar::parse(input).unwrap();
         let expected = vec![Template::Placeholder(Operator::ResponseHeadersBytes, Category::DOWNSTREAM_RESPONSE)];
         assert_eq!(actual, expected);
     }
 
     #[test]
     fn test_default_fmt() {
-        _ = EnvoyGrammar::parse(DEFAULT_ACCESS_LOG_FORMAT).unwrap();
+        _ = AccessLogGrammar::parse(DEFAULT_ACCESS_LOG_FORMAT).unwrap();
     }
 
     // bad patters..
@@ -582,70 +582,70 @@ mod tests {
     #[test]
     fn test_parse_unsupported_operator() {
         let input = "%UNSUPPORTED%";
-        let result = EnvoyGrammar::parse(input);
+        let result = AccessLogGrammar::parse(input);
         assert!(matches!(result, Err(FormatError::InvalidOperator(_))));
     }
 
     #[test]
     fn test_parse_unsupported_operator_with_partial_match() {
         let input = "%RESPONSE_CODE_UNSUPPORTED%";
-        let result = EnvoyGrammar::parse(input);
+        let result = AccessLogGrammar::parse(input);
         assert!(matches!(result, Err(FormatError::InvalidOperator(_))));
     }
 
     #[test]
     fn test_parse_error_empty_argument() {
         let input = "%REQ()%";
-        let result = EnvoyGrammar::parse(input);
+        let result = AccessLogGrammar::parse(input);
         assert!(matches!(result, Err(FormatError::EmptyArgument(_))));
     }
 
     #[test]
     fn test_parse_error_missing_bracket_1() {
         let input = "%REQ";
-        let result = EnvoyGrammar::parse(input);
+        let result = AccessLogGrammar::parse(input);
         assert!(matches!(result, Err(FormatError::MissingBracket(_))));
     }
 
     #[test]
     fn test_parse_error_missing_bracket_2() {
         let input = "%REQ(USER_AGENT%";
-        let result = EnvoyGrammar::parse(input);
+        let result = AccessLogGrammar::parse(input);
         assert!(matches!(result, Err(FormatError::MissingBracket(_))));
     }
 
     #[test]
     fn test_parse_error_missing_delimiter_1() {
         let input = "%UPSTREAM_HOST";
-        let result = EnvoyGrammar::parse(input);
+        let result = AccessLogGrammar::parse(input);
         assert!(matches!(result, Err(FormatError::MissingDelimiter(_))));
     }
 
     #[test]
     fn test_parse_error_missing_delimiter_2() {
         let input = "%REQ(USER_AGENT)";
-        let result = EnvoyGrammar::parse(input);
+        let result = AccessLogGrammar::parse(input);
         assert!(matches!(result, Err(FormatError::MissingDelimiter(_))));
     }
 
     #[test]
     fn test_parse_error_missing_delimiter_3() {
         let input = "%REQ(USER_AGENT) ";
-        let result = EnvoyGrammar::parse(input);
+        let result = AccessLogGrammar::parse(input);
         assert!(matches!(result, Err(FormatError::MissingDelimiter(_))));
     }
 
     #[test]
     fn test_parse_invalid_req_argument() {
         let input = "%REQ(<BAD>)%";
-        let result = EnvoyGrammar::parse(input);
+        let result = AccessLogGrammar::parse(input);
         assert!(matches!(result, Err(FormatError::InvalidRequestArg(_))));
     }
 
     #[test]
     fn test_parse_invalid_resp_argument() {
         let input = "%RESP(<BAD>)%";
-        let result = EnvoyGrammar::parse(input);
+        let result = AccessLogGrammar::parse(input);
         assert!(matches!(result, Err(FormatError::InvalidResponseArg(_))));
     }
 }

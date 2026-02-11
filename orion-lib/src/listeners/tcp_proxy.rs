@@ -84,7 +84,7 @@ impl TcpProxy {
     #[allow(clippy::too_many_lines)]
     pub async fn serve_connection(&self, mut stream: AsyncStream, metadata: DownstreamMetadata) -> Result<()> {
         let start_instant = Instant::now();
-        let mut access_loggers = self.access_log.iter().map(|al| al.logger.local_clone()).collect::<Vec<_>>();
+        let mut access_loggers = self.access_log.iter().map(|al| al.logger.clone()).collect::<Vec<_>>();
 
         access_loggers.with_context_fn(|| InitContext { start_time: std::time::SystemTime::now() });
 
