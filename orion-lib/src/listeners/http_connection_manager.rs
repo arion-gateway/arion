@@ -71,7 +71,7 @@ use {
     orion_format::context::{
         DownstreamResponse, FinishContext, HttpRequestDuration, HttpResponseDuration, InitHttpContext,
     },
-    orion_format::LogFormatterLocal,
+    orion_format::LogFormatter,
     parking_lot::Mutex,
     std::time::Instant,
 };
@@ -79,9 +79,9 @@ use {
 use arc_swap::ArcSwap;
 use core::time::Duration;
 use futures::future::BoxFuture;
-use hyper::{body::Incoming, service::Service, HeaderMap, Request, Response};
+use hyper::{body::Incoming, service::Service, Request, Response};
 use orion_configuration::config::network_filters::http_connection_manager::{
-    header_modifer::{HeaderMapModifier, ModifierType, ModifiersExtractor},
+    header_modifer::{HeaderMapModifier, ModifiersExtractor},
     route::RouteMatch,
 };
 use orion_configuration::config::network_filters::http_connection_manager::{
@@ -784,9 +784,8 @@ impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usiz
             .into_response(request.version()),
             Some(cached_route) => match filter_response {
                 FilterDecision::DirectResponse(mut response) | FilterDecision::AsyncRequest(mut response, _) => {
-                    let res_headers = response.headers_mut();
-                    apply_mutations::<Response<()>>(
-                        res_headers,
+                    apply_mutations_on_response(
+                        &mut response,
                         &self.0,
                         &cached_route,
                         self.0.most_specific_header_mutations_wins,
@@ -806,9 +805,8 @@ impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usiz
                                 .await
                         },
                         Action::Route(route) => {
-                            let req_headers = request.headers_mut();
-                            apply_mutations::<Request<()>>(
-                                req_headers,
+                            apply_mutations_on_request(
+                                &mut request,
                                 &self.0,
                                 &cached_route,
                                 self.0.most_specific_header_mutations_wins,
@@ -838,9 +836,8 @@ impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usiz
                         },
                     }?;
 
-                    let res_headers = response.headers_mut();
-                    apply_mutations::<Response<()>>(
-                        res_headers,
+                    apply_mutations_on_response(
+                        &mut response,
                         &self.0,
                         &cached_route,
                         self.0.most_specific_header_mutations_wins,
@@ -962,9 +959,8 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
             .into_response(request.version()),
             Some(cached_route) => match filter_response {
                 FilterDecision::DirectResponse(mut response) | FilterDecision::AsyncRequest(mut response, _) => {
-                    let res_headers = response.headers_mut();
-                    apply_mutations::<Response<()>>(
-                        res_headers,
+                    apply_mutations_on_response(
+                        &mut response,
                         &self,
                         &cached_route,
                         self.most_specific_header_mutations_wins,
@@ -988,9 +984,8 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
                             .await
                         },
                         Action::Route(route) => {
-                            let req_headers = request.headers_mut();
-                            apply_mutations::<Request<()>>(
-                                req_headers,
+                            apply_mutations_on_request(
+                                &mut request,
                                 &self,
                                 &cached_route,
                                 self.most_specific_header_mutations_wins,
@@ -1020,9 +1015,8 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
                         },
                     }?;
 
-                    let res_headers = response.headers_mut();
-                    apply_mutations::<Response<()>>(
-                        res_headers,
+                    apply_mutations_on_response(
+                        &mut response,
                         &self,
                         &cached_route,
                         self.most_specific_header_mutations_wins,
@@ -1045,25 +1039,45 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
     }
 }
 
-fn apply_mutations<T>(
-    target: &mut HeaderMap,
+fn apply_mutations_on_request<B>(
+    target: &mut Request<B>,
     route_config: &RouteConfiguration,
     cached_route: &CachedRoute<'_>,
     most_specific_header_mutations_wins: bool,
 ) where
-    T: ModifierType,
-    Route: ModifiersExtractor<T>,
-    VirtualHost: ModifiersExtractor<T>,
-    RouteConfiguration: ModifiersExtractor<T>,
+    Route: ModifiersExtractor<Request<B>>,
+    VirtualHost: ModifiersExtractor<Request<B>>,
+    RouteConfiguration: ModifiersExtractor<Request<B>>,
 {
     if most_specific_header_mutations_wins {
-        target.apply(ModifiersExtractor::<T>::extract(route_config));
-        target.apply(ModifiersExtractor::<T>::extract(cached_route.vh));
-        target.apply(ModifiersExtractor::<T>::extract(cached_route.route));
+        target.apply(ModifiersExtractor::<Request<B>>::extract(route_config));
+        target.apply(ModifiersExtractor::<Request<B>>::extract(cached_route.vh));
+        target.apply(ModifiersExtractor::<Request<B>>::extract(cached_route.route));
     } else {
-        target.apply(ModifiersExtractor::<T>::extract(cached_route.route));
-        target.apply(ModifiersExtractor::<T>::extract(cached_route.vh));
-        target.apply(ModifiersExtractor::<T>::extract(route_config));
+        target.apply(ModifiersExtractor::<Request<B>>::extract(cached_route.route));
+        target.apply(ModifiersExtractor::<Request<B>>::extract(cached_route.vh));
+        target.apply(ModifiersExtractor::<Request<B>>::extract(route_config));
+    }
+}
+
+fn apply_mutations_on_response<B>(
+    target: &mut Response<B>,
+    route_config: &RouteConfiguration,
+    cached_route: &CachedRoute<'_>,
+    most_specific_header_mutations_wins: bool,
+) where
+    Route: ModifiersExtractor<Request<B>>,
+    VirtualHost: ModifiersExtractor<Request<B>>,
+    RouteConfiguration: ModifiersExtractor<Request<B>>,
+{
+    if most_specific_header_mutations_wins {
+        target.apply(ModifiersExtractor::<Request<B>>::extract(route_config));
+        target.apply(ModifiersExtractor::<Request<B>>::extract(cached_route.vh));
+        target.apply(ModifiersExtractor::<Request<B>>::extract(cached_route.route));
+    } else {
+        target.apply(ModifiersExtractor::<Request<B>>::extract(cached_route.route));
+        target.apply(ModifiersExtractor::<Request<B>>::extract(cached_route.vh));
+        target.apply(ModifiersExtractor::<Request<B>>::extract(route_config));
     }
 }
 

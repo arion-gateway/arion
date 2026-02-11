@@ -5,10 +5,11 @@
 //
 
 use http::{header::InvalidHeaderValue, HeaderValue};
+use serde::{Deserialize, Serialize};
 
 use crate::{context::Context, FormatError, LogFormatter};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct HeaderFormatter {
     fmt: LogFormatter,
 }
@@ -29,6 +30,11 @@ impl HeaderFormatter {
         let fmt = self.fmt.into_message();
         let value = format!("{}", fmt);
         HeaderValue::from_str(&value)
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.fmt.is_empty()
     }
 }
 

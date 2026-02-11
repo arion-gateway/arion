@@ -18,9 +18,14 @@
 use crate::config::network_filters::http_connection_manager::{Route, RouteConfiguration, VirtualHost};
 
 use super::GenericError;
-use http::{HeaderMap, HeaderName, HeaderValue, Request, Response};
+use http::{HeaderName, HeaderValue, Request, Response};
+use orion_format::{
+    context::{DownstreamContext, DownstreamResponse},
+    header_formatter::HeaderFormatter,
+};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
+use tracing::warn;
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub struct HeaderModifiersRemove(
@@ -36,26 +41,53 @@ pub trait HeaderMapModifier<M> {
     fn apply(&mut self, modifier: M);
 }
 
-impl HeaderMapModifier<&HeaderModifiersRemove> for HeaderMap {
+impl<B> HeaderMapModifier<&HeaderModifiersRemove> for Request<B> {
     fn apply(&mut self, modifier: &HeaderModifiersRemove) {
         for name in &modifier.0 {
-            self.remove(name);
+            self.headers_mut().remove(name);
         }
     }
 }
 
-impl HeaderMapModifier<&HeaderModifiersAdd> for HeaderMap {
+impl<B> HeaderMapModifier<&HeaderModifiersRemove> for Response<B> {
+    fn apply(&mut self, modifier: &HeaderModifiersRemove) {
+        for name in &modifier.0 {
+            self.headers_mut().remove(name);
+        }
+    }
+}
+
+impl<B> HeaderMapModifier<&HeaderModifiersAdd> for Request<B> {
     fn apply(&mut self, modifier: &HeaderModifiersAdd) {
         for modifier in &modifier.0 {
-            modifier.apply_to(self);
+            modifier.apply_to_request(self);
         }
     }
 }
 
-impl<'m1, 'm2, M1, M2> HeaderMapModifier<(&'m1 M1, &'m2 M2)> for HeaderMap
+impl<B> HeaderMapModifier<&HeaderModifiersAdd> for Response<B> {
+    fn apply(&mut self, modifier: &HeaderModifiersAdd) {
+        for modifier in &modifier.0 {
+            modifier.apply_to_response(self);
+        }
+    }
+}
+
+impl<'m1, 'm2, M1, M2, B> HeaderMapModifier<(&'m1 M1, &'m2 M2)> for Request<B>
 where
-    HeaderMap: HeaderMapModifier<&'m1 M1>,
-    HeaderMap: HeaderMapModifier<&'m2 M2>,
+    Request<B>: HeaderMapModifier<&'m1 M1>,
+    Request<B>: HeaderMapModifier<&'m2 M2>,
+{
+    fn apply(&mut self, (m1, m2): (&'m1 M1, &'m2 M2)) {
+        self.apply(m1);
+        self.apply(m2);
+    }
+}
+
+impl<'m1, 'm2, M1, M2, B> HeaderMapModifier<(&'m1 M1, &'m2 M2)> for Response<B>
+where
+    Response<B>: HeaderMapModifier<&'m1 M1>,
+    Response<B>: HeaderMapModifier<&'m2 M2>,
 {
     fn apply(&mut self, (m1, m2): (&'m1 M1, &'m2 M2)) {
         self.apply(m1);
@@ -115,30 +147,148 @@ pub struct HeaderValueOption {
 }
 
 impl HeaderValueOption {
-    pub fn apply_to(&self, header_map: &mut HeaderMap) -> bool {
+    pub fn apply_to_request<B>(&self, req: &mut Request<B>) -> bool {
         if self.header.value.is_empty() && !self.keep_empty_value {
-            header_map.remove(&self.header.key).is_some()
+            req.headers_mut().remove(&self.header.key).is_some()
         } else {
             match self.append_action {
                 HeaderAppendAction::AppendIfExistsOrAdd => {
-                    header_map.append(&self.header.key, self.header.value.clone());
+                    let mut formatter = self.header.value.clone();
+                    formatter.with_context(&DownstreamContext {
+                        request: &req,
+                        request_head_size: 0,
+                        trace_id: None,
+                        server_name: None,
+                    });
+                    let header_value = formatter
+                        .into_header_value()
+                        .inspect_err(|e| {
+                            warn!("HeaderValue: failed to convert to HeaderValue: {}", e);
+                        })
+                        .unwrap_or(HeaderValue::from_static(""));
+                    req.headers_mut().append(&self.header.key, header_value);
                     true
                 },
                 HeaderAppendAction::AppendIfAbsent => {
-                    if header_map.get(&self.header.key).is_none() {
-                        header_map.append(&self.header.key, self.header.value.clone());
+                    if req.headers_mut().get(&self.header.key).is_none() {
+                        let mut formatter = self.header.value.clone();
+                        formatter.with_context(&DownstreamContext {
+                            request: &req,
+                            request_head_size: 0,
+                            trace_id: None,
+                            server_name: None,
+                        });
+                        let header_value = formatter
+                            .into_header_value()
+                            .inspect_err(|e| {
+                                warn!("HeaderValue: failed to convert to HeaderValue: {}", e);
+                            })
+                            .unwrap_or(HeaderValue::from_static(""));
+                        req.headers_mut().append(&self.header.key, header_value);
                         true
                     } else {
                         false
                     }
                 },
                 HeaderAppendAction::OverwriteIfExistsOrAdd => {
-                    header_map.insert(&self.header.key, self.header.value.clone());
+                    let mut formatter = self.header.value.clone();
+                    formatter.with_context(&DownstreamContext {
+                        request: &req,
+                        request_head_size: 0,
+                        trace_id: None,
+                        server_name: None,
+                    });
+                    let header_value = formatter
+                        .into_header_value()
+                        .inspect_err(|e| {
+                            warn!("HeaderValue: failed to convert to HeaderValue: {}", e);
+                        })
+                        .unwrap_or(HeaderValue::from_static(""));
+                    req.headers_mut().insert(&self.header.key, header_value);
                     true
                 },
                 HeaderAppendAction::OverwriteIfExists => {
-                    if header_map.get(&self.header.key).is_some() {
-                        header_map.insert(&self.header.key, self.header.value.clone());
+                    if req.headers_mut().get(&self.header.key).is_some() {
+                        let mut formatter = self.header.value.clone();
+                        formatter.with_context(&DownstreamContext {
+                            request: &req,
+                            request_head_size: 0,
+                            trace_id: None,
+                            server_name: None,
+                        });
+
+                        let header_value = formatter
+                            .into_header_value()
+                            .inspect_err(|e| {
+                                warn!("HeaderValue: failed to convert to HeaderValue: {}", e);
+                            })
+                            .unwrap_or(HeaderValue::from_static(""));
+                        req.headers_mut().insert(&self.header.key, header_value);
+                        true
+                    } else {
+                        false
+                    }
+                },
+            }
+        }
+    }
+
+    pub fn apply_to_response<B>(&self, res: &mut Response<B>) -> bool {
+        if self.header.value.is_empty() && !self.keep_empty_value {
+            res.headers_mut().remove(&self.header.key).is_some()
+        } else {
+            match self.append_action {
+                HeaderAppendAction::AppendIfExistsOrAdd => {
+                    let mut formatter = self.header.value.clone();
+                    formatter.with_context(&DownstreamResponse { response: &res, response_head_size: 0 });
+                    let header_value = formatter
+                        .into_header_value()
+                        .inspect_err(|e| {
+                            warn!("HeaderValue: failed to convert to HeaderValue: {}", e);
+                        })
+                        .unwrap_or(HeaderValue::from_static(""));
+                    res.headers_mut().append(&self.header.key, header_value);
+                    true
+                },
+                HeaderAppendAction::AppendIfAbsent => {
+                    if res.headers_mut().get(&self.header.key).is_none() {
+                        let mut formatter = self.header.value.clone();
+                        formatter.with_context(&DownstreamResponse { response: &res, response_head_size: 0 });
+                        let header_value = formatter
+                            .into_header_value()
+                            .inspect_err(|e| {
+                                warn!("HeaderValue: failed to convert to HeaderValue: {}", e);
+                            })
+                            .unwrap_or(HeaderValue::from_static(""));
+                        res.headers_mut().append(&self.header.key, header_value);
+                        true
+                    } else {
+                        false
+                    }
+                },
+                HeaderAppendAction::OverwriteIfExistsOrAdd => {
+                    let mut formatter = self.header.value.clone();
+                    formatter.with_context(&DownstreamResponse { response: &res, response_head_size: 0 });
+                    let header_value = formatter
+                        .into_header_value()
+                        .inspect_err(|e| {
+                            warn!("HeaderValue: failed to convert to HeaderValue: {}", e);
+                        })
+                        .unwrap_or(HeaderValue::from_static(""));
+                    res.headers_mut().insert(&self.header.key, header_value);
+                    true
+                },
+                HeaderAppendAction::OverwriteIfExists => {
+                    if res.headers_mut().get(&self.header.key).is_some() {
+                        let mut formatter = self.header.value.clone();
+                        formatter.with_context(&DownstreamResponse { response: &res, response_head_size: 0 });
+                        let header_value = formatter
+                            .into_header_value()
+                            .inspect_err(|e| {
+                                warn!("HeaderValue: failed to convert to HeaderValue: {}", e);
+                            })
+                            .unwrap_or(HeaderValue::from_static(""));
+                        res.headers_mut().insert(&self.header.key, header_value);
                         true
                     } else {
                         false
@@ -161,10 +311,7 @@ pub enum HeaderAppendAction {
 pub struct HeaderKeyValue {
     #[serde(with = "http_serde_ext::header_name")]
     pub key: HeaderName,
-    //todo(hayley): this macro is too restrictive. It only accepts header values that have printable ascii characters but
-    // the struct accepts opaque bytes too.
-    #[serde(with = "http_serde_ext::header_value")]
-    pub value: HeaderValue,
+    pub value: HeaderFormatter,
 }
 
 impl TryFrom<(String, Vec<u8>)> for HeaderKeyValue {
@@ -173,8 +320,13 @@ impl TryFrom<(String, Vec<u8>)> for HeaderKeyValue {
         let key = HeaderName::from_str(&value.0).map_err(|e| {
             GenericError::from_msg_with_cause(format!("failed to parse \"{}\" as a HeaderName", value.0), e)
         })?;
-        let value = HeaderValue::try_from(value.1)
-            .map_err(|e| GenericError::from_msg_with_cause("failed to parse bytes as HeaderValue", e))?;
+        let value_str = String::from_utf8(value.1)
+            .map_err(|e| GenericError::from_msg_with_cause(format!("failed to parse bytes as a utf"), e))?;
+
+        let value = HeaderFormatter::try_new(&value_str).map_err(|e| {
+            GenericError::from_msg_with_cause(format!("failed to parse \"{}\" as a HeaderFormatter", value_str), e)
+        })?;
+
         Ok(Self { key, value })
     }
 }
@@ -184,9 +336,11 @@ impl TryFrom<(String, String)> for HeaderKeyValue {
         let key = HeaderName::from_str(&value.0).map_err(|e| {
             GenericError::from_msg_with_cause(format!("failed to parse \"{}\" as a HeaderName", value.0), e)
         })?;
-        let value = HeaderValue::from_str(&value.1).map_err(|e| {
-            GenericError::from_msg_with_cause(format!("failed to parse \"{}\" as a HeaderValue", value.1), e)
+
+        let value = HeaderFormatter::try_new(&value.1).map_err(|e| {
+            GenericError::from_msg_with_cause(format!("failed to parse \"{}\" as a HeaderFormatter", value.1), e)
         })?;
+
         Ok(Self { key, value })
     }
 }
@@ -195,215 +349,212 @@ impl TryFrom<(String, String)> for HeaderKeyValue {
 mod tests {
     use super::*;
     use crate::config::network_filters::http_connection_manager::header_modifer::HeaderKeyValue;
-    use http::{
-        header::{COOKIE, LOCATION, USER_AGENT},
-        HeaderMap, HeaderValue,
-    };
+    use http::header::{COOKIE, LOCATION, USER_AGENT};
 
     #[test]
     fn test_header_mutation_append_if_exists_or_add() {
-        let header_map = &mut HeaderMap::<HeaderValue>::default();
+        let mut request = Request::builder().uri("http://example.com").body(()).unwrap();
 
-        let hello = HeaderValue::from_str("hello").unwrap();
-        let world = HeaderValue::from_str("world").unwrap();
+        let hello = HeaderFormatter::try_new("hello").unwrap();
+        let world = HeaderFormatter::try_new("world").unwrap();
 
         HeaderValueOption {
             header: HeaderKeyValue { key: LOCATION, value: hello.clone() },
             append_action: HeaderAppendAction::AppendIfExistsOrAdd,
             keep_empty_value: false,
         }
-        .apply_to(header_map);
+        .apply_to_request(&mut request);
 
-        assert_eq!(header_map.get(LOCATION), Some(&hello));
-        assert_eq!(header_map.len(), 1);
+        assert_eq!(request.headers().get(LOCATION), Some(&hello.clone().into_header_value().unwrap()));
+        assert_eq!(request.headers().len(), 1);
 
         HeaderValueOption {
             header: HeaderKeyValue { key: LOCATION, value: world.clone() },
             append_action: HeaderAppendAction::AppendIfExistsOrAdd,
             keep_empty_value: false,
         }
-        .apply_to(header_map);
+        .apply_to_request(&mut request);
 
-        assert_eq!(header_map.len(), 2);
+        assert_eq!(request.headers().len(), 2);
 
-        let mut iter = header_map.get_all(LOCATION).iter();
-        assert_eq!(&hello, iter.next().unwrap());
-        assert_eq!(&world, iter.next().unwrap());
+        let mut iter = request.headers().get_all(LOCATION).iter();
+        assert_eq!(&hello.into_header_value().unwrap(), iter.next().unwrap());
+        assert_eq!(&world.into_header_value().unwrap(), iter.next().unwrap());
         assert!(iter.next().is_none());
     }
 
     #[test]
     fn test_header_mutation_inline_append() {
-        let header_map = &mut HeaderMap::<HeaderValue>::default();
+        let mut request = Request::builder().uri("http://example.com").body(()).unwrap();
 
-        let hello = HeaderValue::from_str("hello").unwrap();
-        let world = HeaderValue::from_str("world").unwrap();
+        let hello = HeaderFormatter::try_new("hello").unwrap();
+        let world = HeaderFormatter::try_new("world").unwrap();
 
         HeaderValueOption {
             header: HeaderKeyValue { key: USER_AGENT, value: hello.clone() },
             append_action: HeaderAppendAction::AppendIfExistsOrAdd,
             keep_empty_value: false,
         }
-        .apply_to(header_map);
+        .apply_to_request(&mut request);
 
-        assert_eq!(header_map.get(USER_AGENT), Some(&hello));
-        assert_eq!(header_map.len(), 1);
+        assert_eq!(request.headers().get(USER_AGENT), Some(&hello.into_header_value().unwrap()));
+        assert_eq!(request.headers().len(), 1);
 
         HeaderValueOption {
             header: HeaderKeyValue { key: USER_AGENT, value: world.clone() },
             append_action: HeaderAppendAction::AppendIfExistsOrAdd,
             keep_empty_value: false,
         }
-        .apply_to(header_map);
+        .apply_to_request(&mut request);
 
-        assert_eq!(header_map.len(), 2);
+        assert_eq!(request.headers().len(), 2);
     }
 
     #[test]
     fn test_header_mutation_cookie_append() {
-        let header_map = &mut HeaderMap::<HeaderValue>::default();
+        let mut request = Request::builder().uri("http://example.com").body(()).unwrap();
 
-        let hello = HeaderValue::from_str("hello").unwrap();
-        let world = HeaderValue::from_str("world").unwrap();
+        let hello = HeaderFormatter::try_new("hello").unwrap();
+        let world = HeaderFormatter::try_new("world").unwrap();
 
         HeaderValueOption {
             header: HeaderKeyValue { key: COOKIE, value: hello.clone() },
             append_action: HeaderAppendAction::AppendIfExistsOrAdd,
             keep_empty_value: false,
         }
-        .apply_to(header_map);
+        .apply_to_request(&mut request);
 
-        assert_eq!(header_map.get(COOKIE), Some(&hello));
-        assert_eq!(header_map.len(), 1);
+        assert_eq!(request.headers().get(COOKIE), Some(&hello.into_header_value().unwrap()));
+        assert_eq!(request.headers().len(), 1);
 
         HeaderValueOption {
             header: HeaderKeyValue { key: COOKIE, value: world.clone() },
             append_action: HeaderAppendAction::AppendIfExistsOrAdd,
             keep_empty_value: false,
         }
-        .apply_to(header_map);
+        .apply_to_request(&mut request);
 
-        assert_eq!(header_map.len(), 2);
+        assert_eq!(request.headers().len(), 2);
     }
 
     #[test]
     fn test_header_mutation_append_if_absent() {
-        let header_map = &mut HeaderMap::<HeaderValue>::default();
+        let mut request = Request::builder().uri("http://example.com").body(()).unwrap();
 
-        let hello = HeaderValue::from_str("hello").unwrap();
-
-        HeaderValueOption {
-            header: HeaderKeyValue { key: USER_AGENT, value: hello.clone() },
-            append_action: HeaderAppendAction::AppendIfAbsent,
-            keep_empty_value: false,
-        }
-        .apply_to(header_map);
-
-        assert_eq!(header_map.get(USER_AGENT), Some(&hello));
-        assert_eq!(header_map.len(), 1);
+        let hello = HeaderFormatter::try_new("hello").unwrap();
 
         HeaderValueOption {
             header: HeaderKeyValue { key: USER_AGENT, value: hello.clone() },
             append_action: HeaderAppendAction::AppendIfAbsent,
             keep_empty_value: false,
         }
-        .apply_to(header_map);
+        .apply_to_request(&mut request);
 
-        assert_eq!(header_map.get(USER_AGENT), Some(&hello));
-        assert_eq!(header_map.len(), 1);
+        assert_eq!(request.headers().get(USER_AGENT), Some(&hello.clone().into_header_value().unwrap()));
+        assert_eq!(request.headers().len(), 1);
+
+        HeaderValueOption {
+            header: HeaderKeyValue { key: USER_AGENT, value: hello.clone() },
+            append_action: HeaderAppendAction::AppendIfAbsent,
+            keep_empty_value: false,
+        }
+        .apply_to_request(&mut request);
+
+        assert_eq!(request.headers().get(USER_AGENT), Some(&hello.into_header_value().unwrap()));
+        assert_eq!(request.headers().len(), 1);
     }
 
     #[test]
     fn test_header_mutation_overwrite_if_exists_or_add() {
-        let header_map = &mut HeaderMap::<HeaderValue>::default();
+        let mut request = Request::builder().uri("http://example.com").body(()).unwrap();
 
-        let hello = HeaderValue::from_str("hello").unwrap();
-        let world = HeaderValue::from_str("world").unwrap();
+        let hello = HeaderFormatter::try_new("hello").unwrap();
+        let world = HeaderFormatter::try_new("world").unwrap();
 
         HeaderValueOption {
             header: HeaderKeyValue { key: USER_AGENT, value: hello.clone() },
             append_action: HeaderAppendAction::OverwriteIfExistsOrAdd,
             keep_empty_value: false,
         }
-        .apply_to(header_map);
+        .apply_to_request(&mut request);
 
-        assert_eq!(header_map.get(USER_AGENT), Some(&hello));
-        assert_eq!(header_map.len(), 1);
+        assert_eq!(request.headers().get(USER_AGENT), Some(&hello.into_header_value().unwrap()));
+        assert_eq!(request.headers().len(), 1);
 
         HeaderValueOption {
             header: HeaderKeyValue { key: USER_AGENT, value: world.clone() },
             append_action: HeaderAppendAction::OverwriteIfExistsOrAdd,
             keep_empty_value: false,
         }
-        .apply_to(header_map);
+        .apply_to_request(&mut request);
 
-        assert_eq!(header_map.get(USER_AGENT), Some(&world));
-        assert_eq!(header_map.len(), 1);
+        assert_eq!(request.headers().get(USER_AGENT), Some(&world.into_header_value().unwrap()));
+        assert_eq!(request.headers().len(), 1);
     }
 
     #[test]
     fn test_header_mutation_overwrite_if_exists() {
-        let header_map = &mut HeaderMap::<HeaderValue>::default();
+        let mut request = Request::builder().uri("http://example.com").body(()).unwrap();
 
-        let hello = HeaderValue::from_str("hello").unwrap();
-        let world = HeaderValue::from_str("world").unwrap();
+        let hello = HeaderFormatter::try_new("hello").unwrap();
+        let world = HeaderFormatter::try_new("world").unwrap();
 
         HeaderValueOption {
             header: HeaderKeyValue { key: USER_AGENT, value: hello.clone() },
             append_action: HeaderAppendAction::OverwriteIfExists,
             keep_empty_value: false,
         }
-        .apply_to(header_map);
+        .apply_to_request(&mut request);
 
-        assert_eq!(header_map.get(USER_AGENT), None);
-        assert!(header_map.is_empty());
+        assert_eq!(request.headers().get(USER_AGENT), None);
+        assert!(request.headers().is_empty());
         HeaderValueOption {
             header: HeaderKeyValue { key: USER_AGENT, value: hello.clone() },
             append_action: HeaderAppendAction::AppendIfAbsent,
             keep_empty_value: false,
         }
-        .apply_to(header_map);
+        .apply_to_request(&mut request);
 
-        assert_eq!(header_map.get(USER_AGENT), Some(&hello));
-        assert_eq!(header_map.len(), 1);
+        assert_eq!(request.headers().get(USER_AGENT), Some(&hello.into_header_value().unwrap()));
+        assert_eq!(request.headers().len(), 1);
 
         HeaderValueOption {
             header: HeaderKeyValue { key: USER_AGENT, value: world.clone() },
             append_action: HeaderAppendAction::OverwriteIfExists,
             keep_empty_value: false,
         }
-        .apply_to(header_map);
+        .apply_to_request(&mut request);
 
-        assert_eq!(header_map.get(USER_AGENT), Some(&world));
-        assert_eq!(header_map.len(), 1);
+        assert_eq!(request.headers().get(USER_AGENT), Some(&world.into_header_value().unwrap()));
+        assert_eq!(request.headers().len(), 1);
     }
 
     #[test]
     fn test_header_mutation_append_empty_value() {
-        let header_map = &mut HeaderMap::<HeaderValue>::default();
+        let mut request = Request::builder().uri("http://example.com").body(()).unwrap();
 
-        let empty = HeaderValue::from_str("").unwrap();
-        let test = HeaderValue::from_str("test").unwrap();
+        let empty = HeaderFormatter::try_new("").unwrap();
+        let test = HeaderFormatter::try_new("test").unwrap();
 
         HeaderValueOption {
             header: HeaderKeyValue { key: USER_AGENT, value: test.clone() },
             append_action: HeaderAppendAction::AppendIfExistsOrAdd,
             keep_empty_value: true,
         }
-        .apply_to(header_map);
+        .apply_to_request(&mut request);
 
-        assert_eq!(header_map.get(USER_AGENT), Some(&test));
-        assert_eq!(header_map.len(), 1);
+        assert_eq!(request.headers().get(USER_AGENT), Some(&test.clone().into_header_value().unwrap()));
+        assert_eq!(request.headers().len(), 1);
 
         HeaderValueOption {
             header: HeaderKeyValue { key: USER_AGENT, value: empty.clone() },
             append_action: HeaderAppendAction::AppendIfExistsOrAdd,
             keep_empty_value: true,
         }
-        .apply_to(header_map);
+        .apply_to_request(&mut request);
 
-        assert_eq!(header_map.get(USER_AGENT), Some(&test));
-        assert_eq!(header_map.len(), 2);
+        assert_eq!(request.headers().get(USER_AGENT), Some(&test.into_header_value().unwrap()));
+        assert_eq!(request.headers().len(), 2);
     }
 }
 

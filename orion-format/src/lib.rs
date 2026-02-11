@@ -58,14 +58,14 @@ pub enum FormatError {
     InvalidOperatorIndex(#[from] std::num::TryFromIntError),
 }
 
-#[derive(PartialEq, Eq, Debug, Clone, Serialize, Deserialize)]
+#[derive(Hash, PartialEq, Eq, Debug, Clone, Serialize, Deserialize)]
 pub enum Template {
     Char(char),
     Literal(SmolStr),
     Placeholder(Operator, Category), // eg. ("DURATION", Pattern::Duration, None), (Pattern::Req, Some(":METHOD"))
 }
 
-#[derive(PartialEq, Eq, Debug, Clone, Serialize, Deserialize)]
+#[derive(Hash, PartialEq, Eq, Debug, Clone, Serialize, Deserialize)]
 pub enum StringType {
     Char(char),
     Smol(SmolStr),
@@ -73,14 +73,14 @@ pub enum StringType {
     None,
 }
 
-#[derive(PartialEq, Eq, Debug, Clone, Serialize, Deserialize)]
+#[derive(Hash, PartialEq, Eq, Debug, Clone, Serialize, Deserialize)]
 struct LogFormatterConf {
     templates: Vec<Template>,
     indices: [Vec<u8>; NUM_OPERATOR_CATEGORIES],
     omit_empty_values: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Hash)]
 #[allow(clippy::unsafe_derive_deserialize)]
 pub struct LogFormatter {
     conf: Arc<LogFormatterConf>,
