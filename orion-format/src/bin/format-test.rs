@@ -18,7 +18,7 @@
 use criterion::black_box;
 use http::{Request, Response, StatusCode};
 use orion_format::{
-    context::{Context, DownstreamContext, DownstreamResponse, FinishContext, InitContext},
+    context::{Context, DownstreamContext, DownstreamResponseContext, FinishContext, InitContext},
     types::ResponseFlags,
     LogFormatter,
 };
@@ -74,8 +74,8 @@ fn main() -> Result<(), BoxError> {
     for _ in 0..TOTAL {
         let mut fmt = black_box(fmt.clone());
         black_box(eval_format(
-            &DownstreamContext { request: &request, request_head_size: 0, trace_id: None, server_name: None },
-            &DownstreamResponse { response: &response, response_head_size: 0 },
+            &DownstreamContext { request: &request, request_head_size: 0, trace_id: None, server_name: None, socket_address: Default::default() },
+            &DownstreamResponseContext { response: &response, response_head_size: 0 },
             &start,
             &end,
             &mut fmt,

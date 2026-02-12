@@ -19,7 +19,7 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use http::{HeaderMap, HeaderValue, Request, Response, StatusCode, Version};
 use orion_format::{
-    context::{Context, DownstreamContext, DownstreamResponse, FinishContext, InitContext},
+    context::{Context, DownstreamContext, DownstreamResponseContext, FinishContext, InitContext},
     types::{ResponseFlags, ResponseFlagsShort},
     LogFormatter, DEFAULT_ACCESS_LOG_FORMAT,
 };
@@ -190,8 +190,14 @@ fn benchmark_log_formatter(c: &mut Criterion) {
         b.iter(|| {
             let mut fmt = fmt.clone();
             black_box(eval_format(
-                &DownstreamContext { request: &request, trace_id: None, request_head_size: 0, server_name: None },
-                &DownstreamResponse { response: &response, response_head_size: 0 },
+                &DownstreamContext {
+                    request: &request,
+                    trace_id: None,
+                    request_head_size: 0,
+                    server_name: None,
+                    socket_address: Default::default(),
+                },
+                &DownstreamResponseContext { response: &response, response_head_size: 0 },
                 &start,
                 &end,
                 &mut fmt,
@@ -203,8 +209,14 @@ fn benchmark_log_formatter(c: &mut Criterion) {
         b.iter(|| {
             let mut fmt = fmt.clone();
             black_box(eval_format(
-                &DownstreamContext { request: &request, trace_id: None, request_head_size: 0, server_name: None },
-                &DownstreamResponse { response: &response, response_head_size: 0 },
+                &DownstreamContext {
+                    request: &request,
+                    trace_id: None,
+                    request_head_size: 0,
+                    server_name: None,
+                    socket_address: Default::default(),
+                },
+                &DownstreamResponseContext { response: &response, response_head_size: 0 },
                 &start,
                 &end,
                 &mut fmt,
@@ -221,8 +233,14 @@ fn benchmark_log_formatter(c: &mut Criterion) {
 
     let mut formatted = fmt.clone();
     eval_format(
-        &DownstreamContext { request: &request, trace_id: None, request_head_size: 0, server_name: None },
-        &DownstreamResponse { response: &response, response_head_size: 0 },
+        &DownstreamContext {
+            request: &request,
+            trace_id: None,
+            request_head_size: 0,
+            server_name: None,
+            socket_address: Default::default(),
+        },
+        &DownstreamResponseContext { response: &response, response_head_size: 0 },
         &start,
         &end,
         &mut formatted,
@@ -261,8 +279,14 @@ fn benchmark_request_parts(c: &mut Criterion) {
         b.iter(|| {
             let mut fmt = fmt.clone();
             black_box(eval_format(
-                &DownstreamContext { request: &request, trace_id: None, request_head_size: 0, server_name: None },
-                &DownstreamResponse { response: &response, response_head_size: 0 },
+                &DownstreamContext {
+                    request: &request,
+                    trace_id: None,
+                    request_head_size: 0,
+                    server_name: None,
+                    socket_address: Default::default(),
+                },
+                &DownstreamResponseContext { response: &response, response_head_size: 0 },
                 &start,
                 &end,
                 &mut fmt,
@@ -275,8 +299,14 @@ fn benchmark_request_parts(c: &mut Criterion) {
         b.iter(|| {
             let mut fmt = fmt.clone();
             black_box(eval_format(
-                &DownstreamContext { request: &request, trace_id: None, request_head_size: 0, server_name: None },
-                &DownstreamResponse { response: &response, response_head_size: 0 },
+                &DownstreamContext {
+                    request: &request,
+                    trace_id: None,
+                    request_head_size: 0,
+                    server_name: None,
+                    socket_address: Default::default(),
+                },
+                &DownstreamResponseContext { response: &response, response_head_size: 0 },
                 &start,
                 &end,
                 &mut fmt,
@@ -289,8 +319,14 @@ fn benchmark_request_parts(c: &mut Criterion) {
         b.iter(|| {
             let mut fmt = fmt.clone();
             black_box(eval_format(
-                &DownstreamContext { request: &request, trace_id: None, request_head_size: 0, server_name: None },
-                &DownstreamResponse { response: &response, response_head_size: 0 },
+                &DownstreamContext {
+                    request: &request,
+                    trace_id: None,
+                    request_head_size: 0,
+                    server_name: None,
+                    socket_address: Default::default(),
+                },
+                &DownstreamResponseContext { response: &response, response_head_size: 0 },
                 &start,
                 &end,
                 &mut fmt,
@@ -303,8 +339,14 @@ fn benchmark_request_parts(c: &mut Criterion) {
         b.iter(|| {
             let mut fmt = fmt.clone();
             black_box(eval_format(
-                &DownstreamContext { request: &request, trace_id: None, request_head_size: 0, server_name: None },
-                &DownstreamResponse { response: &response, response_head_size: 0 },
+                &DownstreamContext {
+                    request: &request,
+                    trace_id: None,
+                    request_head_size: 0,
+                    server_name: None,
+                    socket_address: Default::default(),
+                },
+                &DownstreamResponseContext { response: &response, response_head_size: 0 },
                 &start,
                 &end,
                 &mut fmt,
@@ -378,8 +420,14 @@ fn benchmark_log_headers(c: &mut Criterion) {
         b.iter(|| {
             let mut fmt = fmt.clone();
             black_box(eval_format(
-                &DownstreamContext { request: &request, trace_id: None, request_head_size: 0, server_name: None },
-                &DownstreamResponse { response: &response, response_head_size: 0 },
+                &DownstreamContext {
+                    request: &request,
+                    trace_id: None,
+                    request_head_size: 0,
+                    server_name: None,
+                    socket_address: Default::default(),
+                },
+                &DownstreamResponseContext { response: &response, response_head_size: 0 },
                 &start,
                 &end,
                 &mut fmt,

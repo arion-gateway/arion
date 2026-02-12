@@ -61,6 +61,7 @@ mod tests {
             request_head_size: 0,
             trace_id: None,
             server_name: None,
+            socket_address: Default::default(),
         });
 
         let header_value = formatter.into_header_value().expect("Failed to create header value");
@@ -78,6 +79,7 @@ mod tests {
             request_head_size: 0,
             trace_id: None,
             server_name: None,
+            socket_address: Default::default(),
         });
 
         let header_value = formatter.into_header_value().expect("Failed to create header value");
@@ -98,6 +100,7 @@ mod tests {
             request_head_size: 0,
             trace_id: None,
             server_name: None,
+            socket_address: Default::default(),
         });
 
         let header_value = formatter.into_header_value().expect("Failed to create header value");

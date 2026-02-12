@@ -69,7 +69,7 @@ use {
     crate::listeners::access_log::AccessLogContext,
     orion_configuration::config::network_filters::access_log::AccessLog,
     orion_format::context::{
-        DownstreamResponse, FinishContext, HttpRequestDuration, HttpResponseDuration, InitHttpContext,
+        DownstreamResponseContext, FinishContext, HttpRequestDurationContext, HttpResponseDurationContext, InitHttpContext,
     },
     orion_format::LogFormatter,
     parking_lot::Mutex,
@@ -359,14 +359,14 @@ pub struct AccessLoggersContext {
     bytes: u64, // either the request or response body size, depending which one has completed first
     flags: ResponseFlags,
     event: Option<EventKind>,
-    loggers: Vec<LogFormatterLocal>,
+    loggers: Vec<LogFormatter>,
 }
 
 #[cfg(feature = "access-log")]
 impl AccessLoggersContext {
     pub fn new(access_log: &[AccessLog]) -> Self {
         AccessLoggersContext {
-            loggers: access_log.iter().map(|al| al.logger.local_clone()).collect::<Vec<_>>(),
+            loggers: access_log.iter().map(|al| al.logger.clone()).collect::<Vec<_>>(),
             bytes: 0,
             flags: ResponseFlags::default(),
             event: None,
@@ -517,7 +517,7 @@ impl TransactionHandler {
             #[cfg(feature = "access-log")]
             if let Some(ctx) = self.access_log_ctx.as_ref() {
                 let response_head_size = response_head_size(&response);
-                ctx.lock().loggers.with_context(&DownstreamResponse { response: &response, response_head_size })
+                ctx.lock().loggers.with_context(&DownstreamResponseContext { response: &response, response_head_size })
             }
 
             #[cfg(feature = "metrics")]
@@ -538,7 +538,7 @@ impl TransactionHandler {
                         let mut log_ctx = ctx.lock();
                         let duration = first_byte_instant.saturating_duration_since(self.start_instant);
                         let tx_duration = Instant::now().saturating_duration_since(first_byte_instant);
-                        log_ctx.loggers.with_context(&HttpResponseDuration { duration, tx_duration });
+                        log_ctx.loggers.with_context(&HttpResponseDurationContext { duration, tx_duration });
 
                         let is_transaction_complete = self.trans_state.message_complete();
                         if is_transaction_complete.0 {
@@ -1201,7 +1201,7 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
             eval_http_init_context(
                 &request,
                 &trans_handler,
-                metadata.and_then(|md| md.sni.as_ref().map(|s| s.as_str())),
+                metadata,
             );
 
             //
@@ -1233,7 +1233,7 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
                     let _is_transaction_complete = if let Some(ctx) = trans_handler.access_log_ctx.as_ref() {
                         let mut log_ctx = ctx.lock();
                         let duration = trans_handler.start_instant.elapsed();
-                        log_ctx.loggers.with_context(&HttpRequestDuration { duration, tx_duration: duration });
+                        log_ctx.loggers.with_context(&HttpRequestDurationContext { duration, tx_duration: duration });
 
                         let is_transaction_complete = trans_handler.trans_state.message_complete();
                         if is_transaction_complete.0 {
@@ -1306,7 +1306,7 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
                 #[cfg(feature = "access-log")]
                 if let Some(log_ctx) = trans_handler.access_log_ctx.as_ref() {
                     let response_head_size = response_head_size(&resp);
-                    log_ctx.lock().loggers.with_context(&DownstreamResponse { response: &resp, response_head_size })
+                    log_ctx.lock().loggers.with_context(&DownstreamResponseContext { response: &resp, response_head_size })
                 }
 
                 #[cfg(feature = "access-log")]
@@ -1331,7 +1331,7 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
                             let mut log_ctx = ctx.lock();
                             let duration = first_byte_instant.saturating_duration_since(trans_handler.start_instant);
                             let tx_duration = Instant::now().saturating_duration_since(first_byte_instant);
-                            log_ctx.loggers.with_context(&HttpResponseDuration { duration, tx_duration });
+                            log_ctx.loggers.with_context(&HttpResponseDurationContext { duration, tx_duration });
 
                             let is_transaction_complete = trans_handler.trans_state.message_complete();
                             if is_transaction_complete.0 {
@@ -1406,7 +1406,7 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
     }
 }
 
-fn eval_http_init_context<R>(_request: &Request<R>, _trans_handler: &TransactionHandler, _server_name: Option<&str>) {
+fn eval_http_init_context<R>(_request: &Request<R>, _trans_handler: &TransactionHandler, _metadata: Option<&DownstreamMetadata>) {
     #[cfg(feature = "tracing")]
     let _trace_id =
         _trans_handler.trace_ctx.as_ref().and_then(|t| t.map_child(orion_tracing::trace_info::TraceInfo::trace_id));
@@ -1414,15 +1414,28 @@ fn eval_http_init_context<R>(_request: &Request<R>, _trans_handler: &Transaction
     let _trace_id: Option<u128> = None;
 
     #[cfg(feature = "access-log")]
-    if let Some(ctx) = _trans_handler.access_log_ctx.as_ref() {
-        let request_head_size = request_head_size(_request);
-        ctx.lock().loggers.with_context_fn(|| InitHttpContext {
-            start_time: std::time::SystemTime::now(),
-            downstream_request: _request,
-            request_head_size,
-            trace_id: _trace_id,
-            server_name: _server_name,
-        })
+    {
+        use orion_format::context::SocketAddrContext;
+        let server_name = _metadata.and_then(|md| md.sni.as_ref().map(|s| s.as_str()));
+
+        let downstream_socket_addr = SocketAddrContext {
+            downstream_local_addr: _metadata.map(|md| md.connection.local_address()),
+            downstream_peer_addr: _metadata.map(|md| md.connection.peer_address()),
+            upstream_local_addr: None,
+            upstream_peer_addr: None,
+        };
+
+        if let Some(ctx) = _trans_handler.access_log_ctx.as_ref() {
+            let request_head_size = request_head_size(_request);
+            ctx.lock().loggers.with_context_fn(|| InitHttpContext {
+                start_time: std::time::SystemTime::now(),
+                downstream_request: _request,
+                request_head_size,
+                trace_id: _trace_id,
+                server_name,
+                socket_address: downstream_socket_addr,
+            })
+        }
     }
 }
 
@@ -1434,7 +1447,7 @@ fn eval_http_finish_context(
     _listener_name: &'static str,
     #[cfg(feature = "access-log")] event: EventInfo,
     #[cfg(feature = "access-log")] permit: Option<ShareableAccessLogPermit>,
-    #[cfg(feature = "access-log")] access_loggers: &mut Vec<LogFormatterLocal>,
+    #[cfg(feature = "access-log")] access_loggers: &mut Vec<LogFormatter>,
     #[cfg(feature = "access-log")] trans_start_time: Instant,
 ) {
     #[cfg(feature = "access-log")]
@@ -1462,8 +1475,8 @@ fn eval_http_finish_context(
                 .map(|d| d.0),
         });
 
-        let loggers: Vec<LogFormatterLocal> = std::mem::take(access_loggers);
-        let messages = loggers.into_iter().map(LogFormatterLocal::into_message).collect::<Vec<_>>();
+        let loggers: Vec<LogFormatter> = std::mem::take(access_loggers);
+        let messages = loggers.into_iter().map(LogFormatter::into_message).collect::<Vec<_>>();
         log_access(permit, Target::Listener(_listener_name.into()), messages);
     }
 }

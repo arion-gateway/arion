@@ -20,7 +20,7 @@ use crate::config::network_filters::http_connection_manager::{Route, RouteConfig
 use super::GenericError;
 use http::{HeaderName, HeaderValue, Request, Response};
 use orion_format::{
-    context::{DownstreamContext, DownstreamResponse},
+    context::{DownstreamContext, DownstreamResponseContext},
     header_formatter::HeaderFormatter,
 };
 use serde::{Deserialize, Serialize};
@@ -159,6 +159,7 @@ impl HeaderValueOption {
                         request_head_size: 0,
                         trace_id: None,
                         server_name: None,
+                        socket_address: Default::default(),
                     });
                     let header_value = formatter
                         .into_header_value()
@@ -177,6 +178,7 @@ impl HeaderValueOption {
                             request_head_size: 0,
                             trace_id: None,
                             server_name: None,
+                            socket_address: Default::default(),
                         });
                         let header_value = formatter
                             .into_header_value()
@@ -197,6 +199,7 @@ impl HeaderValueOption {
                         request_head_size: 0,
                         trace_id: None,
                         server_name: None,
+                        socket_address: Default::default(),
                     });
                     let header_value = formatter
                         .into_header_value()
@@ -215,6 +218,7 @@ impl HeaderValueOption {
                             request_head_size: 0,
                             trace_id: None,
                             server_name: None,
+                            socket_address: Default::default(),
                         });
 
                         let header_value = formatter
@@ -240,7 +244,7 @@ impl HeaderValueOption {
             match self.append_action {
                 HeaderAppendAction::AppendIfExistsOrAdd => {
                     let mut formatter = self.header.value.clone();
-                    formatter.with_context(&DownstreamResponse { response: &res, response_head_size: 0 });
+                    formatter.with_context(&DownstreamResponseContext { response: &res, response_head_size: 0 });
                     let header_value = formatter
                         .into_header_value()
                         .inspect_err(|e| {
@@ -253,7 +257,7 @@ impl HeaderValueOption {
                 HeaderAppendAction::AppendIfAbsent => {
                     if res.headers_mut().get(&self.header.key).is_none() {
                         let mut formatter = self.header.value.clone();
-                        formatter.with_context(&DownstreamResponse { response: &res, response_head_size: 0 });
+                        formatter.with_context(&DownstreamResponseContext { response: &res, response_head_size: 0 });
                         let header_value = formatter
                             .into_header_value()
                             .inspect_err(|e| {
@@ -268,7 +272,7 @@ impl HeaderValueOption {
                 },
                 HeaderAppendAction::OverwriteIfExistsOrAdd => {
                     let mut formatter = self.header.value.clone();
-                    formatter.with_context(&DownstreamResponse { response: &res, response_head_size: 0 });
+                    formatter.with_context(&DownstreamResponseContext { response: &res, response_head_size: 0 });
                     let header_value = formatter
                         .into_header_value()
                         .inspect_err(|e| {
@@ -281,7 +285,7 @@ impl HeaderValueOption {
                 HeaderAppendAction::OverwriteIfExists => {
                     if res.headers_mut().get(&self.header.key).is_some() {
                         let mut formatter = self.header.value.clone();
-                        formatter.with_context(&DownstreamResponse { response: &res, response_head_size: 0 });
+                        formatter.with_context(&DownstreamResponseContext { response: &res, response_head_size: 0 });
                         let header_value = formatter
                             .into_header_value()
                             .inspect_err(|e| {

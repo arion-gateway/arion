@@ -19,7 +19,7 @@
 use {
     crate::access_log::is_access_log_enabled,
     crate::access_log::{log_access, log_access_reserve_balanced, Target},
-    orion_format::LogFormatterLocal,
+    orion_format::LogFormatter,
     smol_str::ToSmolStr,
 };
 
@@ -37,7 +37,7 @@ use orion_configuration::config::{
     network_filters::{access_log::AccessLog, tcp_proxy::TcpProxy as TcpProxyConfig},
 };
 use orion_format::{
-    context::{FinishContext, InitContext, TcpContext},
+    context::{FinishContext, InitContext, SocketAddrContext, TcpContext},
     types::ResponseFlags,
 };
 
@@ -128,10 +128,12 @@ impl TcpProxy {
                         }
 
                         access_loggers.with_context(&TcpContext {
-                            downstream_local_addr: Some(metadata.connection.local_address()),
-                            downstream_peer_addr: Some(metadata.connection.peer_address()),
-                            upstream_local_addr: maybe_upstream_local_addr,
-                            upstream_peer_addr: maybe_upstream_peer_addr,
+                            socket_address: SocketAddrContext {
+                                downstream_local_addr: Some(metadata.connection.local_address()),
+                                downstream_peer_addr: Some(metadata.connection.peer_address()),
+                                upstream_local_addr: maybe_upstream_local_addr,
+                                upstream_peer_addr: maybe_upstream_peer_addr,
+                            },
                             cluster_name: channel.cluster_name,
                         });
 
@@ -156,10 +158,12 @@ impl TcpProxy {
                         maybe_connection_termination_details = io_err.map(ConnectionTerminationDetails::from);
 
                         access_loggers.with_context(&TcpContext {
-                            downstream_local_addr: Some(metadata.connection.local_address()),
-                            downstream_peer_addr: Some(metadata.connection.peer_address()),
-                            upstream_local_addr: None,
-                            upstream_peer_addr: maybe_upstream_peer_addr,
+                            socket_address: SocketAddrContext {
+                                downstream_local_addr: Some(metadata.connection.local_address()),
+                                downstream_peer_addr: Some(metadata.connection.peer_address()),
+                                upstream_local_addr: None,
+                                upstream_peer_addr: maybe_upstream_peer_addr,
+                            },
                             cluster_name,
                         });
 
@@ -177,10 +181,12 @@ impl TcpProxy {
                 maybe_connection_termination_details = io_err.map(ConnectionTerminationDetails::from);
 
                 access_loggers.with_context(&TcpContext {
-                    downstream_local_addr: Some(metadata.connection.local_address()),
-                    downstream_peer_addr: Some(metadata.connection.peer_address()),
-                    upstream_local_addr: None,
-                    upstream_peer_addr: None,
+                    socket_address: SocketAddrContext {
+                        downstream_local_addr: Some(metadata.connection.local_address()),
+                        downstream_peer_addr: Some(metadata.connection.peer_address()),
+                        upstream_local_addr: None,
+                        upstream_peer_addr: None,
+                    },
                     cluster_name: &cluster_selector.name(),
                 });
 
@@ -203,7 +209,7 @@ impl TcpProxy {
             let permit = if is_access_log_enabled() { Some(log_access_reserve_balanced().await) } else { None };
 
             if let Some(permit) = permit {
-                let messages = access_loggers.into_iter().map(LogFormatterLocal::into_message).collect::<Vec<_>>();
+                let messages = access_loggers.into_iter().map(LogFormatter::into_message).collect::<Vec<_>>();
                 log_access(permit, Target::Listener(self.listener_name.to_smolstr()), messages);
             }
         }

@@ -40,7 +40,7 @@ use scopeguard::defer;
 #[cfg(feature = "access-log")]
 use {
     crate::listeners::access_log::AccessLogContext,
-    orion_format::context::{UpstreamContext, UpstreamRequest},
+    orion_format::context::{UpstreamContext, UpstreamRequestContext},
 };
 
 use orion_format::types::{ResponseFlags as FmtResponseFlags, ResponseFlagsLong, ResponseFlagsShort};
@@ -170,7 +170,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
 
                 #[cfg(feature = "access-log")]
                 if let Some(ctx) = trans_handler.access_log_ctx.as_ref() {
-                    ctx.lock().loggers.with_context(&UpstreamRequest(&upstream_request));
+                    ctx.lock().loggers.with_context(&UpstreamRequestContext(&upstream_request));
                 }
 
                 let websocket_enabled = if let Some(upgrade_config) = self.upgrade_config {

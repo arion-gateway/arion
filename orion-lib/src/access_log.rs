@@ -215,7 +215,7 @@ mod tests {
 
     use super::*;
     use orion_format::{
-        context::{DownstreamContext, DownstreamResponse, FinishContext, InitContext, UpstreamContext},
+        context::{DownstreamContext, DownstreamResponseContext, FinishContext, InitContext, UpstreamContext},
         types::ResponseFlags,
         LogFormatter, DEFAULT_ACCESS_LOG_FORMAT,
     };
@@ -240,13 +240,19 @@ mod tests {
         let mut fmt = formatter.clone();
 
         fmt.with_context(&InitContext { start_time: std::time::SystemTime::now() });
-        fmt.with_context(&DownstreamContext { request: &req, trace_id: None, request_head_size: 0, server_name: None });
+        fmt.with_context(&DownstreamContext {
+            request: &req,
+            trace_id: None,
+            request_head_size: 0,
+            server_name: None,
+            socket_address: Default::default(),
+        });
         fmt.with_context(&UpstreamContext {
             authority: Some(req.uri().authority().unwrap()),
             cluster_name: Some("test_cluster"),
             route_name: "test_route",
         });
-        fmt.with_context(&DownstreamResponse { response: &resp, response_head_size: 0 });
+        fmt.with_context(&DownstreamResponseContext { response: &resp, response_head_size: 0 });
         fmt.with_context(&FinishContext {
             duration: Duration::from_millis(100),
             bytes_received: 128,

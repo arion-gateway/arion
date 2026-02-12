@@ -235,7 +235,7 @@ mod tests {
 
     use crate::{
         context::{
-            DownstreamContext, DownstreamResponse, FinishContext, InitContext, UpstreamContext, UpstreamRequest,
+            DownstreamContext, DownstreamResponseContext, FinishContext, InitContext, UpstreamContext, UpstreamRequestContext,
         },
         types::ResponseFlags,
     };
@@ -265,6 +265,7 @@ mod tests {
             request_head_size: 0,
             trace_id: None,
             server_name: None,
+            socket_address: Default::default(),
         });
         let actual = format!("{}", &formatter.into_message());
         assert_eq!(actual, expected);
@@ -284,6 +285,7 @@ mod tests {
             request_head_size: 0,
             trace_id: None,
             server_name: None,
+            socket_address: Default::default(),
         });
         let actual = format!("{}", &formatter.into_message());
         assert_eq!(actual, expected);
@@ -301,6 +303,7 @@ mod tests {
             request_head_size: 0,
             trace_id: None,
             server_name: None,
+            socket_address: Default::default(),
         });
         let actual = format!("{}", &formatter.into_message());
         assert_eq!(actual, expected);
@@ -318,6 +321,7 @@ mod tests {
             request_head_size: 0,
             trace_id: None,
             server_name: None,
+            socket_address: Default::default(),
         });
         let actual = format!("{}", &formatter.into_message());
         assert_eq!(actual, expected);
@@ -330,7 +334,7 @@ mod tests {
         let mut formatter = source.clone();
         println!("FORMATTER: {formatter:?}");
         let expected = "HTTP/1.1";
-        formatter.with_context(&UpstreamRequest(&req));
+        formatter.with_context(&UpstreamRequestContext(&req));
         let actual = format!("{}", &formatter.into_message());
         assert_eq!(actual, expected);
     }
@@ -346,6 +350,7 @@ mod tests {
             request_head_size: 0,
             trace_id: None,
             server_name: None,
+            socket_address: Default::default(),
         });
         let actual = format!("{}", &formatter.into_message());
         assert_eq!(actual, expected);
@@ -362,6 +367,7 @@ mod tests {
             request_head_size: 0,
             trace_id: None,
             server_name: None,
+            socket_address: Default::default(),
         });
         let actual = format!("{}", &formatter.into_message());
         assert_eq!(actual, expected);
@@ -378,6 +384,7 @@ mod tests {
             request_head_size: 0,
             trace_id: None,
             server_name: None,
+            socket_address: Default::default(),
         });
         let actual = format!("{}", &formatter.into_message());
         assert_eq!(actual, expected);
@@ -411,13 +418,14 @@ mod tests {
             request_head_size: 0,
             trace_id: None,
             server_name: None,
+            socket_address: Default::default(),
         });
         formatter.with_context(&UpstreamContext {
             authority: Some(req.uri().authority().unwrap()),
             cluster_name: Some("test_cluster"),
             route_name: "test_route",
         });
-        formatter.with_context(&DownstreamResponse { response: &resp, response_head_size: 0 });
+        formatter.with_context(&DownstreamResponseContext { response: &resp, response_head_size: 0 });
         formatter.with_context(&FinishContext {
             duration: Duration::from_millis(100),
             bytes_received: 128,
@@ -442,13 +450,14 @@ mod tests {
             request_head_size: 0,
             trace_id: None,
             server_name: None,
+            socket_address: Default::default(),
         });
         formatter.with_context(&UpstreamContext {
             authority: Some(req.uri().authority().unwrap()),
             cluster_name: Some("test_cluster"),
             route_name: "test_route",
         });
-        formatter.with_context(&DownstreamResponse { response: &resp, response_head_size: 0 });
+        formatter.with_context(&DownstreamResponseContext { response: &resp, response_head_size: 0 });
         formatter.with_context(&FinishContext {
             duration: Duration::from_millis(100),
             bytes_received: 128,
