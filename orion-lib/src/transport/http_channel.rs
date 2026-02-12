@@ -457,13 +457,10 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
                 let collected = inner.collect().await.map_err(Error::from)?;
                 let replay_body = http_body_util::Full::new(collected.to_bytes());
 
-                let total_attempts = 1 + failover_channels.len();
                 let mut last_error: Option<Error> = None;
-                let mut last_response: Option<Response<OrionResponseBody>> = None;
 
+                let total_attempts = 1 + failover_channels.len();
                 for (attempt, channel) in std::iter::once(channel).chain(failover_channels.iter()).enumerate() {
-                    let has_more = attempt + 1 < total_attempts;
-
                     let cloned_body = InstrumentedBody {
                         inner: TimeoutBody::new(body_timeout, replay_body.clone().into()),
                         guard: guard.clone(),
@@ -474,17 +471,16 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
 
                     match channel.to_response(trans_handler, rebuilt_req, attempt_ctx).await {
                         Ok(response) => {
-                            if has_more {
+                            if response.status().is_server_error() && (attempt + 1) < total_attempts {
                                 debug!(
                                     attempt,
+                                    status = %response.status(),
                                     cluster = channel.cluster_name,
                                     upstream = %channel.upstream_authority,
-                                    "Retrying with alternative upstream endpoint"
+                                    "Server error response, trying next failover"
                                 );
-                                last_response = Some(response);
                                 continue;
                             }
-
                             return Ok(response);
                         },
                         Err(err) => {
@@ -493,16 +489,13 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
                                 cluster = channel.cluster_name,
                                 upstream = %channel.upstream_authority,
                                 error = %err,
-                                "Failed to forward request upstream"
+                                "Failed to forward request upstream, trying next failover"
                             );
                             last_error = Some(err);
                         },
                     }
                 }
 
-                if let Some(response) = last_response {
-                    return Ok(response);
-                }
                 Err(last_error.unwrap_or_else(|| Error::new("Failed to forward request to any upstream channel")))
             },
         }
