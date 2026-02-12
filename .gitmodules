@@ -1,6 +1,5 @@
 [submodule "envoy-data-plane-api/data-plane-api"]
 	path = envoy-data-plane-api/data-plane-api
-	branch=main
 	url = https://internal.invalid/data-plane-api.git
 [submodule "envoy-data-plane-api/xds"]
 	path = envoy-data-plane-api/xds
