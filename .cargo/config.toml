@@ -1,0 +1,8 @@
+[net]
+git-fetch-with-cli = true
+[source.crates-io]
+replace-with = "mirror"
+[source.mirror]
+registry ="https://internal.invalid/rust/crates.io-index/"
+[registries]
+company-registry = { index = "https://internal.invalid/rust/crates.io-index.git" }
