@@ -81,7 +81,6 @@ use core::time::Duration;
 use futures::future::BoxFuture;
 use hyper::{body::Incoming, service::Service, Request, Response};
 use orion_configuration::config::network_filters::http_connection_manager::{
-    header_modifer::{HeaderMapModifier, ModifiersExtractor},
     route::RouteMatch,
 };
 use orion_configuration::config::network_filters::http_connection_manager::{
@@ -91,20 +90,13 @@ use orion_configuration::config::network_filters::http_connection_manager::{
 };
 
 use crate::{
-    body::{
+    ConversionContext, OrionRequestBody, OrionResponseBody, PolyBody, Result, RouteConfiguration, body::{
         instrumented_body::InstrumentedBody,
         response_flags::{BodyKind, ResponseFlags},
         timeout_body::TimeoutBody,
-    },
-    event_error::{EventFailure, EventKind},
-    get_shard_id,
-    listeners::{
-        http_filters::{per_route_http_filters, FilterDecision, FilterFactory, HttpFilter, HttpFilterValue},
-        metadata::DownstreamMetadata,
-        synthetic_http_response::SyntheticHttpResponse,
-    },
-    with_client_span, with_metric, with_server_span, ConversionContext, OrionRequestBody, OrionResponseBody, PolyBody,
-    Result, RouteConfiguration,
+    }, event_error::{EventFailure, EventKind}, get_shard_id, listeners::{
+        http_connection_manager::http_modifiers::ModifiersExtractor, http_filters::{FilterDecision, FilterFactory, HttpFilter, HttpFilterValue, per_route_http_filters}, metadata::DownstreamMetadata, synthetic_http_response::SyntheticHttpResponse
+    }, with_client_span, with_metric, with_server_span
 };
 use orion_configuration::config::network_filters::http_connection_manager::{Route, VirtualHost, XffSettings};
 use orion_configuration::config::network_filters::tracing::{TracingConfig, TracingKey};
@@ -123,6 +115,8 @@ use upgrades as upgrade_utils;
 
 use orion_tracing::http_tracer::HttpTracer;
 use orion_tracing::request_id::{RequestId, RequestIdManager};
+
+use crate::listeners::http_connection_manager::http_modifiers::HeaderMapModifier;
 
 #[derive(Debug, Clone)]
 pub struct HttpConnectionManagerBuilder {
@@ -1050,13 +1044,13 @@ fn apply_mutations_on_request<B>(
     RouteConfiguration: ModifiersExtractor<Request<B>>,
 {
     if most_specific_header_mutations_wins {
-        target.apply(ModifiersExtractor::<Request<B>>::extract(route_config));
-        target.apply(ModifiersExtractor::<Request<B>>::extract(cached_route.vh));
-        target.apply(ModifiersExtractor::<Request<B>>::extract(cached_route.route));
+        target.apply_mutation(ModifiersExtractor::<Request<B>>::extract(route_config));
+        target.apply_mutation(ModifiersExtractor::<Request<B>>::extract(cached_route.vh));
+        target.apply_mutation(ModifiersExtractor::<Request<B>>::extract(cached_route.route));
     } else {
-        target.apply(ModifiersExtractor::<Request<B>>::extract(cached_route.route));
-        target.apply(ModifiersExtractor::<Request<B>>::extract(cached_route.vh));
-        target.apply(ModifiersExtractor::<Request<B>>::extract(route_config));
+        target.apply_mutation(ModifiersExtractor::<Request<B>>::extract(cached_route.route));
+        target.apply_mutation(ModifiersExtractor::<Request<B>>::extract(cached_route.vh));
+        target.apply_mutation(ModifiersExtractor::<Request<B>>::extract(route_config));
     }
 }
 
@@ -1071,13 +1065,13 @@ fn apply_mutations_on_response<B>(
     RouteConfiguration: ModifiersExtractor<Request<B>>,
 {
     if most_specific_header_mutations_wins {
-        target.apply(ModifiersExtractor::<Request<B>>::extract(route_config));
-        target.apply(ModifiersExtractor::<Request<B>>::extract(cached_route.vh));
-        target.apply(ModifiersExtractor::<Request<B>>::extract(cached_route.route));
+        target.apply_mutation(ModifiersExtractor::<Request<B>>::extract(route_config));
+        target.apply_mutation(ModifiersExtractor::<Request<B>>::extract(cached_route.vh));
+        target.apply_mutation(ModifiersExtractor::<Request<B>>::extract(cached_route.route));
     } else {
-        target.apply(ModifiersExtractor::<Request<B>>::extract(cached_route.route));
-        target.apply(ModifiersExtractor::<Request<B>>::extract(cached_route.vh));
-        target.apply(ModifiersExtractor::<Request<B>>::extract(route_config));
+        target.apply_mutation(ModifiersExtractor::<Request<B>>::extract(cached_route.route));
+        target.apply_mutation(ModifiersExtractor::<Request<B>>::extract(cached_route.vh));
+        target.apply_mutation(ModifiersExtractor::<Request<B>>::extract(route_config));
     }
 }
 
