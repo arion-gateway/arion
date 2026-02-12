@@ -25,3 +25,6 @@
 [submodule "envoy-data-plane-api/protobuf"]
 	path = envoy-data-plane-api/protobuf
 	url = https://internal.invalid/protobuf.git
+[submodule "hyper-util"]
+	path = hyper-util
+	url = https://internal.invalid/hyper-util.git

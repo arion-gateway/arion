@@ -26,7 +26,7 @@ rust-version = "1.86"
 version      = "0.1.0"
 
 [patch.crates-io]
-hyper-util   = { git = "https://internal.invalid/hyper-util.git", rev = "76db6ec" }
+hyper-util   = { path = "./hyper-util" }
 
 [workspace.dependencies]
 envoy-data-plane-api = { path = "envoy-data-plane-api" }

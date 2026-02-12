@@ -1658,7 +1658,6 @@ dependencies = [
 [[package]]
 name = "hyper-util"
 version = "0.1.17"
-source = "git+https://internal.invalid/hyper-util.git?rev=76db6ec#76db6ecf628ff21b9796383474dcb138bfb955db"
 dependencies = [
  "base64 0.22.1",
  "bytes",
