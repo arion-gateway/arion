@@ -16,20 +16,30 @@
 //
 
 use super::upgrade_utils;
-use crate::{event_error::EventFailure, listeners::synthetic_http_response::SyntheticHttpResponse, OrionResponseBody};
+use crate::{
+    event_error::EventFailure,
+    listeners::{metadata::DownstreamMetadata, synthetic_http_response::SyntheticHttpResponse},
+    OrionResponseBody,
+};
 use http::{header, HeaderMap, HeaderName, HeaderValue, Method, Request, Response};
 use orion_configuration::config::{
-    cluster::http_protocol_options::Codec, network_filters::http_connection_manager::XffSettings,
+    cluster::http_protocol_options::Codec,
+    network_filters::http_connection_manager::{
+        header_modifier::{HeaderAppendAction, HeaderValueOption},
+        HeaderModifiersAdd, HeaderModifiersRemove, Route, RouteConfiguration, VirtualHost, XffSettings,
+    },
 };
+use orion_format::context::{DownstreamContext, DownstreamResponseContext, SocketAddrContext};
 use orion_http_header::{X_ENVOY_EXTERNAL_ADDRESS, X_ENVOY_INTERNAL, X_FORWARDED_FOR};
 use std::net::{IpAddr, SocketAddr};
+use tracing::warn;
 
 const HOP_BY_HOP_HEADERS: &[HeaderName] = &[
     header::CONNECTION,
     header::PROXY_AUTHENTICATE,
     header::PROXY_AUTHORIZATION,
     // NOTE: (nb) TE and TRAILER headers are intentionally left out as they are be needed for
-    // proper handling of certain requests (e.g., propagating chunked transfer encoding + trialers toward the upstream).
+    // proper handling of certain requests (e.g., propagating chunked transfer encoding + trailers toward the upstream).
     // header::TE,
     // header::TRAILER,
     header::TRANSFER_ENCODING,
@@ -198,11 +208,245 @@ fn determine_trusted_client_address(
     (trusted_client_address, xff_contains_single_ip)
 }
 
+pub trait HeaderMapModifier<M> {
+    fn apply_mutation(&mut self, modifier: M);
+}
+
+impl<B> HeaderMapModifier<&HeaderModifiersRemove> for Request<B> {
+    fn apply_mutation(&mut self, modifier: &HeaderModifiersRemove) {
+        for name in &modifier.0 {
+            self.headers_mut().remove(name);
+        }
+    }
+}
+
+impl<B> HeaderMapModifier<&HeaderModifiersRemove> for Response<B> {
+    fn apply_mutation(&mut self, modifier: &HeaderModifiersRemove) {
+        for name in &modifier.0 {
+            self.headers_mut().remove(name);
+        }
+    }
+}
+
+impl<B> HeaderMapModifier<&HeaderModifiersAdd> for Request<B> {
+    fn apply_mutation(&mut self, modifier: &HeaderModifiersAdd) {
+        for modifier in &modifier.0 {
+            modifier.apply_to_request(self);
+        }
+    }
+}
+
+impl<B> HeaderMapModifier<&HeaderModifiersAdd> for Response<B> {
+    fn apply_mutation(&mut self, modifier: &HeaderModifiersAdd) {
+        for modifier in &modifier.0 {
+            modifier.apply_to_response(self);
+        }
+    }
+}
+
+impl<'m1, 'm2, M1, M2, B> HeaderMapModifier<(&'m1 M1, &'m2 M2)> for Request<B>
+where
+    Request<B>: HeaderMapModifier<&'m1 M1>,
+    Request<B>: HeaderMapModifier<&'m2 M2>,
+{
+    fn apply_mutation(&mut self, (m1, m2): (&'m1 M1, &'m2 M2)) {
+        self.apply_mutation(m1);
+        self.apply_mutation(m2);
+    }
+}
+
+impl<'m1, 'm2, M1, M2, B> HeaderMapModifier<(&'m1 M1, &'m2 M2)> for Response<B>
+where
+    Response<B>: HeaderMapModifier<&'m1 M1>,
+    Response<B>: HeaderMapModifier<&'m2 M2>,
+{
+    fn apply_mutation(&mut self, (m1, m2): (&'m1 M1, &'m2 M2)) {
+        self.apply_mutation(m1);
+        self.apply_mutation(m2);
+    }
+}
+
+pub trait ModifierType {}
+impl<B> ModifierType for Request<B> {}
+impl<B> ModifierType for Response<B> {}
+
+pub trait ModifiersExtractor<T: ModifierType> {
+    fn extract(&self) -> (&HeaderModifiersRemove, &HeaderModifiersAdd);
+}
+
+impl<B> ModifiersExtractor<Request<B>> for Route {
+    fn extract(&self) -> (&HeaderModifiersRemove, &HeaderModifiersAdd) {
+        (&self.request_headers_to_remove, &self.request_headers_to_add)
+    }
+}
+
+impl<B> ModifiersExtractor<Response<B>> for Route {
+    fn extract(&self) -> (&HeaderModifiersRemove, &HeaderModifiersAdd) {
+        (&self.response_headers_to_remove, &self.response_headers_to_add)
+    }
+}
+
+impl<B> ModifiersExtractor<Request<B>> for VirtualHost {
+    fn extract(&self) -> (&HeaderModifiersRemove, &HeaderModifiersAdd) {
+        (&self.request_headers_to_remove, &self.request_headers_to_add)
+    }
+}
+
+impl<B> ModifiersExtractor<Response<B>> for VirtualHost {
+    fn extract(&self) -> (&HeaderModifiersRemove, &HeaderModifiersAdd) {
+        (&self.response_headers_to_remove, &self.response_headers_to_add)
+    }
+}
+
+impl<B> ModifiersExtractor<Request<B>> for RouteConfiguration {
+    fn extract(&self) -> (&HeaderModifiersRemove, &HeaderModifiersAdd) {
+        (&self.request_headers_to_remove, &self.request_headers_to_add)
+    }
+}
+
+impl<B> ModifiersExtractor<Response<B>> for RouteConfiguration {
+    fn extract(&self) -> (&HeaderModifiersRemove, &HeaderModifiersAdd) {
+        (&self.response_headers_to_remove, &self.response_headers_to_add)
+    }
+}
+
+pub enum HeaderAction {
+    Append(HeaderValue),
+    Overwrite(HeaderValue),
+    Nop,
+}
+
+pub trait HeaderValueModifier {
+    fn apply_to_request<B>(&self, res: &mut Request<B>) -> bool;
+    fn apply_to_response<B>(&self, res: &mut Response<B>) -> bool;
+    fn run_action(
+        &self,
+        action: HeaderAction,
+        hmap: &mut HeaderMap<HeaderValue>,
+        keep_empty_value: bool,
+        header: &HeaderName,
+    ) -> bool {
+        match action {
+            HeaderAction::Append(header_value) => {
+                if !keep_empty_value && header_value.is_empty() {
+                    hmap.remove(header).is_some()
+                } else {
+                    hmap.append(header, header_value);
+                    true
+                }
+            },
+            HeaderAction::Overwrite(header_value) => {
+                if !keep_empty_value && header_value.is_empty() {
+                    hmap.remove(header).is_some()
+                } else {
+                    hmap.insert(header, header_value);
+                    true
+                }
+            },
+            HeaderAction::Nop => false,
+        }
+    }
+}
+
+impl HeaderValueModifier for HeaderValueOption {
+    fn apply_to_request<B>(&self, req: &mut Request<B>) -> bool {
+        let has_key_already = req.headers_mut().get(&self.header.key).is_some();
+
+        let socket_address = || match req.extensions().get::<DownstreamMetadata>() {
+            Some(meta) => SocketAddrContext {
+                downstream_local_addr: Some(meta.connection.local_address()),
+                downstream_peer_addr: Some(meta.connection.peer_address()),
+                upstream_local_addr: None,
+                upstream_peer_addr: None,
+            },
+            None => SocketAddrContext::default(),
+        };
+
+        let get_header_value = |req: &Request<B>| -> HeaderValue {
+            let mut formatter = self.header.value.clone();
+            formatter.with_context(&DownstreamContext {
+                request: &req,
+                request_head_size: 0,
+                trace_id: None,
+                server_name: None,
+                socket_address: socket_address(),
+            });
+            formatter
+                .into_header_value()
+                .inspect_err(|e| {
+                    warn!("apply_to_request: failed to convert to HeaderValue: {}", e);
+                })
+                .unwrap_or(HeaderValue::from_static(""))
+        };
+
+        let action = match self.append_action {
+            HeaderAppendAction::AppendIfExistsOrAdd => HeaderAction::Append(get_header_value(&req)),
+            HeaderAppendAction::AppendIfAbsent => {
+                if !has_key_already {
+                    HeaderAction::Append(get_header_value(&req))
+                } else {
+                    HeaderAction::Nop
+                }
+            },
+            HeaderAppendAction::OverwriteIfExistsOrAdd => HeaderAction::Overwrite(get_header_value(&req)),
+            HeaderAppendAction::OverwriteIfExists => {
+                if has_key_already {
+                    HeaderAction::Overwrite(get_header_value(&req))
+                } else {
+                    HeaderAction::Nop
+                }
+            },
+        };
+
+        self.run_action(action, req.headers_mut(), self.keep_empty_value, &self.header.key)
+    }
+
+    fn apply_to_response<B>(&self, res: &mut Response<B>) -> bool {
+        let has_key_already = res.headers_mut().get(&self.header.key).is_some();
+
+        let get_header_value = |res: &Response<B>| -> HeaderValue {
+            let mut formatter = self.header.value.clone();
+            formatter.with_context(&DownstreamResponseContext { response: &res, response_head_size: 0 });
+            formatter
+                .into_header_value()
+                .inspect_err(|e| {
+                    warn!("apply_to_response: failed to convert to HeaderValue: {}", e);
+                })
+                .unwrap_or(HeaderValue::from_static(""))
+        };
+
+        let action = match self.append_action {
+            HeaderAppendAction::AppendIfExistsOrAdd => HeaderAction::Append(get_header_value(&res)),
+            HeaderAppendAction::AppendIfAbsent => {
+                if !has_key_already {
+                    HeaderAction::Append(get_header_value(&res))
+                } else {
+                    HeaderAction::Nop
+                }
+            },
+            HeaderAppendAction::OverwriteIfExistsOrAdd => HeaderAction::Overwrite(get_header_value(&res)),
+            HeaderAppendAction::OverwriteIfExists => {
+                if has_key_already {
+                    HeaderAction::Overwrite(get_header_value(&res))
+                } else {
+                    HeaderAction::Nop
+                }
+            },
+        };
+
+        self.run_action(action, res.headers_mut(), self.keep_empty_value, &self.header.key)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use http::Request;
+    use orion_configuration::config::network_filters::http_connection_manager::header_modifier::HeaderKeyValue;
+    use orion_format::header_formatter::HeaderFormatter;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    use http::header::{COOKIE, LOCATION, USER_AGENT};
 
     #[test]
     fn test_example_1_edge_proxy_no_trusted() {
@@ -301,5 +545,211 @@ mod tests {
         assert!(request.headers().get("x-envoy-external-address").is_none());
         assert_eq!(request.headers().get("x-forwarded-for").unwrap(), "10.20.30.40");
         //assert_eq!(request.headers().get("x-envoy-internal").unwrap(), "true");
+    }
+
+    #[test]
+    fn test_header_mutation_append_if_exists_or_add() {
+        let mut request = Request::builder().uri("http://example.com").body(()).unwrap();
+
+        let hello = HeaderFormatter::try_new("hello").unwrap();
+        let world = HeaderFormatter::try_new("world").unwrap();
+
+        HeaderValueOption {
+            header: HeaderKeyValue { key: LOCATION, value: hello.clone() },
+            append_action: HeaderAppendAction::AppendIfExistsOrAdd,
+            keep_empty_value: false,
+        }
+        .apply_to_request(&mut request);
+
+        assert_eq!(request.headers().get(LOCATION), Some(&hello.clone().into_header_value().unwrap()));
+        assert_eq!(request.headers().len(), 1);
+
+        HeaderValueOption {
+            header: HeaderKeyValue { key: LOCATION, value: world.clone() },
+            append_action: HeaderAppendAction::AppendIfExistsOrAdd,
+            keep_empty_value: false,
+        }
+        .apply_to_request(&mut request);
+
+        assert_eq!(request.headers().len(), 2);
+
+        let mut iter = request.headers().get_all(LOCATION).iter();
+        assert_eq!(&hello.into_header_value().unwrap(), iter.next().unwrap());
+        assert_eq!(&world.into_header_value().unwrap(), iter.next().unwrap());
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn test_header_mutation_inline_append() {
+        let mut request = Request::builder().uri("http://example.com").body(()).unwrap();
+
+        let hello = HeaderFormatter::try_new("hello").unwrap();
+        let world = HeaderFormatter::try_new("world").unwrap();
+
+        HeaderValueOption {
+            header: HeaderKeyValue { key: USER_AGENT, value: hello.clone() },
+            append_action: HeaderAppendAction::AppendIfExistsOrAdd,
+            keep_empty_value: false,
+        }
+        .apply_to_request(&mut request);
+
+        assert_eq!(request.headers().get(USER_AGENT), Some(&hello.into_header_value().unwrap()));
+        assert_eq!(request.headers().len(), 1);
+
+        HeaderValueOption {
+            header: HeaderKeyValue { key: USER_AGENT, value: world.clone() },
+            append_action: HeaderAppendAction::AppendIfExistsOrAdd,
+            keep_empty_value: false,
+        }
+        .apply_to_request(&mut request);
+
+        assert_eq!(request.headers().len(), 2);
+    }
+
+    #[test]
+    fn test_header_mutation_cookie_append() {
+        let mut request = Request::builder().uri("http://example.com").body(()).unwrap();
+
+        let hello = HeaderFormatter::try_new("hello").unwrap();
+        let world = HeaderFormatter::try_new("world").unwrap();
+
+        HeaderValueOption {
+            header: HeaderKeyValue { key: COOKIE, value: hello.clone() },
+            append_action: HeaderAppendAction::AppendIfExistsOrAdd,
+            keep_empty_value: false,
+        }
+        .apply_to_request(&mut request);
+
+        assert_eq!(request.headers().get(COOKIE), Some(&hello.into_header_value().unwrap()));
+        assert_eq!(request.headers().len(), 1);
+
+        HeaderValueOption {
+            header: HeaderKeyValue { key: COOKIE, value: world.clone() },
+            append_action: HeaderAppendAction::AppendIfExistsOrAdd,
+            keep_empty_value: false,
+        }
+        .apply_to_request(&mut request);
+
+        assert_eq!(request.headers().len(), 2);
+    }
+
+    #[test]
+    fn test_header_mutation_append_if_absent() {
+        let mut request = Request::builder().uri("http://example.com").body(()).unwrap();
+
+        let hello = HeaderFormatter::try_new("hello").unwrap();
+
+        HeaderValueOption {
+            header: HeaderKeyValue { key: USER_AGENT, value: hello.clone() },
+            append_action: HeaderAppendAction::AppendIfAbsent,
+            keep_empty_value: false,
+        }
+        .apply_to_request(&mut request);
+
+        assert_eq!(request.headers().get(USER_AGENT), Some(&hello.clone().into_header_value().unwrap()));
+        assert_eq!(request.headers().len(), 1);
+
+        HeaderValueOption {
+            header: HeaderKeyValue { key: USER_AGENT, value: hello.clone() },
+            append_action: HeaderAppendAction::AppendIfAbsent,
+            keep_empty_value: false,
+        }
+        .apply_to_request(&mut request);
+
+        assert_eq!(request.headers().get(USER_AGENT), Some(&hello.into_header_value().unwrap()));
+        assert_eq!(request.headers().len(), 1);
+    }
+
+    #[test]
+    fn test_header_mutation_overwrite_if_exists_or_add() {
+        let mut request = Request::builder().uri("http://example.com").body(()).unwrap();
+
+        let hello = HeaderFormatter::try_new("hello").unwrap();
+        let world = HeaderFormatter::try_new("world").unwrap();
+
+        HeaderValueOption {
+            header: HeaderKeyValue { key: USER_AGENT, value: hello.clone() },
+            append_action: HeaderAppendAction::OverwriteIfExistsOrAdd,
+            keep_empty_value: false,
+        }
+        .apply_to_request(&mut request);
+
+        assert_eq!(request.headers().get(USER_AGENT), Some(&hello.into_header_value().unwrap()));
+        assert_eq!(request.headers().len(), 1);
+
+        HeaderValueOption {
+            header: HeaderKeyValue { key: USER_AGENT, value: world.clone() },
+            append_action: HeaderAppendAction::OverwriteIfExistsOrAdd,
+            keep_empty_value: false,
+        }
+        .apply_to_request(&mut request);
+
+        assert_eq!(request.headers().get(USER_AGENT), Some(&world.into_header_value().unwrap()));
+        assert_eq!(request.headers().len(), 1);
+    }
+
+    #[test]
+    fn test_header_mutation_overwrite_if_exists() {
+        let mut request = Request::builder().uri("http://example.com").body(()).unwrap();
+
+        let hello = HeaderFormatter::try_new("hello").unwrap();
+        let world = HeaderFormatter::try_new("world").unwrap();
+
+        HeaderValueOption {
+            header: HeaderKeyValue { key: USER_AGENT, value: hello.clone() },
+            append_action: HeaderAppendAction::OverwriteIfExists,
+            keep_empty_value: false,
+        }
+        .apply_to_request(&mut request);
+
+        assert_eq!(request.headers().get(USER_AGENT), None);
+        assert!(request.headers().is_empty());
+        HeaderValueOption {
+            header: HeaderKeyValue { key: USER_AGENT, value: hello.clone() },
+            append_action: HeaderAppendAction::AppendIfAbsent,
+            keep_empty_value: false,
+        }
+        .apply_to_request(&mut request);
+
+        assert_eq!(request.headers().get(USER_AGENT), Some(&hello.into_header_value().unwrap()));
+        assert_eq!(request.headers().len(), 1);
+
+        HeaderValueOption {
+            header: HeaderKeyValue { key: USER_AGENT, value: world.clone() },
+            append_action: HeaderAppendAction::OverwriteIfExists,
+            keep_empty_value: false,
+        }
+        .apply_to_request(&mut request);
+
+        assert_eq!(request.headers().get(USER_AGENT), Some(&world.into_header_value().unwrap()));
+        assert_eq!(request.headers().len(), 1);
+    }
+
+    #[test]
+    fn test_header_mutation_append_empty_value() {
+        let mut request = Request::builder().uri("http://example.com").body(()).unwrap();
+
+        let empty = HeaderFormatter::try_new("").unwrap();
+        let test = HeaderFormatter::try_new("test").unwrap();
+
+        HeaderValueOption {
+            header: HeaderKeyValue { key: USER_AGENT, value: test.clone() },
+            append_action: HeaderAppendAction::AppendIfExistsOrAdd,
+            keep_empty_value: true,
+        }
+        .apply_to_request(&mut request);
+
+        assert_eq!(request.headers().get(USER_AGENT), Some(&test.clone().into_header_value().unwrap()));
+        assert_eq!(request.headers().len(), 1);
+
+        HeaderValueOption {
+            header: HeaderKeyValue { key: USER_AGENT, value: empty.clone() },
+            append_action: HeaderAppendAction::AppendIfExistsOrAdd,
+            keep_empty_value: true,
+        }
+        .apply_to_request(&mut request);
+
+        assert_eq!(request.headers().get(USER_AGENT), Some(&test.into_header_value().unwrap()));
+        assert_eq!(request.headers().len(), 2);
     }
 }

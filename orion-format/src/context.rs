@@ -21,7 +21,7 @@ use std::{
 };
 
 use crate::{
-    operator::{Category, Operator},
+    operator::Operator,
     types::{ResponseFlags, ResponseFlagsLong, ResponseFlagsShort},
     StringType,
 };
@@ -36,21 +36,17 @@ use uuid::Uuid;
 
 pub trait Context {
     fn eval_part(&self, op: &Operator) -> StringType;
-    fn categories() -> Category;
 }
 
-pub struct TcpContext<'a> {
+#[derive(Debug, Clone, Default)]
+pub struct SocketAddrContext {
     pub downstream_local_addr: Option<SocketAddr>,
     pub downstream_peer_addr: Option<SocketAddr>,
     pub upstream_local_addr: Option<SocketAddr>,
     pub upstream_peer_addr: Option<SocketAddr>,
-    pub cluster_name: &'a str,
 }
 
-impl Context for TcpContext<'_> {
-    fn categories() -> Category {
-        Category::UPSTREAM_CONTEXT | Category::DOWNSTREAM_CONTEXT
-    }
+impl Context for SocketAddrContext {
     fn eval_part(&self, op: &Operator) -> StringType {
         match op {
             Operator::UpstreamHost | Operator::UpstreamRemoteAddress => {
@@ -93,9 +89,6 @@ impl Context for TcpContext<'_> {
                 self.downstream_peer_addr.map_or(StringType::None, |addr| StringType::Smol(addr.port().to_smolstr()))
             },
 
-            Operator::UpstreamCluster | Operator::UpstreamClusterRaw => {
-                StringType::Smol(SmolStr::new(self.cluster_name))
-            },
             Operator::ConnectionId => {
                 hash_connection(self.downstream_local_addr.as_ref(), self.downstream_peer_addr.as_ref(), &Protocol::Tcp)
             },
@@ -103,6 +96,23 @@ impl Context for TcpContext<'_> {
                 hash_connection(self.upstream_local_addr.as_ref(), self.upstream_peer_addr.as_ref(), &Protocol::Tcp)
             },
             _ => StringType::None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TcpContext<'a> {
+    pub socket_address: SocketAddrContext,
+    pub cluster_name: &'a str,
+}
+
+impl Context for TcpContext<'_> {
+    fn eval_part(&self, op: &Operator) -> StringType {
+        match op {
+            Operator::UpstreamCluster | Operator::UpstreamClusterRaw => {
+                StringType::Smol(SmolStr::new(self.cluster_name))
+            },
+            _ => self.socket_address.eval_part(op),
         }
     }
 }
@@ -129,7 +139,7 @@ fn hash_connection(local: Option<&SocketAddr>, peer: Option<&SocketAddr>, protoc
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug, Clone, Default)]
 pub struct UpstreamContext<'a> {
     pub authority: Option<&'a Authority>,
     pub cluster_name: Option<&'a str>,
@@ -137,9 +147,6 @@ pub struct UpstreamContext<'a> {
 }
 
 impl Context for UpstreamContext<'_> {
-    fn categories() -> Category {
-        Category::UPSTREAM_CONTEXT
-    }
     fn eval_part(&self, op: &Operator) -> StringType {
         match op {
             Operator::UpstreamHost => {
@@ -148,21 +155,24 @@ impl Context for UpstreamContext<'_> {
             Operator::UpstreamCluster | Operator::UpstreamClusterRaw => {
                 self.cluster_name.map_or(StringType::None, |cluster_name| StringType::Smol(SmolStr::new(cluster_name)))
             },
+            Operator::UpstreamHostName => {
+                self.authority.map_or(StringType::None, |auth| StringType::Smol(SmolStr::new(auth.as_str())))
+            },
+            Operator::UpstreamHostNameWithoutPort => {
+                self.authority.map_or(StringType::None, |auth| StringType::Smol(SmolStr::new(auth.host())))
+            },
             Operator::RouteName => StringType::Smol(SmolStr::new(self.route_name)),
             _ => StringType::None,
         }
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug, Clone)]
 pub struct InitContext {
     pub start_time: SystemTime,
 }
 
 impl Context for InitContext {
-    fn categories() -> Category {
-        Category::INIT_CONTEXT
-    }
     fn eval_part(&self, op: &Operator) -> StringType {
         match op {
             Operator::StartTime => StringType::Smol(format_system_time(self.start_time)),
@@ -171,19 +181,17 @@ impl Context for InitContext {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug, Clone)]
 pub struct InitHttpContext<'a, T> {
     pub start_time: SystemTime,
     pub downstream_request: &'a Request<T>,
     pub request_head_size: usize,
     pub trace_id: Option<u128>,
     pub server_name: Option<&'a str>,
+    pub socket_address: SocketAddrContext,
 }
 
 impl<T> Context for InitHttpContext<'_, T> {
-    fn categories() -> Category {
-        Category::INIT_CONTEXT | Category::DOWNSTREAM_REQUEST
-    }
     fn eval_part(&self, op: &Operator) -> StringType {
         match op {
             Operator::StartTime => StringType::Smol(format_system_time(self.start_time)),
@@ -192,22 +200,20 @@ impl<T> Context for InitHttpContext<'_, T> {
                 trace_id: self.trace_id,
                 request_head_size: self.request_head_size,
                 server_name: self.server_name,
+                socket_address: self.socket_address.clone(),
             }
             .eval_part(op),
         }
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct HttpRequestDuration {
+#[derive(Debug, Clone, Default)]
+pub struct HttpRequestDurationContext {
     pub duration: Duration,
     pub tx_duration: Duration,
 }
 
-impl Context for HttpRequestDuration {
-    fn categories() -> Category {
-        Category::REQUEST_DURATION
-    }
+impl Context for HttpRequestDurationContext {
     fn eval_part(&self, op: &Operator) -> StringType {
         match op {
             Operator::RequestDuration => {
@@ -224,15 +230,12 @@ impl Context for HttpRequestDuration {
 }
 
 #[derive(Clone, Debug)]
-pub struct HttpResponseDuration {
+pub struct HttpResponseDurationContext {
     pub duration: Duration,
     pub tx_duration: Duration,
 }
 
-impl Context for HttpResponseDuration {
-    fn categories() -> Category {
-        Category::RESPONSE_DURATION
-    }
+impl Context for HttpResponseDurationContext {
     fn eval_part(&self, op: &Operator) -> StringType {
         match op {
             Operator::ResponseDuration => {
@@ -260,9 +263,6 @@ pub struct FinishContext {
 }
 
 impl Context for FinishContext {
-    fn categories() -> Category {
-        Category::FINISH_CONTEXT
-    }
     fn eval_part(&self, op: &Operator) -> StringType {
         match op {
             Operator::ResponseFlags => StringType::Smol(ResponseFlagsShort(&self.response_flags).to_smolstr()),
@@ -298,20 +298,18 @@ pub struct DownstreamContext<'a, T> {
     pub request_head_size: usize,
     pub trace_id: Option<u128>,
     pub server_name: Option<&'a str>,
+    pub socket_address: SocketAddrContext,
 }
 
-pub struct DownstreamResponse<'a, T> {
+pub struct DownstreamResponseContext<'a, T> {
     pub response: &'a Response<T>,
     pub response_head_size: usize,
 }
 
-pub struct UpstreamRequest<'a, T>(pub &'a Request<T>);
-pub struct UpstreamResponse<'a, T>(pub &'a Response<T>);
+pub struct UpstreamRequestContext<'a, T>(pub &'a Request<T>);
+pub struct UpstreamResponseContext<'a, T>(pub &'a Response<T>);
 
 impl<T> Context for DownstreamContext<'_, T> {
-    fn categories() -> Category {
-        Category::DOWNSTREAM_REQUEST
-    }
     fn eval_part(&self, op: &Operator) -> StringType {
         match op {
             Operator::RequestHeadersBytes => {
@@ -356,15 +354,12 @@ impl<T> Context for DownstreamContext<'_, T> {
             Operator::RequestedServerName => {
                 self.server_name.map_or(StringType::None, |sni| StringType::Smol(SmolStr::new(sni)))
             },
-            _ => StringType::None,
+            _ => self.socket_address.eval_part(op),
         }
     }
 }
 
-impl<T> Context for UpstreamRequest<'_, T> {
-    fn categories() -> Category {
-        Category::UPSTREAM_REQUEST
-    }
+impl<T> Context for UpstreamRequestContext<'_, T> {
     fn eval_part(&self, op: &Operator) -> StringType {
         match op {
             Operator::UpstreamProtocol => StringType::Smol(SmolStr::new_static(self.0.version().to_static_str())),
@@ -386,10 +381,7 @@ impl<T> Context for UpstreamRequest<'_, T> {
     }
 }
 
-impl<T> Context for DownstreamResponse<'_, T> {
-    fn categories() -> Category {
-        Category::DOWNSTREAM_RESPONSE
-    }
+impl<T> Context for DownstreamResponseContext<'_, T> {
     fn eval_part(&self, op: &Operator) -> StringType {
         match op {
             Operator::ResponseHeadersBytes => {

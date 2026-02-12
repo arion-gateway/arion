@@ -16,13 +16,24 @@ The access log is a record of requests processed by Orion, useful for monitoring
 - The macro with_access_log_enabled! is provided to wrap a block of code that needs to be executed only if the access log is enabled. This is useful to avoid unnecessary computation when the access log is not enabled (usually the formatting operation).
 - The access_log is enabled and configured in the access_log section of the Orion configuration file. All the options are optional, and sensible default values are used if not specified.
 
-Example:
+Configuration example:
 ```yaml
 access_logging:
   num_instances: 2
   queue_length: 64
   max_log_files: 5
   log_rotation: daily
+```
+
+...and in filter chain:
+
+```yaml
+access_log:
+   - name: envoy.access_loggers.stdout
+     typed_config:
+        "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+        log_format:
+          text_format: "[%START_TIME%] %REQ(:METHOD)% %REQ(X-Custom-Header)% status=%RESPONSE_CODE% duration=%DURATION% downstream:%DOWNSTREAM_REMOTE_ADDRESS%\n"
 ```
 
 - A new `num_service_threads` option is available in the `runtime` section of the Orion configuration file, which allows configuring the number of threads used in the service runtime. This runtime is used by the XDS handler, the access log system, and the admin interface.
@@ -102,12 +113,12 @@ access_logging:
 | UPSTREAM_REMOTE_ADDRESS                | ✅  |    ✅   |
 | UPSTREAM_REMOTE_ADDRESS_WITHOUT_PORT   | ❌  |    ✅   |
 | UPSTREAM_REMOTE_PORT                   | ❌  |    ✅   |
-| DOWNSTREAM_LOCAL_ADDRESS               | ❌  |    ✅   |
-| DOWNSTREAM_LOCAL_ADDRESS_WITHOUT_PORT  | ❌  |    ✅   |
-| DOWNSTREAM_LOCAL_PORT                  | ❌  |    ✅   |
-| DOWNSTREAM_REMOTE_ADDRESS              | ❌  |    ✅   |
-| DOWNSTREAM_REMOTE_ADDRESS_WITHOUT_PORT | ❌  |    ✅   |
-| DOWNSTREAM_REMOTE_PORT                 | ❌  |    ✅   |
+| DOWNSTREAM_LOCAL_ADDRESS               | ✅  |    ✅   |
+| DOWNSTREAM_LOCAL_ADDRESS_WITHOUT_PORT  | ✅  |    ✅   |
+| DOWNSTREAM_LOCAL_PORT                  | ✅  |    ✅   |
+| DOWNSTREAM_REMOTE_ADDRESS              | ✅  |    ✅   |
+| DOWNSTREAM_REMOTE_ADDRESS_WITHOUT_PORT | ✅  |    ✅   |
+| DOWNSTREAM_REMOTE_PORT                 | ✅  |    ✅   |
 | UPSTREAM_CLUSTER                       | ✅  |    ✅   |
 | UPSTREAM_CLUSTER_RAW                   | ✅  |    ✅   |
 | CONNECTION_ID                          | -   |    ✅   |

@@ -69,7 +69,7 @@ use std::num::NonZeroUsize;
 use std::{sync::Arc, time::Duration};
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::{mpsc, oneshot};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 const CHANNEL_BODY_PREFETCH_FRAMES: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(4) };
 const EXT_PROC_FRAME_MERGE_LIMIT: u32 = 4; // max number of frames to merge in streaming mode

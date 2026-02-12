@@ -69,9 +69,10 @@ use {
     crate::listeners::access_log::AccessLogContext,
     orion_configuration::config::network_filters::access_log::AccessLog,
     orion_format::context::{
-        DownstreamResponse, FinishContext, HttpRequestDuration, HttpResponseDuration, InitHttpContext,
+        DownstreamResponseContext, FinishContext, HttpRequestDurationContext, HttpResponseDurationContext,
+        InitHttpContext,
     },
-    orion_format::LogFormatterLocal,
+    orion_format::LogFormatter,
     parking_lot::Mutex,
     std::time::Instant,
 };
@@ -79,11 +80,8 @@ use {
 use arc_swap::ArcSwap;
 use core::time::Duration;
 use futures::future::BoxFuture;
-use hyper::{body::Incoming, service::Service, HeaderMap, Request, Response};
-use orion_configuration::config::network_filters::http_connection_manager::{
-    header_modifer::{HeaderMapModifier, ModifierType, ModifiersExtractor},
-    route::RouteMatch,
-};
+use hyper::{body::Incoming, service::Service, Request, Response};
+use orion_configuration::config::network_filters::http_connection_manager::route::RouteMatch;
 use orion_configuration::config::network_filters::http_connection_manager::{
     route::{Action, RouteMatchResult},
     CodecType, ConfigSource, ConfigSourceSpecifier, HttpConnectionManager as HttpConnectionManagerConfig, RdsSpecifier,
@@ -99,6 +97,7 @@ use crate::{
     event_error::{EventFailure, EventKind},
     get_shard_id,
     listeners::{
+        http_connection_manager::http_modifiers::ModifiersExtractor,
         http_filters::{per_route_http_filters, FilterDecision, FilterFactory, HttpFilter, HttpFilterValue},
         metadata::DownstreamMetadata,
         synthetic_http_response::SyntheticHttpResponse,
@@ -123,6 +122,8 @@ use upgrades as upgrade_utils;
 
 use orion_tracing::http_tracer::HttpTracer;
 use orion_tracing::request_id::{RequestId, RequestIdManager};
+
+use crate::listeners::http_connection_manager::http_modifiers::HeaderMapModifier;
 
 #[derive(Debug, Clone)]
 pub struct HttpConnectionManagerBuilder {
@@ -359,14 +360,14 @@ pub struct AccessLoggersContext {
     bytes: u64, // either the request or response body size, depending which one has completed first
     flags: ResponseFlags,
     event: Option<EventKind>,
-    loggers: Vec<LogFormatterLocal>,
+    loggers: Vec<LogFormatter>,
 }
 
 #[cfg(feature = "access-log")]
 impl AccessLoggersContext {
     pub fn new(access_log: &[AccessLog]) -> Self {
         AccessLoggersContext {
-            loggers: access_log.iter().map(|al| al.logger.local_clone()).collect::<Vec<_>>(),
+            loggers: access_log.iter().map(|al| al.logger.clone()).collect::<Vec<_>>(),
             bytes: 0,
             flags: ResponseFlags::default(),
             event: None,
@@ -517,7 +518,7 @@ impl TransactionHandler {
             #[cfg(feature = "access-log")]
             if let Some(ctx) = self.access_log_ctx.as_ref() {
                 let response_head_size = response_head_size(&response);
-                ctx.lock().loggers.with_context(&DownstreamResponse { response: &response, response_head_size })
+                ctx.lock().loggers.with_context(&DownstreamResponseContext { response: &response, response_head_size })
             }
 
             #[cfg(feature = "metrics")]
@@ -538,7 +539,7 @@ impl TransactionHandler {
                         let mut log_ctx = ctx.lock();
                         let duration = first_byte_instant.saturating_duration_since(self.start_instant);
                         let tx_duration = Instant::now().saturating_duration_since(first_byte_instant);
-                        log_ctx.loggers.with_context(&HttpResponseDuration { duration, tx_duration });
+                        log_ctx.loggers.with_context(&HttpResponseDurationContext { duration, tx_duration });
 
                         let is_transaction_complete = self.trans_state.message_complete();
                         if is_transaction_complete.0 {
@@ -784,9 +785,8 @@ impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usiz
             .into_response(request.version()),
             Some(cached_route) => match filter_response {
                 FilterDecision::DirectResponse(mut response) | FilterDecision::AsyncRequest(mut response, _) => {
-                    let res_headers = response.headers_mut();
-                    apply_mutations::<Response<()>>(
-                        res_headers,
+                    apply_mutations_on_response(
+                        &mut response,
                         &self.0,
                         &cached_route,
                         self.0.most_specific_header_mutations_wins,
@@ -806,9 +806,8 @@ impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usiz
                                 .await
                         },
                         Action::Route(route) => {
-                            let req_headers = request.headers_mut();
-                            apply_mutations::<Request<()>>(
-                                req_headers,
+                            apply_mutations_on_request(
+                                &mut request,
                                 &self.0,
                                 &cached_route,
                                 self.0.most_specific_header_mutations_wins,
@@ -838,9 +837,8 @@ impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usiz
                         },
                     }?;
 
-                    let res_headers = response.headers_mut();
-                    apply_mutations::<Response<()>>(
-                        res_headers,
+                    apply_mutations_on_response(
+                        &mut response,
                         &self.0,
                         &cached_route,
                         self.0.most_specific_header_mutations_wins,
@@ -962,9 +960,8 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
             .into_response(request.version()),
             Some(cached_route) => match filter_response {
                 FilterDecision::DirectResponse(mut response) | FilterDecision::AsyncRequest(mut response, _) => {
-                    let res_headers = response.headers_mut();
-                    apply_mutations::<Response<()>>(
-                        res_headers,
+                    apply_mutations_on_response(
+                        &mut response,
                         &self,
                         &cached_route,
                         self.most_specific_header_mutations_wins,
@@ -988,9 +985,8 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
                             .await
                         },
                         Action::Route(route) => {
-                            let req_headers = request.headers_mut();
-                            apply_mutations::<Request<()>>(
-                                req_headers,
+                            apply_mutations_on_request(
+                                &mut request,
                                 &self,
                                 &cached_route,
                                 self.most_specific_header_mutations_wins,
@@ -1020,9 +1016,8 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
                         },
                     }?;
 
-                    let res_headers = response.headers_mut();
-                    apply_mutations::<Response<()>>(
-                        res_headers,
+                    apply_mutations_on_response(
+                        &mut response,
                         &self,
                         &cached_route,
                         self.most_specific_header_mutations_wins,
@@ -1045,25 +1040,45 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
     }
 }
 
-fn apply_mutations<T>(
-    target: &mut HeaderMap,
+fn apply_mutations_on_request<B>(
+    target: &mut Request<B>,
     route_config: &RouteConfiguration,
     cached_route: &CachedRoute<'_>,
     most_specific_header_mutations_wins: bool,
 ) where
-    T: ModifierType,
-    Route: ModifiersExtractor<T>,
-    VirtualHost: ModifiersExtractor<T>,
-    RouteConfiguration: ModifiersExtractor<T>,
+    Route: ModifiersExtractor<Request<B>>,
+    VirtualHost: ModifiersExtractor<Request<B>>,
+    RouteConfiguration: ModifiersExtractor<Request<B>>,
 {
     if most_specific_header_mutations_wins {
-        target.apply(ModifiersExtractor::<T>::extract(route_config));
-        target.apply(ModifiersExtractor::<T>::extract(cached_route.vh));
-        target.apply(ModifiersExtractor::<T>::extract(cached_route.route));
+        target.apply_mutation(ModifiersExtractor::<Request<B>>::extract(route_config));
+        target.apply_mutation(ModifiersExtractor::<Request<B>>::extract(cached_route.vh));
+        target.apply_mutation(ModifiersExtractor::<Request<B>>::extract(cached_route.route));
     } else {
-        target.apply(ModifiersExtractor::<T>::extract(cached_route.route));
-        target.apply(ModifiersExtractor::<T>::extract(cached_route.vh));
-        target.apply(ModifiersExtractor::<T>::extract(route_config));
+        target.apply_mutation(ModifiersExtractor::<Request<B>>::extract(cached_route.route));
+        target.apply_mutation(ModifiersExtractor::<Request<B>>::extract(cached_route.vh));
+        target.apply_mutation(ModifiersExtractor::<Request<B>>::extract(route_config));
+    }
+}
+
+fn apply_mutations_on_response<B>(
+    target: &mut Response<B>,
+    route_config: &RouteConfiguration,
+    cached_route: &CachedRoute<'_>,
+    most_specific_header_mutations_wins: bool,
+) where
+    Route: ModifiersExtractor<Request<B>>,
+    VirtualHost: ModifiersExtractor<Request<B>>,
+    RouteConfiguration: ModifiersExtractor<Request<B>>,
+{
+    if most_specific_header_mutations_wins {
+        target.apply_mutation(ModifiersExtractor::<Request<B>>::extract(route_config));
+        target.apply_mutation(ModifiersExtractor::<Request<B>>::extract(cached_route.vh));
+        target.apply_mutation(ModifiersExtractor::<Request<B>>::extract(cached_route.route));
+    } else {
+        target.apply_mutation(ModifiersExtractor::<Request<B>>::extract(cached_route.route));
+        target.apply_mutation(ModifiersExtractor::<Request<B>>::extract(cached_route.vh));
+        target.apply_mutation(ModifiersExtractor::<Request<B>>::extract(route_config));
     }
 }
 
@@ -1184,11 +1199,7 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
             // evaluate InitHttpContext...
 
             let metadata = request.extensions().get::<DownstreamMetadata>();
-            eval_http_init_context(
-                &request,
-                &trans_handler,
-                metadata.and_then(|md| md.sni.as_ref().map(|s| s.as_str())),
-            );
+            eval_http_init_context(&request, &trans_handler, metadata);
 
             //
             // create the InstrumentedBody which will track the size of the request body
@@ -1219,7 +1230,7 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
                     let _is_transaction_complete = if let Some(ctx) = trans_handler.access_log_ctx.as_ref() {
                         let mut log_ctx = ctx.lock();
                         let duration = trans_handler.start_instant.elapsed();
-                        log_ctx.loggers.with_context(&HttpRequestDuration { duration, tx_duration: duration });
+                        log_ctx.loggers.with_context(&HttpRequestDurationContext { duration, tx_duration: duration });
 
                         let is_transaction_complete = trans_handler.trans_state.message_complete();
                         if is_transaction_complete.0 {
@@ -1292,7 +1303,10 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
                 #[cfg(feature = "access-log")]
                 if let Some(log_ctx) = trans_handler.access_log_ctx.as_ref() {
                     let response_head_size = response_head_size(&resp);
-                    log_ctx.lock().loggers.with_context(&DownstreamResponse { response: &resp, response_head_size })
+                    log_ctx
+                        .lock()
+                        .loggers
+                        .with_context(&DownstreamResponseContext { response: &resp, response_head_size })
                 }
 
                 #[cfg(feature = "access-log")]
@@ -1317,7 +1331,7 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
                             let mut log_ctx = ctx.lock();
                             let duration = first_byte_instant.saturating_duration_since(trans_handler.start_instant);
                             let tx_duration = Instant::now().saturating_duration_since(first_byte_instant);
-                            log_ctx.loggers.with_context(&HttpResponseDuration { duration, tx_duration });
+                            log_ctx.loggers.with_context(&HttpResponseDurationContext { duration, tx_duration });
 
                             let is_transaction_complete = trans_handler.trans_state.message_complete();
                             if is_transaction_complete.0 {
@@ -1392,7 +1406,11 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
     }
 }
 
-fn eval_http_init_context<R>(_request: &Request<R>, _trans_handler: &TransactionHandler, _server_name: Option<&str>) {
+fn eval_http_init_context<R>(
+    _request: &Request<R>,
+    _trans_handler: &TransactionHandler,
+    _metadata: Option<&DownstreamMetadata>,
+) {
     #[cfg(feature = "tracing")]
     let _trace_id =
         _trans_handler.trace_ctx.as_ref().and_then(|t| t.map_child(orion_tracing::trace_info::TraceInfo::trace_id));
@@ -1400,15 +1418,28 @@ fn eval_http_init_context<R>(_request: &Request<R>, _trans_handler: &Transaction
     let _trace_id: Option<u128> = None;
 
     #[cfg(feature = "access-log")]
-    if let Some(ctx) = _trans_handler.access_log_ctx.as_ref() {
-        let request_head_size = request_head_size(_request);
-        ctx.lock().loggers.with_context_fn(|| InitHttpContext {
-            start_time: std::time::SystemTime::now(),
-            downstream_request: _request,
-            request_head_size,
-            trace_id: _trace_id,
-            server_name: _server_name,
-        })
+    {
+        use orion_format::context::SocketAddrContext;
+        let server_name = _metadata.and_then(|md| md.sni.as_ref().map(|s| s.as_str()));
+
+        let downstream_socket_addr = SocketAddrContext {
+            downstream_local_addr: _metadata.map(|md| md.connection.local_address()),
+            downstream_peer_addr: _metadata.map(|md| md.connection.peer_address()),
+            upstream_local_addr: None,
+            upstream_peer_addr: None,
+        };
+
+        if let Some(ctx) = _trans_handler.access_log_ctx.as_ref() {
+            let request_head_size = request_head_size(_request);
+            ctx.lock().loggers.with_context_fn(|| InitHttpContext {
+                start_time: std::time::SystemTime::now(),
+                downstream_request: _request,
+                request_head_size,
+                trace_id: _trace_id,
+                server_name,
+                socket_address: downstream_socket_addr,
+            })
+        }
     }
 }
 
@@ -1420,7 +1451,7 @@ fn eval_http_finish_context(
     _listener_name: &'static str,
     #[cfg(feature = "access-log")] event: EventInfo,
     #[cfg(feature = "access-log")] permit: Option<ShareableAccessLogPermit>,
-    #[cfg(feature = "access-log")] access_loggers: &mut Vec<LogFormatterLocal>,
+    #[cfg(feature = "access-log")] access_loggers: &mut Vec<LogFormatter>,
     #[cfg(feature = "access-log")] trans_start_time: Instant,
 ) {
     #[cfg(feature = "access-log")]
@@ -1448,8 +1479,8 @@ fn eval_http_finish_context(
                 .map(|d| d.0),
         });
 
-        let loggers: Vec<LogFormatterLocal> = std::mem::take(access_loggers);
-        let messages = loggers.into_iter().map(LogFormatterLocal::into_message).collect::<Vec<_>>();
+        let loggers: Vec<LogFormatter> = std::mem::take(access_loggers);
+        let messages = loggers.into_iter().map(LogFormatter::into_message).collect::<Vec<_>>();
         log_access(permit, Target::Listener(_listener_name.into()), messages);
     }
 }

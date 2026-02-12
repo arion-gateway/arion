@@ -19,23 +19,12 @@ use bitflags::bitflags;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
-pub const NUM_OPERATOR_CATEGORIES: usize = 12;
-
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-    pub struct Category : u16 {
-        const INIT_CONTEXT = 1 << 0;
-        const FINISH_CONTEXT = 1 << 1;
-        const UPSTREAM_CONTEXT = 1 << 2;
-        const DOWNSTREAM_CONTEXT = 1 << 3;
-        const DOWNSTREAM_REQUEST = 1 << 4;
-        const DOWNSTREAM_RESPONSE = 1 << 5;
-        const UPSTREAM_REQUEST = 1 << 6;
-        const UPSTREAM_RESPONSE = 1 << 7;
-        const REQUEST_DURATION = 1 << 8;
-        const RESPONSE_DURATION = 1 << 9;
-        const ARGUMENT = 1 << 10;
-        const UNSUPPORTED = 1 << 11;
+    pub struct Category : u8 {
+        const OPERATOR = 1 << 0;
+        const ARGUMENT = 1 << 1;
+        const UNSUPPORTED = 1 << 2;
     }
 }
 

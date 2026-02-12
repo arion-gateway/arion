@@ -18,16 +18,16 @@
 use criterion::black_box;
 use http::{Request, Response, StatusCode};
 use orion_format::{
-    context::{Context, DownstreamContext, DownstreamResponse, FinishContext, InitContext},
+    context::{Context, DownstreamContext, DownstreamResponseContext, FinishContext, InitContext},
     types::ResponseFlags,
-    LogFormatter, LogFormatterLocal,
+    LogFormatter,
 };
 use std::time::{Duration, Instant};
 
 const DEF_FMT: &str = r#"[%START_TIME%] "%REQ(:METHOD)% %REQ(X-ENVOY-ORIGINAL-PATH?:PATH)% %PROTOCOL%" %RESPONSE_CODE% %RESPONSE_FLAGS% %BYTES_RECEIVED% %BYTES_SENT% %DURATION% %RESP(X-ENVOY-UPSTREAM-SERVICE-TIME)% "%REQ(X-FORWARDED-FOR)%" "%REQ(USER-AGENT)%" "%REQ(X-REQUEST-ID)%" "%REQ(:AUTHORITY)%" "%UPSTREAM_HOST%""#;
 
 #[inline]
-fn eval_format<C1, C2, C3, C4>(req: &C1, resp: &C2, start: &C3, end: &C4, fmt: &mut LogFormatterLocal) -> bool
+fn eval_format<C1, C2, C3, C4>(req: &C1, resp: &C2, start: &C3, end: &C4, fmt: &mut LogFormatter) -> bool
 where
     C1: Context,
     C2: Context,
@@ -72,10 +72,16 @@ fn main() -> Result<(), BoxError> {
     let now = Instant::now();
 
     for _ in 0..TOTAL {
-        let mut fmt = black_box(fmt.local_clone());
+        let mut fmt = black_box(fmt.clone());
         black_box(eval_format(
-            &DownstreamContext { request: &request, request_head_size: 0, trace_id: None, server_name: None },
-            &DownstreamResponse { response: &response, response_head_size: 0 },
+            &DownstreamContext {
+                request: &request,
+                request_head_size: 0,
+                trace_id: None,
+                server_name: None,
+                socket_address: Default::default(),
+            },
+            &DownstreamResponseContext { response: &response, response_head_size: 0 },
             &start,
             &end,
             &mut fmt,

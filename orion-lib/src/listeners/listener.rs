@@ -287,7 +287,7 @@ impl Listener {
                                 //  we could optimize a little here by either splitting up the filter_chain selection and rbac into the parts that can run
                                 // before we have the ClientHello and the ones after. since we might already have enough info to decide to drop the connection
                                 // or pick a specific filter_chain to run, or we could simply if-else on the with_tls_inspector variable.
-                                _ = tokio::spawn(Self::process_listener_update(name, filter_chains, with_tls_inspector, proxy_protocol_config, local_address, peer_addr, Box::new(stream), start)).await;
+                                _ = tokio::spawn(Self::process_incoming_connection(name, filter_chains, with_tls_inspector, proxy_protocol_config, local_address, peer_addr, Box::new(stream), start)).await;
                             });
 
                             #[cfg(feature = "instrumentation")]
@@ -414,7 +414,7 @@ impl Listener {
 
     #[allow(clippy::too_many_lines)]
     #[allow(clippy::too_many_arguments)]
-    async fn process_listener_update(
+    async fn process_incoming_connection(
         listener_name: &'static str,
         filter_chains: Arc<HashMap<FilterChainMatch, FilterchainType>>,
         with_tls_inspector: bool,
@@ -425,7 +425,6 @@ impl Listener {
         start_instant: std::time::Instant,
     ) -> Result<()> {
         let _shard_id = get_shard_id!();
-
         let ssl = AtomicBool::new(false);
         defer! {
             with_metric!(listeners::DOWNSTREAM_CX_DESTROY, add, 1, _shard_id, &[KeyValue::new("listener", listener_name)]);
