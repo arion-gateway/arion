@@ -228,6 +228,7 @@ mod tests {
     use super::*;
 
     fn check_bind_device(c: &ClusterType, device_name: &str) {
+        use crate::transport::connector::ConnectUsing;
         let expected_bind_device = Some(BindDevice::from_str(device_name).unwrap());
 
         let cla = match c {
@@ -242,7 +243,12 @@ mod tests {
         if let Some(load_assignment) = cla {
             for lep in &load_assignment.endpoints {
                 for ep in &lep.endpoints {
-                    assert_eq!(ep.bind_device, expected_bind_device);
+                    match &ep.connect_using {
+                        ConnectUsing::Socket { bind_device, .. } => {
+                            assert_eq!(bind_device, &expected_bind_device);
+                        },
+                        ConnectUsing::InternalListener { .. } => panic!("Expected socket endpoint"),
+                    }
                 }
             }
         }

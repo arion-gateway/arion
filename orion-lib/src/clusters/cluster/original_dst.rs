@@ -342,9 +342,12 @@ impl Endpoint {
         bind_device: Option<BindDevice>,
         transport_socket: UpstreamTransportSocketConfigurator,
     ) -> Result<Self> {
-        let builder = HttpChannelBuilder::new(bind_device.clone())
-            .with_authority(authority.clone())
-            .with_timeout(http_config.connect_timeout);
+        use crate::transport::connector::ConnectUsing;
+
+        let connect_using =
+            ConnectUsing::Socket { authority: authority.clone(), bind_device, timeout: http_config.connect_timeout };
+
+        let builder = HttpChannelBuilder::new(connect_using.clone());
         let builder = if let Some(tls_conf) = &http_config.tls_configurator {
             if let Some(server_name) = &http_config.server_name {
                 builder.with_tls(Some(tls_conf.clone())).with_server_name(server_name.clone())
@@ -354,15 +357,8 @@ impl Endpoint {
         } else {
             builder
         };
-        let http_channel =
-            builder.with_http_protocol_options(http_config.http_protocol_options.clone()).build_with_no_address()?;
-        let tcp_channel = TcpChannelConnector::new(
-            authority,
-            "original_dst_cluster",
-            bind_device,
-            http_config.connect_timeout,
-            transport_socket,
-        );
+        let http_channel = builder.with_http_protocol_options(http_config.http_protocol_options.clone()).build()?;
+        let tcp_channel = TcpChannelConnector::new(&connect_using, "original_dst_cluster", transport_socket);
 
         Ok(Endpoint { http_channel, tcp_channel })
     }

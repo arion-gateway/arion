@@ -15,25 +15,24 @@
 //
 //
 
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{net::SocketAddr, sync::Arc};
 
 use super::{
-    bind_device::BindDevice, connector::LocalConnectorWithDNSResolver, AsyncStream, UpstreamTransportSocketConfigurator,
+    connector::{ConnectUsing, UnifiedConnector},
+    AsyncStream, UpstreamTransportSocketConfigurator,
 };
 use crate::{
     listeners::metadata::DownstreamConnectionMetadata,
     secrets::{TlsConfigurator, WantsToBuildClient},
 };
 use futures::future::BoxFuture;
-use http::uri::Authority;
 use rustls::ClientConfig;
-use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 use webpki::types::ServerName;
 
 #[derive(Debug, Clone)]
 pub struct TcpChannelConnector {
-    connector: LocalConnectorWithDNSResolver,
+    connector: UnifiedConnector,
     transport_socket: UpstreamTransportSocketConfigurator,
 }
 
@@ -46,16 +45,12 @@ pub struct TcpChannel {
 
 impl TcpChannelConnector {
     pub fn new(
-        authority: &Authority,
+        target: &ConnectUsing,
         cluster_name: &'static str,
-        bind_device: Option<BindDevice>,
-        timeout: Option<Duration>,
         transport_socket: UpstreamTransportSocketConfigurator,
     ) -> Self {
-        Self {
-            connector: LocalConnectorWithDNSResolver { addr: authority.clone(), cluster_name, bind_device, timeout },
-            transport_socket,
-        }
+        let connector = UnifiedConnector::from((target, cluster_name));
+        Self { connector, transport_socket }
     }
 
     pub fn connect(
@@ -67,31 +62,50 @@ impl TcpChannelConnector {
         let connection_metadata = connection_metadata.cloned();
 
         Box::pin(async move {
-            let (mut stream, cluster_name) = connector
-                .connect()
-                .await
-                .map_err(|e| -> crate::Error { format!("TCP connection failed: {e}").into() })?;
+            let is_internal = matches!(connector, UnifiedConnector::Internal(_));
 
-            let upstream_local_addr = stream.local_addr().ok();
-            let upstream_peer_addr = stream.peer_addr().ok();
+            let (mut base_stream, cluster_name, upstream_local_addr, upstream_peer_addr) = match connector {
+                UnifiedConnector::Socket(socket_connector) => {
+                    let (tcp_stream, cluster_name) = socket_connector
+                        .connect()
+                        .await
+                        .map_err(|e| -> crate::Error { format!("TCP connection failed: {e}").into() })?;
+
+                    let upstream_local_addr = tcp_stream.local_addr().ok();
+                    let upstream_peer_addr = tcp_stream.peer_addr().ok();
+                    let stream: AsyncStream = Box::new(tcp_stream);
+
+                    (stream, cluster_name, upstream_local_addr, upstream_peer_addr)
+                },
+                UnifiedConnector::Internal(internal_connector) => {
+                    let (stream, cluster_name) = internal_connector
+                        .connect(connection_metadata.clone().map(Arc::new))
+                        .await
+                        .map_err(|e| -> crate::Error { format!("Internal connection failed: {e}").into() })?;
+
+                    (stream, cluster_name, None, None)
+                },
+            };
 
             let stream: AsyncStream = match &transport_socket {
                 UpstreamTransportSocketConfigurator::Tls(tls_configurator) => {
-                    configure_tls(tls_configurator, stream).await?
+                    configure_tls(tls_configurator, base_stream).await?
                 },
                 UpstreamTransportSocketConfigurator::ProxyProtocol(proxy_configurator) => {
-                    if let Some(metadata) = &connection_metadata {
-                        proxy_configurator.write_proxy_header(&mut stream, metadata).await.map_err(
-                            |e| -> crate::Error { format!("Failed to write proxy protocol header: {e}").into() },
-                        )?;
+                    if !is_internal {
+                        if let Some(metadata) = &connection_metadata {
+                            proxy_configurator.write_proxy_header(&mut base_stream, metadata).await.map_err(
+                                |e| -> crate::Error { format!("Failed to write proxy protocol header: {e}").into() },
+                            )?;
+                        }
                     }
                     if let Some(inner_tls) = &proxy_configurator.inner_tls_configurator {
-                        configure_tls(inner_tls, stream).await?
+                        configure_tls(inner_tls, base_stream).await?
                     } else {
-                        Box::new(stream)
+                        base_stream
                     }
                 },
-                UpstreamTransportSocketConfigurator::None => Box::new(stream),
+                UpstreamTransportSocketConfigurator::None => base_stream,
             };
 
             Ok(TcpChannel { stream, cluster_name, upstream_local_addr, upstream_peer_addr })
@@ -101,7 +115,7 @@ impl TcpChannelConnector {
 
 async fn configure_tls(
     tls_config: &TlsConfigurator<ClientConfig, WantsToBuildClient>,
-    stream: TcpStream,
+    stream: AsyncStream,
 ) -> crate::Result<AsyncStream> {
     let client_config = tls_config.clone().into_inner();
     let server_name = ServerName::try_from(tls_config.sni())

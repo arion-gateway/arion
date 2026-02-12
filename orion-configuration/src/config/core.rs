@@ -22,9 +22,10 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 use std::{
-    fmt::Debug,
+    fmt::{Debug, Display},
     hash::{Hash, Hasher},
     io::{BufRead, BufReader, Read},
+    net::SocketAddr,
 };
 base64_serde_type!(Base64Standard, STANDARD);
 
@@ -239,6 +240,46 @@ impl Hash for StringMatcherPattern {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub enum Address {
+    Socket(String, u16),
+    Pipe(String, u32),
+    Internal(InternalAddress),
+}
+
+impl Address {
+    pub fn into_socket_addr(self) -> Result<SocketAddr, GenericError> {
+        match self {
+            Address::Socket(address, port) => format!("{address}:{port}").parse().map_err(|e| {
+                GenericError::from_msg_with_cause(format!("failed to parse \"{address}\" as an ip address"), e)
+            }),
+            Address::Pipe(_, _) => Err(GenericError::from_msg("cannot convert pipe address to socket address")),
+            Address::Internal(_) => Err(GenericError::from_msg("cannot convert internal address to socket address")),
+        }
+    }
+
+    pub fn is_valid_cluster_endpoint(&self) -> bool {
+        matches!(self, Address::Socket(_, _) | Address::Pipe(_, _) | Address::Internal(_))
+    }
+}
+
+impl Display for Address {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Address::Socket(address, port) => write!(f, "{address}:{port}"),
+            Address::Pipe(path, _) => write!(f, "{path}"),
+            Address::Internal(internal) => write!(f, "internal:{}", internal.server_listener_name),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct InternalAddress {
+    pub server_listener_name: SmolStr,
+    #[serde(default)]
+    pub endpoint_id: SmolStr,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct RustType<T>(pub T);
 
 impl<T> RustType<T> {
@@ -253,15 +294,16 @@ pub(crate) use envoy_conversions::*;
 #[cfg(feature = "envoy-conversions")]
 pub mod envoy_conversions {
     #![allow(deprecated)]
-    use super::{DataSource, RustType, StringMatcher, StringMatcherPattern};
+    use super::{Address, DataSource, InternalAddress, RustType, StringMatcher, StringMatcherPattern};
     use crate::config::common::*;
     use http::{uri::Authority, StatusCode};
     use ipnet::IpNet;
     use orion_data_plane_api::envoy_data_plane_api::envoy::{
         config::core::v3::{
-            address::Address as EnvoyAddress, data_source::Specifier as EnvoySpecifier, socket_address::PortSpecifier,
+            address::Address as EnvoyAddress, data_source::Specifier as EnvoySpecifier,
+            envoy_internal_address::AddressNameSpecifier as EnvoyAddressNameSpecifier, socket_address::PortSpecifier,
             Address as EnvoyOuterAddress, CidrRange as EnvoyCidrRange, DataSource as EnvoyDataSource,
-            Pipe as EnvoyPipe, SocketAddress as EnvoySocketAddress,
+            EnvoyInternalAddress, Pipe as EnvoyPipe, SocketAddress as EnvoySocketAddress,
         },
         r#type::{
             matcher::v3::{
@@ -272,10 +314,10 @@ pub mod envoy_conversions {
         },
     };
     use regex::{Regex, RegexBuilder};
-    use serde::{Deserialize, Serialize};
-    use std::{net::SocketAddr, time::Duration};
+    use smol_str::SmolStr;
 
     use orion_data_plane_api::envoy_data_plane_api::google::protobuf::Duration as EnvoyDuration;
+    use std::time::Duration;
 
     impl TryFrom<EnvoyDuration> for RustType<Duration> {
         type Error = GenericError;
@@ -320,37 +362,15 @@ pub mod envoy_conversions {
         }
     }
 
-    #[derive(Debug, Eq, PartialEq, Serialize, Deserialize, Clone)]
-    pub enum Address {
-        Socket(String, u16),
-        Pipe(String, u32),
-    }
+    pub struct CidrRange(IpNet);
 
-    impl Address {
-        pub fn into_addr(self) -> Result<SocketAddr, GenericError> {
-            #[allow(clippy::match_wildcard_for_single_variants)]
-            match self {
-                Self::Socket(address, port) => format!("{address}:{port}")
-                    .parse()
-                    .map_err(|e| {
-                        GenericError::from_msg_with_cause(format!("failed to parse \"{address}\" as an ip address"), e)
-                    })
-                    .with_node(address),
-                _ => Err(GenericError::from_msg("only socket addresses are supported currently")),
-            }
+    impl CidrRange {
+        pub fn into_ipnet(self) -> IpNet {
+            self.0
         }
     }
 
-    impl std::fmt::Display for Address {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            match self {
-                Self::Socket(address, port) => f.write_str(&format!("{address}:{port}")),
-                Self::Pipe(path, _) => f.write_str(path),
-            }
-        }
-    }
-
-    impl TryFrom<EnvoyCidrRange> for RustType<IpNet> {
+    impl TryFrom<EnvoyCidrRange> for CidrRange {
         type Error = GenericError;
         fn try_from(value: EnvoyCidrRange) -> Result<Self, Self::Error> {
             let EnvoyCidrRange { address_prefix, prefix_len } = value;
@@ -376,6 +396,13 @@ pub mod envoy_conversions {
         }
     }
 
+    impl TryFrom<EnvoyCidrRange> for RustType<IpNet> {
+        type Error = GenericError;
+        fn try_from(value: EnvoyCidrRange) -> Result<Self, Self::Error> {
+            CidrRange::try_from(value).map(|c| RustType(c.into_ipnet()))
+        }
+    }
+
     impl TryFrom<EnvoyOuterAddress> for Address {
         type Error = GenericError;
         fn try_from(value: EnvoyOuterAddress) -> Result<Self, Self::Error> {
@@ -390,7 +417,7 @@ pub mod envoy_conversions {
             match value {
                 EnvoyAddress::SocketAddress(sock) => sock.try_into(),
                 EnvoyAddress::Pipe(pipe) => pipe.try_into(),
-                EnvoyAddress::EnvoyInternalAddress(_) => Err(GenericError::unsupported_variant("EnvoyInternalAddress")),
+                EnvoyAddress::EnvoyInternalAddress(internal) => Ok(Address::Internal(internal.try_into()?)),
             }
         }
     }
@@ -408,7 +435,8 @@ pub mod envoy_conversions {
         fn try_from(value: &Authority) -> Result<Self, Self::Error> {
             let port =
                 value.port_u16().ok_or(GenericError::from_msg(format!("Authority doesn't have port {value}")))?;
-            Ok(Address::Socket(value.host().to_owned(), port))
+            let host = value.host();
+            Ok(Address::Socket(host.to_string(), port))
         }
     }
 
@@ -433,8 +461,19 @@ pub mod envoy_conversions {
                 GenericError::from_msg(format!("failed to convert {port_specifier} to a port number"))
                     .with_node("port_specifier")
             })?;
-
             Ok(Address::Socket(address, port))
+        }
+    }
+
+    impl TryFrom<EnvoyInternalAddress> for InternalAddress {
+        type Error = GenericError;
+        fn try_from(value: EnvoyInternalAddress) -> Result<Self, Self::Error> {
+            let EnvoyInternalAddress { endpoint_id, address_name_specifier } = value;
+            let server_listener_name = match required!(address_name_specifier)? {
+                EnvoyAddressNameSpecifier::ServerListenerName(name) => SmolStr::from(name),
+            };
+            let endpoint_id = SmolStr::from(endpoint_id);
+            Ok(InternalAddress { server_listener_name, endpoint_id })
         }
     }
     impl TryFrom<EnvoyDataSource> for DataSource {

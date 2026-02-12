@@ -129,8 +129,11 @@ impl ListenersManager {
 
     pub fn start_listener(&mut self, listener: Listener, listener_conf: ListenerConfig) -> Result<()> {
         let listener_name = listener.get_name();
-        let (addr, dev) = listener.get_socket();
-        info!("Listener {} at {addr} (device bind:{})", listener_name, dev.is_some());
+        if let Some((addr, dev)) = listener.get_socket() {
+            info!("Starting Listener {} at {addr} (device bind:{})", listener_name, dev.is_some());
+        } else {
+            info!("Starting Internal listener {}", listener_name);
+        }
         // spawn the task for this listener address, this will spawn additional task per connection
         let join_handle = tokio::spawn(async move {
             let error = listener.start().await;
@@ -167,7 +170,7 @@ mod tests {
     };
 
     use super::*;
-    use orion_configuration::config::Listener as ListenerConfig;
+    use orion_configuration::config::{listener::ListenerType, Listener as ListenerConfig};
     //use tracing_test::traced_test;
 
     #[tokio::test]
@@ -184,9 +187,11 @@ mod tests {
         let l1 = Listener::test_listener(name, routeb_rx, secb_rx);
         let l1_info = ListenerConfig {
             name: name.into(),
-            address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 1234),
+            listener_type: ListenerType::Socket {
+                address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 1234),
+                bind_device: None,
+            },
             filter_chains: HashMap::default(),
-            bind_device: None,
             with_tls_inspector: false,
             proxy_protocol_config: None,
             tcp_backlog_size: 128,
@@ -223,9 +228,11 @@ mod tests {
         let l1 = Listener::test_listener(name, routeb_rx, secb_rx);
         let l1_info = ListenerConfig {
             name: name.into(),
-            address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 1234),
+            listener_type: ListenerType::Socket {
+                address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 1234),
+                bind_device: None,
+            },
             filter_chains: HashMap::default(),
-            bind_device: None,
             with_tls_inspector: false,
             proxy_protocol_config: None,
             tcp_backlog_size: 128,

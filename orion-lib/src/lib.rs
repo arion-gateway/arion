@@ -29,6 +29,7 @@ pub mod clusters;
 pub mod instrumentation;
 mod listeners;
 pub mod metrics;
+pub mod runtime_context;
 mod secrets;
 pub(crate) mod thread_local;
 pub mod tracing_attributes;

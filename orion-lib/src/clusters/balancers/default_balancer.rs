@@ -148,13 +148,13 @@ where
 
 #[cfg(test)]
 mod test {
-    use orion_configuration::config::{cluster::HttpProtocolOptions, core::envoy_conversions::Address};
+    use orion_configuration::config::{cluster::HttpProtocolOptions, core::Address};
     use std::sync::Arc;
 
     use super::DefaultBalancer;
     use crate::{
         clusters::{
-            balancers::{wrr::WeightedRoundRobinBalancer, Balancer},
+            balancers::{wrr::WeightedRoundRobinBalancer, Balancer, EndpointWithAuthority},
             health::HealthStatus,
             load_assignment::{LbEndpoint, LocalityLbEndpoints},
         },
@@ -172,7 +172,7 @@ mod test {
                 if health_status == HealthStatus::Healthy {
                     healthy += 1;
                 }
-                let address = Address::Socket(auth.host().to_owned(), auth.port_u16().unwrap());
+                let address = Address::Socket(auth.host().to_string(), auth.port_u16().unwrap_or(8000));
                 lb_endpoints.push(Arc::new(LbEndpoint::new(
                     auth,
                     address,
@@ -236,7 +236,7 @@ mod test {
             results.push(next);
         }
 
-        let results: Vec<_> = results.into_iter().filter_map(|r| r.map(|f| f.authority.to_string())).collect();
+        let results: Vec<_> = results.into_iter().filter_map(|r| r.map(|f| f.authority().to_string())).collect();
         let expected = [
             "endpoint11:8000",
             "endpoint12:8000",
@@ -291,7 +291,7 @@ mod test {
             results.push(next);
         }
 
-        let results: Vec<_> = results.into_iter().filter_map(|r| r.map(|f| f.authority.to_string())).collect();
+        let results: Vec<_> = results.into_iter().filter_map(|r| r.map(|f| f.authority().to_string())).collect();
         let expected = [
             "endpoint11:8000",
             "endpoint12:8000",
@@ -346,7 +346,7 @@ mod test {
             results.push(next);
         }
 
-        let results: Vec<_> = results.into_iter().filter_map(|r| r.map(|f| f.authority.to_string())).collect();
+        let results: Vec<_> = results.into_iter().filter_map(|r| r.map(|f| f.authority().to_string())).collect();
         let expected = [
             "endpoint11:8000",
             "endpoint12:8000",
@@ -401,7 +401,7 @@ mod test {
             results.push(next);
         }
 
-        let results: Vec<_> = results.into_iter().filter_map(|r| r.map(|f| f.authority.to_string())).collect();
+        let results: Vec<_> = results.into_iter().filter_map(|r| r.map(|f| f.authority().to_string())).collect();
         let expected = [
             "endpoint21:8000",
             "endpoint22:8000",
@@ -456,7 +456,7 @@ mod test {
             results.push(next);
         }
 
-        let results: Vec<_> = results.into_iter().filter_map(|r| r.map(|f| f.authority.to_string())).collect();
+        let results: Vec<_> = results.into_iter().filter_map(|r| r.map(|f| f.authority().to_string())).collect();
         let expected = [
             "endpoint21:8000",
             "endpoint22:8000",
@@ -511,7 +511,7 @@ mod test {
             results.push(next);
         }
 
-        let results: Vec<_> = results.into_iter().filter_map(|r| r.map(|f| f.authority.to_string())).collect();
+        let results: Vec<_> = results.into_iter().filter_map(|r| r.map(|f| f.authority().to_string())).collect();
         let expected = [
             "endpoint21:8000",
             "endpoint22:8000",
@@ -566,7 +566,7 @@ mod test {
             results.push(next);
         }
 
-        let results: Vec<_> = results.into_iter().filter_map(|r| r.map(|f| f.authority.to_string())).collect();
+        let results: Vec<_> = results.into_iter().filter_map(|r| r.map(|f| f.authority().to_string())).collect();
         let expected = [
             "endpoint21:8000",
             "endpoint31:8000",

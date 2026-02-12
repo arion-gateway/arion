@@ -18,6 +18,7 @@
 use crate::core_affinity::{self, AffinityStrategy};
 use orion_configuration::config::runtime::Affinity;
 use orion_lib::runtime_config;
+use orion_lib::runtime_context::set_runtime_id;
 
 #[cfg(feature = "metrics")]
 use orion_metrics::{metrics::init_per_thread_metrics, Metrics};
@@ -53,7 +54,8 @@ pub fn build_tokio_runtime(
 ) -> Runtime {
     let config = runtime_config();
 
-    let thread_name: String = match affinity_info {
+    let runtime_id = affinity_info.as_ref().map_or(0, |(id, _)| id.0);
+    let thread_name: String = match &affinity_info {
         Some((runtime_id, _)) => format!("{thread_name}_{runtime_id}"),
         None => thread_name.to_owned(),
     };
@@ -87,13 +89,21 @@ pub fn build_tokio_runtime(
     config.event_interval.map(|val| builder.event_interval(val));
     config.max_io_events_per_tick.map(|val| builder.max_io_events_per_tick(val.into()));
 
-    // initialize per-thread metrics...
-    //
-    #[cfg(feature = "metrics")]
+    // initialize per-thread state: runtime ID and metrics
     if _current_thread {
+        set_runtime_id(runtime_id);
+        #[cfg(feature = "metrics")]
         init_per_thread_metrics(&metrics);
     } else {
-        builder.on_thread_start(move || init_per_thread_metrics(&metrics));
+        #[cfg(feature = "metrics")]
+        builder.on_thread_start(move || {
+            set_runtime_id(runtime_id);
+            init_per_thread_metrics(&metrics);
+        });
+        #[cfg(not(feature = "metrics"))]
+        builder.on_thread_start(move || {
+            set_runtime_id(runtime_id);
+        });
     }
 
     #[allow(clippy::expect_used)]

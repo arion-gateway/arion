@@ -40,14 +40,30 @@ use orion_interner::StringInterner;
 
 const DEFAULT_TCP_BACKLOG_SIZE: UInt32Value = UInt32Value { value: 128 };
 
+/// Empty configuration marker for internal listeners
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct EmptyConfig {}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum ListenerType {
+    Socket {
+        address: SocketAddr,
+        #[serde(skip_serializing_if = "Option::is_none", default = "Default::default")]
+        bind_device: Option<BindDevice>,
+    },
+    Internal {
+        internal_listener: EmptyConfig,
+    },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Listener {
     pub name: SmolStr,
-    pub address: SocketAddr,
+    #[serde(flatten)]
+    pub listener_type: ListenerType,
     #[serde(with = "serde_filterchains")]
     pub filter_chains: HashMap<FilterChainMatch, FilterChain>,
-    #[serde(skip_serializing_if = "Option::is_none", default = "Default::default")]
-    pub bind_device: Option<BindDevice>,
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
     pub with_tls_inspector: bool,
     #[serde(skip_serializing_if = "Option::is_none", default = "Default::default")]
@@ -321,7 +337,9 @@ mod envoy_conversions {
     use std::hash::{DefaultHasher, Hash, Hasher};
     use std::str::FromStr;
 
-    use super::{FilterChain, FilterChainMatch, Listener, MainFilter, ServerNameMatch, TlsConfig};
+    use super::{
+        EmptyConfig, FilterChain, FilterChainMatch, Listener, ListenerType, MainFilter, ServerNameMatch, TlsConfig,
+    };
     use crate::config::core::RustType;
     use crate::config::listener::DEFAULT_TCP_BACKLOG_SIZE;
     use crate::config::{
@@ -336,8 +354,9 @@ mod envoy_conversions {
             config::{
                 core::v3::TransportSocket as EnvoyTransportSocket,
                 listener::v3::{
-                    filter::ConfigType as EnvoyConfigType, Filter as EnvoyFilter, FilterChain as EnvoyFilterChain,
-                    FilterChainMatch as EnvoyFilterChainMatch, Listener as EnvoyListener,
+                    filter::ConfigType as EnvoyConfigType, listener::ListenerSpecifier as EnvoyListenerSpecifier,
+                    Filter as EnvoyFilter, FilterChain as EnvoyFilterChain, FilterChainMatch as EnvoyFilterChainMatch,
+                    Listener as EnvoyListener,
                 },
             },
             extensions::{
@@ -425,7 +444,7 @@ mod envoy_conversions {
                 bind_to_port,
                 enable_mptcp,
                 ignore_global_conn_limit,
-                listener_specifier,
+                // listener_specifier
                 bypass_overload_manager,
                 fcds_config,
                 tcp_keepalive
@@ -433,7 +452,24 @@ mod envoy_conversions {
             let name: String = required!(name)?;
             (|| -> Result<_, GenericError> {
                 let name = name.clone();
-                let address = Address::into_addr(convert_opt!(address)?)?;
+
+                let listener_type = match listener_specifier {
+                    Some(EnvoyListenerSpecifier::InternalListener(_)) => {
+                        ListenerType::Internal { internal_listener: EmptyConfig {} }
+                    },
+                    None => {
+                        let envoy_address: Address = convert_opt!(address)?;
+                        let address = envoy_address.into_socket_addr()?;
+                        let bind_device = convert_vec!(socket_options)?;
+                        if bind_device.len() > 1 {
+                            return Err(GenericError::from_msg("at most one bind device is supported"))
+                                .with_node("socket_options");
+                        }
+                        let bind_device = bind_device.into_iter().next();
+                        ListenerType::Socket { address, bind_device }
+                    },
+                };
+
                 let filter_chains: Vec<FilterChainWrapper> = convert_non_empty_vec!(filter_chains)?;
                 let n_filter_chains = filter_chains.len();
                 let filter_chains: HashMap<_, _> = filter_chains.into_iter().map(|x| x.0).collect();
@@ -465,18 +501,11 @@ mod envoy_conversions {
                         },
                     }
                 }
-                let bind_device = convert_vec!(socket_options)?;
-                if bind_device.len() > 1 {
-                    return Err(GenericError::from_msg("at most one bind device is supported"))
-                        .with_node("socket_options");
-                }
-                let bind_device = bind_device.into_iter().next();
                 let tcp_backlog_size = tcp_backlog_size.unwrap_or(DEFAULT_TCP_BACKLOG_SIZE).value;
                 Ok(Self {
                     name: name.into(),
-                    address,
+                    listener_type,
                     filter_chains,
-                    bind_device,
                     with_tls_inspector,
                     proxy_protocol_config,
                     tcp_backlog_size,
