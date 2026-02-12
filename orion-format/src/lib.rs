@@ -42,6 +42,8 @@ pub const DEFAULT_ISTIO_ACCESS_LOG_FORMAT: &str = r#"[%START_TIME%] "%REQ(:METHO
 pub enum FormatError {
     #[error("invalid operator `{0}`")]
     InvalidOperator(String),
+    #[error("unsupported operator `{0}`")]
+    UnsupportedOperator(String),
     #[error("missing argument `{0}`")]
     MissingArgument(String),
     #[error("missing bracket `{0}`")]
@@ -54,8 +56,6 @@ pub enum FormatError {
     InvalidRequestArg(String),
     #[error("invalid response argument `{0}`")]
     InvalidResponseArg(String),
-    #[error("invalid operator index `{0}`")]
-    InvalidOperatorIndex(#[from] std::num::TryFromIntError),
 }
 
 #[derive(Hash, PartialEq, Eq, Debug, Clone, Serialize, Deserialize)]
@@ -63,6 +63,29 @@ pub enum Template {
     Char(char),
     Literal(SmolStr),
     Placeholder(Operator, Category), // eg. ("DURATION", Pattern::Duration, None), (Pattern::Req, Some(":METHOD"))
+}
+
+impl Template {
+    pub fn is_placeholder(&self) -> bool {
+        matches!(self, Template::Placeholder(_, _))
+    }
+
+    pub fn is_unsupported(&self) -> bool {
+        match self {
+            Template::Placeholder(_, cat) => cat.contains(Category::UNSUPPORTED),
+            _ => false,
+        }
+    }
+}
+
+impl Display for Template {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Template::Char(c) => write!(f, "{c}"),
+            Template::Literal(s) => write!(f, "{s}"),
+            Template::Placeholder(op, _) => write!(f, "{op:?}"),
+        }
+    }
 }
 
 #[derive(Hash, PartialEq, Eq, Debug, Clone, Serialize, Deserialize)]
@@ -103,6 +126,13 @@ impl Clone for LogFormatter {
 impl LogFormatter {
     pub fn try_new(input: &str, omit_empty_values: bool) -> Result<LogFormatter, FormatError> {
         let templates = AccessLogGrammar::parse(input)?;
+
+        for template in &templates {
+            if template.is_unsupported() {
+                return Err(FormatError::UnsupportedOperator(template.to_string()));
+            }
+        }
+
         let mut format: Vec<StringType> = Vec::with_capacity(templates.len());
 
         for t in &templates {
