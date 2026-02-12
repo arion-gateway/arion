@@ -25,7 +25,7 @@ use http::{header, HeaderMap, HeaderName, HeaderValue, Method, Request, Response
 use orion_configuration::config::{
     cluster::http_protocol_options::Codec,
     network_filters::http_connection_manager::{
-        header_modifer::{HeaderAppendAction, HeaderValueOption},
+        header_modifier::{HeaderAppendAction, HeaderValueOption},
         HeaderModifiersAdd, HeaderModifiersRemove, Route, RouteConfiguration, VirtualHost, XffSettings,
     },
 };
@@ -310,126 +310,131 @@ impl<B> ModifiersExtractor<Response<B>> for RouteConfiguration {
     }
 }
 
+pub enum HeaderAction {
+    Append(HeaderValue),
+    Overwrite(HeaderValue),
+    Nop,
+}
+
 pub trait HeaderValueModifier {
     fn apply_to_request<B>(&self, res: &mut Request<B>) -> bool;
     fn apply_to_response<B>(&self, res: &mut Response<B>) -> bool;
+    fn run_action(
+        &self,
+        action: HeaderAction,
+        hmap: &mut HeaderMap<HeaderValue>,
+        keep_empty_value: bool,
+        header: &HeaderName,
+    ) -> bool {
+        match action {
+            HeaderAction::Append(header_value) => {
+                if !keep_empty_value && header_value.is_empty() {
+                    hmap.remove(header).is_some()
+                } else {
+                    hmap.append(header, header_value);
+                    true
+                }
+            },
+            HeaderAction::Overwrite(header_value) => {
+                if !keep_empty_value && header_value.is_empty() {
+                    hmap.remove(header).is_some()
+                } else {
+                    hmap.insert(header, header_value);
+                    true
+                }
+            },
+            HeaderAction::Nop => false,
+        }
+    }
 }
 
 impl HeaderValueModifier for HeaderValueOption {
     fn apply_to_request<B>(&self, req: &mut Request<B>) -> bool {
-        if self.header.value.is_empty() && !self.keep_empty_value {
-            req.headers_mut().remove(&self.header.key).is_some()
-        } else {
-            let has_key_already = req.headers_mut().get(&self.header.key).is_some();
+        let has_key_already = req.headers_mut().get(&self.header.key).is_some();
 
-            let socket_address = || match req.extensions().get::<DownstreamMetadata>() {
-                Some(meta) => SocketAddrContext {
-                    downstream_local_addr: Some(meta.connection.local_address()),
-                    downstream_peer_addr: Some(meta.connection.peer_address()),
-                    upstream_local_addr: None,
-                    upstream_peer_addr: None,
-                },
-                None => SocketAddrContext::default(),
-            };
+        let socket_address = || match req.extensions().get::<DownstreamMetadata>() {
+            Some(meta) => SocketAddrContext {
+                downstream_local_addr: Some(meta.connection.local_address()),
+                downstream_peer_addr: Some(meta.connection.peer_address()),
+                upstream_local_addr: None,
+                upstream_peer_addr: None,
+            },
+            None => SocketAddrContext::default(),
+        };
 
-            let get_header_value = |req: &Request<B>| -> HeaderValue {
-                let mut formatter = self.header.value.clone();
-                formatter.with_context(&DownstreamContext {
-                    request: &req,
-                    request_head_size: 0,
-                    trace_id: None,
-                    server_name: None,
-                    socket_address: socket_address(),
-                });
-                formatter
-                    .into_header_value()
-                    .inspect_err(|e| {
-                        warn!("apply_to_request: failed to convert to HeaderValue: {}", e);
-                    })
-                    .unwrap_or(HeaderValue::from_static(""))
-            };
+        let get_header_value = |req: &Request<B>| -> HeaderValue {
+            let mut formatter = self.header.value.clone();
+            formatter.with_context(&DownstreamContext {
+                request: &req,
+                request_head_size: 0,
+                trace_id: None,
+                server_name: None,
+                socket_address: socket_address(),
+            });
+            formatter
+                .into_header_value()
+                .inspect_err(|e| {
+                    warn!("apply_to_request: failed to convert to HeaderValue: {}", e);
+                })
+                .unwrap_or(HeaderValue::from_static(""))
+        };
 
-            match self.append_action {
-                HeaderAppendAction::AppendIfExistsOrAdd => {
-                    let header_val = get_header_value(&req);
-                    req.headers_mut().append(&self.header.key, header_val);
-                    true
-                },
-                HeaderAppendAction::AppendIfAbsent => {
-                    if !has_key_already {
-                        let header_value = get_header_value(&req);
-                        req.headers_mut().append(&self.header.key, header_value);
-                        true
-                    } else {
-                        false
-                    }
-                },
-                HeaderAppendAction::OverwriteIfExistsOrAdd => {
-                    let header_value = get_header_value(&req);
-                    req.headers_mut().insert(&self.header.key, header_value);
-                    true
-                },
-                HeaderAppendAction::OverwriteIfExists => {
-                    if has_key_already {
-                        let header_value = get_header_value(&req);
-                        req.headers_mut().insert(&self.header.key, header_value);
-                        true
-                    } else {
-                        false
-                    }
-                },
-            }
-        }
+        let action = match self.append_action {
+            HeaderAppendAction::AppendIfExistsOrAdd => HeaderAction::Append(get_header_value(&req)),
+            HeaderAppendAction::AppendIfAbsent => {
+                if !has_key_already {
+                    HeaderAction::Append(get_header_value(&req))
+                } else {
+                    HeaderAction::Nop
+                }
+            },
+            HeaderAppendAction::OverwriteIfExistsOrAdd => HeaderAction::Overwrite(get_header_value(&req)),
+            HeaderAppendAction::OverwriteIfExists => {
+                if has_key_already {
+                    HeaderAction::Overwrite(get_header_value(&req))
+                } else {
+                    HeaderAction::Nop
+                }
+            },
+        };
+
+        self.run_action(action, req.headers_mut(), self.keep_empty_value, &self.header.key)
     }
 
     fn apply_to_response<B>(&self, res: &mut Response<B>) -> bool {
-        if self.header.value.is_empty() && !self.keep_empty_value {
-            res.headers_mut().remove(&self.header.key).is_some()
-        } else {
-            let has_key_already = res.headers_mut().get(&self.header.key).is_some();
+        let has_key_already = res.headers_mut().get(&self.header.key).is_some();
 
-            let get_header_value = |res: &Response<B>| -> HeaderValue {
-                let mut formatter = self.header.value.clone();
-                formatter.with_context(&DownstreamResponseContext { response: &res, response_head_size: 0 });
-                formatter
-                    .into_header_value()
-                    .inspect_err(|e| {
-                        warn!("apply_to_response: failed to convert to HeaderValue: {}", e);
-                    })
-                    .unwrap_or(HeaderValue::from_static(""))
-            };
+        let get_header_value = |res: &Response<B>| -> HeaderValue {
+            let mut formatter = self.header.value.clone();
+            formatter.with_context(&DownstreamResponseContext { response: &res, response_head_size: 0 });
+            formatter
+                .into_header_value()
+                .inspect_err(|e| {
+                    warn!("apply_to_response: failed to convert to HeaderValue: {}", e);
+                })
+                .unwrap_or(HeaderValue::from_static(""))
+        };
 
-            match self.append_action {
-                HeaderAppendAction::AppendIfExistsOrAdd => {
-                    let header_value = get_header_value(&res);
-                    res.headers_mut().append(&self.header.key, header_value);
-                    true
-                },
-                HeaderAppendAction::AppendIfAbsent => {
-                    if !has_key_already {
-                        let header_value = get_header_value(&res);
-                        res.headers_mut().append(&self.header.key, header_value);
-                        true
-                    } else {
-                        false
-                    }
-                },
-                HeaderAppendAction::OverwriteIfExistsOrAdd => {
-                    let header_value = get_header_value(&res);
-                    res.headers_mut().insert(&self.header.key, header_value);
-                    true
-                },
-                HeaderAppendAction::OverwriteIfExists => {
-                    if has_key_already {
-                        let header_value = get_header_value(&res);
-                        res.headers_mut().insert(&self.header.key, header_value);
-                        true
-                    } else {
-                        false
-                    }
-                },
-            }
-        }
+        let action = match self.append_action {
+            HeaderAppendAction::AppendIfExistsOrAdd => HeaderAction::Append(get_header_value(&res)),
+            HeaderAppendAction::AppendIfAbsent => {
+                if !has_key_already {
+                    HeaderAction::Append(get_header_value(&res))
+                } else {
+                    HeaderAction::Nop
+                }
+            },
+            HeaderAppendAction::OverwriteIfExistsOrAdd => HeaderAction::Overwrite(get_header_value(&res)),
+            HeaderAppendAction::OverwriteIfExists => {
+                if has_key_already {
+                    HeaderAction::Overwrite(get_header_value(&res))
+                } else {
+                    HeaderAction::Nop
+                }
+            },
+        };
+
+        self.run_action(action, res.headers_mut(), self.keep_empty_value, &self.header.key)
     }
 }
 
@@ -437,7 +442,7 @@ impl HeaderValueModifier for HeaderValueOption {
 mod tests {
     use super::*;
     use http::Request;
-    use orion_configuration::config::network_filters::http_connection_manager::header_modifer::HeaderKeyValue;
+    use orion_configuration::config::network_filters::http_connection_manager::header_modifier::HeaderKeyValue;
     use orion_format::header_formatter::HeaderFormatter;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 

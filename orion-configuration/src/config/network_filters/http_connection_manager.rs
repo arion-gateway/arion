@@ -16,7 +16,7 @@
 //
 
 pub mod header_matcher;
-pub mod header_modifer;
+pub mod header_modifier;
 pub mod http_filters;
 pub mod route;
 
@@ -32,7 +32,7 @@ use std::{collections::HashMap, str::FromStr, time::Duration};
 use crate::config::{
     common::*,
     network_filters::{
-        access_log::AccessLog, http_connection_manager::header_modifer::HeaderValueOption, tracing::TracingConfig,
+        access_log::AccessLog, http_connection_manager::header_modifier::HeaderValueOption, tracing::TracingConfig,
     },
 };
 
