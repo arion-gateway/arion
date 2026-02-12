@@ -23,7 +23,6 @@ use orion_lib::configuration::get_listeners_and_clusters;
 use orion_lib::RUNTIME_CONFIG;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use tracing_test::traced_test;
 
 /// we cannot run the tests concurrently because some of them rely on
 /// the current working directory ($PWD). This function is just a wrapper with
@@ -51,13 +50,11 @@ fn check_config_file(file_path: &str) -> Result<(), orion_error::Error> {
     with_current_dir(&d, || get_listeners_and_clusters(bootstrap).map(|_| ()))
 }
 
-#[traced_test]
 #[test]
 fn bootstrap_demo_static() -> Result<(), orion_error::Error> {
     check_config_file("conf/demo/demo-static.yaml")
 }
 
-#[traced_test]
 #[test]
 fn bootstrap_demo_dynamic() -> Result<(), orion_error::Error> {
     check_config_file("conf/demo/demo-dynamic.yaml")

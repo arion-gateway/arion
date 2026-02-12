@@ -23,6 +23,7 @@ orion-metrics                  = { workspace = true, optional = true }
 orion-tracing.workspace        = true
 orion-xds.workspace            = true
 parking_lot                    = "0.12.5"
+pingora-timeout                = "0.3.0"
 tokio.workspace                = true
 tower.workspace                = true
 tracing.workspace              = true
@@ -66,7 +67,6 @@ affinity = "0.1.2"
 [dev-dependencies]
 axum-test              = "17.3.0"
 orion-data-plane-api.workspace = true
-tracing-test.workspace = true
 
 [lints]
 workspace = true

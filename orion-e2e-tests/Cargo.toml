@@ -1,0 +1,37 @@
+[package]
+edition.workspace      = true
+license-file.workspace = true
+name                   = "orion-e2e-tests"
+rust-version.workspace = true
+version.workspace      = true
+description            = "E2E test harness for Orion Proxy"
+
+[dependencies]
+tokio.workspace       = true
+futures.workspace     = true
+tokio-stream.workspace = true
+hyper           = { version = "1.7", features = ["server", "http1"] }
+hyper-util.workspace  = true
+http.workspace        = true
+http-body.workspace   = true
+http-body-util.workspace = true
+serde.workspace       = true
+serde_json.workspace  = true
+serde_yaml.workspace  = true
+thiserror.workspace   = true
+tracing.workspace     = true
+bytes.workspace       = true
+orion-data-plane-api.workspace = true
+orion-xds.workspace = true
+prost.workspace = true
+tonic.workspace = true
+uuid = { version = "1", features = ["v4"] }
+pingora-timeout = "0.3.0"
+dashmap = "6"
+atomic-take = "1.1.0"
+
+[dev-dependencies]
+tracing-test.workspace = true
+
+[lints]
+workspace = true

@@ -16,7 +16,10 @@
 //
 
 pub use crate::config::network_filters::network_rbac::Action;
-use crate::config::{common::*, core::StringMatcher};
+use crate::config::{
+    common::*,
+    core::{StringMatcher, StringMatcherPattern},
+};
 use http::{HeaderMap, HeaderName, Method, Request, Response, Uri};
 use serde::{de::Visitor, Deserialize, Serialize};
 use std::str::FromStr;
@@ -154,8 +157,14 @@ impl HeaderMatcher {
                         if self.treat_missing_header_as_empty {
                             self.header_matcher.matches("") ^ self.invert_match
                         } else {
-                            // missing headers don't get inverted
-                            false
+                            // For Present matching: missing header = false (not present)
+                            // Then invert_match will be applied for "absent" matching
+                            if matches!(self.header_matcher.pattern, StringMatcherPattern::Present) {
+                                false ^ self.invert_match
+                            } else {
+                                // Other matchers: missing headers don't get inverted
+                                false
+                            }
                         }
                     },
                     Some(first) => {
@@ -333,6 +342,89 @@ mod header_matcher_tests {
     }
 }
 
+#[cfg(test)]
+mod header_matcher_present_tests {
+    use super::*;
+    use crate::config::core::{StringMatcher, StringMatcherPattern};
+    use http::header::*;
+
+    #[test]
+    fn test_header_present_match() {
+        let mut hm = HeaderMap::new();
+
+        let h = HeaderMatcher {
+            header_name: HeaderName::from_static("x-debug").into(),
+            invert_match: false,
+            treat_missing_header_as_empty: false,
+            header_matcher: StringMatcher { ignore_case: false, pattern: StringMatcherPattern::Present },
+        };
+
+        // Header is absent - should NOT match
+        let mut builder = http::request::Builder::new();
+        *builder.headers_mut().unwrap() = hm.clone();
+        let req = builder.body(()).unwrap();
+        assert!(!h.request_matches(&req), "Present should not match when header is absent");
+
+        // Header is present with a value - should match
+        hm.insert(HeaderName::from_static("x-debug"), HeaderValue::from_static("true"));
+        let mut builder = http::request::Builder::new();
+        *builder.headers_mut().unwrap() = hm.clone();
+        let req = builder.body(()).unwrap();
+        assert!(h.request_matches(&req), "Present should match when header is present");
+    }
+
+    #[test]
+    fn test_header_absent_match_with_invert() {
+        let mut hm = HeaderMap::new();
+
+        let h = HeaderMatcher {
+            header_name: HeaderName::from_static("x-debug").into(),
+            invert_match: true,
+            treat_missing_header_as_empty: false,
+            header_matcher: StringMatcher { ignore_case: false, pattern: StringMatcherPattern::Present },
+        };
+
+        // Header is absent - with invert, should match
+        let mut builder = http::request::Builder::new();
+        *builder.headers_mut().unwrap() = hm.clone();
+        let req = builder.body(()).unwrap();
+        assert!(h.request_matches(&req), "Present with invert should match when header is absent");
+
+        // Header is present with a value - with invert, should NOT match
+        hm.insert(HeaderName::from_static("x-debug"), HeaderValue::from_static("true"));
+        let mut builder = http::request::Builder::new();
+        *builder.headers_mut().unwrap() = hm.clone();
+        let req = builder.body(()).unwrap();
+        assert!(!h.request_matches(&req), "Present with invert should not match when header is present");
+    }
+
+    #[test]
+    fn test_header_present_empty_value() {
+        let mut hm = HeaderMap::new();
+
+        let h = HeaderMatcher {
+            header_name: HeaderName::from_static("authorization").into(),
+            invert_match: false,
+            treat_missing_header_as_empty: false,
+            header_matcher: StringMatcher { ignore_case: false, pattern: StringMatcherPattern::Present },
+        };
+
+        // Header is present with empty value - should match
+        hm.insert(HeaderName::from_static("authorization"), HeaderValue::from_static(""));
+        let mut builder = http::request::Builder::new();
+        *builder.headers_mut().unwrap() = hm.clone();
+        let req = builder.body(()).unwrap();
+        assert!(h.request_matches(&req), "Present should match when header is present with empty value");
+
+        // Header is present with non-empty value - should also match
+        hm.insert(HeaderName::from_static("authorization"), HeaderValue::from_static("Bearer token"));
+        let mut builder = http::request::Builder::new();
+        *builder.headers_mut().unwrap() = hm.clone();
+        let req = builder.body(()).unwrap();
+        assert!(h.request_matches(&req), "Present should match when header is present with non-empty value");
+    }
+}
+
 #[cfg(feature = "envoy-conversions")]
 mod envoy_conversions {
     #![allow(deprecated)]
@@ -352,8 +444,13 @@ mod envoy_conversions {
             let EnvoyHeaderMatcher { name, invert_match, treat_missing_header_as_empty, header_match_specifier } =
                 value;
             let header_name = HeaderNames::from_str(&name).with_node("name")?;
-            let header_matcher = convert_opt!(header_match_specifier)?;
-            Ok(Self { header_name, treat_missing_header_as_empty, invert_match, header_matcher })
+            let header_matcher: StringMatcher = convert_opt!(header_match_specifier)?;
+            let treat_missing = if matches!(header_matcher.pattern, StringMatcherPattern::Present) {
+                false
+            } else {
+                treat_missing_header_as_empty
+            };
+            Ok(Self { header_name, treat_missing_header_as_empty: treat_missing, invert_match, header_matcher })
         }
     }
 
@@ -378,7 +475,9 @@ mod envoy_conversions {
                     Ok(Self { ignore_case: false, pattern: StringMatcherPattern::Suffix(s.into()) })
                 },
                 EnvoyHeaderMatchSpecifier::RangeMatch(_) => Err(GenericError::unsupported_variant("RangeMatch")),
-                EnvoyHeaderMatchSpecifier::PresentMatch(_) => Err(GenericError::unsupported_variant("PresentMatch")),
+                EnvoyHeaderMatchSpecifier::PresentMatch(_) => {
+                    Ok(Self { ignore_case: false, pattern: StringMatcherPattern::Present })
+                },
             }
         }
     }

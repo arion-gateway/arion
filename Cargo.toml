@@ -5,6 +5,7 @@ members = [
   "orion-data-plane-api",
   "orion-error",
   "orion-http-header",
+  "orion-e2e-tests",
   "orion-interner",
   "orion-format",
   "orion-lib",
@@ -29,17 +30,18 @@ version      = "0.1.0"
 hyper-util   = { git = "https://internal.invalid/hyper-util.git", rev = "76db6ec" }
 
 [workspace.dependencies]
-envoy-data-plane-api = { path = "envoy-data-plane-api" }
-orion-configuration  = { path = "orion-configuration" }
-orion-data-plane-api = { path = "orion-data-plane-api" }
-orion-error          = { path = "orion-error" }
-orion-format         = { path = "orion-format" }
-orion-http-header    = { path = "orion-http-header" }
-orion-interner       = { path = "orion-interner" }
-orion-lib            = { path = "orion-lib" }
-orion-metrics        = { path = "orion-metrics" }
-orion-tracing        = { path = "orion-tracing" }
-orion-xds            = { path = "orion-xds" }
+envoy-data-plane-api    = { path = "envoy-data-plane-api" }
+orion-configuration     = { path = "orion-configuration" }
+orion-data-plane-api    = { path = "orion-data-plane-api" }
+orion-error             = { path = "orion-error" }
+orion-format            = { path = "orion-format" }
+orion-http-header       = { path = "orion-http-header" }
+orion-e2e-tests         = { path = "orion-e2e-tests" }
+orion-interner          = { path = "orion-interner" }
+orion-lib               = { path = "orion-lib" }
+orion-metrics           = { path = "orion-metrics" }
+orion-tracing           = { path = "orion-tracing" }
+orion-xds               = { path = "orion-xds" }
 
 dashmap             = "6.1.0"
 abort-on-drop       = "0.2"

@@ -409,6 +409,9 @@ async fn configure_initial_resources(
     clusters: Vec<PartialClusterType>,
     configuration_senders: Vec<ConfigurationSenders>,
 ) -> Result<Vec<ClusterType>> {
+    let initial_clusters: Vec<ClusterType> =
+        clusters.into_iter().map(orion_lib::clusters::add_cluster).collect::<Result<_>>()?;
+
     let listeners_tx: Vec<_> = configuration_senders
         .into_iter()
         .map(|ConfigurationSenders { listener_configuration_sender, route_configuration_sender: _ }| {
@@ -426,7 +429,7 @@ async fn configure_initial_resources(
         .map_err(Into::<orion_error::Error>::into)?;
     }
 
-    clusters.into_iter().map(orion_lib::clusters::add_cluster).collect::<Result<_>>()
+    Ok(initial_clusters)
 }
 
 async fn start_proxy(configuration_receivers: ConfigurationReceivers) -> Result<()> {

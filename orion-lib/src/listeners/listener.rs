@@ -243,7 +243,8 @@ impl Listener {
             Err(e) => return e,
         };
 
-        info!("listener '{name}' started: {local_address}");
+        let actual_address = listener.local_addr().unwrap_or(local_address);
+        info!("listener '{name}' started: {actual_address}");
         let mut filter_chains = Arc::new(filter_chains);
         let proxy_protocol_config = proxy_protocol_config.map(Arc::new);
         let _listener_name = name;
@@ -566,7 +567,8 @@ impl Listener {
         route_update: RouteConfigurationChange,
     ) {
         match route_update {
-            RouteConfigurationChange::Added((id, route)) => {
+            RouteConfigurationChange::Added((id, route), notify) => {
+                let mut applied = false;
                 for chain in filter_chains.values() {
                     if let ConnectionHandler::Http(http_manager) = &chain.handler {
                         let route_id = http_manager.get_route_id();
@@ -574,21 +576,34 @@ impl Listener {
                             if route_id == &id {
                                 debug!("{listener_name} Route updated {id} {route:?}");
                                 http_manager.update_route(route.clone());
+                                applied = true;
                             }
                         } else {
                             debug!("{listener_name} Got route update but id doesn't match {route_id:?} {id}");
                         }
                     }
                 }
+                if applied {
+                    if let Some(notify) = notify {
+                        notify.notify_one();
+                    }
+                }
             },
-            RouteConfigurationChange::Removed(id) => {
+            RouteConfigurationChange::Removed(id, notify) => {
+                let mut applied = false;
                 for chain in filter_chains.values() {
                     if let ConnectionHandler::Http(http_manager) = &chain.handler {
                         if let Some(route_id) = http_manager.get_route_id() {
                             if route_id == &id {
                                 http_manager.remove_route();
+                                applied = true;
                             }
                         }
+                    }
+                }
+                if applied {
+                    if let Some(notify) = notify {
+                        notify.notify_one();
                     }
                 }
             },
@@ -629,7 +644,6 @@ mod tests {
     use orion_data_plane_api::envoy_data_plane_api::envoy::config::listener::v3::Listener as EnvoyListener;
 
     use std::{net::Ipv4Addr, str::FromStr};
-    use tracing_test::traced_test;
 
     #[test]
     fn listener_bind_device() {
@@ -700,7 +714,6 @@ socket_options:
         assert_eq!(selected.copied(), Some(1));
     }
 
-    #[traced_test]
     #[test]
     fn sni_match_without_inspector_fails() {
         const LISTENER: &str = r#"
@@ -741,7 +754,6 @@ filter_chains:
             .contains("has server_names in filter_chain_match, but no TLS inspector so matches would always fail"));
     }
 
-    #[traced_test]
     #[test]
     fn filter_chain_multiple() {
         let m: EnvoyFilterChainMatch = from_yaml(
