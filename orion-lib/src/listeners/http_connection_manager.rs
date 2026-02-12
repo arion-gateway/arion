@@ -69,7 +69,8 @@ use {
     crate::listeners::access_log::AccessLogContext,
     orion_configuration::config::network_filters::access_log::AccessLog,
     orion_format::context::{
-        DownstreamResponseContext, FinishContext, HttpRequestDurationContext, HttpResponseDurationContext, InitHttpContext,
+        DownstreamResponseContext, FinishContext, HttpRequestDurationContext, HttpResponseDurationContext,
+        InitHttpContext,
     },
     orion_format::LogFormatter,
     parking_lot::Mutex,
@@ -80,9 +81,7 @@ use arc_swap::ArcSwap;
 use core::time::Duration;
 use futures::future::BoxFuture;
 use hyper::{body::Incoming, service::Service, Request, Response};
-use orion_configuration::config::network_filters::http_connection_manager::{
-    route::RouteMatch,
-};
+use orion_configuration::config::network_filters::http_connection_manager::route::RouteMatch;
 use orion_configuration::config::network_filters::http_connection_manager::{
     route::{Action, RouteMatchResult},
     CodecType, ConfigSource, ConfigSourceSpecifier, HttpConnectionManager as HttpConnectionManagerConfig, RdsSpecifier,
@@ -90,13 +89,21 @@ use orion_configuration::config::network_filters::http_connection_manager::{
 };
 
 use crate::{
-    ConversionContext, OrionRequestBody, OrionResponseBody, PolyBody, Result, RouteConfiguration, body::{
+    body::{
         instrumented_body::InstrumentedBody,
         response_flags::{BodyKind, ResponseFlags},
         timeout_body::TimeoutBody,
-    }, event_error::{EventFailure, EventKind}, get_shard_id, listeners::{
-        http_connection_manager::http_modifiers::ModifiersExtractor, http_filters::{FilterDecision, FilterFactory, HttpFilter, HttpFilterValue, per_route_http_filters}, metadata::DownstreamMetadata, synthetic_http_response::SyntheticHttpResponse
-    }, with_client_span, with_metric, with_server_span
+    },
+    event_error::{EventFailure, EventKind},
+    get_shard_id,
+    listeners::{
+        http_connection_manager::http_modifiers::ModifiersExtractor,
+        http_filters::{per_route_http_filters, FilterDecision, FilterFactory, HttpFilter, HttpFilterValue},
+        metadata::DownstreamMetadata,
+        synthetic_http_response::SyntheticHttpResponse,
+    },
+    with_client_span, with_metric, with_server_span, ConversionContext, OrionRequestBody, OrionResponseBody, PolyBody,
+    Result, RouteConfiguration,
 };
 use orion_configuration::config::network_filters::http_connection_manager::{Route, VirtualHost, XffSettings};
 use orion_configuration::config::network_filters::tracing::{TracingConfig, TracingKey};
@@ -1192,11 +1199,7 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
             // evaluate InitHttpContext...
 
             let metadata = request.extensions().get::<DownstreamMetadata>();
-            eval_http_init_context(
-                &request,
-                &trans_handler,
-                metadata,
-            );
+            eval_http_init_context(&request, &trans_handler, metadata);
 
             //
             // create the InstrumentedBody which will track the size of the request body
@@ -1300,7 +1303,10 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
                 #[cfg(feature = "access-log")]
                 if let Some(log_ctx) = trans_handler.access_log_ctx.as_ref() {
                     let response_head_size = response_head_size(&resp);
-                    log_ctx.lock().loggers.with_context(&DownstreamResponseContext { response: &resp, response_head_size })
+                    log_ctx
+                        .lock()
+                        .loggers
+                        .with_context(&DownstreamResponseContext { response: &resp, response_head_size })
                 }
 
                 #[cfg(feature = "access-log")]
@@ -1400,7 +1406,11 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
     }
 }
 
-fn eval_http_init_context<R>(_request: &Request<R>, _trans_handler: &TransactionHandler, _metadata: Option<&DownstreamMetadata>) {
+fn eval_http_init_context<R>(
+    _request: &Request<R>,
+    _trans_handler: &TransactionHandler,
+    _metadata: Option<&DownstreamMetadata>,
+) {
     #[cfg(feature = "tracing")]
     let _trace_id =
         _trans_handler.trace_ctx.as_ref().and_then(|t| t.map_child(orion_tracing::trace_info::TraceInfo::trace_id));

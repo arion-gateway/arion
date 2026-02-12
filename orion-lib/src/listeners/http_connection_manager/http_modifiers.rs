@@ -16,10 +16,18 @@
 //
 
 use super::upgrade_utils;
-use crate::{OrionResponseBody, event_error::EventFailure, listeners::{metadata::DownstreamMetadata, synthetic_http_response::SyntheticHttpResponse}};
+use crate::{
+    event_error::EventFailure,
+    listeners::{metadata::DownstreamMetadata, synthetic_http_response::SyntheticHttpResponse},
+    OrionResponseBody,
+};
 use http::{header, HeaderMap, HeaderName, HeaderValue, Method, Request, Response};
 use orion_configuration::config::{
-    cluster::http_protocol_options::Codec, network_filters::http_connection_manager::{HeaderModifiersAdd, HeaderModifiersRemove, Route, RouteConfiguration, VirtualHost, XffSettings, header_modifer::{HeaderAppendAction, HeaderValueOption}},
+    cluster::http_protocol_options::Codec,
+    network_filters::http_connection_manager::{
+        header_modifer::{HeaderAppendAction, HeaderValueOption},
+        HeaderModifiersAdd, HeaderModifiersRemove, Route, RouteConfiguration, VirtualHost, XffSettings,
+    },
 };
 use orion_format::context::{DownstreamContext, DownstreamResponseContext, SocketAddrContext};
 use orion_http_header::{X_ENVOY_EXTERNAL_ADDRESS, X_ENVOY_INTERNAL, X_FORWARDED_FOR};
@@ -31,7 +39,7 @@ const HOP_BY_HOP_HEADERS: &[HeaderName] = &[
     header::PROXY_AUTHENTICATE,
     header::PROXY_AUTHORIZATION,
     // NOTE: (nb) TE and TRAILER headers are intentionally left out as they are be needed for
-    // proper handling of certain requests (e.g., propagating chunked transfer encoding + trialers toward the upstream).
+    // proper handling of certain requests (e.g., propagating chunked transfer encoding + trailers toward the upstream).
     // header::TE,
     // header::TRAILER,
     header::TRANSFER_ENCODING,
@@ -312,55 +320,44 @@ impl HeaderValueModifier for HeaderValueOption {
         if self.header.value.is_empty() && !self.keep_empty_value {
             req.headers_mut().remove(&self.header.key).is_some()
         } else {
-            let socket_address = match req.extensions().get::<DownstreamMetadata>() {
-                Some(meta) => {
-                    SocketAddrContext {
-                        downstream_local_addr: Some(meta.connection.local_address()),
-                        downstream_peer_addr: Some(meta.connection.peer_address()),
-                        upstream_local_addr: None,
-                        upstream_peer_addr: None,
-                    }
+            let has_key_already = req.headers_mut().get(&self.header.key).is_some();
+
+            let socket_address = || match req.extensions().get::<DownstreamMetadata>() {
+                Some(meta) => SocketAddrContext {
+                    downstream_local_addr: Some(meta.connection.local_address()),
+                    downstream_peer_addr: Some(meta.connection.peer_address()),
+                    upstream_local_addr: None,
+                    upstream_peer_addr: None,
                 },
-                None => {
-                    SocketAddrContext::default()
-                },
+                None => SocketAddrContext::default(),
+            };
+
+            let get_header_value = |req: &Request<B>| -> HeaderValue {
+                let mut formatter = self.header.value.clone();
+                formatter.with_context(&DownstreamContext {
+                    request: &req,
+                    request_head_size: 0,
+                    trace_id: None,
+                    server_name: None,
+                    socket_address: socket_address(),
+                });
+                formatter
+                    .into_header_value()
+                    .inspect_err(|e| {
+                        warn!("apply_to_request: failed to convert to HeaderValue: {}", e);
+                    })
+                    .unwrap_or(HeaderValue::from_static(""))
             };
 
             match self.append_action {
                 HeaderAppendAction::AppendIfExistsOrAdd => {
-                    let mut formatter = self.header.value.clone();
-                    formatter.with_context(&DownstreamContext {
-                        request: &req,
-                        request_head_size: 0,
-                        trace_id: None,
-                        server_name: None,
-                        socket_address,
-                    });
-                    let header_value = formatter
-                        .into_header_value()
-                        .inspect_err(|e| {
-                            warn!("HeaderValue: failed to convert to HeaderValue: {}", e);
-                        })
-                        .unwrap_or(HeaderValue::from_static(""));
-                    req.headers_mut().append(&self.header.key, header_value);
+                    let header_val = get_header_value(&req);
+                    req.headers_mut().append(&self.header.key, header_val);
                     true
                 },
                 HeaderAppendAction::AppendIfAbsent => {
-                    if req.headers_mut().get(&self.header.key).is_none() {
-                        let mut formatter = self.header.value.clone();
-                        formatter.with_context(&DownstreamContext {
-                            request: &req,
-                            request_head_size: 0,
-                            trace_id: None,
-                            server_name: None,
-                            socket_address,
-                        });
-                        let header_value = formatter
-                            .into_header_value()
-                            .inspect_err(|e| {
-                                warn!("HeaderValue: failed to convert to HeaderValue: {}", e);
-                            })
-                            .unwrap_or(HeaderValue::from_static(""));
+                    if !has_key_already {
+                        let header_value = get_header_value(&req);
                         req.headers_mut().append(&self.header.key, header_value);
                         true
                     } else {
@@ -368,40 +365,13 @@ impl HeaderValueModifier for HeaderValueOption {
                     }
                 },
                 HeaderAppendAction::OverwriteIfExistsOrAdd => {
-                    let mut formatter = self.header.value.clone();
-                    formatter.with_context(&DownstreamContext {
-                        request: &req,
-                        request_head_size: 0,
-                        trace_id: None,
-                        server_name: None,
-                        socket_address,
-                    });
-                    let header_value = formatter
-                        .into_header_value()
-                        .inspect_err(|e| {
-                            warn!("HeaderValue: failed to convert to HeaderValue: {}", e);
-                        })
-                        .unwrap_or(HeaderValue::from_static(""));
+                    let header_value = get_header_value(&req);
                     req.headers_mut().insert(&self.header.key, header_value);
                     true
                 },
                 HeaderAppendAction::OverwriteIfExists => {
-                    if req.headers_mut().get(&self.header.key).is_some() {
-                        let mut formatter = self.header.value.clone();
-                        formatter.with_context(&DownstreamContext {
-                            request: &req,
-                            request_head_size: 0,
-                            trace_id: None,
-                            server_name: None,
-                            socket_address,
-                        });
-
-                        let header_value = formatter
-                            .into_header_value()
-                            .inspect_err(|e| {
-                                warn!("HeaderValue: failed to convert to HeaderValue: {}", e);
-                            })
-                            .unwrap_or(HeaderValue::from_static(""));
+                    if has_key_already {
+                        let header_value = get_header_value(&req);
                         req.headers_mut().insert(&self.header.key, header_value);
                         true
                     } else {
@@ -416,29 +386,28 @@ impl HeaderValueModifier for HeaderValueOption {
         if self.header.value.is_empty() && !self.keep_empty_value {
             res.headers_mut().remove(&self.header.key).is_some()
         } else {
+            let has_key_already = res.headers_mut().get(&self.header.key).is_some();
+
+            let get_header_value = |res: &Response<B>| -> HeaderValue {
+                let mut formatter = self.header.value.clone();
+                formatter.with_context(&DownstreamResponseContext { response: &res, response_head_size: 0 });
+                formatter
+                    .into_header_value()
+                    .inspect_err(|e| {
+                        warn!("apply_to_response: failed to convert to HeaderValue: {}", e);
+                    })
+                    .unwrap_or(HeaderValue::from_static(""))
+            };
+
             match self.append_action {
                 HeaderAppendAction::AppendIfExistsOrAdd => {
-                    let mut formatter = self.header.value.clone();
-                    formatter.with_context(&DownstreamResponseContext { response: &res, response_head_size: 0 });
-                    let header_value = formatter
-                        .into_header_value()
-                        .inspect_err(|e| {
-                            warn!("HeaderValue: failed to convert to HeaderValue: {}", e);
-                        })
-                        .unwrap_or(HeaderValue::from_static(""));
+                    let header_value = get_header_value(&res);
                     res.headers_mut().append(&self.header.key, header_value);
                     true
                 },
                 HeaderAppendAction::AppendIfAbsent => {
-                    if res.headers_mut().get(&self.header.key).is_none() {
-                        let mut formatter = self.header.value.clone();
-                        formatter.with_context(&DownstreamResponseContext { response: &res, response_head_size: 0 });
-                        let header_value = formatter
-                            .into_header_value()
-                            .inspect_err(|e| {
-                                warn!("HeaderValue: failed to convert to HeaderValue: {}", e);
-                            })
-                            .unwrap_or(HeaderValue::from_static(""));
+                    if !has_key_already {
+                        let header_value = get_header_value(&res);
                         res.headers_mut().append(&self.header.key, header_value);
                         true
                     } else {
@@ -446,27 +415,13 @@ impl HeaderValueModifier for HeaderValueOption {
                     }
                 },
                 HeaderAppendAction::OverwriteIfExistsOrAdd => {
-                    let mut formatter = self.header.value.clone();
-                    formatter.with_context(&DownstreamResponseContext { response: &res, response_head_size: 0 });
-                    let header_value = formatter
-                        .into_header_value()
-                        .inspect_err(|e| {
-                            warn!("HeaderValue: failed to convert to HeaderValue: {}", e);
-                        })
-                        .unwrap_or(HeaderValue::from_static(""));
+                    let header_value = get_header_value(&res);
                     res.headers_mut().insert(&self.header.key, header_value);
                     true
                 },
                 HeaderAppendAction::OverwriteIfExists => {
-                    if res.headers_mut().get(&self.header.key).is_some() {
-                        let mut formatter = self.header.value.clone();
-                        formatter.with_context(&DownstreamResponseContext { response: &res, response_head_size: 0 });
-                        let header_value = formatter
-                            .into_header_value()
-                            .inspect_err(|e| {
-                                warn!("HeaderValue: failed to convert to HeaderValue: {}", e);
-                            })
-                            .unwrap_or(HeaderValue::from_static(""));
+                    if has_key_already {
+                        let header_value = get_header_value(&res);
                         res.headers_mut().insert(&self.header.key, header_value);
                         true
                     } else {
@@ -482,11 +437,11 @@ impl HeaderValueModifier for HeaderValueOption {
 mod tests {
     use super::*;
     use http::Request;
+    use orion_configuration::config::network_filters::http_connection_manager::header_modifer::HeaderKeyValue;
     use orion_format::header_formatter::HeaderFormatter;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-    use crate::config::network_filters::http_connection_manager::header_modifer::HeaderKeyValue;
-    use http::{Request, header::{COOKIE, LOCATION, USER_AGENT}};
+    use http::header::{COOKIE, LOCATION, USER_AGENT};
 
     #[test]
     fn test_example_1_edge_proxy_no_trusted() {

@@ -106,13 +106,12 @@ mod config_dump_tests {
     use axum_test::TestServer;
     use orion_configuration::config::{
         core::DataSource,
-        network_filters::http_connection_manager::header_modifer::{HeaderModifiersAdd, HeaderModifiersRemove},
+        network_filters::http_connection_manager::{HeaderModifiersAdd, HeaderModifiersRemove},
         secret::{Secret, TlsCertificate, Type, ValidationContext},
         Bootstrap, Listener,
     };
     use orion_lib::{ConfigDump, ListenerConfigurationChange};
     use parking_lot::RwLock;
-    use serde_json::json;
     use smol_str::SmolStr;
     use std::{sync::Arc, time::Instant};
     use tokio::sync::mpsc;

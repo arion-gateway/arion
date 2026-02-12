@@ -16,13 +16,10 @@
 //
 
 use super::GenericError;
-use http::{HeaderName};
-use orion_format::{
-    header_formatter::HeaderFormatter,
-};
+use http::HeaderName;
+use orion_format::header_formatter::HeaderFormatter;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
-
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HeaderValueOption {

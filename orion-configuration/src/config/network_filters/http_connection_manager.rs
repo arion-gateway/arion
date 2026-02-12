@@ -31,7 +31,9 @@ use std::{collections::HashMap, str::FromStr, time::Duration};
 
 use crate::config::{
     common::*,
-    network_filters::{access_log::AccessLog, http_connection_manager::header_modifer::HeaderValueOption, tracing::TracingConfig},
+    network_filters::{
+        access_log::AccessLog, http_connection_manager::header_modifer::HeaderValueOption, tracing::TracingConfig,
+    },
 };
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -95,7 +97,8 @@ pub enum RouteSpecifier {
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub struct HeaderModifiersRemove(
-    #[serde(with = "http_serde_ext::header_name::vec", default, skip_serializing_if = "is_default")] pub Vec<http::HeaderName>,
+    #[serde(with = "http_serde_ext::header_name::vec", default, skip_serializing_if = "is_default")]
+    pub  Vec<http::HeaderName>,
 );
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -577,7 +580,14 @@ mod envoy_conversions {
         CodecType, ConfigSource, ConfigSourceSpecifier, HttpConnectionManager, RdsSpecifier, RetryBackoff, RetryOn,
         RetryPolicy, Route, RouteConfiguration, RouteSpecifier, UpgradeType, VirtualHost, XffSettings,
     };
-    use crate::config::{common::*, core::RustType, network_filters::{access_log::AccessLog, http_connection_manager::{HeaderModifiersAdd, HeaderModifiersRemove}}};
+    use crate::config::{
+        common::*,
+        core::RustType,
+        network_filters::{
+            access_log::AccessLog,
+            http_connection_manager::{HeaderModifiersAdd, HeaderModifiersRemove},
+        },
+    };
     use http::{HeaderName, StatusCode};
     use orion_data_plane_api::envoy_data_plane_api::envoy::{
         config::{
