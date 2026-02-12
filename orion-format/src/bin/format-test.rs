@@ -74,7 +74,13 @@ fn main() -> Result<(), BoxError> {
     for _ in 0..TOTAL {
         let mut fmt = black_box(fmt.clone());
         black_box(eval_format(
-            &DownstreamContext { request: &request, request_head_size: 0, trace_id: None, server_name: None, socket_address: Default::default() },
+            &DownstreamContext {
+                request: &request,
+                request_head_size: 0,
+                trace_id: None,
+                server_name: None,
+                socket_address: Default::default(),
+            },
             &DownstreamResponseContext { response: &response, response_head_size: 0 },
             &start,
             &end,

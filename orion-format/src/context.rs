@@ -21,7 +21,7 @@ use std::{
 };
 
 use crate::{
-    operator::{Category, Operator},
+    operator::Operator,
     types::{ResponseFlags, ResponseFlagsLong, ResponseFlagsShort},
     StringType,
 };
@@ -36,7 +36,6 @@ use uuid::Uuid;
 
 pub trait Context {
     fn eval_part(&self, op: &Operator) -> StringType;
-    fn categories() -> Category;
 }
 
 #[derive(Debug, Clone, Default)]
@@ -48,9 +47,6 @@ pub struct SocketAddrContext {
 }
 
 impl Context for SocketAddrContext {
-    fn categories() -> Category {
-        Category::UPSTREAM_CONTEXT | Category::DOWNSTREAM_CONTEXT
-    }
     fn eval_part(&self, op: &Operator) -> StringType {
         match op {
             Operator::UpstreamHost | Operator::UpstreamRemoteAddress => {
@@ -111,15 +107,12 @@ pub struct TcpContext<'a> {
 }
 
 impl Context for TcpContext<'_> {
-    fn categories() -> Category {
-        Category::UPSTREAM_CONTEXT | Category::DOWNSTREAM_CONTEXT
-    }
     fn eval_part(&self, op: &Operator) -> StringType {
         match op {
             Operator::UpstreamCluster | Operator::UpstreamClusterRaw => {
                 StringType::Smol(SmolStr::new(self.cluster_name))
             },
-            _ => self.socket_address.eval_part(op)
+            _ => self.socket_address.eval_part(op),
         }
     }
 }
@@ -154,9 +147,6 @@ pub struct UpstreamContext<'a> {
 }
 
 impl Context for UpstreamContext<'_> {
-    fn categories() -> Category {
-        Category::UPSTREAM_CONTEXT
-    }
     fn eval_part(&self, op: &Operator) -> StringType {
         match op {
             Operator::UpstreamHost => {
@@ -166,14 +156,10 @@ impl Context for UpstreamContext<'_> {
                 self.cluster_name.map_or(StringType::None, |cluster_name| StringType::Smol(SmolStr::new(cluster_name)))
             },
             Operator::UpstreamHostName => {
-                self.authority.map_or(StringType::None, |auth| {
-                    StringType::Smol(SmolStr::new(auth.as_str()))
-                })
+                self.authority.map_or(StringType::None, |auth| StringType::Smol(SmolStr::new(auth.as_str())))
             },
             Operator::UpstreamHostNameWithoutPort => {
-                self.authority.map_or(StringType::None, |auth| {
-                    StringType::Smol(SmolStr::new(auth.host()))
-                })
+                self.authority.map_or(StringType::None, |auth| StringType::Smol(SmolStr::new(auth.host())))
             },
             Operator::RouteName => StringType::Smol(SmolStr::new(self.route_name)),
             _ => StringType::None,
@@ -187,9 +173,6 @@ pub struct InitContext {
 }
 
 impl Context for InitContext {
-    fn categories() -> Category {
-        Category::INIT_CONTEXT
-    }
     fn eval_part(&self, op: &Operator) -> StringType {
         match op {
             Operator::StartTime => StringType::Smol(format_system_time(self.start_time)),
@@ -209,9 +192,6 @@ pub struct InitHttpContext<'a, T> {
 }
 
 impl<T> Context for InitHttpContext<'_, T> {
-    fn categories() -> Category {
-        Category::INIT_CONTEXT | Category::UPSTREAM_CONTEXT | Category::DOWNSTREAM_CONTEXT | Category::DOWNSTREAM_REQUEST
-    }
     fn eval_part(&self, op: &Operator) -> StringType {
         match op {
             Operator::StartTime => StringType::Smol(format_system_time(self.start_time)),
@@ -234,9 +214,6 @@ pub struct HttpRequestDurationContext {
 }
 
 impl Context for HttpRequestDurationContext {
-    fn categories() -> Category {
-        Category::REQUEST_DURATION
-    }
     fn eval_part(&self, op: &Operator) -> StringType {
         match op {
             Operator::RequestDuration => {
@@ -259,9 +236,6 @@ pub struct HttpResponseDurationContext {
 }
 
 impl Context for HttpResponseDurationContext {
-    fn categories() -> Category {
-        Category::RESPONSE_DURATION
-    }
     fn eval_part(&self, op: &Operator) -> StringType {
         match op {
             Operator::ResponseDuration => {
@@ -289,9 +263,6 @@ pub struct FinishContext {
 }
 
 impl Context for FinishContext {
-    fn categories() -> Category {
-        Category::FINISH_CONTEXT
-    }
     fn eval_part(&self, op: &Operator) -> StringType {
         match op {
             Operator::ResponseFlags => StringType::Smol(ResponseFlagsShort(&self.response_flags).to_smolstr()),
@@ -339,9 +310,6 @@ pub struct UpstreamRequestContext<'a, T>(pub &'a Request<T>);
 pub struct UpstreamResponseContext<'a, T>(pub &'a Response<T>);
 
 impl<T> Context for DownstreamContext<'_, T> {
-    fn categories() -> Category {
-        Category::DOWNSTREAM_REQUEST | Category::DOWNSTREAM_CONTEXT | Category::UPSTREAM_CONTEXT
-    }
     fn eval_part(&self, op: &Operator) -> StringType {
         match op {
             Operator::RequestHeadersBytes => {
@@ -386,15 +354,12 @@ impl<T> Context for DownstreamContext<'_, T> {
             Operator::RequestedServerName => {
                 self.server_name.map_or(StringType::None, |sni| StringType::Smol(SmolStr::new(sni)))
             },
-            _ => self.socket_address.eval_part(op)
+            _ => self.socket_address.eval_part(op),
         }
     }
 }
 
 impl<T> Context for UpstreamRequestContext<'_, T> {
-    fn categories() -> Category {
-        Category::UPSTREAM_REQUEST
-    }
     fn eval_part(&self, op: &Operator) -> StringType {
         match op {
             Operator::UpstreamProtocol => StringType::Smol(SmolStr::new_static(self.0.version().to_static_str())),
@@ -417,9 +382,6 @@ impl<T> Context for UpstreamRequestContext<'_, T> {
 }
 
 impl<T> Context for DownstreamResponseContext<'_, T> {
-    fn categories() -> Category {
-        Category::DOWNSTREAM_RESPONSE
-    }
     fn eval_part(&self, op: &Operator) -> StringType {
         match op {
             Operator::ResponseHeadersBytes => {

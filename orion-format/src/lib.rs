@@ -23,7 +23,7 @@ pub mod types;
 
 use crate::grammar::AccessLogGrammar;
 use context::Context;
-use operator::{Category, Operator, NUM_OPERATOR_CATEGORIES};
+use operator::{Category, Operator};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 use std::{
@@ -76,7 +76,6 @@ pub enum StringType {
 #[derive(Hash, PartialEq, Eq, Debug, Clone, Serialize, Deserialize)]
 struct LogFormatterConf {
     templates: Vec<Template>,
-    indices: [Vec<u8>; NUM_OPERATOR_CATEGORIES],
     omit_empty_values: bool,
 }
 
@@ -104,15 +103,6 @@ impl Clone for LogFormatter {
 impl LogFormatter {
     pub fn try_new(input: &str, omit_empty_values: bool) -> Result<LogFormatter, FormatError> {
         let templates = AccessLogGrammar::parse(input)?;
-        let mut indices: [Vec<u8>; NUM_OPERATOR_CATEGORIES] = std::array::from_fn(|_| vec![]);
-
-        for (i, part) in templates.iter().enumerate() {
-            if let Template::Placeholder(_, cat) = part {
-                let idx = cat.bits().trailing_zeros();
-                indices[idx as usize].push(u8::try_from(i)?);
-            }
-        }
-
         let mut format: Vec<StringType> = Vec::with_capacity(templates.len());
 
         for t in &templates {
@@ -123,7 +113,7 @@ impl LogFormatter {
             }
         }
 
-        Ok(LogFormatter { conf: Arc::new(LogFormatterConf { templates, indices, omit_empty_values }), format })
+        Ok(LogFormatter { conf: Arc::new(LogFormatterConf { templates, omit_empty_values }), format })
     }
 
     #[inline]
@@ -137,11 +127,14 @@ impl LogFormatter {
     }
 
     pub fn with_context<C: Context>(&mut self, ctx: &C) -> &Self {
-        for cat in C::categories() {
+        for (idx, template) in self.conf.templates.iter().enumerate() {
             unsafe {
-                for idx in self.conf.indices.get_unchecked(cat.bits().trailing_zeros() as usize) {
-                    if let Template::Placeholder(op, _) = self.conf.templates.get_unchecked(*idx as usize) {
-                        *self.format.get_unchecked_mut(*idx as usize) = ctx.eval_part(op);
+                if let Template::Placeholder(op, _) = template {
+                    if matches!(self.format.get_unchecked(idx), StringType::None) {
+                        let result = ctx.eval_part(op);
+                        if !matches!(result, StringType::None) {
+                            *self.format.get_unchecked_mut(idx) = result;
+                        }
                     }
                 }
             }
@@ -235,7 +228,8 @@ mod tests {
 
     use crate::{
         context::{
-            DownstreamContext, DownstreamResponseContext, FinishContext, InitContext, UpstreamContext, UpstreamRequestContext,
+            DownstreamContext, DownstreamResponseContext, FinishContext, InitContext, UpstreamContext,
+            UpstreamRequestContext,
         },
         types::ResponseFlags,
     };
