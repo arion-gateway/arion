@@ -34,6 +34,7 @@ use crate::{
     listeners::{
         http_connection_manager::mcp_gateway::{
             tools::{CallToolError, ToolsRegistry},
+            transcoder::{RestTranscoder, Transcoder},
             transport::{
                 self, AcceptedMime, RequestExt, SessionId, Transport, MIME_APPLICATION_JSON, MIME_TEXT_EVENT_STREAM,
             },
@@ -196,6 +197,7 @@ pub struct McpGateway {
     version: http::Version,
     initialize_request_params: Option<model::InitializeRequestParams>,
     streamable_async_sender: Option<Arc<TokioMutex<SinkSender>>>,
+    current_tool: Option<smol_str::SmolStr>,
 }
 
 impl From<McpGatewayConfig> for McpGateway {
@@ -207,6 +209,7 @@ impl From<McpGatewayConfig> for McpGateway {
             initialize_request_params: None,
             version: http::Version::default(),
             streamable_async_sender: None,
+            current_tool: None,
         }
     }
 }
@@ -220,6 +223,7 @@ impl FilterFactory for McpGateway {
             initialize_request_params: None,
             version: http::Version::default(),
             streamable_async_sender: None,
+            current_tool: None,
         }
     }
 }
@@ -270,7 +274,8 @@ impl McpGateway {
         };
 
         let ctx = McpGatewayListenerContext::get_filter_context(session.listener_name);
-        let is_async = { matches!(session.transport, Transport::Sse) || self.streamable_async_sender.as_ref().is_some() };
+        let is_async =
+            { matches!(session.transport, Transport::Sse) || self.streamable_async_sender.as_ref().is_some() };
 
         defer! {
             if is_async {
@@ -311,14 +316,76 @@ impl McpGateway {
             return FilterDecision::Continue;
         };
 
-        let body_string = Self::extract_body_string(&body.to_bytes(), response.status());
-        let content = RawContent::Text(RawTextContent { text: body_string, meta: None });
+        let body_bytes = body.to_bytes();
+        let upstream_status = response.status();
+
+        // Get the result value - either from transcoder (REST) or raw body (MCP upstream)
+        let result_value = match &self.current_tool {
+            Some(tool_name) => {
+                // Look up the tool to get its output_schema and backend type
+                match self.inner.tools.get_tool(tool_name) {
+                    Some(tool) => {
+                        match &tool.backend {
+                            orion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::UpstreamBackend::Rest { method, path, query_params, body_template, .. } => {
+                                // Use the transcoder to decode and validate the response
+                                let transcoder = RestTranscoder {
+                                    method,
+                                    path,
+                                    query_params,
+                                    body_template: body_template.as_ref(),
+                                };
+                                match transcoder.decode(&tool.output_schema, body_bytes, upstream_status) {
+                                    Ok(value) => value,
+                                    Err(e) => {
+                                        debug!(target: "mcp_gateway", "apply_response: transcoder decode error: {e}");
+                                        // Return error as JSON string in the result
+                                        json!({
+                                            "error": format!("Failed to decode upstream response: {e}"),
+                                            "status": upstream_status.as_u16()
+                                        })
+                                    }
+                                }
+                            },
+                            _ => {
+                                // For non-REST backends (McpServer), use the raw body
+                                serde_json::from_slice(&body_bytes).unwrap_or_else(|_| {
+                                    json!({
+                                        "text": String::from_utf8_lossy(&body_bytes),
+                                        "status": upstream_status.as_u16()
+                                    })
+                                })
+                            }
+                        }
+                    },
+                    None => {
+                        debug!(target: "mcp_gateway", "apply_response: tool {} not found in registry", tool_name);
+                        json!({
+                            "text": String::from_utf8_lossy(&body_bytes),
+                            "status": upstream_status.as_u16()
+                        })
+                    },
+                }
+            },
+            None => {
+                // No current tool set, use raw body
+                serde_json::from_slice(&body_bytes).unwrap_or_else(|_| {
+                    json!({
+                        "text": String::from_utf8_lossy(&body_bytes),
+                        "status": upstream_status.as_u16()
+                    })
+                })
+            },
+        };
+
+        // Build the CallToolResult with the decoded/validated result
+        let result_json = serde_json::to_string(&result_value).unwrap_or_default();
+        let content = RawContent::Text(RawTextContent { text: result_json, meta: None });
 
         let tool_result = CallToolResult {
             content: vec![Annotated::new(content, None)],
-            is_error: Some(!response.status().is_success()),
+            is_error: Some(!upstream_status.is_success()),
             meta: None,
-            structured_content: None,
+            structured_content: Some(result_value),
         };
 
         let server_result = ServerResult::CallToolResult(tool_result);
@@ -819,6 +886,16 @@ impl McpGateway {
                     )));
                 };
 
+                // Extract and store the tool name for later use in apply_response
+                let tool_name = rpc
+                    .request
+                    .params
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.split_once("__").map(|(tool, _)| tool).unwrap_or(s))
+                    .map(smol_str::SmolStr::from);
+                self.current_tool = tool_name;
+
                 let resp = match self
                     .inner
                     .tools
@@ -829,9 +906,10 @@ impl McpGateway {
                     Err(err) => {
                         debug!(target: "mcp_gateway", "handle_rpc_json_request: tools/call failed: {err:#}");
                         let error_data = match err {
-                            CallToolError::NameNotString => {
-                                model::ErrorData::invalid_params("'name' parameter is missing or not a valid string", None)
-                            },
+                            CallToolError::NameNotString => model::ErrorData::invalid_params(
+                                "'name' parameter is missing or not a valid string",
+                                None,
+                            ),
                             CallToolError::ToolNotFound(ref name) => {
                                 model::ErrorData::resource_not_found(format!("Tool '{name}' not found"), None)
                             },

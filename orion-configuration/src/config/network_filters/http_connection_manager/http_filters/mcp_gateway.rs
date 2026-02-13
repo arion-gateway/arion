@@ -27,6 +27,7 @@ pub struct McpTool {
     pub name: SmolStr,
     pub description: String,
     pub input_schema: Map<String, Value>,
+    pub output_schema: Map<String, Value>,
     pub backend: UpstreamBackend,
     pub rbac: Option<McpToolRbac>,
 }
@@ -116,15 +117,26 @@ mod envoy_conversions {
         type Error = GenericError;
 
         fn try_from(orion: OrionTool) -> Result<Self, Self::Error> {
-            let OrionTool { name, description, input_schema, upstream_backend, rbac } = orion;
+            let OrionTool { name, description, input_schema, output_schema, upstream_backend, rbac } = orion;
             let input_schema: DataSource = required!(input_schema)?.try_into()?;
             let backend = required!(upstream_backend)?.try_into()?;
 
             let bytes = input_schema.to_bytes_blocking()?;
             let string = String::from_utf8(bytes)?;
             let input_schema = serde_json::from_str(&string)?;
+
+            // Parse output_schema if provided, otherwise use empty object
+            let output_schema = if let Some(output_schema_ds) = output_schema {
+                let ds: DataSource = output_schema_ds.try_into()?;
+                let bytes = ds.to_bytes_blocking()?;
+                let string = String::from_utf8(bytes)?;
+                serde_json::from_str(&string)?
+            } else {
+                serde_json::Map::new()
+            };
+
             let rbac = rbac.map(TryInto::try_into).transpose()?;
-            Ok(McpTool { name: name.into(), description, input_schema, backend, rbac })
+            Ok(McpTool { name: name.into(), description, input_schema, output_schema, backend, rbac })
         }
     }
 

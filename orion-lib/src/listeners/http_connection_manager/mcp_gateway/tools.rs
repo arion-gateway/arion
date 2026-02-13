@@ -106,6 +106,7 @@ impl ToolsRegistry {
                 },
                 "required": ["city"]
             }),
+            output_schema: serde_json::Map::new(),
             rbac: None,
             backend: UpstreamBackend::Rest {
                 cluster: "weather_api_cluster".into(),
@@ -128,6 +129,7 @@ impl ToolsRegistry {
                 },
                 "required": ["username", "email"]
             }),
+            output_schema: serde_json::Map::new(),
             rbac: None,
             backend: UpstreamBackend::Rest {
                 cluster: "post_user_cluster".into(),
@@ -145,6 +147,11 @@ impl ToolsRegistry {
     pub fn register(&mut self, tool: McpTool) {
         let rbac = tool.rbac.as_ref().map(convert_config_rbac_to_runtime);
         self.registry.push(ToolEntry { tool, rbac });
+    }
+
+    /// Get a tool entry by name
+    pub fn get_tool(&self, name: &str) -> Option<&McpTool> {
+        self.registry.iter().find(|e| e.tool.name == name).map(|e| &e.tool)
     }
 
     pub async fn build_list_tools(&self, req_ext: http::Extensions) -> ListToolsResult {
