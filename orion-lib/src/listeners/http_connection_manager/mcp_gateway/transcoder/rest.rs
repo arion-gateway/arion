@@ -11,6 +11,7 @@ use jsonschema::Validator;
 use rmcp::model::{JsonObject, Request};
 use serde_json::Value;
 use upon::Engine;
+use url::form_urlencoded;
 
 pub const DEFAULT_USER_AGENT: &str = concat!("orion/", env!("CARGO_PKG_VERSION"));
 
@@ -139,41 +140,16 @@ fn build_query_string(
     query_params: &Vec<super::McpRestQueryParams>,
     arguments: &serde_json::Map<String, Value>,
 ) -> String {
-    let mut pairs: Vec<(String, String)> = Vec::with_capacity(query_params.len());
+    let mut serializer = form_urlencoded::Serializer::new(String::new());
 
     for param in query_params {
-        // Resolve the source path (can be "latitude" or "arguments.latitude")
         let value = resolve_variable(&param.source, arguments);
-        // Skip null values
         if value != "null" {
-            pairs.push((param.name.clone(), value));
+            serializer.append_pair(&param.name, &value);
         }
     }
 
-    if pairs.is_empty() {
-        return String::new();
-    }
-
-    let mut result = String::with_capacity(pairs.len() * 32);
-    for (i, (name, value)) in pairs.iter().enumerate() {
-        if i > 0 {
-            result.push('&');
-        }
-        result.push_str(&url_escape(name));
-        result.push('=');
-        result.push_str(&url_escape(value));
-    }
-
-    result
-}
-
-/// We manually implement this url enconder rather than using form_urlencoded::byte_serialize
-/// because the latter encodes tilde (~) which is an unreserved character per RFC 3986.
-fn url_escape(s: &str) -> String {
-    const UNRESERVED: &percent_encoding::AsciiSet =
-        &percent_encoding::NON_ALPHANUMERIC.remove(b'-').remove(b'_').remove(b'.').remove(b'~');
-
-    percent_encoding::percent_encode(s.as_bytes(), UNRESERVED).to_string().replace("%20", "+")
+    serializer.finish().replace("%7E", "~").replace("%20", "+")
 }
 
 #[cfg(test)]
@@ -735,17 +711,45 @@ mod tests {
     }
 
     #[test]
-    fn test_url_escape_special_characters() {
-        assert_eq!(url_escape("hello world"), "hello+world");
-        assert_eq!(url_escape("foo&bar"), "foo%26bar");
-        assert_eq!(url_escape("a=b"), "a%3Db");
-        assert_eq!(url_escape("test/value"), "test%2Fvalue");
+    fn test_build_query_string_encoding() {
+        // Test special characters are properly encoded
+        let mut args = serde_json::Map::new();
+        args.insert("space".to_string(), json!("hello world"));
+        args.insert("amp".to_string(), json!("foo&bar"));
+        args.insert("equal".to_string(), json!("a=b"));
+        args.insert("slash".to_string(), json!("test/value"));
+
+        let query_params = vec![
+            super::super::McpRestQueryParams { name: "space".to_string(), source: "space".to_string() },
+            super::super::McpRestQueryParams { name: "amp".to_string(), source: "amp".to_string() },
+            super::super::McpRestQueryParams { name: "equal".to_string(), source: "equal".to_string() },
+            super::super::McpRestQueryParams { name: "slash".to_string(), source: "slash".to_string() },
+        ];
+
+        let result = build_query_string(&query_params, &args);
+        assert!(result.contains("space=hello+world"), "Space should be encoded as +: {}", result);
+        assert!(result.contains("amp=foo%26bar"), "& should be encoded: {}", result);
+        assert!(result.contains("equal=a%3Db"), "= should be encoded: {}", result);
+        assert!(result.contains("slash=test%2Fvalue"), "/ should be encoded: {}", result);
     }
 
     #[test]
-    fn test_url_escape_safe_characters() {
-        assert_eq!(url_escape("ABCxyz"), "ABCxyz");
-        assert_eq!(url_escape("123"), "123");
-        assert_eq!(url_escape("-_.~"), "-_.~");
+    fn test_build_query_string_unreserved_chars() {
+        // Test RFC 3986 unreserved characters are not encoded
+        let mut args = serde_json::Map::new();
+        args.insert("alpha".to_string(), json!("ABCxyz"));
+        args.insert("numeric".to_string(), json!("123"));
+        args.insert("special".to_string(), json!("-_.~"));
+
+        let query_params = vec![
+            super::super::McpRestQueryParams { name: "alpha".to_string(), source: "alpha".to_string() },
+            super::super::McpRestQueryParams { name: "numeric".to_string(), source: "numeric".to_string() },
+            super::super::McpRestQueryParams { name: "special".to_string(), source: "special".to_string() },
+        ];
+
+        let result = build_query_string(&query_params, &args);
+        assert!(result.contains("alpha=ABCxyz"), "Alphanumeric should not be encoded: {}", result);
+        assert!(result.contains("numeric=123"), "Numeric should not be encoded: {}", result);
+        assert!(result.contains("special=-_.~"), "Unreserved chars -_.~ should not be encoded: {}", result);
     }
 }
