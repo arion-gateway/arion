@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 use smol_str::ToSmolStr;
 use std::sync::{atomic::AtomicUsize, Arc};
 use tokio::sync::Mutex as TokioMutex;
-use tracing::debug;
+use tracing::{debug, info};
 use uuid::Uuid;
 
 use rmcp::{
@@ -322,7 +322,7 @@ impl McpGateway {
         };
 
         let server_result = ServerResult::CallToolResult(tool_result);
-        debug!(target: "mcp_gateway", "apply_response: {:#?}", server_result);
+        debug!(target: "mcp_gateway", "apply_response: {:?}", server_result);
 
         let json_rpc_response = self.to_json_rpc_response(server_result);
 
@@ -728,7 +728,7 @@ impl McpGateway {
                 let Ok(init_params): Result<model::InitializeRequestParams, _> =
                     serde_json::from_value(serde_json::Value::Object(rpc.request.params))
                 else {
-                    debug!(target: "mcp_gateway", "handle_rpc_json_request: invalid params");
+                    info!(target: "mcp_gateway", "handle_rpc_json_request: invalid params!");
                     return MessageResult::JsonRpcError(
                         self.build_rpc_error(model::ErrorData::invalid_params("invalid params", None)),
                     );
@@ -764,9 +764,9 @@ impl McpGateway {
                 //
 
                 if matches!(transport, Transport::StreamableHttp) {
-                    debug!(target: "mcp_gateway", "handle_rpc_json_request: creating new session ========================= ");
+                    debug!(target: "mcp_gateway", "handle_rpc_json_request: creating new session...");
                     let Ok(new_session) = ctx.create_session(listener_name, None, Transport::StreamableHttp) else {
-                        debug!(target: "mcp_gateway", "handle_rpc_json_request: failed to create new session!");
+                        info!(target: "mcp_gateway", "handle_rpc_json_request: failed to create new session!");
                         return MessageResult::JsonRpcError(
                             self.build_rpc_error(model::ErrorData::parse_error("Failed to create new session", None)),
                         );
@@ -829,11 +829,8 @@ impl McpGateway {
                     Err(err) => {
                         debug!(target: "mcp_gateway", "handle_rpc_json_request: tools/call failed: {err:#}");
                         let error_data = match err {
-                            CallToolError::MissingName => {
-                                model::ErrorData::invalid_params("Missing 'name' parameter in request", None)
-                            },
-                            CallToolError::NameNotValidString => {
-                                model::ErrorData::invalid_params("'name' parameter is not a valid string", None)
+                            CallToolError::NameNotString => {
+                                model::ErrorData::invalid_params("'name' parameter is missing or not a valid string", None)
                             },
                             CallToolError::ToolNotFound(ref name) => {
                                 model::ErrorData::resource_not_found(format!("Tool '{name}' not found"), None)
@@ -911,7 +908,7 @@ impl McpGateway {
                 resp
             },
             _ => {
-                debug!(target: "mcp_gateway", "handle_rpc_json_request: unknown rpc method '{}'", rpc.request.method);
+                info!(target: "mcp_gateway", "handle_rpc_json_request: unknown rpc method '{}'!", rpc.request.method);
                 MessageResult::JsonRpcError(self.build_rpc_error(model::ErrorData::new(
                     model::ErrorCode::METHOD_NOT_FOUND,
                     "Method not found",
@@ -930,7 +927,7 @@ impl McpGateway {
         match transport {
             Transport::Sse => {
                 let Some(session_id) = request.get_mcp_session_id() else {
-                    debug!(target: "mcp_gateway", "get_valid_session: SSE transport requires session ID but none found in request");
+                    info!(target: "mcp_gateway", "get_valid_session: SSE transport requires session ID but none found in request!");
                     return None;
                 };
 
