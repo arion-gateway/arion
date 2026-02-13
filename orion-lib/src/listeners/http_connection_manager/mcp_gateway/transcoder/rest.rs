@@ -42,27 +42,21 @@ impl Transcoder for RestTranscoder<'_> {
         let _has_args = arguments.is_some_and(|m| !m.is_empty());
         let _has_body_template = self.body_template.is_some();
 
-        // Render path template with variable substitution
-        let rendered_path = render_path_template(self.path, arguments.unwrap_or(&serde_json::Map::new()));
+        let rendered_path = render_template(self.path, arguments.unwrap_or(&serde_json::Map::new()));
 
-        // Build query string from query_params with variable substitution
         let query_string = if !self.query_params.is_empty() {
             build_query_string(self.query_params, arguments.unwrap_or(&serde_json::Map::new()))
         } else {
             String::new()
         };
 
-        // Estimate capacity: path + '?' + query string length
         let capacity = rendered_path.len() + if !query_string.is_empty() { 1 + query_string.len() } else { 0 };
-
-        // Ensure path starts with '/' for a valid path-only URI
         let mut uri = String::with_capacity(capacity);
         if !rendered_path.starts_with('/') {
             uri.push('/');
         }
         uri.push_str(&rendered_path);
 
-        // Append query string if present
         if !query_string.is_empty() {
             uri.push('?');
             uri.push_str(&query_string);
@@ -106,11 +100,6 @@ impl Transcoder for RestTranscoder<'_> {
 
 /// Renders a template by substituting variables with values from the arguments map.
 /// Variables are in the format {{variable_name}}.
-/// Nested paths are supported: {{user.name}} accesses arguments["user"]["name"].
-/// The template can be any text format (JSON, XML, plain text, etc.).
-///
-/// This function uses the 'upon' templating library with its Engine API,
-/// which natively supports {{variable}} syntax and nested path access with dot notation.
 ///
 /// Note: Missing variables in templates should be caught by input schema validation.
 /// Null values are properly rendered as "null" for JSON compatibility.
@@ -145,15 +134,7 @@ fn resolve_variable(path: &str, arguments: &serde_json::Map<String, Value>) -> S
     }
 }
 
-/// Renders a path template by substituting variables with values from the arguments map.
-/// Variables are in the format {{variable_name}}.
-/// Nested paths are supported: {{user.id}} accesses arguments["user"]["id"].
-fn render_path_template(path_template: &str, arguments: &serde_json::Map<String, Value>) -> String {
-    render_template(path_template, arguments)
-}
-
 /// Builds a query string from query params configuration with variable substitution.
-/// Each param's source can be a simple key or a nested path like "latitude" or "coordinates.latitude".
 fn build_query_string(
     query_params: &Vec<super::McpRestQueryParams>,
     arguments: &serde_json::Map<String, Value>,
@@ -186,11 +167,7 @@ fn build_query_string(
     result
 }
 
-/// Percent-encodes a string for use in URL query parameters.
-/// Uses percent-encoding for special characters and '+' for spaces.
-/// Follows application/x-www-form-urlencoded encoding.
-///
-/// Note: We manually implement this rather than using form_urlencoded::byte_serialize
+/// We manually implement this url enconder rather than using form_urlencoded::byte_serialize
 /// because the latter encodes tilde (~) which is an unreserved character per RFC 3986.
 fn url_escape(s: &str) -> String {
     const UNRESERVED: &percent_encoding::AsciiSet =
@@ -736,7 +713,7 @@ mod tests {
         args.insert("id".to_string(), json!("123"));
 
         let template = "/api/items/{{id}}";
-        let result = render_path_template(template, &args);
+        let result = render_template(template, &args);
 
         assert_eq!(result, "/api/items/123");
     }
