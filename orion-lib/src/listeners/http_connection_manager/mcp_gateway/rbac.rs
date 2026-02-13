@@ -149,7 +149,7 @@ impl ToolRbac {
         };
 
         debug!(
-            target: "mcp_rbac",
+            target: "mcp_gateway",
             "Tool RBAC: action={:?}, matched={}, permitted={}",
             self.action, any_permission_matched, permitted
         );

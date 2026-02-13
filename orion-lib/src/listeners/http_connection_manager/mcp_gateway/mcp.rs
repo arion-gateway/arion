@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 use smol_str::ToSmolStr;
 use std::sync::{atomic::AtomicUsize, Arc};
 use tokio::sync::Mutex as TokioMutex;
-use tracing::debug;
+use tracing::{debug, info};
 use uuid::Uuid;
 
 use rmcp::{
@@ -22,8 +22,8 @@ use rmcp::{
         ListToolsRequestMethod, PingRequestMethod, ProtocolVersion, RawContent, RawTextContent, ServerCapabilities,
         ServerResult,
     },
-    service::RunningService,
-    RoleClient,
+    service::{ClientInitializeError, RunningService},
+    RoleClient, ServiceError,
 };
 
 use crate::{
@@ -33,7 +33,7 @@ use crate::{
     },
     listeners::{
         http_connection_manager::mcp_gateway::{
-            tools::{CallToolError::RbacDenied, ToolsRegistry},
+            tools::{CallToolError, ToolsRegistry},
             transport::{
                 self, AcceptedMime, RequestExt, SessionId, Transport, MIME_APPLICATION_JSON, MIME_TEXT_EVENT_STREAM,
             },
@@ -322,7 +322,7 @@ impl McpGateway {
         };
 
         let server_result = ServerResult::CallToolResult(tool_result);
-        debug!(target: "mcp_gateway", "apply_response: {:#?}", server_result);
+        debug!(target: "mcp_gateway", "apply_response: {:?}", server_result);
 
         let json_rpc_response = self.to_json_rpc_response(server_result);
 
@@ -728,7 +728,7 @@ impl McpGateway {
                 let Ok(init_params): Result<model::InitializeRequestParams, _> =
                     serde_json::from_value(serde_json::Value::Object(rpc.request.params))
                 else {
-                    debug!(target: "mcp_gateway", "handle_rpc_json_request: invalid params");
+                    info!(target: "mcp_gateway", "handle_rpc_json_request: invalid params!");
                     return MessageResult::JsonRpcError(
                         self.build_rpc_error(model::ErrorData::invalid_params("invalid params", None)),
                     );
@@ -764,9 +764,9 @@ impl McpGateway {
                 //
 
                 if matches!(transport, Transport::StreamableHttp) {
-                    debug!(target: "mcp_gateway", "handle_rpc_json_request: creating new session ========================= ");
+                    debug!(target: "mcp_gateway", "handle_rpc_json_request: creating new session...");
                     let Ok(new_session) = ctx.create_session(listener_name, None, Transport::StreamableHttp) else {
-                        debug!(target: "mcp_gateway", "handle_rpc_json_request: failed to create new session!");
+                        info!(target: "mcp_gateway", "handle_rpc_json_request: failed to create new session!");
                         return MessageResult::JsonRpcError(
                             self.build_rpc_error(model::ErrorData::parse_error("Failed to create new session", None)),
                         );
@@ -826,16 +826,79 @@ impl McpGateway {
                     .await
                 {
                     Ok(result) => result,
-                    Err(e) => {
-                        debug!(target: "mcp_gateway", "handle_rpc_json_request: tools/call failed: {e:#}");
-                        let error_data = if matches!(e, RbacDenied(_)) {
-                            model::ErrorData::new(
-                                model::ErrorCode::INVALID_REQUEST,
-                                "Access denied by RBAC policy",
+                    Err(err) => {
+                        debug!(target: "mcp_gateway", "handle_rpc_json_request: tools/call failed: {err:#}");
+                        let error_data = match err {
+                            CallToolError::NameNotString => {
+                                model::ErrorData::invalid_params("'name' parameter is missing or not a valid string", None)
+                            },
+                            CallToolError::ToolNotFound(ref name) => {
+                                model::ErrorData::resource_not_found(format!("Tool '{name}' not found"), None)
+                            },
+                            CallToolError::RbacDenied(ref tool) => model::ErrorData::invalid_request(
+                                format!("Access denied by RBAC policy for tool '{tool}'"),
                                 None,
-                            )
-                        } else {
-                            model::ErrorData::invalid_params("Invalid params", None)
+                            ),
+                            CallToolError::FunctionGraphNotImplemented => model::ErrorData::internal_error(
+                                "FunctionGraph transcoding is not yet implemented",
+                                None,
+                            ),
+                            CallToolError::InvalidHeaderValue(ref e) => {
+                                model::ErrorData::internal_error(format!("Invalid header value: {e}"), None)
+                            },
+                            CallToolError::TranscoderError { ref tool, ref reason } => {
+                                model::ErrorData::internal_error(
+                                    format!("Transcoder error for tool '{tool}': {reason}"),
+                                    None,
+                                )
+                            },
+                            CallToolError::ClientInitializeError(ref init_err) => match init_err {
+                                ClientInitializeError::JsonRpcError(error_data) => error_data.clone(),
+                                ClientInitializeError::ConnectionClosed(ref msg) => {
+                                    model::ErrorData::internal_error(format!("Upstream connection closed: {msg}"), None)
+                                },
+                                ClientInitializeError::TransportError { ref error, ref context } => {
+                                    model::ErrorData::internal_error(
+                                        format!("Upstream transport error ({context}): {error}"),
+                                        None,
+                                    )
+                                },
+                                ClientInitializeError::Cancelled => model::ErrorData::internal_error(
+                                    "Upstream client initialization was cancelled",
+                                    None,
+                                ),
+                                _ => model::ErrorData::internal_error(
+                                    format!("Upstream client initialization error: {init_err}"),
+                                    None,
+                                ),
+                            },
+                            CallToolError::SerdeError(ref e) => {
+                                model::ErrorData::parse_error(format!("Serialization error: {e}"), None)
+                            },
+                            CallToolError::ServiceError(ref svc_err) => match svc_err {
+                                ServiceError::McpError(error_data) => error_data.clone(),
+                                ServiceError::TransportSend(ref e) => model::ErrorData::internal_error(
+                                    format!("Upstream transport send error: {e}"),
+                                    None,
+                                ),
+                                ServiceError::TransportClosed => {
+                                    model::ErrorData::internal_error("Upstream transport closed", None)
+                                },
+                                ServiceError::UnexpectedResponse => {
+                                    model::ErrorData::internal_error("Unexpected response from upstream", None)
+                                },
+                                ServiceError::Cancelled { ref reason } => model::ErrorData::internal_error(
+                                    format!("Upstream request cancelled: {}", reason.as_deref().unwrap_or("<unknown>")),
+                                    None,
+                                ),
+                                ServiceError::Timeout { timeout } => model::ErrorData::internal_error(
+                                    format!("Upstream request timed out after {timeout:?}"),
+                                    None,
+                                ),
+                                _ => {
+                                    model::ErrorData::internal_error(format!("Upstream service error: {svc_err}"), None)
+                                },
+                            },
                         };
 
                         return MessageResult::JsonRpcError(self.build_rpc_error(error_data));
@@ -845,7 +908,7 @@ impl McpGateway {
                 resp
             },
             _ => {
-                debug!(target: "mcp_gateway", "handle_rpc_json_request: unknown rpc method '{}'", rpc.request.method);
+                info!(target: "mcp_gateway", "handle_rpc_json_request: unknown rpc method '{}'!", rpc.request.method);
                 MessageResult::JsonRpcError(self.build_rpc_error(model::ErrorData::new(
                     model::ErrorCode::METHOD_NOT_FOUND,
                     "Method not found",
@@ -864,7 +927,7 @@ impl McpGateway {
         match transport {
             Transport::Sse => {
                 let Some(session_id) = request.get_mcp_session_id() else {
-                    debug!(target: "mcp_gateway", "get_valid_session: SSE transport requires session ID but none found in request");
+                    info!(target: "mcp_gateway", "get_valid_session: SSE transport requires session ID but none found in request!");
                     return None;
                 };
 

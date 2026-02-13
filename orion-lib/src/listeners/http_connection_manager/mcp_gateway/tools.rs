@@ -6,7 +6,8 @@ use crate::{
             Permission as RbacPermission, ToolRbac,
         },
         transcoder::{rest::DEFAULT_USER_AGENT, RestTranscoder, Transcoder},
-    }
+    },
+    OrionRequestBody,
 };
 use dashmap::DashMap;
 use http::{header::InvalidHeaderValue, HeaderValue};
@@ -26,7 +27,7 @@ use rmcp::object;
 use rmcp::service::{RoleClient, RunningService};
 use smol_str::{SmolStr, ToSmolStr};
 use std::{borrow::Cow, sync::Arc, time::Instant};
-use tracing::{debug, error, warn};
+use tracing::{debug, info};
 
 #[derive(Debug, Clone)]
 struct CachedEntry<T> {
@@ -48,9 +49,7 @@ struct ToolEntry {
 
 #[derive(Debug, thiserror::Error)]
 pub enum CallToolError {
-    #[error("missing 'name' parameter in request")]
-    MissingName,
-    #[error("'name' parameter is not a string")]
+    #[error("'name' parameter is missing or not a string")]
     NameNotString,
     #[error("tool '{0}' not found in registry")]
     ToolNotFound(String),
@@ -60,12 +59,10 @@ pub enum CallToolError {
     FunctionGraphNotImplemented,
     #[error("HeaderValue: {0}")]
     InvalidHeaderValue(#[from] InvalidHeaderValue),
-    #[error("Http: {0}")]
-    HttpError(#[from] http::Error),
     #[error("Transcoder: tool: {tool} reason: {reason}")]
     TranscoderError { tool: String, reason: String },
     #[error("Client initialization error: {0}")]
-    InitializeError(#[from] ClientInitializeError),
+    ClientInitializeError(#[from] ClientInitializeError),
     #[error("ServiceError: {0}")]
     ServiceError(#[from] ServiceError),
     #[error("SerdeError: {0}")]
@@ -196,7 +193,7 @@ impl ToolsRegistry {
                             tools.extend(up_tools.iter().cloned());
                         },
                         Err(err) => {
-                            warn!(target: "mcp_gateway", "Failed to list tools: {}", err);
+                            info!(target: "mcp_gateway", "Failed to list tools: {}!", err);
                         },
                     }
                 },
@@ -226,8 +223,6 @@ impl ToolsRegistry {
         namespace: &str,
     ) -> Result<Vec<Tool>, ListToolsError> {
         let client = Self::get_mcp_client(url).await?;
-        let server_info = client.peer_info();
-        tracing::info!("Connected to server: {server_info:#?}");
 
         // List tools
         let mut tools = client.list_tools(Default::default()).await?;
@@ -243,6 +238,7 @@ impl ToolsRegistry {
     async fn get_mcp_client(
         url: &str,
     ) -> Result<RunningService<RoleClient, InitializeRequestParams>, ClientInitializeError> {
+        debug!(target: "mcp_gateway", "Creating MCP client for URL: {url}...");
         let transport = StreamableHttpClientTransport::from_uri(url);
         let client_info = ClientInfo {
             meta: None,
@@ -257,7 +253,7 @@ impl ToolsRegistry {
             },
         };
         client_info.serve(transport).await.inspect_err(|e| {
-            error!("client error: {:?}", e);
+            info!(target: "mcp_gateway", "get_mcp_client error: {}!", e);
         })
     }
 
@@ -271,7 +267,7 @@ impl ToolsRegistry {
     ) -> Result<MessageResult, CallToolError> {
         // get tool name, and in case of upstream MCP, sub-tool name as well...
         let (backend_name, tool_name) = {
-            let name = rpc.request.params.get("name").ok_or(CallToolError::MissingName)?;
+            let name = rpc.request.params.get("name").ok_or(CallToolError::NameNotString)?;
             let name = name.as_str().ok_or(CallToolError::NameNotString)?;
             match name.split_once("__") {
                 Some((tool, sub_name)) => (tool, sub_name),
@@ -279,7 +275,7 @@ impl ToolsRegistry {
             }
         };
 
-        debug!(target: "mcp_gateway", ">>>> call: method:{} tool{tool_name}@backend{backend_name}", rpc.request.method);
+        debug!(target: "mcp_gateway", "call: method:{} tool {tool_name}@{backend_name}", rpc.request.method);
 
         let entry = self
             .registry
@@ -311,28 +307,45 @@ impl ToolsRegistry {
                 Ok(MessageResult::UpstreamRequest((upstream_request, async_api)))
             },
             UpstreamBackend::McpServer { url, .. } => {
-                let client = if let Some(existing) = session.mcp_upstreams.get_mut(url) {
-                    existing
-                } else {
-                    let new_client = Self::get_mcp_client(url).await?;
-                    session.mcp_upstreams.entry(url.to_owned()).or_insert(new_client)
+                let client = match session.mcp_upstreams.entry(url.to_owned()) {
+                    dashmap::Entry::Occupied(entry) => entry.into_ref(),
+                    dashmap::Entry::Vacant(vacant_entry) => {
+                        let new_client = Self::get_mcp_client(url).await?;
+                        vacant_entry.insert(new_client)
+                    },
                 };
 
-                debug!(target: "mcp_gateway", "Calling tool{backend_name}@{tool_name} with arguments {:?}", rpc.request.params);
-
-                let arguments = match &rpc.request.params.clone().get("arguments") {
+                let arguments = match &rpc.request.params.get("arguments") {
                     Some(&serde_json::Value::Object(ref o)) => Some(o.clone()),
                     _ => None,
                 };
 
-                let tool_result = client
+                let tool_result = match client
                     .call_tool(CallToolRequestParams {
                         meta: None,
                         name: tool_name.to_owned().into(),
                         arguments,
                         task: None,
                     })
-                    .await?;
+                    .await
+                {
+                    Ok(res) => res,
+                    Err(err) => {
+                        match &err {
+                            ServiceError::TransportSend(_) | ServiceError::TransportClosed => {
+                                // delete the client, will be re-created on next call:
+                                // first, drop the reference to client, to avoid deadlock, then remove from session map
+                                info!(target: "mcp_gateway", "removing MCP client for URL {url} due to transport error!");
+                                drop(client);
+                                session.mcp_upstreams.remove(url);
+                            },
+                            _ => (),
+                        };
+                        return Err(err.into());
+                    },
+                };
+
+                debug!(target: "mcp_gateway", "Received result from tool{backend_name}@{tool_name}: {:?}", tool_result);
 
                 let json_result = serde_json::to_value(tool_result)?;
 
