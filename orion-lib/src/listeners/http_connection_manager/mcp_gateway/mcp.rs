@@ -28,7 +28,7 @@ use rmcp::{
 
 use crate::{
     body::{
-        sse_body::{SseBody, SseSender},
+        sink_body::{SinkBody, SinkSender},
         timeout_body::TimeoutBody,
     },
     listeners::{
@@ -54,7 +54,7 @@ pub struct Session {
     pub listener_name: &'static str, // to handle session eviction from listener.sse_map
     pub session_id: SessionId,
     pub transport: Transport,
-    pub session_sse_sender: Option<TokioMutex<SseSender>>,
+    pub sse_sender: Option<TokioMutex<SinkSender>>,
     pub last_activity: Mutex<tokio::time::Instant>,
     pub mcp_upstreams: DashMap<String, RunningService<RoleClient, InitializeRequestParams>, ahash::RandomState>,
 }
@@ -65,7 +65,7 @@ impl Default for Session {
             listener_name: "",
             session_id: SessionId::default(),
             transport: Transport::default(),
-            session_sse_sender: None,
+            sse_sender: None,
             last_activity: Mutex::new(tokio::time::Instant::now()),
             mcp_upstreams: DashMap::with_hasher(ahash::RandomState::default()),
         }
@@ -146,7 +146,7 @@ impl McpGatewayListenerContext {
     pub fn create_session(
         &self,
         listener_name: &'static str,
-        sse_sender: Option<SseSender>,
+        sse_sender: Option<SinkSender>,
         transport: Transport,
     ) -> Result<Arc<Session>, CreateSessionError> {
         if self.session_map.len() >= Self::MAX_SESSIONS_LIMIT {
@@ -160,7 +160,7 @@ impl McpGatewayListenerContext {
             listener_name,
             session_id: session_id.clone(),
             transport,
-            session_sse_sender: sse_sender.map(TokioMutex::new),
+            sse_sender: sse_sender.map(TokioMutex::new),
             last_activity: Mutex::new(tokio::time::Instant::now()),
             mcp_upstreams: DashMap::with_hasher(ahash::RandomState::default()),
         });
@@ -195,7 +195,7 @@ pub struct McpGateway {
     request_id: model::RequestId,
     version: http::Version,
     initialize_request_params: Option<model::InitializeRequestParams>,
-    sse_sender: Option<Arc<TokioMutex<SseSender>>>,
+    streamable_async_sender: Option<Arc<TokioMutex<SinkSender>>>,
 }
 
 impl From<McpGatewayConfig> for McpGateway {
@@ -206,7 +206,7 @@ impl From<McpGatewayConfig> for McpGateway {
             request_id: model::RequestId::Number(0),
             initialize_request_params: None,
             version: http::Version::default(),
-            sse_sender: None,
+            streamable_async_sender: None,
         }
     }
 }
@@ -219,7 +219,7 @@ impl FilterFactory for McpGateway {
             request_id: model::RequestId::Number(0),
             initialize_request_params: None,
             version: http::Version::default(),
-            sse_sender: None,
+            streamable_async_sender: None,
         }
     }
 }
@@ -270,7 +270,7 @@ impl McpGateway {
         };
 
         let ctx = McpGatewayListenerContext::get_filter_context(session.listener_name);
-        let is_async = { matches!(session.transport, Transport::Sse) || self.sse_sender.as_ref().is_some() };
+        let is_async = { matches!(session.transport, Transport::Sse) || self.streamable_async_sender.as_ref().is_some() };
 
         defer! {
             if is_async {
@@ -284,7 +284,7 @@ impl McpGateway {
             let error = self.build_rpc_error(model::ErrorData::internal_error("failed to collect response body", None));
             match session.transport {
                 Transport::Sse => {
-                    let Some(sender) = session.session_sse_sender.as_ref() else {
+                    let Some(sender) = session.sse_sender.as_ref() else {
                         debug!(target: "mcp_gateway", "apply_response: SSE sender not available for session {}", session.session_id);
                         return FilterDecision::internal_server_error("SSE sender not available", self.version);
                     };
@@ -297,7 +297,7 @@ impl McpGateway {
                 },
                 Transport::StreamableHttp => {
                     let event = transport::streamable_http::Event::Message(&error);
-                    if let Some(sender) = &mut self.sse_sender {
+                    if let Some(sender) = &mut self.streamable_async_sender {
                         let mut sender_guard = sender.lock().await;
                         let sender = &mut *sender_guard;
                         if let Err(e) = Self::send_sse_message(sender, event.to_bytes(), self.version).await {
@@ -328,7 +328,7 @@ impl McpGateway {
 
         match session.transport {
             Transport::Sse => {
-                let Some(sender) = session.session_sse_sender.as_ref() else {
+                let Some(sender) = session.sse_sender.as_ref() else {
                     debug!(target: "mcp_gateway", "apply_response: SSE sender not available for session {}", session.session_id);
                     return FilterDecision::internal_server_error("SSE sender not available", self.version);
                 };
@@ -341,9 +341,9 @@ impl McpGateway {
                 }
                 FilterDecision::Continue
             },
-            Transport::StreamableHttp => match self.sse_sender.as_mut() {
+            Transport::StreamableHttp => match self.streamable_async_sender.as_mut() {
                 Some(sender) => {
-                    debug!(target: "mcp_gateway", "apply_response: streamable HTTP (async SSE)...");
+                    debug!(target: "mcp_gateway", "apply_response: streamable HTTP (async)...");
                     let mut sender_guard = sender.lock().await;
                     let sender = &mut *sender_guard;
                     let event = transport::streamable_http::Event::Message(&json_rpc_response);
@@ -354,7 +354,7 @@ impl McpGateway {
                     FilterDecision::Continue
                 },
                 None => {
-                    debug!(target: "mcp_gateway", "apply_response: streamable HTTP (application/json)...");
+                    debug!(target: "mcp_gateway", "apply_response: streamable HTTP (sync)...");
                     let body = serde_json::to_vec(&json_rpc_response).unwrap_or_default();
                     let headers = self.build_json_headers_with_session();
                     match self.build_mcp_response(StatusCode::OK, Self::build_mcp_body(Some(body.into())), &headers) {
@@ -456,7 +456,7 @@ impl McpGateway {
                 debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: handling Error response...");
                 match transport {
                     Transport::Sse => {
-                        let Some(sender) = self.session.as_deref().and_then(|s| s.session_sse_sender.as_ref()) else {
+                        let Some(sender) = self.session.as_deref().and_then(|s| s.sse_sender.as_ref()) else {
                             debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: SSE sender not available");
                             return FilterDecision::internal_server_error("SSE sender not available", self.version);
                         };
@@ -489,7 +489,7 @@ impl McpGateway {
                 debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: handling Response...");
                 match transport {
                     Transport::Sse => {
-                        let Some(sender) = self.session.as_deref().and_then(|s| s.session_sse_sender.as_ref()) else {
+                        let Some(sender) = self.session.as_deref().and_then(|s| s.sse_sender.as_ref()) else {
                             debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: SSE sender not available");
                             return FilterDecision::internal_server_error("SSE sender not available", self.version);
                         };
@@ -548,7 +548,7 @@ impl McpGateway {
                             return FilterDecision::rate_limited(request.version());
                         }
 
-                        let (body, mut sender) = SseBody::new();
+                        let (body, mut sender) = SinkBody::new();
 
                         // priming event...
                         let event: transport::streamable_http::Event = transport::streamable_http::Event::Priming;
@@ -558,7 +558,7 @@ impl McpGateway {
                         };
 
                         // save the sender for use on response
-                        self.sse_sender = Some(Arc::new(TokioMutex::new(sender)));
+                        self.streamable_async_sender = Some(Arc::new(TokioMutex::new(sender)));
 
                         let body = TimeoutBody::new(None, PolyBody::from(body));
                         let Ok(mut okay) = self.build_mcp_response(
@@ -610,7 +610,7 @@ impl McpGateway {
             .version(self.version)
             .status(StatusCode::OK);
 
-        let (body, mut sender) = SseBody::new();
+        let (body, mut sender) = SinkBody::new();
 
         // create a new session
         let session = match ctx.create_session(listener_name, Some(sender.clone()), Transport::Sse) {
@@ -955,7 +955,7 @@ impl McpGateway {
     }
 
     async fn send_sse_message(
-        sender: &mut SseSender,
+        sender: &mut SinkSender,
         message: Bytes,
         version: http::Version,
     ) -> Result<(), FilterDecision> {

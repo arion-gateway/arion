@@ -17,7 +17,7 @@
 
 use super::timeout_body::TimeoutBodyError;
 use crate::body::channel_body::ChannelBody;
-use crate::body::sse_body::SseBody;
+use crate::body::sink_body::SinkBody;
 use crate::Error;
 use bytes::Bytes;
 use http_body::{Frame, SizeHint};
@@ -41,7 +41,7 @@ pub enum PolyBody {
     Grpc(#[pin] GrpcBody),
     Stream(#[pin] StreamBody<ReceiverStream<Result<Frame<Bytes>, Error>>>),
     ChannelBody(#[pin] ChannelBody),
-    SseBody(#[pin] SseBody),
+    SseBody(#[pin] SinkBody),
     Collected(#[pin] Box<Collected<Bytes>>),
     FullWithTrailers(#[pin] Box<WithTrailers<Full<Bytes>, Ready<TrailersType>>>),
     EmptyWithTrailers(#[pin] Box<WithTrailers<Empty<Bytes>, Ready<TrailersType>>>),
@@ -245,9 +245,9 @@ impl From<ChannelBody> for PolyBody {
     }
 }
 
-impl From<SseBody> for PolyBody {
+impl From<SinkBody> for PolyBody {
     #[inline]
-    fn from(body: SseBody) -> Self {
+    fn from(body: SinkBody) -> Self {
         PolyBody::SseBody(body)
     }
 }
@@ -343,7 +343,7 @@ impl TryFrom<PolyBody> for ChannelBody {
     }
 }
 
-impl TryFrom<PolyBody> for SseBody {
+impl TryFrom<PolyBody> for SinkBody {
     type Error = PolyBodyError;
     fn try_from(value: PolyBody) -> Result<Self, Self::Error> {
         match value {
