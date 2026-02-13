@@ -85,16 +85,6 @@ fn extract_arguments(mcp_request: &Request) -> impl Iterator<Item = (&str, Cow<'
     })
 }
 
-//fn build_rest_request(
-//    request: &http::Request<OrionRequestBody>,
-//    mcp_request: &Request,
-//    method: &http::Method,
-//    path: &str,
-//    _query_params: &Vec<McpRestQueryParams>,
-//) -> Result<http::Request<OrionRequestBody>, http::Error> {
-//    todo!()
-//}
-
 #[cfg(test)]
 mod tests {
     use super::*;
