@@ -1,0 +1,6 @@
+[net]
+git-fetch-with-cli = true
+[source.crates-io]
+replace-with = "mirror"
+[source.mirror]
+registry ="sparse+https://internal.invalid/cargo/"

@@ -23,11 +23,11 @@ resolver = "2"
 description  = "Orion Proxy is a cloud native proxy. Orion Proxy is configurable via Envoy xDS protocol"
 edition      = "2021"
 license-file = "./LICENSE"
-rust-version = "1.86"
+rust-version = "1.89"
 version      = "0.1.0"
 
 [patch.crates-io]
-hyper-util   = { git = "https://internal.invalid/hyper-util.git", rev = "76db6ec" }
+hyper-util   = { path = "./hyper-util" }
 
 [workspace.dependencies]
 envoy-data-plane-api    = { path = "envoy-data-plane-api" }
