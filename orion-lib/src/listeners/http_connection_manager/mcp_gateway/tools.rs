@@ -289,8 +289,6 @@ impl ToolsRegistry {
         }
 
         let tool = &entry.tool;
-        let mut async_api = false;
-
         match &tool.backend {
             UpstreamBackend::Rest { method, path, query_params, cluster, r#async, body_template } => {
                 let transcoder = RestTranscoder { method, path, query_params, body_template: body_template.as_ref() };
@@ -301,9 +299,8 @@ impl ToolsRegistry {
                 if let Some(cluster_header) = cluster_header {
                     let headers = upstream_request.headers_mut();
                     headers.append(cluster_header.0.clone(), HeaderValue::from_str(&cluster)?);
-                    async_api = *r#async;
                 }
-                Ok(MessageResult::UpstreamRequest((upstream_request, async_api)))
+                Ok(MessageResult::UpstreamRequest((upstream_request, *r#async)))
             },
             UpstreamBackend::McpServer { url, .. } => {
                 let client = match session.mcp_upstreams.entry(url.to_owned()) {
