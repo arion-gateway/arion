@@ -11,4 +11,13 @@ impl Transcoder for FunctionGraphTranscoder {
     ) -> Result<http::Request<OrionRequestBody>, TranscoderError> {
         todo!()
     }
+
+    fn decode(
+            &self,
+            _output_schema: &JsonObject,
+            _http_headers: &http::HeaderMap,
+            _mcp_request: &Request,
+        ) -> Result<http::Response<OrionRequestBody>, TranscoderError> {
+        todo!()
+    }
 }

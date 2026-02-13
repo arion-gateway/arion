@@ -34,4 +34,11 @@ pub trait Transcoder {
         http_headers: &http::HeaderMap,
         mcp_request: &Request,
     ) -> Result<http::Request<OrionRequestBody>, TranscoderError>;
+
+    fn decode(
+        &self,
+        output_schema: &JsonObject,
+        http_headers: &http::HeaderMap,
+        mcp_request: &Request,
+    ) -> Result<http::Response<OrionRequestBody>, TranscoderError>;
 }

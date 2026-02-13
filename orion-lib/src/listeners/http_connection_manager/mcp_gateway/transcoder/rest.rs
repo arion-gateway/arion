@@ -97,6 +97,15 @@ impl Transcoder for RestTranscoder<'_> {
 
         Ok(builder.body(body)?)
     }
+
+    fn decode(
+        &self,
+        output_schema: &JsonObject,
+        http_headers: &http::HeaderMap,
+        mcp_request: &Request,
+    ) -> Result<http::Response<OrionRequestBody>, TranscoderError> {
+       todo!()
+    }
 }
 
 /// Renders a template by substituting variables with values from the arguments map.
