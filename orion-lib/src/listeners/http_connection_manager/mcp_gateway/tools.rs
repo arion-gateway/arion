@@ -1,5 +1,5 @@
 use crate::listeners::http_connection_manager::mcp_gateway::{
-    mcp::{MessageResult, Session},
+    mcp::{MessageResult, Session, ToolRegistryIndex},
     rbac::{
         Action as RbacAction, JwtClaimField, JwtHeaderField, JwtHeaderMatcher, JwtPayloadMatcher,
         Permission as RbacPermission, ToolRbac,
@@ -149,9 +149,9 @@ impl ToolsRegistry {
         self.registry.push(ToolEntry { tool, rbac });
     }
 
-    /// Get a tool entry by name
-    pub fn get_tool(&self, name: &str) -> Option<&McpTool> {
-        self.registry.iter().find(|e| e.tool.name == name).map(|e| &e.tool)
+    /// Get a tool by name as an Arc for cheap cloning
+    pub fn get_tool_by_index(&self, tool_index: ToolRegistryIndex) -> Option<&McpTool> {
+        self.registry.get(tool_index.0).map(|entry| &entry.tool)
     }
 
     pub async fn build_list_tools(&self, req_ext: http::Extensions) -> ListToolsResult {
@@ -283,10 +283,11 @@ impl ToolsRegistry {
 
         debug!(target: "mcp_gateway", "call: method:{} tool {tool_name}@{backend_name}", rpc.request.method);
 
-        let entry = self
+        let (index, entry) = self
             .registry
             .iter()
-            .find(|e| e.tool.name == backend_name)
+            .enumerate()
+            .find(|(_, e)| e.tool.name == backend_name)
             .ok_or_else(|| CallToolError::ToolNotFound(backend_name.to_string()))?;
 
         if let Some(rbac) = &entry.rbac {
@@ -300,14 +301,14 @@ impl ToolsRegistry {
             UpstreamBackend::Rest { method, path, query_params, cluster, r#async, body_template } => {
                 let transcoder = RestTranscoder { method, path, query_params, body_template: body_template.as_ref() };
                 let mut upstream_request =
-                    transcoder.encode(&entry.tool.input_schema, req_headers, &rpc.request).map_err(|e| {
+                    transcoder.encode(&tool.input_schema, req_headers, &rpc.request).map_err(|e| {
                         CallToolError::TranscoderError { tool: backend_name.to_owned(), reason: e.to_string() }
                     })?;
                 if let Some(cluster_header) = cluster_header {
                     let headers = upstream_request.headers_mut();
                     headers.append(cluster_header.0.clone(), HeaderValue::from_str(&cluster)?);
                 }
-                Ok(MessageResult::UpstreamRequest((upstream_request, *r#async)))
+                Ok(MessageResult::UpstreamRequest((upstream_request, *r#async, ToolRegistryIndex(index))))
             },
             UpstreamBackend::McpServer { url, .. } => {
                 let client = match session.mcp_upstreams.entry(url.to_owned()) {

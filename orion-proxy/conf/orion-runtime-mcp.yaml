@@ -68,6 +68,26 @@ envoy_bootstrap:
                                   },
                                   "required": ["latitude", "longitude"]
                                 }
+                            output_schema:
+                              inline_string: >-
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "temperature": {
+                                      "type": "number",
+                                      "description": "Current temperature in Celsius"
+                                    },
+                                    "humidity": {
+                                      "type": "number",
+                                      "description": "Humidity percentage"
+                                    },
+                                    "condition": {
+                                      "type": "string",
+                                      "description": "Weather condition (e.g., sunny, cloudy, rainy)"
+                                    }
+                                  },
+                                  "required": ["temperature", "condition"]
+                                }
                             rest_backend:
                              cluster: weather_api_cluster
                              method: GET
