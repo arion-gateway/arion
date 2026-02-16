@@ -14,9 +14,16 @@
 
 use std::net::{IpAddr, Ipv4Addr};
 
-use orion_data_plane_api::envoy_data_plane_api::envoy::config::{
-    core::v3::{address::Address as AddressType, socket_address::PortSpecifier, Address, SocketAddress},
-    listener::v3::{FilterChain, Listener as EnvoyListener},
+use orion_data_plane_api::envoy_data_plane_api::{
+    envoy::{
+        config::{
+            core::v3::{address::Address as AddressType, socket_address::PortSpecifier, Address, SocketAddress},
+            listener::v3::{listener_filter::ConfigType, FilterChain, Listener as EnvoyListener, ListenerFilter},
+        },
+        extensions::filters::listener::tls_inspector::v3::TlsInspector,
+    },
+    google::protobuf::Any,
+    prost::Message,
 };
 
 #[derive(Debug, Clone)]
@@ -72,6 +79,22 @@ impl ListenerBuilder {
         F: Into<FilterChain>,
     {
         self.proto.filter_chains.extend(chains.into_iter().map(Into::into));
+        self
+    }
+
+    #[must_use]
+    pub fn with_tls_inspector(mut self) -> Self {
+        let tls_inspector = TlsInspector::default();
+        let listener_filter = ListenerFilter {
+            name: "envoy.filters.listener.tls_inspector".to_string(),
+            config_type: Some(ConfigType::TypedConfig(Any {
+                type_url: "type.googleapis.com/envoy.extensions.filters.listener.tls_inspector.v3.TlsInspector"
+                    .to_string(),
+                value: tls_inspector.encode_to_vec(),
+            })),
+            ..Default::default()
+        };
+        self.proto.listener_filters.push(listener_filter);
         self
     }
 

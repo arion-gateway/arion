@@ -16,12 +16,49 @@ use orion_data_plane_api::envoy_data_plane_api::{
     envoy::{
         config::core::v3::{data_source::Specifier, DataSource},
         extensions::transport_sockets::tls::v3::{
-            CommonTlsContext, DownstreamTlsContext as EnvoyDownstreamTlsContext, SdsSecretConfig, TlsCertificate,
+            certificate_validation_context::TrustChainVerification, common_tls_context::ValidationContextType,
+            CertificateValidationContext, CommonTlsContext, DownstreamTlsContext as EnvoyDownstreamTlsContext,
+            SdsSecretConfig, TlsCertificate, TlsParameters as EnvoyTlsParameters,
             UpstreamTlsContext as EnvoyUpstreamTlsContext,
         },
     },
     google::protobuf::BoolValue,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TlsVersion {
+    Tls1_2,
+    Tls1_3,
+}
+
+impl TlsVersion {
+    fn to_envoy(self) -> i32 {
+        match self {
+            TlsVersion::Tls1_2 => 3, // TlsProtocol::TlsV1_2
+            TlsVersion::Tls1_3 => 4, // TlsProtocol::TlsV1_3
+        }
+    }
+}
+
+fn make_file_data_source(path: impl Into<String>) -> DataSource {
+    DataSource { specifier: Some(Specifier::Filename(path.into())), watched_directory: None }
+}
+
+fn make_validation_context(trusted_ca_path: impl Into<String>) -> CertificateValidationContext {
+    CertificateValidationContext {
+        trusted_ca: Some(make_file_data_source(trusted_ca_path)),
+        trust_chain_verification: TrustChainVerification::VerifyTrustChain as i32,
+        ..Default::default()
+    }
+}
+
+fn make_validation_context_accept_untrusted(trusted_ca_path: impl Into<String>) -> CertificateValidationContext {
+    CertificateValidationContext {
+        trusted_ca: Some(make_file_data_source(trusted_ca_path)),
+        trust_chain_verification: TrustChainVerification::AcceptUntrusted as i32,
+        ..Default::default()
+    }
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct DownstreamTlsBuilder {
@@ -37,14 +74,8 @@ impl DownstreamTlsBuilder {
     #[must_use]
     pub fn cert_files(mut self, cert_chain: impl Into<String>, private_key: impl Into<String>) -> Self {
         let tls_cert = TlsCertificate {
-            certificate_chain: Some(DataSource {
-                specifier: Some(Specifier::Filename(cert_chain.into())),
-                watched_directory: None,
-            }),
-            private_key: Some(DataSource {
-                specifier: Some(Specifier::Filename(private_key.into())),
-                watched_directory: None,
-            }),
+            certificate_chain: Some(make_file_data_source(cert_chain)),
+            private_key: Some(make_file_data_source(private_key)),
             ..Default::default()
         };
         self.ensure_common_tls_context();
@@ -71,6 +102,58 @@ impl DownstreamTlsBuilder {
     }
 
     #[must_use]
+    pub fn validation_context(mut self, trusted_ca_path: impl Into<String>) -> Self {
+        self.ensure_common_tls_context();
+        if let Some(ref mut ctx) = self.proto.common_tls_context {
+            ctx.validation_context_type =
+                Some(ValidationContextType::ValidationContext(make_validation_context(trusted_ca_path)));
+        }
+        self
+    }
+
+    #[must_use]
+    pub fn validation_context_sds(mut self, secret_name: impl Into<String>) -> Self {
+        let sds_config = SdsSecretConfig { name: secret_name.into(), ..Default::default() };
+        self.ensure_common_tls_context();
+        if let Some(ref mut ctx) = self.proto.common_tls_context {
+            ctx.validation_context_type = Some(ValidationContextType::ValidationContextSdsSecretConfig(sds_config));
+        }
+        self
+    }
+
+    #[must_use]
+    pub fn tls_minimum_version(mut self, version: TlsVersion) -> Self {
+        self.ensure_tls_params();
+        if let Some(ref mut ctx) = self.proto.common_tls_context {
+            if let Some(ref mut params) = ctx.tls_params {
+                params.tls_minimum_protocol_version = version.to_envoy();
+            }
+        }
+        self
+    }
+
+    #[must_use]
+    pub fn tls_maximum_version(mut self, version: TlsVersion) -> Self {
+        self.ensure_tls_params();
+        if let Some(ref mut ctx) = self.proto.common_tls_context {
+            if let Some(ref mut params) = ctx.tls_params {
+                params.tls_maximum_protocol_version = version.to_envoy();
+            }
+        }
+        self
+    }
+
+    #[must_use]
+    pub fn tls_1_2_only(self) -> Self {
+        self.tls_minimum_version(TlsVersion::Tls1_2).tls_maximum_version(TlsVersion::Tls1_2)
+    }
+
+    #[must_use]
+    pub fn tls_1_3_only(self) -> Self {
+        self.tls_minimum_version(TlsVersion::Tls1_3).tls_maximum_version(TlsVersion::Tls1_3)
+    }
+
+    #[must_use]
     pub fn with_proto<F: FnOnce(&mut EnvoyDownstreamTlsContext)>(mut self, f: F) -> Self {
         f(&mut self.proto);
         self
@@ -84,6 +167,15 @@ impl DownstreamTlsBuilder {
     fn ensure_common_tls_context(&mut self) {
         if self.proto.common_tls_context.is_none() {
             self.proto.common_tls_context = Some(CommonTlsContext::default());
+        }
+    }
+
+    fn ensure_tls_params(&mut self) {
+        self.ensure_common_tls_context();
+        if let Some(ref mut ctx) = self.proto.common_tls_context {
+            if ctx.tls_params.is_none() {
+                ctx.tls_params = Some(EnvoyTlsParameters::default());
+            }
         }
     }
 }
@@ -114,6 +206,94 @@ impl UpstreamTlsBuilder {
     }
 
     #[must_use]
+    pub fn client_cert_files(mut self, cert_chain: impl Into<String>, private_key: impl Into<String>) -> Self {
+        let tls_cert = TlsCertificate {
+            certificate_chain: Some(make_file_data_source(cert_chain)),
+            private_key: Some(make_file_data_source(private_key)),
+            ..Default::default()
+        };
+        self.ensure_common_tls_context();
+        if let Some(ref mut ctx) = self.proto.common_tls_context {
+            ctx.tls_certificates.push(tls_cert);
+        }
+        self
+    }
+
+    #[must_use]
+    pub fn client_cert_sds(mut self, secret_name: impl Into<String>) -> Self {
+        let sds_config = SdsSecretConfig { name: secret_name.into(), ..Default::default() };
+        self.ensure_common_tls_context();
+        if let Some(ref mut ctx) = self.proto.common_tls_context {
+            ctx.tls_certificate_sds_secret_configs.push(sds_config);
+        }
+        self
+    }
+
+    #[must_use]
+    pub fn validation_context(mut self, trusted_ca_path: impl Into<String>) -> Self {
+        self.ensure_common_tls_context();
+        if let Some(ref mut ctx) = self.proto.common_tls_context {
+            ctx.validation_context_type =
+                Some(ValidationContextType::ValidationContext(make_validation_context(trusted_ca_path)));
+        }
+        self
+    }
+
+    #[must_use]
+    pub fn validation_context_sds(mut self, secret_name: impl Into<String>) -> Self {
+        let sds_config = SdsSecretConfig { name: secret_name.into(), ..Default::default() };
+        self.ensure_common_tls_context();
+        if let Some(ref mut ctx) = self.proto.common_tls_context {
+            ctx.validation_context_type = Some(ValidationContextType::ValidationContextSdsSecretConfig(sds_config));
+        }
+        self
+    }
+
+    #[must_use]
+    pub fn skip_server_verification(mut self, sni: impl Into<String>, trusted_ca_path: impl Into<String>) -> Self {
+        self.proto.sni = sni.into();
+        self.ensure_common_tls_context();
+        if let Some(ref mut ctx) = self.proto.common_tls_context {
+            ctx.validation_context_type = Some(ValidationContextType::ValidationContext(
+                make_validation_context_accept_untrusted(trusted_ca_path),
+            ));
+        }
+        self
+    }
+
+    #[must_use]
+    pub fn tls_minimum_version(mut self, version: TlsVersion) -> Self {
+        self.ensure_tls_params();
+        if let Some(ref mut ctx) = self.proto.common_tls_context {
+            if let Some(ref mut params) = ctx.tls_params {
+                params.tls_minimum_protocol_version = version.to_envoy();
+            }
+        }
+        self
+    }
+
+    #[must_use]
+    pub fn tls_maximum_version(mut self, version: TlsVersion) -> Self {
+        self.ensure_tls_params();
+        if let Some(ref mut ctx) = self.proto.common_tls_context {
+            if let Some(ref mut params) = ctx.tls_params {
+                params.tls_maximum_protocol_version = version.to_envoy();
+            }
+        }
+        self
+    }
+
+    #[must_use]
+    pub fn tls_1_2_only(self) -> Self {
+        self.tls_minimum_version(TlsVersion::Tls1_2).tls_maximum_version(TlsVersion::Tls1_2)
+    }
+
+    #[must_use]
+    pub fn tls_1_3_only(self) -> Self {
+        self.tls_minimum_version(TlsVersion::Tls1_3).tls_maximum_version(TlsVersion::Tls1_3)
+    }
+
+    #[must_use]
     pub fn with_proto<F: FnOnce(&mut EnvoyUpstreamTlsContext)>(mut self, f: F) -> Self {
         f(&mut self.proto);
         self
@@ -122,6 +302,21 @@ impl UpstreamTlsBuilder {
     #[must_use]
     pub fn build(self) -> EnvoyUpstreamTlsContext {
         self.proto
+    }
+
+    fn ensure_common_tls_context(&mut self) {
+        if self.proto.common_tls_context.is_none() {
+            self.proto.common_tls_context = Some(CommonTlsContext::default());
+        }
+    }
+
+    fn ensure_tls_params(&mut self) {
+        self.ensure_common_tls_context();
+        if let Some(ref mut ctx) = self.proto.common_tls_context {
+            if ctx.tls_params.is_none() {
+                ctx.tls_params = Some(EnvoyTlsParameters::default());
+            }
+        }
     }
 }
 

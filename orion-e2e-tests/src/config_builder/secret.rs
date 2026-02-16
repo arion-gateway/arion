@@ -12,9 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::path::Path;
+
 use orion_data_plane_api::envoy_data_plane_api::envoy::{
-    config::core::v3::DataSource,
-    extensions::transport_sockets::tls::v3::{secret::Type as SecretType, Secret as EnvoySecret, TlsCertificate},
+    config::core::v3::{data_source::Specifier, DataSource},
+    extensions::transport_sockets::tls::v3::{
+        secret::Type as SecretType, CertificateValidationContext, Secret as EnvoySecret, TlsCertificate,
+    },
 };
 
 #[derive(Debug, Clone)]
@@ -30,7 +34,6 @@ impl SecretBuilder {
 
     #[must_use]
     pub fn tls_certificate(mut self, certificate_chain: Vec<u8>, private_key: Vec<u8>) -> Self {
-        use orion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::data_source::Specifier;
         let tls_cert = TlsCertificate {
             certificate_chain: Some(DataSource {
                 specifier: Some(Specifier::InlineBytes(certificate_chain)),
@@ -44,6 +47,34 @@ impl SecretBuilder {
         };
         self.proto.r#type = Some(SecretType::TlsCertificate(tls_cert));
         self
+    }
+
+    pub fn tls_certificate_files(
+        self,
+        cert_path: impl AsRef<Path>,
+        key_path: impl AsRef<Path>,
+    ) -> std::io::Result<Self> {
+        let cert_bytes = std::fs::read(cert_path)?;
+        let key_bytes = std::fs::read(key_path)?;
+        Ok(self.tls_certificate(cert_bytes, key_bytes))
+    }
+
+    #[must_use]
+    pub fn validation_context(mut self, trusted_ca: Vec<u8>) -> Self {
+        let validation_ctx = CertificateValidationContext {
+            trusted_ca: Some(DataSource {
+                specifier: Some(Specifier::InlineBytes(trusted_ca)),
+                watched_directory: None,
+            }),
+            ..Default::default()
+        };
+        self.proto.r#type = Some(SecretType::ValidationContext(validation_ctx));
+        self
+    }
+
+    pub fn validation_context_file(self, ca_path: impl AsRef<Path>) -> std::io::Result<Self> {
+        let ca_bytes = std::fs::read(ca_path)?;
+        Ok(self.validation_context(ca_bytes))
     }
 
     #[must_use]
