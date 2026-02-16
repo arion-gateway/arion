@@ -753,26 +753,16 @@ mod envoy_conversions {
         ) -> Result<Self, Self::Error> {
             match (discovery, cla) {
                 (EnvoyDiscoveryType::Static, Some(cla)) => {
-                    if cla
+                    let all_valid = cla
                         .endpoints
                         .iter()
-                        .flat_map(|e| {
-                            e.lb_endpoints
-                                .iter()
-                                .map(|e| match e.address {
-                                    Address::Socket(_, _) => e.address.clone().into_addr().and(Ok(())),
-                                    Address::Pipe(_, _) => Ok(()),
-                                })
-                                .collect::<Vec<_>>()
-                        })
-                        .filter(Result::is_err)
-                        .collect::<Vec<_>>()
-                        .is_empty()
-                    {
+                        .flat_map(|e| e.lb_endpoints.iter())
+                        .all(|e| e.address.is_valid_cluster_endpoint());
+                    if all_valid {
                         Ok(ClusterDiscoveryType::Static(cla))
                     } else {
                         Err(GenericError::from_msg(
-                            "Static clusters are required to have a cluster load assignment configured and all endpoints must be valid IP addresses",
+                            "Static clusters are required to have a cluster load assignment configured and all endpoints must be valid addresses (IP or internal)",
                         ))
                     }
                 },

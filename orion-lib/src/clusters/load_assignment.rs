@@ -18,13 +18,10 @@
 use std::{sync::Arc, time::Duration};
 
 use http::uri::Authority;
-use orion_configuration::config::{
-    cluster::{
-        ClusterLoadAssignment as ClusterLoadAssignmentConfig, ExtendedLbPolicy, HealthStatus, HttpProtocolOptions,
-        LbEndpoint as LbEndpointConfig, LbPolicy, LocalityLbEndpoints as LocalityLbEndpointsConfig, OverrideHostSource,
-        StandardLbPolicy,
-    },
-    core::envoy_conversions::Address,
+use orion_configuration::config::cluster::{
+    ClusterLoadAssignment as ClusterLoadAssignmentConfig, ExtendedLbPolicy, HealthStatus, HttpProtocolOptions,
+    LbEndpoint as LbEndpointConfig, LbPolicy, LocalityLbEndpoints as LocalityLbEndpointsConfig, OverrideHostSource,
+    StandardLbPolicy,
 };
 use tracing::debug;
 use typed_builder::TypedBuilder;
@@ -37,14 +34,13 @@ use super::{
         wrr::WeightedRoundRobinBalancer, Balancer, DefaultBalancer, EndpointWithAuthority, EndpointWithLoad,
         WeightedEndpoint,
     },
-    // cluster::HyperService,
     health::{EndpointHealth, ValueUpdated},
 };
 use crate::{
     clusters::clusters_manager::{RoutingContext, RoutingRequirement},
     transport::{
-        bind_device::BindDevice, GrpcService, HttpChannel, HttpChannelBuilder, HttpChannels, TcpChannelConnector,
-        UpstreamTransportSocketConfigurator,
+        bind_device::BindDevice, connector::ConnectUsing, GrpcService, HttpChannel, HttpChannelBuilder, HttpChannels,
+        TcpChannelConnector, UpstreamTransportSocketConfigurator,
     },
     Result,
 };
@@ -52,9 +48,7 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct LbEndpoint {
     pub name: &'static str,
-    pub address: Address,
-    pub authority: http::uri::Authority,
-    pub bind_device: Option<BindDevice>,
+    pub connect_using: ConnectUsing,
     pub weight: u32,
     pub health_status: HealthStatus,
     http_channel: HttpChannel,
@@ -63,7 +57,7 @@ pub struct LbEndpoint {
 
 impl PartialEq for LbEndpoint {
     fn eq(&self, other: &Self) -> bool {
-        self.authority == other.authority
+        self.connect_using.authority() == other.connect_using.authority()
     }
 }
 
@@ -75,7 +69,7 @@ impl WeightedEndpoint for LbEndpoint {
 
 impl EndpointWithAuthority for LbEndpoint {
     fn authority(&self) -> &Authority {
-        &self.authority
+        self.connect_using.authority()
     }
 }
 
@@ -88,7 +82,7 @@ impl PartialOrd for LbEndpoint {
 }
 impl Ord for LbEndpoint {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.authority.as_str().cmp(other.authority.as_str())
+        self.connect_using.authority().as_str().cmp(other.connect_using.authority().as_str())
     }
 }
 
@@ -104,7 +98,7 @@ impl EndpointHealth for LbEndpoint {
 
 impl LbEndpoint {
     pub fn grpc_service(&self) -> Result<GrpcService> {
-        GrpcService::try_new(self.http_channel.clone(), self.authority.clone())
+        GrpcService::try_new(self.http_channel.clone(), self.connect_using.authority().clone())
     }
 
     pub fn http_channel(&self) -> HttpChannel {
@@ -114,9 +108,7 @@ impl LbEndpoint {
 
 #[derive(Debug, Clone)]
 pub struct PartialLbEndpoint {
-    pub address: Address,
-    pub authority: http::uri::Authority,
-    pub bind_device: Option<BindDevice>,
+    pub connect_using: ConnectUsing,
     pub weight: u32,
     pub health_status: HealthStatus,
 }
@@ -124,12 +116,20 @@ pub struct PartialLbEndpoint {
 impl PartialLbEndpoint {
     fn new(value: &LbEndpoint) -> Self {
         PartialLbEndpoint {
-            address: value.address.clone(),
-            authority: value.authority.clone(),
-            bind_device: value.bind_device.clone(),
+            connect_using: value.connect_using.clone(),
             weight: value.weight,
             health_status: value.health_status,
         }
+    }
+
+    fn with_bind_device(mut self, bind_device: Option<BindDevice>) -> Self {
+        self.connect_using = self.connect_using.with_bind_device(bind_device);
+        self
+    }
+
+    fn with_timeout(mut self, timeout: Option<Duration>) -> Self {
+        self.connect_using = self.connect_using.with_timeout(timeout);
+        self
     }
 }
 
@@ -148,25 +148,14 @@ struct LbEndpointBuilder {
     transport_socket: UpstreamTransportSocketConfigurator,
     #[builder(default)]
     server_name: Option<ServerName<'static>>,
-    connect_timeout: Option<Duration>,
 }
 
 impl LbEndpointBuilder {
-    #[must_use]
-    fn replace_bind_device(mut self, bind_device: Option<BindDevice>) -> Self {
-        self.endpoint.bind_device = bind_device;
-        self
-    }
-
     pub fn build(self) -> Result<Arc<LbEndpoint>> {
         let cluster_name = self.cluster_name;
-        let PartialLbEndpoint { address, authority, bind_device, weight, health_status } = self.endpoint;
+        let PartialLbEndpoint { connect_using, weight, health_status } = self.endpoint;
 
-        let builder = HttpChannelBuilder::new(bind_device.clone())
-            .with_address(address.clone())
-            .with_authority(authority.clone())
-            .with_timeout(self.connect_timeout)
-            .with_cluster_name(cluster_name);
+        let builder = HttpChannelBuilder::new(connect_using.clone()).with_cluster_name(cluster_name);
 
         let maybe_tls_conf = self.transport_socket.tls_configurator();
         let builder = if let Some(server_name) = self.server_name {
@@ -175,24 +164,9 @@ impl LbEndpointBuilder {
             builder.with_tls(maybe_tls_conf.cloned())
         };
         let http_channel = builder.with_http_protocol_options(self.http_protocol_options).build()?;
-        let tcp_channel = TcpChannelConnector::new(
-            &authority,
-            cluster_name,
-            bind_device.clone(),
-            self.connect_timeout,
-            self.transport_socket.clone(),
-        );
+        let tcp_channel = TcpChannelConnector::new(&connect_using, cluster_name, self.transport_socket.clone());
 
-        Ok(Arc::new(LbEndpoint {
-            name: cluster_name,
-            authority,
-            address,
-            bind_device,
-            weight,
-            health_status,
-            http_channel,
-            tcp_channel,
-        }))
+        Ok(Arc::new(LbEndpoint { name: cluster_name, connect_using, weight, health_status, http_channel, tcp_channel }))
     }
 }
 
@@ -202,12 +176,9 @@ impl TryFrom<LbEndpointConfig> for PartialLbEndpoint {
     fn try_from(lb_endpoint: LbEndpointConfig) -> Result<Self> {
         let health_status = lb_endpoint.health_status;
         let address = lb_endpoint.address;
-        let authority = match &address {
-            Address::Socket(_, _) => http::uri::Authority::try_from(format!("{address}"))?,
-            Address::Pipe(_, _) => http::uri::Authority::from_static("pipe_dream"),
-        };
+        let connect_using = ConnectUsing::from_address(&address, None, None)?;
         let weight = lb_endpoint.load_balancing_weight.into();
-        Ok(PartialLbEndpoint { address, authority, bind_device: None, weight, health_status })
+        Ok(PartialLbEndpoint { connect_using, weight, health_status })
     }
 }
 
@@ -231,7 +202,6 @@ impl LocalityLbEndpoints {
                 LbEndpointBuilder::builder()
                     .with_cluster_name(self.name)
                     .with_http_protocol_options(self.http_protocol_options.clone())
-                    .with_connect_timeout(self.connection_timeout)
                     .with_transport_socket(self.transport_socket.clone())
                     .with_endpoint(PartialLbEndpoint::new(&e))
                     .prepare()
@@ -269,16 +239,15 @@ impl LocalityLbEndpointsBuilder {
             .into_iter()
             .map(|e| {
                 let server_name = self.transport_socket.tls_configurator().and(self.server_name.clone());
+                let e = e.with_bind_device(self.bind_device.clone()).with_timeout(self.connection_timeout);
 
                 LbEndpointBuilder::builder()
                     .with_endpoint(e)
                     .with_cluster_name(cluster_name)
-                    .with_connect_timeout(self.connection_timeout)
                     .with_transport_socket(self.transport_socket.clone())
                     .with_server_name(server_name)
                     .with_http_protocol_options(self.http_protocol_options.clone())
                     .prepare()
-                    .replace_bind_device(self.bind_device.clone())
                     .build()
             })
             .collect::<Result<_>>()?;
@@ -430,22 +399,24 @@ impl ClusterLoadAssignment {
     }
 
     pub fn all_http_channels(&self) -> Vec<(Authority, HttpChannel)> {
-        self.all_endpoints_iter().map(|endpoint| (endpoint.authority.clone(), endpoint.http_channel.clone())).collect()
+        self.all_endpoints_iter()
+            .map(|endpoint| (endpoint.authority().clone(), endpoint.http_channel.clone()))
+            .collect()
     }
 
     pub fn all_tcp_channels(&self) -> Vec<(Authority, TcpChannelConnector)> {
-        self.all_endpoints_iter().map(|endpoint| (endpoint.authority.clone(), endpoint.tcp_channel.clone())).collect()
+        self.all_endpoints_iter().map(|endpoint| (endpoint.authority().clone(), endpoint.tcp_channel.clone())).collect()
     }
 
     pub fn try_all_grpc_channels(&self) -> Vec<Result<(Authority, GrpcService)>> {
         self.all_endpoints_iter()
-            .map(|endpoint| endpoint.grpc_service().map(|channel| (endpoint.authority.clone(), channel)))
+            .map(|endpoint| endpoint.grpc_service().map(|channel| (endpoint.authority().clone(), channel)))
             .collect()
     }
 
     pub fn update_endpoint_health(&mut self, authority: &http::uri::Authority, health: HealthStatus) {
         for locality in &self.endpoints {
-            locality.endpoints.iter().filter(|endpoint| &endpoint.authority == authority).for_each(|endpoint| {
+            locality.endpoints.iter().filter(|endpoint| endpoint.authority() == authority).for_each(|endpoint| {
                 if let Err(err) = self.balancer.update_health(endpoint, health) {
                     debug!("Could not update endpoint health: {}", err);
                 }
@@ -571,13 +542,14 @@ impl TryFrom<ClusterLoadAssignmentConfig> for PartialClusterLoadAssignment {
 #[cfg(test)]
 mod test {
     use http::uri::Authority;
-    use orion_configuration::config::core::envoy_conversions::Address;
+    use orion_configuration::config::core::Address;
 
     use super::LbEndpoint;
     use crate::{
         clusters::health::HealthStatus,
         transport::{
-            bind_device::BindDevice, HttpChannelBuilder, TcpChannelConnector, UpstreamTransportSocketConfigurator,
+            bind_device::BindDevice, connector::ConnectUsing, HttpChannelBuilder, TcpChannelConnector,
+            UpstreamTransportSocketConfigurator,
         },
     };
 
@@ -591,21 +563,16 @@ mod test {
             weight: u32,
             health_status: HealthStatus,
         ) -> Self {
-            let http_channel = HttpChannelBuilder::new(bind_device.clone())
-                .with_authority(authority.clone())
-                .with_address(address.clone())
-                .with_cluster_name(cluster_name)
-                .build()
-                .unwrap();
+            let connect_using = ConnectUsing::Socket { authority, bind_device, timeout: None };
+            let http_channel =
+                HttpChannelBuilder::new(connect_using.clone()).with_cluster_name(cluster_name).build().unwrap();
             let tcp_channel = TcpChannelConnector::new(
-                &authority,
+                &connect_using,
                 "test_cluster",
-                bind_device.clone(),
-                None,
                 UpstreamTransportSocketConfigurator::default(),
             );
 
-            Self { name: "Cluster", authority, address, bind_device, weight, health_status, http_channel, tcp_channel }
+            Self { name: "Cluster", connect_using, weight, health_status, http_channel, tcp_channel }
         }
     }
 }

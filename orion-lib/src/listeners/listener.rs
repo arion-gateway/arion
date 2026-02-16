@@ -17,6 +17,7 @@
 
 use super::{
     filterchain::{ConnectionHandler, FilterchainBuilder, FilterchainType},
+    internal_registry::{self, InternalConnection},
     listeners_manager::TlsContextChange,
 };
 #[cfg(feature = "instrumentation")]
@@ -33,10 +34,11 @@ use crate::{
     ConversionContext, Error, Result, RouteConfigurationChange,
 };
 use orion_configuration::config::{
-    listener::{FilterChainMatch, Listener as ListenerConfig, MatchResult},
+    listener::{FilterChainMatch, Listener as ListenerConfig, ListenerType, MatchResult},
     listener_filters::DownstreamProxyProtocolConfig,
 };
 use orion_interner::StringInterner;
+use tokio::sync::mpsc;
 
 #[cfg(feature = "metrics")]
 use opentelemetry::KeyValue;
@@ -65,14 +67,29 @@ use tokio::{
 use tracing::{debug, info, warn};
 
 #[derive(Debug, Clone)]
+enum ListenerBinding {
+    Socket { address: SocketAddr, bind_device: Option<BindDevice>, tcp_backlog_size: u32 },
+    Internal,
+}
+
+enum ConnectionSource {
+    Socket {
+        local_address: SocketAddr,
+        peer_addr: SocketAddr,
+        proxy_protocol_config: Option<Arc<DownstreamProxyProtocolConfig>>,
+    },
+    Internal {
+        metadata: Arc<DownstreamConnectionMetadata>,
+    },
+}
+
+#[derive(Debug, Clone)]
 struct PartialListener {
     name: &'static str,
-    socket_address: std::net::SocketAddr,
-    bind_device: Option<BindDevice>,
+    binding: ListenerBinding,
     filter_chains: HashMap<FilterChainMatch, FilterchainBuilder>,
     with_tls_inspector: bool,
     proxy_protocol_config: Option<DownstreamProxyProtocolConfig>,
-    tcp_backlog_size: u32,
 }
 #[derive(Debug, Clone)]
 pub struct ListenerFactory {
@@ -84,17 +101,22 @@ impl TryFrom<ConversionContext<'_, ListenerConfig>> for PartialListener {
     fn try_from(ctx: ConversionContext<'_, ListenerConfig>) -> std::result::Result<Self, Self::Error> {
         let ConversionContext { envoy_object: listener, secret_manager } = ctx;
         let name = listener.name.to_static_str();
-        let addr = listener.address;
         let with_tls_inspector = listener.with_tls_inspector;
         let proxy_protocol_config = listener.proxy_protocol_config;
         debug!("Listener {name} :TLS Inspector is {with_tls_inspector}");
+
+        let binding = match listener.listener_type {
+            ListenerType::Socket { address, bind_device } => {
+                ListenerBinding::Socket { address, bind_device, tcp_backlog_size: listener.tcp_backlog_size }
+            },
+            ListenerType::Internal { .. } => ListenerBinding::Internal,
+        };
 
         let filter_chains: HashMap<FilterChainMatch, _> = listener
             .filter_chains
             .into_iter()
             .map(|f| FilterchainBuilder::try_from(ConversionContext::new((f.1, secret_manager))).map(|x| (f.0, x)))
             .collect::<Result<_>>()?;
-        let bind_device = listener.bind_device;
 
         if !with_tls_inspector {
             let has_server_names = filter_chains.keys().any(|m| !m.server_names.is_empty());
@@ -105,15 +127,7 @@ impl TryFrom<ConversionContext<'_, ListenerConfig>> for PartialListener {
             }
         }
 
-        Ok(PartialListener {
-            name,
-            socket_address: addr,
-            bind_device,
-            filter_chains,
-            with_tls_inspector,
-            proxy_protocol_config,
-            tcp_backlog_size: listener.tcp_backlog_size,
-        })
+        Ok(PartialListener { name, binding, filter_chains, with_tls_inspector, proxy_protocol_config })
     }
 }
 
@@ -123,15 +137,7 @@ impl ListenerFactory {
         route_updates_receiver: broadcast::Receiver<RouteConfigurationChange>,
         secret_updates_receiver: broadcast::Receiver<TlsContextChange>,
     ) -> Result<Listener> {
-        let PartialListener {
-            name,
-            socket_address,
-            bind_device,
-            filter_chains,
-            with_tls_inspector,
-            proxy_protocol_config,
-            tcp_backlog_size,
-        } = self.listener;
+        let PartialListener { name, binding, filter_chains, with_tls_inspector, proxy_protocol_config } = self.listener;
 
         let filter_chains = filter_chains
             .into_iter()
@@ -140,14 +146,12 @@ impl ListenerFactory {
 
         Ok(Listener {
             name,
-            socket_address,
-            bind_device,
+            binding,
             filter_chains,
             with_tls_inspector,
             proxy_protocol_config,
             route_updates_receiver,
             secret_updates_receiver,
-            tcp_backlog_size,
         })
     }
 }
@@ -188,14 +192,12 @@ fn get_listener_context(listener_name: &'static str) -> Arc<ListenerContext> {
 #[derive(Debug)]
 pub struct Listener {
     name: &'static str,
-    socket_address: std::net::SocketAddr,
-    bind_device: Option<BindDevice>,
+    binding: ListenerBinding,
     pub filter_chains: HashMap<FilterChainMatch, FilterchainType>,
     with_tls_inspector: bool,
     proxy_protocol_config: Option<DownstreamProxyProtocolConfig>,
     route_updates_receiver: broadcast::Receiver<RouteConfigurationChange>,
     secret_updates_receiver: broadcast::Receiver<TlsContextChange>,
-    tcp_backlog_size: u32,
 }
 
 impl Listener {
@@ -208,118 +210,175 @@ impl Listener {
         use std::net::{IpAddr, Ipv4Addr};
         Listener {
             name,
-            socket_address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
-            bind_device: None,
+            binding: ListenerBinding::Socket {
+                address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+                bind_device: None,
+                tcp_backlog_size: 128,
+            },
             filter_chains: HashMap::new(),
             with_tls_inspector: false,
             proxy_protocol_config: None,
             route_updates_receiver: route_rx,
             secret_updates_receiver: secret_rx,
-            tcp_backlog_size: 128,
         }
     }
 
     pub fn get_name(&self) -> &'static str {
         self.name
     }
-    pub fn get_socket(&self) -> (&std::net::SocketAddr, Option<&BindDevice>) {
-        (&self.socket_address, self.bind_device.as_ref())
+
+    pub fn get_socket(&self) -> Option<(&std::net::SocketAddr, Option<&BindDevice>)> {
+        match &self.binding {
+            ListenerBinding::Socket { address, bind_device, .. } => Some((address, bind_device.as_ref())),
+            ListenerBinding::Internal => None,
+        }
     }
 
     pub async fn start(self) -> Error {
         let Self {
             name,
-            socket_address: local_address,
-            bind_device,
+            binding,
             filter_chains,
             with_tls_inspector,
             proxy_protocol_config,
             mut route_updates_receiver,
             mut secret_updates_receiver,
-            tcp_backlog_size,
         } = self;
-        let listener = match configure_and_start_tcp_listener(local_address, bind_device.as_ref(), tcp_backlog_size) {
-            Ok(x) => x,
-            Err(e) => return e,
-        };
 
-        let actual_address = listener.local_addr().unwrap_or(local_address);
-        info!("listener '{name}' started: {actual_address}");
         let mut filter_chains = Arc::new(filter_chains);
         let proxy_protocol_config = proxy_protocol_config.map(Arc::new);
         let _listener_name = name;
 
-        #[cfg(feature = "instrumentation")]
-        let clock = quanta::Clock::new();
+        match binding {
+            ListenerBinding::Socket { address: local_address, bind_device, tcp_backlog_size } => {
+                let listener =
+                    match configure_and_start_tcp_listener(local_address, bind_device.as_ref(), tcp_backlog_size) {
+                        Ok(x) => x,
+                        Err(e) => return e,
+                    };
 
-        loop {
-            tokio::select! {
-                biased;
-                // here we accept a connection, and then start processing it.
-                //  we spawn early so that we don't block other connections from being accepted due to a slow client
-                maybe_stream = listener.accept() => {
-                    match maybe_stream {
-                        Ok((stream, peer_addr)) => {
-                            #[cfg(feature = "instrumentation")]
-                            instrumentation::metrics::CONNECTIONS.add(1);
+                let actual_address = listener.local_addr().unwrap_or(local_address);
+                info!("listener '{name}' started: {actual_address}");
 
-                            #[cfg(feature = "instrumentation")]
-                            let start_clock = clock.raw();
+                #[cfg(feature = "instrumentation")]
+                let clock = quanta::Clock::new();
 
-                            let filter_chains = Arc::clone(&filter_chains);
-                            let proxy_protocol_config = proxy_protocol_config.clone();
-                            tokio::spawn(async move {
-                                let start = std::time::Instant::now();
+                loop {
+                    tokio::select! {
+                        biased;
+                        maybe_stream = listener.accept() => {
+                            match maybe_stream {
+                                Ok((stream, peer_addr)) => {
+                                    #[cfg(feature = "instrumentation")]
+                                    instrumentation::metrics::CONNECTIONS.add(1);
 
-                                _ = stream.set_nodelay(true);
-                                _ = stream.set_quickack(true);
+                                    #[cfg(feature = "instrumentation")]
+                                    let start_clock = clock.raw();
 
-                                // This is a new downstream connection...
-                                //
-                                let _shard_id = get_shard_id!();
-                                with_metric!(listeners::DOWNSTREAM_CX_TOTAL, add, 1, _shard_id,&[KeyValue::new("listener", _listener_name)]);
-                                with_metric!(listeners::DOWNSTREAM_CX_ACTIVE, add, 1, _shard_id,&[KeyValue::new("listener", _listener_name)]);
+                                    let filter_chains = Arc::clone(&filter_chains);
+                                    let proxy_protocol_config = proxy_protocol_config.clone();
+                                    tokio::spawn(async move {
+                                        let start = std::time::Instant::now();
 
-                                // spawn a separate task for handling this client<->proxy connection
-                                // we spawn before we know if we want to process this route because we might need to run the tls_inspector which could
-                                // stall if the client is slow to send the ClientHello and end up blocking the acceptance of new connections
-                                //
-                                //  we could optimize a little here by either splitting up the filter_chain selection and rbac into the parts that can run
-                                // before we have the ClientHello and the ones after. since we might already have enough info to decide to drop the connection
-                                // or pick a specific filter_chain to run, or we could simply if-else on the with_tls_inspector variable.
-                                _ = tokio::spawn(Self::process_incoming_connection(name, filter_chains, with_tls_inspector, proxy_protocol_config, local_address, peer_addr, Box::new(stream), start)).await;
-                            });
+                                        _ = stream.set_nodelay(true);
+                                        _ = stream.set_quickack(true);
 
-                            #[cfg(feature = "instrumentation")]
-                            {
-                                let nanos = clock.delta_as_nanos(start_clock, clock.raw());
-                                instrumentation::metrics::CONNECTION_SETUP_TIME.observe(nanos as usize);
+                                        let _shard_id = get_shard_id!();
+                                        with_metric!(listeners::DOWNSTREAM_CX_TOTAL, add, 1, _shard_id,&[KeyValue::new("listener", _listener_name)]);
+                                        with_metric!(listeners::DOWNSTREAM_CX_ACTIVE, add, 1, _shard_id,&[KeyValue::new("listener", _listener_name)]);
+
+                                        _ = tokio::spawn(Self::process_connection(
+                                            name,
+                                            filter_chains,
+                                            with_tls_inspector,
+                                            ConnectionSource::Socket { local_address, peer_addr, proxy_protocol_config },
+                                            Box::new(stream),
+                                            start,
+                                        )).await;
+                                    });
+
+                                    #[cfg(feature = "instrumentation")]
+                                    {
+                                        let nanos = clock.delta_as_nanos(start_clock, clock.raw());
+                                        instrumentation::metrics::CONNECTION_SETUP_TIME.observe(nanos as usize);
+                                    }
+                                },
+                                Err(e) => {
+                                    warn!("failed to accept tcp connection: {e}");
+                                }
                             }
                         },
-                        Err(e) => {
-                            warn!("failed to accept tcp connection: {e}");
+                        maybe_route_update = route_updates_receiver.recv() => {
+                            match maybe_route_update {
+                                Ok(route_update) => {Self::process_route_update(name, &filter_chains, route_update)},
+                                Err(e) => {return e.into();}
+                            }
+                        },
+                        maybe_secret_update = secret_updates_receiver.recv() => {
+                            match maybe_secret_update {
+                                Ok(secret_update) => {
+                                    let mut filter_chains_clone = Arc::unwrap_or_clone(filter_chains);
+                                    Self::process_secret_update(name, &mut filter_chains_clone, secret_update);
+                                    filter_chains = Arc::new(filter_chains_clone);
+                                }
+                                Err(e) => {return e.into();}
+                            }
                         }
-                    }
-                },
-                maybe_route_update = route_updates_receiver.recv() => {
-                    //todo: add context to the error here once orion-error lands
-                    match maybe_route_update {
-                        Ok(route_update) => {Self::process_route_update(name, &filter_chains, route_update)},
-                        Err(e) => {return e.into();}
-                    }
-                },
-                maybe_secret_update = secret_updates_receiver.recv() => {
-                    match maybe_secret_update {
-                        Ok(secret_update) => {
-                            // todo: possibly expensive clone - may need to rethink this structure
-                            let mut filter_chains_clone = Arc::unwrap_or_clone(filter_chains);
-                            Self::process_secret_update(name, &mut filter_chains_clone, secret_update);
-                            filter_chains = Arc::new(filter_chains_clone);
-                        }
-                        Err(e) => {return e.into();}
                     }
                 }
-            }
+            },
+            ListenerBinding::Internal => {
+                let (tx, mut rx) = mpsc::channel::<InternalConnection>(128);
+
+                internal_registry::register(name, tx);
+                scopeguard::defer! {
+                    internal_registry::unregister(name);
+                }
+                info!("internal listener '{name}' started");
+
+                loop {
+                    tokio::select! {
+                        maybe_connection = rx.recv() => {
+                            match maybe_connection {
+                                Some(InternalConnection { stream, downstream_metadata, start_instant }) => {
+                                    let _shard_id = get_shard_id!();
+                                    with_metric!(listeners::DOWNSTREAM_CX_TOTAL, add, 1, _shard_id, &[KeyValue::new("listener", _listener_name)]);
+                                    with_metric!(listeners::DOWNSTREAM_CX_ACTIVE, add, 1, _shard_id, &[KeyValue::new("listener", _listener_name)]);
+
+                                    let filter_chains = Arc::clone(&filter_chains);
+                                    tokio::spawn(Self::process_connection(
+                                        name,
+                                        filter_chains,
+                                        with_tls_inspector,
+                                        ConnectionSource::Internal { metadata: downstream_metadata },
+                                        stream,
+                                        start_instant,
+                                    ));
+                                },
+                                None => {
+                                    return "Internal listener channel closed".into();
+                                }
+                            }
+                        },
+                        maybe_route_update = route_updates_receiver.recv() => {
+                            match maybe_route_update {
+                                Ok(route_update) => {Self::process_route_update(name, &filter_chains, route_update)},
+                                Err(e) => {return e.into();}
+                            }
+                        },
+                        maybe_secret_update = secret_updates_receiver.recv() => {
+                            match maybe_secret_update {
+                                Ok(secret_update) => {
+                                    let mut filter_chains_clone = Arc::unwrap_or_clone(filter_chains);
+                                    Self::process_secret_update(name, &mut filter_chains_clone, secret_update);
+                                    filter_chains = Arc::new(filter_chains_clone);
+                                }
+                                Err(e) => {return e.into();}
+                            }
+                        }
+                    }
+                }
+            },
         }
     }
 
@@ -413,14 +472,11 @@ impl Listener {
     }
 
     #[allow(clippy::too_many_lines)]
-    #[allow(clippy::too_many_arguments)]
-    async fn process_incoming_connection(
+    async fn process_connection(
         listener_name: &'static str,
         filter_chains: Arc<HashMap<FilterChainMatch, FilterchainType>>,
         with_tls_inspector: bool,
-        proxy_protocol_config: Option<Arc<DownstreamProxyProtocolConfig>>,
-        local_address: SocketAddr,
-        peer_addr: SocketAddr,
+        source: ConnectionSource,
         mut stream: AsyncStream,
         start_instant: std::time::Instant,
     ) -> Result<()> {
@@ -487,20 +543,26 @@ impl Listener {
             None
         };
 
-        let connection_metadata = if let Some(config) = proxy_protocol_config.as_ref() {
-            let reader = ProxyProtocolReader::new(Arc::clone(config));
-            let (metadata, new_stream) = reader.try_read_proxy_header(stream, local_address, peer_addr).await?;
-            stream = new_stream;
-            metadata
-        } else {
-            DownstreamConnectionMetadata::FromSocket { peer_address: peer_addr, local_address }
+        let connection_metadata = match source {
+            ConnectionSource::Socket { local_address, peer_addr, proxy_protocol_config } => {
+                if let Some(config) = proxy_protocol_config.as_ref() {
+                    let reader = ProxyProtocolReader::new(Arc::clone(config));
+                    let (metadata, new_stream) = reader.try_read_proxy_header(stream, local_address, peer_addr).await?;
+                    stream = new_stream;
+                    metadata
+                } else {
+                    DownstreamConnectionMetadata::FromSocket { peer_address: peer_addr, local_address }
+                }
+            },
+            ConnectionSource::Internal { metadata } => (*metadata).clone(),
         };
 
         let selected_filterchain = Self::select_filterchain(&filter_chains, &connection_metadata, sni.as_deref())?;
 
         if let Some(filterchain) = selected_filterchain {
             debug!(
-                "{listener_name} : mapping connection from {peer_addr} to filter chain {}",
+                "{listener_name} : mapping connection from {} to filter chain {}",
+                connection_metadata.peer_address(),
                 filterchain.filter_chain().name
             );
             if let Some(stream) = filterchain.apply_rbac(stream, &connection_metadata, sni.as_deref()) {
@@ -513,7 +575,7 @@ impl Listener {
                     )
                     .await;
             }
-            debug!("{listener_name} : dropped connection from {peer_addr} due to rbac");
+            debug!("{listener_name} : dropped connection from {} due to rbac", connection_metadata.peer_address());
         } else {
             with_metric!(
                 listeners::NO_FILTER_CHAIN_MATCH,
@@ -522,7 +584,11 @@ impl Listener {
                 _shard_id,
                 &[KeyValue::new("listener", listener_name)]
             );
-            warn!("{listener_name} : No match for {peer_addr} {local_address}");
+            warn!(
+                "{listener_name} : No match for {} {}",
+                connection_metadata.peer_address(),
+                connection_metadata.local_address()
+            );
         }
         Ok(())
     }
@@ -683,7 +749,10 @@ socket_options:
         let l = PartialListener::try_from(ctx).unwrap();
         let expected_bind_device = Some(BindDevice::from_str("virt1").unwrap());
 
-        assert_eq!(&l.bind_device, &expected_bind_device);
+        match &l.binding {
+            ListenerBinding::Socket { bind_device, .. } => assert_eq!(bind_device, &expected_bind_device),
+            ListenerBinding::Internal => panic!("Expected socket listener"),
+        }
     }
 
     #[test]

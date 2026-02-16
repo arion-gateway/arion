@@ -4,7 +4,7 @@ use http::{uri::Authority, HeaderName, HeaderValue};
 use rustc_hash::FxHashMap as HashMap;
 use tracing::debug;
 
-use super::Balancer;
+use super::{Balancer, EndpointWithAuthority};
 use crate::clusters::{
     health::{EndpointHealth, HealthStatus, ValueUpdated},
     load_assignment::{BalancerType, LbEndpoint, LocalityLbEndpoints},
@@ -76,7 +76,7 @@ impl OverrideHostLoadBalancer {
     }
 
     pub fn update_health(&mut self, endpoint: &LbEndpoint, health: HealthStatus) -> Result<ValueUpdated> {
-        if let Some(entry) = self.endpoints.get_mut(endpoint.authority.as_str()) {
+        if let Some(entry) = self.endpoints.get_mut(endpoint.authority().as_str()) {
             entry.healthy = health.is_healthy();
         }
         self.fallback.update_health(endpoint, health)
@@ -100,7 +100,7 @@ impl OverrideHostLoadBalancer {
         let mut override_map = HashMap::default();
         for locality in endpoints {
             for endpoint in &locality.endpoints {
-                let key = endpoint.authority.as_str().to_owned();
+                let key = endpoint.authority().as_str().to_owned();
                 let healthy = previous
                     .and_then(|prev| prev.get(&key).map(|entry| entry.healthy))
                     .unwrap_or_else(|| endpoint.health_status.is_healthy());

@@ -15,7 +15,7 @@
 //
 //
 
-use super::{bind_device::BindDevice, connector::LocalConnectorWithDNSResolver};
+use super::connector::{ConnectUsing, UnifiedConnector};
 use crate::{
     body::{
         instrumented_body::InstrumentedBody, poly_body::PolyBody, response_flags::ResponseFlags,
@@ -46,7 +46,6 @@ use hyper_util::{
 };
 use orion_configuration::config::{
     cluster::http_protocol_options::{Codec, HttpProtocolOptions},
-    core::envoy_conversions::Address,
     network_filters::http_connection_manager::RetryPolicy,
 };
 use orion_format::types::{ResponseFlagsLong, ResponseFlagsShort};
@@ -75,8 +74,8 @@ use {
 };
 const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
-type HttpClient = Client<LocalConnectorWithDNSResolver, OrionRequestBody>;
-type HttpsClient = Client<HttpsConnector<LocalConnectorWithDNSResolver>, OrionRequestBody>;
+type HttpClient = Client<UnifiedConnector, OrionRequestBody>;
+type HttpsClient = Client<HttpsConnector<UnifiedConnector>, OrionRequestBody>;
 
 // Rationale: The outer Arc is necessary to avoid building a new Client when cloning the HttpChannel.
 // The inner Arc, instead, is used to pass the client to async code, so it's already wrapped by the Arc.
@@ -84,12 +83,12 @@ type HttpsClient = Client<HttpsConnector<LocalConnectorWithDNSResolver>, OrionRe
 #[derive(Clone, Debug)]
 pub struct ClientContext {
     configured_upstream_http_version: Codec,
-    client: Arc<LocalObject<Arc<HttpsClient>, Builder, HttpsConnector<LocalConnectorWithDNSResolver>>>,
+    client: Arc<LocalObject<Arc<HttpsClient>, Builder, HttpsConnector<UnifiedConnector>>>,
 }
 impl ClientContext {
     fn new(
         configured_upstream_http_version: Codec,
-        client: Arc<LocalObject<Arc<HttpsClient>, Builder, HttpsConnector<LocalConnectorWithDNSResolver>>>,
+        client: Arc<LocalObject<Arc<HttpsClient>, Builder, HttpsConnector<UnifiedConnector>>>,
     ) -> Self {
         Self { configured_upstream_http_version, client }
     }
@@ -132,7 +131,7 @@ pub struct HttpChannel {
 
 #[derive(Clone, Debug)]
 pub enum HttpChannelClient {
-    Plain(Arc<LocalObject<Arc<HttpClient>, Builder, LocalConnectorWithDNSResolver>>),
+    Plain(Arc<LocalObject<Arc<HttpClient>, Builder, UnifiedConnector>>),
     Tls(ClientContext),
     Unix(hyper::Uri, Arc<Client<UnixConnector, InstrumentedBody<TimeoutBody<PolyBody>>>>),
 }
@@ -143,49 +142,39 @@ impl HttpChannelClient {
     }
 }
 
-#[derive(Default)]
 pub struct HttpChannelBuilder {
+    connect_using: ConnectUsing,
     tls: Option<TlsConfigurator<ClientConfig, WantsToBuildClient>>,
-    address: Option<Address>,
-    authority: Option<Authority>,
-    bind_device: Option<BindDevice>,
     server_name: Option<ServerName<'static>>,
     http_protocol_options: HttpProtocolOptions,
-    connection_timeout: Option<Duration>,
     cluster_name: Option<&'static str>,
 }
 
-impl LocalBuilder<LocalConnectorWithDNSResolver, Arc<HttpClient>> for Builder {
-    fn build(&self, arg: LocalConnectorWithDNSResolver) -> Arc<HttpClient> {
+impl LocalBuilder<UnifiedConnector, Arc<HttpClient>> for Builder {
+    fn build(&self, arg: UnifiedConnector) -> Arc<HttpClient> {
         Arc::new(self.build(arg))
     }
 }
 
-impl LocalBuilder<HttpsConnector<LocalConnectorWithDNSResolver>, Arc<HttpsClient>> for Builder {
-    fn build(&self, arg: HttpsConnector<LocalConnectorWithDNSResolver>) -> Arc<HttpsClient> {
+impl LocalBuilder<HttpsConnector<UnifiedConnector>, Arc<HttpsClient>> for Builder {
+    fn build(&self, arg: HttpsConnector<UnifiedConnector>) -> Arc<HttpsClient> {
         Arc::new(self.build(arg))
     }
 }
 
 impl HttpChannelBuilder {
-    pub fn new(bind_device: Option<BindDevice>) -> Self {
-        Self { bind_device, ..Default::default() }
+    pub fn new(connect_using: ConnectUsing) -> Self {
+        Self {
+            connect_using,
+            tls: None,
+            server_name: None,
+            http_protocol_options: HttpProtocolOptions::default(),
+            cluster_name: None,
+        }
     }
 
     pub fn with_tls(self, tls_configurator: Option<TlsConfigurator<ClientConfig, WantsToBuildClient>>) -> Self {
         Self { tls: tls_configurator, ..self }
-    }
-
-    pub fn with_timeout(self, timeout: Option<Duration>) -> Self {
-        Self { connection_timeout: timeout, ..self }
-    }
-
-    pub fn with_authority(self, authority: Authority) -> Self {
-        Self { authority: Some(authority), ..self }
-    }
-
-    pub fn with_address(self, address: Address) -> Self {
-        Self { address: Some(address), ..self }
     }
 
     pub fn with_cluster_name(self, cluster_name: &'static str) -> Self {
@@ -200,18 +189,8 @@ impl HttpChannelBuilder {
         Self { http_protocol_options, ..self }
     }
 
-    #[allow(clippy::cast_sign_loss)]
     pub fn build(self) -> crate::Result<HttpChannel> {
-        match self.address {
-            Some(Address::Socket(_, _)) => self.build_channel_from_authority(),
-            Some(Address::Pipe(_, _)) => self.build_channel_from_pipe(),
-            None => Err(Error::from("Address is mandatory")),
-        }
-    }
-
-    #[allow(clippy::cast_sign_loss)]
-    pub fn build_with_no_address(self) -> crate::Result<HttpChannel> {
-        self.build_channel_from_authority()
+        self.build_channel()
     }
 
     fn configure_hyper_client(&self) -> Builder {
@@ -262,20 +241,17 @@ impl HttpChannelBuilder {
         }
     }
 
-    fn build_channel_from_authority(self) -> crate::Result<HttpChannel> {
-        let authority = self.authority.clone().ok_or_else(|| Error::from("Authority is mandatory"))?;
+    fn build_channel(self) -> crate::Result<HttpChannel> {
+        let authority = self.connect_using.authority().clone();
         let client_builder = self.configure_hyper_client();
+        let is_http2 = matches!(self.http_protocol_options.codec, Codec::Http2);
 
-        // enable_trailers is only valid for HTTP1 and the flag is used to
-        // include the TE and Trailer headers if they were missing from the
-        // original request
         let enable_trailers = match self.http_protocol_options.codec {
             Codec::Http1 => self.http_protocol_options.http1_options.enable_trailers,
             Codec::Http2 => false,
         };
 
         if let Some(tls_context) = self.tls {
-            // Build TLS client inline to avoid ownership issues
             let mut builder =
                 hyper_rustls::HttpsConnectorBuilder::new().with_tls_config(tls_context.into_inner()).https_only();
 
@@ -287,12 +263,8 @@ impl HttpChannelBuilder {
                 builder.with_server_name_resolver(FixedServerNameResolver::new(server_name))
             };
 
-            let connector = LocalConnectorWithDNSResolver {
-                addr: authority.clone(),
-                cluster_name: self.cluster_name.unwrap_or_default(),
-                bind_device: self.bind_device,
-                timeout: self.connection_timeout,
-            };
+            let connector =
+                UnifiedConnector::from((&self.connect_using, self.cluster_name.unwrap_or_default(), is_http2));
 
             let http_connector = match self.http_protocol_options.codec {
                 Codec::Http2 => builder.enable_http2().wrap_connector(connector),
@@ -310,13 +282,8 @@ impl HttpChannelBuilder {
                 cluster_name: self.cluster_name.unwrap_or_default(),
             })
         } else {
-            // Build plain client inline
-            let connector = LocalConnectorWithDNSResolver {
-                addr: authority.clone(),
-                bind_device: self.bind_device,
-                timeout: self.connection_timeout,
-                cluster_name: self.cluster_name.unwrap_or_default(),
-            };
+            let connector =
+                UnifiedConnector::from((&self.connect_using, self.cluster_name.unwrap_or_default(), is_http2));
 
             Ok(HttpChannel {
                 channel_client: HttpChannelClient::Plain(Arc::new(LocalObject::new(client_builder, connector))),
@@ -328,24 +295,12 @@ impl HttpChannelBuilder {
         }
     }
 
+    #[allow(dead_code)]
     fn build_channel_from_pipe(self) -> crate::Result<HttpChannel> {
-        use hyperlocal::{UnixClientExt, Uri};
-
-        match self.address {
-            Some(Address::Pipe(name, _)) => {
-                debug!("Building address from a pipe {name}");
-                let uri: hyper::Uri = Uri::new(name.clone(), "/").into();
-                let authority = uri.authority().cloned().unwrap_or(Authority::from_static("none"));
-                debug!("Building address from a pipe {uri:?}");
-                Ok(HttpChannel {
-                    channel_client: HttpChannelClient::Unix(uri, Arc::new(Client::unix())),
-                    http_version: self.http_protocol_options.codec,
-                    enable_trailers: self.http_protocol_options.http1_options.enable_trailers,
-                    upstream_authority: authority,
-                    cluster_name: self.cluster_name.unwrap_or_default(),
-                })
+        match &self.connect_using {
+            ConnectUsing::Socket { .. } | ConnectUsing::InternalListener { .. } => {
+                Err(Error::from("Pipe channel requires a pipe address"))
             },
-            _ => Err(Error::from("Trying to build a pipe address from invalid address")),
         }
     }
 }

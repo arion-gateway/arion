@@ -22,7 +22,7 @@ use orion_configuration::config::{
         ClusterLoadAssignment as ClusterLoadAssignmentConfig, HealthCheck, HealthStatus,
         LbEndpoint as LbEndpointConfig, LbPolicy, LocalityLbEndpoints as LocalityLbEndpointsConfig,
     },
-    core::envoy_conversions::Address,
+    core::Address,
     transport::BindDevice,
 };
 
@@ -171,7 +171,7 @@ impl TryFrom<&DynamicCluster> for ClusterLoadAssignmentConfig {
                         let load_balancing_weight = std::num::NonZeroU32::new(ep.weight)
                             .ok_or_else(|| format!("Invalid load balancing weight: {}", ep.weight))?;
                         Ok(LbEndpointConfig {
-                            address: Address::try_from(&ep.authority)?,
+                            address: Address::try_from(ep.connect_using.authority())?,
                             health_status: ep.health_status,
                             load_balancing_weight,
                         })

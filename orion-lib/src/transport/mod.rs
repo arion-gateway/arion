@@ -15,6 +15,11 @@
 //
 //
 
+use hyper_util::client::legacy::connect::{Connected, Connection};
+use hyper_util::rt::TokioIo;
+use std::ops::{Deref, DerefMut};
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite};
 
 pub mod bind_device;
@@ -41,3 +46,65 @@ pub trait AsyncReadWrite: AsyncRead + AsyncWrite + Send + Sync + Unpin {}
 impl<T> AsyncReadWrite for T where T: AsyncRead + AsyncWrite + Send + Sync + Unpin {}
 
 pub type AsyncStream = Box<dyn AsyncReadWrite>;
+
+pub struct HttpConnection {
+    inner: TokioIo<AsyncStream>,
+    is_http2: bool,
+}
+
+impl HttpConnection {
+    pub fn new(stream: TokioIo<AsyncStream>) -> Self {
+        Self { inner: stream, is_http2: false }
+    }
+
+    pub fn new_http2(stream: TokioIo<AsyncStream>) -> Self {
+        Self { inner: stream, is_http2: true }
+    }
+}
+
+impl Connection for HttpConnection {
+    fn connected(&self) -> Connected {
+        let conn = Connected::new();
+        if self.is_http2 {
+            conn.negotiated_h2()
+        } else {
+            conn
+        }
+    }
+}
+
+impl Deref for HttpConnection {
+    type Target = TokioIo<AsyncStream>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl DerefMut for HttpConnection {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
+    }
+}
+
+impl hyper::rt::Read for HttpConnection {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: hyper::rt::ReadBufCursor<'_>,
+    ) -> Poll<Result<(), std::io::Error>> {
+        Pin::new(&mut self.inner).poll_read(cx, buf)
+    }
+}
+
+impl hyper::rt::Write for HttpConnection {
+    fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize, std::io::Error>> {
+        Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
