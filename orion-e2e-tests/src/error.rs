@@ -51,6 +51,24 @@ pub enum Error {
     #[error("No request received within {0:?}")]
     NoRequestReceived(std::time::Duration),
 
+    #[error("No TCP connection received within {0:?}")]
+    NoConnectionReceived(std::time::Duration),
+
+    #[error("No gRPC request received within {0:?}")]
+    NoGrpcRequestReceived(std::time::Duration),
+
+    #[error("gRPC health service not enabled")]
+    HealthServiceNotEnabled,
+
+    #[error("gRPC test service not enabled")]
+    TestServiceNotEnabled,
+
+    #[error("Expected {expected} requests but only received {actual} within {timeout:?}")]
+    RequestCountTimeout { expected: usize, actual: usize, timeout: std::time::Duration },
+
+    #[error("Expected {expected} health checks but only received {actual} within {timeout:?}")]
+    HealthCheckCountTimeout { expected: usize, actual: usize, timeout: std::time::Duration },
+
     #[error("Failed to allocate port: {0}")]
     PortAllocationFailed(String),
 

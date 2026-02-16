@@ -215,7 +215,7 @@ impl WaitInterval for IntervalWaiter {
 
 /// Wait for the `interval`. Returns `true` if it was cancelled.
 async fn wait_was_cancelled(interval: Duration, stop_signal: &Notify) -> bool {
-    fast_timeout(interval, stop_signal.notified()).await.is_err()
+    fast_timeout(interval, stop_signal.notified()).await.is_ok()
 }
 
 /// If the option has a value, wait for the `interval`. If the option is empty, return immediately.

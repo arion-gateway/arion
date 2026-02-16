@@ -46,7 +46,7 @@ pub struct HarnessTimeouts {
 
 impl Default for HarnessTimeouts {
     fn default() -> Self {
-        Self { connection: Duration::from_secs(10), push: Duration::from_secs(5) }
+        Self { connection: Duration::from_secs(10), push: Duration::from_secs(10) }
     }
 }
 
@@ -127,6 +127,16 @@ impl XdsEnabledHarness {
 
     pub async fn push_endpoints(&self, cluster_name: &str, endpoints: &[Endpoint]) -> Result<(), HarnessError> {
         let result = self.pusher.push_endpoints(cluster_name, endpoints, self.timeouts.push).await?;
+        Self::check_result(result)
+    }
+
+    pub async fn push_endpoints_with_priorities(
+        &self,
+        cluster_name: &str,
+        priority_endpoints: &[(u32, Vec<Endpoint>)],
+    ) -> Result<(), HarnessError> {
+        let result =
+            self.pusher.push_endpoints_with_priorities(cluster_name, priority_endpoints, self.timeouts.push).await?;
         Self::check_result(result)
     }
 

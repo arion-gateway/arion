@@ -23,7 +23,10 @@ use orion_data_plane_api::envoy_data_plane_api::{
                 query_parameter_matcher::QueryParameterMatchSpecifier,
                 redirect_action::{PathRewriteSpecifier, RedirectResponseCode, SchemeRewriteSpecifier},
                 route::Action,
-                route_action::ClusterSpecifier,
+                route_action::{
+                    hash_policy::{Header as HashPolicyHeader, PolicySpecifier},
+                    ClusterSpecifier, HashPolicy,
+                },
                 route_match::PathSpecifier,
                 weighted_cluster::ClusterWeight,
                 DirectResponseAction, HeaderMatcher, QueryParameterMatcher, RedirectAction, RetryPolicy,
@@ -322,6 +325,20 @@ impl RouteBuilder {
             cluster_specifier: Some(ClusterSpecifier::ClusterHeader(header_name.into())),
             ..Default::default()
         }));
+        self
+    }
+
+    #[must_use]
+    pub fn hash_policy_header(mut self, header_name: impl Into<String>) -> Self {
+        if let Some(Action::Route(ref mut route_action)) = self.proto.action {
+            route_action.hash_policy.push(HashPolicy {
+                terminal: false,
+                policy_specifier: Some(PolicySpecifier::Header(HashPolicyHeader {
+                    header_name: header_name.into(),
+                    ..Default::default()
+                })),
+            });
+        }
         self
     }
 

@@ -444,8 +444,8 @@ mod envoy_conversions {
             match value {
                 EnvoyHealthChecker::HttpHealthCheck(envoy) => envoy.try_into().map(Self::Http),
                 EnvoyHealthChecker::TcpHealthCheck(envoy) => Ok(Self::Tcp(envoy.try_into()?)),
+                EnvoyHealthChecker::GrpcHealthCheck(envoy) => envoy.try_into().map(Self::Grpc),
                 EnvoyHealthChecker::CustomHealthCheck(_) => Err(GenericError::unsupported_variant("CustomHealthCheck")),
-                EnvoyHealthChecker::GrpcHealthCheck(_) => Err(GenericError::unsupported_variant("GrpcHealthCheck")),
             }
         }
     }

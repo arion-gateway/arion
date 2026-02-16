@@ -1067,18 +1067,18 @@ fn apply_mutations_on_response<B>(
     cached_route: &CachedRoute<'_>,
     most_specific_header_mutations_wins: bool,
 ) where
-    Route: ModifiersExtractor<Request<B>>,
-    VirtualHost: ModifiersExtractor<Request<B>>,
-    RouteConfiguration: ModifiersExtractor<Request<B>>,
+    Route: ModifiersExtractor<Response<B>>,
+    VirtualHost: ModifiersExtractor<Response<B>>,
+    RouteConfiguration: ModifiersExtractor<Response<B>>,
 {
     if most_specific_header_mutations_wins {
-        target.apply_mutation(ModifiersExtractor::<Request<B>>::extract(route_config));
-        target.apply_mutation(ModifiersExtractor::<Request<B>>::extract(cached_route.vh));
-        target.apply_mutation(ModifiersExtractor::<Request<B>>::extract(cached_route.route));
+        target.apply_mutation(ModifiersExtractor::<Response<B>>::extract(route_config));
+        target.apply_mutation(ModifiersExtractor::<Response<B>>::extract(cached_route.vh));
+        target.apply_mutation(ModifiersExtractor::<Response<B>>::extract(cached_route.route));
     } else {
-        target.apply_mutation(ModifiersExtractor::<Request<B>>::extract(cached_route.route));
-        target.apply_mutation(ModifiersExtractor::<Request<B>>::extract(cached_route.vh));
-        target.apply_mutation(ModifiersExtractor::<Request<B>>::extract(route_config));
+        target.apply_mutation(ModifiersExtractor::<Response<B>>::extract(cached_route.route));
+        target.apply_mutation(ModifiersExtractor::<Response<B>>::extract(cached_route.vh));
+        target.apply_mutation(ModifiersExtractor::<Response<B>>::extract(route_config));
     }
 }
 

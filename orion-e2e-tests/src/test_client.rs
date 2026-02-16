@@ -28,7 +28,7 @@ use crate::{Error, Result};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TestResponse {
     pub status: StatusCode,
     pub headers: http::HeaderMap,
