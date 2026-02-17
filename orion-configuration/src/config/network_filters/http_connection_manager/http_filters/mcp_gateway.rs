@@ -118,21 +118,22 @@ mod envoy_conversions {
 
         fn try_from(orion: OrionTool) -> Result<Self, Self::Error> {
             let OrionTool { name, description, input_schema, output_schema, upstream_backend, rbac } = orion;
-            let input_schema: DataSource = required!(input_schema)?.try_into()?;
             let backend = required!(upstream_backend)?.try_into()?;
 
-            let bytes = input_schema.to_bytes_blocking()?;
-            let string = String::from_utf8(bytes)?;
-            let input_schema = serde_json::from_str(&string)?;
-
-            // Parse output_schema if provided, otherwise use empty object
-            let output_schema = if let Some(output_schema_ds) = output_schema {
-                let ds: DataSource = output_schema_ds.try_into()?;
-                let bytes = ds.to_bytes_blocking()?;
+            let input_schema = if let Some(input_schema) = input_schema {
+                let bytes = TryInto::<DataSource>::try_into(input_schema)?.to_bytes_blocking()?;
                 let string = String::from_utf8(bytes)?;
                 serde_json::from_str(&string)?
             } else {
-                serde_json::Map::new()
+                Map::new()
+            };
+
+            let output_schema = if let Some(output_schema) = output_schema {
+                let bytes = TryInto::<DataSource>::try_into(output_schema)?.to_bytes_blocking()?;
+                let string = String::from_utf8(bytes)?;
+                serde_json::from_str(&string)?
+            } else {
+                Map::new()
             };
 
             let rbac = rbac.map(TryInto::try_into).transpose()?;

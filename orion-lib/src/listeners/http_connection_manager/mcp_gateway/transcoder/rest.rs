@@ -8,8 +8,7 @@ use crate::{
 use bytes::Bytes;
 use http::StatusCode;
 use http_body_util::Full;
-use jsonschema::Validator;
-use rmcp::model::{JsonObject, Request};
+use rmcp::model::Request;
 use serde_json::Value;
 use upon::Engine;
 use url::form_urlencoded;
@@ -19,7 +18,6 @@ pub const DEFAULT_USER_AGENT: &str = concat!("orion/", env!("CARGO_PKG_VERSION")
 impl Transcoder for RestTranscoder<'_> {
     fn encode(
         &self,
-        input_schema: &JsonObject,
         http_headers: &http::HeaderMap,
         mcp_request: &Request,
     ) -> Result<http::Request<OrionRequestBody>, TranscoderError> {
@@ -27,19 +25,6 @@ impl Transcoder for RestTranscoder<'_> {
         // upstream cluster based on configuration. Including authority without scheme
         // causes "invalid format" error in http::Uri parser.
         let arguments = mcp_request.params.get("arguments").and_then(|v| v.as_object());
-
-        // Validate arguments against input schema
-        if !input_schema.is_empty() {
-            let schema_value = Value::Object(input_schema.clone());
-            let validator = Validator::new(&schema_value)
-                .map_err(|e| TranscoderError::ValidationError(format!("Invalid input schema: {e}")))?;
-            let args_to_validate =
-                arguments.map_or_else(|| Value::Object(serde_json::Map::new()), |a| Value::Object(a.clone()));
-            let errors: Vec<String> = validator.iter_errors(&args_to_validate).map(|e| e.to_string()).collect();
-            if !errors.is_empty() {
-                return Err(TranscoderError::ValidationError(errors.join("; ")));
-            }
-        }
 
         let _has_args = arguments.is_some_and(|m| !m.is_empty());
         let _has_body_template = self.body_template.is_some();
@@ -79,11 +64,12 @@ impl Transcoder for RestTranscoder<'_> {
 
         // Build the body based on body template or empty body
         let body = if let Some(body_template) = self.body_template {
-            let template_bytes = body_template
-                .to_bytes_blocking()
-                .map_err(|e| TranscoderError::ValidationError(format!("Failed to read body template: {e}")))?;
-            let template_str = String::from_utf8(template_bytes)
-                .map_err(|e| TranscoderError::ValidationError(format!("Body template is not valid UTF-8: {e}")))?;
+            let template_bytes = body_template.to_bytes_blocking().map_err(|e| {
+                TranscoderError::UpstreamRequestBodyValidationError(format!("Failed to read body template: {e}"))
+            })?;
+            let template_str = String::from_utf8(template_bytes).map_err(|e| {
+                TranscoderError::UpstreamRequestBodyValidationError(format!("Body template is not valid UTF-8: {e}"))
+            })?;
 
             let rendered = render_template(&template_str, arguments.unwrap_or(&serde_json::Map::new()));
 
@@ -99,16 +85,10 @@ impl Transcoder for RestTranscoder<'_> {
         Ok(builder.body(body)?)
     }
 
-    fn decode(
-        &self,
-        output_schema: &JsonObject,
-        upstream_body: Bytes,
-        upstream_status: StatusCode,
-    ) -> Result<Value, TranscoderError> {
-        // If the upstream returned an error status, create an error response
+    fn decode(&self, upstream_body: Bytes, upstream_status: StatusCode) -> Result<Value, TranscoderError> {
         if !upstream_status.is_success() {
             let body_str = String::from_utf8_lossy(&upstream_body);
-            return Err(TranscoderError::ValidationError(format!(
+            return Err(TranscoderError::UpstreamError(format!(
                 "Upstream returned error status {}: {}",
                 upstream_status.as_u16(),
                 body_str
@@ -125,19 +105,19 @@ impl Transcoder for RestTranscoder<'_> {
         };
 
         // Validate against output_schema if it's not empty
-        if !output_schema.is_empty() {
-            let schema_value = Value::Object(output_schema.clone());
-            let validator = Validator::new(&schema_value)
-                .map_err(|e| TranscoderError::ValidationError(format!("Invalid output schema: {e}")))?;
+        //if !output_schema.is_empty() {
+        //    let schema_value = Value::Object(output_schema.clone());
+        //    let validator = Validator::new(&schema_value)
+        //        .map_err(|e| TranscoderError::ValidationError(format!("Invalid output schema: {e}")))?;
 
-            let errors: Vec<String> = validator.iter_errors(&response_value).map(|e| e.to_string()).collect();
-            if !errors.is_empty() {
-                return Err(TranscoderError::ValidationError(format!(
-                    "Output validation failed: {}",
-                    errors.join("; ")
-                )));
-            }
-        }
+        //    let errors: Vec<String> = validator.iter_errors(&response_value).map(|e| e.to_string()).collect();
+        //    if !errors.is_empty() {
+        //        return Err(TranscoderError::ValidationError(format!(
+        //            "Output validation failed: {}",
+        //            errors.join("; ")
+        //        )));
+        //    }
+        //}
 
         Ok(response_value)
     }
@@ -151,7 +131,6 @@ impl Transcoder for RestTranscoder<'_> {
 fn render_template(template: &str, arguments: &serde_json::Map<String, Value>) -> String {
     let engine = Engine::new();
     let data = Value::Object(arguments.clone());
-
     engine
         .compile(template)
         .and_then(|tmpl| tmpl.render(&engine, &data).to_string())
@@ -162,13 +141,10 @@ fn render_template(template: &str, arguments: &serde_json::Map<String, Value>) -
 /// Returns the JSON value as a string, or "null" if not found.
 fn resolve_variable(path: &str, arguments: &serde_json::Map<String, Value>) -> String {
     let parts: Vec<&str> = path.split('.').collect();
-
     let mut current: Option<&Value> = Some(&Value::Object(arguments.clone()));
-
     for part in parts {
         current = current.and_then(|v| if let Value::Object(map) = v { map.get(part) } else { None });
     }
-
     match current {
         Some(Value::String(s)) => s.clone(),
         Some(Value::Number(n)) => n.to_string(),
@@ -185,14 +161,12 @@ fn build_query_string(
     arguments: &serde_json::Map<String, Value>,
 ) -> String {
     let mut serializer = form_urlencoded::Serializer::new(String::new());
-
     for param in query_params {
         let value = resolve_variable(&param.source, arguments);
         if value != "null" {
             serializer.append_pair(&param.name, &value);
         }
     }
-
     serializer.finish().replace("%7E", "~").replace("%20", "+")
 }
 
@@ -217,125 +191,8 @@ mod tests {
     }
 
     #[test]
-    fn test_validation_fails_when_required_field_missing() {
-        // Schema requires "username" field
-        let input_schema: JsonObject = serde_json::from_value(json!({
-            "type": "object",
-            "properties": {
-                "username": { "type": "string" }
-            },
-            "required": ["username"]
-        }))
-        .unwrap();
-
-        // Request with empty arguments - missing required "username"
-        let mcp_request = create_test_request(Some(serde_json::Map::new()));
-        let http_request = create_http_request();
-        let query_params: Vec<super::super::McpRestQueryParams> = vec![];
-        let transcoder = RestTranscoder {
-            method: &http::Method::GET,
-            path: "/api/test",
-            query_params: &query_params,
-            body_template: None,
-        };
-
-        let result = transcoder.encode(&input_schema, http_request.headers(), &mcp_request);
-
-        assert!(matches!(result, Err(TranscoderError::ValidationError(_))));
-        if let Err(TranscoderError::ValidationError(msg)) = result {
-            assert!(msg.contains("username"), "Error message should mention missing field: {}", msg);
-        }
-    }
-
-    #[test]
-    fn test_validation_fails_when_wrong_type() {
-        // Schema requires "count" to be a number
-        let input_schema: JsonObject = serde_json::from_value(json!({
-            "type": "object",
-            "properties": {
-                "count": { "type": "number" }
-            }
-        }))
-        .unwrap();
-
-        // Request with string instead of number
-        let mut args = serde_json::Map::new();
-        args.insert("count".to_string(), json!("not a number"));
-        let mcp_request = create_test_request(Some(args));
-        let http_request = create_http_request();
-        let query_params: Vec<super::super::McpRestQueryParams> = vec![];
-        let transcoder = RestTranscoder {
-            method: &http::Method::GET,
-            path: "/api/test",
-            query_params: &query_params,
-            body_template: None,
-        };
-
-        let result = transcoder.encode(&input_schema, http_request.headers(), &mcp_request);
-
-        assert!(matches!(result, Err(TranscoderError::ValidationError(_))));
-        if let Err(TranscoderError::ValidationError(msg)) = result {
-            assert!(msg.contains("number"), "Error message should mention type mismatch: {}", msg);
-        }
-    }
-
-    #[test]
-    fn test_validation_passes_with_valid_arguments() {
-        // Schema with required fields
-        let input_schema: JsonObject = serde_json::from_value(json!({
-            "type": "object",
-            "properties": {
-                "username": { "type": "string" },
-                "age": { "type": "integer" }
-            },
-            "required": ["username"]
-        }))
-        .unwrap();
-
-        // Valid request with all required fields and correct types
-        let mut args = serde_json::Map::new();
-        args.insert("username".to_string(), json!("john_doe"));
-        args.insert("age".to_string(), json!(25));
-        let mcp_request = create_test_request(Some(args));
-        let http_request = create_http_request();
-        let query_params: Vec<super::super::McpRestQueryParams> = vec![];
-        let transcoder = RestTranscoder {
-            method: &http::Method::GET,
-            path: "/api/test",
-            query_params: &query_params,
-            body_template: None,
-        };
-
-        let result = transcoder.encode(&input_schema, http_request.headers(), &mcp_request);
-
-        assert!(result.is_ok(), "Expected validation to pass but got: {:?}", result);
-    }
-
-    #[test]
-    fn test_empty_schema_skips_validation() {
-        // Empty schema - no validation should occur
-        let input_schema: JsonObject = serde_json::Map::new();
-        let mut args = serde_json::Map::new();
-        args.insert("any_field".to_string(), json!("any_value"));
-        let mcp_request = create_test_request(Some(args));
-        let http_request = create_http_request();
-        let query_params: Vec<super::super::McpRestQueryParams> = vec![];
-        let transcoder = RestTranscoder {
-            method: &http::Method::GET,
-            path: "/api/test",
-            query_params: &query_params,
-            body_template: None,
-        };
-
-        let result = transcoder.encode(&input_schema, http_request.headers(), &mcp_request);
-
-        assert!(result.is_ok(), "Expected no validation for empty schema but got: {:?}", result);
-    }
-
-    #[test]
     fn test_body_template_simple_substitution() {
         // Test simple variable substitution in body template (JSON format)
-        let input_schema: JsonObject = serde_json::Map::new();
         let mut args = serde_json::Map::new();
         args.insert("username".to_string(), json!("john_doe"));
         args.insert("age".to_string(), json!(30));
@@ -351,7 +208,7 @@ mod tests {
             body_template: Some(&body_template),
         };
 
-        let result = transcoder.encode(&input_schema, http_request.headers(), &mcp_request);
+        let result = transcoder.encode(http_request.headers(), &mcp_request);
         assert!(result.is_ok(), "Expected successful encoding but got: {:?}", result);
 
         let request = result.unwrap();
@@ -363,7 +220,6 @@ mod tests {
     #[test]
     fn test_body_template_nested_path() {
         // Test nested path access in body template (JSON format)
-        let input_schema: JsonObject = serde_json::Map::new();
         let mut args = serde_json::Map::new();
         let mut user = serde_json::Map::new();
         user.insert("name".to_string(), json!("john"));
@@ -382,14 +238,13 @@ mod tests {
             body_template: Some(&body_template),
         };
 
-        let result = transcoder.encode(&input_schema, http_request.headers(), &mcp_request);
+        let result = transcoder.encode(http_request.headers(), &mcp_request);
         assert!(result.is_ok(), "Expected successful encoding but got: {:?}", result);
     }
 
     #[test]
     fn test_body_template_missing_variable() {
         // Test that missing variables are replaced with "null" in JSON template
-        let input_schema: JsonObject = serde_json::Map::new();
         let mut args = serde_json::Map::new();
         args.insert("username".to_string(), json!("john_doe"));
         let mcp_request = create_test_request(Some(args));
@@ -404,14 +259,13 @@ mod tests {
             body_template: Some(&body_template),
         };
 
-        let result = transcoder.encode(&input_schema, http_request.headers(), &mcp_request);
+        let result = transcoder.encode(http_request.headers(), &mcp_request);
         assert!(result.is_ok(), "Expected successful encoding but got: {:?}", result);
     }
 
     #[test]
     fn test_body_template_complex_types() {
         // Test that arrays and objects are serialized correctly in JSON template
-        let input_schema: JsonObject = serde_json::Map::new();
         let mut args = serde_json::Map::new();
         args.insert("tags".to_string(), json!(["rust", "mcp", "api"]));
         let mut metadata = serde_json::Map::new();
@@ -429,7 +283,7 @@ mod tests {
             body_template: Some(&body_template),
         };
 
-        let result = transcoder.encode(&input_schema, http_request.headers(), &mcp_request);
+        let result = transcoder.encode(http_request.headers(), &mcp_request);
         assert!(result.is_ok(), "Expected successful encoding but got: {:?}", result);
     }
 
@@ -550,7 +404,6 @@ mod tests {
     #[test]
     fn test_path_template_substitution() {
         // Test variable substitution in path template
-        let input_schema: JsonObject = serde_json::Map::new();
         let mut args = serde_json::Map::new();
         args.insert("user_id".to_string(), json!("12345"));
         args.insert("action".to_string(), json!("profile"));
@@ -566,7 +419,7 @@ mod tests {
             body_template: None,
         };
 
-        let result = transcoder.encode(&input_schema, http_request.headers(), &mcp_request);
+        let result = transcoder.encode(http_request.headers(), &mcp_request);
         assert!(result.is_ok(), "Expected successful encoding but got: {:?}", result);
 
         let request = result.unwrap();
@@ -576,7 +429,6 @@ mod tests {
     #[test]
     fn test_path_template_with_nested_args() {
         // Test nested path access in path template
-        let input_schema: JsonObject = serde_json::Map::new();
         let mut args = serde_json::Map::new();
         let mut location = serde_json::Map::new();
         location.insert("city".to_string(), json!("dublin"));
@@ -593,7 +445,7 @@ mod tests {
             body_template: None,
         };
 
-        let result = transcoder.encode(&input_schema, http_request.headers(), &mcp_request);
+        let result = transcoder.encode(http_request.headers(), &mcp_request);
         assert!(result.is_ok(), "Expected successful encoding but got: {:?}", result);
 
         let request = result.unwrap();
@@ -603,41 +455,36 @@ mod tests {
     #[test]
     fn test_query_params_substitution() {
         // Test variable substitution in query params
-        let input_schema: JsonObject = serde_json::Map::new();
         let mut args = serde_json::Map::new();
-        args.insert("latitude".to_string(), json!("53.3498"));
-        args.insert("longitude".to_string(), json!("-6.2603"));
-        args.insert("days".to_string(), json!(7));
+        args.insert("search".to_string(), json!("rust language"));
+        args.insert("limit".to_string(), json!(10));
         let mcp_request = create_test_request(Some(args));
         let http_request = create_http_request();
 
         let query_params = vec![
-            super::super::McpRestQueryParams { name: "lat".to_string(), source: "latitude".to_string() },
-            super::super::McpRestQueryParams { name: "lon".to_string(), source: "longitude".to_string() },
-            super::super::McpRestQueryParams { name: "days".to_string(), source: "days".to_string() },
+            super::super::McpRestQueryParams { name: "q".to_string(), source: "search".to_string() },
+            super::super::McpRestQueryParams { name: "limit".to_string(), source: "limit".to_string() },
         ];
         let transcoder = RestTranscoder {
             method: &http::Method::GET,
-            path: "/v1/forecast",
+            path: "/api/search",
             query_params: &query_params,
             body_template: None,
         };
 
-        let result = transcoder.encode(&input_schema, http_request.headers(), &mcp_request);
+        let result = transcoder.encode(http_request.headers(), &mcp_request);
         assert!(result.is_ok(), "Expected successful encoding but got: {:?}", result);
 
         let request = result.unwrap();
         let uri = request.uri().to_string();
-        assert!(uri.starts_with("/v1/forecast?"), "URI should start with /v1/forecast?: {}", uri);
-        assert!(uri.contains("lat=53.3498"), "URI should contain lat=53.3498: {}", uri);
-        assert!(uri.contains("lon=-6.2603"), "URI should contain lon=-6.2603: {}", uri);
-        assert!(uri.contains("days=7"), "URI should contain days=7: {}", uri);
+        assert!(uri.starts_with("/api/search?"), "URI should start with /api/search?: {}", uri);
+        assert!(uri.contains("q=rust+language"), "URI should contain q=rust+language: {}", uri);
+        assert!(uri.contains("limit=10"), "URI should contain limit=10: {}", uri);
     }
 
     #[test]
     fn test_query_params_with_nested_source() {
         // Test nested path access in query params source
-        let input_schema: JsonObject = serde_json::Map::new();
         let mut args = serde_json::Map::new();
         let mut coords = serde_json::Map::new();
         coords.insert("lat".to_string(), json!("51.5074"));
@@ -659,7 +506,7 @@ mod tests {
             body_template: None,
         };
 
-        let result = transcoder.encode(&input_schema, http_request.headers(), &mcp_request);
+        let result = transcoder.encode(http_request.headers(), &mcp_request);
         assert!(result.is_ok(), "Expected successful encoding but got: {:?}", result);
 
         let request = result.unwrap();
@@ -671,8 +518,7 @@ mod tests {
 
     #[test]
     fn test_query_params_skips_null_values() {
-        // Test that query params with null/missing values are skipped
-        let input_schema: JsonObject = serde_json::Map::new();
+        // Test that null values are skipped in query params
         let mut args = serde_json::Map::new();
         args.insert("city".to_string(), json!("London"));
         // "country" is not set, so it should be skipped
@@ -690,7 +536,7 @@ mod tests {
             body_template: None,
         };
 
-        let result = transcoder.encode(&input_schema, http_request.headers(), &mcp_request);
+        let result = transcoder.encode(http_request.headers(), &mcp_request);
         assert!(result.is_ok(), "Expected successful encoding but got: {:?}", result);
 
         let request = result.unwrap();
@@ -701,7 +547,6 @@ mod tests {
     #[test]
     fn test_path_and_query_params_combined() {
         // Test both path template and query params together
-        let input_schema: JsonObject = serde_json::Map::new();
         let mut args = serde_json::Map::new();
         args.insert("user_id".to_string(), json!("42"));
         let mut filters = serde_json::Map::new();
@@ -719,7 +564,7 @@ mod tests {
             body_template: None,
         };
 
-        let result = transcoder.encode(&input_schema, http_request.headers(), &mcp_request);
+        let result = transcoder.encode(http_request.headers(), &mcp_request);
         assert!(result.is_ok(), "Expected successful encoding but got: {:?}", result);
 
         let request = result.unwrap();
@@ -795,89 +640,5 @@ mod tests {
         assert!(result.contains("alpha=ABCxyz"), "Alphanumeric should not be encoded: {}", result);
         assert!(result.contains("numeric=123"), "Numeric should not be encoded: {}", result);
         assert!(result.contains("special=-_.~"), "Unreserved chars -_.~ should not be encoded: {}", result);
-    }
-
-    #[test]
-    fn test_decode_success_with_valid_json() {
-        let _output_schema = serde_json::Map::new(); // Empty schema, no validation
-
-        let body = Bytes::from(r#"{"temperature": 72, "unit": "F"}"#);
-        let _status = StatusCode::OK;
-
-        // Parse the JSON directly since we only test validation logic
-        let result: Value = serde_json::from_slice(&body).unwrap();
-
-        assert_eq!(result["temperature"], 72);
-        assert_eq!(result["unit"], "F");
-    }
-
-    #[test]
-    fn test_decode_validates_against_output_schema() {
-        let mut output_schema = serde_json::Map::new();
-        output_schema.insert("type".to_string(), json!("object"));
-        output_schema.insert(
-            "properties".to_string(),
-            json!({
-                "temperature": { "type": "number" },
-                "unit": { "type": "string" }
-            }),
-        );
-        output_schema.insert("required".to_string(), json!(["temperature", "unit"]));
-
-        let body = Bytes::from(r#"{"temperature": 72, "unit": "F"}"#);
-
-        // Parse and validate
-        let value: Value = serde_json::from_slice(&body).unwrap();
-        let schema_value = Value::Object(output_schema);
-        let validator = Validator::new(&schema_value).unwrap();
-        let errors: Vec<String> = validator.iter_errors(&value).map(|e| e.to_string()).collect();
-        assert!(errors.is_empty(), "Validation should pass: {:?}", errors);
-    }
-
-    #[test]
-    fn test_decode_fails_validation_with_wrong_type() {
-        let mut output_schema = serde_json::Map::new();
-        output_schema.insert("type".to_string(), json!("object"));
-        output_schema.insert(
-            "properties".to_string(),
-            json!({
-                "temperature": { "type": "number" }
-            }),
-        );
-
-        // temperature is a string, but schema requires number
-        let body = Bytes::from(r#"{"temperature": "hot"}"#);
-
-        let value: Value = serde_json::from_slice(&body).unwrap();
-        let schema_value = Value::Object(output_schema);
-        let validator = Validator::new(&schema_value).unwrap();
-        let errors: Vec<String> = validator.iter_errors(&value).map(|e| e.to_string()).collect();
-        assert!(!errors.is_empty(), "Validation should fail for wrong type");
-    }
-
-    #[test]
-    fn test_decode_handles_empty_body() {
-        let body = Bytes::from("");
-
-        // Empty body should result in Null
-        let result = if body.is_empty() { Value::Null } else { serde_json::from_slice(&body).unwrap() };
-
-        assert_eq!(result, Value::Null);
-    }
-
-    #[test]
-    fn test_decode_fails_on_non_success_status() {
-        let status = StatusCode::NOT_FOUND;
-
-        // Non-success status should be detected
-        assert!(!status.is_success(), "404 should not be success");
-    }
-
-    #[test]
-    fn test_decode_fails_on_invalid_json() {
-        let body = Bytes::from(r#"{"invalid json"#);
-
-        let result = serde_json::from_slice::<Value>(&body);
-        assert!(result.is_err(), "Should fail to parse invalid JSON");
     }
 }

@@ -3,7 +3,7 @@ use http::header::InvalidHeaderValue;
 use http::StatusCode;
 use orion_configuration::config::core::DataSource;
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::McpRestQueryParams;
-use rmcp::model::{JsonObject, Request};
+use rmcp::model::Request;
 use serde_json::Value;
 
 use crate::OrionRequestBody;
@@ -17,10 +17,12 @@ pub enum TranscoderError {
     InvalidHeaderValue(#[from] InvalidHeaderValue),
     #[error("Http: {0}")]
     HttpError(#[from] http::Error),
-    #[error("Validation error: {0}")]
-    ValidationError(String),
     #[error("JSON parse error: {0}")]
     JsonParseError(String),
+    #[error("UpstreamBodyValidation error: {0}")]
+    UpstreamRequestBodyValidationError(String),
+    #[error("UpstreamError error: {0}")]
+    UpstreamError(String),
 }
 
 pub struct RestTranscoder<'a> {
@@ -35,7 +37,6 @@ pub struct FunctionGraphTranscoder {}
 pub trait Transcoder {
     fn encode(
         &self,
-        input_schema: &JsonObject,
         http_headers: &http::HeaderMap,
         mcp_request: &Request,
     ) -> Result<http::Request<OrionRequestBody>, TranscoderError>;
@@ -50,10 +51,5 @@ pub trait Transcoder {
     /// # Returns
     /// * `Ok(Value)` - The parsed and validated JSON value to use as JRPC result
     /// * `Err(TranscoderError)` - If parsing or validation fails
-    fn decode(
-        &self,
-        output_schema: &JsonObject,
-        upstream_body: Bytes,
-        upstream_status: StatusCode,
-    ) -> Result<Value, TranscoderError>;
+    fn decode(&self, upstream_body: Bytes, upstream_status: StatusCode) -> Result<Value, TranscoderError>;
 }

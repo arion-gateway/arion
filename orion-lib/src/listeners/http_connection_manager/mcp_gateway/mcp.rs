@@ -35,7 +35,7 @@ use crate::{
     },
     listeners::{
         http_connection_manager::mcp_gateway::{
-            tools::{CallToolError, ToolsRegistry},
+            tools::{CallToolError, ToolBuilderError, ToolsRegistry},
             transcoder::{RestTranscoder, Transcoder},
             transport::{
                 self, AcceptedMime, RequestExt, SessionId, Transport, MIME_APPLICATION_JSON, MIME_TEXT_EVENT_STREAM,
@@ -205,17 +205,20 @@ pub struct McpGateway {
     current_tool_index: Option<ToolRegistryIndex>,
 }
 
-impl From<McpGatewayConfig> for McpGateway {
-    fn from(config: McpGatewayConfig) -> Self {
-        Self {
-            inner: Arc::new(McpGatewayInner { config: config.clone(), tools: ToolsRegistry::with_tools(config.tools) }),
+impl TryFrom<McpGatewayConfig> for McpGateway {
+    type Error = ToolBuilderError;
+
+    fn try_from(config: McpGatewayConfig) -> Result<Self, Self::Error> {
+        let tools = ToolsRegistry::with_tools(config.tools.clone())?;
+        Ok(Self {
+            inner: Arc::new(McpGatewayInner { config, tools }),
             session: None,
             request_id: model::RequestId::Number(0),
             initialize_request_params: None,
             version: http::Version::default(),
             streamable_async_sender: None,
             current_tool_index: None,
-        }
+        })
     }
 }
 
@@ -334,38 +337,54 @@ impl McpGateway {
 
         let result_value = if let Some(tool_index) = self.current_tool_index {
             match self.inner.tools.get_tool_by_index(tool_index) {
-                Some(tool) => match &tool.backend {
-                    UpstreamBackend::Rest { method, path, query_params, body_template, .. } => {
-                        let transcoder =
-                            RestTranscoder { method, path, query_params, body_template: body_template.as_ref() };
-                        match transcoder.decode(&tool.output_schema, body_bytes, upstream_status) {
-                            Ok(value) => value,
-                            Err(e) => {
-                                debug!(target: "mcp_gateway", "apply_response: transcoder decode error: {e}");
-                                json!({
-                                    "error": format!("Failed to decode upstream response: {e}"),
-                                    "status": upstream_status.as_u16()
-                                })
-                            },
-                        }
-                    },
-                    _ => {
-                        // For non-REST backends, use the raw body
-                        raw_body_fn(&body_string, upstream_status)
-                    },
+                Some(tool) => {
+                    let value = match &tool.conf.backend {
+                        UpstreamBackend::Rest { method, path, query_params, body_template, .. } => {
+                            let transcoder =
+                                RestTranscoder { method, path, query_params, body_template: body_template.as_ref() };
+                            match transcoder.decode(body_bytes, upstream_status) {
+                                Ok(value) => value,
+                                Err(e) => {
+                                    debug!(target: "mcp_gateway", "apply_response: transcoder decode error: {e}");
+                                    json!({
+                                        "error": format!("Failed to decode upstream response: {e}"),
+                                            "status": upstream_status.as_u16()
+                                    })
+                                },
+                            }
+                        },
+                        _ => {
+                            // For non-REST backends, use the raw body
+                            raw_body_fn(&body_string, upstream_status)
+                        },
+                    };
+                    match tool.validate_against_output_schema(&value) {
+                        Ok(()) => value,
+                        Err(e) => {
+                            debug!(target: "mcp_gateway", "apply_response: output schema validation error: {e}");
+                            json!({
+                                "error": format!("Failed to validate upstream response against output schema: {e}"),
+                                "status": upstream_status.as_u16()
+                            })
+                        },
+                    }
                 },
                 None => {
+                    // We really should never get here, but we try a soft
+                    // failure by sending the raw content back
                     debug!(target: "mcp_gateway", "apply_response: tool index {:?} not found in registry", tool_index);
                     raw_body_fn(&body_string, upstream_status)
                 },
             }
         } else {
+            // We really should never get here, but we try a soft
+            // failure by sending the raw content back
             debug!(target: "mcp_gateway", "apply_response: no tool index stored for request_id: {:?}", self.request_id);
             raw_body_fn(&body_string, upstream_status)
         };
 
         // Build the CallToolResult with the raw response as content. If we are
-        // here and there was some transcoding, the response has been validated.
+        // here the response has been validated against the output schema.
         // The result_value will be injected as structured_content.
         let content = RawContent::Text(RawTextContent { text: body_string, meta: None });
 
@@ -954,6 +973,9 @@ impl McpGateway {
                                 _ => {
                                     model::ErrorData::internal_error(format!("Upstream service error: {svc_err}"), None)
                                 },
+                            },
+                            CallToolError::ValidationError(e) => {
+                                model::ErrorData::internal_error(format!("Json schema validation error: {e}"), None)
                             },
                         };
 

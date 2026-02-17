@@ -8,8 +8,9 @@ use crate::listeners::http_connection_manager::mcp_gateway::{
 };
 use dashmap::DashMap;
 use http::{header::InvalidHeaderValue, HeaderValue};
+use jsonschema::Validator;
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::{
-    ClusterHeader, McpBackendTransportUpstream, McpRestQueryParams, McpTool, UpstreamBackend,
+    ClusterHeader, McpBackendTransportUpstream, McpTool, UpstreamBackend,
 };
 use rmcp::{
     model::{CallToolRequestParams, ClientCapabilities, ClientInfo, Implementation, InitializeRequestParams},
@@ -20,8 +21,8 @@ use rmcp::{
 
 use rmcp::model;
 use rmcp::model::{ListToolsResult, Tool};
-use rmcp::object;
 use rmcp::service::{RoleClient, RunningService};
+use serde_json::Value;
 use smol_str::{SmolStr, ToSmolStr};
 use std::{borrow::Cow, sync::Arc, time::Instant};
 use tracing::{debug, info};
@@ -39,9 +40,11 @@ pub struct ToolsRegistry {
 }
 
 #[derive(Debug, Clone)]
-struct ToolEntry {
-    tool: McpTool,
-    rbac: Option<ToolRbac>,
+pub struct ToolEntry {
+    pub conf: McpTool,
+    pub input_schema_validator: Option<Validator>,
+    pub output_schema_validator: Option<Validator>,
+    pub rbac: Option<ToolRbac>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -64,6 +67,8 @@ pub enum CallToolError {
     ServiceError(#[from] ServiceError),
     #[error("SerdeError: {0}")]
     SerdeError(#[from] serde_json::Error),
+    #[error("Validation error: {0}")]
+    ValidationError(String),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -76,82 +81,68 @@ pub enum ListToolsError {
     ServiceError(#[from] ServiceError),
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum ToolBuilderError {
+    #[error("Invalid input schema")]
+    InvalidInputSchema(String),
+    #[error("Invalid output schema")]
+    InvalidOutputSchema(String),
+}
+
+impl ToolEntry {
+    fn validate_json_against_schema(
+        validator: &Option<jsonschema::Validator>,
+        arguments: &Value,
+    ) -> Result<(), CallToolError> {
+        if let Some(validator) = validator {
+            let errors: Vec<String> = validator.iter_errors(arguments).map(|e| e.to_string()).collect();
+            if !errors.is_empty() {
+                return Err(CallToolError::ValidationError(errors.join("; ")));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn validate_against_input_schema(&self, arguments: &Value) -> Result<(), CallToolError> {
+        Self::validate_json_against_schema(&self.input_schema_validator, arguments)
+    }
+
+    pub fn validate_against_output_schema(&self, arguments: &Value) -> Result<(), CallToolError> {
+        Self::validate_json_against_schema(&self.output_schema_validator, arguments)
+    }
+}
+
 impl ToolsRegistry {
-    pub fn new() -> Self {
-        ToolsRegistry { registry: Vec::new(), cache: DashMap::with_hasher(ahash::RandomState::new()) }
-    }
-
-    pub fn with_tools(tools: Vec<McpTool>) -> Self {
-        let registry = tools
+    pub fn with_tools(tools: Vec<McpTool>) -> Result<Self, ToolBuilderError> {
+        let registry: Vec<ToolEntry> = tools
             .into_iter()
-            .map(|tool| {
-                let rbac = tool.rbac.as_ref().map(convert_config_rbac_to_runtime);
-                ToolEntry { tool, rbac }
+            .map(|tool_conf| -> Result<ToolEntry, ToolBuilderError> {
+                let rbac = tool_conf.rbac.as_ref().map(convert_config_rbac_to_runtime);
+                let input_schema_validator = if !tool_conf.input_schema.is_empty() {
+                    Some(
+                        Validator::new(&Value::Object(tool_conf.input_schema.clone()))
+                            .map_err(|e| ToolBuilderError::InvalidInputSchema(e.to_string()))?,
+                    )
+                } else {
+                    None
+                };
+                let output_schema_validator = if !tool_conf.output_schema.is_empty() {
+                    Some(
+                        Validator::new(&Value::Object(tool_conf.output_schema.clone()))
+                            .map_err(|e| ToolBuilderError::InvalidOutputSchema(e.to_string()))?,
+                    )
+                } else {
+                    None
+                };
+                Ok(ToolEntry { conf: tool_conf, rbac, input_schema_validator, output_schema_validator })
             })
-            .collect();
-        ToolsRegistry { registry, cache: DashMap::with_hasher(ahash::RandomState::new()) }
-    }
-
-    #[allow(dead_code)]
-    pub fn with_dummy_tools() -> Self {
-        let mut myself = ToolsRegistry::new();
-
-        myself.register(McpTool {
-            name: "get_name".into(),
-            description: "Get weather information for a city".into(),
-            input_schema: object!({
-                "type": "object",
-                "properties": {
-                    "city": { "type": "string", "description": "City Name" }
-                },
-                "required": ["city"]
-            }),
-            output_schema: serde_json::Map::new(),
-            rbac: None,
-            backend: UpstreamBackend::Rest {
-                cluster: "weather_api_cluster".into(),
-                r#async: false,
-                method: http::Method::GET,
-                path: "/weather".into(),
-                query_params: vec![McpRestQueryParams { name: "city".into(), source: "country".into() }],
-                body_template: None,
-            },
-        });
-
-        myself.register(McpTool {
-            name: "post_user".into(),
-            description: "Add a new username and email".into(),
-            input_schema: object!({
-                "type": "object",
-                "properties": {
-                    "username": { "type": "string" },
-                    "email": { "type": "string" }
-                },
-                "required": ["username", "email"]
-            }),
-            output_schema: serde_json::Map::new(),
-            rbac: None,
-            backend: UpstreamBackend::Rest {
-                cluster: "post_user_cluster".into(),
-                r#async: false,
-                method: http::Method::POST,
-                path: "/user".into(),
-                query_params: vec![McpRestQueryParams { name: "username".into(), source: "email".into() }],
-                body_template: None,
-            },
-        });
-
-        myself
-    }
-
-    pub fn register(&mut self, tool: McpTool) {
-        let rbac = tool.rbac.as_ref().map(convert_config_rbac_to_runtime);
-        self.registry.push(ToolEntry { tool, rbac });
+            .collect::<Result<Vec<_>, ToolBuilderError>>()?;
+        Ok(ToolsRegistry { registry, cache: DashMap::with_hasher(ahash::RandomState::new()) })
     }
 
     /// Get a tool by name as an Arc for cheap cloning
-    pub fn get_tool_by_index(&self, tool_index: ToolRegistryIndex) -> Option<&McpTool> {
-        self.registry.get(tool_index.0).map(|entry| &entry.tool)
+    pub fn get_tool_by_index(&self, tool_index: ToolRegistryIndex) -> Option<&ToolEntry> {
+        self.registry.get(tool_index.0)
     }
 
     pub async fn build_list_tools(&self, req_ext: http::Extensions) -> ListToolsResult {
@@ -163,12 +154,12 @@ impl ToolsRegistry {
                 }
             }
 
-            match &entry.tool.backend {
+            match &entry.conf.backend {
                 UpstreamBackend::Rest { .. } => {
                     tools.push(Tool {
-                        name: Cow::Owned(entry.tool.name.to_string()),
-                        description: Some(entry.tool.description.clone().into()),
-                        input_schema: Arc::new(entry.tool.input_schema.clone()),
+                        name: Cow::Owned(entry.conf.name.to_string()),
+                        description: Some(entry.conf.description.clone().into()),
+                        input_schema: Arc::new(entry.conf.input_schema.clone()),
                         title: None,
                         output_schema: None,
                         annotations: None,
@@ -177,20 +168,20 @@ impl ToolsRegistry {
                     });
                 },
                 UpstreamBackend::McpServer { transport, url, cache_duration } => {
-                    if let Some(r) = self.cache.get(&entry.tool.name) {
+                    if let Some(r) = self.cache.get(&entry.conf.name) {
                         if std::time::Instant::now() < r.expiration {
                             tools.extend(r.entry.iter().cloned());
                             continue;
                         }
                     }
 
-                    match self.get_list_tools_from_upstream(&transport, &url, &entry.tool.name).await {
+                    match self.get_list_tools_from_upstream(&transport, &url, &entry.conf.name).await {
                         Ok(up_tools) => {
                             if let Some(cache_duration) = cache_duration {
                                 if let Some(expiration) = std::time::Instant::now().checked_add(cache_duration.clone())
                                 {
                                     self.cache.insert(
-                                        entry.tool.name.to_smolstr(),
+                                        entry.conf.name.to_smolstr(),
                                         CachedEntry { entry: up_tools.clone(), expiration },
                                     );
                                 }
@@ -287,7 +278,7 @@ impl ToolsRegistry {
             .registry
             .iter()
             .enumerate()
-            .find(|(_, e)| e.tool.name == backend_name)
+            .find(|(_, e)| e.conf.name == backend_name)
             .ok_or_else(|| CallToolError::ToolNotFound(backend_name.to_string()))?;
 
         if let Some(rbac) = &entry.rbac {
@@ -296,14 +287,19 @@ impl ToolsRegistry {
             }
         }
 
-        let tool = &entry.tool;
+        // Validate the request message arguments against the input schema
+        let arguments = rpc.request.params.get("arguments").and_then(|v| v.as_object());
+        let args_to_validate =
+            arguments.map_or_else(|| Value::Object(serde_json::Map::new()), |a| Value::Object(a.clone()));
+        entry.validate_against_input_schema(&args_to_validate)?;
+
+        let tool = &entry.conf;
         match &tool.backend {
             UpstreamBackend::Rest { method, path, query_params, cluster, r#async, body_template } => {
                 let transcoder = RestTranscoder { method, path, query_params, body_template: body_template.as_ref() };
-                let mut upstream_request =
-                    transcoder.encode(&tool.input_schema, req_headers, &rpc.request).map_err(|e| {
-                        CallToolError::TranscoderError { tool: backend_name.to_owned(), reason: e.to_string() }
-                    })?;
+                let mut upstream_request = transcoder.encode(req_headers, &rpc.request).map_err(|e| {
+                    CallToolError::TranscoderError { tool: backend_name.to_owned(), reason: e.to_string() }
+                })?;
                 if let Some(cluster_header) = cluster_header {
                     let headers = upstream_request.headers_mut();
                     headers.append(cluster_header.0.clone(), HeaderValue::from_str(&cluster)?);
