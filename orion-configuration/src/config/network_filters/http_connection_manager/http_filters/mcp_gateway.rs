@@ -86,10 +86,13 @@ mod envoy_conversions {
 
     use super::*;
     use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::mcp::mcp_gateway::v3::{
-        mcp_server_backend::TransportUpstream as OrionTransportUpstream, tool::UpstreamBackend as OrionUpstreamBackend,
-        McpGateway as OrionMcpGateway, QueryParam as OrionMcpQueryParams, ServerInfo as OrionMcpServerInfo,
-        Tool as OrionTool,
+        mcp_server_backend::TransportUpstream as OrionTransportUpstream, permission,
+        tool::UpstreamBackend as OrionUpstreamBackend, tool_rbac::Action as OrionAction, JwtClaimMatcher,
+        JwtHeaderMatcher, McpGateway as OrionMcpGateway, Permission as OrionPermission,
+        QueryParam as OrionMcpQueryParams, ServerInfo as OrionMcpServerInfo, Tool as OrionTool,
+        ToolRbac as OrionToolRbac,
     };
+    use tracing::warn;
 
     impl From<OrionTransportUpstream> for McpBackendTransportUpstream {
         fn from(trans: OrionTransportUpstream) -> Self {
@@ -120,20 +123,56 @@ mod envoy_conversions {
             let OrionTool { name, description, input_schema, output_schema, upstream_backend, rbac } = orion;
             let backend = required!(upstream_backend)?.try_into()?;
 
-            let input_schema = if let Some(input_schema) = input_schema {
-                let bytes = TryInto::<DataSource>::try_into(input_schema)?.to_bytes_blocking()?;
-                let string = String::from_utf8(bytes)?;
-                serde_json::from_str(&string)?
-            } else {
-                Map::new()
+            match backend {
+                UpstreamBackend::FunctionGraph { .. } => unimplemented!("FunctionGraph backend is not supported yet"),
+                _ => (),
+            }
+
+            let input_schema = match backend {
+                UpstreamBackend::Rest { .. } | UpstreamBackend::FunctionGraph { .. } => {
+                    // input_schema is mandatory for transcoded backends
+                    let input_schema = required!(input_schema)?;
+                    let bytes = TryInto::<DataSource>::try_into(input_schema)?.to_bytes_blocking()?;
+                    let string = String::from_utf8(bytes)?;
+                    let schema: Map<String, Value> = serde_json::from_str(&string)?;
+                    // Verify the schema is valid; we are still storing the raw
+                    // schema and recreate the validator in orion-lib as
+                    // jsonschema::Validator is not Serialize and cannot be
+                    // added to the configuration type
+                    jsonschema::Validator::new(&Value::Object(schema.clone()))
+                        .map_err(|e| GenericError::from_msg(format!("Invalid input_schema: {e}")))?;
+                    schema
+                },
+                UpstreamBackend::McpServer { .. } => {
+                    // input_schema is ignored for MCP backends
+                    if let Some(_) = input_schema {
+                        warn!("input_schema is ignored for MCP backends");
+                    }
+                    Map::new()
+                },
             };
 
-            let output_schema = if let Some(output_schema) = output_schema {
-                let bytes = TryInto::<DataSource>::try_into(output_schema)?.to_bytes_blocking()?;
-                let string = String::from_utf8(bytes)?;
-                serde_json::from_str(&string)?
-            } else {
-                Map::new()
+            let output_schema = match backend {
+                // output_schema is optional for transcoded backends
+                UpstreamBackend::Rest { .. } | UpstreamBackend::FunctionGraph { .. } => {
+                    if let Some(output_schema) = output_schema {
+                        let bytes = TryInto::<DataSource>::try_into(output_schema)?.to_bytes_blocking()?;
+                        let string = String::from_utf8(bytes)?;
+                        let schema: Map<String, Value> = serde_json::from_str(&string)?;
+                        jsonschema::Validator::new(&Value::Object(schema.clone()))
+                            .map_err(|e| GenericError::from_msg(format!("Invalid output_schema: {e}")))?;
+                        schema
+                    } else {
+                        Map::new()
+                    }
+                },
+                UpstreamBackend::McpServer { .. } => {
+                    // output_schema is ignored for MCP backends
+                    if let Some(_) = output_schema {
+                        warn!("output_schema is ignored for MCP backends");
+                    }
+                    Map::new()
+                },
             };
 
             let rbac = rbac.map(TryInto::try_into).transpose()?;
@@ -186,11 +225,6 @@ mod envoy_conversions {
             McpServerInfo { name: orion.name, version: orion.version }
         }
     }
-
-    use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::mcp::mcp_gateway::v3::{
-        permission, tool_rbac::Action as OrionAction, JwtClaimMatcher, JwtHeaderMatcher, Permission as OrionPermission,
-        ToolRbac as OrionToolRbac,
-    };
 
     impl From<OrionAction> for Action {
         fn from(action: OrionAction) -> Self {

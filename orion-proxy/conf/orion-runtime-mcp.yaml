@@ -106,10 +106,6 @@ envoy_bootstrap:
                                    "days": "{{days}}"
                           - name: "user_profile_get"
                             description: "Get user profile information"
-                            rest_backend:
-                              cluster: user_profile_api_cluster
-                              method: GET
-                              path: "/v1/user/profile"
                             input_schema:
                               inline_string: >-
                                 {
@@ -121,12 +117,12 @@ envoy_bootstrap:
                                   },
                                   "required": ["user_id"]
                                 }
-                          - name: "admin_delete_user"
-                            description: "Delete a user account (admin only)"
                             rest_backend:
                               cluster: user_profile_api_cluster
-                              method: DELETE
-                              path: "/v1/admin/user"
+                              method: GET
+                              path: "/v1/user/profile"
+                          - name: "admin_delete_user"
+                            description: "Delete a user account (admin only)"
                             rbac:
                               action: ALLOW
                               permissions:
@@ -144,11 +140,12 @@ envoy_bootstrap:
                                   },
                                   "required": ["user_id"]
                                 }
+                            rest_backend:
+                              cluster: user_profile_api_cluster
+                              method: DELETE
+                              path: "/v1/admin/user"
                           - name: "everything"
                             description: "everything mcp server"
-                            input_schema:
-                              inline_string: >-
-                                {}
                             mcp_server_backend:
                               transport: StreamableHttp
                               url: http://127.0.0.1:3001/mcp
