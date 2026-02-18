@@ -4,7 +4,6 @@ use http::StatusCode;
 use orion_configuration::config::core::DataSource;
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::McpRestQueryParams;
 use rmcp::model::Request;
-use serde_json::Value;
 
 use crate::OrionRequestBody;
 
@@ -41,15 +40,5 @@ pub trait Transcoder {
         mcp_request: &Request,
     ) -> Result<http::Request<OrionRequestBody>, TranscoderError>;
 
-    /// Decodes an upstream HTTP response into a JSON value for JRPC response.
-    ///
-    /// # Arguments
-    /// * `output_schema` - The JSON schema to validate the response against
-    /// * `upstream_body` - The raw body bytes from the upstream response
-    /// * `upstream_status` - The HTTP status code from the upstream response
-    ///
-    /// # Returns
-    /// * `Ok(Value)` - The parsed and validated JSON value to use as JRPC result
-    /// * `Err(TranscoderError)` - If parsing or validation fails
-    fn decode(&self, upstream_body: Bytes, upstream_status: StatusCode) -> Result<Value, TranscoderError>;
+    fn decode(&self, upstream_body: Bytes, upstream_status: StatusCode) -> Result<serde_json::Value, TranscoderError>;
 }

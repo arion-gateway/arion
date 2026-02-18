@@ -26,9 +26,6 @@ impl Transcoder for RestTranscoder<'_> {
         // causes "invalid format" error in http::Uri parser.
         let arguments = mcp_request.params.get("arguments").and_then(|v| v.as_object());
 
-        let _has_args = arguments.is_some_and(|m| !m.is_empty());
-        let _has_body_template = self.body_template.is_some();
-
         let rendered_path = render_template(self.path, arguments.unwrap_or(&serde_json::Map::new()));
 
         let query_string = if !self.query_params.is_empty() {
@@ -103,21 +100,6 @@ impl Transcoder for RestTranscoder<'_> {
                 TranscoderError::JsonParseError(format!("Failed to parse upstream response as JSON: {e}"))
             })?
         };
-
-        // Validate against output_schema if it's not empty
-        //if !output_schema.is_empty() {
-        //    let schema_value = Value::Object(output_schema.clone());
-        //    let validator = Validator::new(&schema_value)
-        //        .map_err(|e| TranscoderError::ValidationError(format!("Invalid output schema: {e}")))?;
-
-        //    let errors: Vec<String> = validator.iter_errors(&response_value).map(|e| e.to_string()).collect();
-        //    if !errors.is_empty() {
-        //        return Err(TranscoderError::ValidationError(format!(
-        //            "Output validation failed: {}",
-        //            errors.join("; ")
-        //        )));
-        //    }
-        //}
 
         Ok(response_value)
     }

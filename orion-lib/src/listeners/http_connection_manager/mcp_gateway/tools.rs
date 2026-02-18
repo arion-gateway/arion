@@ -420,3 +420,278 @@ fn convert_config_rbac_to_runtime(
 
     ToolRbac { action, permissions }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn create_test_tool_with_schemas(
+        input_schema: serde_json::Map<String, Value>,
+        output_schema: serde_json::Map<String, Value>,
+    ) -> McpTool {
+        McpTool {
+            name: "test_tool".into(),
+            description: "A test tool".into(),
+            input_schema,
+            output_schema,
+            backend: UpstreamBackend::Rest {
+                method: http::Method::GET,
+                path: "/test".into(),
+                query_params: vec![],
+                cluster: "test_cluster".into(),
+                r#async: false,
+                body_template: None,
+            },
+            rbac: None,
+        }
+    }
+
+    #[test]
+    fn test_input_schema_validation_passes_with_valid_arguments() {
+        let input_schema = serde_json::from_value(json!({
+            "type": "object",
+            "properties": {
+                "username": { "type": "string" },
+                "age": { "type": "integer" }
+            },
+            "required": ["username"]
+        }))
+        .unwrap();
+
+        let tool = create_test_tool_with_schemas(input_schema, serde_json::Map::new());
+        let registry = ToolsRegistry::with_tools(vec![tool]).unwrap();
+        let tool_entry = registry.get_tool_by_index(ToolRegistryIndex(0)).unwrap();
+
+        let args = json!({
+            "username": "john_doe",
+            "age": 25
+        });
+
+        assert!(tool_entry.validate_against_input_schema(&args).is_ok());
+    }
+
+    #[test]
+    fn test_input_schema_validation_fails_with_missing_required_field() {
+        let input_schema = serde_json::from_value(json!({
+            "type": "object",
+            "properties": {
+                "username": { "type": "string" }
+            },
+            "required": ["username"]
+        }))
+        .unwrap();
+
+        let tool = create_test_tool_with_schemas(input_schema, serde_json::Map::new());
+        let registry = ToolsRegistry::with_tools(vec![tool]).unwrap();
+        let tool_entry = registry.get_tool_by_index(ToolRegistryIndex(0)).unwrap();
+
+        let args = json!({});
+
+        let result = tool_entry.validate_against_input_schema(&args);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("username"), "Error should mention missing field: {}", err_msg);
+    }
+
+    #[test]
+    fn test_input_schema_validation_fails_with_wrong_type() {
+        let input_schema = serde_json::from_value(json!({
+            "type": "object",
+            "properties": {
+                "count": { "type": "number" }
+            }
+        }))
+        .unwrap();
+
+        let tool = create_test_tool_with_schemas(input_schema, serde_json::Map::new());
+        let registry = ToolsRegistry::with_tools(vec![tool]).unwrap();
+        let tool_entry = registry.get_tool_by_index(ToolRegistryIndex(0)).unwrap();
+
+        let args = json!({
+            "count": "not a number"
+        });
+
+        let result = tool_entry.validate_against_input_schema(&args);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("number"), "Error should mention type mismatch: {}", err_msg);
+    }
+
+    #[test]
+    fn test_input_schema_validation_skips_when_empty() {
+        let tool = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
+        let registry = ToolsRegistry::with_tools(vec![tool]).unwrap();
+        let tool_entry = registry.get_tool_by_index(ToolRegistryIndex(0)).unwrap();
+
+        // Any args should pass when schema is empty
+        let args = json!({
+            "anything": "goes",
+            "count": 123
+        });
+
+        assert!(tool_entry.validate_against_input_schema(&args).is_ok());
+    }
+
+    #[test]
+    fn test_output_schema_validation_passes_with_valid_response() {
+        let output_schema = serde_json::from_value(json!({
+            "type": "object",
+            "properties": {
+                "temperature": { "type": "number" },
+                "unit": { "type": "string" }
+            },
+            "required": ["temperature"]
+        }))
+        .unwrap();
+
+        let tool = create_test_tool_with_schemas(serde_json::Map::new(), output_schema);
+        let registry = ToolsRegistry::with_tools(vec![tool]).unwrap();
+        let tool_entry = registry.get_tool_by_index(ToolRegistryIndex(0)).unwrap();
+
+        let response = json!({
+            "temperature": 72.5,
+            "unit": "F"
+        });
+
+        assert!(tool_entry.validate_against_output_schema(&response).is_ok());
+    }
+
+    #[test]
+    fn test_output_schema_validation_fails_with_invalid_response() {
+        let output_schema = serde_json::from_value(json!({
+            "type": "object",
+            "properties": {
+                "temperature": { "type": "number" }
+            },
+            "required": ["temperature"]
+        }))
+        .unwrap();
+
+        let tool = create_test_tool_with_schemas(serde_json::Map::new(), output_schema);
+        let registry = ToolsRegistry::with_tools(vec![tool]).unwrap();
+        let tool_entry = registry.get_tool_by_index(ToolRegistryIndex(0)).unwrap();
+
+        let response = json!({
+            "temperature": "hot" // Should be a number
+        });
+
+        let result = tool_entry.validate_against_output_schema(&response);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_output_schema_validation_skips_when_empty() {
+        let tool = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
+        let registry = ToolsRegistry::with_tools(vec![tool]).unwrap();
+        let tool_entry = registry.get_tool_by_index(ToolRegistryIndex(0)).unwrap();
+
+        // Any response should pass when schema is empty
+        let response = json!({
+            "arbitrary": "data",
+            "nested": {
+                "value": 123
+            }
+        });
+
+        assert!(tool_entry.validate_against_output_schema(&response).is_ok());
+    }
+
+    #[test]
+    fn test_with_tools_fails_with_invalid_input_schema() {
+        let input_schema = serde_json::from_value(json!({
+            "type": "invalid_type" // Invalid schema
+        }))
+        .unwrap();
+
+        let tool = create_test_tool_with_schemas(input_schema, serde_json::Map::new());
+        let result = ToolsRegistry::with_tools(vec![tool]);
+
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), ToolBuilderError::InvalidInputSchema(_)));
+    }
+
+    #[test]
+    fn test_with_tools_fails_with_invalid_output_schema() {
+        let output_schema = serde_json::from_value(json!({
+            "type": "invalid_type" // Invalid schema
+        }))
+        .unwrap();
+
+        let tool = create_test_tool_with_schemas(serde_json::Map::new(), output_schema);
+        let result = ToolsRegistry::with_tools(vec![tool]);
+
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), ToolBuilderError::InvalidOutputSchema(_)));
+    }
+
+    #[test]
+    fn test_nested_object_validation() {
+        let input_schema = serde_json::from_value(json!({
+            "type": "object",
+            "properties": {
+                "user": {
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string" },
+                        "age": { "type": "integer" }
+                    },
+                    "required": ["name"]
+                }
+            }
+        }))
+        .unwrap();
+
+        let tool = create_test_tool_with_schemas(input_schema, serde_json::Map::new());
+        let registry = ToolsRegistry::with_tools(vec![tool]).unwrap();
+        let tool_entry = registry.get_tool_by_index(ToolRegistryIndex(0)).unwrap();
+
+        // Valid nested object
+        let valid_args = json!({
+            "user": {
+                "name": "Alice",
+                "age": 30
+            }
+        });
+        assert!(tool_entry.validate_against_input_schema(&valid_args).is_ok());
+
+        // Invalid - missing required nested field
+        let invalid_args = json!({
+            "user": {
+                "age": 30
+            }
+        });
+        assert!(tool_entry.validate_against_input_schema(&invalid_args).is_err());
+    }
+
+    #[test]
+    fn test_array_validation() {
+        let input_schema = serde_json::from_value(json!({
+            "type": "object",
+            "properties": {
+                "tags": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                }
+            }
+        }))
+        .unwrap();
+
+        let tool = create_test_tool_with_schemas(input_schema, serde_json::Map::new());
+        let registry = ToolsRegistry::with_tools(vec![tool]).unwrap();
+        let tool_entry = registry.get_tool_by_index(ToolRegistryIndex(0)).unwrap();
+
+        // Valid array
+        let valid_args = json!({
+            "tags": ["rust", "mcp", "api"]
+        });
+        assert!(tool_entry.validate_against_input_schema(&valid_args).is_ok());
+
+        // Invalid - wrong item type
+        let invalid_args = json!({
+            "tags": [1, 2, 3]
+        });
+        let result = tool_entry.validate_against_input_schema(&invalid_args);
+        assert!(result.is_err());
+    }
+}
