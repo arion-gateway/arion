@@ -21,9 +21,10 @@ use orion_data_plane_api::envoy_data_plane_api::{
             route::v3::RouteConfiguration,
         },
         extensions::filters::{
-            http::router::v3::Router,
+            http::{rbac::v3::Rbac as HttpRbac, router::v3::Router},
             network::http_connection_manager::v3::{
                 http_connection_manager::{CodecType as ProtoCodecType, RouteSpecifier},
+                http_filter::ConfigType as HttpFilterConfigType,
                 HttpConnectionManager as EnvoyHcm, HttpFilter, Rds,
             },
         },
@@ -129,6 +130,22 @@ impl HcmBuilder {
     #[must_use]
     pub fn with_proto<F: FnOnce(&mut EnvoyHcm)>(mut self, f: F) -> Self {
         f(&mut self.proto);
+        self
+    }
+
+    #[must_use]
+    pub fn http_rbac(mut self, rbac: impl Into<HttpRbac>) -> Self {
+        let rbac_proto: HttpRbac = rbac.into();
+        let rbac_any = Any {
+            type_url: "type.googleapis.com/envoy.extensions.filters.http.rbac.v3.RBAC".into(),
+            value: rbac_proto.encode_to_vec(),
+        };
+
+        self.proto.http_filters.push(HttpFilter {
+            name: "envoy.filters.http.rbac".into(),
+            config_type: Some(HttpFilterConfigType::TypedConfig(rbac_any)),
+            ..Default::default()
+        });
         self
     }
 
