@@ -95,9 +95,8 @@ impl ToolEntry {
         arguments: &Value,
     ) -> Result<(), CallToolError> {
         if let Some(validator) = validator {
-            let errors: Vec<String> = validator.iter_errors(arguments).map(|e| e.to_string()).collect();
-            if !errors.is_empty() {
-                return Err(CallToolError::ValidationError(errors.join("; ")));
+            if let Some(err) = validator.iter_errors(arguments).next() {
+                return Err(CallToolError::ValidationError(err.to_string()));
             }
         }
         Ok(())
@@ -145,11 +144,11 @@ impl ToolsRegistry {
         self.registry.get(tool_index.0)
     }
 
-    pub async fn build_list_tools(&self, req_ext: http::Extensions) -> ListToolsResult {
+    pub async fn build_list_tools(&self, req_ext: &http::Extensions) -> ListToolsResult {
         let mut tools = Vec::with_capacity(self.registry.len());
         for entry in self.registry.iter() {
             if let Some(rbac) = &entry.rbac {
-                if !rbac.is_permitted(&req_ext) {
+                if !rbac.is_permitted(req_ext) {
                     continue;
                 }
             }
@@ -225,8 +224,7 @@ impl ToolsRegistry {
         let mut tools = client.list_tools(Default::default()).await?;
 
         for tool in &mut tools.tools {
-            let name: String = tool.name.clone().into_owned();
-            tool.name = Cow::Owned(format!("{namespace}__{name}"));
+            tool.name = Cow::Owned(format!("{namespace}__{}", tool.name));
         }
 
         Ok(tools.tools)
@@ -288,10 +286,12 @@ impl ToolsRegistry {
         }
 
         // Validate the request message arguments against the input schema
-        let arguments = rpc.request.params.get("arguments").and_then(|v| v.as_object());
-        let args_to_validate =
-            arguments.map_or_else(|| Value::Object(serde_json::Map::new()), |a| Value::Object(a.clone()));
-        entry.validate_against_input_schema(&args_to_validate)?;
+        if let Some(arguments) = rpc.request.params.get("arguments") {
+            entry.validate_against_input_schema(arguments)?;
+        } else {
+            let arguments = Value::Null;
+            entry.validate_against_input_schema(&arguments)?;
+        }
 
         let tool = &entry.conf;
         match &tool.backend {

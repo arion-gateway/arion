@@ -493,9 +493,6 @@ impl McpGateway {
             }
         }
 
-        let req_ext = request.extensions().clone();
-        let req_headers = request.headers().clone();
-
         // collect the body of the request...
         let Ok(body) = request.body_mut().collect().await else {
             debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: failed to collect request body");
@@ -512,7 +509,15 @@ impl McpGateway {
         // handle the JSON RPC message
         //
         let response = self
-            .handle_rpc_json_message(ctx, req_ext, req_headers, transport, body.to_bytes(), listener_name, &mut session)
+            .handle_rpc_json_message(
+                ctx,
+                request.extensions(),
+                request.headers(),
+                transport,
+                body.to_bytes(),
+                listener_name,
+                &mut session,
+            )
             .await;
 
         //
@@ -720,8 +725,8 @@ impl McpGateway {
     async fn handle_rpc_json_message(
         &mut self,
         ctx: &McpGatewayListenerContext,
-        req_ext: http::Extensions,
-        req_headers: http::HeaderMap,
+        req_ext: &http::Extensions,
+        req_headers: &http::HeaderMap,
         transport: Transport,
         body: Bytes,
         listener_name: &'static str,
@@ -788,8 +793,8 @@ impl McpGateway {
     async fn handle_rpc_json_request(
         &mut self,
         ctx: &McpGatewayListenerContext,
-        req_ext: http::Extensions,
-        req_headers: http::HeaderMap,
+        req_ext: &http::Extensions,
+        req_headers: &http::HeaderMap,
         transport: Transport,
         rpc: model::JsonRpcRequest,
         listener_name: &'static str,
@@ -873,7 +878,7 @@ impl McpGateway {
             },
             ListToolsRequestMethod::VALUE => {
                 debug!(target: "mcp_gateway", "handle_rpc_json_request: tools/list received");
-                let tools = self.inner.tools.build_list_tools(req_ext).await;
+                let tools = self.inner.tools.build_list_tools(&req_ext).await;
                 let response = model::JsonRpcResponse {
                     jsonrpc: model::JsonRpcVersion2_0,
                     id: self.request_id.clone(),

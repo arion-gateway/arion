@@ -112,27 +112,29 @@ impl Transcoder for RestTranscoder<'_> {
 /// Null values are properly rendered as "null" for JSON compatibility.
 fn render_template(template: &str, arguments: &serde_json::Map<String, Value>) -> String {
     let engine = Engine::new();
-    let data = Value::Object(arguments.clone());
     engine
         .compile(template)
-        .and_then(|tmpl| tmpl.render(&engine, &data).to_string())
+        .and_then(|tmpl| tmpl.render(&engine, arguments).to_string())
         .unwrap_or_else(|_| template.to_string())
 }
 
 /// Resolves a variable path like "user.name" against the arguments map.
 /// Returns the JSON value as a string, or "null" if not found.
 fn resolve_variable(path: &str, arguments: &serde_json::Map<String, Value>) -> String {
-    let parts: Vec<&str> = path.split('.').collect();
-    let mut current: Option<&Value> = Some(&Value::Object(arguments.clone()));
+    let mut parts = path.split('.');
+
+    // Get the first part directly from the map to avoid cloning the entire arguments object
+    let mut current = parts.next().and_then(|first| arguments.get(first));
+
+    // Iterate through the rest of the path without allocating a Vec
     for part in parts {
-        current = current.and_then(|v| if let Value::Object(map) = v { map.get(part) } else { None });
+        current = current.and_then(|v| v.as_object()).and_then(|map| map.get(part));
     }
+
+    // Format output: avoid quotes for strings, use default to_string() for other JSON types
     match current {
         Some(Value::String(s)) => s.clone(),
-        Some(Value::Number(n)) => n.to_string(),
-        Some(Value::Bool(b)) => b.to_string(),
-        Some(Value::Null) => "null".to_string(),
-        Some(Value::Array(_) | Value::Object(_)) => current.unwrap().to_string(),
+        Some(v) => v.to_string(),
         None => "null".to_string(),
     }
 }
