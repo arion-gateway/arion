@@ -91,7 +91,7 @@ pub enum ToolBuilderError {
 
 impl ToolEntry {
     fn validate_json_against_schema(
-        validator: &Option<jsonschema::Validator>,
+        validator: Option<&jsonschema::Validator>,
         arguments: &Value,
     ) -> Result<(), CallToolError> {
         if let Some(validator) = validator {
@@ -103,11 +103,11 @@ impl ToolEntry {
     }
 
     pub fn validate_against_input_schema(&self, arguments: &Value) -> Result<(), CallToolError> {
-        Self::validate_json_against_schema(&self.input_schema_validator, arguments)
+        Self::validate_json_against_schema(self.input_schema_validator.as_ref(), arguments)
     }
 
     pub fn validate_against_output_schema(&self, arguments: &Value) -> Result<(), CallToolError> {
-        Self::validate_json_against_schema(&self.output_schema_validator, arguments)
+        Self::validate_json_against_schema(self.output_schema_validator.as_ref(), arguments)
     }
 }
 
@@ -140,6 +140,7 @@ impl ToolsRegistry {
     }
 
     /// Get a tool by name as an Arc for cheap cloning
+    #[inline]
     pub fn get_tool_by_index(&self, tool_index: ToolRegistryIndex) -> Option<&ToolEntry> {
         self.registry.get(tool_index.0)
     }
@@ -286,11 +287,13 @@ impl ToolsRegistry {
         }
 
         // Validate the request message arguments against the input schema
-        if let Some(arguments) = rpc.request.params.get("arguments") {
-            entry.validate_against_input_schema(arguments)?;
-        } else {
-            let arguments = Value::Null;
-            entry.validate_against_input_schema(&arguments)?;
+        if entry.input_schema_validator.is_some() {
+            if let Some(arguments) = rpc.request.params.get("arguments") {
+                entry.validate_against_input_schema(arguments)?;
+            } else {
+                let arguments = Value::Null;
+                entry.validate_against_input_schema(&arguments)?;
+            }
         }
 
         let tool = &entry.conf;

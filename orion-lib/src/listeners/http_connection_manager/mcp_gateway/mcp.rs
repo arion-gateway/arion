@@ -328,59 +328,57 @@ impl McpGateway {
         let upstream_status = response.status();
         let body_string = McpGateway::extract_body_string(&body_bytes, upstream_status);
 
-        let raw_body_fn = |body_string: &String, upstream_status: StatusCode| {
-            json!({
-                "text": body_string,
-                "status": upstream_status.as_u16()
-            })
-        };
-
-        let result_value = if let Some(tool_index) = self.current_tool_index {
+        let structured_content = if let Some(tool_index) = self.current_tool_index {
             match self.inner.tools.get_tool_by_index(tool_index) {
                 Some(tool) => {
-                    let value = match &tool.conf.backend {
-                        UpstreamBackend::Rest { method, path, query_params, body_template, .. } => {
-                            let transcoder =
-                                RestTranscoder { method, path, query_params, body_template: body_template.as_ref() };
-                            match transcoder.decode(body_bytes, upstream_status) {
-                                Ok(value) => value,
-                                Err(e) => {
-                                    debug!(target: "mcp_gateway", "apply_response: transcoder decode error: {e}");
-                                    json!({
-                                        "error": format!("Failed to decode upstream response: {e}"),
-                                            "status": upstream_status.as_u16()
-                                    })
-                                },
-                            }
-                        },
-                        _ => {
-                            // For non-REST backends, use the raw body
-                            raw_body_fn(&body_string, upstream_status)
-                        },
-                    };
-                    match tool.validate_against_output_schema(&value) {
-                        Ok(()) => value,
-                        Err(e) => {
-                            debug!(target: "mcp_gateway", "apply_response: output schema validation error: {e}");
-                            json!({
-                                "error": format!("Failed to validate upstream response against output schema: {e}"),
-                                "status": upstream_status.as_u16()
-                            })
-                        },
+                    if tool.output_schema_validator.is_some() {
+                        let value = match &tool.conf.backend {
+                            UpstreamBackend::Rest { method, path, query_params, body_template, .. } => {
+                                let transcoder = RestTranscoder {
+                                    method,
+                                    path,
+                                    query_params,
+                                    body_template: body_template.as_ref(),
+                                };
+                                match transcoder.decode(body_bytes, upstream_status) {
+                                    Ok(value) => Some(value),
+                                    Err(e) => {
+                                        debug!(target: "mcp_gateway", "apply_response: transcoder decode error: {e}");
+                                        Some(json!({
+                                            "error": format!("Failed to decode upstream response: {e}"),
+                                                "status": upstream_status.as_u16()
+                                        }))
+                                    },
+                                }
+                            },
+                            _ => None,
+                        };
+                        value.map(|value| match tool.validate_against_output_schema(&value) {
+                            Ok(()) => value,
+                            Err(e) => {
+                                debug!(target: "mcp_gateway", "apply_response: output schema validation error: {e}");
+                                json!({
+                                    "error": format!("Failed to validate upstream response against output schema: {e}"),
+                                    "status": upstream_status.as_u16()
+                                })
+                            },
+                        })
+                    } else {
+                        None
                     }
                 },
                 None => {
                     // We really should never get here, but we try a soft
                     // failure by sending the raw content back
                     debug!(target: "mcp_gateway", "apply_response: tool index {:?} not found in registry", tool_index);
-                    raw_body_fn(&body_string, upstream_status)
+                    None
                 },
             }
         } else {
             // We really should never get here, but we try a soft
             // failure by sending the raw content back
             debug!(target: "mcp_gateway", "apply_response: no tool index stored for request_id: {:?}", self.request_id);
-            raw_body_fn(&body_string, upstream_status)
+            None
         };
 
         // Build the CallToolResult with the raw response as content. If we are
@@ -392,7 +390,7 @@ impl McpGateway {
             content: vec![Annotated::new(content, None)],
             is_error: Some(!upstream_status.is_success()),
             meta: None,
-            structured_content: Some(result_value),
+            structured_content,
         };
 
         let server_result = ServerResult::CallToolResult(tool_result);
