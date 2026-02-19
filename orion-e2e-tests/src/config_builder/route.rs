@@ -119,7 +119,10 @@ impl RouteBuilder {
         if let Some(ref mut m) = self.proto.r#match {
             m.headers.push(HeaderMatcher {
                 name: name.into(),
-                header_match_specifier: Some(HeaderMatchSpecifier::ExactMatch(value.into())),
+                header_match_specifier: Some(HeaderMatchSpecifier::StringMatch(StringMatcher {
+                    match_pattern: Some(MatchPattern::Exact(value.into())),
+                    ..Default::default()
+                })),
                 ..Default::default()
             });
         }
@@ -161,7 +164,10 @@ impl RouteBuilder {
         if let Some(ref mut m) = self.proto.r#match {
             m.headers.push(HeaderMatcher {
                 name: name.into(),
-                header_match_specifier: Some(HeaderMatchSpecifier::SuffixMatch(suffix.into())),
+                header_match_specifier: Some(HeaderMatchSpecifier::StringMatch(StringMatcher {
+                    match_pattern: Some(MatchPattern::Suffix(suffix.into())),
+                    ..Default::default()
+                })),
                 ..Default::default()
             });
         }
@@ -174,7 +180,10 @@ impl RouteBuilder {
         if let Some(ref mut m) = self.proto.r#match {
             m.headers.push(HeaderMatcher {
                 name: name.into(),
-                header_match_specifier: Some(HeaderMatchSpecifier::ContainsMatch(substring.into())),
+                header_match_specifier: Some(HeaderMatchSpecifier::StringMatch(StringMatcher {
+                    match_pattern: Some(MatchPattern::Contains(substring.into())),
+                    ..Default::default()
+                })),
                 ..Default::default()
             });
         }
