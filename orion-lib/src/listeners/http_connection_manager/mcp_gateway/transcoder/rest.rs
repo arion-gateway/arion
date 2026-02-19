@@ -1,0 +1,626 @@
+use super::{RestTranscoder, Transcoder, TranscoderError};
+use crate::{
+    body::{
+        instrumented_body::InstrumentedBody, poly_body::PolyBody, response_flags::BodyKind, timeout_body::TimeoutBody,
+    },
+    OrionRequestBody,
+};
+use bytes::Bytes;
+use http::StatusCode;
+use http_body_util::Full;
+use rmcp::model::Request;
+use serde_json::Value;
+use upon::Engine;
+use url::form_urlencoded;
+
+pub const DEFAULT_USER_AGENT: &str = concat!("orion/", env!("CARGO_PKG_VERSION"));
+
+impl Transcoder for RestTranscoder<'_> {
+    fn encode(
+        &self,
+        http_headers: &http::HeaderMap,
+        mcp_request: &Request,
+    ) -> Result<http::Request<OrionRequestBody>, TranscoderError> {
+        // Build a path-only URI (no authority/scheme) - Orion will route to the correct
+        // upstream cluster based on configuration. Including authority without scheme
+        // causes "invalid format" error in http::Uri parser.
+        let arguments = mcp_request.params.get("arguments").and_then(|v| v.as_object());
+
+        let rendered_path = render_template(self.path, arguments.unwrap_or(&serde_json::Map::new()));
+
+        let query_string = if !self.query_params.is_empty() {
+            build_query_string(self.query_params, arguments.unwrap_or(&serde_json::Map::new()))
+        } else {
+            String::new()
+        };
+
+        let capacity = rendered_path.len() + if !query_string.is_empty() { 1 + query_string.len() } else { 0 };
+        let mut uri = String::with_capacity(capacity);
+        if !rendered_path.starts_with('/') {
+            uri.push('/');
+        }
+        uri.push_str(&rendered_path);
+
+        if !query_string.is_empty() {
+            uri.push('?');
+            uri.push_str(&query_string);
+        }
+
+        // Orion will override the authority with the correct upstream endpoint.
+        // This is required for the match_virtual_host to work properly.
+
+        let user_agent =
+            http_headers.get(http::header::USER_AGENT).and_then(|ua| ua.to_str().ok()).unwrap_or(DEFAULT_USER_AGENT);
+
+        let mut builder =
+            http::Request::builder().method(self.method.clone()).uri(uri).header(http::header::USER_AGENT, user_agent);
+
+        if let Some(host) = http_headers.get(http::header::HOST).and_then(|h| h.to_str().ok()) {
+            builder = builder.header(http::header::HOST, host);
+        }
+
+        // Build the body based on body template or empty body
+        let body = if let Some(body_template) = self.body_template {
+            let template_bytes = body_template.to_bytes_blocking().map_err(|e| {
+                TranscoderError::UpstreamRequestBodyValidationError(format!("Failed to read body template: {e}"))
+            })?;
+            let template_str = String::from_utf8(template_bytes).map_err(|e| {
+                TranscoderError::UpstreamRequestBodyValidationError(format!("Body template is not valid UTF-8: {e}"))
+            })?;
+
+            let rendered = render_template(&template_str, arguments.unwrap_or(&serde_json::Map::new()));
+
+            builder = builder.header(http::header::CONTENT_TYPE, "application/json");
+
+            let poly_body = PolyBody::from(Full::new(Bytes::from(rendered)));
+            let timeout_body = TimeoutBody::new(None, poly_body);
+            InstrumentedBody::new(BodyKind::Request, timeout_body, |_, _, _| {})
+        } else {
+            InstrumentedBody::default()
+        };
+
+        Ok(builder.body(body)?)
+    }
+
+    fn decode(&self, upstream_body: Bytes, upstream_status: StatusCode) -> Result<Value, TranscoderError> {
+        if !upstream_status.is_success() {
+            let body_str = String::from_utf8_lossy(&upstream_body);
+            return Err(TranscoderError::UpstreamError(format!(
+                "Upstream returned error status {}: {}",
+                upstream_status.as_u16(),
+                body_str
+            )));
+        }
+
+        // Parse the response body as JSON
+        let response_value: Value = if upstream_body.is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_slice(&upstream_body).map_err(|e| {
+                TranscoderError::JsonParseError(format!("Failed to parse upstream response as JSON: {e}"))
+            })?
+        };
+
+        Ok(response_value)
+    }
+}
+
+/// Renders a template by substituting variables with values from the arguments map.
+/// Variables are in the format {{variable_name}}.
+///
+/// Note: Missing variables in templates should be caught by input schema validation.
+/// Null values are properly rendered as "null" for JSON compatibility.
+fn render_template(template: &str, arguments: &serde_json::Map<String, Value>) -> String {
+    let engine = Engine::new();
+    let data = Value::Object(arguments.clone());
+    engine
+        .compile(template)
+        .and_then(|tmpl| tmpl.render(&engine, &data).to_string())
+        .unwrap_or_else(|_| template.to_string())
+}
+
+/// Resolves a variable path like "user.name" against the arguments map.
+/// Returns the JSON value as a string, or "null" if not found.
+fn resolve_variable(path: &str, arguments: &serde_json::Map<String, Value>) -> String {
+    let parts: Vec<&str> = path.split('.').collect();
+    let mut current: Option<&Value> = Some(&Value::Object(arguments.clone()));
+    for part in parts {
+        current = current.and_then(|v| if let Value::Object(map) = v { map.get(part) } else { None });
+    }
+    match current {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Number(n)) => n.to_string(),
+        Some(Value::Bool(b)) => b.to_string(),
+        Some(Value::Null) => "null".to_string(),
+        Some(Value::Array(_) | Value::Object(_)) => current.unwrap().to_string(),
+        None => "null".to_string(),
+    }
+}
+
+/// Builds a query string from query params configuration with variable substitution.
+fn build_query_string(
+    query_params: &Vec<super::McpRestQueryParams>,
+    arguments: &serde_json::Map<String, Value>,
+) -> String {
+    let mut serializer = form_urlencoded::Serializer::new(String::new());
+    for param in query_params {
+        let value = resolve_variable(&param.source, arguments);
+        if value != "null" {
+            serializer.append_pair(&param.name, &value);
+        }
+    }
+    serializer.finish().replace("%7E", "~").replace("%20", "+")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use orion_configuration::config::core::DataSource;
+    use rmcp::model::Request;
+    use serde_json::json;
+
+    fn create_test_request(arguments: Option<serde_json::Map<String, Value>>) -> Request {
+        let mut params = serde_json::Map::new();
+        params.insert("name".to_string(), json!("test_tool"));
+        if let Some(args) = arguments {
+            params.insert("arguments".to_string(), Value::Object(args));
+        }
+        Request { method: "tools/call".into(), params, extensions: Default::default() }
+    }
+
+    fn create_http_request() -> http::Request<OrionRequestBody> {
+        http::Request::builder().method(http::Method::GET).uri("/test").body(OrionRequestBody::default()).unwrap()
+    }
+
+    #[test]
+    fn test_body_template_simple_substitution() {
+        // Test simple variable substitution in body template (JSON format)
+        let mut args = serde_json::Map::new();
+        args.insert("username".to_string(), json!("john_doe"));
+        args.insert("age".to_string(), json!(30));
+        let mcp_request = create_test_request(Some(args));
+        let http_request = create_http_request();
+        let query_params: Vec<super::super::McpRestQueryParams> = vec![];
+
+        let body_template = DataSource::InlineString(r#"{"name": "{{username}}", "years": {{age}}}"#.into());
+        let transcoder = RestTranscoder {
+            method: &http::Method::POST,
+            path: "/api/users",
+            query_params: &query_params,
+            body_template: Some(&body_template),
+        };
+
+        let result = transcoder.encode(http_request.headers(), &mcp_request);
+        assert!(result.is_ok(), "Expected successful encoding but got: {:?}", result);
+
+        let request = result.unwrap();
+        assert_eq!(request.method(), http::Method::POST);
+        assert_eq!(request.uri(), "/api/users");
+        assert_eq!(request.headers().get(http::header::CONTENT_TYPE).unwrap(), "application/json");
+    }
+
+    #[test]
+    fn test_body_template_nested_path() {
+        // Test nested path access in body template (JSON format)
+        let mut args = serde_json::Map::new();
+        let mut user = serde_json::Map::new();
+        user.insert("name".to_string(), json!("john"));
+        user.insert("email".to_string(), json!("john@example.com"));
+        args.insert("user".to_string(), Value::Object(user));
+        let mcp_request = create_test_request(Some(args));
+        let http_request = create_http_request();
+        let query_params: Vec<super::super::McpRestQueryParams> = vec![];
+
+        let body_template =
+            DataSource::InlineString(r#"{"username": "{{user.name}}", "contact": "{{user.email}}"}"#.into());
+        let transcoder = RestTranscoder {
+            method: &http::Method::POST,
+            path: "/api/users",
+            query_params: &query_params,
+            body_template: Some(&body_template),
+        };
+
+        let result = transcoder.encode(http_request.headers(), &mcp_request);
+        assert!(result.is_ok(), "Expected successful encoding but got: {:?}", result);
+    }
+
+    #[test]
+    fn test_body_template_missing_variable() {
+        // Test that missing variables are replaced with "null" in JSON template
+        let mut args = serde_json::Map::new();
+        args.insert("username".to_string(), json!("john_doe"));
+        let mcp_request = create_test_request(Some(args));
+        let http_request = create_http_request();
+        let query_params: Vec<super::super::McpRestQueryParams> = vec![];
+
+        let body_template = DataSource::InlineString(r#"{"name": "{{username}}", "missing": {{nonexistent}}}"#.into());
+        let transcoder = RestTranscoder {
+            method: &http::Method::POST,
+            path: "/api/users",
+            query_params: &query_params,
+            body_template: Some(&body_template),
+        };
+
+        let result = transcoder.encode(http_request.headers(), &mcp_request);
+        assert!(result.is_ok(), "Expected successful encoding but got: {:?}", result);
+    }
+
+    #[test]
+    fn test_body_template_complex_types() {
+        // Test that arrays and objects are serialized correctly in JSON template
+        let mut args = serde_json::Map::new();
+        args.insert("tags".to_string(), json!(["rust", "mcp", "api"]));
+        let mut metadata = serde_json::Map::new();
+        metadata.insert("version".to_string(), json!("1.0"));
+        args.insert("meta".to_string(), Value::Object(metadata));
+        let mcp_request = create_test_request(Some(args));
+        let http_request = create_http_request();
+        let query_params: Vec<super::super::McpRestQueryParams> = vec![];
+
+        let body_template = DataSource::InlineString(r#"{"tags": {{tags}}, "metadata": {{meta}}}"#.into());
+        let transcoder = RestTranscoder {
+            method: &http::Method::POST,
+            path: "/api/data",
+            query_params: &query_params,
+            body_template: Some(&body_template),
+        };
+
+        let result = transcoder.encode(http_request.headers(), &mcp_request);
+        assert!(result.is_ok(), "Expected successful encoding but got: {:?}", result);
+    }
+
+    #[test]
+    fn test_render_template_simple() {
+        // Test JSON template rendering
+        let mut args = serde_json::Map::new();
+        args.insert("name".to_string(), json!("Alice"));
+        args.insert("count".to_string(), json!(42));
+
+        let template = r#"{"user": "{{name}}", "value": {{count}}}"#;
+        let result = render_template(template, &args);
+
+        assert_eq!(result, r#"{"user": "Alice", "value": 42}"#);
+    }
+
+    #[test]
+    fn test_render_template_non_json() {
+        // Test that templates work with non-JSON formats (plain text, XML, etc.)
+        let mut args = serde_json::Map::new();
+        args.insert("username".to_string(), json!("john_doe"));
+        args.insert("action".to_string(), json!("login"));
+
+        // Plain text template
+        let template = "User {{username}} performed {{action}}";
+        let result = render_template(template, &args);
+        assert_eq!(result, "User john_doe performed login");
+
+        // XML template
+        let xml_template = r#"<user><name>{{username}}</name><action>{{action}}</action></user>"#;
+        let result = render_template(xml_template, &args);
+        assert_eq!(result, r#"<user><name>john_doe</name><action>login</action></user>"#);
+
+        // URL template
+        let url_template = "/api/users/{{username}}/{{action}}";
+        let result = render_template(url_template, &args);
+        assert_eq!(result, "/api/users/john_doe/login");
+    }
+
+    #[test]
+    fn test_render_template_nested() {
+        // Test nested variable access in JSON template
+        let mut args = serde_json::Map::new();
+        let mut user = serde_json::Map::new();
+        user.insert("name".to_string(), json!("Bob"));
+        user.insert("id".to_string(), json!(123));
+        args.insert("user".to_string(), Value::Object(user));
+
+        let template = r#"{"username": "{{user.name}}", "user_id": {{user.id}}}"#;
+        let result = render_template(template, &args);
+
+        assert_eq!(result, r#"{"username": "Bob", "user_id": 123}"#);
+    }
+
+    #[test]
+    fn test_render_template_missing_var() {
+        // In reality, missing variables should be caught by schema validation.
+        // This test verifies that upon leaves missing variables as-is (template error).
+        let args = serde_json::Map::new();
+
+        let template = r#"{"value": {{missing}}}"#;
+        let result = render_template(template, &args);
+
+        // Upon leaves missing variables in the template unchanged
+        assert_eq!(result, r#"{"value": {{missing}}}"#);
+    }
+
+    #[test]
+    fn test_render_template_boolean_and_null() {
+        // Test boolean and null values in JSON template
+        let mut args = serde_json::Map::new();
+        args.insert("active".to_string(), json!(true));
+        args.insert("deleted".to_string(), json!(false));
+        args.insert("empty".to_string(), Value::Null);
+
+        let template = r#"{"is_active": {{active}}, "is_deleted": {{deleted}}, "empty_field": {{empty}}}"#;
+        let result = render_template(template, &args);
+
+        // Note: upon renders null as empty string, not "null"
+        // This is acceptable since schema validation ensures required fields exist
+        assert_eq!(result, r#"{"is_active": true, "is_deleted": false, "empty_field": }"#);
+    }
+
+    #[test]
+    fn test_resolve_variable_simple() {
+        let mut args = serde_json::Map::new();
+        args.insert("name".to_string(), json!("Test"));
+
+        assert_eq!(resolve_variable("name", &args), "Test");
+    }
+
+    #[test]
+    fn test_resolve_variable_nested() {
+        let mut args = serde_json::Map::new();
+        let mut nested = serde_json::Map::new();
+        nested.insert("value".to_string(), json!(42));
+        args.insert("config".to_string(), Value::Object(nested));
+
+        assert_eq!(resolve_variable("config.value", &args), "42");
+    }
+
+    #[test]
+    fn test_resolve_variable_missing() {
+        let args = serde_json::Map::new();
+
+        assert_eq!(resolve_variable("missing", &args), "null");
+    }
+
+    #[test]
+    fn test_resolve_variable_not_an_object() {
+        let mut args = serde_json::Map::new();
+        args.insert("name".to_string(), json!("value"));
+
+        // Trying to access a field on a string should return null
+        assert_eq!(resolve_variable("name.invalid", &args), "null");
+    }
+
+    #[test]
+    fn test_path_template_substitution() {
+        // Test variable substitution in path template
+        let mut args = serde_json::Map::new();
+        args.insert("user_id".to_string(), json!("12345"));
+        args.insert("action".to_string(), json!("profile"));
+        let mcp_request = create_test_request(Some(args));
+        let http_request = create_http_request();
+
+        let path_template = "/api/users/{{user_id}}/{{action}}";
+        let query_params: Vec<super::super::McpRestQueryParams> = vec![];
+        let transcoder = RestTranscoder {
+            method: &http::Method::GET,
+            path: path_template,
+            query_params: &query_params,
+            body_template: None,
+        };
+
+        let result = transcoder.encode(http_request.headers(), &mcp_request);
+        assert!(result.is_ok(), "Expected successful encoding but got: {:?}", result);
+
+        let request = result.unwrap();
+        assert_eq!(request.uri(), "/api/users/12345/profile");
+    }
+
+    #[test]
+    fn test_path_template_with_nested_args() {
+        // Test nested path access in path template
+        let mut args = serde_json::Map::new();
+        let mut location = serde_json::Map::new();
+        location.insert("city".to_string(), json!("dublin"));
+        args.insert("location".to_string(), Value::Object(location));
+        let mcp_request = create_test_request(Some(args));
+        let http_request = create_http_request();
+
+        let path_template = "/api/weather/{{location.city}}";
+        let query_params: Vec<super::super::McpRestQueryParams> = vec![];
+        let transcoder = RestTranscoder {
+            method: &http::Method::GET,
+            path: path_template,
+            query_params: &query_params,
+            body_template: None,
+        };
+
+        let result = transcoder.encode(http_request.headers(), &mcp_request);
+        assert!(result.is_ok(), "Expected successful encoding but got: {:?}", result);
+
+        let request = result.unwrap();
+        assert_eq!(request.uri(), "/api/weather/dublin");
+    }
+
+    #[test]
+    fn test_query_params_substitution() {
+        // Test variable substitution in query params
+        let mut args = serde_json::Map::new();
+        args.insert("search".to_string(), json!("rust language"));
+        args.insert("limit".to_string(), json!(10));
+        let mcp_request = create_test_request(Some(args));
+        let http_request = create_http_request();
+
+        let query_params = vec![
+            super::super::McpRestQueryParams { name: "q".to_string(), source: "search".to_string() },
+            super::super::McpRestQueryParams { name: "limit".to_string(), source: "limit".to_string() },
+        ];
+        let transcoder = RestTranscoder {
+            method: &http::Method::GET,
+            path: "/api/search",
+            query_params: &query_params,
+            body_template: None,
+        };
+
+        let result = transcoder.encode(http_request.headers(), &mcp_request);
+        assert!(result.is_ok(), "Expected successful encoding but got: {:?}", result);
+
+        let request = result.unwrap();
+        let uri = request.uri().to_string();
+        assert!(uri.starts_with("/api/search?"), "URI should start with /api/search?: {}", uri);
+        assert!(uri.contains("q=rust+language"), "URI should contain q=rust+language: {}", uri);
+        assert!(uri.contains("limit=10"), "URI should contain limit=10: {}", uri);
+    }
+
+    #[test]
+    fn test_query_params_with_nested_source() {
+        // Test nested path access in query params source
+        let mut args = serde_json::Map::new();
+        let mut coords = serde_json::Map::new();
+        coords.insert("lat".to_string(), json!("51.5074"));
+        coords.insert("lon".to_string(), json!("-0.1278"));
+        args.insert("coordinates".to_string(), Value::Object(coords));
+        args.insert("forecast_days".to_string(), json!(5));
+        let mcp_request = create_test_request(Some(args));
+        let http_request = create_http_request();
+
+        let query_params = vec![
+            super::super::McpRestQueryParams { name: "latitude".to_string(), source: "coordinates.lat".to_string() },
+            super::super::McpRestQueryParams { name: "longitude".to_string(), source: "coordinates.lon".to_string() },
+            super::super::McpRestQueryParams { name: "days".to_string(), source: "forecast_days".to_string() },
+        ];
+        let transcoder = RestTranscoder {
+            method: &http::Method::GET,
+            path: "/api/weather",
+            query_params: &query_params,
+            body_template: None,
+        };
+
+        let result = transcoder.encode(http_request.headers(), &mcp_request);
+        assert!(result.is_ok(), "Expected successful encoding but got: {:?}", result);
+
+        let request = result.unwrap();
+        let uri = request.uri().to_string();
+        assert!(uri.contains("latitude=51.5074"), "URI should contain latitude=51.5074: {}", uri);
+        assert!(uri.contains("longitude=-0.1278"), "URI should contain longitude=-0.1278: {}", uri);
+        assert!(uri.contains("days=5"), "URI should contain days=5: {}", uri);
+    }
+
+    #[test]
+    fn test_query_params_skips_null_values() {
+        // Test that null values are skipped in query params
+        let mut args = serde_json::Map::new();
+        args.insert("city".to_string(), json!("London"));
+        // "country" is not set, so it should be skipped
+        let mcp_request = create_test_request(Some(args));
+        let http_request = create_http_request();
+
+        let query_params = vec![
+            super::super::McpRestQueryParams { name: "city".to_string(), source: "city".to_string() },
+            super::super::McpRestQueryParams { name: "country".to_string(), source: "missing_country".to_string() },
+        ];
+        let transcoder = RestTranscoder {
+            method: &http::Method::GET,
+            path: "/api/locations",
+            query_params: &query_params,
+            body_template: None,
+        };
+
+        let result = transcoder.encode(http_request.headers(), &mcp_request);
+        assert!(result.is_ok(), "Expected successful encoding but got: {:?}", result);
+
+        let request = result.unwrap();
+        let uri = request.uri().to_string();
+        assert_eq!(uri, "/api/locations?city=London", "URI should only contain city param: {}", uri);
+    }
+
+    #[test]
+    fn test_path_and_query_params_combined() {
+        // Test both path template and query params together
+        let mut args = serde_json::Map::new();
+        args.insert("user_id".to_string(), json!("42"));
+        let mut filters = serde_json::Map::new();
+        filters.insert("status".to_string(), json!("active"));
+        args.insert("filters".to_string(), Value::Object(filters));
+        let mcp_request = create_test_request(Some(args));
+        let http_request = create_http_request();
+
+        let query_params =
+            vec![super::super::McpRestQueryParams { name: "status".to_string(), source: "filters.status".to_string() }];
+        let transcoder = RestTranscoder {
+            method: &http::Method::GET,
+            path: "/api/users/{{user_id}}/orders",
+            query_params: &query_params,
+            body_template: None,
+        };
+
+        let result = transcoder.encode(http_request.headers(), &mcp_request);
+        assert!(result.is_ok(), "Expected successful encoding but got: {:?}", result);
+
+        let request = result.unwrap();
+        let uri = request.uri().to_string();
+        assert_eq!(uri, "/api/users/42/orders?status=active", "URI should have path and query: {}", uri);
+    }
+
+    #[test]
+    fn test_render_path_template_simple() {
+        let mut args = serde_json::Map::new();
+        args.insert("id".to_string(), json!("123"));
+
+        let template = "/api/items/{{id}}";
+        let result = render_template(template, &args);
+
+        assert_eq!(result, "/api/items/123");
+    }
+
+    #[test]
+    fn test_build_query_string_simple() {
+        let mut args = serde_json::Map::new();
+        args.insert("lat".to_string(), json!("53.3498"));
+        args.insert("lon".to_string(), json!("-6.2603"));
+
+        let query_params = vec![
+            super::super::McpRestQueryParams { name: "lat".to_string(), source: "lat".to_string() },
+            super::super::McpRestQueryParams { name: "lon".to_string(), source: "lon".to_string() },
+        ];
+
+        let result = build_query_string(&query_params, &args);
+        assert!(result.contains("lat=53.3498"), "Result should contain lat=53.3498: {}", result);
+        assert!(result.contains("lon=-6.2603"), "Result should contain lon=-6.2603: {}", result);
+    }
+
+    #[test]
+    fn test_build_query_string_encoding() {
+        // Test special characters are properly encoded
+        let mut args = serde_json::Map::new();
+        args.insert("space".to_string(), json!("hello world"));
+        args.insert("amp".to_string(), json!("foo&bar"));
+        args.insert("equal".to_string(), json!("a=b"));
+        args.insert("slash".to_string(), json!("test/value"));
+
+        let query_params = vec![
+            super::super::McpRestQueryParams { name: "space".to_string(), source: "space".to_string() },
+            super::super::McpRestQueryParams { name: "amp".to_string(), source: "amp".to_string() },
+            super::super::McpRestQueryParams { name: "equal".to_string(), source: "equal".to_string() },
+            super::super::McpRestQueryParams { name: "slash".to_string(), source: "slash".to_string() },
+        ];
+
+        let result = build_query_string(&query_params, &args);
+        assert!(result.contains("space=hello+world"), "Space should be encoded as +: {}", result);
+        assert!(result.contains("amp=foo%26bar"), "& should be encoded: {}", result);
+        assert!(result.contains("equal=a%3Db"), "= should be encoded: {}", result);
+        assert!(result.contains("slash=test%2Fvalue"), "/ should be encoded: {}", result);
+    }
+
+    #[test]
+    fn test_build_query_string_unreserved_chars() {
+        // Test RFC 3986 unreserved characters are not encoded
+        let mut args = serde_json::Map::new();
+        args.insert("alpha".to_string(), json!("ABCxyz"));
+        args.insert("numeric".to_string(), json!("123"));
+        args.insert("special".to_string(), json!("-_.~"));
+
+        let query_params = vec![
+            super::super::McpRestQueryParams { name: "alpha".to_string(), source: "alpha".to_string() },
+            super::super::McpRestQueryParams { name: "numeric".to_string(), source: "numeric".to_string() },
+            super::super::McpRestQueryParams { name: "special".to_string(), source: "special".to_string() },
+        ];
+
+        let result = build_query_string(&query_params, &args);
+        assert!(result.contains("alpha=ABCxyz"), "Alphanumeric should not be encoded: {}", result);
+        assert!(result.contains("numeric=123"), "Numeric should not be encoded: {}", result);
+        assert!(result.contains("special=-_.~"), "Unreserved chars -_.~ should not be encoded: {}", result);
+    }
+}

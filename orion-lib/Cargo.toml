@@ -49,7 +49,6 @@ hyper = { version = "1", features = ["full"] }
 hyper-rustls = { version = "0.27.7", features = ["default", "http2"] }
 ipnet = "2.11"
 lru_time_cache = "0.11.11"
-once_cell = { version = "1.21" }
 opentelemetry = "0.29.0"
 orion-metrics = { workspace = true, optional = true }
 parking_lot = "0.12.5"
@@ -58,7 +57,7 @@ pingora-timeout = "0.3.0"
 pretty-duration = "0.1.1"
 rand = { version = "0.8.5", features = ["small_rng"] }
 rustc-hash = "1.1.0"
-rustls = "0.23"
+rustls = { version = "0.23", features = ["aws-lc-rs"] }
 rustls-pemfile = "2.2"
 rustls-platform-verifier = { version = "0.3" }
 rustls-webpki = "0.102"
@@ -83,12 +82,14 @@ base64 = "0.22.1"
 schemars = { version = "1.1.0", features = ["std", "derive", "chrono04"] }
 pastey = "0.2.1"
 owning_ref = "0.4.1"
-rmcp = "0.12.0"
+rmcp = { version = "0.14.0", features = ["client", "transport-streamable-http-client-reqwest"] }
 moka = { version = "0.12.12", features = ["sync"] }
 contatori = { version = "0.7.5", optional = true }
 quanta = { version = "0.12.6", optional = true }
 hyperlocal = "0.9.1"
-
+jsonschema = "0.41.0"
+ctor = "0.6.3"
+upon = "0.8"
 
 [dev-dependencies]
 orion-data-plane-api.workspace = true
@@ -97,10 +98,7 @@ tracing-test.workspace         = true
 test-log                       = { version = "0.2.18", features = ["trace"] }
 
 [features]
-# making sure we are not using pure ring
-aws_lc_rs = ["rustls/aws_lc_rs"]
-
-default   = ["aws_lc_rs","server", "macros", "elicitation", "base64", "schemars"]
+default   = ["server", "macros", "elicitation", "base64", "schemars"]
 metrics   = ["dep:orion-metrics"]
 tracing   = []
 access-log = []

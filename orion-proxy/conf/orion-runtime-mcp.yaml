@@ -50,11 +50,6 @@ envoy_bootstrap:
                         tools:
                           - name: "weather_get_forecast"
                             description: "Get weather forecast for a location"
-                            backend:
-                              cluster: weather_api_cluster
-                              rest_transcoding:
-                                method: GET
-                                path: "/v1/forecast"
                             input_schema:
                               inline_string: >-
                                 {
@@ -73,13 +68,44 @@ envoy_bootstrap:
                                   },
                                   "required": ["latitude", "longitude"]
                                 }
+                            output_schema:
+                              inline_string: >-
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "temperature": {
+                                      "type": "number",
+                                      "description": "Current temperature in Celsius"
+                                    },
+                                    "humidity": {
+                                      "type": "number",
+                                      "description": "Humidity percentage"
+                                    },
+                                    "condition": {
+                                      "type": "string",
+                                      "description": "Weather condition (e.g., sunny, cloudy, rainy)"
+                                    }
+                                  },
+                                  "required": ["temperature", "condition"]
+                                }
+                            rest_backend:
+                             cluster: weather_api_cluster
+                             method: GET
+                             path: "/v1/forecast/{{days}}"
+                             query_params:
+                               - name: "days"
+                                 source: "days"
+                               - name: "lat"
+                                 source: "latitude"
+                               - name: "lon"
+                                 source: "longitude"
+                             body_template:
+                               inline_string: >-
+                                   "latitude": "{{latitude}}",
+                                   "longitude": "{{longitude}}",
+                                   "days": "{{days}}"
                           - name: "user_profile_get"
                             description: "Get user profile information"
-                            backend:
-                              cluster: weather_api_cluster
-                              rest_transcoding:
-                                method: GET
-                                path: "/v1/user/profile"
                             input_schema:
                               inline_string: >-
                                 {
@@ -91,13 +117,12 @@ envoy_bootstrap:
                                   },
                                   "required": ["user_id"]
                                 }
+                            rest_backend:
+                              cluster: user_profile_api_cluster
+                              method: GET
+                              path: "/v1/user/profile"
                           - name: "admin_delete_user"
                             description: "Delete a user account (admin only)"
-                            backend:
-                              cluster: weather_api_cluster
-                              rest_transcoding:
-                                method: DELETE
-                                path: "/v1/admin/user"
                             rbac:
                               action: ALLOW
                               permissions:
@@ -115,7 +140,16 @@ envoy_bootstrap:
                                   },
                                   "required": ["user_id"]
                                 }
-
+                            rest_backend:
+                              cluster: user_profile_api_cluster
+                              method: DELETE
+                              path: "/v1/admin/user"
+                          - name: "everything"
+                            description: "everything mcp server"
+                            mcp_server_backend:
+                              transport: StreamableHttp
+                              url: http://127.0.0.1:3001/mcp
+                              cache_duration: 10s
                     - name: envoy.filters.http.router
                       typedConfig:
                         "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
@@ -144,3 +178,16 @@ envoy_bootstrap:
                       socket_address:
                         address: 127.0.0.1
                         port_value: 4001
+
+      - name: user_profile_api_cluster
+        connect_timeout: 0.25s
+        type: STATIC
+        lb_policy: ROUND_ROBIN
+        load_assignment:
+          endpoints:
+            - lb_endpoints:
+                - endpoint:
+                    address:
+                      socket_address:
+                        address: 127.0.0.1
+                        port_value: 4002

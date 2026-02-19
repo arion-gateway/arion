@@ -3,7 +3,7 @@ use http::Method;
 use orion_http_header::MCP_SESSION_ID;
 use serde::Serialize;
 use smol_str::{SmolStr, ToSmolStr};
-use tracing::{debug, error};
+use tracing::{debug, info};
 use url::form_urlencoded;
 
 pub const SESSION_ID_QUERY_KEY: &str = "sessionId";
@@ -133,7 +133,7 @@ impl std::fmt::Display for Transport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Transport::Sse => write!(f, "SSE"),
-            Transport::StreamableHttp => write!(f, "Streamable HTTP"),
+            Transport::StreamableHttp => write!(f, "StreamableHTTP"),
         }
     }
 }
@@ -154,7 +154,7 @@ pub mod sse {
                 Event::Endpoint(endpoint) => Bytes::from(format!("event: endpoint\ndata: {endpoint}\n\n")),
                 Event::Message(value) => {
                     let msg = serde_json::to_string(value).unwrap_or_else(|err| {
-                        error!(target: "mcp_gateway", "SEE: failed to serialize message: {}", err);
+                        info!(target: "mcp_gateway", "SSE: failed to serialize message: {}!", err);
                         "".into()
                     });
 

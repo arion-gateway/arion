@@ -13,16 +13,16 @@ use thiserror::Error;
 type FrameResult = Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>;
 
 /// A Body that allows streaming bytes into its body.
-pub struct SseBody {
+pub struct SinkBody {
     stream: ReceiverStream<FrameResult>,
 }
 
-impl SseBody {
-    /// Creates a new `SseBody` wrapping an existing body.
+impl SinkBody {
+    /// Creates a new `SinkBody` wrapping an existing body.
     ///
-    /// Returns a tuple of (`SseBody`, `SseSender`). `SseSender` must be used
+    /// Returns a tuple of (`SinkBody`, `SinkSender`). `SinkSender` must be used
     /// to inject frames into.
-    pub fn new() -> (Self, SseSender) {
+    pub fn new() -> (Self, SinkSender) {
         // Create a channel for injecting frames
         let (tx, rx) = mpsc::channel(16);
 
@@ -30,17 +30,17 @@ impl SseBody {
         let stream_of_body = ReceiverStream::new(rx);
 
         // Create the bridge linked to the body
-        (SseBody { stream: stream_of_body }, SseSender::new(tx))
+        (SinkBody { stream: stream_of_body }, SinkSender::new(tx))
     }
 }
 
-impl std::fmt::Debug for SseBody {
+impl std::fmt::Debug for SinkBody {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SseBody").field("stream", &self.stream).finish()
+        f.debug_struct("SinkBody").field("stream", &self.stream).finish()
     }
 }
 
-impl Body for SseBody {
+impl Body for SinkBody {
     type Data = Bytes;
     type Error = Box<dyn std::error::Error + Send + Sync>;
 
@@ -53,29 +53,29 @@ impl Body for SseBody {
     }
 }
 
-/// The `SseSender` acts as a bridge to the `SseBody`.
-/// Frames written from the original body must be injected into the `SseBody` for it
+/// The `SinkSender` acts as a bridge to the `SinkBody`.
+/// Frames written from the original body must be injected into the `SinkBody` for it
 /// to produce any output.
 #[pin_project]
 #[derive(Default, Clone)]
-pub struct SseSender {
+pub struct SinkSender {
     #[pin]
     injector: Option<PollSender<FrameResult>>,
 }
 
-impl std::fmt::Debug for SseSender {
+impl std::fmt::Debug for SinkSender {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SseSender").finish()
+        f.debug_struct("SinkSender").finish()
     }
 }
 
-impl SseSender {
+impl SinkSender {
     #[inline]
     fn new(injector: mpsc::Sender<Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>>) -> Self {
         Self { injector: Some(PollSender::new(injector)) }
     }
 
-    /// Close the `SseSender` to prevent further frame injections.
+    /// Close the `SinkSender` to prevent further frame injections.
     #[inline]
     pub fn close(&mut self) {
         self.injector.take();
@@ -85,22 +85,22 @@ impl SseSender {
 type PollSenderError = PollSendError<std::result::Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>>;
 
 #[derive(Debug, Error)]
-pub enum SseSenderError {
+pub enum SinkSenderError {
     #[error("PollSendError: {0}")]
     PollSendError(#[from] PollSenderError),
     #[error("SenderClosed")]
     SenderClosed,
 }
 
-impl Sink<Bytes> for SseSender {
-    type Error = SseSenderError;
+impl Sink<Bytes> for SinkSender {
+    type Error = SinkSenderError;
 
     #[inline]
     fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let this = self.project();
         match this.injector.as_pin_mut() {
             Some(injector) => injector.poll_ready(cx).map_err(Into::into),
-            None => Poll::Ready(Err(SseSenderError::SenderClosed)),
+            None => Poll::Ready(Err(SinkSenderError::SenderClosed)),
         }
     }
 
@@ -109,7 +109,7 @@ impl Sink<Bytes> for SseSender {
         let this = self.project();
         match this.injector.as_pin_mut() {
             Some(injector) => injector.start_send(Ok(Frame::data(item))).map_err(Into::into),
-            None => Err(SseSenderError::SenderClosed),
+            None => Err(SinkSenderError::SenderClosed),
         }
     }
 
@@ -118,7 +118,7 @@ impl Sink<Bytes> for SseSender {
         let this = self.project();
         match this.injector.as_pin_mut() {
             Some(injector) => injector.poll_flush(cx).map_err(Into::into),
-            None => Poll::Ready(Err(SseSenderError::SenderClosed)),
+            None => Poll::Ready(Err(SinkSenderError::SenderClosed)),
         }
     }
 
@@ -127,7 +127,7 @@ impl Sink<Bytes> for SseSender {
         let this = self.project();
         match this.injector.as_pin_mut() {
             Some(injector) => injector.poll_close(cx).map_err(Into::into),
-            None => Poll::Ready(Err(SseSenderError::SenderClosed)),
+            None => Poll::Ready(Err(SinkSenderError::SenderClosed)),
         }
     }
 }

@@ -205,3 +205,14 @@ pub async fn start_listener_manager(configuration_receivers: ConfigurationReceiv
     tracing::debug!("listeners manager finished cleanly");
     Ok(())
 }
+
+use ctor::ctor;
+#[ctor]
+fn init() {
+    //
+    // intialize AWS-LC-RS as defualt crypto provider
+    //
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .expect("Could not install crypto provider (aws-lc-rs)");
+}

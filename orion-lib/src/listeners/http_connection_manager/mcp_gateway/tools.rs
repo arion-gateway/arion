@@ -1,255 +1,366 @@
-use crate::{
-    body::{instrumented_body::InstrumentedBody, response_flags::BodyKind, timeout_body::TimeoutBody},
-    listeners::http_connection_manager::mcp_gateway::rbac::{
+use crate::listeners::http_connection_manager::mcp_gateway::{
+    mcp::{MessageResult, Session, ToolRegistryIndex},
+    rbac::{
         Action as RbacAction, JwtClaimField, JwtHeaderField, JwtHeaderMatcher, JwtPayloadMatcher,
         Permission as RbacPermission, ToolRbac,
     },
-    OrionRequestBody, PolyBody,
+    transcoder::{rest::DEFAULT_USER_AGENT, RestTranscoder, Transcoder},
 };
+use dashmap::DashMap;
 use http::{header::InvalidHeaderValue, HeaderValue};
-use http_body_util::Empty;
+use jsonschema::Validator;
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::{
-    ClusterHeader, McpBackend, McpRestQueryParams, McpTool, McpTranscoding,
+    ClusterHeader, McpBackendTransportUpstream, McpTool, UpstreamBackend,
 };
-use rmcp::model::{ListToolsResult, Request, Tool};
-use rmcp::object;
-use std::{borrow::Cow, sync::Arc};
-use url::form_urlencoded;
+use rmcp::{
+    model::{CallToolRequestParams, ClientCapabilities, ClientInfo, Implementation, InitializeRequestParams},
+    service::ClientInitializeError,
+    transport::StreamableHttpClientTransport,
+    ServiceError, ServiceExt,
+};
 
-const DEFAULT_USER_AGENT: &str = concat!("orion/", env!("CARGO_PKG_VERSION"));
+use rmcp::model;
+use rmcp::model::{ListToolsResult, Tool};
+use rmcp::service::{RoleClient, RunningService};
+use serde_json::Value;
+use smol_str::{SmolStr, ToSmolStr};
+use std::{borrow::Cow, sync::Arc, time::Instant};
+use tracing::{debug, info};
 
-#[derive(Debug, thiserror::Error)]
-pub enum BuildRequestError {
-    #[error("missing 'name' parameter in request")]
-    MissingName,
-    #[error("'name' parameter is not a string")]
-    NameNotString,
-    #[error("tool '{0}' not found in registry")]
-    ToolNotFound(String),
-    #[error("access to tool '{0}' denied by RBAC policy")]
-    RbacDenied(String),
-    #[error("REST request for tool '{tool}': {reason}")]
-    RestBuildFailed { tool: String, reason: String },
-    #[error("MCP transcoding is not yet implemented")]
-    McpNotImplemented,
-    #[error("FunctionGraph transcoding is not yet implemented")]
-    FunctionGraphNotImplemented,
-    #[error("HeaderValue: {0}")]
-    InvalidHeaderValue(#[from] InvalidHeaderValue),
+#[derive(Debug, Clone)]
+struct CachedEntry<T> {
+    expiration: Instant,
+    entry: T,
 }
 
 #[derive(Debug, Clone)]
 pub struct ToolsRegistry {
     registry: Vec<ToolEntry>,
+    cache: DashMap<SmolStr, CachedEntry<Vec<Tool>>, ahash::RandomState>,
 }
 
 #[derive(Debug, Clone)]
-struct ToolEntry {
-    tool: McpTool,
-    rbac: Option<ToolRbac>,
+pub struct ToolEntry {
+    pub conf: McpTool,
+    pub input_schema_validator: Option<Validator>,
+    pub output_schema_validator: Option<Validator>,
+    pub rbac: Option<ToolRbac>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum CallToolError {
+    #[error("'name' parameter is missing or not a string")]
+    NameNotString,
+    #[error("tool '{0}' not found in registry")]
+    ToolNotFound(String),
+    #[error("access to tool '{0}' denied by RBAC policy")]
+    RbacDenied(String),
+    #[error("FunctionGraph transcoding is not yet implemented")]
+    FunctionGraphNotImplemented,
+    #[error("HeaderValue: {0}")]
+    InvalidHeaderValue(#[from] InvalidHeaderValue),
+    #[error("Transcoder: tool: {tool} reason: {reason}")]
+    TranscoderError { tool: String, reason: String },
+    #[error("Client initialization error: {0}")]
+    ClientInitializeError(#[from] ClientInitializeError),
+    #[error("ServiceError: {0}")]
+    ServiceError(#[from] ServiceError),
+    #[error("SerdeError: {0}")]
+    SerdeError(#[from] serde_json::Error),
+    #[error("Validation error: {0}")]
+    ValidationError(String),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ListToolsError {
+    #[error("Unsupported transport")]
+    UnsupportedTransport,
+    #[error("Client: {0}")]
+    ClientError(#[from] ClientInitializeError),
+    #[error("ServiceError: {0}")]
+    ServiceError(#[from] ServiceError),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ToolBuilderError {
+    #[error("Invalid input schema")]
+    InvalidInputSchema(String),
+    #[error("Invalid output schema")]
+    InvalidOutputSchema(String),
+}
+
+impl ToolEntry {
+    fn validate_json_against_schema(
+        validator: &Option<jsonschema::Validator>,
+        arguments: &Value,
+    ) -> Result<(), CallToolError> {
+        if let Some(validator) = validator {
+            let errors: Vec<String> = validator.iter_errors(arguments).map(|e| e.to_string()).collect();
+            if !errors.is_empty() {
+                return Err(CallToolError::ValidationError(errors.join("; ")));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn validate_against_input_schema(&self, arguments: &Value) -> Result<(), CallToolError> {
+        Self::validate_json_against_schema(&self.input_schema_validator, arguments)
+    }
+
+    pub fn validate_against_output_schema(&self, arguments: &Value) -> Result<(), CallToolError> {
+        Self::validate_json_against_schema(&self.output_schema_validator, arguments)
+    }
 }
 
 impl ToolsRegistry {
-    pub fn new() -> Self {
-        ToolsRegistry { registry: Vec::new() }
-    }
-
-    pub fn with_tools(tools: Vec<McpTool>) -> Self {
-        let registry = tools
+    pub fn with_tools(tools: Vec<McpTool>) -> Result<Self, ToolBuilderError> {
+        let registry: Vec<ToolEntry> = tools
             .into_iter()
-            .map(|tool| {
-                let rbac = tool.rbac.as_ref().map(convert_config_rbac_to_runtime);
-                ToolEntry { tool, rbac }
+            .map(|tool_conf| -> Result<ToolEntry, ToolBuilderError> {
+                let rbac = tool_conf.rbac.as_ref().map(convert_config_rbac_to_runtime);
+                let input_schema_validator = if !tool_conf.input_schema.is_empty() {
+                    Some(
+                        Validator::new(&Value::Object(tool_conf.input_schema.clone()))
+                            .map_err(|e| ToolBuilderError::InvalidInputSchema(e.to_string()))?,
+                    )
+                } else {
+                    None
+                };
+                let output_schema_validator = if !tool_conf.output_schema.is_empty() {
+                    Some(
+                        Validator::new(&Value::Object(tool_conf.output_schema.clone()))
+                            .map_err(|e| ToolBuilderError::InvalidOutputSchema(e.to_string()))?,
+                    )
+                } else {
+                    None
+                };
+                Ok(ToolEntry { conf: tool_conf, rbac, input_schema_validator, output_schema_validator })
             })
-            .collect();
-        ToolsRegistry { registry }
+            .collect::<Result<Vec<_>, ToolBuilderError>>()?;
+        Ok(ToolsRegistry { registry, cache: DashMap::with_hasher(ahash::RandomState::new()) })
     }
 
-    #[allow(dead_code)]
-    pub fn with_dummy_tools() -> Self {
-        let mut myself = ToolsRegistry::new();
-
-        myself.register(McpTool {
-            name: "get_name".into(),
-            description: "Get weather information for a city".into(),
-            input_schema: object!({
-                "type": "object",
-                "properties": {
-                    "city": { "type": "string", "description": "City Name" }
-                },
-                "required": ["city"]
-            }),
-            rbac: None,
-            backend: McpBackend {
-                cluster: "weather_api_cluster".into(),
-                r#async: false,
-                transcoding: McpTranscoding::Rest {
-                    method: http::Method::GET,
-                    path: "/weather".into(),
-                    query_params: vec![McpRestQueryParams { name: "city".into(), source: "country".into() }],
-                },
-            },
-        });
-
-        myself.register(McpTool {
-            name: "post_user".into(),
-            description: "Add a new username and email".into(),
-            input_schema: object!({
-                "type": "object",
-                "properties": {
-                    "username": { "type": "string" },
-                    "email": { "type": "string" }
-                },
-                "required": ["username", "email"]
-            }),
-            rbac: None,
-            backend: McpBackend {
-                cluster: "post_user_cluster".into(),
-                r#async: false,
-                transcoding: McpTranscoding::Rest {
-                    method: http::Method::POST,
-                    path: "/user".into(),
-                    query_params: vec![McpRestQueryParams { name: "username".into(), source: "email".into() }],
-                },
-            },
-        });
-
-        myself
+    /// Get a tool by name as an Arc for cheap cloning
+    pub fn get_tool_by_index(&self, tool_index: ToolRegistryIndex) -> Option<&ToolEntry> {
+        self.registry.get(tool_index.0)
     }
 
-    pub fn register(&mut self, tool: McpTool) {
-        let rbac = tool.rbac.as_ref().map(convert_config_rbac_to_runtime);
-        self.registry.push(ToolEntry { tool, rbac });
-    }
-
-    pub fn build_list_tools(&self) -> ListToolsResult {
+    pub async fn build_list_tools(&self, req_ext: http::Extensions) -> ListToolsResult {
         let mut tools = Vec::with_capacity(self.registry.len());
         for entry in self.registry.iter() {
-            tools.push(Tool {
-                name: entry.tool.name.clone().into(),
-                description: Some(entry.tool.description.clone().into()),
-                input_schema: Arc::new(entry.tool.input_schema.clone()),
-                title: None,
-                output_schema: None,
-                annotations: None,
-                icons: None,
-                meta: None,
-            });
+            if let Some(rbac) = &entry.rbac {
+                if !rbac.is_permitted(&req_ext) {
+                    continue;
+                }
+            }
+
+            match &entry.conf.backend {
+                UpstreamBackend::Rest { .. } => {
+                    tools.push(Tool {
+                        name: Cow::Owned(entry.conf.name.to_string()),
+                        description: Some(entry.conf.description.clone().into()),
+                        input_schema: Arc::new(entry.conf.input_schema.clone()),
+                        title: None,
+                        output_schema: None,
+                        annotations: None,
+                        icons: None,
+                        meta: None,
+                    });
+                },
+                UpstreamBackend::McpServer { transport, url, cache_duration } => {
+                    if let Some(r) = self.cache.get(&entry.conf.name) {
+                        if std::time::Instant::now() < r.expiration {
+                            tools.extend(r.entry.iter().cloned());
+                            continue;
+                        }
+                    }
+
+                    match self.get_list_tools_from_upstream(&transport, &url, &entry.conf.name).await {
+                        Ok(up_tools) => {
+                            if let Some(cache_duration) = cache_duration {
+                                if let Some(expiration) = std::time::Instant::now().checked_add(cache_duration.clone())
+                                {
+                                    self.cache.insert(
+                                        entry.conf.name.to_smolstr(),
+                                        CachedEntry { entry: up_tools.clone(), expiration },
+                                    );
+                                }
+                            }
+
+                            tools.extend(up_tools.iter().cloned());
+                        },
+                        Err(err) => {
+                            info!(target: "mcp_gateway", "Failed to list tools: {}!", err);
+                        },
+                    }
+                },
+                UpstreamBackend::FunctionGraph {} => todo!(),
+            }
         }
 
         ListToolsResult { tools, next_cursor: None, meta: None }
     }
 
-    /// Returns an iterator over arguments as (key, value) pairs without allocating a Vec.
-    /// Values are borrowed when possible (strings), owned only when conversion is needed.
-    #[inline]
-    fn extract_arguments(mcp_request: &Request) -> impl Iterator<Item = (&str, Cow<'_, str>)> {
-        mcp_request.params.get("arguments").and_then(|v| v.as_object()).into_iter().flatten().map(|(k, v)| {
-            let value = match v {
-                serde_json::Value::String(s) => Cow::Borrowed(s.as_str()),
-                serde_json::Value::Null => Cow::Borrowed("null"),
-                serde_json::Value::Bool(true) => Cow::Borrowed("true"),
-                serde_json::Value::Bool(false) => Cow::Borrowed("false"),
-                other => Cow::Owned(other.to_string()),
-            };
-            (k.as_str(), value)
+    pub async fn get_list_tools_from_upstream(
+        &self,
+        transport: &McpBackendTransportUpstream,
+        url: &str,
+        namespace: &str,
+    ) -> Result<Vec<Tool>, ListToolsError> {
+        debug!(target: "mcp_gateway", "Getting list of tools from upstream with transport {transport:?}");
+        match transport {
+            McpBackendTransportUpstream::StreamableHttp => self.get_list_tools_streamable_http(url, namespace).await,
+            McpBackendTransportUpstream::Sse => Err(ListToolsError::UnsupportedTransport),
+        }
+    }
+
+    pub async fn get_list_tools_streamable_http(
+        &self,
+        url: &str,
+        namespace: &str,
+    ) -> Result<Vec<Tool>, ListToolsError> {
+        let client = Self::get_mcp_client(url).await?;
+
+        // List tools
+        let mut tools = client.list_tools(Default::default()).await?;
+
+        for tool in &mut tools.tools {
+            let name: String = tool.name.clone().into_owned();
+            tool.name = Cow::Owned(format!("{namespace}__{name}"));
+        }
+
+        Ok(tools.tools)
+    }
+
+    async fn get_mcp_client(
+        url: &str,
+    ) -> Result<RunningService<RoleClient, InitializeRequestParams>, ClientInitializeError> {
+        debug!(target: "mcp_gateway", "Creating MCP client for URL: {url}...");
+        let transport = StreamableHttpClientTransport::from_uri(url);
+        let client_info = ClientInfo {
+            meta: None,
+            protocol_version: Default::default(),
+            capabilities: ClientCapabilities::default(),
+            client_info: Implementation {
+                name: DEFAULT_USER_AGENT.into(),
+                title: None,
+                version: "0.0.1".to_string(),
+                website_url: None,
+                icons: None,
+            },
+        };
+        client_info.serve(transport).await.inspect_err(|e| {
+            info!(target: "mcp_gateway", "get_mcp_client error: {}!", e);
         })
     }
 
-    pub fn build_request(
+    pub async fn call(
         &self,
-        request: &http::Request<OrionRequestBody>,
-        mcp_request: &Request,
+        req_ext: &http::Extensions,
+        req_headers: &http::HeaderMap,
+        rpc: &model::JsonRpcRequest,
         cluster_header: &Option<ClusterHeader>,
-    ) -> Result<(http::Request<OrionRequestBody>, bool), BuildRequestError> {
-        let name = mcp_request.params.get("name").ok_or(BuildRequestError::MissingName)?;
-        let name = name.as_str().ok_or(BuildRequestError::NameNotString)?;
+        session: &Session,
+    ) -> Result<MessageResult, CallToolError> {
+        // get tool name, and in case of upstream MCP, sub-tool name as well...
+        let (backend_name, tool_name) = {
+            let name = rpc.request.params.get("name").ok_or(CallToolError::NameNotString)?;
+            let name = name.as_str().ok_or(CallToolError::NameNotString)?;
+            match name.split_once("__") {
+                Some((tool, sub_name)) => (tool, sub_name),
+                None => (name, name),
+            }
+        };
 
-        let entry = self
+        debug!(target: "mcp_gateway", "call: method:{} tool {tool_name}@{backend_name}", rpc.request.method);
+
+        let (index, entry) = self
             .registry
             .iter()
-            .find(|e| e.tool.name == name)
-            .ok_or_else(|| BuildRequestError::ToolNotFound(name.to_string()))?;
+            .enumerate()
+            .find(|(_, e)| e.conf.name == backend_name)
+            .ok_or_else(|| CallToolError::ToolNotFound(backend_name.to_string()))?;
 
         if let Some(rbac) = &entry.rbac {
-            if !rbac.is_permitted(request) {
-                return Err(BuildRequestError::RbacDenied(name.to_string()));
+            if !rbac.is_permitted(req_ext) {
+                return Err(CallToolError::RbacDenied(backend_name.to_string()));
             }
         }
 
-        let endpoint = &entry.tool;
+        // Validate the request message arguments against the input schema
+        let arguments = rpc.request.params.get("arguments").and_then(|v| v.as_object());
+        let args_to_validate =
+            arguments.map_or_else(|| Value::Object(serde_json::Map::new()), |a| Value::Object(a.clone()));
+        entry.validate_against_input_schema(&args_to_validate)?;
 
-        let mut upstream_request = match &endpoint.backend.transcoding {
-            McpTranscoding::Rest { method, path, query_params } => self
-                .build_rest_request(request, mcp_request, &method, &path, &query_params)
-                .map_err(|e| BuildRequestError::RestBuildFailed { tool: name.to_string(), reason: e.to_string() })?,
-            McpTranscoding::FunctionGraph {} => {
-                return Err(BuildRequestError::FunctionGraphNotImplemented);
+        let tool = &entry.conf;
+        match &tool.backend {
+            UpstreamBackend::Rest { method, path, query_params, cluster, r#async, body_template } => {
+                let transcoder = RestTranscoder { method, path, query_params, body_template: body_template.as_ref() };
+                let mut upstream_request = transcoder.encode(req_headers, &rpc.request).map_err(|e| {
+                    CallToolError::TranscoderError { tool: backend_name.to_owned(), reason: e.to_string() }
+                })?;
+                if let Some(cluster_header) = cluster_header {
+                    let headers = upstream_request.headers_mut();
+                    headers.append(cluster_header.0.clone(), HeaderValue::from_str(&cluster)?);
+                }
+                Ok(MessageResult::UpstreamRequest((upstream_request, *r#async, ToolRegistryIndex(index))))
             },
-            McpTranscoding::Mcp {} => {
-                return Err(BuildRequestError::McpNotImplemented);
+            UpstreamBackend::McpServer { url, .. } => {
+                let client = match session.mcp_upstreams.entry(url.to_owned()) {
+                    dashmap::Entry::Occupied(entry) => entry.into_ref(),
+                    dashmap::Entry::Vacant(vacant_entry) => {
+                        let new_client = Self::get_mcp_client(url).await?;
+                        vacant_entry.insert(new_client)
+                    },
+                };
+
+                let arguments = match &rpc.request.params.get("arguments") {
+                    Some(&serde_json::Value::Object(ref o)) => Some(o.clone()),
+                    _ => None,
+                };
+
+                let tool_result = match client
+                    .call_tool(CallToolRequestParams {
+                        meta: None,
+                        name: tool_name.to_owned().into(),
+                        arguments,
+                        task: None,
+                    })
+                    .await
+                {
+                    Ok(res) => res,
+                    Err(err) => {
+                        match &err {
+                            ServiceError::TransportSend(_) | ServiceError::TransportClosed => {
+                                // delete the client, will be re-created on next call:
+                                // first, drop the reference to client, to avoid deadlock, then remove from session map
+                                info!(target: "mcp_gateway", "removing MCP client for URL {url} due to transport error!");
+                                drop(client);
+                                session.mcp_upstreams.remove(url);
+                            },
+                            _ => (),
+                        };
+                        return Err(err.into());
+                    },
+                };
+
+                debug!(target: "mcp_gateway", "Received result from tool{backend_name}@{tool_name}: {:?}", tool_result);
+
+                let json_result = serde_json::to_value(tool_result)?;
+
+                let json_rcp_response = model::JsonRpcResponse {
+                    jsonrpc: model::JsonRpcVersion2_0,
+                    id: rpc.id.clone(),
+                    result: json_result,
+                };
+
+                Ok(MessageResult::JsonRcpResponse(json_rcp_response))
             },
-        };
-
-        if let Some(cluster_header) = cluster_header {
-            let headers = upstream_request.headers_mut();
-            headers.append(cluster_header.0.clone(), HeaderValue::from_str(&endpoint.backend.cluster)?);
+            UpstreamBackend::FunctionGraph {} => {
+                return Err(CallToolError::FunctionGraphNotImplemented);
+            },
         }
-
-        Ok((upstream_request, endpoint.backend.r#async))
-    }
-
-    fn build_rest_request(
-        &self,
-        request: &http::Request<OrionRequestBody>,
-        mcp_request: &Request,
-        method: &http::Method,
-        path: &str,
-        _query_params: &Vec<McpRestQueryParams>,
-    ) -> Result<http::Request<OrionRequestBody>, http::Error> {
-        // Build a path-only URI (no authority/scheme) - Orion will route to the correct
-        // upstream cluster based on configuration. Including authority without scheme
-        // causes "invalid format" error in http::Uri parser.
-        let arguments = mcp_request.params.get("arguments").and_then(|v| v.as_object());
-        let has_args = arguments.is_some_and(|m| !m.is_empty());
-
-        // Estimate capacity: path + '?' + ~24 chars per argument (key=value&)
-        let capacity = path.len() + if has_args { 1 + arguments.map_or(0, |m| m.len() * 24) } else { 0 };
-
-        // Ensure path starts with '/' for a valid path-only URI
-        let mut uri = String::with_capacity(capacity);
-        if !path.starts_with('/') {
-            uri.push('/');
-        }
-        uri.push_str(path);
-
-        // Build query string directly using lazy iterator
-        if has_args {
-            uri.push('?');
-            uri = form_urlencoded::Serializer::new(uri).extend_pairs(Self::extract_arguments(mcp_request)).finish();
-        }
-
-        // Orion will override the authority with the correct upstream endpoint.
-        // This is required for the match_virtual_host to work properly.
-
-        let headers = request.headers();
-        let user_agent =
-            headers.get(http::header::USER_AGENT).and_then(|ua| ua.to_str().ok()).unwrap_or(DEFAULT_USER_AGENT);
-
-        let mut builder =
-            http::Request::builder().method(method.clone()).uri(uri).header(http::header::USER_AGENT, user_agent);
-
-        if let Some(host) = headers.get(http::header::HOST).and_then(|h| h.to_str().ok()) {
-            builder = builder.header(http::header::HOST, host);
-        }
-
-        let body = InstrumentedBody::new(
-            BodyKind::Request,
-            TimeoutBody::new(None, PolyBody::from(Empty::new())),
-            |_, _, _| {},
-        );
-
-        builder.body(body)
     }
 }
 
@@ -308,4 +419,279 @@ fn convert_config_rbac_to_runtime(
         .collect();
 
     ToolRbac { action, permissions }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn create_test_tool_with_schemas(
+        input_schema: serde_json::Map<String, Value>,
+        output_schema: serde_json::Map<String, Value>,
+    ) -> McpTool {
+        McpTool {
+            name: "test_tool".into(),
+            description: "A test tool".into(),
+            input_schema,
+            output_schema,
+            backend: UpstreamBackend::Rest {
+                method: http::Method::GET,
+                path: "/test".into(),
+                query_params: vec![],
+                cluster: "test_cluster".into(),
+                r#async: false,
+                body_template: None,
+            },
+            rbac: None,
+        }
+    }
+
+    #[test]
+    fn test_input_schema_validation_passes_with_valid_arguments() {
+        let input_schema = serde_json::from_value(json!({
+            "type": "object",
+            "properties": {
+                "username": { "type": "string" },
+                "age": { "type": "integer" }
+            },
+            "required": ["username"]
+        }))
+        .unwrap();
+
+        let tool = create_test_tool_with_schemas(input_schema, serde_json::Map::new());
+        let registry = ToolsRegistry::with_tools(vec![tool]).unwrap();
+        let tool_entry = registry.get_tool_by_index(ToolRegistryIndex(0)).unwrap();
+
+        let args = json!({
+            "username": "john_doe",
+            "age": 25
+        });
+
+        assert!(tool_entry.validate_against_input_schema(&args).is_ok());
+    }
+
+    #[test]
+    fn test_input_schema_validation_fails_with_missing_required_field() {
+        let input_schema = serde_json::from_value(json!({
+            "type": "object",
+            "properties": {
+                "username": { "type": "string" }
+            },
+            "required": ["username"]
+        }))
+        .unwrap();
+
+        let tool = create_test_tool_with_schemas(input_schema, serde_json::Map::new());
+        let registry = ToolsRegistry::with_tools(vec![tool]).unwrap();
+        let tool_entry = registry.get_tool_by_index(ToolRegistryIndex(0)).unwrap();
+
+        let args = json!({});
+
+        let result = tool_entry.validate_against_input_schema(&args);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("username"), "Error should mention missing field: {}", err_msg);
+    }
+
+    #[test]
+    fn test_input_schema_validation_fails_with_wrong_type() {
+        let input_schema = serde_json::from_value(json!({
+            "type": "object",
+            "properties": {
+                "count": { "type": "number" }
+            }
+        }))
+        .unwrap();
+
+        let tool = create_test_tool_with_schemas(input_schema, serde_json::Map::new());
+        let registry = ToolsRegistry::with_tools(vec![tool]).unwrap();
+        let tool_entry = registry.get_tool_by_index(ToolRegistryIndex(0)).unwrap();
+
+        let args = json!({
+            "count": "not a number"
+        });
+
+        let result = tool_entry.validate_against_input_schema(&args);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("number"), "Error should mention type mismatch: {}", err_msg);
+    }
+
+    #[test]
+    fn test_input_schema_validation_skips_when_empty() {
+        let tool = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
+        let registry = ToolsRegistry::with_tools(vec![tool]).unwrap();
+        let tool_entry = registry.get_tool_by_index(ToolRegistryIndex(0)).unwrap();
+
+        // Any args should pass when schema is empty
+        let args = json!({
+            "anything": "goes",
+            "count": 123
+        });
+
+        assert!(tool_entry.validate_against_input_schema(&args).is_ok());
+    }
+
+    #[test]
+    fn test_output_schema_validation_passes_with_valid_response() {
+        let output_schema = serde_json::from_value(json!({
+            "type": "object",
+            "properties": {
+                "temperature": { "type": "number" },
+                "unit": { "type": "string" }
+            },
+            "required": ["temperature"]
+        }))
+        .unwrap();
+
+        let tool = create_test_tool_with_schemas(serde_json::Map::new(), output_schema);
+        let registry = ToolsRegistry::with_tools(vec![tool]).unwrap();
+        let tool_entry = registry.get_tool_by_index(ToolRegistryIndex(0)).unwrap();
+
+        let response = json!({
+            "temperature": 72.5,
+            "unit": "F"
+        });
+
+        assert!(tool_entry.validate_against_output_schema(&response).is_ok());
+    }
+
+    #[test]
+    fn test_output_schema_validation_fails_with_invalid_response() {
+        let output_schema = serde_json::from_value(json!({
+            "type": "object",
+            "properties": {
+                "temperature": { "type": "number" }
+            },
+            "required": ["temperature"]
+        }))
+        .unwrap();
+
+        let tool = create_test_tool_with_schemas(serde_json::Map::new(), output_schema);
+        let registry = ToolsRegistry::with_tools(vec![tool]).unwrap();
+        let tool_entry = registry.get_tool_by_index(ToolRegistryIndex(0)).unwrap();
+
+        let response = json!({
+            "temperature": "hot" // Should be a number
+        });
+
+        let result = tool_entry.validate_against_output_schema(&response);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_output_schema_validation_skips_when_empty() {
+        let tool = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
+        let registry = ToolsRegistry::with_tools(vec![tool]).unwrap();
+        let tool_entry = registry.get_tool_by_index(ToolRegistryIndex(0)).unwrap();
+
+        // Any response should pass when schema is empty
+        let response = json!({
+            "arbitrary": "data",
+            "nested": {
+                "value": 123
+            }
+        });
+
+        assert!(tool_entry.validate_against_output_schema(&response).is_ok());
+    }
+
+    #[test]
+    fn test_with_tools_fails_with_invalid_input_schema() {
+        let input_schema = serde_json::from_value(json!({
+            "type": "invalid_type" // Invalid schema
+        }))
+        .unwrap();
+
+        let tool = create_test_tool_with_schemas(input_schema, serde_json::Map::new());
+        let result = ToolsRegistry::with_tools(vec![tool]);
+
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), ToolBuilderError::InvalidInputSchema(_)));
+    }
+
+    #[test]
+    fn test_with_tools_fails_with_invalid_output_schema() {
+        let output_schema = serde_json::from_value(json!({
+            "type": "invalid_type" // Invalid schema
+        }))
+        .unwrap();
+
+        let tool = create_test_tool_with_schemas(serde_json::Map::new(), output_schema);
+        let result = ToolsRegistry::with_tools(vec![tool]);
+
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), ToolBuilderError::InvalidOutputSchema(_)));
+    }
+
+    #[test]
+    fn test_nested_object_validation() {
+        let input_schema = serde_json::from_value(json!({
+            "type": "object",
+            "properties": {
+                "user": {
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string" },
+                        "age": { "type": "integer" }
+                    },
+                    "required": ["name"]
+                }
+            }
+        }))
+        .unwrap();
+
+        let tool = create_test_tool_with_schemas(input_schema, serde_json::Map::new());
+        let registry = ToolsRegistry::with_tools(vec![tool]).unwrap();
+        let tool_entry = registry.get_tool_by_index(ToolRegistryIndex(0)).unwrap();
+
+        // Valid nested object
+        let valid_args = json!({
+            "user": {
+                "name": "Alice",
+                "age": 30
+            }
+        });
+        assert!(tool_entry.validate_against_input_schema(&valid_args).is_ok());
+
+        // Invalid - missing required nested field
+        let invalid_args = json!({
+            "user": {
+                "age": 30
+            }
+        });
+        assert!(tool_entry.validate_against_input_schema(&invalid_args).is_err());
+    }
+
+    #[test]
+    fn test_array_validation() {
+        let input_schema = serde_json::from_value(json!({
+            "type": "object",
+            "properties": {
+                "tags": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                }
+            }
+        }))
+        .unwrap();
+
+        let tool = create_test_tool_with_schemas(input_schema, serde_json::Map::new());
+        let registry = ToolsRegistry::with_tools(vec![tool]).unwrap();
+        let tool_entry = registry.get_tool_by_index(ToolRegistryIndex(0)).unwrap();
+
+        // Valid array
+        let valid_args = json!({
+            "tags": ["rust", "mcp", "api"]
+        });
+        assert!(tool_entry.validate_against_input_schema(&valid_args).is_ok());
+
+        // Invalid - wrong item type
+        let invalid_args = json!({
+            "tags": [1, 2, 3]
+        });
+        let result = tool_entry.validate_against_input_schema(&invalid_args);
+        assert!(result.is_err());
+    }
 }

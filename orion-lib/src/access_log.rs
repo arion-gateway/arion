@@ -23,12 +23,12 @@ pub mod logger;
 mod pool;
 
 use logger::AccessLogger;
-use once_cell::sync::OnceCell;
 use orion_configuration::config::network_filters::access_log::AccessLogConf;
 use orion_format::FormattedMessage;
 use parking_lot::Mutex;
 use pool::LoggerPool;
 use smol_str::SmolStr;
+use std::sync::OnceLock;
 use tracing_appender::rolling::Rotation;
 
 use std::{fmt::Display, hash::Hash, sync::Arc};
@@ -75,7 +75,7 @@ pub enum LoggerError {
     SenderError,
 }
 
-static SENDER_POOL: OnceCell<LoggerPool<AccessLogMessage>> = OnceCell::new();
+static SENDER_POOL: OnceLock<LoggerPool<AccessLogMessage>> = OnceLock::new();
 
 pub type AccessLogPermit = Permit<'static, AccessLogMessage>;
 pub type ShareableAccessLogPermit = Arc<Mutex<Option<AccessLogPermit>>>;

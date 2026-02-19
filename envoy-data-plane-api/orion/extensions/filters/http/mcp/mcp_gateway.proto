@@ -3,6 +3,7 @@ syntax = "proto3";
 package orion.extensions.filters.http.mcp.mcp_gateway.v3;
 
 import "envoy/config/core/v3/base.proto";
+import "google/protobuf/duration.proto";
 import "validate/validate.proto";
 
 // [#protodoc-title: McpGateway Filter]
@@ -25,24 +26,22 @@ message Tool {
     string name = 1 [(validate.rules).string = {min_bytes: 1}];
     string description = 2 [(validate.rules).string = {min_bytes: 1}];
     envoy.config.core.v3.DataSource input_schema = 3;
-    Backend backend = 4 [(validate.rules).message = {required: true}];
-    optional ToolRbac rbac = 5;
+    envoy.config.core.v3.DataSource output_schema = 4;
+    oneof upstream_backend {
+        RestBackend rest_backend = 5;
+        FunctionGraphBackend function_graph_backend = 6;
+        McpServerBackend mcp_server_backend = 7;
+    };
+    optional ToolRbac rbac = 8;
 }
 
-message Backend {
-    string cluster = 1 [(validate.rules).string = {min_bytes: 1}];
-    bool async = 2;
-    oneof transcoding {
-        RestTranscoding rest_transcoding = 3;
-        FunctionGraphTranscoding function_graph_transcoding = 4;
-        McpServerTranscoding mcp_server_transcoding = 5;
-    }
-}
-
-message RestTranscoding {
+message RestBackend {
   string method = 1 [(validate.rules).string = {min_bytes: 1}];
   string path = 2 [(validate.rules).string = {min_bytes: 1}];
   repeated QueryParam query_params = 3;
+  string cluster = 4 [(validate.rules).string = {min_bytes: 1}];
+  bool async = 5;
+  envoy.config.core.v3.DataSource body_template = 6;
 }
 
 message QueryParam {
@@ -50,10 +49,18 @@ message QueryParam {
   string source = 2 [(validate.rules).string = {min_bytes: 1}];
 }
 
-message FunctionGraphTranscoding {
+message FunctionGraphBackend {
 }
 
-message McpServerTranscoding {
+message McpServerBackend {
+// Use a oneof to represent the transport type
+  enum TransportUpstream {
+    Sse = 0;
+    StreamableHttp = 1;
+  }
+  TransportUpstream transport = 1;
+  string url = 2 [(validate.rules).string = {min_bytes: 1}];
+  google.protobuf.Duration cache_duration = 3;
 }
 
 // RBAC configuration for individual MCP tools
@@ -79,10 +86,10 @@ message ToolRbac {
 message Permission {
   oneof permission_type {
     option (validate.required) = true;
-    
+
     // Match based on JWT header field
     JwtHeaderMatcher jwt_header = 1;
-    
+
     // Match based on JWT claim field
     JwtClaimMatcher jwt_claim = 2;
   }

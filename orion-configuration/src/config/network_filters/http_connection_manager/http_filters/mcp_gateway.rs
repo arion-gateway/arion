@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use crate::config::core::DataSource;
 use crate::config::network_filters::network_rbac::Action;
 use serde::{Deserialize, Serialize};
@@ -22,30 +24,37 @@ pub struct McpServerInfo {
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct McpTool {
-    pub name: String,
+    pub name: SmolStr,
     pub description: String,
     pub input_schema: Map<String, Value>,
-    pub backend: McpBackend,
+    pub output_schema: Map<String, Value>,
+    pub backend: UpstreamBackend,
     pub rbac: Option<McpToolRbac>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
-pub struct McpBackend {
-    pub cluster: String,
-    pub r#async: bool,
-    pub transcoding: McpTranscoding,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
-pub enum McpTranscoding {
+pub enum UpstreamBackend {
     Rest {
         #[serde(with = "http_serde_ext::method")]
         method: http::Method,
         path: String,
         query_params: Vec<McpRestQueryParams>,
+        cluster: String,
+        r#async: bool,
+        body_template: Option<DataSource>,
+    },
+    McpServer {
+        transport: McpBackendTransportUpstream,
+        url: String,
+        cache_duration: Option<Duration>,
     },
     FunctionGraph {},
-    Mcp {},
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub enum McpBackendTransportUpstream {
+    Sse,
+    StreamableHttp,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
@@ -72,13 +81,27 @@ mod envoy_conversions {
     use std::str::FromStr;
 
     use crate::config::common::envoy_conversions::IsUsed;
+    use crate::config::core::RustType;
     use crate::config::{required, GenericError};
 
     use super::*;
     use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::mcp::mcp_gateway::v3::{
-        backend::Transcoding as OrionTranscoding, Backend as OrionMcpBackend, McpGateway as OrionMcpGateway,
+        mcp_server_backend::TransportUpstream as OrionTransportUpstream, permission,
+        tool::UpstreamBackend as OrionUpstreamBackend, tool_rbac::Action as OrionAction, JwtClaimMatcher,
+        JwtHeaderMatcher, McpGateway as OrionMcpGateway, Permission as OrionPermission,
         QueryParam as OrionMcpQueryParams, ServerInfo as OrionMcpServerInfo, Tool as OrionTool,
+        ToolRbac as OrionToolRbac,
     };
+    use tracing::warn;
+
+    impl From<OrionTransportUpstream> for McpBackendTransportUpstream {
+        fn from(trans: OrionTransportUpstream) -> Self {
+            match trans {
+                OrionTransportUpstream::Sse => McpBackendTransportUpstream::Sse,
+                OrionTransportUpstream::StreamableHttp => McpBackendTransportUpstream::StreamableHttp,
+            }
+        }
+    }
 
     impl TryFrom<OrionMcpGateway> for McpGateway {
         type Error = GenericError;
@@ -97,38 +120,96 @@ mod envoy_conversions {
         type Error = GenericError;
 
         fn try_from(orion: OrionTool) -> Result<Self, Self::Error> {
-            let OrionTool { name, description, input_schema, backend, rbac } = orion;
-            let input_schema: DataSource = required!(input_schema)?.try_into()?;
-            let backend = required!(backend)?.try_into()?;
+            let OrionTool { name, description, input_schema, output_schema, upstream_backend, rbac } = orion;
+            let backend = required!(upstream_backend)?.try_into()?;
 
-            let bytes = input_schema.to_bytes_blocking()?;
-            let string = String::from_utf8(bytes)?;
-            let input_schema = serde_json::from_str(&string)?;
+            match backend {
+                UpstreamBackend::FunctionGraph { .. } => unimplemented!("FunctionGraph backend is not supported yet"),
+                _ => (),
+            }
+
+            let input_schema = match backend {
+                UpstreamBackend::Rest { .. } | UpstreamBackend::FunctionGraph { .. } => {
+                    // input_schema is mandatory for transcoded backends
+                    let input_schema = required!(input_schema)?;
+                    let bytes = TryInto::<DataSource>::try_into(input_schema)?.to_bytes_blocking()?;
+                    let string = String::from_utf8(bytes)?;
+                    let schema: Map<String, Value> = serde_json::from_str(&string)?;
+                    // Verify the schema is valid; we are still storing the raw
+                    // schema and recreate the validator in orion-lib as
+                    // jsonschema::Validator is not Serialize and cannot be
+                    // added to the configuration type
+                    jsonschema::Validator::new(&Value::Object(schema.clone()))
+                        .map_err(|e| GenericError::from_msg(format!("Invalid input_schema: {e}")))?;
+                    schema
+                },
+                UpstreamBackend::McpServer { .. } => {
+                    // input_schema is ignored for MCP backends
+                    if let Some(_) = input_schema {
+                        warn!("input_schema is ignored for MCP backends");
+                    }
+                    Map::new()
+                },
+            };
+
+            let output_schema = match backend {
+                // output_schema is optional for transcoded backends
+                UpstreamBackend::Rest { .. } | UpstreamBackend::FunctionGraph { .. } => {
+                    if let Some(output_schema) = output_schema {
+                        let bytes = TryInto::<DataSource>::try_into(output_schema)?.to_bytes_blocking()?;
+                        let string = String::from_utf8(bytes)?;
+                        let schema: Map<String, Value> = serde_json::from_str(&string)?;
+                        jsonschema::Validator::new(&Value::Object(schema.clone()))
+                            .map_err(|e| GenericError::from_msg(format!("Invalid output_schema: {e}")))?;
+                        schema
+                    } else {
+                        Map::new()
+                    }
+                },
+                UpstreamBackend::McpServer { .. } => {
+                    // output_schema is ignored for MCP backends
+                    if let Some(_) = output_schema {
+                        warn!("output_schema is ignored for MCP backends");
+                    }
+                    Map::new()
+                },
+            };
+
             let rbac = rbac.map(TryInto::try_into).transpose()?;
-            Ok(McpTool { name, description, input_schema, backend, rbac })
+            Ok(McpTool { name: name.into(), description, input_schema, output_schema, backend, rbac })
         }
     }
 
-    impl TryFrom<OrionMcpBackend> for McpBackend {
+    impl TryFrom<OrionUpstreamBackend> for UpstreamBackend {
         type Error = GenericError;
 
-        fn try_from(orion: OrionMcpBackend) -> Result<Self, GenericError> {
-            let OrionMcpBackend { cluster, r#async, transcoding } = orion;
-            let cluster = required!(cluster)?;
-            let transcoding = required!(transcoding)?;
-
-            match transcoding {
-                OrionTranscoding::RestTranscoding(trans) => Ok(McpBackend {
-                    cluster,
-                    r#async,
-                    transcoding: McpTranscoding::Rest {
-                        method: http::Method::from_str(&trans.method)?,
-                        path: trans.path,
-                        query_params: trans.query_params.into_iter().map(Into::into).collect(),
-                    },
+        fn try_from(value: OrionUpstreamBackend) -> Result<Self, GenericError> {
+            match value {
+                OrionUpstreamBackend::RestBackend(be) => {
+                    let cluster = be.cluster;
+                    let cluster = required!(cluster)?;
+                    let body_template = be.body_template.map(|ds| ds.try_into()).transpose()?;
+                    Ok(UpstreamBackend::Rest {
+                        method: http::Method::from_str(&be.method)?,
+                        path: be.path,
+                        query_params: be.query_params.into_iter().map(Into::into).collect(),
+                        cluster,
+                        r#async: be.r#async,
+                        body_template,
+                    })
+                },
+                OrionUpstreamBackend::McpServerBackend(trans) => Ok(UpstreamBackend::McpServer {
+                    transport: trans.transport().into(),
+                    url: trans.url,
+                    cache_duration: trans
+                        .cache_duration
+                        .map(|d| -> Result<Duration, GenericError> {
+                            let dur: RustType<Duration> = d.try_into()?;
+                            Ok(dur.into_inner())
+                        })
+                        .transpose()?,
                 }),
-                OrionTranscoding::FunctionGraphTranscoding(_) => todo!(),
-                OrionTranscoding::McpServerTranscoding(_) => todo!(),
+                OrionUpstreamBackend::FunctionGraphBackend(_) => todo!(),
             }
         }
     }
@@ -145,21 +226,20 @@ mod envoy_conversions {
         }
     }
 
-    use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::mcp::mcp_gateway::v3::{
-        permission, JwtClaimMatcher, JwtHeaderMatcher, Permission as OrionPermission, ToolRbac as OrionToolRbac,
-    };
+    impl From<OrionAction> for Action {
+        fn from(action: OrionAction) -> Self {
+            match action {
+                OrionAction::Allow => Action::Allow,
+                OrionAction::Deny => Action::Deny,
+            }
+        }
+    }
 
     impl TryFrom<OrionToolRbac> for McpToolRbac {
         type Error = GenericError;
         fn try_from(orion: OrionToolRbac) -> Result<Self, Self::Error> {
-            let OrionToolRbac { action, permissions } = orion;
-
-            let action = match action {
-                0 => Action::Allow, // ALLOW
-                1 => Action::Deny,  // DENY
-                _ => return Err(GenericError::from_msg("Invalid RBAC action")),
-            };
-
+            let action = orion.action().into();
+            let permissions = orion.permissions;
             if permissions.is_empty() {
                 return Err(GenericError::from_msg("Tool RBAC must have at least one permission"));
             }
