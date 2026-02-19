@@ -45,7 +45,7 @@ envoy_bootstrap:
                         "@type": type.googleapis.com/orion.extensions.filters.http.mcp.mcp_gateway.v3.McpGateway
                         server_info:
                           name: "orion-mcp-gateway"
-                          version: "0.2.0"
+                          version: "0.0.1"
                         cluster_header: "x-mcp-target-cluster"
                         tools:
                           - name: "weather_get_forecast"
@@ -68,15 +68,84 @@ envoy_bootstrap:
                                   },
                                   "required": ["latitude", "longitude"]
                                 }
+                            output_schema:
+                              inline_string: >-
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "temperature": {
+                                      "type": "number",
+                                      "description": "Current temperature in Celsius"
+                                    },
+                                    "humidity": {
+                                      "type": "number",
+                                      "description": "Humidity percentage"
+                                    },
+                                    "condition": {
+                                      "type": "string",
+                                      "description": "Weather condition (e.g., sunny, cloudy, rainy)"
+                                    }
+                                  },
+                                  "required": ["temperature", "condition"]
+                                }
                             rest_backend:
-                              cluster: weather_api_cluster
-                              method: GET
-                              path: "/v1/forecast"
-                          - name: "everything"
-                            description: "everything mcp server"
+                             cluster: weather_api_cluster
+                             method: GET
+                             path: "/v1/forecast/{{days}}"
+                             query_params:
+                               - name: "days"
+                                 source: "days"
+                               - name: "lat"
+                                 source: "latitude"
+                               - name: "lon"
+                                 source: "longitude"
+                             body_template:
+                               inline_string: >-
+                                   "latitude": "{{latitude}}",
+                                   "longitude": "{{longitude}}",
+                                   "days": "{{days}}"
+                          - name: "user_profile_get"
+                            description: "Get user profile information"
                             input_schema:
                               inline_string: >-
-                                {}
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "user_id": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": ["user_id"]
+                                }
+                            rest_backend:
+                              cluster: user_profile_api_cluster
+                              method: GET
+                              path: "/v1/user/profile"
+                          - name: "admin_delete_user"
+                            description: "Delete a user account (admin only)"
+                            rbac:
+                              action: ALLOW
+                              permissions:
+                                - jwt_claim:
+                                    field: "role"
+                                    value: "admin"
+                            input_schema:
+                              inline_string: >-
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "user_id": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": ["user_id"]
+                                }
+                            rest_backend:
+                              cluster: user_profile_api_cluster
+                              method: DELETE
+                              path: "/v1/admin/user"
+                          - name: "everything"
+                            description: "everything mcp server"
                             mcp_server_backend:
                               transport: StreamableHttp
                               url: http://127.0.0.1:3001/mcp
@@ -109,3 +178,16 @@ envoy_bootstrap:
                       socket_address:
                         address: 127.0.0.1
                         port_value: 4001
+
+      - name: user_profile_api_cluster
+        connect_timeout: 0.25s
+        type: STATIC
+        lb_policy: ROUND_ROBIN
+        load_assignment:
+          endpoints:
+            - lb_endpoints:
+                - endpoint:
+                    address:
+                      socket_address:
+                        address: 127.0.0.1
+                        port_value: 4002

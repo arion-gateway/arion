@@ -26,12 +26,13 @@ message Tool {
     string name = 1 [(validate.rules).string = {min_bytes: 1}];
     string description = 2 [(validate.rules).string = {min_bytes: 1}];
     envoy.config.core.v3.DataSource input_schema = 3;
+    envoy.config.core.v3.DataSource output_schema = 4;
     oneof upstream_backend {
-        RestBackend rest_backend = 4;
-        FunctionGraphBackend function_graph_backend = 5;
-        McpServerBackend mcp_server_backend = 6;
+        RestBackend rest_backend = 5;
+        FunctionGraphBackend function_graph_backend = 6;
+        McpServerBackend mcp_server_backend = 7;
     };
-    optional ToolRbac rbac = 7;
+    optional ToolRbac rbac = 8;
 }
 
 message RestBackend {
@@ -40,6 +41,7 @@ message RestBackend {
   repeated QueryParam query_params = 3;
   string cluster = 4 [(validate.rules).string = {min_bytes: 1}];
   bool async = 5;
+  envoy.config.core.v3.DataSource body_template = 6;
 }
 
 message QueryParam {

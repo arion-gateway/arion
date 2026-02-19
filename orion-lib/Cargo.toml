@@ -89,6 +89,7 @@ quanta = { version = "0.12.6", optional = true }
 hyperlocal = "0.9.1"
 jsonschema = "0.41.0"
 ctor = "0.6.3"
+upon = "0.8"
 
 [dev-dependencies]
 orion-data-plane-api.workspace = true
