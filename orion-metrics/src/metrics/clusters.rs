@@ -39,6 +39,9 @@ pub static UPSTREAM_CX_CONNECT_FAIL: OnceLock<Metric<ShardedU64<ThreadId>>> = On
 pub static UPSTREAM_CX_CONNECT_TIMEOUT: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 pub static UPSTREAM_CX_RX_BYTES_TOTAL: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 pub static UPSTREAM_CX_TX_BYTES_TOTAL: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
+pub static UPSTREAM_CX_OVERFLOW: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
+pub static UPSTREAM_RQ_OVERFLOW: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
+pub static UPSTREAM_RQ_RETRY_OVERFLOW: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 
 pub(crate) fn init_metrics() {
     init_observable_counter!(UPSTREAM_RQ_TOTAL, "cluster", "upstream_rq_total", "Total number of upstream requests");
@@ -77,4 +80,23 @@ pub(crate) fn init_metrics() {
         "Total upstream connections destroyed"
     );
     init_observable_gauge!(UPSTREAM_CX_ACTIVE, "cluster", "upstream_cx_active", "Number of active connections");
+
+    init_observable_counter!(
+        UPSTREAM_CX_OVERFLOW,
+        "cluster",
+        "upstream_cx_overflow",
+        "Total connections rejected by circuit breaker"
+    );
+    init_observable_counter!(
+        UPSTREAM_RQ_OVERFLOW,
+        "cluster",
+        "upstream_rq_overflow",
+        "Total requests rejected by circuit breaker"
+    );
+    init_observable_counter!(
+        UPSTREAM_RQ_RETRY_OVERFLOW,
+        "cluster",
+        "upstream_rq_retry_overflow",
+        "Total retries rejected by circuit breaker"
+    );
 }

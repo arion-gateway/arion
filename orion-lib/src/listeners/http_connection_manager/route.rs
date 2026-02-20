@@ -21,6 +21,7 @@ use crate::{
     clusters::{
         balancers::hash_policy::HashState,
         clusters_manager::{self, RoutingContext},
+        decrement_requests, try_increment_requests,
     },
     listeners::{http_connection_manager::HttpConnectionManager, synthetic_http_response::SyntheticHttpResponse},
     Result,
@@ -29,7 +30,13 @@ use crate::{
 #[cfg(feature = "access-log")]
 use crate::with_access_log;
 
+#[cfg(feature = "metrics")]
+use crate::{clusters::CircuitBreakerDenial, get_shard_id, with_metric};
 use crate::{instrument_block, instrument_function, OrionRequestBody, OrionResponseBody, RequestContext};
+#[cfg(feature = "metrics")]
+use opentelemetry::KeyValue;
+#[cfg(feature = "metrics")]
+use orion_metrics::metrics::clusters;
 
 use http::{uri::Parts as UriParts, Uri};
 use hyper::{Request, Response};
@@ -38,7 +45,6 @@ use orion_configuration::config::network_filters::http_connection_manager::{
     RetryPolicy,
 };
 use orion_error::Context;
-#[cfg(feature = "instrumentation")]
 use scopeguard::defer;
 
 #[cfg(feature = "access-log")]
@@ -94,6 +100,35 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
             )
             .into_response(downstream_request.version()));
         };
+
+        let priority = self.priority;
+        #[allow(unused_variables)]
+        if let Err(denial) = try_increment_requests(cluster_id, priority) {
+            debug!("Circuit breaker overflow for cluster {}", cluster_id);
+            #[cfg(feature = "metrics")]
+            {
+                let shard_id = get_shard_id!();
+                let attrs = &[KeyValue::new("cluster", cluster_id.to_string())];
+                match denial {
+                    CircuitBreakerDenial::MaxConnections => {
+                        with_metric!(clusters::UPSTREAM_CX_OVERFLOW, add, 1, shard_id, attrs);
+                    },
+                    CircuitBreakerDenial::MaxRequests => {
+                        with_metric!(clusters::UPSTREAM_RQ_OVERFLOW, add, 1, shard_id, attrs);
+                    },
+                    CircuitBreakerDenial::MaxRetries => {},
+                }
+            }
+            return Ok(SyntheticHttpResponse::circuit_breaker_overflow(
+                EventKind::Failure(EventFailure::UpstreamOverflow),
+                ResponseFlags(FmtResponseFlags::UPSTREAM_OVERFLOW),
+            )
+            .into_circuit_breaker_response(downstream_request.version()));
+        }
+
+        defer! {
+            decrement_requests(cluster_id, priority);
+        }
 
         let routing_requirement = clusters_manager::get_cluster_routing_requirements(cluster_id);
         let hash_state = HashState::new(self.hash_policy.as_slice(), &downstream_request, remote_address);
@@ -214,7 +249,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
                     .to_response(
                         trans_handler,
                         upstream_request,
-                        RequestContext { route_timeout: self.timeout, retry_policy },
+                        RequestContext { route_timeout: self.timeout, retry_policy, priority },
                     )
                     .await;
                 match resp {

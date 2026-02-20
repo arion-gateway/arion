@@ -28,6 +28,7 @@ use orion_configuration::config::{
 
 use crate::{
     clusters::{
+        circuit_breaker::ClusterCircuitBreaker,
         clusters_manager::{RoutingContext, RoutingRequirement},
         load_assignment::ClusterLoadAssignment,
         GrpcService,
@@ -47,12 +48,20 @@ pub struct DynamicClusterBuilder {
     pub health_check: Option<HealthCheck>,
     pub load_balancing_policy: LbPolicy,
     pub config: orion_configuration::config::cluster::Cluster,
+    pub circuit_breaker: ClusterCircuitBreaker,
 }
 
 impl DynamicClusterBuilder {
     pub fn build(self) -> ClusterType {
-        let DynamicClusterBuilder { name, transport_socket, health_check, load_balancing_policy, bind_device, config } =
-            self;
+        let DynamicClusterBuilder {
+            name,
+            transport_socket,
+            health_check,
+            load_balancing_policy,
+            bind_device,
+            config,
+            circuit_breaker,
+        } = self;
         ClusterType::Dynamic(DynamicCluster {
             name,
             load_assignment: None,
@@ -61,6 +70,7 @@ impl DynamicClusterBuilder {
             load_balancing_policy,
             bind_device,
             config,
+            circuit_breaker,
         })
     }
 }
@@ -74,6 +84,7 @@ pub struct DynamicCluster {
     pub health_check: Option<HealthCheck>,
     pub load_balancing_policy: LbPolicy,
     pub config: orion_configuration::config::cluster::Cluster,
+    pub circuit_breaker: ClusterCircuitBreaker,
 }
 
 impl DynamicCluster {
@@ -151,6 +162,10 @@ impl ClusterOps for DynamicCluster {
         } else {
             RoutingRequirement::None
         }
+    }
+
+    fn circuit_breaker(&self) -> &ClusterCircuitBreaker {
+        &self.circuit_breaker
     }
 }
 

@@ -55,6 +55,8 @@ pub struct Cluster {
     #[serde(with = "humantime_serde")]
     #[serde(skip_serializing_if = "Option::is_none", default = "Default::default")]
     pub cleanup_interval: Option<Duration>,
+    #[serde(skip_serializing_if = "Option::is_none", default = "Default::default")]
+    pub circuit_breakers: Option<CircuitBreakers>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -290,14 +292,78 @@ impl LbPolicy {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum RoutingPriority {
+    #[default]
+    Default,
+    High,
+}
+
+pub const DEFAULT_MAX_CONNECTIONS: u32 = 1024;
+pub const DEFAULT_MAX_REQUESTS: u32 = 1024;
+pub const DEFAULT_MAX_RETRIES: u32 = 3;
+
+const fn default_max_connections() -> u32 {
+    DEFAULT_MAX_CONNECTIONS
+}
+const fn default_max_requests() -> u32 {
+    DEFAULT_MAX_REQUESTS
+}
+const fn default_max_retries() -> u32 {
+    DEFAULT_MAX_RETRIES
+}
+fn is_default_max_connections(v: &u32) -> bool {
+    *v == DEFAULT_MAX_CONNECTIONS
+}
+fn is_default_max_requests(v: &u32) -> bool {
+    *v == DEFAULT_MAX_REQUESTS
+}
+fn is_default_max_retries(v: &u32) -> bool {
+    *v == DEFAULT_MAX_RETRIES
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CircuitBreakerThresholds {
+    #[serde(skip_serializing_if = "is_default", default)]
+    pub priority: RoutingPriority,
+    #[serde(skip_serializing_if = "is_default_max_connections", default = "default_max_connections")]
+    pub max_connections: u32,
+    #[serde(skip_serializing_if = "is_default_max_requests", default = "default_max_requests")]
+    pub max_requests: u32,
+    #[serde(skip_serializing_if = "is_default_max_retries", default = "default_max_retries")]
+    pub max_retries: u32,
+    #[serde(skip_serializing_if = "is_default", default)]
+    pub track_remaining: bool,
+}
+
+impl Default for CircuitBreakerThresholds {
+    fn default() -> Self {
+        Self {
+            priority: RoutingPriority::Default,
+            max_connections: DEFAULT_MAX_CONNECTIONS,
+            max_requests: DEFAULT_MAX_REQUESTS,
+            max_retries: DEFAULT_MAX_RETRIES,
+            track_remaining: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct CircuitBreakers {
+    #[serde(default)]
+    pub thresholds: Vec<CircuitBreakerThresholds>,
+}
+
 #[cfg(feature = "envoy-conversions")]
 mod envoy_conversions {
     #![allow(deprecated)]
     use super::{
         health_check::{ClusterHostnameError, HealthCheck, HealthCheckProtocol},
-        Cluster, ClusterDiscoveryType, ClusterLoadAssignment, ExtendedLbPolicy, HealthStatus, HttpProtocolOptions,
-        LbEndpoint, LbPolicy, LocalityLbEndpoints, OriginalDstConfig, OriginalDstRoutingMethod, OverrideHostConfig,
-        OverrideHostSource, StandardLbPolicy, TlsConfig, TlsSecret,
+        CircuitBreakerThresholds, CircuitBreakers, Cluster, ClusterDiscoveryType, ClusterLoadAssignment,
+        ExtendedLbPolicy, HealthStatus, HttpProtocolOptions, LbEndpoint, LbPolicy, LocalityLbEndpoints,
+        OriginalDstConfig, OriginalDstRoutingMethod, OverrideHostConfig, OverrideHostSource, RoutingPriority,
+        StandardLbPolicy, TlsConfig, TlsSecret, DEFAULT_MAX_CONNECTIONS, DEFAULT_MAX_REQUESTS, DEFAULT_MAX_RETRIES,
     };
     use crate::config::{
         common::*,
@@ -312,16 +378,17 @@ mod envoy_conversions {
         envoy::{
             config::{
                 cluster::v3::{
+                    circuit_breakers::Thresholds as EnvoyThresholds,
                     cluster::{
                         ClusterDiscoveryType as EnvoyClusterDiscoveryType, DiscoveryType as EnvoyDiscoveryType,
                         LbConfig as EnvoyLbConfig, LbPolicy as EnvoyLbPolicy,
                     },
                     load_balancing_policy::Policy,
-                    Cluster as EnvoyCluster, LoadBalancingPolicy,
+                    CircuitBreakers as EnvoyCircuitBreakers, Cluster as EnvoyCluster, LoadBalancingPolicy,
                 },
                 core::v3::{
                     BindConfig as EnvoyBindConfig, HealthStatus as EnvoyHealthStatus,
-                    TransportSocket as EnvoyTransportSocket,
+                    RoutingPriority as EnvoyRoutingPriority, TransportSocket as EnvoyTransportSocket,
                 },
                 endpoint::v3::{
                     lb_endpoint::HostIdentifier as EnvoyHostIdentifier,
@@ -413,7 +480,7 @@ mod envoy_conversions {
                     // load_assignment,
                     // health_checks,
                     max_requests_per_connection,
-                    circuit_breakers,
+                    // circuit_breakers,
                     upstream_http_protocol_options,
                     common_http_protocol_options,
                     http_protocol_options,
@@ -630,6 +697,10 @@ mod envoy_conversions {
                     .transpose()
                     .map_err(|_| GenericError::from_msg("Failed to convert cleanup_interval into Duration"))
                     .with_node("cleanup_interval")?.map(RustType::into_inner);
+                let circuit_breakers = circuit_breakers
+                    .map(CircuitBreakers::try_from)
+                    .transpose()
+                    .with_node("circuit_breakers")?;
                 Ok(Self {
                     name: SmolStr::from(&name),
                     discovery_settings,
@@ -640,6 +711,7 @@ mod envoy_conversions {
                     health_check,
                     connect_timeout,
                     cleanup_interval,
+                    circuit_breakers,
                 })
             })()
             .with_name(name)
@@ -1118,6 +1190,67 @@ mod envoy_conversions {
                 n => Err(GenericError::from_msg(format!(
                     "only one load balancing policy is currently supported, but {n} were provided"
                 ))),
+            }
+        }
+    }
+
+    impl TryFrom<EnvoyCircuitBreakers> for CircuitBreakers {
+        type Error = GenericError;
+        fn try_from(value: EnvoyCircuitBreakers) -> Result<Self, Self::Error> {
+            let EnvoyCircuitBreakers { thresholds, per_host_thresholds } = value;
+            unsupported_field!(
+                // thresholds,
+                per_host_thresholds
+            )?;
+            let thresholds =
+                thresholds.into_iter().map(CircuitBreakerThresholds::try_from).collect::<Result<Vec<_>, _>>()?;
+            Ok(Self { thresholds })
+        }
+    }
+
+    impl TryFrom<EnvoyThresholds> for CircuitBreakerThresholds {
+        type Error = GenericError;
+        fn try_from(value: EnvoyThresholds) -> Result<Self, Self::Error> {
+            let EnvoyThresholds {
+                priority,
+                max_connections,
+                max_pending_requests,
+                max_requests,
+                max_retries,
+                retry_budget,
+                track_remaining,
+                max_connection_pools,
+            } = value;
+            unsupported_field!(
+                // priority,
+                // max_connections,
+                max_pending_requests,
+                // max_requests,
+                // max_retries,
+                retry_budget,
+                // track_remaining,
+                max_connection_pools
+            )?;
+            let priority = EnvoyRoutingPriority::try_from(priority)
+                .map_err(|_| GenericError::from_msg(format!("unknown routing priority: {priority}")))?
+                .try_into()
+                .with_node("priority")?;
+            Ok(Self {
+                priority,
+                max_connections: max_connections.map(|v| v.value).unwrap_or(DEFAULT_MAX_CONNECTIONS),
+                max_requests: max_requests.map(|v| v.value).unwrap_or(DEFAULT_MAX_REQUESTS),
+                max_retries: max_retries.map(|v| v.value).unwrap_or(DEFAULT_MAX_RETRIES),
+                track_remaining,
+            })
+        }
+    }
+
+    impl TryFrom<EnvoyRoutingPriority> for RoutingPriority {
+        type Error = GenericError;
+        fn try_from(value: EnvoyRoutingPriority) -> Result<Self, Self::Error> {
+            match value {
+                EnvoyRoutingPriority::Default => Ok(RoutingPriority::Default),
+                EnvoyRoutingPriority::High => Ok(RoutingPriority::High),
             }
         }
     }

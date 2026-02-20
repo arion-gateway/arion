@@ -53,6 +53,7 @@ pub enum EventFailure {
     RateLimited,
     ExtProcError,
     ViaUpstream,
+    UpstreamOverflow,
 }
 
 #[derive(Debug, Clone)]
@@ -115,6 +116,7 @@ impl EventKind {
                 EventFailure::RateLimited => Some(ResponseCodeDetails("rate_limited")),
                 EventFailure::ExtProcError => Some(ResponseCodeDetails("ext_proc_error")),
                 EventFailure::ViaUpstream => Some(ResponseCodeDetails("via_upstream")),
+                EventFailure::UpstreamOverflow => Some(ResponseCodeDetails("upstream_overflow")),
             },
         }
     }

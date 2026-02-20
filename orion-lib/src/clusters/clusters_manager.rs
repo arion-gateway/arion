@@ -300,3 +300,47 @@ where
         }
     })
 }
+
+pub use super::circuit_breaker::{CircuitBreakerDenial, RoutingPriority};
+
+pub fn try_increment_requests(
+    cluster_id: ClusterID,
+    priority: RoutingPriority,
+) -> std::result::Result<(), CircuitBreakerDenial> {
+    CLUSTERS_MAP_CACHE.with_borrow_mut(|watcher| {
+        if let Some(cluster) = watcher.cached_or_latest().get_mut(cluster_id) {
+            cluster.circuit_breaker().try_increment_requests(priority)
+        } else {
+            Ok(())
+        }
+    })
+}
+
+pub fn decrement_requests(cluster_id: ClusterID, priority: RoutingPriority) {
+    CLUSTERS_MAP_CACHE.with_borrow_mut(|watcher| {
+        if let Some(cluster) = watcher.cached_or_latest().get_mut(cluster_id) {
+            cluster.circuit_breaker().decrement_requests(priority);
+        }
+    });
+}
+
+pub fn try_increment_retries(
+    cluster_id: ClusterID,
+    priority: RoutingPriority,
+) -> std::result::Result<(), CircuitBreakerDenial> {
+    CLUSTERS_MAP_CACHE.with_borrow_mut(|watcher| {
+        if let Some(cluster) = watcher.cached_or_latest().get_mut(cluster_id) {
+            cluster.circuit_breaker().try_increment_retries(priority)
+        } else {
+            Ok(())
+        }
+    })
+}
+
+pub fn decrement_retries(cluster_id: ClusterID, priority: RoutingPriority) {
+    CLUSTERS_MAP_CACHE.with_borrow_mut(|watcher| {
+        if let Some(cluster) = watcher.cached_or_latest().get_mut(cluster_id) {
+            cluster.circuit_breaker().decrement_retries(priority);
+        }
+    });
+}
