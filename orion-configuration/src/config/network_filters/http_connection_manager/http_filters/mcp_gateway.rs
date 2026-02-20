@@ -41,7 +41,7 @@ pub enum UpstreamBackend {
         query_params: Vec<McpRestQueryParams>,
         cluster: String,
         r#async: bool,
-        body_template: Option<DataSource>,
+        body_template: Option<String>,
     },
     McpServer {
         transport: McpBackendTransportUpstream,
@@ -184,7 +184,9 @@ mod envoy_conversions {
                 OrionUpstreamBackend::RestBackend(be) => {
                     let cluster = be.cluster;
                     let cluster = required!(cluster)?;
-                    let body_template = be.body_template.map(|ds| ds.try_into()).transpose()?;
+                    let template_ds: Option<DataSource> = be.body_template.map(|ds| ds.try_into()).transpose()?;
+                    let template_bytes = template_ds.map(|t| t.to_bytes_blocking()).transpose()?;
+                    let body_template = template_bytes.map(String::from_utf8).transpose()?;
                     Ok(UpstreamBackend::Rest {
                         method: http::Method::from_str(&be.method)?,
                         path: be.path,

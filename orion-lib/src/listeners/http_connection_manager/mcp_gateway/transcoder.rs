@@ -1,9 +1,9 @@
 use bytes::Bytes;
 use http::header::InvalidHeaderValue;
 use http::StatusCode;
-use orion_configuration::config::core::DataSource;
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::McpRestQueryParams;
 use rmcp::model::Request;
+use upon::Engine;
 
 use crate::OrionRequestBody;
 
@@ -18,19 +18,29 @@ pub enum TranscoderError {
     HttpError(#[from] http::Error),
     #[error("JSON parse error: {0}")]
     JsonParseError(String),
-    #[error("UpstreamBodyValidation error: {0}")]
-    UpstreamRequestBodyValidationError(String),
     #[error("UpstreamError error: {0}")]
     UpstreamError(String),
+    #[error("Template render error: {0}")]
+    TemplateRenderError(#[from] upon::Error),
 }
 
-pub struct RestTranscoder<'a> {
-    pub method: &'a http::Method,
-    pub path: &'a str,
-    pub query_params: &'a Vec<McpRestQueryParams>,
-    pub body_template: Option<&'a DataSource>,
+#[derive(Debug)]
+pub enum TranscoderType {
+    Rest(RestTranscoder),
+    FunctionGraph(FunctionGraphTranscoder),
+    // No transcoding for MCP usptreams
+    NoTranscoder,
 }
 
+#[derive(Debug)]
+pub struct RestTranscoder {
+    pub method: http::Method,
+    pub query_params: Vec<McpRestQueryParams>,
+    pub has_body_template: bool,
+    pub template_engine: Engine<'static>,
+}
+
+#[derive(Debug)]
 pub struct FunctionGraphTranscoder {}
 
 pub trait Transcoder {

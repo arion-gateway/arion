@@ -10,12 +10,28 @@ use http::StatusCode;
 use http_body_util::Full;
 use rmcp::model::Request;
 use serde_json::Value;
-use upon::Engine;
 use url::form_urlencoded;
 
 pub const DEFAULT_USER_AGENT: &str = concat!("orion/", env!("CARGO_PKG_VERSION"));
+pub const PATH_TEMPLATE_NAME: &str = "path";
+pub const BODY_TEMPLATE_NAME: &str = "body";
 
-impl Transcoder for RestTranscoder<'_> {
+impl RestTranscoder {
+    /// Renders a template by substituting variables with values from the arguments map.
+    /// Variables are in the format {{variable_name}}.
+    ///
+    /// Note: Missing variables in templates should be caught by input schema validation.
+    /// Null values are properly rendered as "null" for JSON compatibility.
+    fn render_template(
+        &self,
+        template_name: &str,
+        arguments: &serde_json::Map<String, Value>,
+    ) -> Result<String, TranscoderError> {
+        Ok(self.template_engine.template(template_name).render(arguments).to_string()?)
+    }
+}
+
+impl Transcoder for RestTranscoder {
     fn encode(
         &self,
         http_headers: &http::HeaderMap,
@@ -26,10 +42,10 @@ impl Transcoder for RestTranscoder<'_> {
         // causes "invalid format" error in http::Uri parser.
         let arguments = mcp_request.params.get("arguments").and_then(|v| v.as_object());
 
-        let rendered_path = render_template(self.path, arguments.unwrap_or(&serde_json::Map::new()));
+        let rendered_path = self.render_template(PATH_TEMPLATE_NAME, arguments.unwrap_or(&serde_json::Map::new()))?;
 
         let query_string = if !self.query_params.is_empty() {
-            build_query_string(self.query_params, arguments.unwrap_or(&serde_json::Map::new()))
+            build_query_string(&self.query_params, arguments.unwrap_or(&serde_json::Map::new()))
         } else {
             String::new()
         };
@@ -60,15 +76,8 @@ impl Transcoder for RestTranscoder<'_> {
         }
 
         // Build the body based on body template or empty body
-        let body = if let Some(body_template) = self.body_template {
-            let template_bytes = body_template.to_bytes_blocking().map_err(|e| {
-                TranscoderError::UpstreamRequestBodyValidationError(format!("Failed to read body template: {e}"))
-            })?;
-            let template_str = String::from_utf8(template_bytes).map_err(|e| {
-                TranscoderError::UpstreamRequestBodyValidationError(format!("Body template is not valid UTF-8: {e}"))
-            })?;
-
-            let rendered = render_template(&template_str, arguments.unwrap_or(&serde_json::Map::new()));
+        let body = if self.has_body_template {
+            let rendered = self.render_template(BODY_TEMPLATE_NAME, arguments.unwrap_or(&serde_json::Map::new()))?;
 
             builder = builder.header(http::header::CONTENT_TYPE, "application/json");
 
@@ -103,19 +112,6 @@ impl Transcoder for RestTranscoder<'_> {
 
         Ok(response_value)
     }
-}
-
-/// Renders a template by substituting variables with values from the arguments map.
-/// Variables are in the format {{variable_name}}.
-///
-/// Note: Missing variables in templates should be caught by input schema validation.
-/// Null values are properly rendered as "null" for JSON compatibility.
-fn render_template(template: &str, arguments: &serde_json::Map<String, Value>) -> String {
-    let engine = Engine::new();
-    engine
-        .compile(template)
-        .and_then(|tmpl| tmpl.render(&engine, arguments).to_string())
-        .unwrap_or_else(|_| template.to_string())
 }
 
 /// Resolves a variable path like "user.name" against the arguments map.
@@ -189,7 +185,7 @@ mod tests {
             method: &http::Method::POST,
             path: "/api/users",
             query_params: &query_params,
-            body_template: Some(&body_template),
+            has_body_template: Some(&body_template),
         };
 
         let result = transcoder.encode(http_request.headers(), &mcp_request);
@@ -219,7 +215,7 @@ mod tests {
             method: &http::Method::POST,
             path: "/api/users",
             query_params: &query_params,
-            body_template: Some(&body_template),
+            has_body_template: Some(&body_template),
         };
 
         let result = transcoder.encode(http_request.headers(), &mcp_request);
@@ -240,7 +236,7 @@ mod tests {
             method: &http::Method::POST,
             path: "/api/users",
             query_params: &query_params,
-            body_template: Some(&body_template),
+            has_body_template: Some(&body_template),
         };
 
         let result = transcoder.encode(http_request.headers(), &mcp_request);
@@ -264,7 +260,7 @@ mod tests {
             method: &http::Method::POST,
             path: "/api/data",
             query_params: &query_params,
-            body_template: Some(&body_template),
+            has_body_template: Some(&body_template),
         };
 
         let result = transcoder.encode(http_request.headers(), &mcp_request);
@@ -400,7 +396,7 @@ mod tests {
             method: &http::Method::GET,
             path: path_template,
             query_params: &query_params,
-            body_template: None,
+            has_body_template: None,
         };
 
         let result = transcoder.encode(http_request.headers(), &mcp_request);
@@ -426,7 +422,7 @@ mod tests {
             method: &http::Method::GET,
             path: path_template,
             query_params: &query_params,
-            body_template: None,
+            has_body_template: None,
         };
 
         let result = transcoder.encode(http_request.headers(), &mcp_request);
@@ -453,7 +449,7 @@ mod tests {
             method: &http::Method::GET,
             path: "/api/search",
             query_params: &query_params,
-            body_template: None,
+            has_body_template: None,
         };
 
         let result = transcoder.encode(http_request.headers(), &mcp_request);
@@ -487,7 +483,7 @@ mod tests {
             method: &http::Method::GET,
             path: "/api/weather",
             query_params: &query_params,
-            body_template: None,
+            has_body_template: None,
         };
 
         let result = transcoder.encode(http_request.headers(), &mcp_request);
@@ -517,7 +513,7 @@ mod tests {
             method: &http::Method::GET,
             path: "/api/locations",
             query_params: &query_params,
-            body_template: None,
+            has_body_template: None,
         };
 
         let result = transcoder.encode(http_request.headers(), &mcp_request);
@@ -545,7 +541,7 @@ mod tests {
             method: &http::Method::GET,
             path: "/api/users/{{user_id}}/orders",
             query_params: &query_params,
-            body_template: None,
+            has_body_template: None,
         };
 
         let result = transcoder.encode(http_request.headers(), &mcp_request);

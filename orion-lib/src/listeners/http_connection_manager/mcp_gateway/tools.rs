@@ -4,7 +4,10 @@ use crate::listeners::http_connection_manager::mcp_gateway::{
         Action as RbacAction, JwtClaimField, JwtHeaderField, JwtHeaderMatcher, JwtPayloadMatcher,
         Permission as RbacPermission, ToolRbac,
     },
-    transcoder::{rest::DEFAULT_USER_AGENT, RestTranscoder, Transcoder},
+    transcoder::{
+        rest::{BODY_TEMPLATE_NAME, DEFAULT_USER_AGENT, PATH_TEMPLATE_NAME},
+        FunctionGraphTranscoder, RestTranscoder, Transcoder, TranscoderType,
+    },
 };
 use dashmap::DashMap;
 use http::{header::InvalidHeaderValue, HeaderValue};
@@ -26,6 +29,7 @@ use serde_json::Value;
 use smol_str::{SmolStr, ToSmolStr};
 use std::{borrow::Cow, sync::Arc, time::Instant};
 use tracing::{debug, info};
+use upon::Engine;
 
 #[derive(Debug, Clone)]
 struct CachedEntry<T> {
@@ -33,15 +37,16 @@ struct CachedEntry<T> {
     entry: T,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ToolsRegistry {
     registry: Vec<ToolEntry>,
     cache: DashMap<SmolStr, CachedEntry<Vec<Tool>>, ahash::RandomState>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ToolEntry {
     pub conf: McpTool,
+    pub transcoder: TranscoderType,
     pub input_schema_validator: Option<Validator>,
     pub output_schema_validator: Option<Validator>,
     pub rbac: Option<ToolRbac>,
@@ -87,6 +92,8 @@ pub enum ToolBuilderError {
     InvalidInputSchema(String),
     #[error("Invalid output schema")]
     InvalidOutputSchema(String),
+    #[error("Failed compiling template: {0}")]
+    FailedCompilingTemplate(#[from] upon::Error),
 }
 
 impl ToolEntry {
@@ -133,7 +140,24 @@ impl ToolsRegistry {
                 } else {
                     None
                 };
-                Ok(ToolEntry { conf: tool_conf, rbac, input_schema_validator, output_schema_validator })
+                let transcoder = match &tool_conf.backend {
+                    UpstreamBackend::Rest { method, path, query_params, body_template, .. } => {
+                        let mut template_engine: Engine<'static> = upon::Engine::new();
+                        template_engine.add_template(PATH_TEMPLATE_NAME, path.clone())?;
+                        if let Some(body_template) = body_template {
+                            template_engine.add_template(BODY_TEMPLATE_NAME, body_template.clone())?;
+                        }
+                        TranscoderType::Rest(RestTranscoder {
+                            method: method.clone(),
+                            query_params: query_params.clone(),
+                            has_body_template: body_template.is_some(),
+                            template_engine,
+                        })
+                    },
+                    UpstreamBackend::FunctionGraph { .. } => TranscoderType::FunctionGraph(FunctionGraphTranscoder {}),
+                    UpstreamBackend::McpServer { .. } => TranscoderType::NoTranscoder,
+                };
+                Ok(ToolEntry { conf: tool_conf, transcoder, rbac, input_schema_validator, output_schema_validator })
             })
             .collect::<Result<Vec<_>, ToolBuilderError>>()?;
         Ok(ToolsRegistry { registry, cache: DashMap::with_hasher(ahash::RandomState::new()) })
@@ -296,10 +320,11 @@ impl ToolsRegistry {
             }
         }
 
-        let tool = &entry.conf;
-        match &tool.backend {
-            UpstreamBackend::Rest { method, path, query_params, cluster, r#async, body_template } => {
-                let transcoder = RestTranscoder { method, path, query_params, body_template: body_template.as_ref() };
+        match (&entry.conf.backend, &entry.transcoder) {
+            (
+                UpstreamBackend::Rest { method: _, path: _, query_params: _, cluster, r#async, body_template: _ },
+                TranscoderType::Rest(transcoder),
+            ) => {
                 let mut upstream_request = transcoder.encode(req_headers, &rpc.request).map_err(|e| {
                     CallToolError::TranscoderError { tool: backend_name.to_owned(), reason: e.to_string() }
                 })?;
@@ -309,7 +334,7 @@ impl ToolsRegistry {
                 }
                 Ok(MessageResult::UpstreamRequest((upstream_request, *r#async, ToolRegistryIndex(index))))
             },
-            UpstreamBackend::McpServer { url, .. } => {
+            (UpstreamBackend::McpServer { url, .. }, TranscoderType::NoTranscoder) => {
                 let client = match session.mcp_upstreams.entry(url.to_owned()) {
                     dashmap::Entry::Occupied(entry) => entry.into_ref(),
                     dashmap::Entry::Vacant(vacant_entry) => {
@@ -360,22 +385,23 @@ impl ToolsRegistry {
 
                 Ok(MessageResult::JsonRcpResponse(json_rcp_response))
             },
-            UpstreamBackend::FunctionGraph {} => {
+            (UpstreamBackend::FunctionGraph {}, TranscoderType::FunctionGraph(_)) => {
                 return Err(CallToolError::FunctionGraphNotImplemented);
             },
+            _ => unreachable!(),
         }
     }
 }
 
-/// Convert configuration RBAC to runtime RBAC
-fn convert_config_rbac_to_runtime(
-    config_rbac: &orion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::McpToolRbac,
-) -> ToolRbac {
-    use orion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::McpRbacPermission;
+use orion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::McpRbacPermission;
+use orion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::McpToolRbac;
+use orion_configuration::config::network_filters::network_rbac::Action;
 
+/// Convert configuration RBAC to runtime RBAC
+fn convert_config_rbac_to_runtime(config_rbac: &McpToolRbac) -> ToolRbac {
     let action = match config_rbac.action {
-        orion_configuration::config::network_filters::network_rbac::Action::Allow => RbacAction::Allow,
-        orion_configuration::config::network_filters::network_rbac::Action::Deny => RbacAction::Deny,
+        Action::Allow => RbacAction::Allow,
+        Action::Deny => RbacAction::Deny,
     };
 
     let permissions = config_rbac
