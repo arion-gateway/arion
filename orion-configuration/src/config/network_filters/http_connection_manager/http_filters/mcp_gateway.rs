@@ -41,7 +41,7 @@ pub enum UpstreamBackend {
         query_params: Vec<McpRestQueryParams>,
         cluster: String,
         r#async: bool,
-        body_template: Option<DataSource>,
+        body_template: Option<String>,
     },
     McpServer {
         transport: McpBackendTransportUpstream,
@@ -128,11 +128,9 @@ mod envoy_conversions {
                 _ => (),
             }
 
-            let input_schema = match backend {
-                UpstreamBackend::Rest { .. } | UpstreamBackend::FunctionGraph { .. } => {
-                    // input_schema is mandatory for transcoded backends
-                    let input_schema = required!(input_schema)?;
-                    let bytes = TryInto::<DataSource>::try_into(input_schema)?.to_bytes_blocking()?;
+            let validate_schema_fn = |schema, name| -> Result<Map<String, Value>, GenericError> {
+                if let Some(schema) = schema {
+                    let bytes = TryInto::<DataSource>::try_into(schema)?.to_bytes_blocking()?;
                     let string = String::from_utf8(bytes)?;
                     let schema: Map<String, Value> = serde_json::from_str(&string)?;
                     // Verify the schema is valid; we are still storing the raw
@@ -140,8 +138,16 @@ mod envoy_conversions {
                     // jsonschema::Validator is not Serialize and cannot be
                     // added to the configuration type
                     jsonschema::Validator::new(&Value::Object(schema.clone()))
-                        .map_err(|e| GenericError::from_msg(format!("Invalid input_schema: {e}")))?;
-                    schema
+                        .map_err(|e| GenericError::from_msg(format!("Invalid {name}_schema: {e}")))?;
+                    Ok(schema)
+                } else {
+                    Ok(Map::new())
+                }
+            };
+
+            let input_schema = match backend {
+                UpstreamBackend::Rest { .. } | UpstreamBackend::FunctionGraph { .. } => {
+                    validate_schema_fn(input_schema, "input")?
                 },
                 UpstreamBackend::McpServer { .. } => {
                     // input_schema is ignored for MCP backends
@@ -153,18 +159,8 @@ mod envoy_conversions {
             };
 
             let output_schema = match backend {
-                // output_schema is optional for transcoded backends
                 UpstreamBackend::Rest { .. } | UpstreamBackend::FunctionGraph { .. } => {
-                    if let Some(output_schema) = output_schema {
-                        let bytes = TryInto::<DataSource>::try_into(output_schema)?.to_bytes_blocking()?;
-                        let string = String::from_utf8(bytes)?;
-                        let schema: Map<String, Value> = serde_json::from_str(&string)?;
-                        jsonschema::Validator::new(&Value::Object(schema.clone()))
-                            .map_err(|e| GenericError::from_msg(format!("Invalid output_schema: {e}")))?;
-                        schema
-                    } else {
-                        Map::new()
-                    }
+                    validate_schema_fn(output_schema, "output")?
                 },
                 UpstreamBackend::McpServer { .. } => {
                     // output_schema is ignored for MCP backends
@@ -188,7 +184,9 @@ mod envoy_conversions {
                 OrionUpstreamBackend::RestBackend(be) => {
                     let cluster = be.cluster;
                     let cluster = required!(cluster)?;
-                    let body_template = be.body_template.map(|ds| ds.try_into()).transpose()?;
+                    let template_ds: Option<DataSource> = be.body_template.map(|ds| ds.try_into()).transpose()?;
+                    let template_bytes = template_ds.map(|t| t.to_bytes_blocking()).transpose()?;
+                    let body_template = template_bytes.map(String::from_utf8).transpose()?;
                     Ok(UpstreamBackend::Rest {
                         method: http::Method::from_str(&be.method)?,
                         path: be.path,

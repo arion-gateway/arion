@@ -3,9 +3,7 @@ use dashmap::DashMap;
 use futures::SinkExt;
 use http::{HeaderName, Method, Response, StatusCode};
 use http_body_util::{BodyExt, Empty, Full};
-use orion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::{
-    McpGateway as McpGatewayConfig, UpstreamBackend,
-};
+use orion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::McpGateway as McpGatewayConfig;
 use orion_http_header::MCP_SESSION_ID;
 use parking_lot::Mutex;
 use scopeguard::defer;
@@ -14,7 +12,7 @@ use serde_json::{json, Value};
 use smol_str::ToSmolStr;
 use std::sync::{atomic::AtomicUsize, Arc};
 use tokio::sync::Mutex as TokioMutex;
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 use uuid::Uuid;
 
 use rmcp::{
@@ -36,7 +34,7 @@ use crate::{
     listeners::{
         http_connection_manager::mcp_gateway::{
             tools::{CallToolError, ToolBuilderError, ToolsRegistry},
-            transcoder::{RestTranscoder, Transcoder},
+            transcoder::{Transcoder, TranscoderType},
             transport::{
                 self, AcceptedMime, RequestExt, SessionId, Transport, MIME_APPLICATION_JSON, MIME_TEXT_EVENT_STREAM,
             },
@@ -202,7 +200,7 @@ pub struct McpGateway {
     version: http::Version,
     initialize_request_params: Option<model::InitializeRequestParams>,
     streamable_async_sender: Option<Arc<TokioMutex<SinkSender>>>,
-    current_tool_index: Option<ToolRegistryIndex>,
+    current_tool_index: ToolRegistryIndex,
 }
 
 impl TryFrom<McpGatewayConfig> for McpGateway {
@@ -217,7 +215,7 @@ impl TryFrom<McpGatewayConfig> for McpGateway {
             initialize_request_params: None,
             version: http::Version::default(),
             streamable_async_sender: None,
-            current_tool_index: None,
+            current_tool_index: ToolRegistryIndex(usize::MAX),
         })
     }
 }
@@ -231,7 +229,7 @@ impl FilterFactory for McpGateway {
             initialize_request_params: None,
             version: http::Version::default(),
             streamable_async_sender: None,
-            current_tool_index: None,
+            current_tool_index: ToolRegistryIndex(usize::MAX),
         }
     }
 }
@@ -328,59 +326,48 @@ impl McpGateway {
         let upstream_status = response.status();
         let body_string = McpGateway::extract_body_string(&body_bytes, upstream_status);
 
-        let raw_body_fn = |body_string: &String, upstream_status: StatusCode| {
-            json!({
-                "text": body_string,
-                "status": upstream_status.as_u16()
-            })
-        };
-
-        let result_value = if let Some(tool_index) = self.current_tool_index {
-            match self.inner.tools.get_tool_by_index(tool_index) {
-                Some(tool) => {
-                    let value = match &tool.conf.backend {
-                        UpstreamBackend::Rest { method, path, query_params, body_template, .. } => {
-                            let transcoder =
-                                RestTranscoder { method, path, query_params, body_template: body_template.as_ref() };
-                            match transcoder.decode(body_bytes, upstream_status) {
-                                Ok(value) => value,
+        let structured_content = match self.inner.tools.get_tool_by_index(self.current_tool_index) {
+            Some(tool) => {
+                let value = match &tool.transcoder {
+                    TranscoderType::Rest(rest_transcoder) => {
+                        // For REST transcoder, decode upstream message only if
+                        // we have to validate it against an output_schema
+                        if tool.output_schema_validator.is_some() {
+                            match rest_transcoder.decode(body_bytes, upstream_status) {
+                                Ok(value) => Some(value),
                                 Err(e) => {
                                     debug!(target: "mcp_gateway", "apply_response: transcoder decode error: {e}");
-                                    json!({
+                                    Some(json!({
                                         "error": format!("Failed to decode upstream response: {e}"),
                                             "status": upstream_status.as_u16()
-                                    })
+                                    }))
                                 },
                             }
-                        },
-                        _ => {
-                            // For non-REST backends, use the raw body
-                            raw_body_fn(&body_string, upstream_status)
-                        },
-                    };
-                    match tool.validate_against_output_schema(&value) {
-                        Ok(()) => value,
-                        Err(e) => {
-                            debug!(target: "mcp_gateway", "apply_response: output schema validation error: {e}");
-                            json!({
-                                "error": format!("Failed to validate upstream response against output schema: {e}"),
+                        } else {
+                            None
+                        }
+                    },
+                    TranscoderType::FunctionGraph(_) => unimplemented!(),
+                    TranscoderType::NoTranscoder => None,
+                };
+                value.map(|value| match tool.validate_against_output_schema(&value) {
+                    Ok(()) => value,
+                    Err(e) => {
+                        debug!(target: "mcp_gateway", "apply_response: output schema validation error: {e}");
+                        json!({
+                            "error": format!("Failed to validate upstream response against output schema: {e}"),
                                 "status": upstream_status.as_u16()
-                            })
-                        },
-                    }
-                },
-                None => {
-                    // We really should never get here, but we try a soft
-                    // failure by sending the raw content back
-                    debug!(target: "mcp_gateway", "apply_response: tool index {:?} not found in registry", tool_index);
-                    raw_body_fn(&body_string, upstream_status)
-                },
-            }
-        } else {
-            // We really should never get here, but we try a soft
-            // failure by sending the raw content back
-            debug!(target: "mcp_gateway", "apply_response: no tool index stored for request_id: {:?}", self.request_id);
-            raw_body_fn(&body_string, upstream_status)
+                        })
+                    },
+                })
+            },
+            None => {
+                // Tool was not found with the recorded index. We really
+                // should never get here, but we try a soft failure by
+                // sending only the raw content back
+                error!(target: "mcp_gateway", "apply_response: tool index {:?} not found in registry", self.current_tool_index);
+                None
+            },
         };
 
         // Build the CallToolResult with the raw response as content. If we are
@@ -392,7 +379,7 @@ impl McpGateway {
             content: vec![Annotated::new(content, None)],
             is_error: Some(!upstream_status.is_success()),
             meta: None,
-            structured_content: Some(result_value),
+            structured_content,
         };
 
         let server_result = ServerResult::CallToolResult(tool_result);
@@ -493,9 +480,6 @@ impl McpGateway {
             }
         }
 
-        let req_ext = request.extensions().clone();
-        let req_headers = request.headers().clone();
-
         // collect the body of the request...
         let Ok(body) = request.body_mut().collect().await else {
             debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: failed to collect request body");
@@ -512,7 +496,15 @@ impl McpGateway {
         // handle the JSON RPC message
         //
         let response = self
-            .handle_rpc_json_message(ctx, req_ext, req_headers, transport, body.to_bytes(), listener_name, &mut session)
+            .handle_rpc_json_message(
+                ctx,
+                request.extensions(),
+                request.headers(),
+                transport,
+                body.to_bytes(),
+                listener_name,
+                &mut session,
+            )
             .await;
 
         //
@@ -720,8 +712,8 @@ impl McpGateway {
     async fn handle_rpc_json_message(
         &mut self,
         ctx: &McpGatewayListenerContext,
-        req_ext: http::Extensions,
-        req_headers: http::HeaderMap,
+        req_ext: &http::Extensions,
+        req_headers: &http::HeaderMap,
         transport: Transport,
         body: Bytes,
         listener_name: &'static str,
@@ -788,8 +780,8 @@ impl McpGateway {
     async fn handle_rpc_json_request(
         &mut self,
         ctx: &McpGatewayListenerContext,
-        req_ext: http::Extensions,
-        req_headers: http::HeaderMap,
+        req_ext: &http::Extensions,
+        req_headers: &http::HeaderMap,
         transport: Transport,
         rpc: model::JsonRpcRequest,
         listener_name: &'static str,
@@ -873,7 +865,7 @@ impl McpGateway {
             },
             ListToolsRequestMethod::VALUE => {
                 debug!(target: "mcp_gateway", "handle_rpc_json_request: tools/list received");
-                let tools = self.inner.tools.build_list_tools(req_ext).await;
+                let tools = self.inner.tools.build_list_tools(&req_ext).await;
                 let response = model::JsonRpcResponse {
                     jsonrpc: model::JsonRpcVersion2_0,
                     id: self.request_id.clone(),
@@ -985,7 +977,7 @@ impl McpGateway {
 
                 // Store the tool index from the UpstreamRequest for use in apply_response
                 if let MessageResult::UpstreamRequest((_, _, tool_index)) = &resp {
-                    self.current_tool_index = Some(*tool_index);
+                    self.current_tool_index = *tool_index;
                 }
 
                 resp
