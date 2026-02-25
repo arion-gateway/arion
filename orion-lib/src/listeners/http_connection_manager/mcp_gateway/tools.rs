@@ -184,8 +184,12 @@ impl ToolsRegistry {
                         name: Cow::Owned(entry.conf.name.to_string()),
                         description: Some(entry.conf.description.clone().into()),
                         input_schema: Arc::new(entry.conf.input_schema.clone()),
+                        output_schema: if !entry.conf.output_schema.is_empty() {
+                            Some(Arc::new(entry.conf.output_schema.clone()))
+                        } else {
+                            None
+                        },
                         title: None,
-                        output_schema: None,
                         annotations: None,
                         icons: None,
                         meta: None,
