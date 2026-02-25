@@ -474,11 +474,12 @@ impl TlsConfigurator<ClientConfig, WantsToBuildClient> {
 #[derive(Debug)]
 pub struct RelaxedResolvesServerCertUsingSni {
     by_name: HashMap<String, Arc<rustls::sign::CertifiedKey>>,
+    default_cert: Option<Arc<rustls::sign::CertifiedKey>>,
 }
 
 impl RelaxedResolvesServerCertUsingSni {
     pub fn new() -> Self {
-        Self { by_name: HashMap::new() }
+        Self { by_name: HashMap::new(), default_cert: None }
     }
 
     pub fn add(&mut self, name: &str, ck: rustls::sign::CertifiedKey) -> StdResult<(), rustls::Error> {
@@ -491,7 +492,11 @@ impl RelaxedResolvesServerCertUsingSni {
             .and_then(|cert| rustls::client::verify_server_name(&cert, &server_name))?;
 
         if let ServerName::DnsName(name) = server_name {
-            self.by_name.insert(name.as_ref().to_owned(), Arc::new(ck));
+            let cert = Arc::new(ck);
+            if self.default_cert.is_none() {
+                self.default_cert = Some(Arc::clone(&cert));
+            }
+            self.by_name.insert(name.as_ref().to_owned(), cert);
         } else {
             warn!("Server name is not valid DNS name");
         }
@@ -504,8 +509,7 @@ impl rustls::server::ResolvesServerCert for RelaxedResolvesServerCertUsingSni {
         if let Some(name) = client_hello.server_name() {
             self.by_name.get(name).cloned()
         } else {
-            // This kind of resolver requires SNI
-            None
+            self.default_cert.clone()
         }
     }
 }

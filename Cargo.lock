@@ -2706,6 +2706,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "orion-e2e-tests"
+version = "0.1.0"
+dependencies = [
+ "atomic-take",
+ "bytes",
+ "dashmap",
+ "futures",
+ "http",
+ "http-body",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "orion-data-plane-api",
+ "orion-xds",
+ "pingora-timeout",
+ "prost 0.14.3",
+ "rustls",
+ "rustls-pemfile",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-rustls",
+ "tokio-stream",
+ "tonic 0.14.3",
+ "tonic-health",
+ "tonic-prost",
+ "tonic-prost-build",
+ "tracing",
+ "tracing-test",
+ "uuid",
+]
+
+[[package]]
 name = "orion-error"
 version = "0.1.0"
 
@@ -2888,6 +2923,7 @@ dependencies = [
  "orion-tracing",
  "orion-xds",
  "parking_lot",
+ "pingora-timeout",
  "prometheus",
  "regex",
  "serde",
@@ -2900,7 +2936,6 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
- "tracing-test",
 ]
 
 [[package]]
