@@ -60,8 +60,8 @@ pub enum McpBackendTransportUpstream {
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct McpRestQueryParams {
-    pub name: String,
-    pub source: String,
+    pub name: SmolStr,
+    pub source: SmolStr,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
@@ -215,7 +215,7 @@ mod envoy_conversions {
 
     impl From<OrionMcpQueryParams> for McpRestQueryParams {
         fn from(orion: OrionMcpQueryParams) -> Self {
-            McpRestQueryParams { name: orion.name, source: orion.source }
+            McpRestQueryParams { name: orion.name.into(), source: orion.source.into()}
         }
     }
 

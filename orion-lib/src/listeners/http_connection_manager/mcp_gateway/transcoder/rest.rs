@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use super::{RestTranscoder, Transcoder, TranscoderError};
 use crate::{
     body::{
@@ -10,11 +12,20 @@ use http::StatusCode;
 use http_body_util::Full;
 use rmcp::model::Request;
 use serde_json::Value;
-use url::form_urlencoded;
+use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
 
 pub const DEFAULT_USER_AGENT: &str = concat!("orion/", env!("CARGO_PKG_VERSION"));
 pub const PATH_TEMPLATE_NAME: &str = "path";
 pub const BODY_TEMPLATE_NAME: &str = "body";
+
+static EMPTY_MAP: std::sync::LazyLock<serde_json::Map<String, Value>> = std::sync::LazyLock::new(serde_json::Map::new);
+
+/// Set of characters that are "unreserved" according to RFC 3986.
+const QUERY_SET: &AsciiSet = &NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'_')
+    .remove(b'.')
+    .remove(b'~');
 
 impl RestTranscoder {
     /// Renders a template by substituting variables with values from the arguments map.
@@ -40,26 +51,18 @@ impl Transcoder for RestTranscoder {
         // Build a path-only URI (no authority/scheme) - Orion will route to the correct
         // upstream cluster based on configuration. Including authority without scheme
         // causes "invalid format" error in http::Uri parser.
-        let arguments = mcp_request.params.get("arguments").and_then(|v| v.as_object());
+        let arguments = mcp_request.params.get("arguments").and_then(|v| v.as_object()).unwrap_or_else(|| &EMPTY_MAP);
+        let rendered_path = self.render_template(PATH_TEMPLATE_NAME, arguments)?;
 
-        let rendered_path = self.render_template(PATH_TEMPLATE_NAME, arguments.unwrap_or(&serde_json::Map::new()))?;
-
-        let query_string = if !self.query_params.is_empty() {
-            build_query_string(&self.query_params, arguments.unwrap_or(&serde_json::Map::new()))
-        } else {
-            String::new()
-        };
-
-        let capacity = rendered_path.len() + if !query_string.is_empty() { 1 + query_string.len() } else { 0 };
+        let capacity = rendered_path.len() + self.query_params.len() * 32 + 2;
         let mut uri = String::with_capacity(capacity);
         if !rendered_path.starts_with('/') {
             uri.push('/');
         }
         uri.push_str(&rendered_path);
 
-        if !query_string.is_empty() {
-            uri.push('?');
-            uri.push_str(&query_string);
+        if !self.query_params.is_empty() {
+            append_query_string(&mut uri, &self.query_params, arguments);
         }
 
         // Orion will override the authority with the correct upstream endpoint.
@@ -69,7 +72,7 @@ impl Transcoder for RestTranscoder {
             http_headers.get(http::header::USER_AGENT).and_then(|ua| ua.to_str().ok()).unwrap_or(DEFAULT_USER_AGENT);
 
         let mut builder =
-            http::Request::builder().method(self.method.clone()).uri(uri).header(http::header::USER_AGENT, user_agent);
+            http::Request::builder().method(&self.method).uri(uri).header(http::header::USER_AGENT, user_agent);
 
         if let Some(host) = http_headers.get(http::header::HOST).and_then(|h| h.to_str().ok()) {
             builder = builder.header(http::header::HOST, host);
@@ -77,7 +80,7 @@ impl Transcoder for RestTranscoder {
 
         // Build the body based on body template or empty body
         let body = if self.has_body_template {
-            let rendered = self.render_template(BODY_TEMPLATE_NAME, arguments.unwrap_or(&serde_json::Map::new()))?;
+            let rendered = self.render_template(BODY_TEMPLATE_NAME, arguments)?;
 
             builder = builder.header(http::header::CONTENT_TYPE, "application/json");
 
@@ -115,8 +118,8 @@ impl Transcoder for RestTranscoder {
 }
 
 /// Resolves a variable path like "user.name" against the arguments map.
-/// Returns the JSON value as a string, or "null" if not found.
-fn resolve_variable(path: &str, arguments: &serde_json::Map<String, Value>) -> String {
+/// Returns the JSON value as a string, or None if not found.
+fn resolve_variable<'a>(path: &str, arguments: &'a serde_json::Map<String, Value>) -> Option<Cow<'a, str>> {
     let mut parts = path.split('.');
 
     // Get the first part directly from the map to avoid cloning the entire arguments object
@@ -128,26 +131,38 @@ fn resolve_variable(path: &str, arguments: &serde_json::Map<String, Value>) -> S
     }
 
     // Format output: avoid quotes for strings, use default to_string() for other JSON types
-    match current {
-        Some(Value::String(s)) => s.clone(),
-        Some(v) => v.to_string(),
-        None => "null".to_string(),
-    }
+    current.map(|value|
+        match value {
+            Value::String(s) => Cow::Borrowed(s.as_str()),
+            Value::Null => Cow::Borrowed("null"),
+            Value::Bool(true) => Cow::Borrowed("true"),
+            Value::Bool(false) => Cow::Borrowed("false"),
+            v => Cow::Owned(v.to_string())
+        }
+    )
 }
 
-/// Builds a query string from query params configuration with variable substitution.
-fn build_query_string(
-    query_params: &Vec<super::McpRestQueryParams>,
+/// Appends a query string from query params configuration with variable substitution.
+fn append_query_string(
+    uri: &mut String,
+    query_params: &[super::McpRestQueryParams],
     arguments: &serde_json::Map<String, Value>,
-) -> String {
-    let mut serializer = form_urlencoded::Serializer::new(String::new());
+) {
+    let mut first = true;
+
     for param in query_params {
-        let value = resolve_variable(&param.source, arguments);
-        if value != "null" {
-            serializer.append_pair(&param.name, &value);
+        if let Some(value) = resolve_variable(&param.source, arguments) {
+            if first {
+                uri.push('?');
+                first = false;
+            } else {
+                uri.push('&');
+            }
+            uri.extend(utf8_percent_encode(&param.name, QUERY_SET));
+            uri.push('=');
+            uri.extend(utf8_percent_encode(&value, QUERY_SET));
         }
     }
-    serializer.finish().replace("%7E", "~").replace("%20", "+")
 }
 
 #[cfg(test)]
@@ -360,7 +375,7 @@ mod tests {
         let mut args = serde_json::Map::new();
         args.insert("name".to_string(), json!("Test"));
 
-        assert_eq!(resolve_variable("name", &args), "Test");
+        assert_eq!(resolve_variable("name", &args), Some(Cow::from("Test")));
     }
 
     #[test]
@@ -370,14 +385,14 @@ mod tests {
         nested.insert("value".to_string(), json!(42));
         args.insert("config".to_string(), Value::Object(nested));
 
-        assert_eq!(resolve_variable("config.value", &args), "42");
+        assert_eq!(resolve_variable("config.value", &args), Some(Cow::from("42")));
     }
 
     #[test]
     fn test_resolve_variable_missing() {
         let args = serde_json::Map::new();
 
-        assert_eq!(resolve_variable("missing", &args), "null");
+        assert_eq!(resolve_variable("missing", &args), None);
     }
 
     #[test]
@@ -386,7 +401,7 @@ mod tests {
         args.insert("name".to_string(), json!("value"));
 
         // Trying to access a field on a string should return null
-        assert_eq!(resolve_variable("name.invalid", &args), "null");
+        assert_eq!(resolve_variable("name.invalid", &args), None);
     }
 
     #[test]
@@ -440,8 +455,8 @@ mod tests {
         let http_request = create_http_request();
 
         let query_params = vec![
-            super::super::McpRestQueryParams { name: "q".to_string(), source: "search".to_string() },
-            super::super::McpRestQueryParams { name: "limit".to_string(), source: "limit".to_string() },
+            super::super::McpRestQueryParams { name: "q".into(), source: "search".into() },
+            super::super::McpRestQueryParams { name: "limit".into(), source: "limit".into() },
         ];
         let transcoder = create_transcoder(http::Method::GET, "/api/search".to_string(), query_params, false, None);
 
@@ -451,7 +466,7 @@ mod tests {
         let request = result.unwrap();
         let uri = request.uri().to_string();
         assert!(uri.starts_with("/api/search?"), "URI should start with /api/search?: {}", uri);
-        assert!(uri.contains("q=rust+language"), "URI should contain q=rust+language: {}", uri);
+        assert!(uri.contains("q=rust%20language"), "URI should contain q=rust%20language: {}", uri);
         assert!(uri.contains("limit=10"), "URI should contain limit=10: {}", uri);
     }
 
@@ -468,9 +483,9 @@ mod tests {
         let http_request = create_http_request();
 
         let query_params = vec![
-            super::super::McpRestQueryParams { name: "latitude".to_string(), source: "coordinates.lat".to_string() },
-            super::super::McpRestQueryParams { name: "longitude".to_string(), source: "coordinates.lon".to_string() },
-            super::super::McpRestQueryParams { name: "days".to_string(), source: "forecast_days".to_string() },
+            super::super::McpRestQueryParams { name: "latitude".into(), source: "coordinates.lat".into() },
+            super::super::McpRestQueryParams { name: "longitude".into(), source: "coordinates.lon".into() },
+            super::super::McpRestQueryParams { name: "days".into(), source: "forecast_days".into() },
         ];
         let transcoder = create_transcoder(http::Method::GET, "/api/weather".to_string(), query_params, false, None);
 
@@ -494,8 +509,8 @@ mod tests {
         let http_request = create_http_request();
 
         let query_params = vec![
-            super::super::McpRestQueryParams { name: "city".to_string(), source: "city".to_string() },
-            super::super::McpRestQueryParams { name: "country".to_string(), source: "missing_country".to_string() },
+            super::super::McpRestQueryParams { name: "city".into(), source: "city".into() },
+            super::super::McpRestQueryParams { name: "country".into(), source: "missing_country".into() },
         ];
         let transcoder = create_transcoder(http::Method::GET, "/api/locations".to_string(), query_params, false, None);
 
@@ -519,7 +534,7 @@ mod tests {
         let http_request = create_http_request();
 
         let query_params =
-            vec![super::super::McpRestQueryParams { name: "status".to_string(), source: "filters.status".to_string() }];
+            vec![super::super::McpRestQueryParams { name: "status".into(), source: "filters.status".into() }];
         let transcoder = create_transcoder(
             http::Method::GET,
             "/api/users/{{user_id}}/orders".to_string(),
@@ -554,11 +569,12 @@ mod tests {
         args.insert("lon".to_string(), json!("-6.2603"));
 
         let query_params = vec![
-            super::super::McpRestQueryParams { name: "lat".to_string(), source: "lat".to_string() },
-            super::super::McpRestQueryParams { name: "lon".to_string(), source: "lon".to_string() },
+            super::super::McpRestQueryParams { name: "lat".into(), source: "lat".into() },
+            super::super::McpRestQueryParams { name: "lon".into(), source: "lon".into() },
         ];
 
-        let result = build_query_string(&query_params, &args);
+        let mut result = String::new();
+        append_query_string(&mut result, &query_params, &args);
         assert!(result.contains("lat=53.3498"), "Result should contain lat=53.3498: {}", result);
         assert!(result.contains("lon=-6.2603"), "Result should contain lon=-6.2603: {}", result);
     }
@@ -573,17 +589,35 @@ mod tests {
         args.insert("slash".to_string(), json!("test/value"));
 
         let query_params = vec![
-            super::super::McpRestQueryParams { name: "space".to_string(), source: "space".to_string() },
-            super::super::McpRestQueryParams { name: "amp".to_string(), source: "amp".to_string() },
-            super::super::McpRestQueryParams { name: "equal".to_string(), source: "equal".to_string() },
-            super::super::McpRestQueryParams { name: "slash".to_string(), source: "slash".to_string() },
+            super::super::McpRestQueryParams { name: "space".into(), source: "space".into() },
+            super::super::McpRestQueryParams { name: "amp".into(), source: "amp".into() },
+            super::super::McpRestQueryParams { name: "equal".into(), source: "equal".into() },
+            super::super::McpRestQueryParams { name: "slash".into(), source: "slash".into() },
         ];
 
-        let result = build_query_string(&query_params, &args);
-        assert!(result.contains("space=hello+world"), "Space should be encoded as +: {}", result);
+        let mut result = String::new();
+        append_query_string(&mut result, &query_params, &args);
+        assert!(result.contains("space=hello%20world"), "Space should be encoded as %20: {}", result);
         assert!(result.contains("amp=foo%26bar"), "& should be encoded: {}", result);
         assert!(result.contains("equal=a%3Db"), "= should be encoded: {}", result);
         assert!(result.contains("slash=test%2Fvalue"), "/ should be encoded: {}", result);
+    }
+
+    #[test]
+    fn test_build_query_string_encoding_names_and_non_ascii() {
+        let mut args = serde_json::Map::new();
+        args.insert("city".to_string(), json!("München"));
+        args.insert("emoji".to_string(), json!("🚀"));
+
+        let query_params = vec![
+            super::super::McpRestQueryParams { name: "city name".into(), source: "city".into() },
+            super::super::McpRestQueryParams { name: "emoji param".into(), source: "emoji".into() },
+        ];
+
+        let mut result = String::new();
+        append_query_string(&mut result, &query_params, &args);
+        assert!(result.contains("city%20name=M%C3%BCnchen"), "Non-ASCII and spaces in names should be encoded: {}", result);
+        assert!(result.contains("emoji%20param=%F0%9F%9A%80"), "Emojis should be encoded: {}", result);
     }
 
     #[test]
@@ -595,12 +629,13 @@ mod tests {
         args.insert("special".to_string(), json!("-_.~"));
 
         let query_params = vec![
-            super::super::McpRestQueryParams { name: "alpha".to_string(), source: "alpha".to_string() },
-            super::super::McpRestQueryParams { name: "numeric".to_string(), source: "numeric".to_string() },
-            super::super::McpRestQueryParams { name: "special".to_string(), source: "special".to_string() },
+            super::super::McpRestQueryParams { name: "alpha".into(), source: "alpha".into() },
+            super::super::McpRestQueryParams { name: "numeric".into(), source: "numeric".into() },
+            super::super::McpRestQueryParams { name: "special".into(), source: "special".into() },
         ];
 
-        let result = build_query_string(&query_params, &args);
+        let mut result = String::new();
+        append_query_string(&mut result, &query_params, &args);
         assert!(result.contains("alpha=ABCxyz"), "Alphanumeric should not be encoded: {}", result);
         assert!(result.contains("numeric=123"), "Numeric should not be encoded: {}", result);
         assert!(result.contains("special=-_.~"), "Unreserved chars -_.~ should not be encoded: {}", result);
