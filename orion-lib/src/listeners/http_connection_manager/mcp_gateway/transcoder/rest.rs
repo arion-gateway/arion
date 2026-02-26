@@ -10,9 +10,9 @@ use crate::{
 use bytes::Bytes;
 use http::StatusCode;
 use http_body_util::Full;
+use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
 use rmcp::model::Request;
 use serde_json::Value;
-use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
 
 pub const DEFAULT_USER_AGENT: &str = concat!("orion/", env!("CARGO_PKG_VERSION"));
 pub const PATH_TEMPLATE_NAME: &str = "path";
@@ -21,11 +21,7 @@ pub const BODY_TEMPLATE_NAME: &str = "body";
 static EMPTY_MAP: std::sync::LazyLock<serde_json::Map<String, Value>> = std::sync::LazyLock::new(serde_json::Map::new);
 
 /// Set of characters that are "unreserved" according to RFC 3986.
-const QUERY_SET: &AsciiSet = &NON_ALPHANUMERIC
-    .remove(b'-')
-    .remove(b'_')
-    .remove(b'.')
-    .remove(b'~');
+const QUERY_SET: &AsciiSet = &NON_ALPHANUMERIC.remove(b'-').remove(b'_').remove(b'.').remove(b'~');
 
 impl RestTranscoder {
     /// Renders a template by substituting variables with values from the arguments map.
@@ -131,15 +127,13 @@ fn resolve_variable<'a>(path: &str, arguments: &'a serde_json::Map<String, Value
     }
 
     // Format output: avoid quotes for strings, use default to_string() for other JSON types
-    current.map(|value|
-        match value {
-            Value::String(s) => Cow::Borrowed(s.as_str()),
-            Value::Null => Cow::Borrowed("null"),
-            Value::Bool(true) => Cow::Borrowed("true"),
-            Value::Bool(false) => Cow::Borrowed("false"),
-            v => Cow::Owned(v.to_string())
-        }
-    )
+    current.map(|value| match value {
+        Value::String(s) => Cow::Borrowed(s.as_str()),
+        Value::Null => Cow::Borrowed("null"),
+        Value::Bool(true) => Cow::Borrowed("true"),
+        Value::Bool(false) => Cow::Borrowed("false"),
+        v => Cow::Owned(v.to_string()),
+    })
 }
 
 /// Appends a query string from query params configuration with variable substitution.
@@ -616,7 +610,11 @@ mod tests {
 
         let mut result = String::new();
         append_query_string(&mut result, &query_params, &args);
-        assert!(result.contains("city%20name=M%C3%BCnchen"), "Non-ASCII and spaces in names should be encoded: {}", result);
+        assert!(
+            result.contains("city%20name=M%C3%BCnchen"),
+            "Non-ASCII and spaces in names should be encoded: {}",
+            result
+        );
         assert!(result.contains("emoji%20param=%F0%9F%9A%80"), "Emojis should be encoded: {}", result);
     }
 

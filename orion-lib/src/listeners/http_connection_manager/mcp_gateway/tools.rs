@@ -5,7 +5,8 @@ use crate::listeners::http_connection_manager::mcp_gateway::{
         Permission as RbacPermission, ToolRbac,
     },
     transcoder::{
-        FunctionGraphTranscoder, RestTranscoder, Transcoder, TranscoderType, rest::{BODY_TEMPLATE_NAME, DEFAULT_USER_AGENT, PATH_TEMPLATE_NAME}
+        rest::{BODY_TEMPLATE_NAME, DEFAULT_USER_AGENT, PATH_TEMPLATE_NAME},
+        FunctionGraphTranscoder, RestTranscoder, Transcoder, TranscoderType,
     },
 };
 use dashmap::DashMap;
