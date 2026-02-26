@@ -219,17 +219,17 @@ impl ToolsRegistry {
         ListToolsResult { tools, next_cursor: None, meta: None }
     }
 
-    fn filter_tool_by_vector_similarity(tool: &ToolEntry, prompt: Option<&String>) -> bool {
+    fn filter_tool_by_vector_similarity(tool: &ToolEntry, prompt_words: Option<&[String]>) -> bool {
         // TODO: This is a dummy implementation of vector similarity.
         // If any word in the prompt is present in the tool description,
         // the tool is selected.
 
-        let Some(prompt) = prompt else {
+        let Some(words) = prompt_words else {
             return true;
         };
 
         let description = tool.conf.description.to_lowercase();
-        prompt.split_whitespace().any(|word| description.contains(&word.to_lowercase()))
+        words.iter().any(|word| description.contains(word))
     }
 
     async fn fill_list_tools(&self, req_ext: &http::Extensions, session: &Option<Arc<Session>>, tools: &mut Vec<Tool>) {
@@ -241,12 +241,17 @@ impl ToolsRegistry {
         // reset the list of active tools for this session...
         session.active_tools.clear();
 
+        let prompt_words: Option<Vec<String>> = {
+            let prompt_guard = session.prompt.lock();
+            prompt_guard.as_ref().map(|p| p.split_whitespace().map(|w| w.to_lowercase()).collect())
+        };
+
         // populate the list of active tools as well as the list of tools to return...
         for entry in self
             .registry
             .iter()
             .filter(|entry| entry.rbac.as_ref().map_or(true, |rbac| rbac.is_permitted(req_ext)))
-            .filter(|entry| Self::filter_tool_by_vector_similarity(entry, session.prompt.lock().as_ref()))
+            .filter(|entry| Self::filter_tool_by_vector_similarity(entry, prompt_words.as_deref()))
         {
             match &entry.conf.backend {
                 UpstreamBackend::Rest { .. } => {
@@ -268,7 +273,7 @@ impl ToolsRegistry {
                 UpstreamBackend::McpServer { transport, url, cache_duration } => {
                     if let Some(r) = self.cache.get(&entry.conf.name) {
                         if std::time::Instant::now() < r.expiration {
-                            tools.extend(r.entry.iter().cloned());
+                            tools.extend_from_slice(&r.entry);
                             continue;
                         }
                     }
@@ -284,12 +289,12 @@ impl ToolsRegistry {
                                 );
                             }
 
-                            tools.extend(up_tools.iter().cloned());
                             if self.dynamic_tool_discovery {
                                 up_tools.iter().for_each(|t| {
                                     session.active_tools.insert(t.name.to_smolstr());
                                 });
                             }
+                            tools.extend(up_tools);
                         },
                         Err(err) => {
                             info!(target: "mcp_gateway", "Failed to list tools: {}!", err);
