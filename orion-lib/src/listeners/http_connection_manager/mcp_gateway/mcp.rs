@@ -1,5 +1,5 @@
-use bytes::Bytes;
-use dashmap::DashMap;
+use bytes::{Bytes, BytesMut};
+use dashmap::{DashMap, DashSet};
 use futures::SinkExt;
 use http::{HeaderName, Method, Response, StatusCode};
 use http_body_util::{BodyExt, Empty, Full};
@@ -9,7 +9,7 @@ use parking_lot::Mutex;
 use scopeguard::defer;
 use serde::Serialize;
 use serde_json::{json, Value};
-use smol_str::ToSmolStr;
+use smol_str::{SmolStr, ToSmolStr};
 use std::sync::{atomic::AtomicUsize, Arc};
 use tokio::sync::Mutex as TokioMutex;
 use tracing::{debug, error, info};
@@ -20,7 +20,7 @@ use rmcp::{
         self, Annotated, CallToolRequestMethod, CallToolResult, ConstString, Implementation, InitializeRequestParams,
         InitializeResult, InitializeResultMethod, InitializedNotificationMethod, JsonRpcResponse,
         ListToolsRequestMethod, PingRequestMethod, ProtocolVersion, RawContent, RawTextContent, ServerCapabilities,
-        ServerResult,
+        ServerNotification, ServerResult,
     },
     service::{ClientInitializeError, RunningService},
     RoleClient, ServiceError,
@@ -58,6 +58,8 @@ pub struct Session {
     pub sse_sender: Option<TokioMutex<SinkSender>>,
     pub last_activity: Mutex<tokio::time::Instant>,
     pub mcp_upstreams: DashMap<String, RunningService<RoleClient, InitializeRequestParams>, ahash::RandomState>,
+    pub prompt: Mutex<Option<String>>,
+    pub active_tools: DashSet<SmolStr, ahash::RandomState>,
 }
 
 impl Default for Session {
@@ -69,6 +71,8 @@ impl Default for Session {
             sse_sender: None,
             last_activity: Mutex::new(tokio::time::Instant::now()),
             mcp_upstreams: DashMap::with_hasher(ahash::RandomState::default()),
+            prompt: Mutex::new(None),
+            active_tools: DashSet::with_hasher(ahash::RandomState::default()),
         }
     }
 }
@@ -164,6 +168,8 @@ impl McpGatewayListenerContext {
             sse_sender: sse_sender.map(TokioMutex::new),
             last_activity: Mutex::new(tokio::time::Instant::now()),
             mcp_upstreams: DashMap::with_hasher(ahash::RandomState::default()),
+            prompt: Mutex::new(None),
+            active_tools: DashSet::with_hasher(ahash::RandomState::default()),
         });
         self.session_map.insert(session_id, session.clone());
         Ok(session)
@@ -187,7 +193,8 @@ pub struct ToolRegistryIndex(pub usize);
 pub enum MessageResult {
     Nothing,
     JsonRpcError(model::JsonRpcError),
-    JsonRcpResponse(model::JsonRpcResponse<serde_json::Value>),
+    JsonRpcResponse(model::JsonRpcResponse<Value>),
+    JsonRpcNotificationResponse(model::JsonRpcNotification<ServerNotification>, model::JsonRpcResponse<Value>),
     UpstreamRequest((http::Request<OrionRequestBody>, bool, ToolRegistryIndex)),
 }
 
@@ -207,7 +214,7 @@ impl TryFrom<McpGatewayConfig> for McpGateway {
     type Error = ToolBuilderError;
 
     fn try_from(config: McpGatewayConfig) -> Result<Self, Self::Error> {
-        let tools = ToolsRegistry::with_tools(config.tools.clone())?;
+        let tools = ToolsRegistry::with_tools(config.tools.clone(), config.dynamic_tool_discovery)?;
         Ok(Self {
             inner: Arc::new(McpGatewayInner { config, tools }),
             session: None,
@@ -417,8 +424,12 @@ impl McpGateway {
                 None => {
                     debug!(target: "mcp_gateway", "apply_response: streamable HTTP (sync)...");
                     let body = serde_json::to_vec(&json_rpc_response).unwrap_or_default();
-                    let headers = self.build_json_headers_with_session();
-                    match self.build_mcp_response(StatusCode::OK, Self::build_mcp_body(Some(body.into())), &headers) {
+                    let headers = self.build_headers_with_session(MIME_APPLICATION_JSON);
+                    match self.build_mcp_http_response(
+                        StatusCode::OK,
+                        Self::build_mcp_response_body(Some(body.into())),
+                        &headers,
+                    ) {
                         Ok(resp) => {
                             *response = resp;
                             FilterDecision::Continue
@@ -532,17 +543,21 @@ impl McpGateway {
                         if let Err(e) = Self::send_sse_message(&mut sender, event.to_bytes(), self.version).await {
                             return e;
                         }
-                        match self.build_mcp_response(StatusCode::ACCEPTED, Self::build_mcp_body(None), &[]) {
+                        match self.build_mcp_http_response(
+                            StatusCode::ACCEPTED,
+                            Self::build_mcp_response_body(None),
+                            &[],
+                        ) {
                             Ok(accepted) => return FilterDecision::DirectResponse(accepted),
                             Err(e) => return e,
                         };
                     },
                     Transport::StreamableHttp => {
                         let body = serde_json::to_string(&json_rpc_error).unwrap_or_default();
-                        let headers = self.build_json_headers_with_session();
-                        match self.build_mcp_response(
+                        let headers = self.build_headers_with_session(MIME_APPLICATION_JSON);
+                        match self.build_mcp_http_response(
                             StatusCode::BAD_REQUEST,
-                            Self::build_mcp_body(Some(body.into())),
+                            Self::build_mcp_response_body(Some(body.into())),
                             &headers,
                         ) {
                             Ok(resp) => return FilterDecision::DirectResponse(resp),
@@ -551,7 +566,7 @@ impl McpGateway {
                     },
                 }
             },
-            MessageResult::JsonRcpResponse(json_rpc_response) => {
+            MessageResult::JsonRpcResponse(json_rpc_response) => {
                 debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: handling Response...");
                 match transport {
                     Transport::Sse => {
@@ -565,16 +580,72 @@ impl McpGateway {
                             return e;
                         }
 
-                        match self.build_mcp_response(StatusCode::ACCEPTED, Self::build_mcp_body(None), &[]) {
+                        match self.build_mcp_http_response(
+                            StatusCode::ACCEPTED,
+                            Self::build_mcp_response_body(None),
+                            &[],
+                        ) {
                             Ok(accepted) => return FilterDecision::DirectResponse(accepted),
                             Err(e) => return e,
                         };
                     },
                     Transport::StreamableHttp => {
                         let body = serde_json::to_vec(&json_rpc_response).unwrap_or_default();
-                        let headers = self.build_json_headers_with_session();
-                        match self.build_mcp_response(StatusCode::OK, Self::build_mcp_body(Some(body.into())), &headers)
-                        {
+                        let headers = self.build_headers_with_session(MIME_APPLICATION_JSON);
+                        match self.build_mcp_http_response(
+                            StatusCode::OK,
+                            Self::build_mcp_response_body(Some(body.into())),
+                            &headers,
+                        ) {
+                            Ok(resp) => return FilterDecision::DirectResponse(resp),
+                            Err(e) => return e,
+                        }
+                    },
+                }
+            },
+            MessageResult::JsonRpcNotificationResponse(json_rpc_notif, json_rpc_response) => {
+                debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: handling Response...");
+                match transport {
+                    Transport::Sse => {
+                        let Some(sender) = self.session.as_deref().and_then(|s| s.sse_sender.as_ref()) else {
+                            debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: SSE sender not available");
+                            return FilterDecision::internal_server_error("SSE sender not available", self.version);
+                        };
+
+                        let event = transport::sse::Event::Message(&json_rpc_notif);
+                        let mut sender = sender.lock().await;
+                        if let Err(e) = Self::send_sse_message(&mut sender, event.to_bytes(), self.version).await {
+                            return e;
+                        }
+
+                        let event = transport::sse::Event::Message(&json_rpc_response);
+                        if let Err(e) = Self::send_sse_message(&mut sender, event.to_bytes(), self.version).await {
+                            return e;
+                        }
+
+                        match self.build_mcp_http_response(
+                            StatusCode::ACCEPTED,
+                            Self::build_mcp_response_body(None),
+                            &[],
+                        ) {
+                            Ok(accepted) => return FilterDecision::DirectResponse(accepted),
+                            Err(e) => return e,
+                        };
+                    },
+                    Transport::StreamableHttp => {
+                        let notif = transport::streamable_http::Event::Message(&json_rpc_notif).to_bytes();
+                        let resp = transport::streamable_http::Event::Message(&json_rpc_response).to_bytes();
+                        let mut buf = BytesMut::with_capacity(notif.len() + resp.len());
+                        buf.extend_from_slice(&notif);
+                        buf.extend_from_slice(&resp);
+                        let body: Bytes = buf.freeze();
+
+                        let headers = self.build_headers_with_session(MIME_TEXT_EVENT_STREAM);
+                        match self.build_mcp_http_response(
+                            StatusCode::OK,
+                            Self::build_mcp_response_body(Some(body)),
+                            &headers,
+                        ) {
                             Ok(resp) => return FilterDecision::DirectResponse(resp),
                             Err(e) => return e,
                         }
@@ -584,7 +655,8 @@ impl McpGateway {
             MessageResult::Nothing => {
                 debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: handling Nothing...");
                 let headers = self.build_session_id_headers();
-                let Ok(accepted) = self.build_mcp_response(StatusCode::ACCEPTED, Self::build_mcp_body(None), &headers)
+                let Ok(accepted) =
+                    self.build_mcp_http_response(StatusCode::ACCEPTED, Self::build_mcp_response_body(None), &headers)
                 else {
                     return FilterDecision::internal_server_error("Failed to build response", self.version);
                 };
@@ -600,9 +672,11 @@ impl McpGateway {
                             return FilterDecision::rate_limited(request.version());
                         }
 
-                        let Ok(accepted) =
-                            self.build_mcp_response(StatusCode::ACCEPTED, Self::build_mcp_body(None), &[])
-                        else {
+                        let Ok(accepted) = self.build_mcp_http_response(
+                            StatusCode::ACCEPTED,
+                            Self::build_mcp_response_body(None),
+                            &[],
+                        ) else {
                             return FilterDecision::internal_server_error("Failed to build response", self.version);
                         };
                         return FilterDecision::AsyncRequest(accepted, Some(upstream_request));
@@ -627,7 +701,7 @@ impl McpGateway {
                         self.streamable_async_sender = Some(Arc::new(TokioMutex::new(sender)));
 
                         let body = TimeoutBody::new(None, PolyBody::from(body));
-                        let Ok(mut okay) = self.build_mcp_response(
+                        let Ok(mut okay) = self.build_mcp_http_response(
                             StatusCode::OK,
                             body,
                             &[
@@ -804,7 +878,7 @@ impl McpGateway {
 
                 let capabilities = ServerCapabilities::builder()
                     .enable_tools()
-                    //.enable_tool_list_changed()
+                    .enable_tool_list_changed()
                     //.enable_resources()
                     //.enable_logging()
                     .build();
@@ -847,7 +921,7 @@ impl McpGateway {
                     result: serde_json::to_value(result).unwrap_or(serde_json::Value::Null),
                 };
 
-                MessageResult::JsonRcpResponse(response)
+                MessageResult::JsonRpcResponse(response)
             },
             InitializedNotificationMethod::VALUE => {
                 debug!(target: "mcp_gateway", "handle_rpc_json_request: notification/initialized (transport: {transport})");
@@ -861,18 +935,18 @@ impl McpGateway {
                     result: json!({}),
                 };
 
-                MessageResult::JsonRcpResponse(response)
+                MessageResult::JsonRpcResponse(response)
             },
             ListToolsRequestMethod::VALUE => {
                 debug!(target: "mcp_gateway", "handle_rpc_json_request: tools/list received");
-                let tools = self.inner.tools.build_list_tools(&req_ext).await;
+                let tools = self.inner.tools.build_list_tools(&req_ext, session).await;
                 let response = model::JsonRpcResponse {
                     jsonrpc: model::JsonRpcVersion2_0,
                     id: self.request_id.clone(),
                     result: serde_json::to_value(tools).unwrap_or(serde_json::Value::Null),
                 };
 
-                MessageResult::JsonRcpResponse(response)
+                MessageResult::JsonRpcResponse(response)
             },
             CallToolRequestMethod::VALUE => {
                 debug!(target: "mcp_gateway", "handle_rpc_json_request: tools/call");
@@ -1053,8 +1127,8 @@ impl McpGateway {
     }
 
     /// Build headers with Content-Type and optional session ID for JSON responses.
-    fn build_json_headers_with_session(&self) -> Vec<(HeaderName, &str)> {
-        let mut headers = vec![(http::header::CONTENT_TYPE, MIME_APPLICATION_JSON)];
+    fn build_headers_with_session(&self, content_type: &'static str) -> Vec<(HeaderName, &str)> {
+        let mut headers = vec![(http::header::CONTENT_TYPE, content_type)];
         if let Some(session_id) = self.get_current_session_id() {
             headers.push((MCP_SESSION_ID, session_id.as_str()));
         }
@@ -1071,14 +1145,14 @@ impl McpGateway {
     }
 
     #[inline]
-    fn build_mcp_body(bytes: Option<Bytes>) -> TimeoutBody<PolyBody> {
-        match bytes {
+    fn build_mcp_response_body(body: Option<Bytes>) -> TimeoutBody<PolyBody> {
+        match body {
             Some(b) => TimeoutBody::new(None, PolyBody::from(Full::from(b))),
             None => TimeoutBody::new(None, PolyBody::from(Empty::new())),
         }
     }
 
-    fn build_mcp_response(
+    fn build_mcp_http_response(
         &self,
         status: StatusCode,
         body: TimeoutBody<PolyBody>,
