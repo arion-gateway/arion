@@ -225,7 +225,7 @@ impl ToolsRegistry {
         // the tool is selected.
 
         let Some(prompt) = prompt else {
-            return false;
+            return true;
         };
 
         let description = tool.conf.description.to_lowercase();
