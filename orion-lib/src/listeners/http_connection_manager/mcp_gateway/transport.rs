@@ -1,4 +1,3 @@
-use bytes::Bytes;
 use http::Method;
 use orion_http_header::MCP_SESSION_ID;
 use serde::Serialize;
@@ -11,8 +10,6 @@ pub const SESSION_ID_QUERY_KEY_ALT: &str = "session_id";
 pub const MIME_TEXT_EVENT_STREAM: &str = "text/event-stream";
 pub const MIME_APPLICATION_JSON: &str = "application/json";
 
-pub const BYTES_MIME_TEXT_EVENT_STREAM: &[u8] = b"text/event-stream";
-
 #[derive(Debug, Clone, Default, Eq, PartialEq, Hash)]
 pub struct SessionId(pub SmolStr);
 
@@ -24,7 +21,7 @@ impl SessionId {
 
 impl std::fmt::Display for SessionId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.as_str())
+        f.write_str(self.as_str())
     }
 }
 
@@ -89,9 +86,10 @@ impl<B> RequestExt for http::Request<B> {
             },
             Method::GET => {
                 if let Some(accept_value) = self.headers().get(http::header::ACCEPT) {
-                    let bytes = accept_value.as_bytes();
-                    if bytes.windows(BYTES_MIME_TEXT_EVENT_STREAM.len()).any(|w| w == BYTES_MIME_TEXT_EVENT_STREAM) {
-                        return Some(Transport::Sse);
+                    if let Ok(s) = accept_value.to_str() {
+                        if s.contains(MIME_TEXT_EVENT_STREAM) {
+                            return Some(Transport::Sse);
+                        }
                     }
                 }
                 None
@@ -139,6 +137,8 @@ impl std::fmt::Display for Transport {
 }
 
 pub mod sse {
+    use bytes::{BufMut, BytesMut};
+
     use super::*;
 
     #[derive(Debug)]
@@ -148,17 +148,25 @@ pub mod sse {
     }
 
     impl<'a, T: Serialize> Event<'a, T> {
-        #[inline]
-        pub fn to_bytes(&self) -> Bytes {
+        // Write directly to a pre-allocated BytesMut
+        pub fn write_to(&self, buf: &mut BytesMut) {
             match self {
-                Event::Endpoint(endpoint) => Bytes::from(format!("event: endpoint\ndata: {endpoint}\n\n")),
+                Event::Endpoint(endpoint) => {
+                    buf.extend_from_slice(b"event: endpoint\ndata: ");
+                    buf.extend_from_slice(endpoint.as_bytes());
+                    buf.extend_from_slice(b"\n\n");
+                },
                 Event::Message(value) => {
-                    let msg = serde_json::to_string(value).unwrap_or_else(|err| {
-                        info!(target: "mcp_gateway", "SSE: failed to serialize message: {}!", err);
-                        "".into()
-                    });
+                    // Write the SSE header
+                    buf.extend_from_slice(b"event: message\ndata: ");
 
-                    Bytes::from(format!("event: message\ndata: {msg}\n\n"))
+                    // Serialize directly into the IO writer adapter
+                    if let Err(err) = serde_json::to_writer(buf.writer(), value) {
+                        info!(target: "mcp_gateway", "SSE: failed to serialize message: {}!", err);
+                    }
+
+                    // Append closing newlines (acts as fallback if serialization fails)
+                    buf.extend_from_slice(b"\n\n");
                 },
             }
         }
@@ -174,9 +182,9 @@ pub mod streamable_http {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use bytes::Bytes;
+    use bytes::{BufMut, BytesMut};
     use serde::Serialize;
-    use smol_str::{format_smolstr, SmolStr};
+    use std::io::Write;
 
     // Stores the random instance prefix (initialized only once).
     // We use OnceLock for thread-safe, one-time initialization without Mutex overhead on reads.
@@ -193,31 +201,32 @@ pub mod streamable_http {
     }
 
     impl<'a, T: Serialize> Event<'a, T> {
-        #[inline]
-        pub fn to_bytes(&self) -> Bytes {
-            let id = get_sse_id();
+        pub fn write_to(&self, buf: &mut BytesMut) {
+            let prefix = INSTANCE_PREFIX.get_or_init(|| {
+                let start = SystemTime::now();
+                let since_the_epoch = start.duration_since(UNIX_EPOCH).expect("Time went backwards");
+                since_the_epoch.as_nanos()
+            });
+            let count = COUNTER.fetch_add(1, Ordering::Relaxed);
+
+            // Create an adapter that implements std::io::Write
+            let mut writer = buf.writer();
+
             match self {
                 Event::Message(value) => {
-                    let msg = serde_json::to_string(value).unwrap_or_default();
-                    Bytes::from(format!("event: message\nid: {id}\ndata: {msg}\n\n"))
+                    // 1. Write the SSE header using the io::Write trait
+                    let _ = write!(writer, "event: message\nid: {:x}_{}\ndata: ", prefix, count);
+
+                    // 2. Serialize JSON directly into the writer
+                    let _ = serde_json::to_writer(&mut writer, value);
+
+                    // 3. Append the closing newlines
+                    let _ = writer.write_all(b"\n\n");
                 },
-                Event::Priming => Bytes::from(format!("event: message\nid: {id}\ndata:\n\n")),
+                Event::Priming => {
+                    let _ = write!(writer, "event: message\nid: {:x}_{}\ndata:\n\n", prefix, count);
+                },
             }
         }
-    }
-
-    fn get_sse_id() -> SmolStr {
-        // 1. Get the prefix in nanoseconds.
-        let prefix = INSTANCE_PREFIX.get_or_init(|| {
-            let start = SystemTime::now();
-            let since_the_epoch = start.duration_since(UNIX_EPOCH).expect("Time went backwards");
-            since_the_epoch.as_nanos()
-        });
-
-        // 2. Increment the counter.
-        let count = COUNTER.fetch_add(1, Ordering::Relaxed);
-
-        // 3. Combine them.
-        format_smolstr!("{:x}_{}", prefix, count)
     }
 }

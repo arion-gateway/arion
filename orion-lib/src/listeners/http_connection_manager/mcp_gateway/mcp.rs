@@ -309,7 +309,9 @@ impl McpGateway {
 
                     let event = transport::sse::Event::Message(&error);
                     let mut sender = sender.lock().await;
-                    if let Err(e) = Self::send_sse_message(&mut sender, event.to_bytes(), self.version).await {
+                    let mut buf = BytesMut::with_capacity(1024);
+                    event.write_to(&mut buf);
+                    if let Err(e) = Self::send_sse_message(&mut sender, buf.freeze(), self.version).await {
                         return e;
                     }
                 },
@@ -318,7 +320,9 @@ impl McpGateway {
                     if let Some(sender) = &mut self.streamable_async_sender {
                         let mut sender_guard = sender.lock().await;
                         let sender = &mut *sender_guard;
-                        if let Err(e) = Self::send_sse_message(sender, event.to_bytes(), self.version).await {
+                        let mut buf = BytesMut::with_capacity(1024);
+                        event.write_to(&mut buf);
+                        if let Err(e) = Self::send_sse_message(sender, buf.freeze(), self.version).await {
                             return e;
                         }
                         sender.close();
@@ -404,7 +408,9 @@ impl McpGateway {
                 let event = transport::sse::Event::Message(&json_rpc_response);
                 debug!(target: "mcp_gateway", "apply_response: SENDING SSE EVENT: {:?}", event);
                 let mut sender = sender.lock().await;
-                if let Err(e) = Self::send_sse_message(&mut sender, event.to_bytes(), self.version).await {
+                let mut buf = BytesMut::with_capacity(1024);
+                event.write_to(&mut buf);
+                if let Err(e) = Self::send_sse_message(&mut sender, buf.freeze(), self.version).await {
                     return e;
                 }
                 FilterDecision::Continue
@@ -415,7 +421,9 @@ impl McpGateway {
                     let mut sender_guard = sender.lock().await;
                     let sender = &mut *sender_guard;
                     let event = transport::streamable_http::Event::Message(&json_rpc_response);
-                    if let Err(e) = sender.send(event.to_bytes()).await {
+                    let mut buf = BytesMut::with_capacity(1024);
+                    event.write_to(&mut buf);
+                    if let Err(e) = sender.send(buf.freeze()).await {
                         debug!(target: "mcp_gateway", "apply_response: failed to send message for session {}, error {e}", session.session_id);
                     }
                     sender.close();
@@ -540,7 +548,9 @@ impl McpGateway {
                         debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: sending SSE message...");
                         let event = transport::sse::Event::Message(&json_rpc_error);
                         let mut sender = sender.lock().await;
-                        if let Err(e) = Self::send_sse_message(&mut sender, event.to_bytes(), self.version).await {
+                        let mut buf = BytesMut::with_capacity(1024);
+                        event.write_to(&mut buf);
+                        if let Err(e) = Self::send_sse_message(&mut sender, buf.freeze(), self.version).await {
                             return e;
                         }
                         match self.build_mcp_http_response(
@@ -576,7 +586,9 @@ impl McpGateway {
                         };
                         let event = transport::sse::Event::Message(&json_rpc_response);
                         let mut sender = sender.lock().await;
-                        if let Err(e) = Self::send_sse_message(&mut sender, event.to_bytes(), self.version).await {
+                        let mut buf = BytesMut::with_capacity(1024);
+                        event.write_to(&mut buf);
+                        if let Err(e) = Self::send_sse_message(&mut sender, buf.freeze(), self.version).await {
                             return e;
                         }
 
@@ -614,12 +626,16 @@ impl McpGateway {
 
                         let event = transport::sse::Event::Message(&json_rpc_notif);
                         let mut sender = sender.lock().await;
-                        if let Err(e) = Self::send_sse_message(&mut sender, event.to_bytes(), self.version).await {
+                        let mut buf = BytesMut::with_capacity(1024);
+                        event.write_to(&mut buf);
+                        if let Err(e) = Self::send_sse_message(&mut sender, buf.freeze(), self.version).await {
                             return e;
                         }
 
                         let event = transport::sse::Event::Message(&json_rpc_response);
-                        if let Err(e) = Self::send_sse_message(&mut sender, event.to_bytes(), self.version).await {
+                        let mut buf = BytesMut::with_capacity(1024);
+                        event.write_to(&mut buf);
+                        if let Err(e) = Self::send_sse_message(&mut sender, buf.freeze(), self.version).await {
                             return e;
                         }
 
@@ -633,11 +649,12 @@ impl McpGateway {
                         };
                     },
                     Transport::StreamableHttp => {
-                        let notif = transport::streamable_http::Event::Message(&json_rpc_notif).to_bytes();
-                        let resp = transport::streamable_http::Event::Message(&json_rpc_response).to_bytes();
-                        let mut buf = BytesMut::with_capacity(notif.len() + resp.len());
-                        buf.extend_from_slice(&notif);
-                        buf.extend_from_slice(&resp);
+                        let notif = transport::streamable_http::Event::Message(&json_rpc_notif);
+                        let resp = transport::streamable_http::Event::Message(&json_rpc_response);
+                        let mut buf = BytesMut::with_capacity(1024);
+
+                        notif.write_to(&mut buf);
+                        resp.write_to(&mut buf);
                         let body: Bytes = buf.freeze();
 
                         let headers = self.build_headers_with_session(MIME_TEXT_EVENT_STREAM);
@@ -692,7 +709,9 @@ impl McpGateway {
 
                         // priming event...
                         let event: transport::streamable_http::Event = transport::streamable_http::Event::Priming;
-                        if let Err(e) = sender.send(event.to_bytes()).await {
+                        let mut buf = BytesMut::with_capacity(1024);
+                        event.write_to(&mut buf);
+                        if let Err(e) = sender.send(buf.freeze()).await {
                             debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: failed to send priming event: {e}");
                             return FilterDecision::internal_server_error("Failed to send priming event", self.version);
                         };
@@ -767,9 +786,12 @@ impl McpGateway {
             session.session_id.as_str()
         ));
 
+        let mut buf = BytesMut::with_capacity(1024);
+        event.write_to(&mut buf);
+
         let body = TimeoutBody::new(None, PolyBody::from(body));
 
-        let Ok(_) = sender.send(event.to_bytes()).await else {
+        let Ok(_) = sender.send(buf.freeze()).await else {
             debug!(target: "mcp_gateway", "handle_sse_handshake: failed to send SSE payload");
             ctx.delete_session(&session.session_id);
             return FilterDecision::internal_server_error("Failed to send SSE payload", request.version());
