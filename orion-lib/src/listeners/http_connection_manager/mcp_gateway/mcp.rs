@@ -7,6 +7,7 @@ use orion_configuration::config::network_filters::http_connection_manager::http_
 use orion_http_header::MCP_SESSION_ID;
 use parking_lot::Mutex;
 use scopeguard::defer;
+use atomic_time::AtomicInstant;
 use serde::Serialize;
 use serde_json::{json, Value};
 use smol_str::{SmolStr, ToSmolStr};
@@ -50,16 +51,30 @@ const MCP_MESSAGE_ENDPOINT: &str = "/mcp";
 const SSE_MESSAGE_ENDPOINT: &str = "/sse";
 const SESSION_IDLE_TIMEOUT: tokio::time::Duration = tokio::time::Duration::from_secs(60);
 
-#[derive(Debug)]
 pub struct Session {
     pub listener_name: &'static str, // to handle session eviction from listener.sse_map
     pub session_id: SessionId,
     pub transport: Transport,
     pub sse_sender: Option<TokioMutex<SinkSender>>,
-    pub last_activity: Mutex<tokio::time::Instant>,
+    pub last_activity: AtomicInstant,
     pub mcp_upstreams: DashMap<String, RunningService<RoleClient, InitializeRequestParams>, ahash::RandomState>,
     pub prompt: Mutex<Option<String>>,
     pub active_tools: DashSet<SmolStr, ahash::RandomState>,
+}
+
+impl std::fmt::Debug for Session {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Session")
+            .field("listener_name", &self.listener_name)
+            .field("session_id", &self.session_id)
+            .field("transport", &self.transport)
+            .field("sse_sender", &self.sse_sender)
+            .field("last_activity", &self.last_activity.load(std::sync::atomic::Ordering::Relaxed))
+            .field("mcp_upstreams", &self.mcp_upstreams)
+            .field("prompt", &self.prompt)
+            .field("active_tools", &self.active_tools)
+            .finish()
+    }
 }
 
 impl Default for Session {
@@ -69,7 +84,7 @@ impl Default for Session {
             session_id: SessionId::default(),
             transport: Transport::default(),
             sse_sender: None,
-            last_activity: Mutex::new(tokio::time::Instant::now()),
+            last_activity: AtomicInstant::now(),
             mcp_upstreams: DashMap::with_hasher(ahash::RandomState::default()),
             prompt: Mutex::new(None),
             active_tools: DashSet::with_hasher(ahash::RandomState::default()),
@@ -86,10 +101,10 @@ pub struct McpGatewayListenerContext {
 
 impl McpGatewayListenerContext {
     fn cleanup(session_map: &DashMap<SessionId, Arc<Session>, ahash::RandomState>) {
-        let now = tokio::time::Instant::now();
+        let now = std::time::Instant::now();
         session_map.retain(|_, session| {
-            let last_activity = session.last_activity.lock();
-            let idle = now.duration_since(*last_activity);
+            let last_activity = session.last_activity.load(std::sync::atomic::Ordering::Relaxed);
+            let idle = now.saturating_duration_since(last_activity);
             let retain = idle < SESSION_IDLE_TIMEOUT;
             if !retain {
                 debug!(target: "mcp_gateway", "Session {} has been idle for {} seconds (dropped)", session.session_id, idle.as_secs());
@@ -166,7 +181,7 @@ impl McpGatewayListenerContext {
             session_id: session_id.clone(),
             transport,
             sse_sender: sse_sender.map(TokioMutex::new),
-            last_activity: Mutex::new(tokio::time::Instant::now()),
+            last_activity: AtomicInstant::now(),
             mcp_upstreams: DashMap::with_hasher(ahash::RandomState::default()),
             prompt: Mutex::new(None),
             active_tools: DashSet::with_hasher(ahash::RandomState::default()),
@@ -1108,6 +1123,7 @@ impl McpGateway {
                     return None;
                 };
 
+                session.last_activity.store(std::time::Instant::now(), std::sync::atomic::Ordering::Relaxed);
                 debug!(target: "mcp_gateway", "get_valid_session: found session {}", session_id);
                 Some(session.clone())
             },
@@ -1118,6 +1134,7 @@ impl McpGateway {
                         return None;
                     };
 
+                    session.last_activity.store(std::time::Instant::now(), std::sync::atomic::Ordering::Relaxed);
                     Some(session.clone())
                 },
                 None => None,
