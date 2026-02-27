@@ -10,6 +10,7 @@ use scopeguard::defer;
 use atomic_time::AtomicInstant;
 use serde::Serialize;
 use serde_json::{json, Value};
+use smallvec::{smallvec, SmallVec};
 use smol_str::{SmolStr, ToSmolStr};
 use std::sync::{atomic::AtomicUsize, Arc};
 use tokio::sync::Mutex as TokioMutex;
@@ -1166,8 +1167,8 @@ impl McpGateway {
     }
 
     /// Build headers with Content-Type and optional session ID for JSON responses.
-    fn build_headers_with_session(&self, content_type: &'static str) -> Vec<(HeaderName, &str)> {
-        let mut headers = vec![(http::header::CONTENT_TYPE, content_type)];
+    fn build_headers_with_session(&self, content_type: &'static str) -> SmallVec<[(HeaderName, &str); 2]> {
+        let mut headers = smallvec![(http::header::CONTENT_TYPE, content_type)];
         if let Some(session_id) = self.get_current_session_id() {
             headers.push((MCP_SESSION_ID, session_id.as_str()));
         }
@@ -1175,11 +1176,11 @@ impl McpGateway {
     }
 
     /// Build headers with only session ID (no Content-Type), for accepted responses.
-    fn build_session_id_headers(&self) -> Vec<(HeaderName, &str)> {
+    fn build_session_id_headers(&self) -> SmallVec<[(HeaderName, &str); 2]> {
         if let Some(session_id) = self.get_current_session_id() {
-            vec![(MCP_SESSION_ID, session_id.as_str())]
+            smallvec![(MCP_SESSION_ID, session_id.as_str())]
         } else {
-            vec![]
+            smallvec![]
         }
     }
 
