@@ -441,7 +441,7 @@ impl ToolsRegistry {
             .iter()
             .enumerate()
             .find(|(_, e)| e.conf.name == tool_name)
-            .filter(|(_, e)| session.active_tools.contains(&e.conf.name))
+            .filter(|(_, e)| !self.dynamic_tool_discovery || session.active_tools.contains(&e.conf.name))
             .ok_or_else(|| CallToolError::ToolNotFound(tool_name.to_string()))?;
 
         if let Some(rbac) = &entry.rbac {
