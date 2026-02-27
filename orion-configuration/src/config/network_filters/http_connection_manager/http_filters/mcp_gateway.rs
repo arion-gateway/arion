@@ -215,7 +215,7 @@ mod envoy_conversions {
 
     impl From<OrionMcpQueryParams> for McpRestQueryParams {
         fn from(orion: OrionMcpQueryParams) -> Self {
-            McpRestQueryParams { name: orion.name.into(), source: orion.source.into()}
+            McpRestQueryParams { name: orion.name.into(), source: orion.source.into() }
         }
     }
 
