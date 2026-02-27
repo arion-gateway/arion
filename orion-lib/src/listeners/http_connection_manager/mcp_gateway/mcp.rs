@@ -12,7 +12,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use smallvec::{smallvec, SmallVec};
 use smol_str::{SmolStr, ToSmolStr};
-use std::sync::{atomic::AtomicUsize, Arc};
+use std::sync::{atomic::{AtomicBool, AtomicUsize, Ordering}, Arc};
 use tokio::sync::Mutex as TokioMutex;
 use tracing::{debug, error, info};
 use uuid::Uuid;
@@ -98,6 +98,7 @@ pub struct McpGatewayListenerContext {
     session_map: Arc<DashMap<SessionId, Arc<Session>, ahash::RandomState>>,
     active_async_requests: AtomicUsize,
     cleanup_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    cleanup_task_started: AtomicBool,
 }
 
 impl McpGatewayListenerContext {
@@ -115,16 +116,19 @@ impl McpGatewayListenerContext {
     }
 
     pub fn start_cleanup_task(&self) {
-        let mut clean_task = self.cleanup_task.lock();
-        if clean_task.is_none() {
-            let session_map = Arc::clone(&self.session_map);
-            let task = tokio::spawn(async move {
-                loop {
-                    pingora_timeout::sleep(SESSION_IDLE_TIMEOUT / 2).await;
-                    Self::cleanup(&session_map);
-                }
-            });
-            *clean_task = Some(task);
+        if !self.cleanup_task_started.load(Ordering::Acquire) {
+            let mut clean_task = self.cleanup_task.lock();
+            if clean_task.is_none() {
+                let session_map = Arc::clone(&self.session_map);
+                let task = tokio::spawn(async move {
+                    loop {
+                        pingora_timeout::sleep(SESSION_IDLE_TIMEOUT / 2).await;
+                        Self::cleanup(&session_map);
+                    }
+                });
+                *clean_task = Some(task);
+                self.cleanup_task_started.store(true, Ordering::Release);
+            }
         }
     }
 }
@@ -135,6 +139,7 @@ impl Default for McpGatewayListenerContext {
             session_map: Arc::new(DashMap::default()),
             active_async_requests: Default::default(),
             cleanup_task: Mutex::new(None),
+            cleanup_task_started: AtomicBool::new(false),
         }
     }
 }
