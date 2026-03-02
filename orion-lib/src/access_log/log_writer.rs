@@ -16,9 +16,10 @@
 //
 
 use orion_configuration::config::network_filters::access_log::AccessLogConf;
+use tracing_rolling_file::{RollingConditionBase, RollingFileAppender, RollingFrequency};
 use tracing_appender::{
     non_blocking::{NonBlocking, WorkerGuard},
-    rolling::{RollingFileAppender, Rotation},
+    rolling::Rotation,
 };
 
 use super::{deferred_init, LoggerError};
@@ -34,7 +35,13 @@ impl LogWriter {
         &self.conf
     }
 
-    pub(crate) fn new(index: usize, conf: AccessLogConf, rotation: Rotation, max_log_files: usize) -> Self {
+    pub(crate) fn new(
+        index: usize,
+        conf: AccessLogConf,
+        rolling_frequency: Option<RollingFrequency>,
+        max_file_size: Option<u64>,
+        max_log_files: usize,
+    ) -> Self {
         let handle = match conf {
             AccessLogConf::Stdout => DeferredInit::new(|| Ok(tracing_appender::non_blocking(std::io::stdout()))),
             AccessLogConf::Stderr => DeferredInit::new(|| Ok(tracing_appender::non_blocking(std::io::stderr()))),
@@ -42,12 +49,19 @@ impl LogWriter {
                 let path = path.clone();
                 DeferredInit::new(move || {
                     let filename = if index == 0 { path.clone() } else { format!("{path}-{index}") };
-                    match RollingFileAppender::builder()
-                        .rotation(rotation)
-                        .max_log_files(max_log_files)
-                        .filename_prefix(filename)
-                        .build("")
-                    {
+                    let condition = if let Some(max_size) = max_file_size {
+                        RollingConditionBase::new().max_size(max_size)
+                    } else {
+                        RollingConditionBase::new()
+                    };
+
+                    let condition = if let Some(freq) = rolling_frequency {
+                        condition.frequency(freq)
+                    } else {
+                        condition
+                    };
+
+                    match RollingFileAppender::new(filename, condition, max_log_files) {
                         Ok(app) => Ok(tracing_appender::non_blocking(app)),
                         Err(e) => Err(LoggerError::InitializationError(format!(
                             "Failed to create RollingFileAppender for path: {path}. Error: {e}"

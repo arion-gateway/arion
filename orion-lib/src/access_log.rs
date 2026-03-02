@@ -28,6 +28,7 @@ use orion_format::FormattedMessage;
 use parking_lot::Mutex;
 use pool::LoggerPool;
 use smol_str::SmolStr;
+use tracing_rolling_file::RollingFrequency;
 use std::sync::OnceLock;
 use tracing_appender::rolling::Rotation;
 
@@ -129,7 +130,8 @@ pub fn log_access(permit: ShareableAccessLogPermit, target: Target, vec: Vec<For
 ///
 /// * `len` - The number of logger instances to spawn.
 /// * `buffer` - The size of the message buffer for each logger's channel.
-/// * `rotation` - The Rotation variant from tracing lib.
+/// * `frequency` - The optional RollingFrequency variant from tracing_rolling_file lib.
+/// * `max_file_size` - The optional maximum size of file per each target.
 /// * `max_log_files` - The maximum number of files per each target.
 ///
 /// # Returns
@@ -139,7 +141,8 @@ pub fn log_access(permit: ShareableAccessLogPermit, target: Target, vec: Vec<For
 pub fn start_access_loggers(
     num_instances: usize,
     buffer: usize,
-    rotation: Rotation,
+    frequency: Option<RollingFrequency>,
+    max_file_size: Option<u64>,
     max_log_files: usize,
 ) -> JoinSet<()> {
     let (mut senders, mut receivers) = (Vec::with_capacity(num_instances), Vec::with_capacity(num_instances));
@@ -158,9 +161,10 @@ pub fn start_access_loggers(
 
     let mut join_set = JoinSet::new();
     for (i, recv) in receivers.into_iter().enumerate() {
-        let rotation = rotation.clone();
+        let frequency = frequency.clone();
+        let max_size = max_file_size.clone();
         join_set.spawn(async move {
-            let mut logger = AccessLogger::new(i, rotation, max_log_files);
+            let mut logger = AccessLogger::new(i, frequency, max_size, max_log_files);
             logger.run(recv).await
         });
     }
@@ -266,7 +270,7 @@ mod tests {
         let message = fmt.into_message();
 
         // initialize the logger pool with one channel for access log messages
-        let handles = start_access_loggers(8, 100, Rotation::NEVER, 3);
+        let handles = start_access_loggers(8, 100, None, None, 3);
 
         // send a new configuration for the logger(s)
         update_configuration(

@@ -17,53 +17,48 @@
 
 use orion_error::{Context, Error};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use tracing_rolling_file::RollingFrequency;
 use std::num::NonZeroUsize;
-use tracing_appender::rolling::Rotation;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RotationConfig(pub Rotation);
+pub struct RollingFrequencyConfig(pub RollingFrequency);
 
-impl Serialize for RotationConfig {
+impl Serialize for RollingFrequencyConfig {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
         let s = match self.0 {
-            Rotation::MINUTELY => "minutely",
-            Rotation::HOURLY => "hourly",
-            Rotation::DAILY => "daily",
-            Rotation::WEEKLY => "weekly",
-            Rotation::NEVER => "never",
+            RollingFrequency::EveryDay => "daily",
+            RollingFrequency::EveryHour => "hourly",
+            RollingFrequency::EveryMinute => "minutely",
         };
         serializer.serialize_str(s)
     }
 }
 
-impl<'de> Deserialize<'de> for RotationConfig {
+impl<'de> Deserialize<'de> for RollingFrequencyConfig {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         let s: String = Deserialize::deserialize(deserializer)?;
         let rot = match s.as_str() {
-            "minutely" | "MINUTELY" => Rotation::MINUTELY,
-            "hourly" | "HOURLY" => Rotation::HOURLY,
-            "daily" | "DAILY" => Rotation::DAILY,
-            "weekly" | "WEEKLY" => Rotation::WEEKLY,
-            "never" | "NEVER" => Rotation::NEVER,
-            _ => return Err(serde::de::Error::custom(format!("invalid rotation: {s}"))),
+            "minutely" | "MINUTELY" => RollingFrequency::EveryMinute,
+            "hourly" | "HOURLY" => RollingFrequency::EveryHour,
+            "daily" | "DAILY" => RollingFrequency::EveryDay,
+            _ => return Err(serde::de::Error::custom(format!("invalid frequency rotation: {s}"))),
         };
-        Ok(RotationConfig(rot))
+        Ok(RollingFrequencyConfig(rot))
     }
 }
 
-impl Default for RotationConfig {
+impl Default for RollingFrequencyConfig {
     fn default() -> Self {
-        RotationConfig(Rotation::NEVER)
+        RollingFrequencyConfig(RollingFrequency::EveryDay)
     }
 }
-
 #[derive(Debug, Deserialize, Serialize, Default)]
 pub struct LogConfig {
     #[serde(deserialize_with = "deserialize_log_level", serialize_with = "serialize_log_level")]
@@ -94,8 +89,8 @@ pub struct AccessLogConfig {
     pub num_instances: NonZeroUsize,
     #[serde(default = "const_value::<1024>")]
     pub queue_length: NonZeroUsize,
-    #[serde(default = "RotationConfig::default")]
-    pub log_rotation: RotationConfig,
+    pub log_rotation: Option<RollingFrequencyConfig>,
+    pub log_max_size: Option<u64>,
     #[serde(default = "const_value::<10>")]
     pub max_log_files: NonZeroUsize,
 }
@@ -105,7 +100,8 @@ impl Default for AccessLogConfig {
         Self {
             num_instances: const_value::<1>(),
             queue_length: const_value::<1024>(),
-            log_rotation: RotationConfig::default(),
+            log_rotation: None,
+            log_max_size: None,
             max_log_files: const_value::<10>(),
         }
     }
