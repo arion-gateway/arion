@@ -13,6 +13,7 @@ message McpGateway {
     optional string cluster_header = 1;
     ServerInfo server_info = 2 [(validate.rules).message = {required: true}];
     repeated Tool tools = 3;
+    bool dynamic_tool_discovery = 4;
 }
 
 // Server info

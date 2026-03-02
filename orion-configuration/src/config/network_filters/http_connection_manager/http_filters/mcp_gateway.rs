@@ -14,6 +14,7 @@ pub struct McpGateway {
     pub cluster_header: Option<ClusterHeader>,
     pub server_info: McpServerInfo,
     pub tools: Vec<McpTool>,
+    pub dynamic_tool_discovery: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
@@ -59,8 +60,8 @@ pub enum McpBackendTransportUpstream {
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct McpRestQueryParams {
-    pub name: String,
-    pub source: String,
+    pub name: SmolStr,
+    pub source: SmolStr,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
@@ -106,13 +107,13 @@ mod envoy_conversions {
     impl TryFrom<OrionMcpGateway> for McpGateway {
         type Error = GenericError;
         fn try_from(orion: OrionMcpGateway) -> Result<Self, Self::Error> {
-            let OrionMcpGateway { cluster_header, server_info, tools } = orion;
+            let OrionMcpGateway { cluster_header, server_info, tools, dynamic_tool_discovery } = orion;
             let server_info = required!(server_info)?;
             let cluster_header: Option<http::HeaderName> = cluster_header.map(TryInto::try_into).transpose()?;
             let cluster_header = cluster_header.map(ClusterHeader);
 
             let tools = tools.into_iter().map(TryInto::try_into).collect::<Result<Vec<_>, _>>()?;
-            Ok(McpGateway { cluster_header, server_info: server_info.into(), tools })
+            Ok(McpGateway { cluster_header, server_info: server_info.into(), tools, dynamic_tool_discovery })
         }
     }
 
@@ -214,7 +215,7 @@ mod envoy_conversions {
 
     impl From<OrionMcpQueryParams> for McpRestQueryParams {
         fn from(orion: OrionMcpQueryParams) -> Self {
-            McpRestQueryParams { name: orion.name, source: orion.source }
+            McpRestQueryParams { name: orion.name.into(), source: orion.source.into() }
         }
     }
 

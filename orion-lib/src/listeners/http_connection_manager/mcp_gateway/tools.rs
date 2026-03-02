@@ -16,7 +16,11 @@ use orion_configuration::config::network_filters::http_connection_manager::http_
     ClusterHeader, McpBackendTransportUpstream, McpTool, UpstreamBackend,
 };
 use rmcp::{
-    model::{CallToolRequestParams, ClientCapabilities, ClientInfo, Implementation, InitializeRequestParams},
+    model::{
+        CallToolRequestParams, CallToolResult, ClientCapabilities, ClientInfo, Content, Implementation,
+        InitializeRequestParams, JsonRpcNotification, RawContent, RawTextContent, ServerNotification,
+        ToolListChangedNotification,
+    },
     service::ClientInitializeError,
     transport::StreamableHttpClientTransport,
     ServiceError, ServiceExt,
@@ -25,11 +29,24 @@ use rmcp::{
 use rmcp::model;
 use rmcp::model::{ListToolsResult, Tool};
 use rmcp::service::{RoleClient, RunningService};
-use serde_json::Value;
+use serde_json::{json, Value};
 use smol_str::{SmolStr, ToSmolStr};
+use std::sync::LazyLock;
 use std::{borrow::Cow, sync::Arc, time::Instant};
 use tracing::{debug, info};
 use upon::Engine;
+
+const DYNAMIC_TOOL_DISCOVERY: &str = "dynamic_tool_discovery";
+
+static DYNAMIC_TOOL_DISCOVERY_INPUT_SCHEMA: LazyLock<Value> = LazyLock::new(|| {
+    json!({
+        "type": "object",
+        "properties": {
+            "user_query": { "type": "string", "description": "The prompt or summary text." }
+        },
+        "required": ["user_query"],
+    })
+});
 
 #[derive(Debug, Clone)]
 struct CachedEntry<T> {
@@ -41,6 +58,7 @@ struct CachedEntry<T> {
 pub struct ToolsRegistry {
     registry: Vec<ToolEntry>,
     cache: DashMap<SmolStr, CachedEntry<Vec<Tool>>, ahash::RandomState>,
+    dynamic_tool_discovery: bool,
 }
 
 #[derive(Debug)]
@@ -109,17 +127,19 @@ impl ToolEntry {
         Ok(())
     }
 
+    #[inline]
     pub fn validate_against_input_schema(&self, arguments: &Value) -> Result<(), CallToolError> {
         Self::validate_json_against_schema(self.input_schema_validator.as_ref(), arguments)
     }
 
+    #[inline]
     pub fn validate_against_output_schema(&self, arguments: &Value) -> Result<(), CallToolError> {
         Self::validate_json_against_schema(self.output_schema_validator.as_ref(), arguments)
     }
 }
 
 impl ToolsRegistry {
-    pub fn with_tools(tools: Vec<McpTool>) -> Result<Self, ToolBuilderError> {
+    pub fn with_tools(tools: Vec<McpTool>, dynamic_tool_discovery: bool) -> Result<Self, ToolBuilderError> {
         let registry: Vec<ToolEntry> = tools
             .into_iter()
             .map(|tool_conf| -> Result<ToolEntry, ToolBuilderError> {
@@ -160,7 +180,7 @@ impl ToolsRegistry {
                 Ok(ToolEntry { conf: tool_conf, transcoder, rbac, input_schema_validator, output_schema_validator })
             })
             .collect::<Result<Vec<_>, ToolBuilderError>>()?;
-        Ok(ToolsRegistry { registry, cache: DashMap::with_hasher(ahash::RandomState::new()) })
+        Ok(ToolsRegistry { registry, cache: DashMap::with_hasher(ahash::RandomState::new()), dynamic_tool_discovery })
     }
 
     /// Get a tool by name as an Arc for cheap cloning
@@ -169,49 +189,113 @@ impl ToolsRegistry {
         self.registry.get(tool_index.0)
     }
 
-    pub async fn build_list_tools(&self, req_ext: &http::Extensions) -> ListToolsResult {
-        let mut tools = Vec::with_capacity(self.registry.len());
-        for entry in self.registry.iter() {
-            if let Some(rbac) = &entry.rbac {
-                if !rbac.is_permitted(req_ext) {
-                    continue;
-                }
-            }
+    pub async fn build_list_tools(
+        &self,
+        req_ext: &http::Extensions,
+        session: &Option<Arc<Session>>,
+    ) -> ListToolsResult {
+        let mut tools = Vec::with_capacity(self.registry.len() + 1);
+        if self.dynamic_tool_discovery {
+            let Value::Object(discovery_input_schema) = &*DYNAMIC_TOOL_DISCOVERY_INPUT_SCHEMA else { unreachable!() };
 
+            tools.push(Tool {
+                name: DYNAMIC_TOOL_DISCOVERY.into(),
+                description: Some("Pass the user prompt or a summary to discover relevant tools.".into()),
+                input_schema: Arc::new(discovery_input_schema.clone()),
+                output_schema: None,
+                title: None,
+                annotations: None,
+                icons: None,
+                meta: None,
+            });
+        }
+
+        // FIXME: This is a dummy dynamic tool discovery strategy that
+        // returns the complete list of tools after the dynamic_tool_discovery is invoked.
+        //
+        if !self.dynamic_tool_discovery || session.as_ref().is_some_and(|session| session.prompt.lock().is_some()) {
+            self.fill_list_tools(req_ext, session, &mut tools).await;
+        }
+
+        ListToolsResult { tools, next_cursor: None, meta: None }
+    }
+
+    fn filter_tool_by_vector_similarity(tool: &ToolEntry, prompt_words: Option<&[String]>) -> bool {
+        // TODO: This is a dummy implementation of vector similarity.
+        // If any word in the prompt is present in the tool description,
+        // the tool is selected.
+
+        let Some(words) = prompt_words else {
+            return true;
+        };
+
+        let description = tool.conf.description.to_lowercase();
+        words.iter().any(|word| description.contains(word))
+    }
+
+    async fn fill_list_tools(&self, req_ext: &http::Extensions, session: &Option<Arc<Session>>, tools: &mut Vec<Tool>) {
+        let Some(session) = session.as_ref() else {
+            debug!(target: "mcp_gateway", "build_list_tool_apis without session!");
+            return;
+        };
+
+        // reset the list of active tools for this session...
+        session.active_tools.clear();
+
+        let prompt_words: Option<Vec<String>> = {
+            let prompt_guard = session.prompt.lock();
+            prompt_guard.as_ref().map(|p| p.split_whitespace().map(|w| w.to_lowercase()).collect())
+        };
+
+        // populate the list of active tools as well as the list of tools to return...
+        for entry in self
+            .registry
+            .iter()
+            .filter(|entry| entry.rbac.as_ref().map_or(true, |rbac| rbac.is_permitted(req_ext)))
+            .filter(|entry| Self::filter_tool_by_vector_similarity(entry, prompt_words.as_deref()))
+        {
             match &entry.conf.backend {
                 UpstreamBackend::Rest { .. } => {
                     tools.push(Tool {
                         name: Cow::Owned(entry.conf.name.to_string()),
                         description: Some(entry.conf.description.clone().into()),
                         input_schema: Arc::new(entry.conf.input_schema.clone()),
+                        output_schema: (!entry.conf.output_schema.is_empty())
+                            .then(|| Arc::new(entry.conf.output_schema.clone())),
                         title: None,
-                        output_schema: None,
                         annotations: None,
                         icons: None,
                         meta: None,
                     });
+                    if self.dynamic_tool_discovery {
+                        session.active_tools.insert(entry.conf.name.clone());
+                    }
                 },
                 UpstreamBackend::McpServer { transport, url, cache_duration } => {
                     if let Some(r) = self.cache.get(&entry.conf.name) {
                         if std::time::Instant::now() < r.expiration {
-                            tools.extend(r.entry.iter().cloned());
+                            tools.extend_from_slice(&r.entry);
                             continue;
                         }
                     }
 
                     match self.get_list_tools_from_upstream(&transport, &url, &entry.conf.name).await {
                         Ok(up_tools) => {
-                            if let Some(cache_duration) = cache_duration {
-                                if let Some(expiration) = std::time::Instant::now().checked_add(cache_duration.clone())
-                                {
-                                    self.cache.insert(
-                                        entry.conf.name.to_smolstr(),
-                                        CachedEntry { entry: up_tools.clone(), expiration },
-                                    );
-                                }
+                            if let Some(expiration) =
+                                cache_duration.as_ref().and_then(|d| std::time::Instant::now().checked_add(d.clone()))
+                            {
+                                self.cache.insert(
+                                    entry.conf.name.to_smolstr(),
+                                    CachedEntry { entry: up_tools.clone(), expiration },
+                                );
                             }
 
-                            tools.extend(up_tools.iter().cloned());
+                            if self.dynamic_tool_discovery {
+                                up_tools.iter().for_each(|t| {
+                                    session.active_tools.insert(t.name.to_smolstr());
+                                });
+                            }
+                            tools.extend(up_tools);
                         },
                         Err(err) => {
                             info!(target: "mcp_gateway", "Failed to list tools: {}!", err);
@@ -221,8 +305,6 @@ impl ToolsRegistry {
                 UpstreamBackend::FunctionGraph {} => todo!(),
             }
         }
-
-        ListToolsResult { tools, next_cursor: None, meta: None }
     }
 
     pub async fn get_list_tools_from_upstream(
@@ -277,6 +359,59 @@ impl ToolsRegistry {
         })
     }
 
+    pub async fn call_dynamic_tool_discovery(
+        &self,
+        rpc: &model::JsonRpcRequest,
+        session: &Session,
+    ) -> Result<MessageResult, CallToolError> {
+        let arguments = match &rpc.request.params.get("arguments") {
+            Some(&serde_json::Value::Object(ref o)) => o.clone(),
+            _ => {
+                return Err(CallToolError::ValidationError("call_dynamic_tool_discovery: missing arguments".into()));
+            },
+        };
+
+        let Some(Value::String(prompt)) = arguments.get("user_query") else {
+            return Err(CallToolError::ValidationError(
+                "call_dynamic_tool_discovery: invalid user_query argument".into(),
+            ));
+        };
+
+        // send a notifications/tools/list_changed...
+        //
+
+        // Wrap the server notification inside the generic JSON-RPC structure.
+        let json_rpc_notification = JsonRpcNotification::<ServerNotification> {
+            jsonrpc: model::JsonRpcVersion2_0,
+            notification: ServerNotification::ToolListChangedNotification(ToolListChangedNotification::default()),
+        };
+
+        let mut session_prompt = session.prompt.lock();
+        *session_prompt = Some(prompt.clone());
+        drop(session_prompt);
+
+        let text_content = RawTextContent {
+            text: "Context acquired. Relevant APIs loaded. The tool list has been updated, please proceed with the new tools.".to_string(),
+            meta: None
+        };
+
+        let success_message = Content { raw: RawContent::Text(text_content), annotations: None };
+
+        let tool_result = CallToolResult {
+            content: vec![success_message],
+            structured_content: None,
+            is_error: Some(false),
+            meta: None,
+        };
+
+        let json_result = serde_json::to_value(tool_result)?;
+
+        let json_rpc_response =
+            model::JsonRpcResponse { jsonrpc: model::JsonRpcVersion2_0, id: rpc.id.clone(), result: json_result };
+
+        Ok(MessageResult::JsonRpcNotificationResponse(json_rpc_notification, json_rpc_response))
+    }
+
     pub async fn call(
         &self,
         req_ext: &http::Extensions,
@@ -286,27 +421,32 @@ impl ToolsRegistry {
         session: &Session,
     ) -> Result<MessageResult, CallToolError> {
         // get tool name, and in case of upstream MCP, sub-tool name as well...
-        let (backend_name, tool_name) = {
+        let (tool_name, tool_sub_name) = {
             let name = rpc.request.params.get("name").ok_or(CallToolError::NameNotString)?;
             let name = name.as_str().ok_or(CallToolError::NameNotString)?;
             match name.split_once("__") {
-                Some((tool, sub_name)) => (tool, sub_name),
+                Some((tool_name, sub_name)) => (tool_name, sub_name),
                 None => (name, name),
             }
         };
 
-        debug!(target: "mcp_gateway", "call: method:{} tool {tool_name}@{backend_name}", rpc.request.method);
+        debug!(target: "mcp_gateway", "call: method:{} tool {tool_sub_name}@{tool_name}", rpc.request.method);
+
+        if self.dynamic_tool_discovery && tool_name == DYNAMIC_TOOL_DISCOVERY {
+            return self.call_dynamic_tool_discovery(rpc, session).await;
+        }
 
         let (index, entry) = self
             .registry
             .iter()
             .enumerate()
-            .find(|(_, e)| e.conf.name == backend_name)
-            .ok_or_else(|| CallToolError::ToolNotFound(backend_name.to_string()))?;
+            .find(|(_, e)| e.conf.name == tool_name)
+            .filter(|(_, e)| !self.dynamic_tool_discovery || session.active_tools.contains(&e.conf.name))
+            .ok_or_else(|| CallToolError::ToolNotFound(tool_name.to_string()))?;
 
         if let Some(rbac) = &entry.rbac {
             if !rbac.is_permitted(req_ext) {
-                return Err(CallToolError::RbacDenied(backend_name.to_string()));
+                return Err(CallToolError::RbacDenied(tool_name.to_string()));
             }
         }
 
@@ -326,7 +466,7 @@ impl ToolsRegistry {
                 TranscoderType::Rest(transcoder),
             ) => {
                 let mut upstream_request = transcoder.encode(req_headers, &rpc.request).map_err(|e| {
-                    CallToolError::TranscoderError { tool: backend_name.to_owned(), reason: e.to_string() }
+                    CallToolError::TranscoderError { tool: tool_name.to_owned(), reason: e.to_string() }
                 })?;
                 if let Some(cluster_header) = cluster_header {
                     let headers = upstream_request.headers_mut();
@@ -351,7 +491,7 @@ impl ToolsRegistry {
                 let tool_result = match client
                     .call_tool(CallToolRequestParams {
                         meta: None,
-                        name: tool_name.to_owned().into(),
+                        name: tool_sub_name.to_owned().into(),
                         arguments,
                         task: None,
                     })
@@ -373,7 +513,7 @@ impl ToolsRegistry {
                     },
                 };
 
-                debug!(target: "mcp_gateway", "Received result from tool{backend_name}@{tool_name}: {:?}", tool_result);
+                debug!(target: "mcp_gateway", "Received result from tool{tool_name}@{tool_sub_name}: {:?}", tool_result);
 
                 let json_result = serde_json::to_value(tool_result)?;
 
@@ -383,7 +523,7 @@ impl ToolsRegistry {
                     result: json_result,
                 };
 
-                Ok(MessageResult::JsonRcpResponse(json_rcp_response))
+                Ok(MessageResult::JsonRpcResponse(json_rcp_response))
             },
             (UpstreamBackend::FunctionGraph {}, TranscoderType::FunctionGraph(_)) => {
                 return Err(CallToolError::FunctionGraphNotImplemented);
@@ -489,7 +629,7 @@ mod tests {
         .unwrap();
 
         let tool = create_test_tool_with_schemas(input_schema, serde_json::Map::new());
-        let registry = ToolsRegistry::with_tools(vec![tool]).unwrap();
+        let registry = ToolsRegistry::with_tools(vec![tool], false).unwrap();
         let tool_entry = registry.get_tool_by_index(ToolRegistryIndex(0)).unwrap();
 
         let args = json!({
@@ -512,7 +652,7 @@ mod tests {
         .unwrap();
 
         let tool = create_test_tool_with_schemas(input_schema, serde_json::Map::new());
-        let registry = ToolsRegistry::with_tools(vec![tool]).unwrap();
+        let registry = ToolsRegistry::with_tools(vec![tool], false).unwrap();
         let tool_entry = registry.get_tool_by_index(ToolRegistryIndex(0)).unwrap();
 
         let args = json!({});
@@ -534,7 +674,7 @@ mod tests {
         .unwrap();
 
         let tool = create_test_tool_with_schemas(input_schema, serde_json::Map::new());
-        let registry = ToolsRegistry::with_tools(vec![tool]).unwrap();
+        let registry = ToolsRegistry::with_tools(vec![tool], false).unwrap();
         let tool_entry = registry.get_tool_by_index(ToolRegistryIndex(0)).unwrap();
 
         let args = json!({
@@ -550,7 +690,7 @@ mod tests {
     #[test]
     fn test_input_schema_validation_skips_when_empty() {
         let tool = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
-        let registry = ToolsRegistry::with_tools(vec![tool]).unwrap();
+        let registry = ToolsRegistry::with_tools(vec![tool], false).unwrap();
         let tool_entry = registry.get_tool_by_index(ToolRegistryIndex(0)).unwrap();
 
         // Any args should pass when schema is empty
@@ -575,7 +715,7 @@ mod tests {
         .unwrap();
 
         let tool = create_test_tool_with_schemas(serde_json::Map::new(), output_schema);
-        let registry = ToolsRegistry::with_tools(vec![tool]).unwrap();
+        let registry = ToolsRegistry::with_tools(vec![tool], false).unwrap();
         let tool_entry = registry.get_tool_by_index(ToolRegistryIndex(0)).unwrap();
 
         let response = json!({
@@ -598,7 +738,7 @@ mod tests {
         .unwrap();
 
         let tool = create_test_tool_with_schemas(serde_json::Map::new(), output_schema);
-        let registry = ToolsRegistry::with_tools(vec![tool]).unwrap();
+        let registry = ToolsRegistry::with_tools(vec![tool], false).unwrap();
         let tool_entry = registry.get_tool_by_index(ToolRegistryIndex(0)).unwrap();
 
         let response = json!({
@@ -612,7 +752,7 @@ mod tests {
     #[test]
     fn test_output_schema_validation_skips_when_empty() {
         let tool = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
-        let registry = ToolsRegistry::with_tools(vec![tool]).unwrap();
+        let registry = ToolsRegistry::with_tools(vec![tool], false).unwrap();
         let tool_entry = registry.get_tool_by_index(ToolRegistryIndex(0)).unwrap();
 
         // Any response should pass when schema is empty
@@ -634,7 +774,7 @@ mod tests {
         .unwrap();
 
         let tool = create_test_tool_with_schemas(input_schema, serde_json::Map::new());
-        let result = ToolsRegistry::with_tools(vec![tool]);
+        let result = ToolsRegistry::with_tools(vec![tool], false);
 
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), ToolBuilderError::InvalidInputSchema(_)));
@@ -648,7 +788,7 @@ mod tests {
         .unwrap();
 
         let tool = create_test_tool_with_schemas(serde_json::Map::new(), output_schema);
-        let result = ToolsRegistry::with_tools(vec![tool]);
+        let result = ToolsRegistry::with_tools(vec![tool], false);
 
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), ToolBuilderError::InvalidOutputSchema(_)));
@@ -672,7 +812,7 @@ mod tests {
         .unwrap();
 
         let tool = create_test_tool_with_schemas(input_schema, serde_json::Map::new());
-        let registry = ToolsRegistry::with_tools(vec![tool]).unwrap();
+        let registry = ToolsRegistry::with_tools(vec![tool], false).unwrap();
         let tool_entry = registry.get_tool_by_index(ToolRegistryIndex(0)).unwrap();
 
         // Valid nested object
@@ -707,7 +847,7 @@ mod tests {
         .unwrap();
 
         let tool = create_test_tool_with_schemas(input_schema, serde_json::Map::new());
-        let registry = ToolsRegistry::with_tools(vec![tool]).unwrap();
+        let registry = ToolsRegistry::with_tools(vec![tool], false).unwrap();
         let tool_entry = registry.get_tool_by_index(ToolRegistryIndex(0)).unwrap();
 
         // Valid array

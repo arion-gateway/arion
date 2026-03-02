@@ -1,5 +1,6 @@
-use bytes::Bytes;
-use dashmap::DashMap;
+use atomic_time::AtomicInstant;
+use bytes::{Bytes, BytesMut};
+use dashmap::{DashMap, DashSet};
 use futures::SinkExt;
 use http::{HeaderName, Method, Response, StatusCode};
 use http_body_util::{BodyExt, Empty, Full};
@@ -9,8 +10,12 @@ use parking_lot::Mutex;
 use scopeguard::defer;
 use serde::Serialize;
 use serde_json::{json, Value};
-use smol_str::ToSmolStr;
-use std::sync::{atomic::AtomicUsize, Arc};
+use smallvec::{smallvec, SmallVec};
+use smol_str::{SmolStr, ToSmolStr};
+use std::sync::{
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+    Arc,
+};
 use tokio::sync::Mutex as TokioMutex;
 use tracing::{debug, error, info};
 use uuid::Uuid;
@@ -20,7 +25,7 @@ use rmcp::{
         self, Annotated, CallToolRequestMethod, CallToolResult, ConstString, Implementation, InitializeRequestParams,
         InitializeResult, InitializeResultMethod, InitializedNotificationMethod, JsonRpcResponse,
         ListToolsRequestMethod, PingRequestMethod, ProtocolVersion, RawContent, RawTextContent, ServerCapabilities,
-        ServerResult,
+        ServerNotification, ServerResult,
     },
     service::{ClientInitializeError, RunningService},
     RoleClient, ServiceError,
@@ -50,14 +55,30 @@ const MCP_MESSAGE_ENDPOINT: &str = "/mcp";
 const SSE_MESSAGE_ENDPOINT: &str = "/sse";
 const SESSION_IDLE_TIMEOUT: tokio::time::Duration = tokio::time::Duration::from_secs(60);
 
-#[derive(Debug)]
 pub struct Session {
     pub listener_name: &'static str, // to handle session eviction from listener.sse_map
     pub session_id: SessionId,
     pub transport: Transport,
     pub sse_sender: Option<TokioMutex<SinkSender>>,
-    pub last_activity: Mutex<tokio::time::Instant>,
+    pub last_activity: AtomicInstant,
     pub mcp_upstreams: DashMap<String, RunningService<RoleClient, InitializeRequestParams>, ahash::RandomState>,
+    pub prompt: Mutex<Option<String>>,
+    pub active_tools: DashSet<SmolStr, ahash::RandomState>,
+}
+
+impl std::fmt::Debug for Session {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Session")
+            .field("listener_name", &self.listener_name)
+            .field("session_id", &self.session_id)
+            .field("transport", &self.transport)
+            .field("sse_sender", &self.sse_sender)
+            .field("last_activity", &self.last_activity.load(std::sync::atomic::Ordering::Relaxed))
+            .field("mcp_upstreams", &self.mcp_upstreams)
+            .field("prompt", &self.prompt)
+            .field("active_tools", &self.active_tools)
+            .finish()
+    }
 }
 
 impl Default for Session {
@@ -67,8 +88,10 @@ impl Default for Session {
             session_id: SessionId::default(),
             transport: Transport::default(),
             sse_sender: None,
-            last_activity: Mutex::new(tokio::time::Instant::now()),
+            last_activity: AtomicInstant::now(),
             mcp_upstreams: DashMap::with_hasher(ahash::RandomState::default()),
+            prompt: Mutex::new(None),
+            active_tools: DashSet::with_hasher(ahash::RandomState::default()),
         }
     }
 }
@@ -78,14 +101,15 @@ pub struct McpGatewayListenerContext {
     session_map: Arc<DashMap<SessionId, Arc<Session>, ahash::RandomState>>,
     active_async_requests: AtomicUsize,
     cleanup_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    cleanup_task_started: AtomicBool,
 }
 
 impl McpGatewayListenerContext {
     fn cleanup(session_map: &DashMap<SessionId, Arc<Session>, ahash::RandomState>) {
-        let now = tokio::time::Instant::now();
+        let now = std::time::Instant::now();
         session_map.retain(|_, session| {
-            let last_activity = session.last_activity.lock();
-            let idle = now.duration_since(*last_activity);
+            let last_activity = session.last_activity.load(std::sync::atomic::Ordering::Relaxed);
+            let idle = now.saturating_duration_since(last_activity);
             let retain = idle < SESSION_IDLE_TIMEOUT;
             if !retain {
                 debug!(target: "mcp_gateway", "Session {} has been idle for {} seconds (dropped)", session.session_id, idle.as_secs());
@@ -95,16 +119,19 @@ impl McpGatewayListenerContext {
     }
 
     pub fn start_cleanup_task(&self) {
-        let mut clean_task = self.cleanup_task.lock();
-        if clean_task.is_none() {
-            let session_map = Arc::clone(&self.session_map);
-            let task = tokio::spawn(async move {
-                loop {
-                    pingora_timeout::sleep(SESSION_IDLE_TIMEOUT / 2).await;
-                    Self::cleanup(&session_map);
-                }
-            });
-            *clean_task = Some(task);
+        if !self.cleanup_task_started.load(Ordering::Acquire) {
+            let mut clean_task = self.cleanup_task.lock();
+            if clean_task.is_none() {
+                let session_map = Arc::clone(&self.session_map);
+                let task = tokio::spawn(async move {
+                    loop {
+                        pingora_timeout::sleep(SESSION_IDLE_TIMEOUT / 2).await;
+                        Self::cleanup(&session_map);
+                    }
+                });
+                *clean_task = Some(task);
+                self.cleanup_task_started.store(true, Ordering::Release);
+            }
         }
     }
 }
@@ -115,6 +142,7 @@ impl Default for McpGatewayListenerContext {
             session_map: Arc::new(DashMap::default()),
             active_async_requests: Default::default(),
             cleanup_task: Mutex::new(None),
+            cleanup_task_started: AtomicBool::new(false),
         }
     }
 }
@@ -162,8 +190,10 @@ impl McpGatewayListenerContext {
             session_id: session_id.clone(),
             transport,
             sse_sender: sse_sender.map(TokioMutex::new),
-            last_activity: Mutex::new(tokio::time::Instant::now()),
+            last_activity: AtomicInstant::now(),
             mcp_upstreams: DashMap::with_hasher(ahash::RandomState::default()),
+            prompt: Mutex::new(None),
+            active_tools: DashSet::with_hasher(ahash::RandomState::default()),
         });
         self.session_map.insert(session_id, session.clone());
         Ok(session)
@@ -187,7 +217,8 @@ pub struct ToolRegistryIndex(pub usize);
 pub enum MessageResult {
     Nothing,
     JsonRpcError(model::JsonRpcError),
-    JsonRcpResponse(model::JsonRpcResponse<serde_json::Value>),
+    JsonRpcResponse(model::JsonRpcResponse<Value>),
+    JsonRpcNotificationResponse(model::JsonRpcNotification<ServerNotification>, model::JsonRpcResponse<Value>),
     UpstreamRequest((http::Request<OrionRequestBody>, bool, ToolRegistryIndex)),
 }
 
@@ -207,7 +238,7 @@ impl TryFrom<McpGatewayConfig> for McpGateway {
     type Error = ToolBuilderError;
 
     fn try_from(config: McpGatewayConfig) -> Result<Self, Self::Error> {
-        let tools = ToolsRegistry::with_tools(config.tools.clone())?;
+        let tools = ToolsRegistry::with_tools(config.tools.clone(), config.dynamic_tool_discovery)?;
         Ok(Self {
             inner: Arc::new(McpGatewayInner { config, tools }),
             session: None,
@@ -302,7 +333,9 @@ impl McpGateway {
 
                     let event = transport::sse::Event::Message(&error);
                     let mut sender = sender.lock().await;
-                    if let Err(e) = Self::send_sse_message(&mut sender, event.to_bytes(), self.version).await {
+                    let mut buf = BytesMut::with_capacity(1024);
+                    event.write_to(&mut buf);
+                    if let Err(e) = Self::send_sse_message(&mut sender, buf.freeze(), self.version).await {
                         return e;
                     }
                 },
@@ -311,7 +344,9 @@ impl McpGateway {
                     if let Some(sender) = &mut self.streamable_async_sender {
                         let mut sender_guard = sender.lock().await;
                         let sender = &mut *sender_guard;
-                        if let Err(e) = Self::send_sse_message(sender, event.to_bytes(), self.version).await {
+                        let mut buf = BytesMut::with_capacity(1024);
+                        event.write_to(&mut buf);
+                        if let Err(e) = Self::send_sse_message(sender, buf.freeze(), self.version).await {
                             return e;
                         }
                         sender.close();
@@ -397,7 +432,9 @@ impl McpGateway {
                 let event = transport::sse::Event::Message(&json_rpc_response);
                 debug!(target: "mcp_gateway", "apply_response: SENDING SSE EVENT: {:?}", event);
                 let mut sender = sender.lock().await;
-                if let Err(e) = Self::send_sse_message(&mut sender, event.to_bytes(), self.version).await {
+                let mut buf = BytesMut::with_capacity(1024);
+                event.write_to(&mut buf);
+                if let Err(e) = Self::send_sse_message(&mut sender, buf.freeze(), self.version).await {
                     return e;
                 }
                 FilterDecision::Continue
@@ -408,7 +445,9 @@ impl McpGateway {
                     let mut sender_guard = sender.lock().await;
                     let sender = &mut *sender_guard;
                     let event = transport::streamable_http::Event::Message(&json_rpc_response);
-                    if let Err(e) = sender.send(event.to_bytes()).await {
+                    let mut buf = BytesMut::with_capacity(1024);
+                    event.write_to(&mut buf);
+                    if let Err(e) = sender.send(buf.freeze()).await {
                         debug!(target: "mcp_gateway", "apply_response: failed to send message for session {}, error {e}", session.session_id);
                     }
                     sender.close();
@@ -417,8 +456,12 @@ impl McpGateway {
                 None => {
                     debug!(target: "mcp_gateway", "apply_response: streamable HTTP (sync)...");
                     let body = serde_json::to_vec(&json_rpc_response).unwrap_or_default();
-                    let headers = self.build_json_headers_with_session();
-                    match self.build_mcp_response(StatusCode::OK, Self::build_mcp_body(Some(body.into())), &headers) {
+                    let headers = self.build_headers_with_session(MIME_APPLICATION_JSON);
+                    match self.build_mcp_http_response(
+                        StatusCode::OK,
+                        Self::build_mcp_response_body(Some(body.into())),
+                        &headers,
+                    ) {
                         Ok(resp) => {
                             *response = resp;
                             FilterDecision::Continue
@@ -529,20 +572,26 @@ impl McpGateway {
                         debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: sending SSE message...");
                         let event = transport::sse::Event::Message(&json_rpc_error);
                         let mut sender = sender.lock().await;
-                        if let Err(e) = Self::send_sse_message(&mut sender, event.to_bytes(), self.version).await {
+                        let mut buf = BytesMut::with_capacity(1024);
+                        event.write_to(&mut buf);
+                        if let Err(e) = Self::send_sse_message(&mut sender, buf.freeze(), self.version).await {
                             return e;
                         }
-                        match self.build_mcp_response(StatusCode::ACCEPTED, Self::build_mcp_body(None), &[]) {
+                        match self.build_mcp_http_response(
+                            StatusCode::ACCEPTED,
+                            Self::build_mcp_response_body(None),
+                            &[],
+                        ) {
                             Ok(accepted) => return FilterDecision::DirectResponse(accepted),
                             Err(e) => return e,
                         };
                     },
                     Transport::StreamableHttp => {
                         let body = serde_json::to_string(&json_rpc_error).unwrap_or_default();
-                        let headers = self.build_json_headers_with_session();
-                        match self.build_mcp_response(
+                        let headers = self.build_headers_with_session(MIME_APPLICATION_JSON);
+                        match self.build_mcp_http_response(
                             StatusCode::BAD_REQUEST,
-                            Self::build_mcp_body(Some(body.into())),
+                            Self::build_mcp_response_body(Some(body.into())),
                             &headers,
                         ) {
                             Ok(resp) => return FilterDecision::DirectResponse(resp),
@@ -551,7 +600,7 @@ impl McpGateway {
                     },
                 }
             },
-            MessageResult::JsonRcpResponse(json_rpc_response) => {
+            MessageResult::JsonRpcResponse(json_rpc_response) => {
                 debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: handling Response...");
                 match transport {
                     Transport::Sse => {
@@ -561,20 +610,83 @@ impl McpGateway {
                         };
                         let event = transport::sse::Event::Message(&json_rpc_response);
                         let mut sender = sender.lock().await;
-                        if let Err(e) = Self::send_sse_message(&mut sender, event.to_bytes(), self.version).await {
+                        let mut buf = BytesMut::with_capacity(1024);
+                        event.write_to(&mut buf);
+                        if let Err(e) = Self::send_sse_message(&mut sender, buf.freeze(), self.version).await {
                             return e;
                         }
 
-                        match self.build_mcp_response(StatusCode::ACCEPTED, Self::build_mcp_body(None), &[]) {
+                        match self.build_mcp_http_response(
+                            StatusCode::ACCEPTED,
+                            Self::build_mcp_response_body(None),
+                            &[],
+                        ) {
                             Ok(accepted) => return FilterDecision::DirectResponse(accepted),
                             Err(e) => return e,
                         };
                     },
                     Transport::StreamableHttp => {
                         let body = serde_json::to_vec(&json_rpc_response).unwrap_or_default();
-                        let headers = self.build_json_headers_with_session();
-                        match self.build_mcp_response(StatusCode::OK, Self::build_mcp_body(Some(body.into())), &headers)
-                        {
+                        let headers = self.build_headers_with_session(MIME_APPLICATION_JSON);
+                        match self.build_mcp_http_response(
+                            StatusCode::OK,
+                            Self::build_mcp_response_body(Some(body.into())),
+                            &headers,
+                        ) {
+                            Ok(resp) => return FilterDecision::DirectResponse(resp),
+                            Err(e) => return e,
+                        }
+                    },
+                }
+            },
+            MessageResult::JsonRpcNotificationResponse(json_rpc_notif, json_rpc_response) => {
+                debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: handling Response...");
+                match transport {
+                    Transport::Sse => {
+                        let Some(sender) = self.session.as_deref().and_then(|s| s.sse_sender.as_ref()) else {
+                            debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: SSE sender not available");
+                            return FilterDecision::internal_server_error("SSE sender not available", self.version);
+                        };
+
+                        let event = transport::sse::Event::Message(&json_rpc_notif);
+                        let mut sender = sender.lock().await;
+                        let mut buf = BytesMut::with_capacity(1024);
+                        event.write_to(&mut buf);
+                        if let Err(e) = Self::send_sse_message(&mut sender, buf.freeze(), self.version).await {
+                            return e;
+                        }
+
+                        let event = transport::sse::Event::Message(&json_rpc_response);
+                        let mut buf = BytesMut::with_capacity(1024);
+                        event.write_to(&mut buf);
+                        if let Err(e) = Self::send_sse_message(&mut sender, buf.freeze(), self.version).await {
+                            return e;
+                        }
+
+                        match self.build_mcp_http_response(
+                            StatusCode::ACCEPTED,
+                            Self::build_mcp_response_body(None),
+                            &[],
+                        ) {
+                            Ok(accepted) => return FilterDecision::DirectResponse(accepted),
+                            Err(e) => return e,
+                        };
+                    },
+                    Transport::StreamableHttp => {
+                        let notif = transport::streamable_http::Event::Message(&json_rpc_notif);
+                        let resp = transport::streamable_http::Event::Message(&json_rpc_response);
+                        let mut buf = BytesMut::with_capacity(1024);
+
+                        notif.write_to(&mut buf);
+                        resp.write_to(&mut buf);
+                        let body: Bytes = buf.freeze();
+
+                        let headers = self.build_headers_with_session(MIME_TEXT_EVENT_STREAM);
+                        match self.build_mcp_http_response(
+                            StatusCode::OK,
+                            Self::build_mcp_response_body(Some(body)),
+                            &headers,
+                        ) {
                             Ok(resp) => return FilterDecision::DirectResponse(resp),
                             Err(e) => return e,
                         }
@@ -584,7 +696,8 @@ impl McpGateway {
             MessageResult::Nothing => {
                 debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: handling Nothing...");
                 let headers = self.build_session_id_headers();
-                let Ok(accepted) = self.build_mcp_response(StatusCode::ACCEPTED, Self::build_mcp_body(None), &headers)
+                let Ok(accepted) =
+                    self.build_mcp_http_response(StatusCode::ACCEPTED, Self::build_mcp_response_body(None), &headers)
                 else {
                     return FilterDecision::internal_server_error("Failed to build response", self.version);
                 };
@@ -600,9 +713,11 @@ impl McpGateway {
                             return FilterDecision::rate_limited(request.version());
                         }
 
-                        let Ok(accepted) =
-                            self.build_mcp_response(StatusCode::ACCEPTED, Self::build_mcp_body(None), &[])
-                        else {
+                        let Ok(accepted) = self.build_mcp_http_response(
+                            StatusCode::ACCEPTED,
+                            Self::build_mcp_response_body(None),
+                            &[],
+                        ) else {
                             return FilterDecision::internal_server_error("Failed to build response", self.version);
                         };
                         return FilterDecision::AsyncRequest(accepted, Some(upstream_request));
@@ -618,7 +733,9 @@ impl McpGateway {
 
                         // priming event...
                         let event: transport::streamable_http::Event = transport::streamable_http::Event::Priming;
-                        if let Err(e) = sender.send(event.to_bytes()).await {
+                        let mut buf = BytesMut::with_capacity(1024);
+                        event.write_to(&mut buf);
+                        if let Err(e) = sender.send(buf.freeze()).await {
                             debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: failed to send priming event: {e}");
                             return FilterDecision::internal_server_error("Failed to send priming event", self.version);
                         };
@@ -627,7 +744,7 @@ impl McpGateway {
                         self.streamable_async_sender = Some(Arc::new(TokioMutex::new(sender)));
 
                         let body = TimeoutBody::new(None, PolyBody::from(body));
-                        let Ok(mut okay) = self.build_mcp_response(
+                        let Ok(mut okay) = self.build_mcp_http_response(
                             StatusCode::OK,
                             body,
                             &[
@@ -693,9 +810,12 @@ impl McpGateway {
             session.session_id.as_str()
         ));
 
+        let mut buf = BytesMut::with_capacity(1024);
+        event.write_to(&mut buf);
+
         let body = TimeoutBody::new(None, PolyBody::from(body));
 
-        let Ok(_) = sender.send(event.to_bytes()).await else {
+        let Ok(_) = sender.send(buf.freeze()).await else {
             debug!(target: "mcp_gateway", "handle_sse_handshake: failed to send SSE payload");
             ctx.delete_session(&session.session_id);
             return FilterDecision::internal_server_error("Failed to send SSE payload", request.version());
@@ -721,30 +841,38 @@ impl McpGateway {
     ) -> MessageResult {
         debug!(target: "mcp_gateway", "handle_rpc_json_message: transport: {transport}, session: {session:?}, listener: {listener_name}");
 
-        // WORKAROUND: the current rmcp implementation fails to parse
-        // {"jsonrpc":"2.0", "method":"notifications/initialized"},
-        // which is a valid JSON-RPC notification according to the spec.
-        // rmcp incorrectly requires the "params" field, even though it is optional.
-        // This workaround injects an empty "params" object to satisfy rmcp.
+        let message = match serde_json::from_slice::<model::JsonRpcMessage>(&body) {
+            Ok(msg) => msg,
+            Err(err) => {
+                debug!(target: "mcp_gateway", "handle_rpc_json_message: failed to parse JSON message: {body:?}: {err}");
 
-        let Ok(mut value): Result<Value, _> = serde_json::from_slice(&body) else {
-            debug!(target: "mcp_gateway", "handle_rpc_json_message: failed to parse JSON message: {:?}", body);
-            return MessageResult::JsonRpcError(
-                self.build_rpc_error(model::ErrorData::parse_error("invalid JSON", None)),
-            );
-        };
+                // WORKAROUND: the current rmcp implementation fails to parse
+                // {"jsonrpc":"2.0", "method":"notifications/initialized"},
+                // which is a valid JSON-RPC notification according to the spec.
+                // rmcp incorrectly requires the "params" field, even though it is optional.
+                // This workaround injects an empty "params" object to satisfy the crate.
 
-        if value.get("id").is_none() && value.get("params").is_none() {
-            if let Some(obj) = value.as_object_mut() {
-                obj.insert("params".to_string(), serde_json::json!({}));
-            }
-        }
+                let Ok(mut value): Result<Value, _> = serde_json::from_slice(&body) else {
+                    debug!(target: "mcp_gateway", "handle_rpc_json_message: failed to parse JSON message: {:?}", body);
+                    return MessageResult::JsonRpcError(
+                        self.build_rpc_error(model::ErrorData::parse_error("invalid JSON", None)),
+                    );
+                };
 
-        let Ok(message): Result<model::JsonRpcMessage, _> = serde_json::from_value(value) else {
-            debug!(target: "mcp_gateway", "handle_rpc_json_message: failed to parse JSON message: {:?}", body);
-            return MessageResult::JsonRpcError(
-                self.build_rpc_error(model::ErrorData::parse_error("invalid JSON", None)),
-            );
+                if value.get("id").is_none() && value.get("params").is_none() {
+                    if let Some(obj) = value.as_object_mut() {
+                        obj.insert("params".to_string(), serde_json::json!({}));
+                    }
+                }
+
+                let Ok(message): Result<model::JsonRpcMessage, _> = serde_json::from_value(value) else {
+                    return MessageResult::JsonRpcError(
+                        self.build_rpc_error(model::ErrorData::parse_error("invalid JSON", None)),
+                    );
+                };
+
+                message
+            },
         };
 
         match message {
@@ -804,7 +932,7 @@ impl McpGateway {
 
                 let capabilities = ServerCapabilities::builder()
                     .enable_tools()
-                    //.enable_tool_list_changed()
+                    .enable_tool_list_changed()
                     //.enable_resources()
                     //.enable_logging()
                     .build();
@@ -847,7 +975,7 @@ impl McpGateway {
                     result: serde_json::to_value(result).unwrap_or(serde_json::Value::Null),
                 };
 
-                MessageResult::JsonRcpResponse(response)
+                MessageResult::JsonRpcResponse(response)
             },
             InitializedNotificationMethod::VALUE => {
                 debug!(target: "mcp_gateway", "handle_rpc_json_request: notification/initialized (transport: {transport})");
@@ -861,18 +989,18 @@ impl McpGateway {
                     result: json!({}),
                 };
 
-                MessageResult::JsonRcpResponse(response)
+                MessageResult::JsonRpcResponse(response)
             },
             ListToolsRequestMethod::VALUE => {
                 debug!(target: "mcp_gateway", "handle_rpc_json_request: tools/list received");
-                let tools = self.inner.tools.build_list_tools(&req_ext).await;
+                let tools = self.inner.tools.build_list_tools(&req_ext, session).await;
                 let response = model::JsonRpcResponse {
                     jsonrpc: model::JsonRpcVersion2_0,
                     id: self.request_id.clone(),
                     result: serde_json::to_value(tools).unwrap_or(serde_json::Value::Null),
                 };
 
-                MessageResult::JsonRcpResponse(response)
+                MessageResult::JsonRpcResponse(response)
             },
             CallToolRequestMethod::VALUE => {
                 debug!(target: "mcp_gateway", "handle_rpc_json_request: tools/call");
@@ -1012,6 +1140,7 @@ impl McpGateway {
                     return None;
                 };
 
+                session.last_activity.store(std::time::Instant::now(), std::sync::atomic::Ordering::Relaxed);
                 debug!(target: "mcp_gateway", "get_valid_session: found session {}", session_id);
                 Some(session.clone())
             },
@@ -1022,6 +1151,7 @@ impl McpGateway {
                         return None;
                     };
 
+                    session.last_activity.store(std::time::Instant::now(), std::sync::atomic::Ordering::Relaxed);
                     Some(session.clone())
                 },
                 None => None,
@@ -1053,8 +1183,8 @@ impl McpGateway {
     }
 
     /// Build headers with Content-Type and optional session ID for JSON responses.
-    fn build_json_headers_with_session(&self) -> Vec<(HeaderName, &str)> {
-        let mut headers = vec![(http::header::CONTENT_TYPE, MIME_APPLICATION_JSON)];
+    fn build_headers_with_session(&self, content_type: &'static str) -> SmallVec<[(HeaderName, &str); 2]> {
+        let mut headers = smallvec![(http::header::CONTENT_TYPE, content_type)];
         if let Some(session_id) = self.get_current_session_id() {
             headers.push((MCP_SESSION_ID, session_id.as_str()));
         }
@@ -1062,23 +1192,23 @@ impl McpGateway {
     }
 
     /// Build headers with only session ID (no Content-Type), for accepted responses.
-    fn build_session_id_headers(&self) -> Vec<(HeaderName, &str)> {
+    fn build_session_id_headers(&self) -> SmallVec<[(HeaderName, &str); 2]> {
         if let Some(session_id) = self.get_current_session_id() {
-            vec![(MCP_SESSION_ID, session_id.as_str())]
+            smallvec![(MCP_SESSION_ID, session_id.as_str())]
         } else {
-            vec![]
+            smallvec![]
         }
     }
 
     #[inline]
-    fn build_mcp_body(bytes: Option<Bytes>) -> TimeoutBody<PolyBody> {
-        match bytes {
+    fn build_mcp_response_body(body: Option<Bytes>) -> TimeoutBody<PolyBody> {
+        match body {
             Some(b) => TimeoutBody::new(None, PolyBody::from(Full::from(b))),
             None => TimeoutBody::new(None, PolyBody::from(Empty::new())),
         }
     }
 
-    fn build_mcp_response(
+    fn build_mcp_http_response(
         &self,
         status: StatusCode,
         body: TimeoutBody<PolyBody>,
