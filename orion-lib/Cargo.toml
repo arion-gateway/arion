@@ -90,6 +90,7 @@ hyperlocal = "0.9.1"
 jsonschema = "0.41.0"
 ctor = "0.6.3"
 upon = "0.8"
+tracing-rolling-file.workspace = true
 
 [dev-dependencies]
 orion-data-plane-api.workspace = true

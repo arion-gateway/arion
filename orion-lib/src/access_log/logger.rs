@@ -22,21 +22,29 @@ use std::collections::HashMap;
 use tokio::sync::mpsc::Receiver;
 use tracing::{error, info};
 use tracing_appender::rolling::Rotation;
+use tracing_rolling_file::RollingFrequency;
 
 use super::log_writer::LogWriter;
 
 pub(crate) struct AccessLogger {
     id: usize,
     max_log_files: usize,
-    rotation: Rotation,
+    max_file_size: Option<u64>,
+    frequency: Option<RollingFrequency>,
     map: HashMap<Target, Vec<LogWriter>>,
 }
 
 const RECEIVER_BATCH_CAPACITY: usize = 64;
 
 impl AccessLogger {
-    pub(crate) fn new(id: usize, rotation: Rotation, max_log_files: usize) -> Self {
-        AccessLogger { id, max_log_files, rotation, map: HashMap::new() }
+    pub(crate) fn new(id: usize, frequency: Option<RollingFrequency>, max_file_size: Option<u64>, max_log_files: usize) -> Self {
+        AccessLogger {
+            id,
+            max_log_files,
+            frequency,
+            max_file_size,
+            map: HashMap::new(),
+        }
     }
 
     pub(crate) async fn run(&mut self, mut receiver: Receiver<AccessLogMessage>) {
@@ -62,7 +70,13 @@ impl AccessLogger {
                             info!("AccessLogger: updating configuration for target {target}");
                             let mut handlers = vec![];
                             for conf in new_conf {
-                                let handler = LogWriter::new(self.id, conf, self.rotation.clone(), self.max_log_files);
+                                let handler = LogWriter::new(
+                                    self.id,
+                                    conf,
+                                    self.frequency.clone(),
+                                    self.max_file_size,
+                                    self.max_log_files,
+                                );
                                 handlers.push(handler)
                             }
 

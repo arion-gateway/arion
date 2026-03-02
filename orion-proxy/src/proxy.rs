@@ -357,7 +357,8 @@ async fn spawn_services(info: ServiceInfo) -> Result<()> {
             let handles = start_access_loggers(
                 conf.num_instances.get(),
                 conf.queue_length.get(),
-                conf.log_rotation.0.clone(),
+                conf.log_rotation.map(|x| x.0).clone(),
+                conf.log_max_size.clone(),
                 conf.max_log_files.get(),
             );
 
