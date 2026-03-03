@@ -207,6 +207,7 @@ impl ToolsRegistry {
                 annotations: None,
                 icons: None,
                 meta: None,
+                execution: None,
             });
         }
 
@@ -266,6 +267,7 @@ impl ToolsRegistry {
                         annotations: None,
                         icons: None,
                         meta: None,
+                        execution: None,
                     });
                     if self.dynamic_tool_discovery {
                         session.active_tools.insert(entry.conf.name.clone());
@@ -352,6 +354,7 @@ impl ToolsRegistry {
                 version: "0.0.1".to_string(),
                 website_url: None,
                 icons: None,
+                description: None,
             },
         };
         client_info.serve(transport).await.inspect_err(|e| {

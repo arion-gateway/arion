@@ -844,7 +844,7 @@ impl McpGateway {
         let message = match serde_json::from_slice::<model::JsonRpcMessage>(&body) {
             Ok(msg) => msg,
             Err(err) => {
-                debug!(target: "mcp_gateway", "handle_rpc_json_message: failed to parse JSON message: {body:?}: {err}");
+                debug!(target: "mcp_gateway", "handle_rpc_json_message: failed to parse JSON message: {body:?}: {err} (trying param workaround...)");
 
                 // WORKAROUND: the current rmcp implementation fails to parse
                 // {"jsonrpc":"2.0", "method":"notifications/initialized"},
@@ -853,19 +853,20 @@ impl McpGateway {
                 // This workaround injects an empty "params" object to satisfy the crate.
 
                 let Ok(mut value): Result<Value, _> = serde_json::from_slice(&body) else {
-                    debug!(target: "mcp_gateway", "handle_rpc_json_message: failed to parse JSON message: {:?}", body);
+                    info!(target: "mcp_gateway", "handle_rpc_json_message: failed to parse JSON message: {:?}", body);
                     return MessageResult::JsonRpcError(
                         self.build_rpc_error(model::ErrorData::parse_error("invalid JSON", None)),
                     );
                 };
 
-                if value.get("id").is_none() && value.get("params").is_none() {
+                if value.get("params").is_none() {
                     if let Some(obj) = value.as_object_mut() {
                         obj.insert("params".to_string(), serde_json::json!({}));
                     }
                 }
 
                 let Ok(message): Result<model::JsonRpcMessage, _> = serde_json::from_value(value) else {
+                    info!(target: "mcp_gateway", "handle_rpc_json_message: workaround still not working. Still failed to parse: {:?}", body);
                     return MessageResult::JsonRpcError(
                         self.build_rpc_error(model::ErrorData::parse_error("invalid JSON", None)),
                     );

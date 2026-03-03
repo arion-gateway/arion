@@ -19,7 +19,6 @@ use orion_configuration::config::network_filters::access_log::AccessLogConf;
 use tracing_rolling_file::{RollingConditionBase, RollingFileAppender, RollingFrequency};
 use tracing_appender::{
     non_blocking::{NonBlocking, WorkerGuard},
-    rolling::Rotation,
 };
 
 use super::{deferred_init, LoggerError};

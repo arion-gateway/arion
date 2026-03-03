@@ -21,7 +21,6 @@ use super::{AccessLogMessage, Target};
 use std::collections::HashMap;
 use tokio::sync::mpsc::Receiver;
 use tracing::{error, info};
-use tracing_appender::rolling::Rotation;
 use tracing_rolling_file::RollingFrequency;
 
 use super::log_writer::LogWriter;
