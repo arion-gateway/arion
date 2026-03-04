@@ -465,14 +465,10 @@ impl ToolsRegistry {
                     Some(&serde_json::Value::Object(ref args)) => {
                         CallToolRequestParams::new(tool_sub_name.to_owned()).with_arguments(args.clone())
                     },
-                    _ => {
-                        CallToolRequestParams::new(tool_sub_name.to_owned())
-                    },
+                    _ => CallToolRequestParams::new(tool_sub_name.to_owned()),
                 };
 
-                let tool_result = match client
-                    .call_tool(call_params).await
-                {
+                let tool_result = match client.call_tool(call_params).await {
                     Ok(res) => res,
                     Err(err) => {
                         match &err {

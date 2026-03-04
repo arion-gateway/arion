@@ -20,12 +20,13 @@ use tokio::sync::Mutex as TokioMutex;
 use tracing::{debug, error, info};
 use uuid::Uuid;
 
-use rmcp::{self,
+use rmcp::{
+    self,
     model::{
         self, Annotated, CallToolRequestMethod, CallToolResult, ConstString, Implementation, InitializeRequestParams,
         InitializeResult, InitializeResultMethod, InitializedNotificationMethod, JsonRpcResponse,
-        ListToolsRequestMethod, PingRequestMethod, RawContent, RawTextContent, ServerCapabilities, ServerNotification,
-        ServerResult,
+        ListToolsRequestMethod, NumberOrString, PingRequestMethod, RawContent, RawTextContent, ServerCapabilities,
+        ServerNotification, ServerResult,
     },
     service::{ClientInitializeError, RunningService},
     RoleClient, ServiceError,
@@ -239,7 +240,7 @@ enum JsonRcpMessageError {
     #[error("{0}")]
     RmcpError(#[from] rmcp::ErrorData),
     #[error("{0}")]
-    SerdeError(#[from] serde_json::Error)
+    SerdeError(#[from] serde_json::Error),
 }
 
 impl TryFrom<McpGatewayConfig> for McpGateway {
@@ -331,7 +332,8 @@ impl McpGateway {
         // collect the body...
         let Ok(body) = response.body_mut().collect().await else {
             debug!(target: "mcp_gateway", "apply_response: failed to collect response body");
-            let error = self.build_json_rpc_error(model::ErrorData::internal_error("failed to collect response body", None));
+            let error =
+                self.build_json_rpc_error(model::ErrorData::internal_error("failed to collect response body", None));
             match session.transport {
                 Transport::Sse => {
                     let Some(sender) = session.sse_sender.as_ref() else {
@@ -574,14 +576,21 @@ impl McpGateway {
             },
         };
 
-        if let model::JsonRpcMessage::Request(request) = &json_rpc_message {
-            self.request_id = request.id.clone();
-        }
+        self.request_id = match &json_rpc_message {
+            model::JsonRpcMessage::Request(json_rpc_request) => json_rpc_request.id.clone(),
+            model::JsonRpcMessage::Response(json_rpc_response) => json_rpc_response.id.clone(),
+            model::JsonRpcMessage::Error(json_rcp_error) => json_rcp_error.id.clone(),
+            model::JsonRpcMessage::Notification(_) => NumberOrString::Number(0),
+        };
 
         let mut session: Option<Arc<Session>> = match session_id {
             Some(session_id) => {
-                match (self.get_valid_session(ctx, transport, &session_id), &json_rpc_message) {
-                    (_, model::JsonRpcMessage::Request(r)) if r.request.method.as_str() == InitializeResultMethod::VALUE => None, // workaround for buggy agent clients
+                match (self.get_valid_session(ctx, &session_id), &json_rpc_message) {
+                    (_, model::JsonRpcMessage::Request(r))
+                        if r.request.method.as_str() == InitializeResultMethod::VALUE =>
+                    {
+                        None
+                    }, // workaround for buggy agent clients
                     (Some(session), _) => Some(session),
                     (None, _) => {
                         debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: invalid session id: {session_id} -> return 404");
@@ -908,7 +917,7 @@ impl McpGateway {
                 // rmcp incorrectly requires the "params" field, even though it is optional.
                 // This workaround injects an empty "params" object to satisfy the crate.
 
-                let mut value : serde_json::Value = serde_json::from_slice(&body)?;
+                let mut value: serde_json::Value = serde_json::from_slice(&body)?;
 
                 if value.get("params").is_none() {
                     if let Some(obj) = value.as_object_mut() {
@@ -937,7 +946,6 @@ impl McpGateway {
         match json_rpc_message {
             model::JsonRpcMessage::Request(json_rpc_request) => {
                 debug!(target: "mcp_gateway", "handle_rpc_json_message: json rpc Request on {transport}, session_id: {}...", session.as_ref().map(|s| s.session_id.clone()).unwrap_or_default());
-                self.request_id = json_rpc_request.id.clone();
                 self.handle_rpc_json_request(
                     ctx,
                     req_ext,
@@ -1011,9 +1019,10 @@ impl McpGateway {
                     debug!(target: "mcp_gateway", "handle_rpc_json_request: creating new session...");
                     let Ok(new_session) = ctx.create_session(listener_name, None, Transport::StreamableHttp) else {
                         info!(target: "mcp_gateway", "handle_rpc_json_request: failed to create new session!");
-                        return MessageResult::JsonRpcError(
-                            self.build_json_rpc_error(model::ErrorData::parse_error("Failed to create new session", None)),
-                        );
+                        return MessageResult::JsonRpcError(self.build_json_rpc_error(model::ErrorData::parse_error(
+                            "Failed to create new session",
+                            None,
+                        )));
                     };
 
                     *session = Some(new_session);
@@ -1171,34 +1180,15 @@ impl McpGateway {
         }
     }
 
-    fn get_valid_session(
-        &mut self,
-        ctx: &McpGatewayListenerContext,
-        transport: Transport,
-        session_id: &SessionId,
-    ) -> Option<Arc<Session>> {
-        match transport {
-            Transport::Sse => {
-                // search for session in map
-                let Some(session) = ctx.session_map.get(session_id) else {
-                    debug!(target: "mcp_gateway", "get_valid_session: session {} not found in session map", session_id);
-                    return None;
-                };
+    fn get_valid_session(&mut self, ctx: &McpGatewayListenerContext, session_id: &SessionId) -> Option<Arc<Session>> {
+        let Some(session) = ctx.session_map.get(session_id) else {
+            debug!(target: "mcp_gateway", "get_valid_session: session {} not found in session map", session_id);
+            return None;
+        };
 
-                session.last_activity.store(std::time::Instant::now(), std::sync::atomic::Ordering::Relaxed);
-                debug!(target: "mcp_gateway", "get_valid_session: found session {}", session_id);
-                Some(session.clone())
-            },
-            Transport::StreamableHttp => {
-                let Some(session) = ctx.session_map.get(session_id) else {
-                    debug!(target: "mcp_gateway", "get_valid_session: StreamableHttp session {} not found in session map", session_id);
-                    return None;
-                };
-
-                session.last_activity.store(std::time::Instant::now(), std::sync::atomic::Ordering::Relaxed);
-                Some(session.clone())
-            },
-        }
+        session.last_activity.store(std::time::Instant::now(), std::sync::atomic::Ordering::Relaxed);
+        debug!(target: "mcp_gateway", "get_valid_session: found session {}", session_id);
+        Some(session.clone())
     }
 
     async fn send_sse_message(
@@ -1225,7 +1215,10 @@ impl McpGateway {
     }
 
     /// Build headers with optional Content-Type and optional session ID for JSON responses.
-    fn build_http_headers_with_content_type(&self, content_type: Option<&'static str>) -> SmallVec<[(HeaderName, &str); 2]> {
+    fn build_http_headers_with_content_type(
+        &self,
+        content_type: Option<&'static str>,
+    ) -> SmallVec<[(HeaderName, &str); 2]> {
         let mut headers = smallvec![];
         if let Some(session_id) = self.get_current_session_id() {
             headers.push((MCP_SESSION_ID, session_id.as_str()));
