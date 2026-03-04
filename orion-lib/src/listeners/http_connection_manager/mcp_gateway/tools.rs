@@ -198,17 +198,11 @@ impl ToolsRegistry {
         if self.dynamic_tool_discovery {
             let Value::Object(discovery_input_schema) = &*DYNAMIC_TOOL_DISCOVERY_INPUT_SCHEMA else { unreachable!() };
 
-            tools.push(Tool {
-                name: DYNAMIC_TOOL_DISCOVERY.into(),
-                description: Some("Pass the user prompt or a summary to discover relevant tools.".into()),
-                input_schema: Arc::new(discovery_input_schema.clone()),
-                output_schema: None,
-                title: None,
-                annotations: None,
-                icons: None,
-                meta: None,
-                execution: None,
-            });
+            tools.push(Tool::new(
+                DYNAMIC_TOOL_DISCOVERY,
+                "Pass the user prompt or a summary to discover relevant tools.",
+                Arc::new(discovery_input_schema.clone()),
+            ));
         }
 
         // FIXME: This is a dummy dynamic tool discovery strategy that
@@ -230,8 +224,8 @@ impl ToolsRegistry {
             return true;
         };
 
-        let description = tool.conf.description.to_lowercase();
-        words.iter().any(|word| description.contains(word))
+        let description_words = tool.conf.description.split_whitespace().map(|w| w.to_lowercase()).collect::<Vec<_>>();
+        words.iter().any(|word| description_words.contains(word))
     }
 
     async fn fill_list_tools(&self, req_ext: &http::Extensions, session: &Option<Arc<Session>>, tools: &mut Vec<Tool>) {
@@ -257,18 +251,18 @@ impl ToolsRegistry {
         {
             match &entry.conf.backend {
                 UpstreamBackend::Rest { .. } => {
-                    tools.push(Tool {
-                        name: Cow::Owned(entry.conf.name.to_string()),
-                        description: Some(entry.conf.description.clone().into()),
-                        input_schema: Arc::new(entry.conf.input_schema.clone()),
-                        output_schema: (!entry.conf.output_schema.is_empty())
-                            .then(|| Arc::new(entry.conf.output_schema.clone())),
-                        title: None,
-                        annotations: None,
-                        icons: None,
-                        meta: None,
-                        execution: None,
+                    let tool = Tool::new(
+                        entry.conf.name.to_string(),
+                        entry.conf.description.clone(),
+                        Arc::new(entry.conf.input_schema.clone()),
+                    );
+
+                    tools.push(if !entry.conf.output_schema.is_empty() {
+                        tool.with_raw_output_schema(Arc::new(entry.conf.output_schema.clone()))
+                    } else {
+                        tool
                     });
+
                     if self.dynamic_tool_discovery {
                         session.active_tools.insert(entry.conf.name.clone());
                     }
@@ -344,19 +338,8 @@ impl ToolsRegistry {
     ) -> Result<RunningService<RoleClient, InitializeRequestParams>, ClientInitializeError> {
         debug!(target: "mcp_gateway", "Creating MCP client for URL: {url}...");
         let transport = StreamableHttpClientTransport::from_uri(url);
-        let client_info = ClientInfo {
-            meta: None,
-            protocol_version: Default::default(),
-            capabilities: ClientCapabilities::default(),
-            client_info: Implementation {
-                name: DEFAULT_USER_AGENT.into(),
-                title: None,
-                version: "0.0.1".to_string(),
-                website_url: None,
-                icons: None,
-                description: None,
-            },
-        };
+        let client_info =
+            ClientInfo::new(ClientCapabilities::default(), Implementation::new(DEFAULT_USER_AGENT, "0.1.0"));
         client_info.serve(transport).await.inspect_err(|e| {
             info!(target: "mcp_gateway", "get_mcp_client error: {}!", e);
         })
@@ -399,15 +382,7 @@ impl ToolsRegistry {
         };
 
         let success_message = Content { raw: RawContent::Text(text_content), annotations: None };
-
-        let tool_result = CallToolResult {
-            content: vec![success_message],
-            structured_content: None,
-            is_error: Some(false),
-            meta: None,
-        };
-
-        let json_result = serde_json::to_value(tool_result)?;
+        let json_result = serde_json::to_value(CallToolResult::success(vec![success_message]))?;
 
         let json_rpc_response =
             model::JsonRpcResponse { jsonrpc: model::JsonRpcVersion2_0, id: rpc.id.clone(), result: json_result };
@@ -486,19 +461,17 @@ impl ToolsRegistry {
                     },
                 };
 
-                let arguments = match &rpc.request.params.get("arguments") {
-                    Some(&serde_json::Value::Object(ref o)) => Some(o.clone()),
-                    _ => None,
+                let call_params = match &rpc.request.params.get("arguments") {
+                    Some(&serde_json::Value::Object(ref args)) => {
+                        CallToolRequestParams::new(tool_sub_name.to_owned()).with_arguments(args.clone())
+                    },
+                    _ => {
+                        CallToolRequestParams::new(tool_sub_name.to_owned())
+                    },
                 };
 
                 let tool_result = match client
-                    .call_tool(CallToolRequestParams {
-                        meta: None,
-                        name: tool_sub_name.to_owned().into(),
-                        arguments,
-                        task: None,
-                    })
-                    .await
+                    .call_tool(call_params).await
                 {
                     Ok(res) => res,
                     Err(err) => {

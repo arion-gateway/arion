@@ -24,7 +24,7 @@ use rmcp::{
     model::{
         self, Annotated, CallToolRequestMethod, CallToolResult, ConstString, Implementation, InitializeRequestParams,
         InitializeResult, InitializeResultMethod, InitializedNotificationMethod, JsonRpcResponse,
-        ListToolsRequestMethod, PingRequestMethod, ProtocolVersion, RawContent, RawTextContent, ServerCapabilities,
+        ListToolsRequestMethod, PingRequestMethod, RawContent, RawTextContent, ServerCapabilities,
         ServerNotification, ServerResult,
     },
     service::{ClientInitializeError, RunningService},
@@ -408,13 +408,24 @@ impl McpGateway {
         // Build the CallToolResult with the raw response as content. If we are
         // here the response has been validated against the output schema.
         // The result_value will be injected as structured_content.
-        let content = RawContent::Text(RawTextContent { text: body_string, meta: None });
 
-        let tool_result = CallToolResult {
-            content: vec![Annotated::new(content, None)],
-            is_error: Some(!upstream_status.is_success()),
-            meta: None,
-            structured_content,
+        let tool_result = match structured_content {
+            Some(value) => {
+                if upstream_status.is_success() {
+                    CallToolResult::structured(value)
+                } else {
+                    CallToolResult::structured_error(value)
+                }
+            },
+            None => {
+                let content = RawContent::Text(RawTextContent { text: body_string, meta: None });
+                let content = vec![Annotated::new(content, None)];
+                if upstream_status.is_success() {
+                    CallToolResult::success(content)
+                } else {
+                    CallToolResult::error(content)
+                }
+            },
         };
 
         let server_result = ServerResult::CallToolResult(tool_result);
@@ -940,19 +951,10 @@ impl McpGateway {
 
                 let server_info = {
                     let info = &self.inner.config.server_info;
-                    Implementation {
-                        name: info.name.to_string(),
-                        version: info.version.to_string(),
-                        ..Default::default()
-                    }
+                    Implementation::new(info.name.clone(), info.version.clone())
                 };
 
-                let result = InitializeResult {
-                    protocol_version: ProtocolVersion::default(),
-                    instructions: None,
-                    capabilities,
-                    server_info,
-                };
+                let result = InitializeResult::new(capabilities).with_server_info(server_info);
 
                 //
                 // with StreamableHttp transport, generate a new unique session ID
