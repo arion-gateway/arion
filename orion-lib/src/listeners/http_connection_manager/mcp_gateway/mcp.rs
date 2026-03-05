@@ -54,7 +54,7 @@ use crate::{
 
 const MCP_MESSAGE_ENDPOINT: &str = "/mcp";
 const SSE_MESSAGE_ENDPOINT: &str = "/sse";
-const SESSION_IDLE_TIMEOUT: tokio::time::Duration = tokio::time::Duration::from_secs(60);
+const SESSION_IDLE_TIMEOUT: tokio::time::Duration = tokio::time::Duration::from_secs(300);
 
 pub struct Session {
     pub listener_name: &'static str, // to handle session eviction from listener.sse_map
@@ -196,7 +196,7 @@ impl McpGatewayListenerContext {
             prompt: Mutex::new(None),
             active_tools: DashSet::with_hasher(ahash::RandomState::default()),
         });
-        self.session_map.insert(session_id, session.clone());
+        self.session_map.insert(session_id, Arc::clone(&session));
         Ok(session)
     }
 
@@ -227,7 +227,7 @@ pub enum MessageResult {
 #[derive(Debug, Clone)]
 pub struct McpGateway {
     inner: Arc<McpGatewayInner>,
-    session: Option<Arc<Session>>,
+    current_session: Option<Arc<Session>>,
     request_id: model::RequestId,
     version: http::Version,
     initialize_request_params: Option<model::InitializeRequestParams>,
@@ -250,7 +250,7 @@ impl TryFrom<McpGatewayConfig> for McpGateway {
         let tools = ToolsRegistry::with_tools(config.tools.clone(), config.dynamic_tool_discovery)?;
         Ok(Self {
             inner: Arc::new(McpGatewayInner { config, tools }),
-            session: None,
+            current_session: None,
             request_id: model::RequestId::Number(0),
             initialize_request_params: None,
             version: http::Version::default(),
@@ -264,7 +264,7 @@ impl FilterFactory for McpGateway {
     fn new_from(&self) -> Self {
         Self {
             inner: self.inner.clone(),
-            session: None,
+            current_session: None,
             request_id: model::RequestId::Number(0),
             initialize_request_params: None,
             version: http::Version::default(),
@@ -276,7 +276,7 @@ impl FilterFactory for McpGateway {
 
 impl McpGateway {
     pub async fn apply_request(&mut self, request: &mut http::Request<OrionRequestBody>) -> FilterDecision {
-        debug!(target: "mcp_gateway", "apply_request: processing request: {:?}", request);
+        //debug!(target: "mcp_gateway", "apply_request: {:?}", request);
 
         self.version = request.version();
 
@@ -311,10 +311,10 @@ impl McpGateway {
     }
 
     pub async fn apply_response(&mut self, response: &mut Response<OrionResponseBody>) -> FilterDecision {
-        debug!(target: "mcp_gateway", "apply_response: processing response...");
+        // debug!(target: "mcp_gateway", "apply_response: {response:?}");
 
         // get global context for this listener
-        let Some(session) = self.session.as_deref() else {
+        let Some(session) = self.current_session.as_deref() else {
             debug!(target: "mcp_gateway", "apply_response: no session found!");
             return FilterDecision::Continue;
         };
@@ -531,6 +531,8 @@ impl McpGateway {
         listener_name: &'static str,
     ) -> FilterDecision {
         // get transport type for the request
+        //
+
         let Some(transport) = request.get_mcp_transport() else {
             debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: could not get transport type from request");
             return FilterDecision::bad_request(self.version);
@@ -557,12 +559,12 @@ impl McpGateway {
         // get session ID from the request. It may return None, in which case we create a new session id in the "initialize" method
         //
 
-        let session_id = request.get_mcp_session_id();
+        let mut session_id = request.get_mcp_session_id();
 
         let json_rpc_message = match Self::parse_json_rpc_message(&body) {
             Ok(message) => message,
             Err(err) => {
-                info!(target: "mcp_gateway", "handle_rpc_json_message: failed to parse json message: {:?} ({err:?})", body);
+                info!(target: "mcp_gateway", "handle_rpc_json_message: failed to parse json message: {body:?} ({err:?})");
 
                 let headers = self.build_http_headers_with_content_type(None);
                 match self.build_mcp_http_response(
@@ -583,9 +585,9 @@ impl McpGateway {
             model::JsonRpcMessage::Notification(_) => NumberOrString::Number(0),
         };
 
-        let mut session: Option<Arc<Session>> = match session_id {
+        let mut session: Option<Arc<Session>> = match &session_id {
             Some(session_id) => {
-                match (self.get_valid_session(ctx, &session_id), &json_rpc_message) {
+                match (self.get_valid_session(ctx, session_id), &json_rpc_message) {
                     (_, model::JsonRpcMessage::Request(r))
                         if r.request.method.as_str() == InitializeResultMethod::VALUE =>
                     {
@@ -593,7 +595,7 @@ impl McpGateway {
                     }, // workaround for buggy agent clients
                     (Some(session), _) => Some(session),
                     (None, _) => {
-                        debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: invalid session id: {session_id} -> return 404");
+                        debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: invalid session id: {session_id} (return 404)");
 
                         let headers = self.build_http_headers_with_content_type(None);
                         match self.build_mcp_http_response(
@@ -610,7 +612,7 @@ impl McpGateway {
             None => None,
         };
 
-        debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: actual session: {:?}", session);
+        debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: previous session: {session_id:?} -> {session:?}");
 
         // handle the JSON RPC message
         //
@@ -629,16 +631,21 @@ impl McpGateway {
 
         // save session...
         //
+
         if let Some(session) = session {
-            self.session = Some(session);
+            session_id = Some(session.session_id.clone());
+            debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: current session: {session_id:?} -> {:?}", session);
+            self.current_session = Some(session);
+        } else {
+            debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: current session: None (internal bug)!");
         }
 
         match response {
             MessageResult::JsonRpcError(json_rpc_error) => {
-                debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: handling Error response...");
+                debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: return ({json_rpc_error:?})");
                 match transport {
                     Transport::Sse => {
-                        let Some(sender) = self.session.as_deref().and_then(|s| s.sse_sender.as_ref()) else {
+                        let Some(sender) = self.current_session.as_deref().and_then(|s| s.sse_sender.as_ref()) else {
                             debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: SSE sender not available");
                             return FilterDecision::internal_server_error("SSE sender not available", self.version);
                         };
@@ -675,10 +682,10 @@ impl McpGateway {
                 }
             },
             MessageResult::JsonRpcResponse(json_rpc_response) => {
-                debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: handling Response...");
+                debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: return ({json_rpc_response:?})");
                 match transport {
                     Transport::Sse => {
-                        let Some(sender) = self.session.as_deref().and_then(|s| s.sse_sender.as_ref()) else {
+                        let Some(sender) = self.current_session.as_deref().and_then(|s| s.sse_sender.as_ref()) else {
                             debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: SSE sender not available");
                             return FilterDecision::internal_server_error("SSE sender not available", self.version);
                         };
@@ -715,10 +722,10 @@ impl McpGateway {
                 }
             },
             MessageResult::JsonRpcNotificationResponse(json_rpc_notif, json_rpc_response) => {
-                debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: handling Response...");
+                debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: return ({json_rpc_notif:?} + {json_rpc_response:?})");
                 match transport {
                     Transport::Sse => {
-                        let Some(sender) = self.session.as_deref().and_then(|s| s.sse_sender.as_ref()) else {
+                        let Some(sender) = self.current_session.as_deref().and_then(|s| s.sse_sender.as_ref()) else {
                             debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: SSE sender not available");
                             return FilterDecision::internal_server_error("SSE sender not available", self.version);
                         };
@@ -770,7 +777,7 @@ impl McpGateway {
                 }
             },
             MessageResult::UpstreamRequest((upstream_request, async_call, _)) => {
-                debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: handling Upstream...");
+                debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: send upstream ({upstream_request:?}");
                 match transport {
                     Transport::Sse => {
                         debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: legacy SSE...");
@@ -835,7 +842,7 @@ impl McpGateway {
                 }
             },
             MessageResult::Nothing => {
-                debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: handling Nothing...");
+                debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: return Nothing response.");
                 let headers = self.build_http_headers_with_content_type(None);
                 let Ok(accepted) =
                     self.build_mcp_http_response(StatusCode::ACCEPTED, Self::build_mcp_response_body(None), &headers)
@@ -901,7 +908,7 @@ impl McpGateway {
             unreachable!("handle_sse_handshake: failed to build body for response");
         };
 
-        self.session = Some(session);
+        self.current_session = Some(session);
         FilterDecision::DirectResponse(response)
     }
 
@@ -957,16 +964,16 @@ impl McpGateway {
                 )
                 .await
             },
-            model::JsonRpcMessage::Response(json_rpc_response) => {
-                debug!(target: "mcp_gateway", "handle_rpc_json_message: Unsupported json rpc Response: {:#?}", json_rpc_response);
+            model::JsonRpcMessage::Notification(json_rpc_notification) => {
+                debug!(target: "mcp_gateway", "handle_rpc_json_message: rpc Notification: {:?}", json_rpc_notification);
                 MessageResult::Nothing
             },
-            model::JsonRpcMessage::Notification(json_rpc_notification) => {
-                debug!(target: "mcp_gateway", "handle_rpc_json_message: Unsupported json rpc Notification: {:#?}", json_rpc_notification);
+            model::JsonRpcMessage::Response(json_rpc_response) => {
+                debug!(target: "mcp_gateway", "handle_rpc_json_message: rpc Response: {:#?}", json_rpc_response);
                 MessageResult::Nothing
             },
             model::JsonRpcMessage::Error(json_rpc_error) => {
-                debug!(target: "mcp_gateway", "handle_rpc_json_message: Unsupported json rpc Error: {:#?}", json_rpc_error);
+                debug!(target: "mcp_gateway", "handle_rpc_json_message: rpc Error: {:#?}", json_rpc_error);
                 MessageResult::Nothing
             },
         }
@@ -984,7 +991,7 @@ impl McpGateway {
     ) -> MessageResult {
         match rpc.request.method.as_str() {
             InitializeResultMethod::VALUE => {
-                debug!(target: "mcp_gateway", "handle_rpc_json_request: initialize received (transport {transport})");
+                debug!(target: "mcp_gateway", "handle_rpc_json_request: 'initialize' method received ({transport})");
 
                 let Ok(init_params): Result<model::InitializeRequestParams, _> =
                     serde_json::from_value(serde_json::Value::Object(rpc.request.params))
@@ -1000,8 +1007,6 @@ impl McpGateway {
                 let capabilities = ServerCapabilities::builder()
                     .enable_tools()
                     .enable_tool_list_changed()
-                    //.enable_resources()
-                    //.enable_logging()
                     .build();
 
                 let server_info = {
@@ -1016,7 +1021,6 @@ impl McpGateway {
                 //
 
                 if matches!(transport, Transport::StreamableHttp) {
-                    debug!(target: "mcp_gateway", "handle_rpc_json_request: creating new session...");
                     let Ok(new_session) = ctx.create_session(listener_name, None, Transport::StreamableHttp) else {
                         info!(target: "mcp_gateway", "handle_rpc_json_request: failed to create new session!");
                         return MessageResult::JsonRpcError(self.build_json_rpc_error(model::ErrorData::parse_error(
@@ -1025,6 +1029,7 @@ impl McpGateway {
                         )));
                     };
 
+                    debug!(target: "mcp_gateway", "handle_rpc_json_request: new session: {new_session:?}");
                     *session = Some(new_session);
                 }
 
@@ -1037,11 +1042,11 @@ impl McpGateway {
                 MessageResult::JsonRpcResponse(response)
             },
             InitializedNotificationMethod::VALUE => {
-                debug!(target: "mcp_gateway", "handle_rpc_json_request: notification/initialized (transport: {transport})");
+                debug!(target: "mcp_gateway", "handle_rpc_json_request: 'notification/initialized' (transport: {transport})");
                 MessageResult::Nothing
             },
             PingRequestMethod::VALUE => {
-                debug!(target: "mcp_gateway", "handle_rpc_json_request: ping received");
+                debug!(target: "mcp_gateway", "handle_rpc_json_request: 'ping' received");
                 let response = model::JsonRpcResponse {
                     jsonrpc: model::JsonRpcVersion2_0,
                     id: self.request_id.clone(),
@@ -1051,7 +1056,7 @@ impl McpGateway {
                 MessageResult::JsonRpcResponse(response)
             },
             ListToolsRequestMethod::VALUE => {
-                debug!(target: "mcp_gateway", "handle_rpc_json_request: tools/list received");
+                debug!(target: "mcp_gateway", "handle_rpc_json_request: 'tools/list'");
                 let tools = self.inner.tools.build_list_tools(&req_ext, session).await;
                 let response = model::JsonRpcResponse {
                     jsonrpc: model::JsonRpcVersion2_0,
@@ -1062,7 +1067,7 @@ impl McpGateway {
                 MessageResult::JsonRpcResponse(response)
             },
             CallToolRequestMethod::VALUE => {
-                debug!(target: "mcp_gateway", "handle_rpc_json_request: tools/call");
+                debug!(target: "mcp_gateway", "handle_rpc_json_request: 'tools/call'");
 
                 let Some(session) = session.as_ref() else {
                     return MessageResult::JsonRpcError(self.build_json_rpc_error(model::ErrorData::new(
@@ -1080,7 +1085,7 @@ impl McpGateway {
                 {
                     Ok(result) => result,
                     Err(err) => {
-                        debug!(target: "mcp_gateway", "handle_rpc_json_request: tools/call failed: {err:#}");
+                        debug!(target: "mcp_gateway", "handle_rpc_json_request: 'tools/call' failed: {err:#}");
                         let error_data = match err {
                             CallToolError::NameNotString => model::ErrorData::invalid_params(
                                 "'name' parameter is missing or not a valid string",
@@ -1170,7 +1175,7 @@ impl McpGateway {
                 resp
             },
             _ => {
-                info!(target: "mcp_gateway", "handle_rpc_json_request: unknown rpc method '{}'!", rpc.request.method);
+                info!(target: "mcp_gateway", "handle_rpc_json_request: '{}' method unsupported.", rpc.request.method);
                 MessageResult::JsonRpcError(self.build_json_rpc_error(model::ErrorData::new(
                     model::ErrorCode::METHOD_NOT_FOUND,
                     "Method not found",
@@ -1252,11 +1257,11 @@ impl McpGateway {
 
         let Ok(resp) = builder.body(body) else {
             debug!(target: "mcp_gateway", "build_mcp_response: failed to build response body for session {}",
-                self.session.as_deref().map(|s| s.session_id.clone()).unwrap_or_default());
+                self.current_session.as_deref().map(|s| s.session_id.clone()).unwrap_or_default());
             return Err(FilterDecision::internal_server_error(
                 format!(
                     "Failed to build accepted response for session {}",
-                    self.session.as_deref().map(|s| s.session_id.clone()).unwrap_or_default()
+                    self.current_session.as_deref().map(|s| s.session_id.clone()).unwrap_or_default()
                 )
                 .as_str(),
                 self.version,
@@ -1283,6 +1288,6 @@ impl McpGateway {
 
     #[inline]
     pub fn get_current_session_id(&self) -> Option<&SessionId> {
-        self.session.as_deref().map(|s| &s.session_id)
+        self.current_session.as_deref().map(|s| &s.session_id)
     }
 }
