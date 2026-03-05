@@ -17,6 +17,7 @@ mod error;
 pub mod ext_proc_test_server;
 mod grpc_test_backend;
 mod grpc_test_client;
+pub mod mcp_gateway;
 pub mod orion_instance;
 pub(crate) mod port_allocator;
 pub mod raw_http;
@@ -37,6 +38,11 @@ pub use ext_proc_test_server::{
 pub use grpc_test_backend::test_proto::EchoResponse;
 pub use grpc_test_backend::{GrpcTestBackend, GrpcTestBackendBuilder};
 pub use grpc_test_client::GrpcTestClient;
+pub use mcp_gateway::{
+    generate_jwt_token, mcp_gateway_config, mcp_gateway_with_jwt_config, mcp_server_tool_config, rbac_config,
+    rest_tool_config, CallToolParams, CallToolResult, JwtKeyPair, ListToolsResult, McpJsonRpcError, McpJsonRpcRequest,
+    McpJsonRpcResponse, McpTestClient, McpTool, MockMcpServer, TestJwtClaims, ToolContent,
+};
 pub use orion_instance::{OrionInstance, SpawnOptions};
 pub use port_allocator::PortBlock;
 pub use raw_http::{assert_rejected, PartialSendClient, RawHttpRequestBuilder, RawHttpResponse};
