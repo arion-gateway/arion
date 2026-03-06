@@ -61,7 +61,7 @@ use pretty_duration::pretty_duration;
 use rustls::ClientConfig;
 use scopeguard::defer;
 use smol_str::ToSmolStr;
-use std::{io::ErrorKind, mem, result::Result as StdResult, sync::Arc, time::Duration};
+use std::{io, mem, sync::Arc, time::Duration};
 use tracing::debug;
 use webpki::types::ServerName;
 
@@ -709,7 +709,7 @@ impl HttpChannel {
 
         let body = free_body.collect().await?;
         let body = http_body_util::Full::new(body.to_bytes());
-        let mut last_error: Option<Error> = None;
+        let mut last_result: Option<Result<Response<Incoming>>> = None;
         let mut retry_acquired = false;
 
         for (index, back_off) in retry_policy.exponential_back_off().iter().enumerate() {
@@ -726,7 +726,7 @@ impl HttpChannel {
             let cloned_req: Request<OrionRequestBody> = Request::from_parts(parts.clone(), cloned_body);
 
             // actually send the request and wait for the response...
-            let result: StdResult<Response<Incoming>, Error> = if let Some(t) = retry_policy.per_try_timeout() {
+            let result: Result<Response<Incoming>> = if let Some(t) = retry_policy.per_try_timeout() {
                 match fast_timeout(t, sender.request(cloned_req)).await.map_err(|_| UpstreamError::PerTryTimeout) {
                     Ok(result) => result.map_err(Into::into),
                     Err(err) => Err(err.into()),
@@ -785,25 +785,28 @@ impl HttpChannel {
                 pingora_timeout::sleep(back_off).await;
             }
 
-            last_error = result.err();
+            last_result = Some(result);
         }
 
         if retry_acquired {
             decrement_retries(self.cluster_name, priority);
         }
 
-        match last_error {
-            Some(err) => Err(err),
-            None => Err(std::io::Error::new(ErrorKind::InvalidData, "invalid retry_policy configuration").into()),
+        match last_result {
+            Some(result) => result,
+            None => {
+                Err(io::Error::new(io::ErrorKind::InvalidData, "retry loop completed without producing a result")
+                    .into())
+            },
         }
     }
 
     fn map_upstream_result(
-        result: std::result::Result<Response<Incoming>, Error>,
+        result: Result<Response<Incoming>>,
         elapsed: Duration,
         route_timeout: Option<Duration>,
         version: http::Version,
-    ) -> StdResult<hyper::Response<OrionResponseBody>, Error> {
+    ) -> Result<hyper::Response<OrionResponseBody>> {
         match (result, elapsed) {
             (Ok(response), elapsed) => {
                 // calculate the remaining timeout (relative to the route timeout) for receiving

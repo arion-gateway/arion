@@ -19,11 +19,12 @@ use orion_data_plane_api::envoy_data_plane_api::{
     envoy::{
         config::{
             cluster::v3::{
+                circuit_breakers::Thresholds as EnvoyThresholds,
                 cluster::{
                     ClusterDiscoveryType, DiscoveryType, LbConfig, LbPolicy as EnvoyLbPolicy, OriginalDstLbConfig,
                 },
                 load_balancing_policy::Policy,
-                Cluster as EnvoyCluster, LoadBalancingPolicy,
+                CircuitBreakers as EnvoyCircuitBreakers, Cluster as EnvoyCluster, LoadBalancingPolicy,
             },
             core::v3::{
                 transport_socket::ConfigType as TransportSocketConfigType, HealthCheck as ProtoHealthCheck,
@@ -341,6 +342,39 @@ impl ClusterBuilder {
         };
         self.proto.transport_socket = Some(transport_socket);
         self
+    }
+
+    #[must_use]
+    pub fn circuit_breaker_max_requests(mut self, max: u32) -> Self {
+        self.ensure_default_circuit_breaker_threshold().max_requests = Some(UInt32Value { value: max });
+        self
+    }
+
+    #[must_use]
+    pub fn circuit_breaker_max_connections(mut self, max: u32) -> Self {
+        self.ensure_default_circuit_breaker_threshold().max_connections = Some(UInt32Value { value: max });
+        self
+    }
+
+    #[must_use]
+    pub fn circuit_breaker_max_retries(mut self, max: u32) -> Self {
+        self.ensure_default_circuit_breaker_threshold().max_retries = Some(UInt32Value { value: max });
+        self
+    }
+
+    #[must_use]
+    pub fn circuit_breaker_threshold(mut self, threshold: EnvoyThresholds) -> Self {
+        let cb = self.proto.circuit_breakers.get_or_insert_with(EnvoyCircuitBreakers::default);
+        cb.thresholds.push(threshold);
+        self
+    }
+
+    fn ensure_default_circuit_breaker_threshold(&mut self) -> &mut EnvoyThresholds {
+        let cb = self.proto.circuit_breakers.get_or_insert_with(EnvoyCircuitBreakers::default);
+        if !cb.thresholds.iter().any(|t| t.priority == 0) {
+            cb.thresholds.push(EnvoyThresholds { priority: 0, ..Default::default() });
+        }
+        cb.thresholds.iter_mut().find(|t| t.priority == 0).unwrap()
     }
 
     #[must_use]

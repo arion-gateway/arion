@@ -90,8 +90,8 @@ async fn test_http_health_check_recovery() {
         .endpoint(EndpointBuilder::from_socket_addr(backend2.addr()))
         .health_check(
             HttpHealthCheckBuilder::new("/health", Duration::from_millis(100), Duration::from_millis(50))
-                .unhealthy_threshold(3)
-                .healthy_threshold(2)
+                .unhealthy_threshold(2)
+                .healthy_threshold(1)
                 .accept_2xx(),
         )
         .build();
@@ -121,7 +121,7 @@ async fn test_http_health_check_recovery() {
     backend2.set_default_response(PreConfiguredResponse::with_body("b2")).await;
     backend2.drain_requests_for_path("/health");
 
-    backend2.await_path_request_count("/health", 2, Duration::from_secs(5)).await.unwrap();
+    backend2.await_path_request_count("/health", 3, Duration::from_secs(5)).await.unwrap();
 
     // Verify both backends receive traffic (round-robin should distribute)
     let mut saw_b1 = false;
@@ -204,7 +204,7 @@ async fn test_tcp_health_check_recovery() {
         .health_check(
             TcpHealthCheckBuilder::new(Duration::from_millis(100), Duration::from_millis(50))
                 .unhealthy_threshold(2)
-                .healthy_threshold(2),
+                .healthy_threshold(1),
         )
         .build();
 
