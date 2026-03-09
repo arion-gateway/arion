@@ -24,6 +24,7 @@ use rustls::{
 };
 use smol_str::SmolStr;
 use tracing::{debug, warn};
+use x509_parser::prelude::{FromDer, GeneralName, X509Certificate};
 
 use super::configurator::{get_crypto_key_provider, ClientCert, RelaxedResolvesServerCertUsingSni, ServerCert};
 
@@ -269,10 +270,9 @@ impl TlsContextBuilder<WantsToBuildServer> {
             self.state.server_ids_and_certificates.as_slice()
         {
             // If only a single certificate exists, do not install SNI resolver, just accept all
-            // connections using the provided certificate
+            // connections using the provided certificate (SANs is not relevant here)
             return Ok(builder.with_single_cert(certs.to_vec(), key.clone_key())?);
         }
-
         let mut resolver = RelaxedResolvesServerCertUsingSni::new();
         let errors = self
             .state
@@ -282,27 +282,72 @@ impl TlsContextBuilder<WantsToBuildServer> {
                 provider
                     .load_private_key(key.clone_key())
                     .map(|private_key| {
-                        let certs = (**certs).clone();
-                        (secret_name, name, CertifiedKey::new(certs, private_key))
+                        let certs_vec = (**certs).clone();
+                        // Extract the DER bytes of the first certificate (end-entity cert)
+                        let first_cert_der = certs_vec.first().map(|c| c.as_ref().to_vec()).unwrap_or_default();
+
+                        (secret_name, name, CertifiedKey::new(certs_vec, private_key), first_cert_der)
                     })
                     .map_err(|e| format!("UpstreamContext: Can't load private key {secret_name} {name} - {e}").into())
                     .inspect_err(|e| warn!("{e}"))
             })
             .filter_map(Result::ok)
-            .filter_map(|(secret_name, name, ck)| {
-                resolver
-                    .add(name, ck)
-                    .inspect_err(|e| {
+            .map(|(secret_name, config_name, ck, first_cert_der)| {
+                // Start with the name provided in the configuration
+                let mut names_to_register = vec![config_name.to_string()];
+
+                // Extract and append all SANs from the actual certificate, extend the config name and remove
+                // possible duplicates...
+                names_to_register.extend(Self::extract_dns_sans(&first_cert_der));
+                names_to_register.sort_unstable();
+                names_to_register.dedup();
+
+                // Wrap the CertifiedKey in an Arc once, so it can be shared across multiple keys
+                let ck_arc = Arc::new(ck);
+                let mut has_errors = false;
+
+                // Register the certificate for every extracted name
+                for name in names_to_register {
+                    // Note: you will need to update resolver.add to accept Arc<CertifiedKey>
+                    // or create a new method resolver.add_arc(name, ck_arc)
+                    if let Err(e) = resolver.add(&name, Arc::clone(&ck_arc)) {
                         warn!("UpstreamContext: Can't add certificate for secret '{secret_name}' {name} - {e}");
-                    })
-                    .err()
+                        has_errors = true;
+                    }
+                }
+
+                if has_errors {
+                    Err(())
+                } else {
+                    Ok(())
+                }
             })
+            .filter(|res| res.is_err())
             .count();
         if errors > 0 {
             Err(format!("Found {errors} errors in Tls context").into())
         } else {
             Ok(builder.with_cert_resolver(Arc::new(resolver)))
         }
+    }
+
+    // Extracts DNS names from the Subject Alternative Name extension
+    fn extract_dns_sans(der: &[u8]) -> Vec<String> {
+        let mut sans = Vec::new();
+
+        // Parse the DER encoded certificate
+        if let Ok((_, cert)) = X509Certificate::from_der(der) {
+            // Look for the SAN extension
+            if let Ok(Some(san_ext)) = cert.subject_alternative_name() {
+                for name in san_ext.value.general_names.iter() {
+                    // We only care about DNS names for SNI matching
+                    if let GeneralName::DNSName(dns) = name {
+                        sans.push(dns.to_string());
+                    }
+                }
+            }
+        }
+        sans
     }
 }
 

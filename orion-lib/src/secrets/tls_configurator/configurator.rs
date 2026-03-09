@@ -40,8 +40,7 @@ use rustls::{
 use rustls_platform_verifier::Verifier;
 use smol_str::SmolStr;
 use std::{collections::HashMap, result::Result as StdResult, sync::Arc};
-use tracing::{debug, warn};
-use webpki::types::ServerName;
+use tracing::{debug, info, warn};
 
 pub fn get_crypto_key_provider() -> Result<&'static dyn KeyProvider> {
     rustls::crypto::CryptoProvider::get_default()
@@ -473,41 +472,78 @@ impl TlsConfigurator<ClientConfig, WantsToBuildClient> {
 
 #[derive(Debug)]
 pub struct RelaxedResolvesServerCertUsingSni {
-    by_name: HashMap<String, Arc<rustls::sign::CertifiedKey>>,
+    by_name: HashMap<String, Arc<rustls::sign::CertifiedKey>, ahash::RandomState>,
+    by_wildcard: HashMap<String, Arc<rustls::sign::CertifiedKey>, ahash::RandomState>,
     default_cert: Option<Arc<rustls::sign::CertifiedKey>>,
 }
 
 impl RelaxedResolvesServerCertUsingSni {
     pub fn new() -> Self {
-        Self { by_name: HashMap::new(), default_cert: None }
+        Self {
+            by_name: HashMap::with_hasher(ahash::RandomState::default()),
+            by_wildcard: HashMap::with_hasher(ahash::RandomState::default()),
+            default_cert: None,
+        }
     }
 
-    pub fn add(&mut self, name: &str, ck: rustls::sign::CertifiedKey) -> StdResult<(), rustls::Error> {
+    pub fn add(&mut self, name: &str, ck: Arc<rustls::sign::CertifiedKey>) -> StdResult<(), rustls::Error> {
         let name = name.to_ascii_lowercase();
-        let server_name =
-            { ServerName::try_from(name).map_err(|_| rustls::Error::General("Bad Server/DNS name".into()))? };
+        // 1. Check if it's a wildcard early on
+        let is_wildcard = name.starts_with("*.");
+        let base_domain = if is_wildcard { name.strip_prefix("*.").unwrap() } else { &name };
 
+        // 2. Create a valid DNS name for rustls validation.
+        // If it's a wildcard like "*.example.com", we test if the cert covers "dummy.example.com"
+        let test_name_str = if is_wildcard { format!("dummy.{}", base_domain) } else { name.clone() };
+
+        let server_name = rustls::pki_types::ServerName::try_from(test_name_str)
+            .map_err(|_| rustls::Error::General("Bad Server/DNS name".into()))?;
+
+        // 3. Sanity check: verify the certificate actually covers the domain/wildcard
         ck.end_entity_cert()
             .and_then(rustls::server::ParsedCertificate::try_from)
-            .and_then(|cert| rustls::client::verify_server_name(&cert, &server_name))?;
+            .and_then(|c| rustls::client::verify_server_name(&c, &server_name))?;
 
-        if let ServerName::DnsName(name) = server_name {
-            let cert = Arc::new(ck);
-            if self.default_cert.is_none() {
-                self.default_cert = Some(Arc::clone(&cert));
-            }
-            self.by_name.insert(name.as_ref().to_owned(), cert);
-        } else {
-            warn!("Server name is not valid DNS name");
+        if self.default_cert.is_none() {
+            self.default_cert = Some(Arc::clone(&ck));
         }
+
+        // 4. Insert into the correct map
+
+        let cert_id =  {
+            use std::hash::{DefaultHasher, Hash, Hasher};
+            let mut hasher = DefaultHasher::new();
+            ck.cert.hash(&mut hasher);
+            hasher.finish()
+        };
+
+        info!("ServerCert: adding certified key for server name {name} -> cert_id:{:x}, key:{:?}, ocsp:{:?}", cert_id, ck.key, ck.ocsp);
+        if is_wildcard {
+            self.by_wildcard.insert(base_domain.to_string(), ck);
+        } else {
+            self.by_name.insert(name.clone(), ck);
+        }
+
         Ok(())
     }
 }
 
 impl rustls::server::ResolvesServerCert for RelaxedResolvesServerCertUsingSni {
     fn resolve(&self, client_hello: rustls::server::ClientHello) -> Option<Arc<rustls::sign::CertifiedKey>> {
-        if let Some(name) = client_hello.server_name() {
-            self.by_name.get(name).cloned()
+        if let Some(sni) = client_hello.server_name() {
+            // 1. Exact match lookup
+            if let Some(cert) = self.by_name.get(sni).cloned() {
+                return Some(cert);
+            }
+
+            // 2. Wildcard lookup with zero allocations
+            if let Some((_, base_domain)) = sni.split_once('.') {
+                if let Some(cert) = self.by_wildcard.get(base_domain).cloned() {
+                    return Some(cert);
+                }
+            }
+
+            None
         } else {
             self.default_cert.clone()
         }
