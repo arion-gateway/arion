@@ -542,7 +542,6 @@ impl TryFrom<ClusterLoadAssignmentConfig> for PartialClusterLoadAssignment {
 #[cfg(test)]
 mod test {
     use http::uri::Authority;
-    use orion_configuration::config::core::Address;
 
     use super::LbEndpoint;
     use crate::{
@@ -557,7 +556,6 @@ mod test {
         /// This function is used by unit tests in other modules
         pub fn new(
             authority: Authority,
-            address: Address,
             cluster_name: &'static str,
             bind_device: Option<BindDevice>,
             weight: u32,

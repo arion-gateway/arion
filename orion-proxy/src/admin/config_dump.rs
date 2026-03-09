@@ -106,6 +106,7 @@ mod config_dump_tests {
     use axum_test::TestServer;
     use orion_configuration::config::{
         core::DataSource,
+        listener::ListenerType,
         network_filters::http_connection_manager::{HeaderModifiersAdd, HeaderModifiersRemove},
         secret::{Secret, TlsCertificate, Type, ValidationContext},
         Bootstrap, Listener,
@@ -245,7 +246,10 @@ mod config_dump_tests {
         };
         let listener = Listener {
             name: SmolStr::new_static("listener1"),
-            address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8080),
+            listener_type: ListenerType::Socket {
+                address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8080),
+                bind_device: None,
+            },
             filter_chains: {
                 let mut map = HashMap::new();
                 map.insert(
@@ -303,7 +307,6 @@ mod config_dump_tests {
                 );
                 map
             },
-            bind_device: None,
             proxy_protocol_config: None,
             with_tls_inspector: false,
             tcp_backlog_size: 128,
@@ -333,7 +336,7 @@ mod config_dump_tests {
                 Cluster, ClusterDiscoveryType, ClusterLoadAssignment, HealthStatus, HttpProtocolOptions, LbEndpoint,
                 LbPolicy, LocalityLbEndpoints,
             },
-            core::envoy_conversions::Address,
+            core::Address,
         };
         use smol_str::SmolStr;
         use std::{num::NonZeroU32, time::Duration};
@@ -387,7 +390,7 @@ mod config_dump_tests {
                 Cluster, ClusterDiscoveryType, ClusterLoadAssignment, HealthStatus, HttpProtocolOptions, LbEndpoint,
                 LbPolicy, LocalityLbEndpoints,
             },
-            core::envoy_conversions::Address,
+            core::Address,
         };
         use smol_str::SmolStr;
         use std::{num::NonZeroU32, time::Duration};
