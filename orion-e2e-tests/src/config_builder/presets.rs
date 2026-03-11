@@ -56,6 +56,11 @@ pub fn https_listener(
 }
 
 #[must_use]
+pub fn ext_proc_cluster(name: impl Into<String>, addr: SocketAddr) -> ClusterBuilder {
+    ClusterBuilder::new(name).http2().endpoint(EndpointBuilder::from_socket_addr(addr))
+}
+
+#[must_use]
 pub fn static_cluster(name: impl Into<String>, addr: SocketAddr) -> ClusterBuilder {
     ClusterBuilder::new(name).endpoint(EndpointBuilder::from_socket_addr(addr))
 }

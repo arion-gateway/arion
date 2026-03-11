@@ -14,6 +14,7 @@
 
 pub mod config_builder;
 mod error;
+pub mod ext_proc_test_server;
 mod grpc_test_backend;
 mod grpc_test_client;
 pub mod orion_instance;
@@ -29,6 +30,9 @@ mod xds_harness;
 pub mod xds_server;
 
 pub use error::{Error, Result};
+pub use ext_proc_test_server::{
+    ext_proc_responses, CapturedProcessingRequest, ExtProcTestServer, ExtProcTestServerBuilder,
+};
 pub use grpc_test_backend::test_proto::EchoResponse;
 pub use grpc_test_backend::{GrpcTestBackend, GrpcTestBackendBuilder};
 pub use grpc_test_client::GrpcTestClient;
