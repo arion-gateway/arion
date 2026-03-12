@@ -28,8 +28,8 @@ use orion_format::FormattedMessage;
 use parking_lot::Mutex;
 use pool::LoggerPool;
 use smol_str::SmolStr;
-use tracing_rolling_file::RollingFrequency;
 use std::sync::OnceLock;
+use tracing_rolling_file::RollingFrequency;
 
 use std::{fmt::Display, hash::Hash, sync::Arc};
 use tokio::{

@@ -36,14 +36,13 @@ pub(crate) struct AccessLogger {
 const RECEIVER_BATCH_CAPACITY: usize = 64;
 
 impl AccessLogger {
-    pub(crate) fn new(id: usize, frequency: Option<RollingFrequency>, max_file_size: Option<u64>, max_log_files: usize) -> Self {
-        AccessLogger {
-            id,
-            max_log_files,
-            frequency,
-            max_file_size,
-            map: HashMap::new(),
-        }
+    pub(crate) fn new(
+        id: usize,
+        frequency: Option<RollingFrequency>,
+        max_file_size: Option<u64>,
+        max_log_files: usize,
+    ) -> Self {
+        AccessLogger { id, max_log_files, frequency, max_file_size, map: HashMap::new() }
     }
 
     pub(crate) async fn run(&mut self, mut receiver: Receiver<AccessLogMessage>) {

@@ -510,14 +510,17 @@ impl RelaxedResolvesServerCertUsingSni {
 
         // 4. Insert into the correct map
 
-        let cert_id =  {
+        let cert_id = {
             use std::hash::{DefaultHasher, Hash, Hasher};
             let mut hasher = DefaultHasher::new();
             ck.cert.hash(&mut hasher);
             hasher.finish()
         };
 
-        info!("ServerCert: adding certified key for server name {name} -> cert_id:{:x}, key:{:?}, ocsp:{:?}", cert_id, ck.key, ck.ocsp);
+        info!(
+            "ServerCert: adding certified key for server name {name} -> cert_id:{:x}, key:{:?}, ocsp:{:?}",
+            cert_id, ck.key, ck.ocsp
+        );
         if is_wildcard {
             self.by_wildcard.insert(base_domain.to_string(), ck);
         } else {

@@ -17,8 +17,8 @@
 
 use orion_error::{Context, Error};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use tracing_rolling_file::RollingFrequency;
 use std::num::NonZeroUsize;
+use tracing_rolling_file::RollingFrequency;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

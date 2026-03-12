@@ -16,10 +16,8 @@
 //
 
 use orion_configuration::config::network_filters::access_log::AccessLogConf;
+use tracing_appender::non_blocking::{NonBlocking, WorkerGuard};
 use tracing_rolling_file::{RollingConditionBase, RollingFileAppender, RollingFrequency};
-use tracing_appender::{
-    non_blocking::{NonBlocking, WorkerGuard},
-};
 
 use super::{deferred_init, LoggerError};
 use deferred_init::DeferredInit;
@@ -54,11 +52,8 @@ impl LogWriter {
                         RollingConditionBase::new()
                     };
 
-                    let condition = if let Some(freq) = rolling_frequency {
-                        condition.frequency(freq)
-                    } else {
-                        condition
-                    };
+                    let condition =
+                        if let Some(freq) = rolling_frequency { condition.frequency(freq) } else { condition };
 
                     match RollingFileAppender::new(filename, condition, max_log_files) {
                         Ok(app) => Ok(tracing_appender::non_blocking(app)),
