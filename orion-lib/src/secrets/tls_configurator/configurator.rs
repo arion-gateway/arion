@@ -530,22 +530,31 @@ impl RelaxedResolvesServerCertUsingSni {
 
 impl rustls::server::ResolvesServerCert for RelaxedResolvesServerCertUsingSni {
     fn resolve(&self, client_hello: rustls::server::ClientHello) -> Option<Arc<rustls::sign::CertifiedKey>> {
+        debug!("Resolving certificate with server name: {:?}...", client_hello.server_name());
+
         if let Some(sni) = client_hello.server_name() {
             // 1. Exact match lookup
             if let Some(cert) = self.by_name.get(sni).cloned() {
+                debug!("Matched full certificate: {cert:?}");
                 return Some(cert);
             }
 
             // 2. Wildcard lookup with zero allocations
             if let Some((_, base_domain)) = sni.split_once('.') {
                 if let Some(cert) = self.by_wildcard.get(base_domain).cloned() {
+                    debug!("Matched with wildcard certificate: {cert:?}");
                     return Some(cert);
                 }
             }
-
-            None
-        } else {
-            self.default_cert.clone()
         }
+
+        // Nicola: if sni is not specified in the client hello, or if it doesn't match any certificate,
+        // including SAN with wildcards, we return the default certificate. This behavior is consistent
+        // with envoy.
+        // See full_scan_certs_on_sni_mismatch:
+        // https://www.envoyproxy.io/docs/envoy/latest/api-v3/extensions/transport_sockets/tls/v3/tls.proto#envoy-v3-api-field-extensions-transport-sockets-tls-v3-downstreamtlscontext-full-scan-certs-on-sni-mismatch
+        //
+        debug!("Matched with wildcard certificate: {:?}", self.default_cert);
+        self.default_cert.clone()
     }
 }
