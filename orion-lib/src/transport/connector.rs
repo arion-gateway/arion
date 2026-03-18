@@ -37,10 +37,13 @@ use tokio::net::{TcpSocket, TcpStream};
 use tower::Service;
 use tracing::debug;
 
-use crate::{event_error::{EventError, elapsed}, utils::instrumented_stream::InstrumentedStream};
 use crate::listeners::internal_registry::{self, InternalConnection};
 use crate::listeners::metadata::DownstreamConnectionMetadata;
 use crate::transport::{AsyncInstrumentedStream, HttpConnection};
+use crate::{
+    event_error::{elapsed, EventError},
+    utils::instrumented_stream::InstrumentedStream,
+};
 
 use super::{bind_device::BindDevice, resolve};
 
@@ -356,7 +359,9 @@ impl Service<Uri> for UnifiedConnector {
                 Box::pin(async move {
                     let stream = fut.await?;
                     let tcp_stream = stream.into_inner();
-                    Ok(HttpConnection::new(TokioIo::new(Box::new(InstrumentedStream::new(tcp_stream)) as AsyncInstrumentedStream)))
+                    Ok(HttpConnection::new(TokioIo::new(
+                        Box::new(InstrumentedStream::new(tcp_stream)) as AsyncInstrumentedStream
+                    )))
                 })
             },
             UnifiedConnector::Internal(c) => {

@@ -23,7 +23,8 @@ use super::{
 };
 use crate::{
     listeners::metadata::DownstreamConnectionMetadata,
-    secrets::{TlsConfigurator, WantsToBuildClient}, utils::instrumented_stream::InstrumentedStream,
+    secrets::{TlsConfigurator, WantsToBuildClient},
+    utils::instrumented_stream::InstrumentedStream,
 };
 use futures::future::BoxFuture;
 use rustls::ClientConfig;

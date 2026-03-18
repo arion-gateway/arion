@@ -15,7 +15,7 @@
 //
 //
 
-use crate::{transport::AsyncReadWriteInstrumented, utils::instrumented_stream::{Instrumented}};
+use crate::{transport::AsyncReadWriteInstrumented, utils::instrumented_stream::Instrumented};
 use bytes::Bytes;
 use std::{
     pin::Pin,

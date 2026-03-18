@@ -24,10 +24,15 @@ use super::{
 use crate::instrumentation;
 
 use crate::{
-    AsyncInstrumentedStream, ConversionContext, Error, Result, RouteConfigurationChange, get_shard_id, listeners::{
+    get_shard_id,
+    listeners::{
         http_connection_manager::mcp_gateway::mcp::McpGatewayListenerContext,
         metadata::{DownstreamConnectionMetadata, DownstreamMetadata},
-    }, secrets::{TlsConfigurator, WantsToBuildServer}, transport::{ProxyProtocolReader, bind_device::BindDevice, tls_inspector}, utils::instrumented_stream::InstrumentedStream
+    },
+    secrets::{TlsConfigurator, WantsToBuildServer},
+    transport::{bind_device::BindDevice, tls_inspector, ProxyProtocolReader},
+    utils::instrumented_stream::InstrumentedStream,
+    AsyncInstrumentedStream, ConversionContext, Error, Result, RouteConfigurationChange,
 };
 use orion_configuration::config::{
     listener::{FilterChainMatch, Listener as ListenerConfig, ListenerType, MatchResult},
@@ -701,7 +706,7 @@ mod tests {
         decode::from_yaml, envoy_data_plane_api::envoy::config::listener::v3::FilterChainMatch as EnvoyFilterChainMatch,
     };
 
-    use crate::SecretManager;
+    use crate::{utils::instrumented_stream::StreamMetrics, SecretManager};
 
     use super::*;
     use orion_data_plane_api::envoy_data_plane_api::envoy::config::listener::v3::Listener as EnvoyListener;

@@ -16,7 +16,7 @@
 //
 
 use super::AsyncReadWriteInstrumented;
-use crate::utils::{rewindable_stream::RewindableHeadAsyncStream};
+use crate::utils::rewindable_stream::RewindableHeadAsyncStream;
 
 use rustls::server::Acceptor;
 use smol_str::SmolStr;
@@ -32,7 +32,9 @@ pub enum InspectorResult {
     TlsError(io::Error),
 }
 
-pub async fn inspect_client_hello(stream: Box<dyn AsyncReadWriteInstrumented>) -> (InspectorResult, Box<dyn AsyncReadWriteInstrumented>) {
+pub async fn inspect_client_hello(
+    stream: Box<dyn AsyncReadWriteInstrumented>,
+) -> (InspectorResult, Box<dyn AsyncReadWriteInstrumented>) {
     let mut inspector = RewindableHeadAsyncStream::new(stream);
     let acceptor = tokio_rustls::LazyConfigAcceptor::new(Acceptor::default(), &mut inspector);
     let result = match acceptor.await {

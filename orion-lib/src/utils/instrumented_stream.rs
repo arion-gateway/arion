@@ -1,14 +1,18 @@
 use std::{
-    pin::Pin, sync::{
-        Arc, atomic::{AtomicU64, Ordering}
-    }, task::{Context, Poll}
+    pin::Pin,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+    task::{Context, Poll},
 };
 
 use pin_project::pin_project;
-use tokio::{io::{AsyncRead, AsyncWrite, ReadBuf}};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use crate::{transport::AsyncReadWriteInstrumented, utils::rewindable_stream::RewindableHeadAsyncStream};
 
+#[derive(Debug)]
 pub struct StreamMetrics {
     bytes_read: AtomicU64,
     bytes_written: AtomicU64,
@@ -89,12 +93,10 @@ impl<S: AsyncWrite> AsyncWrite for InstrumentedStream<S> {
     }
 }
 
-
 pub trait Instrumented {
     fn metrics(&self) -> &StreamMetrics;
     fn shared_metrics(&self) -> Arc<StreamMetrics>;
 }
-
 
 impl<S> Instrumented for InstrumentedStream<S> {
     fn metrics(&self) -> &StreamMetrics {
@@ -117,8 +119,8 @@ impl Instrumented for tokio_rustls::server::TlsStream<Box<dyn AsyncReadWriteInst
 }
 
 impl<R> Instrumented for RewindableHeadAsyncStream<R>
- where
-     R: AsyncReadWriteInstrumented + Instrumented + ?Sized,
+where
+    R: AsyncReadWriteInstrumented + Instrumented + ?Sized,
 {
     fn metrics(&self) -> &StreamMetrics {
         self.get_ref().metrics()
