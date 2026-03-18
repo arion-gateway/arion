@@ -37,10 +37,10 @@ use tokio::net::{TcpSocket, TcpStream};
 use tower::Service;
 use tracing::debug;
 
-use crate::event_error::{elapsed, EventError};
+use crate::{event_error::{EventError, elapsed}, utils::instrumented_stream::InstrumentedStream};
 use crate::listeners::internal_registry::{self, InternalConnection};
 use crate::listeners::metadata::DownstreamConnectionMetadata;
-use crate::transport::{AsyncStream, HttpConnection};
+use crate::transport::{AsyncInstrumentedStream, HttpConnection};
 
 use super::{bind_device::BindDevice, resolve};
 
@@ -271,7 +271,7 @@ impl InternalConnector {
     pub async fn connect(
         &self,
         downstream_metadata: Option<Arc<DownstreamConnectionMetadata>>,
-    ) -> std::result::Result<(AsyncStream, &'static str), WithContext<io::Error>> {
+    ) -> std::result::Result<(AsyncInstrumentedStream, &'static str), WithContext<io::Error>> {
         debug!("Connecting to internal listener '{}' from cluster '{}'", self.listener_name, self.cluster_name);
 
         let sender = internal_registry::get_connection_sender_for_listener(self.listener_name).ok_or_else(|| {
@@ -289,7 +289,7 @@ impl InternalConnector {
             })
         });
         let internal_conn = InternalConnection {
-            stream: Box::new(server_stream) as AsyncStream,
+            stream: Box::new(InstrumentedStream::new(server_stream)) as AsyncInstrumentedStream,
             downstream_metadata,
             start_instant: Instant::now(),
         };
@@ -302,7 +302,7 @@ impl InternalConnector {
         }
         debug!("Successfully connected to internal listener '{}'", self.listener_name);
 
-        Ok((Box::new(client_stream) as AsyncStream, self.cluster_name))
+        Ok((Box::new(InstrumentedStream::new(client_stream)) as AsyncInstrumentedStream, self.cluster_name))
     }
 }
 
@@ -356,7 +356,7 @@ impl Service<Uri> for UnifiedConnector {
                 Box::pin(async move {
                     let stream = fut.await?;
                     let tcp_stream = stream.into_inner();
-                    Ok(HttpConnection::new(TokioIo::new(Box::new(tcp_stream) as AsyncStream)))
+                    Ok(HttpConnection::new(TokioIo::new(Box::new(InstrumentedStream::new(tcp_stream)) as AsyncInstrumentedStream)))
                 })
             },
             UnifiedConnector::Internal(c) => {

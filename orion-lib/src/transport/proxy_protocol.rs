@@ -18,7 +18,7 @@
 use crate::{
     listeners::metadata::DownstreamConnectionMetadata,
     secrets::{TlsConfigurator, WantsToBuildClient},
-    transport::AsyncReadWrite,
+    transport::AsyncReadWriteInstrumented,
     utils::rewindable_stream::RewindableHeadAsyncStream,
     Error, Result, SecretManager,
 };
@@ -70,10 +70,10 @@ impl ProxyProtocolReader {
 
     pub async fn try_read_proxy_header(
         &self,
-        stream: Box<dyn AsyncReadWrite>,
+        stream: Box<dyn AsyncReadWriteInstrumented>,
         local_address: SocketAddr,
         peer_address: SocketAddr,
-    ) -> Result<(DownstreamConnectionMetadata, Box<dyn AsyncReadWrite>)> {
+    ) -> Result<(DownstreamConnectionMetadata, Box<dyn AsyncReadWriteInstrumented>)> {
         let mut stream = RewindableHeadAsyncStream::new(stream);
         let mut buffer = [0; READ_BUFFER_LEN];
 
@@ -400,6 +400,8 @@ impl TryFrom<(UpstreamProxyProtocolConfig, &SecretManager)> for ProxyProtocolCon
 
 #[cfg(test)]
 mod tests {
+    use crate::utils::instrumented_stream::InstrumentedStream;
+
     use super::*;
     use orion_configuration::config::transport::{PassTlvMatchType, ProxyProtocolPassThroughTlvs, TlvEntry};
     use std::net::{Ipv4Addr, SocketAddr};
@@ -424,7 +426,7 @@ mod tests {
         write_side.write_all(v1_header).await.unwrap();
         write_side.write_all(test_data).await.unwrap();
 
-        let result = reader.try_read_proxy_header(Box::new(read_side), local_addr, peer_addr).await;
+        let result = reader.try_read_proxy_header(Box::new(InstrumentedStream::new(read_side)), local_addr, peer_addr).await;
         assert!(result.is_ok());
 
         let (metadata, _stream) = result.unwrap();
@@ -475,7 +477,7 @@ mod tests {
         write_side.write_all(&v2_header).await.unwrap();
         write_side.write_all(test_data).await.unwrap();
 
-        let result = reader.try_read_proxy_header(Box::new(read_side), local_addr, peer_addr).await;
+        let result = reader.try_read_proxy_header(Box::new(InstrumentedStream::new(read_side)), local_addr, peer_addr).await;
         assert!(result.is_ok());
 
         let (metadata, _stream) = result.unwrap();
@@ -557,7 +559,7 @@ mod tests {
         write_side.write_all(&header_bytes).await.unwrap();
 
         let (parsed_metadata, _) =
-            reader.try_read_proxy_header(Box::new(read_side), proxy_local, proxy_peer).await.unwrap();
+            reader.try_read_proxy_header(Box::new(InstrumentedStream::new(read_side)), proxy_local, proxy_peer).await.unwrap();
 
         match parsed_metadata {
             DownstreamConnectionMetadata::FromProxyProtocol {

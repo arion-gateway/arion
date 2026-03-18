@@ -23,8 +23,8 @@ use crate::{
     get_shard_id,
     listeners::metadata::{DownstreamConnectionMetadata, DownstreamMetadata},
     secrets::{TlsConfigurator, WantsToBuildServer},
-    transport::AsyncReadWrite,
-    AsyncStream, ConversionContext, Error, Result,
+    transport::AsyncReadWriteInstrumented,
+    AsyncInstrumentedStream, ConversionContext, Error, Result,
 };
 use futures::TryFutureExt;
 use hyper::{service::Service, Request};
@@ -155,10 +155,10 @@ impl FilterchainType {
 
     pub fn apply_rbac(
         &self,
-        stream: AsyncStream,
+        stream: AsyncInstrumentedStream,
         connection_metadata: &DownstreamConnectionMetadata,
         server_name: Option<&str>,
-    ) -> Option<AsyncStream> {
+    ) -> Option<AsyncInstrumentedStream> {
         let rbac_filters = &self.filter_chain().rbac_filters;
         let network_context =
             NetworkContext::new(connection_metadata.local_address(), connection_metadata.peer_address(), server_name);
@@ -174,7 +174,7 @@ impl FilterchainType {
     #[allow(clippy::used_underscore_binding)]
     pub async fn start_filterchain(
         &self,
-        stream: AsyncStream,
+        stream: AsyncInstrumentedStream,
         metadata: DownstreamMetadata,
         listener_name: &'static str,
         start_instant: std::time::Instant,
@@ -228,7 +228,6 @@ impl FilterchainType {
                     // and only useful in the cases where the listener is not using TLS.
                     // any deployment that does not want to do TLS to downstream, is probably already in the private network
                     // and would prefer prior-knowledge http2
-                    let stream: Box<dyn AsyncReadWrite> = Box::new(stream);
                     (stream, codec_type)
                 };
 
@@ -269,11 +268,11 @@ impl FilterchainType {
                     .clone()
                     .map(TlsConfigurator::<ServerConfig, WantsToBuildServer>::into_inner);
 
-                let (stream, _alpns): (Box<dyn AsyncReadWrite>, Option<AlpnCodecs>) =
+                let (stream, _alpns): (Box<dyn AsyncReadWriteInstrumented>, Option<AlpnCodecs>) =
                     if let Some(server_config) = server_config {
                         start_tls(listener_name, stream, server_config, None).await?
                     } else {
-                        (Box::new(stream), None)
+                        (stream, None)
                     };
 
                 debug!("Starting tcp proxy");
@@ -295,10 +294,10 @@ fn negotiate_codec_type<'a>(codec_type: CodecType, client_alpns: impl Iterator<I
 
 async fn start_tls(
     listener_name: &'static str,
-    stream: AsyncStream,
+    stream: AsyncInstrumentedStream,
     mut config: ServerConfig,
     codec_type: Option<CodecType>,
-) -> Result<(AsyncStream, Option<AlpnCodecs>)> {
+) -> Result<(AsyncInstrumentedStream, Option<AlpnCodecs>)> {
     let acceptor = tokio_rustls::LazyConfigAcceptor::new(Acceptor::default(), stream);
     tokio::pin!(acceptor);
     match acceptor.as_mut().await {

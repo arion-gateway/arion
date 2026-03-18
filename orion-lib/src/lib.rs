@@ -63,7 +63,7 @@ use orion_configuration::config::{
     Bootstrap, Cluster, Listener as ListenerConfig,
 };
 pub use secrets::SecretManager;
-pub(crate) use transport::AsyncStream;
+pub(crate) use transport::AsyncInstrumentedStream;
 
 pub type Error = orion_error::Error;
 pub type Result<T> = ::core::result::Result<T, Error>;

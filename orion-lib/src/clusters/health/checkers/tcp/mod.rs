@@ -66,7 +66,7 @@ where
 }
 
 impl TcpClient for TcpChannelConnector {
-    type Stream = crate::transport::AsyncStream;
+    type Stream = crate::transport::AsyncInstrumentedStream;
     fn connect(&self) -> BoxFuture<'static, std::result::Result<Self::Stream, Error>> {
         self.connect(None).map(|result| result.map(|channel| channel.stream)).map_err(Error::from).boxed()
     }

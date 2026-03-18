@@ -24,14 +24,10 @@ use super::{
 use crate::instrumentation;
 
 use crate::{
-    get_shard_id,
-    listeners::{
+    AsyncInstrumentedStream, ConversionContext, Error, Result, RouteConfigurationChange, get_shard_id, listeners::{
         http_connection_manager::mcp_gateway::mcp::McpGatewayListenerContext,
         metadata::{DownstreamConnectionMetadata, DownstreamMetadata},
-    },
-    secrets::{TlsConfigurator, WantsToBuildServer},
-    transport::{bind_device::BindDevice, tls_inspector, AsyncStream, ProxyProtocolReader},
-    ConversionContext, Error, Result, RouteConfigurationChange,
+    }, secrets::{TlsConfigurator, WantsToBuildServer}, transport::{ProxyProtocolReader, bind_device::BindDevice, tls_inspector}, utils::instrumented_stream::InstrumentedStream
 };
 use orion_configuration::config::{
     listener::{FilterChainMatch, Listener as ListenerConfig, ListenerType, MatchResult},
@@ -283,6 +279,8 @@ impl Listener {
                                         _ = stream.set_nodelay(true);
                                         _ = stream.set_quickack(true);
 
+                                        let stream = InstrumentedStream::new(stream);
+
                                         let _shard_id = get_shard_id!();
                                         with_metric!(listeners::DOWNSTREAM_CX_TOTAL, add, 1, _shard_id,&[KeyValue::new("listener", _listener_name)]);
                                         with_metric!(listeners::DOWNSTREAM_CX_ACTIVE, add, 1, _shard_id,&[KeyValue::new("listener", _listener_name)]);
@@ -477,7 +475,7 @@ impl Listener {
         filter_chains: Arc<HashMap<FilterChainMatch, FilterchainType>>,
         with_tls_inspector: bool,
         source: ConnectionSource,
-        mut stream: AsyncStream,
+        mut stream: AsyncInstrumentedStream,
         start_instant: std::time::Instant,
     ) -> Result<()> {
         let _shard_id = get_shard_id!();
