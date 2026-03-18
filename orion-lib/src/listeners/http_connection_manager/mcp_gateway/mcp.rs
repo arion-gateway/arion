@@ -235,14 +235,6 @@ pub struct McpGateway {
     current_tool_index: ToolRegistryIndex,
 }
 
-#[derive(Debug, thiserror::Error)]
-enum JsonRcpMessageError {
-    #[error("{0}")]
-    RmcpError(#[from] rmcp::ErrorData),
-    #[error("{0}")]
-    SerdeError(#[from] serde_json::Error),
-}
-
 impl TryFrom<McpGatewayConfig> for McpGateway {
     type Error = ToolBuilderError;
 
@@ -561,7 +553,7 @@ impl McpGateway {
 
         let mut session_id = request.get_mcp_session_id();
 
-        let json_rpc_message = match Self::parse_json_rpc_message(&body) {
+        let json_rpc_message = match serde_json::from_slice::<model::JsonRpcMessage>(&body) {
             Ok(message) => message,
             Err(err) => {
                 info!(target: "mcp_gateway", "handle_rpc_json_message: failed to parse json message: {body:?} ({err:?})");
@@ -912,32 +904,6 @@ impl McpGateway {
         FilterDecision::DirectResponse(response)
     }
 
-    fn parse_json_rpc_message(body: &Bytes) -> Result<model::JsonRpcMessage, JsonRcpMessageError> {
-        match serde_json::from_slice::<model::JsonRpcMessage>(&body) {
-            Ok(msg) => Ok(msg),
-            Err(err) => {
-                debug!(target: "mcp_gateway", "parse_json_rpc_message: failed to parse JSON message: {body:?}: {err} (trying params workaround...)");
-
-                // WORKAROUND: the current rmcp implementation fails to parse
-                // {"jsonrpc":"2.0", "method":"notifications/initialized"},
-                // which is a valid JSON-RPC notification according to the spec.
-                // rmcp incorrectly requires the "params" field, even though it is optional.
-                // This workaround injects an empty "params" object to satisfy the crate.
-
-                let mut value: serde_json::Value = serde_json::from_slice(&body)?;
-
-                if value.get("params").is_none() {
-                    if let Some(obj) = value.as_object_mut() {
-                        obj.insert("params".to_string(), serde_json::json!({}));
-                    }
-                }
-
-                let message = serde_json::from_value(value)?;
-                Ok(message)
-            },
-        }
-    }
-
     async fn handle_rpc_json_message(
         &mut self,
         ctx: &McpGatewayListenerContext,
@@ -1004,10 +970,7 @@ impl McpGateway {
 
                 self.initialize_request_params = Some(init_params);
 
-                let capabilities = ServerCapabilities::builder()
-                    .enable_tools()
-                    .enable_tool_list_changed()
-                    .build();
+                let capabilities = ServerCapabilities::builder().enable_tools().enable_tool_list_changed().build();
 
                 let server_info = {
                     let info = &self.inner.config.server_info;
