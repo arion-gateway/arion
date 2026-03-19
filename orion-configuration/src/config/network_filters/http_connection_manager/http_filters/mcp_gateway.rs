@@ -14,7 +14,7 @@ pub struct McpGateway {
     pub cluster_header: Option<ClusterHeader>,
     pub server_info: McpServerInfo,
     pub tools: Vec<McpTool>,
-    pub semantic_search_tool: bool,
+    pub semantic_search_tool: Option<McpSemanticSearch>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
@@ -78,6 +78,18 @@ pub enum McpRbacPermission {
     JwtClaim { field: SmolStr, value: SmolStr },
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct McpSemanticSearch {
+    pub send_server_side_notification: bool,
+    pub embeddings_provider: EmbeddingsProvider,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub enum EmbeddingsProvider {
+    Local,
+    Remote,
+}
+
 #[cfg(feature = "envoy-conversions")]
 mod envoy_conversions {
     use std::str::FromStr;
@@ -91,8 +103,8 @@ mod envoy_conversions {
         mcp_server_backend::TransportUpstream as OrionTransportUpstream, permission,
         tool::UpstreamBackend as OrionUpstreamBackend, tool_rbac::Action as OrionAction, JwtClaimMatcher,
         JwtHeaderMatcher, McpGateway as OrionMcpGateway, Permission as OrionPermission,
-        QueryParam as OrionMcpQueryParams, ServerInfo as OrionMcpServerInfo, Tool as OrionTool,
-        ToolRbac as OrionToolRbac,
+        QueryParam as OrionMcpQueryParams, SemanticSearchTool as OrionSemanticSearchTool,
+        ServerInfo as OrionMcpServerInfo, Tool as OrionTool, ToolRbac as OrionToolRbac,
     };
     use tracing::warn;
 
@@ -112,9 +124,14 @@ mod envoy_conversions {
             let server_info = required!(server_info)?;
             let cluster_header: Option<http::HeaderName> = cluster_header.map(TryInto::try_into).transpose()?;
             let cluster_header = cluster_header.map(ClusterHeader);
-
             let tools = tools.into_iter().map(TryInto::try_into).collect::<Result<Vec<_>, _>>()?;
-            Ok(McpGateway { cluster_header, server_info: server_info.into(), tools, semantic_search_tool })
+
+            Ok(McpGateway {
+                cluster_header,
+                server_info: server_info.into(),
+                tools,
+                semantic_search_tool: semantic_search_tool.map(TryInto::try_into).transpose()?,
+            })
         }
     }
 
@@ -276,6 +293,23 @@ mod envoy_conversions {
                     Ok(McpRbacPermission::JwtClaim { field: field.into(), value: value.into() })
                 },
             }
+        }
+    }
+
+    impl TryFrom<OrionSemanticSearchTool> for McpSemanticSearch {
+        type Error = GenericError;
+        fn try_from(orion: OrionSemanticSearchTool) -> Result<Self, Self::Error> {
+            use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::mcp::mcp_gateway::v3::semantic_search_tool::EmbeddingsProvider as OrionEmbeddingsProvider;
+
+            let OrionSemanticSearchTool { send_server_side_notification, embeddings_provider } = orion;
+
+            let embeddings_provider = match OrionEmbeddingsProvider::try_from(embeddings_provider) {
+                Ok(OrionEmbeddingsProvider::Local) => EmbeddingsProvider::Local,
+                Ok(OrionEmbeddingsProvider::Remote) => EmbeddingsProvider::Remote,
+                Err(_) => return Err(GenericError::from_msg("Invalid embeddings_provider value")),
+            };
+
+            Ok(McpSemanticSearch { send_server_side_notification, embeddings_provider })
         }
     }
 

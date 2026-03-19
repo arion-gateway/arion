@@ -13,7 +13,7 @@ message McpGateway {
     optional string cluster_header = 1;
     ServerInfo server_info = 2 [(validate.rules).message = {required: true}];
     repeated Tool tools = 3;
-    bool semantic_search_tool = 4;
+    SemanticSearchTool semantic_search_tool = 4;
 }
 
 // Server info
@@ -111,4 +111,13 @@ message JwtHeaderMatcher {
 message JwtClaimMatcher {
   string field = 1 [(validate.rules).string = {min_bytes: 1}];
   string value = 2 [(validate.rules).string = {min_bytes: 1}];
+}
+
+message SemanticSearchTool {
+    enum EmbeddingsProvider {
+        LOCAL = 0;
+        REMOTE = 1;
+    }
+    bool send_server_side_notification = 1;
+    EmbeddingsProvider embeddings_provider = 2;
 }
