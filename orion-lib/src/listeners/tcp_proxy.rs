@@ -37,7 +37,7 @@ use orion_configuration::config::{
     network_filters::{access_log::AccessLog, tcp_proxy::TcpProxy as TcpProxyConfig},
 };
 use orion_format::{
-    context::{FinishContext, InitContext, SocketAddrContext, TcpContext},
+    context::{FinishContext, InitContext, SocketAddrContext, TcpContext, WireContext},
     types::ResponseFlags,
 };
 
@@ -208,6 +208,11 @@ impl TcpProxy {
             upstream_failure: maybe_upstream_transport_error.map(|x| x.0),
             response_code_details: maybe_response_code_details.map(|x| x.0),
             connection_termination_details: maybe_connection_termination_details.map(|x| x.0),
+        });
+
+        access_loggers.with_context(&WireContext {
+            wire_bytes_received: bytes_received,
+            wire_bytes_sent: bytes_sent,
         });
 
         #[cfg(feature = "access-log")]
