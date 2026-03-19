@@ -256,6 +256,8 @@ pub struct FinishContext {
     pub duration: Duration,
     pub bytes_received: u64,
     pub bytes_sent: u64,
+    pub wire_bytes_received: u64,
+    pub wire_bytes_sent: u64,
     pub response_flags: ResponseFlags,
     pub upstream_failure: Option<&'static str>,
     pub response_code_details: Option<&'static str>,
@@ -288,6 +290,28 @@ impl Context for FinishContext {
             Operator::ConnectionTerminationDetails => self
                 .connection_termination_details
                 .map_or(StringType::None, |msg| StringType::Smol(SmolStr::new_static(msg))),
+            _ => StringType::None,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct WireContext {
+    pub wire_bytes_received: u64,
+    pub wire_bytes_sent: u64,
+}
+
+impl Context for WireContext {
+    fn eval_part(&self, op: &Operator) -> StringType {
+        match op {
+            Operator::DownstreamWireBytesReceived => {
+                let mut buffer = itoa::Buffer::new();
+                StringType::Smol(SmolStr::new(buffer.format(self.wire_bytes_received)))
+            },
+            Operator::DownstreamWireBytesSent => {
+                let mut buffer = itoa::Buffer::new();
+                StringType::Smol(SmolStr::new(buffer.format(self.wire_bytes_sent)))
+            },
             _ => StringType::None,
         }
     }

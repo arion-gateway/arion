@@ -182,5 +182,5 @@ fn create_request(
     let req = req.header("User-Agent", "orion/health-checks");
 
     let empty = TimeoutBody::new(None, Empty::<Bytes>::default().into());
-    Ok(req.body(InstrumentedBody::new(BodyKind::Request, empty, |_, _, _| {}))?)
+    Ok(req.body(InstrumentedBody::new(BodyKind::Request, empty, None, |_, _, _, _| {}))?)
 }

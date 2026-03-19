@@ -82,7 +82,7 @@ impl Transcoder for RestTranscoder {
 
             let poly_body = PolyBody::from(Full::new(Bytes::from(rendered)));
             let timeout_body = TimeoutBody::new(None, poly_body);
-            InstrumentedBody::new(BodyKind::Request, timeout_body, |_, _, _| {})
+            InstrumentedBody::new(BodyKind::Request, timeout_body, None, |_, _, _, _| {})
         } else {
             InstrumentedBody::default()
         };

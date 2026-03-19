@@ -75,7 +75,7 @@ static ENVOY_PATTERNS: LazyLock<Trie<u8, (Operator, Category, usize, bool)>> = L
     trie_mapstr_unsupported!(trie, "PACKETS_RETRANSMITTED", Operator::PacketsRetransmitted);
     trie_mapstr_unsupported!(trie, "UPSTREAM_WIRE_BYTES_RECEIVED", Operator::UpstreamWireBytesReceived);
     trie_mapstr_unsupported!(trie, "UPSTREAM_HEADER_BYTES_RECEIVED", Operator::UpstreamHeaderBytesReceived);
-    trie_mapstr_unsupported!(trie, "DOWNSTREAM_WIRE_BYTES_RECEIVED", Operator::DownstreamWireBytesReceived);
+    trie_mapstr!(trie, "DOWNSTREAM_WIRE_BYTES_RECEIVED", Operator::DownstreamWireBytesReceived);
     trie_mapstr_unsupported!(trie, "DOWNSTREAM_HEADER_BYTES_RECEIVED", Operator::DownstreamHeaderBytesReceived);
     trie_mapstr!(trie, "PROTOCOL", Operator::Protocol);
     trie_mapstr!(trie, "UPSTREAM_PROTOCOL", Operator::UpstreamProtocol);
@@ -85,7 +85,7 @@ static ENVOY_PATTERNS: LazyLock<Trie<u8, (Operator, Category, usize, bool)>> = L
     trie_mapstr!(trie, "BYTES_SENT", Operator::BytesSent);
     trie_mapstr_unsupported!(trie, "UPSTREAM_WIRE_BYTES_SENT", Operator::UpstreamWireBytesSent);
     trie_mapstr_unsupported!(trie, "UPSTREAM_HEADER_BYTES_SENT", Operator::UpstreamHeaderBytesSent);
-    trie_mapstr_unsupported!(trie, "DOWNSTREAM_WIRE_BYTES_SENT", Operator::DownstreamWireBytesSent);
+    trie_mapstr!(trie, "DOWNSTREAM_WIRE_BYTES_SENT", Operator::DownstreamWireBytesSent);
     trie_mapstr_unsupported!(trie, "DOWNSTREAM_HEADER_BYTES_SENT", Operator::DownstreamHeaderBytesSent);
     trie_mapstr!(trie, "DURATION", Operator::Duration);
     trie_mapstr_unsupported!(trie, "COMMON_DURATION", Operator::CommonDuration);

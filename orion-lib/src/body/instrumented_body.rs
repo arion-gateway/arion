@@ -30,50 +30,34 @@ use crate::{
 mod metrics_enabled {
     #[allow(clippy::wildcard_imports)]
     use super::*;
-    use crate::event_error::TryInferFrom;
+    use crate::{event_error::TryInferFrom, utils::instrumented_stream::StreamMetrics};
     use bytes::Buf;
     use parking_lot::Mutex;
-    use pin_project::pin_project;
-    use std::sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc,
-    };
+    use pin_project::{pin_project, pinned_drop};
+    use std::sync::Arc;
 
-    type MetricsClosure = Box<dyn FnOnce(u64, Option<EventError>, ResponseFlags) + Send + 'static>;
+    type MetricsClosure = Box<dyn FnOnce(u64, &StreamMetrics, Option<EventError>, ResponseFlags) + Send + 'static>;
 
-    pub struct MetricsState {
-        body_kind: BodyKind,
-        bytes_counter: AtomicU64,
-        on_complete: Mutex<Option<MetricsClosure>>,
-    }
-
-    /// Pin-project prevents the struct to implement `Drop`.
-    /// This workaround allows us to use `Drop` and invoke the closure, if not already executed.
-    #[derive(Clone)]
-    pub struct DropGuard {
-        state: Arc<MetricsState>,
-    }
-
-    impl Drop for DropGuard {
-        fn drop(&mut self) {
-            trigger_on_complete(&self.state, None, ResponseFlags::default());
-        }
-    }
-
-    fn trigger_on_complete(state: &Arc<MetricsState>, event_error: Option<EventError>, flags: ResponseFlags) {
-        let mut guard = state.on_complete.lock();
-        if let Some(closure) = guard.take() {
-            let bytes = state.bytes_counter.load(Ordering::Relaxed);
-            closure(bytes, event_error, flags);
-        }
-    }
-
-    #[pin_project]
+    #[pin_project(PinnedDrop)]
     pub struct InstrumentedBody<B> {
         #[pin]
         pub inner: B,
-        pub state: Arc<MetricsState>,
-        pub guard: DropGuard,
+        pub body_kind: BodyKind,
+        pub body_bytes: u64,
+        pub stream_metrics: Option<Arc<StreamMetrics>>,
+        pub on_complete: Arc<Mutex<Option<MetricsClosure>>>,
+    }
+
+    #[pinned_drop]
+    impl<B> PinnedDrop for InstrumentedBody<B> {
+        fn drop(self: std::pin::Pin<&mut Self>) {
+            let this = self.project();
+            if let Some(closure) = this.on_complete.lock().take() {
+                if let Some(metrics) = this.stream_metrics.as_ref() {
+                    closure(*this.body_bytes, metrics.as_ref(), None, ResponseFlags::default());
+                }
+            }
+        }
     }
 
     impl<B> std::fmt::Debug for InstrumentedBody<B>
@@ -85,34 +69,54 @@ mod metrics_enabled {
         }
     }
 
-    impl<B> InstrumentedBody<B> {
-        pub fn new<F>(kind: BodyKind, inner: B, on_complete: F) -> Self
+    impl<B: Default> InstrumentedBody<B> {
+        pub fn new<F>(kind: BodyKind, inner: B, metrics: Option<Arc<StreamMetrics>>, on_complete: F) -> Self
         where
-            F: FnOnce(u64, Option<EventError>, ResponseFlags) + Send + 'static,
+            F: FnOnce(u64, &StreamMetrics, Option<EventError>, ResponseFlags) + Send + 'static,
         {
-            let state = Arc::new(MetricsState {
+            Self {
+                inner,
                 body_kind: kind,
-                bytes_counter: AtomicU64::new(0),
-                on_complete: Mutex::new(Some(Box::new(on_complete))),
-            });
-
-            Self { inner, guard: DropGuard { state: state.clone() }, state }
+                body_bytes: 0,
+                stream_metrics: metrics,
+                on_complete: Arc::new(Mutex::new(Some(Box::new(on_complete)))),
+            }
         }
 
         #[inline]
-        pub fn map_into<B2>(self) -> InstrumentedBody<B2>
+        pub fn map_into<B2>(mut self) -> InstrumentedBody<B2>
         where
             B: Into<B2>,
         {
-            InstrumentedBody { inner: self.inner.into(), state: self.state, guard: self.guard }
+            let free_body = std::mem::replace(&mut self.inner, B::default());
+            InstrumentedBody {
+                inner: free_body.into(),
+                body_kind: self.body_kind,
+                body_bytes: self.body_bytes,
+                stream_metrics: self.stream_metrics.clone(),
+                on_complete: Arc::clone(&self.on_complete),
+            }
         }
 
         #[inline]
-        pub fn map_inner<B2, F>(self, f: F) -> InstrumentedBody<B2>
+        pub fn map_inner<B2, F2>(mut self, f: F2) -> InstrumentedBody<B2>
         where
-            F: FnOnce(B) -> B2,
+            F2: FnOnce(B) -> B2,
         {
-            InstrumentedBody { inner: f(self.inner), state: self.state, guard: self.guard }
+            let free_body = std::mem::replace(&mut self.inner, B::default());
+            InstrumentedBody {
+                inner: f(free_body),
+                body_kind: self.body_kind,
+                body_bytes: self.body_bytes,
+                stream_metrics: self.stream_metrics.clone(),
+                on_complete: Arc::clone(&self.on_complete),
+            }
+        }
+
+        #[inline]
+        pub fn into_inner(mut self) -> B {
+            let inner = std::mem::replace(&mut self.inner, B::default());
+            inner
         }
     }
 
@@ -134,17 +138,24 @@ mod metrics_enabled {
             match &poll {
                 Poll::Ready(Some(Ok(frame))) => {
                     if let Some(data) = frame.data_ref() {
-                        let size = data.remaining() as u64;
-                        this.state.bytes_counter.fetch_add(size, std::sync::atomic::Ordering::Relaxed);
+                        *this.body_bytes += data.remaining() as u64;
                     }
                 },
                 Poll::Ready(None) => {
-                    trigger_on_complete(this.state, None, ResponseFlags::default());
+                    if let Some(closure) = this.on_complete.lock().take() {
+                        if let Some(metrics) = this.stream_metrics.as_ref() {
+                            closure(*this.body_bytes, metrics.as_ref(), None, ResponseFlags::default());
+                        }
+                    }
                 },
                 Poll::Ready(Some(Err(err))) => {
-                    let event_error = EventError::try_infer_from(err);
-                    let flags = ResponseFlags::from((err, this.state.body_kind));
-                    trigger_on_complete(this.state, event_error, flags);
+                    if let Some(closure) = this.on_complete.lock().take() {
+                        if let Some(metrics) = this.stream_metrics.as_ref() {
+                            let event_error = EventError::try_infer_from(err);
+                            let flags = ResponseFlags::from((err, *this.body_kind));
+                            closure(*this.body_bytes, metrics.as_ref(), event_error, flags);
+                        }
+                    }
                 },
                 Poll::Pending => {},
             }
@@ -165,7 +176,9 @@ mod metrics_enabled {
 
 #[cfg(not(any(feature = "access-log", feature = "metrics")))]
 mod metrics_disabled {
-    use std::marker::PhantomData;
+    use std::{marker::PhantomData, sync::Arc};
+
+    use crate::utils::instrumented_stream::StreamMetrics;
 
     #[allow(clippy::wildcard_imports)]
     use super::*;
@@ -176,8 +189,10 @@ mod metrics_disabled {
     pub struct InstrumentedBody<B> {
         #[pin]
         pub inner: B,
-        pub guard: PhantomData<()>,
-        pub state: PhantomData<()>,
+        pub body_kind: BodyKind,
+        pub body_bytes: u64,
+        pub stream_metrics: PhantomData<()>,
+        pub on_complete: PhantomData<()>,
     }
 
     impl<B> std::fmt::Debug for InstrumentedBody<B>
@@ -190,25 +205,37 @@ mod metrics_disabled {
     }
 
     impl<B> InstrumentedBody<B> {
-        pub fn new<F>(_kind: BodyKind, inner: B, _on_complete: F) -> Self
+        pub fn new<F>(kind: BodyKind, inner: B, _metrics: Option<Arc<StreamMetrics>>, _on_complete: F) -> Self
         where
-            F: FnOnce(u64, Option<EventError>, ResponseFlags) + Send + 'static,
+            F: FnOnce(u64, &StreamMetrics, Option<EventError>, ResponseFlags) + Send + 'static,
         {
-            Self { inner, guard: PhantomData, state: PhantomData }
+            Self { inner, body_kind: kind, body_bytes: 0, stream_metrics: PhantomData, on_complete: PhantomData }
         }
 
         pub fn map_into<B2>(self) -> InstrumentedBody<B2>
         where
             B: Into<B2>,
         {
-            InstrumentedBody { inner: self.inner.into(), guard: PhantomData, state: PhantomData }
+            InstrumentedBody {
+                inner: self.inner.into(),
+                body_kind: self.body_kind,
+                body_bytes: self.body_bytes,
+                stream_metrics: PhantomData,
+                on_complete: PhantomData,
+            }
         }
 
         pub fn map_inner<B2, F>(self, f: F) -> InstrumentedBody<B2>
         where
             F: FnOnce(B) -> B2,
         {
-            InstrumentedBody { inner: f(self.inner), state: self.state, guard: self.guard }
+            InstrumentedBody {
+                inner: f(self.inner),
+                body_kind: self.body_kind,
+                body_bytes: self.body_bytes,
+                stream_metrics: PhantomData,
+                on_complete: PhantomData,
+            }
         }
     }
 

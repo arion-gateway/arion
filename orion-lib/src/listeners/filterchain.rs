@@ -24,6 +24,7 @@ use crate::{
     listeners::metadata::{DownstreamConnectionMetadata, DownstreamMetadata},
     secrets::{TlsConfigurator, WantsToBuildServer},
     transport::AsyncReadWriteInstrumented,
+    utils::instrumented_stream::StreamMetrics,
     AsyncInstrumentedStream, ConversionContext, Error, Result,
 };
 use futures::TryFutureExt;
@@ -233,6 +234,7 @@ impl FilterchainType {
 
                 debug!("{listener_name} tried to negotiate {codec_type:?}, got {selected_codec:?}");
                 let mut hyper_server = HyperServerBuilder::new(TokioExecutor::new());
+                let metrics = stream.shared_metrics();
                 let stream = TokioIo::new(stream);
                 //todo(hayley): we should be applying listener http settings here
                 hyper_server = match selected_codec {
@@ -243,8 +245,9 @@ impl FilterchainType {
                 hyper_server
                     .serve_connection_with_upgrades(
                         stream,
-                        hyper::service::service_fn(|mut req: Request<hyper::body::Incoming>| {
+                        hyper::service::service_fn(move |mut req: Request<hyper::body::Incoming>| {
                             req.extensions_mut().insert::<DownstreamMetadata>(metadata.clone());
+                            req.extensions_mut().insert::<Arc<StreamMetrics>>(metrics.clone());
                             req_handler.call(req).map_err(orion_error::Error::into_inner)
                         }),
                     )

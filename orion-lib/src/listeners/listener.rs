@@ -706,7 +706,7 @@ mod tests {
         decode::from_yaml, envoy_data_plane_api::envoy::config::listener::v3::FilterChainMatch as EnvoyFilterChainMatch,
     };
 
-    use crate::{utils::instrumented_stream::StreamMetrics, SecretManager};
+    use crate::SecretManager;
 
     use super::*;
     use orion_data_plane_api::envoy_data_plane_api::envoy::config::listener::v3::Listener as EnvoyListener;

@@ -58,6 +58,8 @@ fn main() -> Result<(), BoxError> {
         duration: Duration::from_millis(100),
         bytes_received: 128,
         bytes_sent: 256,
+        wire_bytes_received: 128,
+        wire_bytes_sent: 256,
         response_flags: ResponseFlags::empty(),
         upstream_failure: None,
         response_code_details: None,

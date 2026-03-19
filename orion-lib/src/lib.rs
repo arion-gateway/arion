@@ -77,7 +77,12 @@ use std::time::Duration;
 pub type OrionRequestBody = InstrumentedBody<TimeoutBody<PolyBody>>;
 impl Default for OrionRequestBody {
     fn default() -> Self {
-        InstrumentedBody::new(BodyKind::Request, TimeoutBody::new(None, PolyBody::from(Empty::new())), |_, _, _| {})
+        InstrumentedBody::new(
+            BodyKind::Request,
+            TimeoutBody::new(None, PolyBody::from(Empty::new())),
+            None,
+            |_, _, _, _| {},
+        )
     }
 }
 

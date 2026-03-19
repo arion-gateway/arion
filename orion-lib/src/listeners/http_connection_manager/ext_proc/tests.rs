@@ -284,7 +284,7 @@ async fn build_request_from_mock(mock_request: &Mock<RequestMsg>) -> Request<Ori
     )
     .await;
 
-    req.body(InstrumentedBody::new(BodyKind::Request, TimeoutBody::new(None, body), |_, _, _| {})).unwrap()
+    req.body(InstrumentedBody::new(BodyKind::Request, TimeoutBody::new(None, body), None, |_, _, _, _| {})).unwrap()
 }
 
 async fn build_response_from_mock(mock_response: &Mock<ResponseMsg>) -> Response<OrionResponseBody> {
@@ -1952,7 +1952,7 @@ async fn test_request_header_timeout_failure_mode_allow_true() {
     assert_matches!(result, FilterDecision::Continue);
 
     let (_, body) = request.into_parts();
-    let body_bytes = body.inner.collect().await;
+    let body_bytes = body.into_inner().collect().await;
 
     assert!(body_bytes.is_ok());
     if let Ok(bytes) = body_bytes {
@@ -2013,7 +2013,7 @@ async fn test_request_body_timeout_failure_mode_allow_true() {
     assert_matches!(result, FilterDecision::Continue);
 
     let (_, body) = request.into_parts();
-    let body_bytes = body.inner.collect().await;
+    let body_bytes = body.into_inner().collect().await;
 
     assert!(body_bytes.is_ok());
     if let Ok(bytes) = body_bytes {

@@ -48,11 +48,9 @@ where
     pub fn into_rewound_stream(self) -> Self {
         match self {
             Self::HeadBufferingReadOnlyMode { inner, buffer } => {
-                inner.metrics().reset();
                 Self::FullReplayMode { inner, replay_buffer: buffer.into(), read_pos: 0 }
             },
             Self::FullReplayMode { inner, replay_buffer, read_pos } => {
-                inner.metrics().reset();
                 Self::FullReplayMode { inner, replay_buffer, read_pos }
             },
         }

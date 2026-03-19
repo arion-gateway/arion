@@ -405,11 +405,12 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
             HttpChannels::Single(channel) => channel.to_response(trans_handler, request, ctx).await,
             HttpChannels::MultiWithFailover { channel, failover_channels } => {
                 let RequestContext { route_timeout, .. } = ctx;
-                let (parts, body) = request.into_parts();
-                let InstrumentedBody { inner, guard, state } = body;
+                let (parts, mut body) = request.into_parts();
+                let free_body = std::mem::replace(&mut body.inner, TimeoutBody::<PolyBody>::default());
+                let InstrumentedBody { body_kind, body_bytes, ref stream_metrics, ref on_complete, .. } = body;
 
-                let body_timeout = inner.timeout;
-                let collected = inner.collect().await.map_err(Error::from)?;
+                let body_timeout = free_body.timeout;
+                let collected = free_body.collect().await.map_err(Error::from)?;
                 let replay_body = http_body_util::Full::new(collected.to_bytes());
 
                 let mut last_error: Option<Error> = None;
@@ -418,8 +419,10 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
                 for (attempt, channel) in std::iter::once(channel).chain(failover_channels.iter()).enumerate() {
                     let cloned_body = InstrumentedBody {
                         inner: TimeoutBody::new(body_timeout, replay_body.clone().into()),
-                        guard: guard.clone(),
-                        state: state.clone(),
+                        body_kind,
+                        body_bytes,
+                        stream_metrics: stream_metrics.clone(),
+                        on_complete: on_complete.clone(),
                     };
                     let rebuilt_req = Request::from_parts(parts.clone(), cloned_body);
                     let attempt_ctx = RequestContext { route_timeout, retry_policy: None };
@@ -694,10 +697,11 @@ impl HttpChannel {
             crate::instrumentation::metrics::SEND_REQUEST_WITH_RETRY.observe(nanos as usize)
         });
 
-        let (parts, body) = req.into_parts();
-        let InstrumentedBody { inner, guard, state } = body;
+        let (parts, mut body) = req.into_parts();
+        let free_body = std::mem::replace(&mut body.inner, TimeoutBody::<PolyBody>::default());
+        let InstrumentedBody { body_kind, body_bytes, ref stream_metrics, ref on_complete, .. } = body;
 
-        let body = inner.collect().await?;
+        let body = free_body.collect().await?;
         let body = http_body_util::Full::new(body.to_bytes());
         let mut last_error: Option<Error> = None;
 
@@ -706,8 +710,10 @@ impl HttpChannel {
 
             let cloned_body = InstrumentedBody {
                 inner: TimeoutBody::new(None, body.clone().into()),
-                guard: guard.clone(),
-                state: state.clone(),
+                body_kind,
+                body_bytes,
+                stream_metrics: stream_metrics.clone(),
+                on_complete: on_complete.clone(),
             };
 
             let cloned_req: Request<OrionRequestBody> = Request::from_parts(parts.clone(), cloned_body);

@@ -102,6 +102,7 @@ use crate::{
         metadata::DownstreamMetadata,
         synthetic_http_response::SyntheticHttpResponse,
     },
+    utils::instrumented_stream::StreamMetrics,
     with_client_span, with_metric, with_server_span, ConversionContext, OrionRequestBody, OrionResponseBody, PolyBody,
     Result, RouteConfiguration,
 };
@@ -367,8 +368,8 @@ pub struct AccessLoggersContext {
 impl AccessLoggersContext {
     pub fn new(access_log: &[AccessLog]) -> Self {
         AccessLoggersContext {
-            loggers: access_log.iter().map(|al| al.logger.clone()).collect::<Vec<_>>(),
             bytes: 0,
+            loggers: access_log.iter().map(|al| al.logger.clone()).collect::<Vec<_>>(),
             flags: ResponseFlags::default(),
             event: None,
         }
@@ -491,6 +492,8 @@ impl TransactionHandler {
     {
         let _listener_name = manager.listener_name;
         let metadata = request.extensions().get::<DownstreamMetadata>();
+        let stream_metrics = request.extensions().get::<Arc<StreamMetrics>>().map(Clone::clone);
+
         let downstream_addr = metadata
             .map(|md| md.connection.peer_address())
             .unwrap_or_else(|| SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0));
@@ -521,64 +524,70 @@ impl TransactionHandler {
                 ctx.lock().loggers.with_context(&DownstreamResponseContext { response: &response, response_head_size })
             }
 
-            #[cfg(feature = "metrics")]
-            let resp_head_size = response_head_size(&response);
+            // #[cfg(feature = "metrics")]
+            // let resp_head_size = response_head_size(&response);
 
             response.map(move |body| {
-                InstrumentedBody::new(BodyKind::Response, body, move |_nbytes, _body_error, _body_flags| {
-                    with_metric!(
-                        http::DOWNSTREAM_CX_TX_BYTES_TOTAL,
-                        add,
-                        _nbytes + resp_head_size as u64,
-                        self.shard_id(),
-                        &[KeyValue::new("listener", _listener_name)]
-                    );
+                InstrumentedBody::new(
+                    BodyKind::Response,
+                    body,
+                    stream_metrics,
+                    move |_body_bytes, _stream_metrics, _body_error, _body_flags| {
+                        with_metric!(
+                            http::DOWNSTREAM_CX_TX_BYTES_TOTAL,
+                            add,
+                            _stream_metrics.bytes_written(),
+                            self.shard_id(),
+                            &[KeyValue::new("listener", _listener_name)]
+                        );
 
-                    #[cfg(feature = "access-log")]
-                    let _is_transaction_complete = if let Some(ctx) = self.access_log_ctx.as_ref() {
-                        let mut log_ctx = ctx.lock();
-                        let duration = first_byte_instant.saturating_duration_since(self.start_instant);
-                        let tx_duration = Instant::now().saturating_duration_since(first_byte_instant);
-                        log_ctx.loggers.with_context(&HttpResponseDurationContext { duration, tx_duration });
+                        #[cfg(feature = "access-log")]
+                        let _is_transaction_complete = if let Some(ctx) = self.access_log_ctx.as_ref() {
+                            let mut log_ctx = ctx.lock();
+                            let duration = first_byte_instant.saturating_duration_since(self.start_instant);
+                            let tx_duration = Instant::now().saturating_duration_since(first_byte_instant);
+                            log_ctx.loggers.with_context(&HttpResponseDurationContext { duration, tx_duration });
 
-                        let is_transaction_complete = self.trans_state.message_complete();
-                        if is_transaction_complete.0 {
-                            let ctx_bytes = log_ctx.bytes;
-                            let ctx_flags = log_ctx.flags.clone();
-                            let ctx_event = log_ctx.event.clone();
-                            eval_http_finish_context(
-                                ctx_bytes, // bytes received
-                                _nbytes,   // bytes sent
-                                _listener_name,
-                                EventInfo {
-                                    body_kind: BodyKind::Response,
-                                    event_kind: ctx_event.or(initial_event).or(_body_error.map(EventKind::Error)),
-                                    response_flags: ctx_flags | initial_flags | _body_flags,
-                                },
-                                permit,
-                                log_ctx.loggers.as_mut(),
-                                self.start_instant,
-                            );
+                            let is_transaction_complete = self.trans_state.message_complete();
+                            if is_transaction_complete.0 {
+                                let ctx_flags = log_ctx.flags.clone();
+                                let ctx_event = log_ctx.event.clone();
+                                let ctx_bytes = log_ctx.bytes;
+                                eval_http_finish_context(
+                                    ctx_bytes,
+                                    _body_bytes,
+                                    _stream_metrics,
+                                    _listener_name,
+                                    EventInfo {
+                                        body_kind: BodyKind::Response,
+                                        event_kind: ctx_event.or(initial_event).or(_body_error.map(EventKind::Error)),
+                                        response_flags: ctx_flags | initial_flags | _body_flags,
+                                    },
+                                    permit,
+                                    log_ctx.loggers.as_mut(),
+                                    self.start_instant,
+                                );
+                            } else {
+                                log_ctx.bytes = _body_bytes;
+                                log_ctx.flags = initial_flags | _body_flags;
+                                log_ctx.event = initial_event.or(_body_error.map(EventKind::Error));
+                            }
+                            is_transaction_complete
                         } else {
-                            log_ctx.bytes = _nbytes;
-                            log_ctx.flags = initial_flags | _body_flags;
-                            log_ctx.event = initial_event.or(_body_error.map(EventKind::Error));
-                        }
-                        is_transaction_complete
-                    } else {
-                        self.trans_state.message_complete()
-                    };
+                            self.trans_state.message_complete()
+                        };
 
-                    #[cfg(all(not(feature = "access-log"), feature = "tracing"))]
-                    let _is_transaction_complete = self.trans_state.message_complete();
+                        #[cfg(all(not(feature = "access-log"), feature = "tracing"))]
+                        let _is_transaction_complete = self.trans_state.message_complete();
 
-                    #[cfg(feature = "tracing")]
-                    if _is_transaction_complete.0 {
-                        if let Some(span) = self.span_state.as_ref() {
-                            span.end();
+                        #[cfg(feature = "tracing")]
+                        if _is_transaction_complete.0 {
+                            if let Some(span) = self.span_state.as_ref() {
+                                span.end();
+                            }
                         }
-                    }
-                })
+                    },
+                )
             })
         })
     }
@@ -1092,6 +1101,7 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
         // destructure the Request to get the request and addresses
         let incoming_request_id = RequestId::from_request(&incoming_request);
         let incoming_version = incoming_request.version();
+        let stream_metrics = incoming_request.extensions().get::<Arc<StreamMetrics>>().map(Arc::clone);
 
         let access_log_enabled = {
             #[cfg(feature = "access-log")]
@@ -1208,70 +1218,79 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
             let initial_flags = request.extensions().get::<ResponseFlags>().cloned().unwrap_or_default();
             #[cfg(feature = "access-log")]
             let initial_event = request.extensions().get::<Option<EventKind>>().cloned().unwrap_or_default();
-            #[cfg(feature = "metrics")]
-            let req_head_size = request_head_size(&request);
+
+            //#[cfg(feature = "metrics")]
+            //let req_head_size = request_head_size(&request);
 
             let request = request.map(|body| {
                 #[cfg(any(feature = "access-log", feature = "tracing", feature = "metrics"))]
                 let trans_handler = Arc::clone(&trans_handler);
                 let body = TimeoutBody::new(req_timeout, PolyBody::from(body));
 
-                InstrumentedBody::new(BodyKind::Request, body, move |_nbytes, _body_error, _body_flags| {
-                    with_metric!(
-                        http::DOWNSTREAM_CX_RX_BYTES_TOTAL,
-                        add,
-                        _nbytes + req_head_size as u64,
-                        trans_handler.shard_id(),
-                        &[KeyValue::new("listener", listener_name)]
-                    );
+                InstrumentedBody::new(
+                    BodyKind::Request,
+                    body,
+                    stream_metrics.clone(),
+                    move |_body_bytes, _stream_metrics, _body_error, _body_flags| {
+                        with_metric!(
+                            http::DOWNSTREAM_CX_RX_BYTES_TOTAL,
+                            add,
+                            _stream_metrics.bytes_read(),
+                            trans_handler.shard_id(),
+                            &[KeyValue::new("listener", listener_name)]
+                        );
 
-                    // emit the access log, if the transaction is completed..
-                    #[cfg(feature = "access-log")]
-                    let _is_transaction_complete = if let Some(ctx) = trans_handler.access_log_ctx.as_ref() {
-                        let mut log_ctx = ctx.lock();
-                        let duration = trans_handler.start_instant.elapsed();
-                        log_ctx.loggers.with_context(&HttpRequestDurationContext { duration, tx_duration: duration });
+                        // emit the access log, if the transaction is completed..
+                        #[cfg(feature = "access-log")]
+                        let _is_transaction_complete = if let Some(ctx) = trans_handler.access_log_ctx.as_ref() {
+                            let mut log_ctx = ctx.lock();
+                            let duration = trans_handler.start_instant.elapsed();
+                            log_ctx
+                                .loggers
+                                .with_context(&HttpRequestDurationContext { duration, tx_duration: duration });
 
-                        let is_transaction_complete = trans_handler.trans_state.message_complete();
-                        if is_transaction_complete.0 {
-                            let ctx_bytes = log_ctx.bytes;
-                            let ctx_flags = log_ctx.flags.clone();
-                            let ctx_event = log_ctx.event.clone();
+                            let is_transaction_complete = trans_handler.trans_state.message_complete();
+                            if is_transaction_complete.0 {
+                                let ctx_bytes = log_ctx.bytes;
+                                let ctx_flags = log_ctx.flags.clone();
+                                let ctx_event = log_ctx.event.clone();
 
-                            // if this happens is because the stream of body response finished before the request one!
-                            eval_http_finish_context(
-                                _nbytes,   // bytes received
-                                ctx_bytes, // bytes sent
-                                listener_name,
-                                EventInfo {
-                                    body_kind: BodyKind::Request,
-                                    event_kind: ctx_event.or(initial_event).or(_body_error.map(EventKind::Error)),
-                                    response_flags: ctx_flags | initial_flags | _body_flags,
-                                },
-                                permit_clone,
-                                log_ctx.loggers.as_mut(),
-                                trans_handler.start_instant,
-                            );
+                                // if this happens is because the stream of body response finished before the request one!
+                                eval_http_finish_context(
+                                    _body_bytes, // bytes received
+                                    ctx_bytes,   // bytes sent
+                                    _stream_metrics,
+                                    listener_name,
+                                    EventInfo {
+                                        body_kind: BodyKind::Request,
+                                        event_kind: ctx_event.or(initial_event).or(_body_error.map(EventKind::Error)),
+                                        response_flags: ctx_flags | initial_flags | _body_flags,
+                                    },
+                                    permit_clone,
+                                    log_ctx.loggers.as_mut(),
+                                    trans_handler.start_instant,
+                                );
+                            } else {
+                                log_ctx.bytes = _body_bytes;
+                                log_ctx.flags = initial_flags | _body_flags;
+                                log_ctx.event = initial_event.or(_body_error.map(EventKind::Error));
+                            }
+
+                            is_transaction_complete
                         } else {
-                            log_ctx.bytes = _nbytes;
-                            log_ctx.flags = initial_flags | _body_flags;
-                            log_ctx.event = initial_event.or(_body_error.map(EventKind::Error));
-                        }
+                            trans_handler.trans_state.message_complete()
+                        };
+                        #[cfg(all(not(feature = "access-log"), feature = "tracing"))]
+                        let _is_transaction_complete = trans_handler.trans_state.message_complete();
 
-                        is_transaction_complete
-                    } else {
-                        trans_handler.trans_state.message_complete()
-                    };
-                    #[cfg(all(not(feature = "access-log"), feature = "tracing"))]
-                    let _is_transaction_complete = trans_handler.trans_state.message_complete();
-
-                    #[cfg(feature = "tracing")]
-                    if _is_transaction_complete.0 {
-                        if let Some(span) = trans_handler.span_state.as_ref() {
-                            span.end();
+                        #[cfg(feature = "tracing")]
+                        if _is_transaction_complete.0 {
+                            if let Some(span) = trans_handler.span_state.as_ref() {
+                                span.end();
+                            }
                         }
-                    }
-                })
+                    },
+                )
             });
 
             let Some(route_conf) = route_conf else {
@@ -1313,65 +1332,75 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
                 let initial_flags = resp.extensions().get::<ResponseFlags>().cloned().unwrap_or_default();
                 #[cfg(feature = "access-log")]
                 let initial_event = resp.extensions().get::<Option<EventKind>>().cloned().unwrap_or_default();
-                #[cfg(feature = "metrics")]
-                let resp_head_size = response_head_size(&resp);
+
+                // #[cfg(feature = "metrics")]
+                // let resp_head_size = response_head_size(&resp);
 
                 let response = resp.map(|body| {
-                    InstrumentedBody::new(BodyKind::Response, body, move |_nbytes, _body_error, _body_flags| {
-                        with_metric!(
-                            http::DOWNSTREAM_CX_TX_BYTES_TOTAL,
-                            add,
-                            _nbytes + resp_head_size as u64,
-                            trans_handler.shard_id(),
-                            &[KeyValue::new("listener", listener_name)]
-                        );
+                    InstrumentedBody::new(
+                        BodyKind::Response,
+                        body,
+                        stream_metrics,
+                        move |_body_bytes, _stream_metrics, _body_error, _body_flags| {
+                            with_metric!(
+                                http::DOWNSTREAM_CX_TX_BYTES_TOTAL,
+                                add,
+                                _stream_metrics.bytes_written(),
+                                trans_handler.shard_id(),
+                                &[KeyValue::new("listener", listener_name)]
+                            );
 
-                        #[cfg(feature = "access-log")]
-                        let _is_transaction_complete = if let Some(ctx) = trans_handler.access_log_ctx.as_ref() {
-                            let mut log_ctx = ctx.lock();
-                            let duration = first_byte_instant.saturating_duration_since(trans_handler.start_instant);
-                            let tx_duration = Instant::now().saturating_duration_since(first_byte_instant);
-                            log_ctx.loggers.with_context(&HttpResponseDurationContext { duration, tx_duration });
+                            #[cfg(feature = "access-log")]
+                            let _is_transaction_complete = if let Some(ctx) = trans_handler.access_log_ctx.as_ref() {
+                                let mut log_ctx = ctx.lock();
+                                let duration =
+                                    first_byte_instant.saturating_duration_since(trans_handler.start_instant);
+                                let tx_duration = Instant::now().saturating_duration_since(first_byte_instant);
+                                log_ctx.loggers.with_context(&HttpResponseDurationContext { duration, tx_duration });
 
-                            let is_transaction_complete = trans_handler.trans_state.message_complete();
-                            if is_transaction_complete.0 {
-                                let ctx_bytes = log_ctx.bytes;
-                                let ctx_flags = log_ctx.flags.clone();
-                                let ctx_event = log_ctx.event.clone();
+                                let is_transaction_complete = trans_handler.trans_state.message_complete();
+                                if is_transaction_complete.0 {
+                                    let ctx_bytes = log_ctx.bytes;
+                                    let ctx_flags = log_ctx.flags.clone();
+                                    let ctx_event = log_ctx.event.clone();
 
-                                eval_http_finish_context(
-                                    ctx_bytes, // bytes received
-                                    _nbytes,   // bytes sent
-                                    listener_name,
-                                    EventInfo {
-                                        body_kind: BodyKind::Response,
-                                        event_kind: ctx_event.or(initial_event).or(_body_error.map(EventKind::Error)),
-                                        response_flags: ctx_flags | initial_flags | _body_flags,
-                                    },
-                                    permit,
-                                    log_ctx.loggers.as_mut(),
-                                    trans_handler.start_instant,
-                                );
+                                    eval_http_finish_context(
+                                        ctx_bytes,   // bytes received
+                                        _body_bytes, // bytes sent
+                                        _stream_metrics,
+                                        listener_name,
+                                        EventInfo {
+                                            body_kind: BodyKind::Response,
+                                            event_kind: ctx_event
+                                                .or(initial_event)
+                                                .or(_body_error.map(EventKind::Error)),
+                                            response_flags: ctx_flags | initial_flags | _body_flags,
+                                        },
+                                        permit,
+                                        log_ctx.loggers.as_mut(),
+                                        trans_handler.start_instant,
+                                    );
+                                } else {
+                                    log_ctx.bytes = _body_bytes;
+                                    log_ctx.flags = initial_flags | _body_flags;
+                                    log_ctx.event = initial_event.or(_body_error.map(EventKind::Error));
+                                }
+
+                                is_transaction_complete
                             } else {
-                                log_ctx.bytes = _nbytes;
-                                log_ctx.flags = initial_flags | _body_flags;
-                                log_ctx.event = initial_event.or(_body_error.map(EventKind::Error));
-                            }
+                                trans_handler.trans_state.message_complete()
+                            };
+                            #[cfg(all(not(feature = "access-log"), feature = "tracing"))]
+                            let _is_transaction_complete = trans_handler.trans_state.message_complete();
 
-                            is_transaction_complete
-                        } else {
-                            trans_handler.trans_state.message_complete()
-                        };
-                        #[cfg(all(not(feature = "access-log"), feature = "tracing"))]
-                        let _is_transaction_complete = trans_handler.trans_state.message_complete();
-
-                        #[cfg(feature = "tracing")]
-                        if _is_transaction_complete.0 {
-                            if let Some(span) = trans_handler.span_state.as_ref() {
-                                span.end();
+                            #[cfg(feature = "tracing")]
+                            if _is_transaction_complete.0 {
+                                if let Some(span) = trans_handler.span_state.as_ref() {
+                                    span.end();
+                                }
                             }
-                        }
-                    })
+                        },
+                    )
                 });
                 return Ok(response);
             };
@@ -1398,7 +1427,7 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
                 )
                 .into_response(incoming_version);
 
-                Ok(response.map(|body| InstrumentedBody::new(BodyKind::Response, body, |_, _, _| {})))
+                Ok(response.map(|body| InstrumentedBody::new(BodyKind::Response, body, None, |_, _, _, _| {})))
             } else {
                 response
             }
@@ -1448,6 +1477,7 @@ fn eval_http_init_context<R>(
 fn eval_http_finish_context(
     _bytes_received: u64,
     _bytes_sent: u64,
+    _stream_metrics: &StreamMetrics,
     _listener_name: &'static str,
     #[cfg(feature = "access-log")] event: EventInfo,
     #[cfg(feature = "access-log")] permit: Option<ShareableAccessLogPermit>,
@@ -1460,6 +1490,8 @@ fn eval_http_finish_context(
             duration: trans_start_time.elapsed(),
             bytes_received: _bytes_received,
             bytes_sent: _bytes_sent,
+            wire_bytes_received: _stream_metrics.bytes_read(),
+            wire_bytes_sent: _stream_metrics.bytes_written(),
             response_flags: event.response_flags.0,
             upstream_failure: event.event_kind.as_ref().and_then(|ev| {
                 let EventKind::Error(err) = ev else {
@@ -1479,9 +1511,16 @@ fn eval_http_finish_context(
                 .map(|d| d.0),
         });
 
-        let loggers: Vec<LogFormatter> = std::mem::take(access_loggers);
-        let messages = loggers.into_iter().map(LogFormatter::into_message).collect::<Vec<_>>();
-        log_access(permit, Target::Listener(_listener_name.into()), messages);
+        let mut loggers: Vec<LogFormatter> = std::mem::take(access_loggers);
+        let log_fn: Box<dyn FnOnce(u64, u64) + Send> = Box::new(move |wire_bytes_received, wire_bytes_sent| {
+            use orion_format::context::WireContext;
+            loggers.with_context(&WireContext { wire_bytes_received, wire_bytes_sent });
+
+            let messages = loggers.into_iter().map(LogFormatter::into_message).collect::<Vec<_>>();
+            log_access(permit, Target::Listener(_listener_name.into()), messages);
+        });
+
+        _stream_metrics.log_access_and_reset(log_fn);
     }
 }
 

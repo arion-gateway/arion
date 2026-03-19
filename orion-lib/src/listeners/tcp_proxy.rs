@@ -202,6 +202,8 @@ impl TcpProxy {
             duration: start_instant.elapsed(),
             bytes_received,
             bytes_sent,
+            wire_bytes_received: bytes_received,
+            wire_bytes_sent: bytes_sent,
             response_flags,
             upstream_failure: maybe_upstream_transport_error.map(|x| x.0),
             response_code_details: maybe_response_code_details.map(|x| x.0),

@@ -7,23 +7,42 @@ use std::{
     task::{Context, Poll},
 };
 
+use parking_lot::Mutex;
 use pin_project::pin_project;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use crate::{transport::AsyncReadWriteInstrumented, utils::rewindable_stream::RewindableHeadAsyncStream};
 
-#[derive(Debug)]
 pub struct StreamMetrics {
     bytes_read: AtomicU64,
     bytes_written: AtomicU64,
+    log_fn: Mutex<Option<Box<dyn FnOnce(u64, u64) + Send>>>,
+}
+
+impl std::fmt::Debug for StreamMetrics {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StreamMetrics")
+            .field("bytes_read", &self.bytes_read)
+            .field("bytes_written", &self.bytes_written)
+            .finish()
+    }
 }
 
 impl StreamMetrics {
+    #[inline]
     pub fn new() -> StreamMetrics {
-        Self { bytes_read: AtomicU64::new(0), bytes_written: AtomicU64::new(0) }
+        Self { bytes_read: AtomicU64::new(0), bytes_written: AtomicU64::new(0), log_fn: Mutex::new(None) }
     }
 
-    pub fn reset(&self) {
+    #[inline]
+    pub fn log_access_and_reset(&self, log_fn: Box<dyn FnOnce(u64, u64) + Send>) {
+        let mut self_log_fn = self.log_fn.lock();
+        *self_log_fn = Some(log_fn);
+    }
+
+    #[inline]
+    fn reset(&self) {
+        // println!("RESET METRICS! @{:p}", self as * const StreamMetrics);
         self.bytes_read.store(0, Ordering::Relaxed);
         self.bytes_written.store(0, Ordering::Relaxed);
     }
@@ -64,7 +83,9 @@ impl<S: AsyncRead> AsyncRead for InstrumentedStream<S> {
         let before = buf.filled().len();
         match this.inner.poll_read(cx, buf) {
             Poll::Ready(Ok(())) => {
-                this.metrics.bytes_read.fetch_add((buf.filled().len() - before) as u64, Ordering::Relaxed);
+                let bytes = buf.filled().len() - before;
+                this.metrics.bytes_read.fetch_add(bytes as u64, Ordering::Relaxed);
+                // println!("BYTES READ: {bytes} -> {} @{:p}", prev + bytes as u64, this.metrics.as_ref() as *const StreamMetrics);
                 Poll::Ready(Ok(()))
             },
             res => res,
@@ -78,6 +99,7 @@ impl<S: AsyncWrite> AsyncWrite for InstrumentedStream<S> {
         match this.inner.poll_write(cx, buf) {
             Poll::Ready(Ok(n)) => {
                 this.metrics.bytes_written.fetch_add(n as u64, Ordering::Relaxed);
+                // println!("BYTES WRITTEN: {n} -> {} @{:p}", prev + n as u64, this.metrics.as_ref() as *const StreamMetrics);
                 Poll::Ready(Ok(n))
             },
             res => res,
@@ -85,11 +107,21 @@ impl<S: AsyncWrite> AsyncWrite for InstrumentedStream<S> {
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        self.project().inner.poll_flush(cx)
+        let this = self.project();
+        // println!("POLL FLUSH! @{:p}", this.metrics.as_ref() as *const StreamMetrics);
+        if let Some(log_access) = this.metrics.log_fn.lock().take() {
+            // println!("=> FLUSHING LOG  @{:p}", this.metrics.as_ref() as *const StreamMetrics);
+            log_access(this.metrics.bytes_read(), this.metrics.bytes_written());
+            this.metrics.reset();
+        }
+
+        this.inner.poll_flush(cx)
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        self.project().inner.poll_shutdown(cx)
+        let this = self.project();
+        // println!("SHUTDOWN -> @{:p}", this.metrics.as_ref() as *const StreamMetrics);
+        this.inner.poll_shutdown(cx)
     }
 }
 
