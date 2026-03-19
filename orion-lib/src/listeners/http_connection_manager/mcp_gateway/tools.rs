@@ -37,9 +37,9 @@ use tokio::sync::OnceCell;
 use tracing::{debug, info, warn};
 use upon::Engine;
 
-const DYNAMIC_TOOL_DISCOVERY: &str = "dynamic_tool_discovery";
+const SEMANTIC_SEARCH_TOOL: &str = "semantic_search_tool";
 
-static DYNAMIC_TOOL_DISCOVERY_INPUT_SCHEMA: LazyLock<Value> = LazyLock::new(|| {
+static SEMANTIC_SEARCH_TOOL_INPUT_SCHEMA: LazyLock<Value> = LazyLock::new(|| {
     json!({
         "type": "object",
         "properties": {
@@ -59,7 +59,7 @@ struct CachedEntry<T> {
 pub struct ToolsRegistry {
     registry: Vec<ToolEntry>,
     cache: DashMap<SmolStr, CachedEntry<Vec<Tool>>, ahash::RandomState>,
-    dynamic_tool_discovery: bool,
+    semantic_search_tool: bool,
     bootstrapped: OnceCell<()>,
 }
 
@@ -141,7 +141,7 @@ impl ToolEntry {
 }
 
 impl ToolsRegistry {
-    pub fn with_tools(tools: Vec<McpTool>, dynamic_tool_discovery: bool) -> Result<Self, ToolBuilderError> {
+    pub fn with_tools(tools: Vec<McpTool>, semantic_search_tool: bool) -> Result<Self, ToolBuilderError> {
         let registry: Vec<ToolEntry> = tools
             .into_iter()
             .map(|tool_conf| -> Result<ToolEntry, ToolBuilderError> {
@@ -186,7 +186,7 @@ impl ToolsRegistry {
         Ok(ToolsRegistry {
             registry,
             cache: DashMap::with_hasher(ahash::RandomState::new()),
-            dynamic_tool_discovery,
+            semantic_search_tool,
             bootstrapped: OnceCell::new(),
         })
     }
@@ -236,20 +236,20 @@ impl ToolsRegistry {
             .await;
 
         let mut tools = Vec::with_capacity(self.registry.len() + 1);
-        if self.dynamic_tool_discovery {
-            let Value::Object(discovery_input_schema) = &*DYNAMIC_TOOL_DISCOVERY_INPUT_SCHEMA else { unreachable!() };
+        if self.semantic_search_tool {
+            let Value::Object(semantic_search_input_schema) = &*SEMANTIC_SEARCH_TOOL_INPUT_SCHEMA else { unreachable!() };
 
             tools.push(Tool::new(
-                DYNAMIC_TOOL_DISCOVERY,
+                SEMANTIC_SEARCH_TOOL,
                 "Pass the user prompt or a summary to discover relevant tools.",
-                Arc::new(discovery_input_schema.clone()),
+                Arc::new(semantic_search_input_schema.clone()),
             ));
         }
 
         // FIXME: This is a dummy dynamic tool discovery strategy that
-        // returns the complete list of tools after the dynamic_tool_discovery is invoked.
+        // returns the complete list of tools after the semantic_search_tool is invoked.
         //
-        if !self.dynamic_tool_discovery || session.as_ref().is_some_and(|session| session.prompt.lock().is_some()) {
+        if !self.semantic_search_tool || session.as_ref().is_some_and(|session| session.prompt.lock().is_some()) {
             self.fill_list_tools(req_ext, session, &mut tools).await;
         }
 
@@ -304,7 +304,7 @@ impl ToolsRegistry {
                         tool
                     });
 
-                    if self.dynamic_tool_discovery {
+                    if self.semantic_search_tool {
                         session.active_tools.insert(entry.conf.name.clone());
                     }
                 },
@@ -318,7 +318,7 @@ impl ToolsRegistry {
                         if cache_valid {
                             debug!(target: "mcp_gateway", "Loaded cached entry for MCP backend: {}", &entry.conf.name);
                             tools.extend_from_slice(&cached.entry);
-                            if self.dynamic_tool_discovery {
+                            if self.semantic_search_tool {
                                 cached.entry.iter().for_each(|t| {
                                     session.active_tools.insert(t.name.to_smolstr());
                                 });
@@ -341,7 +341,7 @@ impl ToolsRegistry {
                                 CachedEntry { entry: up_tools.clone(), expiration },
                             );
 
-                            if self.dynamic_tool_discovery {
+                            if self.semantic_search_tool {
                                 up_tools.iter().for_each(|t| {
                                     session.active_tools.insert(t.name.to_smolstr());
                                 });
@@ -400,7 +400,7 @@ impl ToolsRegistry {
         })
     }
 
-    pub async fn call_dynamic_tool_discovery(
+    pub async fn call_semantic_search_tool(
         &self,
         rpc: &model::JsonRpcRequest,
         session: &Session,
@@ -408,13 +408,13 @@ impl ToolsRegistry {
         let arguments = match &rpc.request.params.get("arguments") {
             Some(&serde_json::Value::Object(ref o)) => o.clone(),
             _ => {
-                return Err(CallToolError::ValidationError("call_dynamic_tool_discovery: missing arguments".into()));
+                return Err(CallToolError::ValidationError("call_semantic_search_tool: missing arguments".into()));
             },
         };
 
         let Some(Value::String(prompt)) = arguments.get("user_query") else {
             return Err(CallToolError::ValidationError(
-                "call_dynamic_tool_discovery: invalid user_query argument".into(),
+                "call_semantic_search_tool: invalid user_query argument".into(),
             ));
         };
 
@@ -471,8 +471,8 @@ impl ToolsRegistry {
             None => debug!(target: "mcp_gateway", "call: method:{} tool name '{tool_name}'", rpc.request.method),
         }
 
-        if self.dynamic_tool_discovery && tool_name == DYNAMIC_TOOL_DISCOVERY {
-            return self.call_dynamic_tool_discovery(rpc, session).await;
+        if self.semantic_search_tool && tool_name == SEMANTIC_SEARCH_TOOL {
+            return self.call_semantic_search_tool(rpc, session).await;
         }
 
         let (index, entry) = self
@@ -480,7 +480,7 @@ impl ToolsRegistry {
             .iter()
             .enumerate()
             .find(|(_, e)| e.conf.name == tool_name)
-            .filter(|(_, e)| !self.dynamic_tool_discovery || session.active_tools.contains(&e.conf.name))
+            .filter(|(_, e)| !self.semantic_search_tool || session.active_tools.contains(&e.conf.name))
             .ok_or_else(|| CallToolError::ToolNotFound(tool_name.to_string()))?;
 
         if let Some(rbac) = &entry.rbac {
