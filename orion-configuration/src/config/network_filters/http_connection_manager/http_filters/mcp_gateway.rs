@@ -48,6 +48,7 @@ pub enum UpstreamBackend {
         transport: McpBackendTransportUpstream,
         url: String,
         cache_duration: Option<Duration>,
+        dynamic_backend: bool,
     },
     FunctionGraph {},
 }
@@ -197,17 +198,23 @@ mod envoy_conversions {
                         body_template,
                     })
                 },
-                OrionUpstreamBackend::McpServerBackend(trans) => Ok(UpstreamBackend::McpServer {
-                    transport: trans.transport().into(),
-                    url: trans.url,
-                    cache_duration: trans
-                        .cache_duration
-                        .map(|d| -> Result<Duration, GenericError> {
-                            let dur: RustType<Duration> = d.try_into()?;
-                            Ok(dur.into_inner())
-                        })
-                        .transpose()?,
-                }),
+                OrionUpstreamBackend::McpServerBackend(be) => {
+                    if be.cache_duration.is_some() && !be.dynamic_backend {
+                        warn!("For static MCP backends (dynamic_backend = false), the cache_duration field is ignored.")
+                    }
+                    Ok(UpstreamBackend::McpServer {
+                        transport: be.transport().into(),
+                        url: be.url,
+                        cache_duration: be
+                            .cache_duration
+                            .map(|d| -> Result<Duration, GenericError> {
+                                let dur: RustType<Duration> = d.try_into()?;
+                                Ok(dur.into_inner())
+                            })
+                            .transpose()?,
+                        dynamic_backend: be.dynamic_backend,
+                    })
+                },
                 OrionUpstreamBackend::FunctionGraphBackend(_) => todo!(),
             }
         }

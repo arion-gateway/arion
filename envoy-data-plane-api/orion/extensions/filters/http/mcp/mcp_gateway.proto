@@ -61,7 +61,12 @@ message McpServerBackend {
   }
   TransportUpstream transport = 1;
   string url = 2 [(validate.rules).string = {min_bytes: 1}];
+  // DEPRECATED: Use dynamic_backend = true with cache_duration instead.
+  // For static backends (dynamic_backend = false), this field is ignored.
   google.protobuf.Duration cache_duration = 3;
+  // If true, backend is dynamic and tools list may change over time.
+  // If false (default), backend is static and tools are fetched once at bootstrap and cached indefinitely.
+  bool dynamic_backend = 4;
 }
 
 // RBAC configuration for individual MCP tools

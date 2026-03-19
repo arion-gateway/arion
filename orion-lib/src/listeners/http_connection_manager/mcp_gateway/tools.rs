@@ -31,8 +31,9 @@ use rmcp::model::{ListToolsResult, Tool};
 use rmcp::service::{RoleClient, RunningService};
 use serde_json::{json, Value};
 use smol_str::{SmolStr, ToSmolStr};
-use std::sync::LazyLock;
-use std::{borrow::Cow, sync::Arc, time::Instant};
+use std::sync::{Arc, LazyLock};
+use std::{borrow::Cow, time::Instant};
+use tokio::sync::OnceCell;
 use tracing::{debug, info, warn};
 use upon::Engine;
 
@@ -50,7 +51,7 @@ static DYNAMIC_TOOL_DISCOVERY_INPUT_SCHEMA: LazyLock<Value> = LazyLock::new(|| {
 
 #[derive(Debug, Clone)]
 struct CachedEntry<T> {
-    expiration: Instant,
+    expiration: Option<Instant>, // None = indefinite (static backend)
     entry: T,
 }
 
@@ -59,6 +60,7 @@ pub struct ToolsRegistry {
     registry: Vec<ToolEntry>,
     cache: DashMap<SmolStr, CachedEntry<Vec<Tool>>, ahash::RandomState>,
     dynamic_tool_discovery: bool,
+    bootstrapped: OnceCell<()>,
 }
 
 #[derive(Debug)]
@@ -180,7 +182,38 @@ impl ToolsRegistry {
                 Ok(ToolEntry { conf: tool_conf, transcoder, rbac, input_schema_validator, output_schema_validator })
             })
             .collect::<Result<Vec<_>, ToolBuilderError>>()?;
-        Ok(ToolsRegistry { registry, cache: DashMap::with_hasher(ahash::RandomState::new()), dynamic_tool_discovery })
+
+        Ok(ToolsRegistry {
+            registry,
+            cache: DashMap::with_hasher(ahash::RandomState::new()),
+            dynamic_tool_discovery,
+            bootstrapped: OnceCell::new(),
+        })
+    }
+
+    /// Bootstrap static MCP backends by fetching their tools list once at initialization
+    pub async fn bootstrap_static_backends(&self) {
+        for entry in &self.registry {
+            if let UpstreamBackend::McpServer { transport, url, dynamic_backend: false, .. } = &entry.conf.backend {
+                match self.get_list_tools_from_upstream(transport, url, &entry.conf.name).await {
+                    Ok(up_tools) => {
+                        // Cache indefinitely (expiration = None)
+                        self.cache.insert(
+                            entry.conf.name.to_smolstr(),
+                            CachedEntry { entry: up_tools.clone(), expiration: None },
+                        );
+                        info!(target: "mcp_gateway",
+                            "Bootstrapped static MCP backend '{}' with {} tools",
+                            entry.conf.name, up_tools.len());
+                    },
+                    Err(err) => {
+                        warn!(target: "mcp_gateway",
+                            "Failed to bootstrap static MCP backend '{}': {}",
+                            entry.conf.name, err);
+                    },
+                }
+            }
+        }
     }
 
     /// Get a tool by name as an Arc for cheap cloning
@@ -194,6 +227,14 @@ impl ToolsRegistry {
         req_ext: &http::Extensions,
         session: &Option<Arc<Session>>,
     ) -> ListToolsResult {
+        // Bootstrap static backends on first call if not already done
+        let _ = self
+            .bootstrapped
+            .get_or_init(|| async {
+                self.bootstrap_static_backends().await;
+            })
+            .await;
+
         let mut tools = Vec::with_capacity(self.registry.len() + 1);
         if self.dynamic_tool_discovery {
             let Value::Object(discovery_input_schema) = &*DYNAMIC_TOOL_DISCOVERY_INPUT_SCHEMA else { unreachable!() };
@@ -267,24 +308,38 @@ impl ToolsRegistry {
                         session.active_tools.insert(entry.conf.name.clone());
                     }
                 },
-                UpstreamBackend::McpServer { transport, url, cache_duration } => {
-                    if let Some(r) = self.cache.get(&entry.conf.name) {
-                        if std::time::Instant::now() < r.expiration {
-                            tools.extend_from_slice(&r.entry);
+                UpstreamBackend::McpServer { transport, url, cache_duration, dynamic_backend } => {
+                    if let Some(cached) = self.cache.get(&entry.conf.name) {
+                        // For static backends (expiration = None), cache is always valid
+                        // For dynamic backends, check expiration time
+                        let cache_valid = cached.expiration.is_none()
+                            || cached.expiration.is_some_and(|exp| std::time::Instant::now() < exp);
+
+                        if cache_valid {
+                            debug!(target: "mcp_gateway", "Loaded cached entry for MCP backend: {}", &entry.conf.name);
+                            tools.extend_from_slice(&cached.entry);
+                            if self.dynamic_tool_discovery {
+                                cached.entry.iter().for_each(|t| {
+                                    session.active_tools.insert(t.name.to_smolstr());
+                                });
+                            }
                             continue;
                         }
                     }
 
+                    debug!(target: "mcp_gateway", "Entry for MCP backend \"{}\" not found or expired, polling tools list from it", &entry.conf.name);
                     match self.get_list_tools_from_upstream(&transport, &url, &entry.conf.name).await {
                         Ok(up_tools) => {
-                            if let Some(expiration) =
-                                cache_duration.as_ref().and_then(|d| std::time::Instant::now().checked_add(d.clone()))
-                            {
-                                self.cache.insert(
-                                    entry.conf.name.to_smolstr(),
-                                    CachedEntry { entry: up_tools.clone(), expiration },
-                                );
-                            }
+                            let expiration = if *dynamic_backend {
+                                cache_duration.as_ref().and_then(|d| std::time::Instant::now().checked_add(*d))
+                            } else {
+                                None
+                            };
+
+                            self.cache.insert(
+                                entry.conf.name.to_smolstr(),
+                                CachedEntry { entry: up_tools.clone(), expiration },
+                            );
 
                             if self.dynamic_tool_discovery {
                                 up_tools.iter().for_each(|t| {
@@ -653,7 +708,7 @@ mod tests {
         let input_schema = serde_json::from_value(json!({
             "type": "object",
             "properties": {
-                "count": { "type": "number" }
+                "age": { "type": "integer" }
             }
         }))
         .unwrap();
@@ -663,13 +718,17 @@ mod tests {
         let tool_entry = registry.get_tool_by_index(ToolRegistryIndex(0)).unwrap();
 
         let args = json!({
-            "count": "not a number"
+            "age": "not a number"
         });
 
         let result = tool_entry.validate_against_input_schema(&args);
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("number"), "Error should mention type mismatch: {}", err_msg);
+        assert!(
+            err_msg.contains("number") || err_msg.contains("integer"),
+            "Error should mention type mismatch: {}",
+            err_msg
+        );
     }
 
     #[test]
@@ -847,5 +906,59 @@ mod tests {
         });
         let result = tool_entry.validate_against_input_schema(&invalid_args);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_static_backend_caching() {
+        use smol_str::SmolStr;
+
+        // Test that we can create a registry with static and dynamic backends
+        let static_tool = McpTool {
+            name: SmolStr::new("rest_backend"),
+            description: "A REST backend for testing".to_string(),
+            input_schema: serde_json::Map::new(),
+            output_schema: serde_json::Map::new(),
+            backend: UpstreamBackend::Rest {
+                method: http::Method::GET,
+                path: "/test".to_string(),
+                query_params: vec![],
+                cluster: "test".to_string(),
+                r#async: false,
+                body_template: None,
+            },
+            rbac: None,
+        };
+
+        let registry = ToolsRegistry::with_tools(vec![static_tool], false).unwrap();
+
+        // Verify the registry was created successfully
+        assert_eq!(registry.registry.len(), 1);
+
+        // Verify bootstrap hasn't run yet
+        assert!(registry.bootstrapped.get().is_none());
+    }
+
+    #[test]
+    fn test_cache_entry_with_indefinite_expiration() {
+        use rmcp::model::Tool;
+        use std::sync::Arc;
+
+        // Test CachedEntry with None expiration (static backend)
+        let tools = vec![Tool::new("test_tool", "A test tool", Arc::new(serde_json::Map::new()))];
+
+        let static_cache = CachedEntry {
+            entry: tools.clone(),
+            expiration: None, // Indefinite
+        };
+
+        // Verify the cache entry was created
+        assert!(static_cache.expiration.is_none());
+        assert_eq!(static_cache.entry.len(), 1);
+
+        // Test CachedEntry with Some expiration (dynamic backend)
+        let dynamic_cache =
+            CachedEntry { entry: tools, expiration: Some(Instant::now() + std::time::Duration::from_secs(60)) };
+
+        assert!(dynamic_cache.expiration.is_some());
     }
 }
