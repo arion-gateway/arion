@@ -19,7 +19,7 @@ use bitflags::{bitflags, bitflags_match};
 use smol_str::{SmolStr, SmolStrBuilder, ToSmolStr};
 
 bitflags! {
-    #[derive(PartialEq, Clone, Debug)]
+    #[derive(PartialEq, Clone, Copy, Debug)]
     pub struct ResponseFlags: u32 {
         const NO_HEALTHY_UPSTREAM                   = 0b00_0000_0000_0000_0000_0000_0000_0001;
         const UPSTREAM_CONNECTION_FAILURE           = 0b00_0000_0000_0000_0000_0000_0000_0010;

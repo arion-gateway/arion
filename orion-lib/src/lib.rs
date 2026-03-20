@@ -88,11 +88,6 @@ impl Default for OrionRequestBody {
 
 /// The Orion Response Body: a poly body with timeout
 pub type OrionResponseBody = TimeoutBody<PolyBody>;
-impl Default for OrionResponseBody {
-    fn default() -> Self {
-        TimeoutBody::new(None, PolyBody::from(Empty::new()))
-    }
-}
 
 /// Example with Result:
 /// Captures the error in 'e' and returns early from the function main()

@@ -35,7 +35,7 @@ impl StreamMetrics {
     }
 
     #[inline]
-    pub fn log_access_and_reset(&self, log_fn: Box<dyn FnOnce(u64, u64) + Send>) {
+    pub fn log_and_reset(&self, log_fn: Box<dyn FnOnce(u64, u64) + Send>) {
         let mut self_log_fn = self.log_fn.lock();
         *self_log_fn = Some(log_fn);
     }

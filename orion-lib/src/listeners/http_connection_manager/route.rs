@@ -109,13 +109,11 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
         match maybe_channel {
             Ok(svc_channel) => {
                 #[cfg(feature = "access-log")]
-                if let Some(ctx) = trans_handler.access_log_ctx.as_ref() {
-                    ctx.lock().loggers.with_context(&UpstreamContext {
-                        authority: Some(svc_channel.upstream_authority()),
-                        cluster_name: Some(svc_channel.cluster_name()),
-                        route_name,
-                    })
-                }
+                trans_handler.trans_ctx.lock().loggers.with_context(&UpstreamContext {
+                    authority: Some(svc_channel.upstream_authority()),
+                    cluster_name: Some(svc_channel.cluster_name()),
+                    route_name,
+                });
 
                 let ver = downstream_request.version();
 
@@ -169,9 +167,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
                 }
 
                 #[cfg(feature = "access-log")]
-                if let Some(ctx) = trans_handler.access_log_ctx.as_ref() {
-                    ctx.lock().loggers.with_context(&UpstreamRequestContext(&upstream_request));
-                }
+                trans_handler.trans_ctx.lock().loggers.with_context(&UpstreamRequestContext(&upstream_request));
 
                 let websocket_enabled = if let Some(upgrade_config) = self.upgrade_config {
                     upgrade_config.is_websocket_enabled(websocket_enabled_by_default)

@@ -256,8 +256,6 @@ pub struct FinishContext {
     pub duration: Duration,
     pub bytes_received: u64,
     pub bytes_sent: u64,
-    pub wire_bytes_received: u64,
-    pub wire_bytes_sent: u64,
     pub response_flags: ResponseFlags,
     pub upstream_failure: Option<&'static str>,
     pub response_code_details: Option<&'static str>,

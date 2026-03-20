@@ -237,6 +237,11 @@ mod metrics_disabled {
                 on_complete: PhantomData,
             }
         }
+
+        #[inline]
+        pub fn into_inner(mut self) -> B {
+            self.inner
+        }
     }
 
     impl<B: Body> Body for InstrumentedBody<B> {

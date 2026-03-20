@@ -31,13 +31,12 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, &'a str> for &DirectResponseA
         _route_name: &'a str,
     ) -> Result<Response<OrionResponseBody>> {
         #[cfg(feature = "access-log")]
-        if let Some(ctx) = _trans_handler.access_log_ctx.as_ref() {
-            ctx.lock().loggers.with_context(&UpstreamContext {
-                authority: None,
-                cluster_name: None,
-                route_name: _route_name,
-            })
-        }
+        _trans_handler.trans_ctx.lock().loggers.with_context(&UpstreamContext {
+            authority: None,
+            cluster_name: None,
+            route_name: _route_name,
+        });
+
         let body = Full::new(self.body.as_ref().map(|b| bytes::Bytes::copy_from_slice(b.data())).unwrap_or_default());
         let mut resp = Response::new(TimeoutBody::new(None, body.into()));
         *resp.status_mut() = self.status;
