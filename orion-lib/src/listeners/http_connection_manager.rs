@@ -67,7 +67,7 @@ use {
     },
     crate::event_error::UpstreamTransportEventError,
     crate::listeners::access_log::AccessLogContext,
-    orion_configuration::config::network_filters::access_log::AccessLog,
+    orion_configuration::config::access_log::AccessLog,
     orion_format::context::{
         DownstreamResponseContext, FinishContext, HttpRequestDurationContext, HttpResponseDurationContext,
         InitHttpContext,

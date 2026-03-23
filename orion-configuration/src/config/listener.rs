@@ -16,8 +16,11 @@
 //
 
 use super::{
+    access_log::{AccessLog, AccessLogConf},
+};
+
+use super::{
     network_filters::{
-        access_log::{AccessLog, AccessLogConf},
         HttpConnectionManager, NetworkRbac, TcpProxy,
     },
     transport::{BindDevice, CommonTlsContext},
@@ -70,6 +73,8 @@ pub struct Listener {
     pub proxy_protocol_config: Option<super::listener_filters::DownstreamProxyProtocolConfig>,
     #[serde(default = "Default::default")]
     pub tcp_backlog_size: u32,
+    #[serde(skip_serializing_if = "Vec::is_empty", default = "Default::default")]
+    pub access_log: Vec<AccessLog>,
 }
 
 impl Listener {
@@ -340,6 +345,7 @@ mod envoy_conversions {
     use super::{
         EmptyConfig, FilterChain, FilterChainMatch, Listener, ListenerType, MainFilter, ServerNameMatch, TlsConfig,
     };
+    use crate::config::access_log::AccessLog;
     use crate::config::core::RustType;
     use crate::config::listener::DEFAULT_TCP_BACKLOG_SIZE;
     use crate::config::{
@@ -438,7 +444,7 @@ mod envoy_conversions {
                 connection_balance_config,
                 reuse_port,
                 enable_reuse_port,
-                access_log,
+                //access_log,
                 //tcp_backlog_size,
                 max_connections_to_accept_per_socket_event,
                 bind_to_port,
@@ -469,6 +475,9 @@ mod envoy_conversions {
                         ListenerType::Socket { address, bind_device }
                     },
                 };
+
+                let access_log =
+                    access_log.iter().map(|al| AccessLog::try_from(al.clone())).collect::<Result<Vec<_>, _>>()?;
 
                 let filter_chains: Vec<FilterChainWrapper> = convert_non_empty_vec!(filter_chains)?;
                 let n_filter_chains = filter_chains.len();
@@ -509,6 +518,7 @@ mod envoy_conversions {
                     with_tls_inspector,
                     proxy_protocol_config,
                     tcp_backlog_size,
+                    access_log,
                 })
             }())
             .with_name(name)

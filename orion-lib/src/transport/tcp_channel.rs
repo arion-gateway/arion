@@ -74,7 +74,7 @@ impl TcpChannelConnector {
 
                     let upstream_local_addr = tcp_stream.local_addr().ok();
                     let upstream_peer_addr = tcp_stream.peer_addr().ok();
-                    let stream: AsyncInstrumentedStream = Box::new(InstrumentedStream::new(tcp_stream));
+                    let stream: AsyncInstrumentedStream = Box::new(InstrumentedStream::new(tcp_stream, None));
 
                     (stream, cluster_name, upstream_local_addr, upstream_peer_addr)
                 },
@@ -126,5 +126,5 @@ async fn configure_tls(
         .connect(server_name, stream)
         .await
         .map_err(|e| -> crate::Error { format!("TLS connection failed: {e}").into() })?;
-    Ok(Box::new(InstrumentedStream::new(tls_stream)))
+    Ok(Box::new(InstrumentedStream::new(tls_stream, None)))
 }

@@ -34,6 +34,7 @@ pub mod common;
 pub mod grpc;
 pub mod secret;
 pub mod transport;
+pub mod access_log;
 
 pub use crate::config::common::*;
 use crate::{options::Options, Result};

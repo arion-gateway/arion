@@ -15,7 +15,7 @@
 //
 //
 
-use orion_configuration::config::network_filters::access_log::AccessLogConf;
+use orion_configuration::config::access_log::AccessLogConf;
 use tracing_appender::non_blocking::{NonBlocking, WorkerGuard};
 use tracing_rolling_file::{RollingConditionBase, RollingFileAppender, RollingFrequency};
 

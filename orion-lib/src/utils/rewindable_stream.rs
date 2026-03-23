@@ -144,7 +144,7 @@ mod tests {
         let test_data = b"hello world".to_vec();
         let (mut write_side, read_side) = tokio::io::duplex(1024);
         write_side.write_all(&test_data).await.unwrap();
-        let mut rewindable = RewindableHeadAsyncStream::new(Box::new(InstrumentedStream::new(read_side)));
+        let mut rewindable = RewindableHeadAsyncStream::new(Box::new(InstrumentedStream::new(read_side, None)));
 
         let mut read_buf = vec![0u8; 5];
         rewindable.read_exact(&mut read_buf).await.unwrap();
@@ -166,7 +166,7 @@ mod tests {
         let test_data = b"hello world".to_vec();
         let (mut write_side, read_side) = tokio::io::duplex(1024);
         write_side.write_all(&test_data).await.unwrap();
-        let mut rewindable = RewindableHeadAsyncStream::new(Box::new(InstrumentedStream::new(read_side)));
+        let mut rewindable = RewindableHeadAsyncStream::new(Box::new(InstrumentedStream::new(read_side, None)));
 
         let mut read_buf = vec![0u8; 11];
         rewindable.read_exact(&mut read_buf).await.unwrap();

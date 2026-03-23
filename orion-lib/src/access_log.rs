@@ -23,7 +23,7 @@ pub mod logger;
 mod pool;
 
 use logger::AccessLogger;
-use orion_configuration::config::network_filters::access_log::AccessLogConf;
+use orion_configuration::config::access_log::AccessLogConf;
 use orion_format::FormattedMessage;
 use parking_lot::Mutex;
 use pool::LoggerPool;

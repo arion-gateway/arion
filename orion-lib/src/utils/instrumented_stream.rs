@@ -14,47 +14,78 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use crate::{transport::AsyncReadWriteInstrumented, utils::rewindable_stream::RewindableHeadAsyncStream};
 
 pub struct StreamMetrics {
-    bytes_read: AtomicU64,
-    bytes_written: AtomicU64,
-    log_fn: Mutex<Option<Box<dyn FnOnce(u64, u64) + Send>>>,
+    conn_bytes_read: AtomicU64,
+    conn_bytes_written: AtomicU64,
+    txn_bytes_read: AtomicU64,
+    txn_bytes_written: AtomicU64,
+    log_txn: Mutex<Option<Box<dyn FnOnce(u64, u64) + Send>>>,
+    log_conn: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 impl std::fmt::Debug for StreamMetrics {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StreamMetrics")
-            .field("bytes_read", &self.bytes_read)
-            .field("bytes_written", &self.bytes_written)
+            .field("conn_bytes_read", &self.conn_bytes_read)
+            .field("conn_bytes_written", &self.conn_bytes_written)
+            .field("txn_bytes_read", &self.txn_bytes_read)
+            .field("txn_bytes_written", &self.txn_bytes_written)
             .finish()
+    }
+}
+
+impl Drop for StreamMetrics {
+    fn drop(&mut self) {
+        println!("&&&&&&&&&&&&&&&&&& DROP connection!!!!");
+        if let Some(log_fn) = self.log_conn.lock().take() {
+            log_fn();
+        }
     }
 }
 
 impl StreamMetrics {
     #[inline]
-    pub fn new() -> StreamMetrics {
-        Self { bytes_read: AtomicU64::new(0), bytes_written: AtomicU64::new(0), log_fn: Mutex::new(None) }
+    pub fn new(log_fn: Option<Box<dyn FnOnce() + Send>>) -> StreamMetrics {
+        Self {
+            conn_bytes_read: AtomicU64::new(0),
+            conn_bytes_written: AtomicU64::new(0),
+            txn_bytes_read: AtomicU64::new(0),
+            txn_bytes_written: AtomicU64::new(0),
+            log_txn: Mutex::new(None),
+            log_conn: Mutex::new(log_fn),
+        }
     }
 
     #[inline]
     pub fn log_and_reset(&self, log_fn: Box<dyn FnOnce(u64, u64) + Send>) {
-        let mut self_log_fn = self.log_fn.lock();
+        let mut self_log_fn = self.log_txn.lock();
         *self_log_fn = Some(log_fn);
     }
 
     #[inline]
     fn reset(&self) {
         // println!("RESET METRICS! @{:p}", self as * const StreamMetrics);
-        self.bytes_read.store(0, Ordering::Relaxed);
-        self.bytes_written.store(0, Ordering::Relaxed);
+        self.txn_bytes_read.store(0, Ordering::Relaxed);
+        self.txn_bytes_written.store(0, Ordering::Relaxed);
     }
 
     #[inline]
-    pub fn bytes_read(&self) -> u64 {
-        self.bytes_read.load(Ordering::Relaxed)
+    pub fn txn_bytes_read(&self) -> u64 {
+        self.txn_bytes_read.load(Ordering::Relaxed)
     }
 
     #[inline]
-    pub fn bytes_written(&self) -> u64 {
-        self.bytes_written.load(Ordering::Relaxed)
+    pub fn txn_bytes_written(&self) -> u64 {
+        self.txn_bytes_written.load(Ordering::Relaxed)
+    }
+
+    #[inline]
+    pub fn conn_bytes_read(&self) -> u64 {
+        self.conn_bytes_read.load(Ordering::Relaxed)
+    }
+
+    #[inline]
+    pub fn conn_bytes_written(&self) -> u64 {
+        self.conn_bytes_written.load(Ordering::Relaxed)
     }
 }
 
@@ -66,8 +97,8 @@ pub struct InstrumentedStream<S> {
 }
 
 impl<S> InstrumentedStream<S> {
-    pub fn new(inner: S) -> InstrumentedStream<S> {
-        Self { inner, metrics: Arc::new(StreamMetrics::new()) }
+    pub fn new(inner: S, log_fn: Option<Box<dyn FnOnce() + Send>>) -> InstrumentedStream<S> {
+        Self { inner, metrics: Arc::new(StreamMetrics::new(log_fn)) }
     }
 
     #[inline]
@@ -84,7 +115,8 @@ impl<S: AsyncRead> AsyncRead for InstrumentedStream<S> {
         match this.inner.poll_read(cx, buf) {
             Poll::Ready(Ok(())) => {
                 let bytes = buf.filled().len() - before;
-                this.metrics.bytes_read.fetch_add(bytes as u64, Ordering::Relaxed);
+                this.metrics.conn_bytes_read.fetch_add(bytes as u64, Ordering::Relaxed);
+                this.metrics.txn_bytes_read.fetch_add(bytes as u64, Ordering::Relaxed);
                 // println!("BYTES READ: {bytes} -> {} @{:p}", prev + bytes as u64, this.metrics.as_ref() as *const StreamMetrics);
                 Poll::Ready(Ok(()))
             },
@@ -98,7 +130,8 @@ impl<S: AsyncWrite> AsyncWrite for InstrumentedStream<S> {
         let this = self.project();
         match this.inner.poll_write(cx, buf) {
             Poll::Ready(Ok(n)) => {
-                this.metrics.bytes_written.fetch_add(n as u64, Ordering::Relaxed);
+                this.metrics.conn_bytes_written.fetch_add(n as u64, Ordering::Relaxed);
+                this.metrics.txn_bytes_written.fetch_add(n as u64, Ordering::Relaxed);
                 // println!("BYTES WRITTEN: {n} -> {} @{:p}", prev + n as u64, this.metrics.as_ref() as *const StreamMetrics);
                 Poll::Ready(Ok(n))
             },
@@ -109,9 +142,9 @@ impl<S: AsyncWrite> AsyncWrite for InstrumentedStream<S> {
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         let this = self.project();
         // println!("POLL FLUSH! @{:p}", this.metrics.as_ref() as *const StreamMetrics);
-        if let Some(log_access) = this.metrics.log_fn.lock().take() {
+        if let Some(log_access) = this.metrics.log_txn.lock().take() {
             // println!("=> FLUSHING LOG  @{:p}", this.metrics.as_ref() as *const StreamMetrics);
-            log_access(this.metrics.bytes_read(), this.metrics.bytes_written());
+            log_access(this.metrics.txn_bytes_read(), this.metrics.txn_bytes_written());
             this.metrics.reset();
         }
 

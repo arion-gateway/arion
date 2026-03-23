@@ -34,7 +34,8 @@ use crate::{
 };
 use orion_configuration::config::{
     cluster::ClusterSpecifier as ClusterSpecifierConfig,
-    network_filters::{access_log::AccessLog, tcp_proxy::TcpProxy as TcpProxyConfig},
+    access_log::AccessLog,
+    network_filters::{tcp_proxy::TcpProxy as TcpProxyConfig},
 };
 use orion_format::{
     context::{FinishContext, InitContext, SocketAddrContext, TcpContext, WireContext},

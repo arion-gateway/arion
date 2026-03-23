@@ -284,7 +284,7 @@ impl Listener {
                                         _ = stream.set_nodelay(true);
                                         _ = stream.set_quickack(true);
 
-                                        let stream = InstrumentedStream::new(stream);
+                                        let stream = InstrumentedStream::new(stream, None);
 
                                         let _shard_id = get_shard_id!();
                                         with_metric!(listeners::DOWNSTREAM_CX_TOTAL, add, 1, _shard_id,&[KeyValue::new("listener", _listener_name)]);

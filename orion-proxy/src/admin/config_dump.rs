@@ -310,6 +310,7 @@ mod config_dump_tests {
             proxy_protocol_config: None,
             with_tls_inspector: false,
             tcp_backlog_size: 128,
+            access_log: vec![]
         };
         let (configuration_senders, handle) = spawn_mock_listener_manager(Some(vec![listener]));
         let admin_state = AdminState {

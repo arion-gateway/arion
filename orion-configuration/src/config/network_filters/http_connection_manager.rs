@@ -29,10 +29,12 @@ use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 use std::{collections::HashMap, str::FromStr, time::Duration};
 
+use crate::config::access_log::AccessLog;
+
 use crate::config::{
     common::*,
     network_filters::{
-        access_log::AccessLog, http_connection_manager::header_modifier::HeaderValueOption, tracing::TracingConfig,
+        http_connection_manager::header_modifier::HeaderValueOption, tracing::TracingConfig,
     },
 };
 
@@ -580,11 +582,12 @@ mod envoy_conversions {
         CodecType, ConfigSource, ConfigSourceSpecifier, HttpConnectionManager, RdsSpecifier, RetryBackoff, RetryOn,
         RetryPolicy, Route, RouteConfiguration, RouteSpecifier, UpgradeType, VirtualHost, XffSettings,
     };
+    use crate::config::access_log::AccessLog;
+
     use crate::config::{
         common::*,
         core::RustType,
         network_filters::{
-            access_log::AccessLog,
             http_connection_manager::{HeaderModifiersAdd, HeaderModifiersRemove},
         },
     };
