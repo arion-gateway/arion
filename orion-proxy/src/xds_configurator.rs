@@ -331,9 +331,11 @@ impl XdsConfigurationHandler {
     }
 
     async fn access_log_listener_update(&mut self, id: &str, listener: &Listener) {
-        let access_logs = listener.get_access_log_configurations();
-        if let Err(err) = update_configuration(Target::Listener(id.into()), access_logs).await {
-            warn!("Failed to update access log configuration for listener {id}: {err}");
+        let access_logs = listener.all_access_log_configs();
+        for (target, confs) in access_logs {
+            if let Err(err) = update_configuration(target.into(), confs).await {
+                warn!("Failed to update access log configuration for listener '{}' ({id}): {err}", listener.name);
+            }
         }
     }
 

@@ -426,8 +426,9 @@ mod tests {
         write_side.write_all(v1_header).await.unwrap();
         write_side.write_all(test_data).await.unwrap();
 
-        let result =
-            reader.try_read_proxy_header(Box::new(InstrumentedStream::new(read_side, None)), local_addr, peer_addr).await;
+        let result = reader
+            .try_read_proxy_header(Box::new(InstrumentedStream::new(read_side, None)), local_addr, peer_addr)
+            .await;
         assert!(result.is_ok());
 
         let (metadata, _stream) = result.unwrap();
@@ -478,8 +479,9 @@ mod tests {
         write_side.write_all(&v2_header).await.unwrap();
         write_side.write_all(test_data).await.unwrap();
 
-        let result =
-            reader.try_read_proxy_header(Box::new(InstrumentedStream::new(read_side, None)), local_addr, peer_addr).await;
+        let result = reader
+            .try_read_proxy_header(Box::new(InstrumentedStream::new(read_side, None)), local_addr, peer_addr)
+            .await;
         assert!(result.is_ok());
 
         let (metadata, _stream) = result.unwrap();

@@ -88,7 +88,7 @@ impl ListenersManager {
                         ListenerConfigurationChange::Added(boxed) => {
                             let (factory, listener_conf) = *boxed;
                             let listener = factory.clone()
-                                .make_listener(tx_route_updates.subscribe(), tx_secret_updates.subscribe())?;
+                                .into_listener(tx_route_updates.subscribe(), tx_secret_updates.subscribe())?;
                             if let Err(e) = self.start_listener(listener, listener_conf) {
                                 warn!("Failed to start listener: {e}");
                             }
@@ -237,7 +237,7 @@ mod tests {
             with_tls_inspector: false,
             proxy_protocol_config: None,
             tcp_backlog_size: 128,
-            access_log: vec![]
+            access_log: vec![],
         };
         man.start_listener(l1, l1_info).unwrap();
 

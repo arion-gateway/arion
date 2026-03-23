@@ -130,7 +130,7 @@ use crate::listeners::http_connection_manager::http_modifiers::HeaderMapModifier
 #[derive(Debug, Clone)]
 pub struct HttpConnectionManagerBuilder {
     listener_name: Option<&'static str>,
-    filter_chain_match_hash: Option<u64>,
+    filterchain_id: Option<u64>,
     connection_manager: PartialHttpConnectionManager,
 }
 
@@ -138,20 +138,20 @@ impl TryFrom<ConversionContext<'_, HttpConnectionManagerConfig>> for HttpConnect
     type Error = crate::Error;
     fn try_from(ctx: ConversionContext<HttpConnectionManagerConfig>) -> Result<Self> {
         let partial = PartialHttpConnectionManager::try_from(ctx)?;
-        Ok(Self { listener_name: None, filter_chain_match_hash: None, connection_manager: partial })
+        Ok(Self { listener_name: None, filterchain_id: None, connection_manager: partial })
     }
 }
 
 impl HttpConnectionManagerBuilder {
     pub fn build(self) -> Result<HttpConnectionManager> {
         let listener_name = self.listener_name.ok_or("listener name is not set")?;
-        let filter_chain_match_hash = self.filter_chain_match_hash.unwrap_or(0);
+        let filterchain_id = self.filterchain_id.unwrap_or(0);
         let partial = self.connection_manager;
         let router_sender = watch::Sender::new(partial.router.map(Arc::new));
 
         Ok(HttpConnectionManager {
             listener_name,
-            filter_chain_match_hash,
+            filterchain_id,
             router_sender,
             codec_type: partial.codec_type,
             dynamic_route_name: partial.dynamic_route_name,
@@ -174,12 +174,14 @@ impl HttpConnectionManagerBuilder {
         })
     }
 
+    #[inline]
     pub fn with_listener_name(self, name: &'static str) -> Self {
         HttpConnectionManagerBuilder { listener_name: Some(name), ..self }
     }
 
-    pub fn with_filter_chain_match_hash(self, value: u64) -> Self {
-        HttpConnectionManagerBuilder { filter_chain_match_hash: Some(value), ..self }
+    #[inline]
+    pub fn with_filterchain_id(self, value: u64) -> Self {
+        HttpConnectionManagerBuilder { filterchain_id: Some(value), ..self }
     }
 }
 
@@ -279,7 +281,7 @@ impl AlpnCodecs {
 #[derive(Debug)]
 pub struct HttpConnectionManager {
     pub listener_name: &'static str,
-    pub filter_chain_match_hash: u64,
+    pub filterchain_id: u64,
     router_sender: watch::Sender<Option<Arc<RouteConfiguration>>>,
     pub codec_type: CodecType,
     dynamic_route_name: Option<SmolStr>,
@@ -303,7 +305,7 @@ impl fmt::Display for HttpConnectionManager {
 impl HttpConnectionManager {
     #[inline]
     pub fn get_tracing_key(&self) -> TracingKey {
-        TracingKey(self.listener_name, self.filter_chain_match_hash)
+        TracingKey(self.listener_name, self.filterchain_id)
     }
 
     #[inline]
@@ -374,7 +376,7 @@ impl TransactionContext {
             flags: ResponseFlags::default(),
             event: None,
             #[cfg(feature = "access-log")]
-            loggers: access_log.iter().map(|al| al.logger.clone()).collect::<Vec<_>>(),
+            loggers: access_log.iter().map(|al| al.get_logger().clone()).collect::<Vec<_>>(),
         }
     }
 }
@@ -494,6 +496,7 @@ impl TransactionHandler {
         RC: RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> + Clone,
     {
         let _listener_name = manager.listener_name;
+        let _filterchain_id = manager.filterchain_id;
         let metadata = request.extensions().get::<DownstreamMetadata>();
         let stream_metrics = request.extensions().get::<Arc<StreamMetrics>>().map(Clone::clone);
 
@@ -558,6 +561,7 @@ impl TransactionHandler {
                                 eval_http_finish_context(
                                     _stream_metrics,
                                     _listener_name,
+                                    _filterchain_id,
                                     _ctx_bytes,
                                     _body_bytes,
                                     #[cfg(feature = "metrics")]
@@ -1165,6 +1169,7 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
 
         let req_timeout = self.manager.request_timeout;
         let listener_name = self.manager.listener_name;
+        let _filterchain_id = self.manager.filterchain_id;
         let route_conf = self.router.borrow().clone();
         let manager = Arc::clone(&self.manager);
 
@@ -1255,6 +1260,7 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
                                 eval_http_finish_context(
                                     _stream_metrics,
                                     listener_name,
+                                    _filterchain_id,
                                     _body_bytes, // bytes received
                                     _ctx_bytes,  // bytes sent
                                     #[cfg(feature = "metrics")]
@@ -1366,6 +1372,7 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
                                     eval_http_finish_context(
                                         _stream_metrics,
                                         listener_name,
+                                        _filterchain_id,
                                         _ctx_bytes,  // bytes received
                                         _body_bytes, // bytes sent
                                         #[cfg(feature = "metrics")]
@@ -1489,6 +1496,7 @@ struct MetricsFinishContext {
 fn eval_http_finish_context(
     _stream_metrics: &StreamMetrics,
     _listener_name: &'static str,
+    _filterchain_id: u64,
     _bytes_received: u64,
     _bytes_sent: u64,
     #[cfg(feature = "metrics")] m_ctx: MetricsFinishContext,
@@ -1548,7 +1556,7 @@ fn eval_http_finish_context(
             loggers.with_context(&WireContext { wire_bytes_received, wire_bytes_sent });
 
             let messages = loggers.into_iter().map(LogFormatter::into_message).collect::<Vec<_>>();
-            log_access(permit, Target::Listener(_listener_name.into()), messages);
+            log_access(permit, Target::ListenerFilterChain(_listener_name.into(), _filterchain_id), messages);
         }
     });
 

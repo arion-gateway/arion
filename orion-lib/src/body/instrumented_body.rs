@@ -239,7 +239,7 @@ mod metrics_disabled {
         }
 
         #[inline]
-        pub fn into_inner(mut self) -> B {
+        pub fn into_inner(self) -> B {
             self.inner
         }
     }

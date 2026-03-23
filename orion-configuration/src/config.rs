@@ -30,11 +30,11 @@ pub use log::LogConfig;
 pub mod network_filters;
 pub mod runtime;
 pub use runtime::Runtime;
+pub mod access_log;
 pub mod common;
 pub mod grpc;
 pub mod secret;
 pub mod transport;
-pub mod access_log;
 
 pub use crate::config::common::*;
 use crate::{options::Options, Result};

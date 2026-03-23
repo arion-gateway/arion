@@ -23,7 +23,7 @@ pub mod logger;
 mod pool;
 
 use logger::AccessLogger;
-use orion_configuration::config::access_log::AccessLogConf;
+use orion_configuration::config::access_log::{AccessLogConf, AccessLogTarget};
 use orion_format::FormattedMessage;
 use parking_lot::Mutex;
 use pool::LoggerPool;
@@ -41,17 +41,32 @@ use tracing::{error, info};
 /// Represents the destination for an access logging event.
 ///
 /// - `Listener`: Identifies a specific listener by name.
+/// - `ListenerFilterChain`: Identifies a specific filterchain of a listener.
 /// - `Admin`: Refers to the Envoy admin interface.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Target {
     Listener(SmolStr),
+    ListenerFilterChain(SmolStr, u64),
     Admin,
+}
+
+impl From<AccessLogTarget> for Target {
+    fn from(value: AccessLogTarget) -> Self {
+        match value {
+            AccessLogTarget::Listener(name) => Target::Listener(name.into()),
+            AccessLogTarget::ListenerFilterChain(name, hash) => Target::ListenerFilterChain(name.into(), hash),
+            AccessLogTarget::Admin => Target::Admin,
+        }
+    }
 }
 
 impl Display for Target {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Target::Listener(name) => write!(f, "Listener({name})"),
+            Target::ListenerFilterChain(lister_name, filter_chain_name) => {
+                write!(f, "Listener({lister_name}:FilterChain({filter_chain_name})")
+            },
             Target::Admin => write!(f, "Admin"),
         }
     }

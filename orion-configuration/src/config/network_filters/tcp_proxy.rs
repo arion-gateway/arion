@@ -31,7 +31,7 @@ pub struct TcpProxy {
 mod envoy_conversions {
     #![allow(deprecated)]
     use super::TcpProxy;
-    use crate::config::{common::*, access_log::AccessLog};
+    use crate::config::{access_log::AccessLog, common::*};
     use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::network::tcp_proxy::v3::TcpProxy as EnvoyTcpProxy;
 
     impl TryFrom<EnvoyTcpProxy> for TcpProxy {

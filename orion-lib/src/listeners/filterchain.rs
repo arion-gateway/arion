@@ -94,8 +94,8 @@ impl TryFrom<ConversionContext<'_, MainFilter>> for MainFilterBuilder {
 #[derive(Debug, Clone)]
 pub struct FilterchainBuilder {
     name: SmolStr,
+    filterchain_id: u64,
     listener_name: Option<&'static str>,
-    filter_chain_match_hash: u64,
     main_filter: MainFilterBuilder,
     rbac_filters: Vec<NetworkRbac>,
     tls_configurator: Option<TlsConfigurator<ServerConfig, WantsToBuildServer>>,
@@ -118,12 +118,12 @@ impl FilterchainBuilder {
             MainFilterBuilder::Http(http_connection_manager) => ConnectionHandler::Http(Arc::new(
                 http_connection_manager
                     .with_listener_name(listener_name)
-                    .with_filter_chain_match_hash(self.filter_chain_match_hash)
+                    .with_filterchain_id(self.filterchain_id)
                     .build()?,
             )),
-            MainFilterBuilder::Tcp(tcp_proxy) => {
-                ConnectionHandler::Tcp(tcp_proxy.with_listener_name(listener_name).build()?)
-            },
+            MainFilterBuilder::Tcp(tcp_proxy) => ConnectionHandler::Tcp(
+                tcp_proxy.with_listener_name(listener_name).with_filterchain_id(self.filterchain_id).build()?,
+            ),
         };
         Ok(FilterchainType { config, handler })
     }
@@ -140,7 +140,7 @@ impl TryFrom<ConversionContext<'_, FilterChainConfig>> for FilterchainBuilder {
             tls_config.map(|tls_config| TlsConfigurator::try_from((tls_config, secret_manager))).transpose()?;
         Ok(FilterchainBuilder {
             name: filter_chain.name,
-            filter_chain_match_hash: filter_chain.filter_chain_match_hash,
+            filterchain_id: filter_chain.id,
             listener_name: None,
             main_filter,
             rbac_filters,

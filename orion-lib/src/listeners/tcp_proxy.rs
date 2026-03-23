@@ -20,7 +20,6 @@ use {
     crate::access_log::is_access_log_enabled,
     crate::access_log::{log_access, log_access_reserve_balanced, Target},
     orion_format::LogFormatter,
-    smol_str::ToSmolStr,
 };
 
 use crate::{
@@ -33,9 +32,8 @@ use crate::{
     AsyncInstrumentedStream, Result,
 };
 use orion_configuration::config::{
-    cluster::ClusterSpecifier as ClusterSpecifierConfig,
-    access_log::AccessLog,
-    network_filters::{tcp_proxy::TcpProxy as TcpProxyConfig},
+    access_log::AccessLog, cluster::ClusterSpecifier as ClusterSpecifierConfig,
+    network_filters::tcp_proxy::TcpProxy as TcpProxyConfig,
 };
 use orion_format::{
     context::{FinishContext, InitContext, SocketAddrContext, TcpContext, WireContext},
@@ -48,6 +46,7 @@ use tracing::{debug, error};
 #[derive(Debug, Clone)]
 pub struct TcpProxy {
     pub listener_name: &'static str,
+    pub filterchain_id: u64,
     cluster: ClusterSpecifierConfig,
     pub access_log: Vec<AccessLog>,
 }
@@ -55,23 +54,33 @@ pub struct TcpProxy {
 #[derive(Debug, Clone)]
 pub struct TcpProxyBuilder {
     listener_name: Option<&'static str>,
+    filterchain_id: Option<u64>,
     tcp_proxy_config: TcpProxyConfig,
 }
 
 impl From<TcpProxyConfig> for TcpProxyBuilder {
     fn from(tcp_proxy_config: TcpProxyConfig) -> Self {
-        Self { tcp_proxy_config, listener_name: None }
+        Self { tcp_proxy_config, filterchain_id: None, listener_name: None }
     }
 }
 
 impl TcpProxyBuilder {
+    #[inline]
     pub fn with_listener_name(self, name: &'static str) -> Self {
         TcpProxyBuilder { listener_name: Some(name), ..self }
     }
+
+    #[inline]
+    pub fn with_filterchain_id(self, value: u64) -> Self {
+        TcpProxyBuilder { filterchain_id: Some(value), ..self }
+    }
+
+    #[inline]
     pub fn build(self) -> Result<TcpProxy> {
-        let listener_name = self.listener_name.ok_or("listener name is not set")?;
+        let listener_name = self.listener_name.unwrap_or("listener name is not set");
+        let filterchain_id = self.filterchain_id.unwrap_or(0 as u64);
         let TcpProxyConfig { cluster_specifier, access_log } = self.tcp_proxy_config;
-        Ok(TcpProxy { listener_name, access_log, cluster: cluster_specifier })
+        Ok(TcpProxy { listener_name, filterchain_id, access_log, cluster: cluster_specifier })
     }
 }
 
@@ -89,7 +98,7 @@ impl TcpProxy {
         metadata: DownstreamMetadata,
     ) -> Result<()> {
         let start_instant = Instant::now();
-        let mut access_loggers = self.access_log.iter().map(|al| al.logger.clone()).collect::<Vec<_>>();
+        let mut access_loggers = self.access_log.iter().map(|al| al.get_logger().clone()).collect::<Vec<_>>();
 
         access_loggers.with_context_fn(|| InitContext { start_time: std::time::SystemTime::now() });
 
@@ -217,7 +226,11 @@ impl TcpProxy {
 
             if let Some(permit) = permit {
                 let messages = access_loggers.into_iter().map(LogFormatter::into_message).collect::<Vec<_>>();
-                log_access(permit, Target::Listener(self.listener_name.to_smolstr()), messages);
+                log_access(
+                    permit,
+                    Target::ListenerFilterChain(self.listener_name.into(), self.filterchain_id),
+                    messages,
+                );
             }
         }
 

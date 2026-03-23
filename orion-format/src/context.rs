@@ -315,6 +315,33 @@ impl Context for WireContext {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct ConnectionContext {
+    pub duration: Duration,
+    pub wire_bytes_received: u64,
+    pub wire_bytes_sent: u64,
+}
+
+impl Context for ConnectionContext {
+    fn eval_part(&self, op: &Operator) -> StringType {
+        match op {
+            Operator::BytesReceived | Operator::DownstreamWireBytesReceived => {
+                let mut buffer = itoa::Buffer::new();
+                StringType::Smol(SmolStr::new(buffer.format(self.wire_bytes_received)))
+            },
+            Operator::BytesSent | Operator::DownstreamWireBytesSent => {
+                let mut buffer = itoa::Buffer::new();
+                StringType::Smol(SmolStr::new(buffer.format(self.wire_bytes_sent)))
+            },
+            Operator::Duration => {
+                let mut buffer = itoa::Buffer::new();
+                StringType::Smol(SmolStr::new(buffer.format(self.duration.as_millis())))
+            },
+            _ => StringType::None,
+        }
+    }
+}
+
 pub struct DownstreamContext<'a, T> {
     pub request: &'a Request<T>,
     pub request_head_size: usize,

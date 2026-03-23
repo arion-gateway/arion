@@ -19,7 +19,7 @@ pub struct StreamMetrics {
     txn_bytes_read: AtomicU64,
     txn_bytes_written: AtomicU64,
     log_txn: Mutex<Option<Box<dyn FnOnce(u64, u64) + Send>>>,
-    log_conn: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    log_conn: Mutex<Option<Box<dyn FnOnce(&StreamMetrics) + Send>>>,
 }
 
 impl std::fmt::Debug for StreamMetrics {
@@ -35,16 +35,15 @@ impl std::fmt::Debug for StreamMetrics {
 
 impl Drop for StreamMetrics {
     fn drop(&mut self) {
-        println!("&&&&&&&&&&&&&&&&&& DROP connection!!!!");
         if let Some(log_fn) = self.log_conn.lock().take() {
-            log_fn();
+            log_fn(self);
         }
     }
 }
 
 impl StreamMetrics {
     #[inline]
-    pub fn new(log_fn: Option<Box<dyn FnOnce() + Send>>) -> StreamMetrics {
+    pub fn new(log_fn: Option<Box<dyn FnOnce(&StreamMetrics) + Send>>) -> StreamMetrics {
         Self {
             conn_bytes_read: AtomicU64::new(0),
             conn_bytes_written: AtomicU64::new(0),
@@ -97,7 +96,7 @@ pub struct InstrumentedStream<S> {
 }
 
 impl<S> InstrumentedStream<S> {
-    pub fn new(inner: S, log_fn: Option<Box<dyn FnOnce() + Send>>) -> InstrumentedStream<S> {
+    pub fn new(inner: S, log_fn: Option<Box<dyn FnOnce(&StreamMetrics) + Send>>) -> InstrumentedStream<S> {
         Self { inner, metrics: Arc::new(StreamMetrics::new(log_fn)) }
     }
 

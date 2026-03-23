@@ -33,10 +33,7 @@ use {
 use tokio::{sync::mpsc::Sender, task::JoinSet};
 
 #[cfg(feature = "access-log")]
-use {
-    orion_lib::access_log::{start_access_loggers, update_configuration, Target},
-    smol_str::ToSmolStr,
-};
+use orion_lib::access_log::{start_access_loggers, update_configuration};
 
 use orion_error::Context;
 use orion_lib::{
@@ -364,11 +361,10 @@ async fn spawn_services(info: ServiceInfo) -> Result<()> {
 
             info!("Access loggers started with {} instances", conf.num_instances);
 
-            let listener_configurations =
-                listeners.iter().map(|l| (l.name.clone(), l.get_access_log_configurations())).collect::<Vec<_>>();
-
-            for (listener_name, access_log_configurations) in listener_configurations {
-                _ = update_configuration(Target::Listener(listener_name.to_smolstr()), access_log_configurations).await;
+            for (target, access_log_config) in
+                listeners.iter().map(|l| l.all_access_log_configs()).flatten().collect::<Vec<_>>()
+            {
+                _ = update_configuration(target.into(), access_log_config).await;
             }
 
             handles.join_all().await;

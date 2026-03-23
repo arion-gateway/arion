@@ -23,6 +23,16 @@ use super::{
 #[cfg(feature = "instrumentation")]
 use crate::instrumentation;
 
+#[cfg(feature = "access-log")]
+use orion_format::{context::ConnectionContext, LogFormatter};
+
+#[cfg(feature = "access-log")]
+use crate::{
+    access_log::{is_access_log_enabled, log_access, log_access_reserve_balanced, Target},
+    listeners::access_log::AccessLogContext,
+    utils::instrumented_stream::StreamMetrics,
+};
+
 use crate::{
     get_shard_id,
     listeners::{
@@ -34,7 +44,9 @@ use crate::{
     utils::instrumented_stream::InstrumentedStream,
     AsyncInstrumentedStream, ConversionContext, Error, Result, RouteConfigurationChange,
 };
+
 use orion_configuration::config::{
+    access_log::AccessLog,
     listener::{FilterChainMatch, Listener as ListenerConfig, ListenerType, MatchResult},
     listener_filters::DownstreamProxyProtocolConfig,
 };
@@ -60,6 +72,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc, OnceLock,
     },
+    time::Instant,
 };
 use tokio::{
     net::{TcpListener, TcpSocket},
@@ -91,7 +104,9 @@ struct PartialListener {
     filter_chains: HashMap<FilterChainMatch, FilterchainBuilder>,
     with_tls_inspector: bool,
     proxy_protocol_config: Option<DownstreamProxyProtocolConfig>,
+    access_log: Vec<AccessLog>,
 }
+
 #[derive(Debug, Clone)]
 pub struct ListenerFactory {
     listener: PartialListener,
@@ -104,6 +119,7 @@ impl TryFrom<ConversionContext<'_, ListenerConfig>> for PartialListener {
         let name = listener.name.to_static_str();
         let with_tls_inspector = listener.with_tls_inspector;
         let proxy_protocol_config = listener.proxy_protocol_config;
+        let access_log = listener.access_log;
         debug!("Listener {name} :TLS Inspector is {with_tls_inspector}");
 
         let binding = match listener.listener_type {
@@ -128,17 +144,18 @@ impl TryFrom<ConversionContext<'_, ListenerConfig>> for PartialListener {
             }
         }
 
-        Ok(PartialListener { name, binding, filter_chains, with_tls_inspector, proxy_protocol_config })
+        Ok(PartialListener { name, binding, filter_chains, with_tls_inspector, proxy_protocol_config, access_log })
     }
 }
 
 impl ListenerFactory {
-    pub fn make_listener(
+    pub fn into_listener(
         self,
         route_updates_receiver: broadcast::Receiver<RouteConfigurationChange>,
         secret_updates_receiver: broadcast::Receiver<TlsContextChange>,
     ) -> Result<Listener> {
-        let PartialListener { name, binding, filter_chains, with_tls_inspector, proxy_protocol_config } = self.listener;
+        let PartialListener { name, binding, filter_chains, with_tls_inspector, proxy_protocol_config, access_log } =
+            self.listener;
 
         let filter_chains = filter_chains
             .into_iter()
@@ -153,6 +170,7 @@ impl ListenerFactory {
             proxy_protocol_config,
             route_updates_receiver,
             secret_updates_receiver,
+            access_log,
         })
     }
 }
@@ -199,6 +217,7 @@ pub struct Listener {
     proxy_protocol_config: Option<DownstreamProxyProtocolConfig>,
     route_updates_receiver: broadcast::Receiver<RouteConfigurationChange>,
     secret_updates_receiver: broadcast::Receiver<TlsContextChange>,
+    access_log: Vec<AccessLog>,
 }
 
 impl Listener {
@@ -221,6 +240,7 @@ impl Listener {
             proxy_protocol_config: None,
             route_updates_receiver: route_rx,
             secret_updates_receiver: secret_rx,
+            access_log: vec![],
         }
     }
 
@@ -244,6 +264,7 @@ impl Listener {
             proxy_protocol_config,
             mut route_updates_receiver,
             mut secret_updates_receiver,
+            access_log: _access_log,
         } = self;
 
         let mut filter_chains = Arc::new(filter_chains);
@@ -278,12 +299,38 @@ impl Listener {
 
                                     let filter_chains = Arc::clone(&filter_chains);
                                     let proxy_protocol_config = proxy_protocol_config.clone();
+
+                                    #[cfg(feature = "access-log")]
+                                    let mut conn_formatters : Vec<_> = _access_log.iter().map(AccessLog::get_logger).cloned().collect();
+
                                     tokio::spawn(async move {
-                                        let start = std::time::Instant::now();
+                                        let start = Instant::now();
 
                                         _ = stream.set_nodelay(true);
                                         _ = stream.set_quickack(true);
 
+
+                                        #[cfg(feature = "access-log")]
+                                        let permit = if is_access_log_enabled() { Some(log_access_reserve_balanced().await) } else { None };
+
+                                        #[cfg(feature = "access-log")]
+                                        let cb = Box::new(
+                                            move |metrics: &StreamMetrics| {
+                                               conn_formatters.with_context(&ConnectionContext{
+                                                   duration: start.elapsed(),
+                                                   wire_bytes_received: metrics.conn_bytes_read(),
+                                                   wire_bytes_sent: metrics.conn_bytes_written() });
+
+                                               let messages = conn_formatters.into_iter().map(LogFormatter::into_message).collect::<Vec<_>>();
+                                               if let Some(permit) = permit {
+                                                   log_access(permit, Target::Listener(_listener_name.into()), messages);
+                                               }
+                                            }
+                                        );
+
+                                        #[cfg(feature = "access-log")]
+                                        let stream = InstrumentedStream::new(stream, Some(cb));
+                                        #[cfg(not(feature = "access-log"))]
                                         let stream = InstrumentedStream::new(stream, None);
 
                                         let _shard_id = get_shard_id!();

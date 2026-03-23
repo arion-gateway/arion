@@ -1,6 +1,9 @@
 use super::*;
 use crate::{
-    body::{instrumented_body::InstrumentedBody, poly_body::PolyBodyError, response_flags::BodyKind, timeout_body::TimeoutBodyError},
+    body::{
+        instrumented_body::InstrumentedBody, poly_body::PolyBodyError, response_flags::BodyKind,
+        timeout_body::TimeoutBodyError,
+    },
     listeners::http_connection_manager::ext_proc::{
         kind::{MsgKind, RequestMsg, ResponseMsg},
         mutation::apply_header_mutations,
@@ -1952,7 +1955,7 @@ async fn test_request_header_timeout_failure_mode_allow_true() {
     assert_matches!(result, FilterDecision::Continue);
 
     let (_, body) = request.into_parts();
-    let body_bytes : Result<Collected<Bytes>, TimeoutBodyError<PolyBodyError>> = body.into_inner().collect().await;
+    let body_bytes: Result<Collected<Bytes>, TimeoutBodyError<PolyBodyError>> = body.into_inner().collect().await;
 
     assert!(body_bytes.is_ok());
     if let Ok(bytes) = body_bytes {
@@ -2013,7 +2016,7 @@ async fn test_request_body_timeout_failure_mode_allow_true() {
     assert_matches!(result, FilterDecision::Continue);
 
     let (_, body) = request.into_parts();
-    let body_bytes : Result<Collected<Bytes>, TimeoutBodyError<PolyBodyError>> = body.into_inner().collect().await;
+    let body_bytes: Result<Collected<Bytes>, TimeoutBodyError<PolyBodyError>> = body.into_inner().collect().await;
 
     assert!(body_bytes.is_ok());
     if let Ok(bytes) = body_bytes {
