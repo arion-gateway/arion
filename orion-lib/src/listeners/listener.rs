@@ -321,11 +321,13 @@ impl Listener {
                                         let cb = Box::new(
                                             move |metrics: &StreamMetrics| {
                                                #[cfg(feature = "access-log")]
-                                               with_access_log!(&mut conn_formatters, ConnectionContext{
+                                               with_access_log!(&mut conn_formatters, ConnectionContext::<'_> {
                                                    start_time,
                                                    duration: start.elapsed(),
                                                    wire_bytes_received: metrics.conn_bytes_read(),
-                                                   wire_bytes_sent: metrics.conn_bytes_written() });
+                                                   wire_bytes_sent: metrics.conn_bytes_written(),
+                                                   connection_termination_details: metrics.connection_termination_details(),
+                                               });
 
                                                let messages = conn_formatters.into_iter().map(LogFormatter::into_message).collect::<Vec<_>>();
                                                if let Some(permit) = permit {

@@ -285,6 +285,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "atomicoption"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "10cba4a4f91f09cafc3f3f2c45d1f495317693aa8994755a4199e9a342f22c64"
+
+[[package]]
 name = "auto-future"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2798,6 +2804,7 @@ dependencies = [
  "async-stream",
  "atomic-time",
  "atomic_enum",
+ "atomicoption",
  "base64 0.22.1",
  "bounded-integer",
  "bytes",

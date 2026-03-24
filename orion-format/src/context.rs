@@ -316,14 +316,15 @@ impl Context for WireContext {
 }
 
 #[derive(Clone, Debug)]
-pub struct ConnectionContext {
+pub struct ConnectionContext<'a> {
     pub start_time: SystemTime,
     pub duration: Duration,
     pub wire_bytes_received: u64,
     pub wire_bytes_sent: u64,
+    pub connection_termination_details: Option<&'a str>,
 }
 
-impl Context for ConnectionContext {
+impl Context for ConnectionContext<'_> {
     fn eval_part(&self, op: &Operator) -> StringType {
         match op {
             Operator::StartTime => StringType::Smol(format_system_time(self.start_time)),
@@ -339,6 +340,9 @@ impl Context for ConnectionContext {
                 let mut buffer = itoa::Buffer::new();
                 StringType::Smol(SmolStr::new(buffer.format(self.duration.as_millis())))
             },
+            Operator::ConnectionTerminationDetails => self
+                .connection_termination_details
+                .map_or(StringType::None, |msg| StringType::Smol(SmolStr::new(msg))),
             _ => StringType::None,
         }
     }

@@ -1,14 +1,13 @@
 use std::{
-    pin::Pin,
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc,
-    },
-    task::{Context, Poll},
+    pin::Pin, sync::{
+        Arc, atomic::{AtomicU64, Ordering}
+    }, task::{Context, Poll}
 };
 
+use atomicoption::AtomicOption;
 use parking_lot::Mutex;
 use pin_project::pin_project;
+use smol_str::{SmolStr, format_smolstr};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use crate::{transport::AsyncReadWriteInstrumented, utils::rewindable_stream::RewindableHeadAsyncStream};
@@ -18,6 +17,7 @@ pub struct StreamMetrics {
     conn_bytes_written: AtomicU64,
     txn_bytes_read: AtomicU64,
     txn_bytes_written: AtomicU64,
+    connection_termination_details: AtomicOption<SmolStr>,
     log_txn: Mutex<Option<Box<dyn FnOnce(u64, u64) + Send>>>,
     log_conn: Mutex<Option<Box<dyn FnOnce(&StreamMetrics) + Send>>>,
 }
@@ -49,6 +49,7 @@ impl StreamMetrics {
             conn_bytes_written: AtomicU64::new(0),
             txn_bytes_read: AtomicU64::new(0),
             txn_bytes_written: AtomicU64::new(0),
+            connection_termination_details: AtomicOption::none(),
             log_txn: Mutex::new(None),
             log_conn: Mutex::new(log_fn),
         }
@@ -86,6 +87,11 @@ impl StreamMetrics {
     pub fn conn_bytes_written(&self) -> u64 {
         self.conn_bytes_written.load(Ordering::Relaxed)
     }
+
+    #[inline]
+    pub fn connection_termination_details(&self) -> Option<&str> {
+        self.connection_termination_details.as_ref(Ordering::Acquire).map(SmolStr::as_ref)
+    }
 }
 
 #[pin_project]
@@ -112,13 +118,17 @@ impl<S: AsyncRead> AsyncRead for InstrumentedStream<S> {
         let this = self.project();
         let before = buf.filled().len();
         match this.inner.poll_read(cx, buf) {
-            Poll::Ready(Ok(())) => {
+            res@Poll::Ready(Ok(())) => {
                 let bytes = buf.filled().len() - before;
                 this.metrics.conn_bytes_read.fetch_add(bytes as u64, Ordering::Relaxed);
                 this.metrics.txn_bytes_read.fetch_add(bytes as u64, Ordering::Relaxed);
                 // println!("BYTES READ: {bytes} -> {} @{:p}", prev + bytes as u64, this.metrics.as_ref() as *const StreamMetrics);
-                Poll::Ready(Ok(()))
+                res
             },
+            Poll::Ready(Err(e)) => {
+                this.metrics.connection_termination_details.store(Ordering::Release, format_smolstr!("{e}"));
+                Poll::Ready(Err(e))
+            }
             res => res,
         }
     }
@@ -134,6 +144,10 @@ impl<S: AsyncWrite> AsyncWrite for InstrumentedStream<S> {
                 // println!("BYTES WRITTEN: {n} -> {} @{:p}", prev + n as u64, this.metrics.as_ref() as *const StreamMetrics);
                 Poll::Ready(Ok(n))
             },
+            Poll::Ready(Err(e)) => {
+                this.metrics.connection_termination_details.store(Ordering::Release, format_smolstr!("{e}"));
+                Poll::Ready(Err(e))
+            }
             res => res,
         }
     }
@@ -147,13 +161,25 @@ impl<S: AsyncWrite> AsyncWrite for InstrumentedStream<S> {
             this.metrics.reset();
         }
 
-        this.inner.poll_flush(cx)
+        match this.inner.poll_flush(cx) {
+            Poll::Ready(Err(e)) => {
+                this.metrics.connection_termination_details.store(Ordering::Release, format_smolstr!("{e}"));
+                Poll::Ready(Err(e))
+            },
+            res => res
+        }
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         let this = self.project();
         // println!("SHUTDOWN -> @{:p}", this.metrics.as_ref() as *const StreamMetrics);
-        this.inner.poll_shutdown(cx)
+        match this.inner.poll_shutdown(cx) {
+            Poll::Ready(Err(e)) => {
+                this.metrics.connection_termination_details.store(Ordering::Release, format_smolstr!("{e}"));
+                Poll::Ready(Err(e))
+            },
+            res => res
+        }
     }
 }
 
