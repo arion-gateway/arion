@@ -275,14 +275,14 @@ impl Listener {
         let _listener_name = name;
 
         match binding {
-            ListenerBinding::Socket { address: local_address, bind_device, tcp_backlog_size } => {
+            ListenerBinding::Socket { address, bind_device, tcp_backlog_size } => {
                 let listener =
-                    match configure_and_start_tcp_listener(local_address, bind_device.as_ref(), tcp_backlog_size) {
+                    match configure_and_start_tcp_listener(address, bind_device.as_ref(), tcp_backlog_size) {
                         Ok(x) => x,
                         Err(e) => return e,
                     };
 
-                let actual_address = listener.local_addr().unwrap_or(local_address);
+                let actual_address = listener.local_addr().unwrap_or(address);
                 info!("listener '{name}' started: {actual_address}");
 
                 #[cfg(feature = "instrumentation")]
@@ -294,6 +294,8 @@ impl Listener {
                         maybe_stream = listener.accept() => {
                             match maybe_stream {
                                 Ok((stream, peer_addr)) => {
+                                    let local_address = stream.local_addr().ok();
+
                                     #[cfg(feature = "instrumentation")]
                                     instrumentation::metrics::CONNECTIONS.add(1);
 
@@ -318,8 +320,8 @@ impl Listener {
                                         #[cfg(feature = "access-log")]
                                         let permit = if is_access_log_enabled() { Some(log_access_reserve_balanced().await) } else { None };
 
-                                        let downstream_local_addr = stream.local_addr().ok();
-                                        let downstream_peer_addr = stream.peer_addr().ok();
+                                        let downstream_peer_addr = Some(peer_addr);
+                                        let downstream_local_addr = local_address;
 
                                         #[cfg(feature = "access-log")]
                                         let cb = Box::new(
@@ -361,7 +363,7 @@ impl Listener {
                                             name,
                                             filter_chains,
                                             with_tls_inspector,
-                                            ConnectionSource::Socket { local_address, peer_addr, proxy_protocol_config },
+                                            ConnectionSource::Socket { local_address: local_address.unwrap_or(address), peer_addr, proxy_protocol_config },
                                             Box::new(stream),
                                             start,
                                         )).await;
