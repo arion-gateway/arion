@@ -23,6 +23,7 @@ use super::{
 #[cfg(feature = "instrumentation")]
 use crate::instrumentation;
 
+use orion_format::context::SocketAddrContext;
 #[cfg(feature = "access-log")]
 use orion_format::{context::ConnectionContext, LogFormatter};
 
@@ -317,6 +318,9 @@ impl Listener {
                                         #[cfg(feature = "access-log")]
                                         let permit = if is_access_log_enabled() { Some(log_access_reserve_balanced().await) } else { None };
 
+                                        let downstream_local_addr = stream.local_addr().ok();
+                                        let downstream_peer_addr = stream.peer_addr().ok();
+
                                         #[cfg(feature = "access-log")]
                                         let cb = Box::new(
                                             move |metrics: &StreamMetrics| {
@@ -329,6 +333,13 @@ impl Listener {
                                                    connection_termination_details: metrics.connection_termination_details(),
                                                });
 
+                                               #[cfg(feature = "access-log")]
+                                               with_access_log!(&mut conn_formatters, SocketAddrContext {
+                                                   downstream_local_addr,
+                                                   downstream_peer_addr,
+                                                   upstream_local_addr: None,
+                                                   upstream_peer_addr: None });
+
                                                let messages = conn_formatters.into_iter().map(LogFormatter::into_message).collect::<Vec<_>>();
                                                if let Some(permit) = permit {
                                                    log_access(permit, Target::Listener(_listener_name.into()), messages);
@@ -338,6 +349,7 @@ impl Listener {
 
                                         #[cfg(feature = "access-log")]
                                         let stream = InstrumentedStream::new(stream, Some(cb));
+
                                         #[cfg(not(feature = "access-log"))]
                                         let stream = InstrumentedStream::new(stream, None);
 

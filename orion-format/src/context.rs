@@ -76,19 +76,15 @@ impl Context for SocketAddrContext {
             Operator::DownstreamLocalPort => {
                 self.downstream_local_addr.map_or(StringType::None, |addr| StringType::Smol(addr.port().to_smolstr()))
             },
-
             Operator::DownstreamRemoteAddress => {
                 self.downstream_peer_addr.map_or(StringType::None, |addr| StringType::Smol(addr.to_smolstr()))
             },
-
             Operator::DownstreamRemoteAddressWithoutPort => {
                 self.downstream_peer_addr.map_or(StringType::None, |addr| StringType::Smol(addr.ip().to_smolstr()))
             },
-
             Operator::DownstreamRemotePort => {
                 self.downstream_peer_addr.map_or(StringType::None, |addr| StringType::Smol(addr.port().to_smolstr()))
             },
-
             Operator::ConnectionId => {
                 hash_connection(self.downstream_local_addr.as_ref(), self.downstream_peer_addr.as_ref(), &Protocol::Tcp)
             },
