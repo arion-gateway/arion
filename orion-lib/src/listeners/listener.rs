@@ -28,7 +28,6 @@ use orion_format::{context::ConnectionContext, LogFormatter};
 
 #[cfg(feature = "access-log")]
 use crate::{
-    access_log::AccessLogContext,
     access_log::{is_access_log_enabled, log_access, log_access_reserve_balanced, Target},
     utils::instrumented_stream::StreamMetrics,
 };
@@ -52,6 +51,9 @@ use orion_configuration::config::{
 };
 use orion_interner::StringInterner;
 use tokio::sync::mpsc;
+
+#[cfg(feature = "access-log")]
+use crate::with_access_log;
 
 #[cfg(feature = "metrics")]
 use opentelemetry::KeyValue;
@@ -315,7 +317,8 @@ impl Listener {
                                         #[cfg(feature = "access-log")]
                                         let cb = Box::new(
                                             move |metrics: &StreamMetrics| {
-                                               conn_formatters.with_context(&ConnectionContext{
+                                               #[cfg(feature = "access-log")]
+                                               with_access_log!(&mut conn_formatters, ConnectionContext{
                                                    duration: start.elapsed(),
                                                    wire_bytes_received: metrics.conn_bytes_read(),
                                                    wire_bytes_sent: metrics.conn_bytes_written() });

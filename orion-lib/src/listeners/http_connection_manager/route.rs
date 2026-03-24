@@ -25,6 +25,10 @@ use crate::{
     listeners::{http_connection_manager::HttpConnectionManager, synthetic_http_response::SyntheticHttpResponse},
     Result,
 };
+
+#[cfg(feature = "access-log")]
+use crate::with_access_log;
+
 use crate::{instrument_block, instrument_function, OrionRequestBody, OrionResponseBody, RequestContext};
 
 use http::{uri::Parts as UriParts, Uri};
@@ -38,11 +42,7 @@ use orion_error::Context;
 use scopeguard::defer;
 
 #[cfg(feature = "access-log")]
-use {
-    crate::access_log::AccessLogContext,
-    orion_format::context::{UpstreamContext, UpstreamRequestContext},
-};
-
+use orion_format::context::{UpstreamContext, UpstreamRequestContext};
 use orion_format::types::{ResponseFlags as FmtResponseFlags, ResponseFlagsLong, ResponseFlagsShort};
 
 #[cfg(feature = "tracing")]
@@ -109,11 +109,14 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
         match maybe_channel {
             Ok(svc_channel) => {
                 #[cfg(feature = "access-log")]
-                trans_handler.trans_ctx.lock().loggers.with_context(&UpstreamContext {
-                    authority: Some(svc_channel.upstream_authority()),
-                    cluster_name: Some(svc_channel.cluster_name()),
-                    route_name,
-                });
+                with_access_log!(
+                    &mut trans_handler.trans_ctx.lock().loggers,
+                    UpstreamContext {
+                        authority: Some(svc_channel.upstream_authority()),
+                        cluster_name: Some(svc_channel.cluster_name()),
+                        route_name,
+                    }
+                );
 
                 let ver = downstream_request.version();
 
@@ -167,7 +170,10 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
                 }
 
                 #[cfg(feature = "access-log")]
-                trans_handler.trans_ctx.lock().loggers.with_context(&UpstreamRequestContext(&upstream_request));
+                with_access_log!(
+                    &mut trans_handler.trans_ctx.lock().loggers,
+                    UpstreamRequestContext(&upstream_request)
+                );
 
                 let websocket_enabled = if let Some(upgrade_config) = self.upgrade_config {
                     upgrade_config.is_websocket_enabled(websocket_enabled_by_default)

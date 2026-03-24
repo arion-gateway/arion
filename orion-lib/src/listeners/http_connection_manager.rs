@@ -57,12 +57,14 @@ use {
 #[cfg(feature = "access-log")]
 use crate::utils::http::{request_head_size, response_head_size};
 
+#[cfg(any(feature = "access-log"))]
+use crate::with_access_log;
+
 #[cfg(feature = "metrics")]
 use orion_metrics::metrics::http;
 
 #[cfg(feature = "access-log")]
 use {
-    crate::access_log::AccessLogContext,
     crate::access_log::{
         is_access_log_enabled, log_access, log_access_reserve_balanced, ShareableAccessLogPermit, Target,
     },
@@ -526,11 +528,15 @@ impl TransactionHandler {
             let initial_event = response.extensions().get::<Option<EventKind>>().cloned().unwrap_or_default();
             #[cfg(feature = "access-log")]
             {
-                let response_head_size = response_head_size(&response);
-                self.trans_ctx
-                    .lock()
-                    .loggers
-                    .with_context(&DownstreamResponseContext { response: &response, response_head_size })
+                use crate::with_access_log;
+
+                with_access_log!(
+                    &mut self.trans_ctx.lock().loggers,
+                    DownstreamResponseContext {
+                        response: &response,
+                        response_head_size: response_head_size(&response)
+                    }
+                )
             }
 
             // #[cfg(feature = "metrics")]
@@ -549,10 +555,10 @@ impl TransactionHandler {
                             let _tx_duration = Instant::now().saturating_duration_since(first_byte_instant);
 
                             #[cfg(feature = "access-log")]
-                            trans_ctx.loggers.with_context(&HttpResponseDurationContext {
-                                duration: _duration,
-                                tx_duration: _tx_duration,
-                            });
+                            with_access_log!(
+                                &mut trans_ctx.loggers,
+                                HttpResponseDurationContext { duration: _duration, tx_duration: _tx_duration }
+                            );
 
                             if self.trans_phase.is_complete() {
                                 let _ctx_bytes = trans_ctx.bytes;
@@ -1247,10 +1253,10 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
                             let _duration = trans_handler.start_instant.elapsed();
 
                             #[cfg(feature = "access-log")]
-                            trans_ctx.loggers.with_context(&HttpRequestDurationContext {
-                                duration: _duration,
-                                tx_duration: _duration,
-                            });
+                            with_access_log!(
+                                &mut trans_ctx.loggers,
+                                HttpRequestDurationContext { duration: _duration, tx_duration: _duration }
+                            );
 
                             if trans_handler.trans_phase.is_complete() {
                                 let _ctx_bytes = trans_ctx.bytes;
@@ -1326,14 +1332,10 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
                 }
 
                 #[cfg(feature = "access-log")]
-                {
-                    let response_head_size = response_head_size(&resp);
-                    trans_handler
-                        .trans_ctx
-                        .lock()
-                        .loggers
-                        .with_context(&DownstreamResponseContext { response: &resp, response_head_size })
-                }
+                with_access_log!(
+                    &mut trans_handler.trans_ctx.lock().loggers,
+                    DownstreamResponseContext { response: &resp, response_head_size: response_head_size(&resp) }
+                );
 
                 #[cfg(feature = "access-log")]
                 let initial_flags = resp.extensions().get::<ResponseFlags>().cloned().unwrap_or_default();
@@ -1356,12 +1358,15 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
 
                                 #[cfg(feature = "access-log")]
                                 {
+                                    use crate::with_access_log;
+
                                     let duration =
                                         first_byte_instant.saturating_duration_since(trans_handler.start_instant);
                                     let tx_duration = Instant::now().saturating_duration_since(first_byte_instant);
-                                    log_ctx
-                                        .loggers
-                                        .with_context(&HttpResponseDurationContext { duration, tx_duration });
+                                    with_access_log!(
+                                        &mut log_ctx.loggers,
+                                        HttpResponseDurationContext { duration, tx_duration }
+                                    );
                                 }
 
                                 if trans_handler.trans_phase.is_complete() {
@@ -1456,25 +1461,28 @@ fn eval_http_init_context<R>(
 
     #[cfg(feature = "access-log")]
     {
+        use crate::with_access_log;
         use orion_format::context::SocketAddrContext;
+
         let server_name = _metadata.and_then(|md| md.sni.as_ref().map(|s| s.as_str()));
 
-        let downstream_socket_addr = SocketAddrContext {
-            downstream_local_addr: _metadata.map(|md| md.connection.local_address()),
-            downstream_peer_addr: _metadata.map(|md| md.connection.peer_address()),
-            upstream_local_addr: None,
-            upstream_peer_addr: None,
-        };
-
-        let request_head_size = request_head_size(_request);
-        _trans_handler.trans_ctx.lock().loggers.with_context_fn(|| InitHttpContext {
-            start_time: std::time::SystemTime::now(),
-            downstream_request: _request,
-            request_head_size,
-            trace_id: _trace_id,
-            server_name,
-            socket_address: downstream_socket_addr,
-        });
+        #[cfg(feature = "access-log")]
+        with_access_log!(
+            &mut _trans_handler.trans_ctx.lock().loggers,
+            InitHttpContext {
+                start_time: std::time::SystemTime::now(),
+                downstream_request: _request,
+                request_head_size: request_head_size(_request),
+                trace_id: _trace_id,
+                server_name,
+                socket_address: SocketAddrContext {
+                    downstream_local_addr: _metadata.map(|md| md.connection.local_address()),
+                    downstream_peer_addr: _metadata.map(|md| md.connection.peer_address()),
+                    upstream_local_addr: None,
+                    upstream_peer_addr: None,
+                }
+            }
+        );
     }
 }
 
@@ -1500,33 +1508,36 @@ fn eval_http_finish_context(
     _bytes_received: u64,
     _bytes_sent: u64,
     #[cfg(feature = "metrics")] m_ctx: MetricsFinishContext,
-    #[cfg(feature = "access-log")] al_ctx: AccessLogFinishContext,
+    #[cfg(feature = "access-log")] mut al_ctx: AccessLogFinishContext,
 ) {
     #[cfg(feature = "access-log")]
-    al_ctx.access_loggers.with_context(&FinishContext {
-        duration: al_ctx.trans_start_time.elapsed(),
-        bytes_received: _bytes_received,
-        bytes_sent: _bytes_sent,
-        response_flags: al_ctx.event.response_flags.0,
-        upstream_failure: al_ctx.event.event_kind.as_ref().and_then(|ev| {
-            let EventKind::Error(err) = ev else {
-                return None;
-            };
-            UpstreamTransportEventError::try_from(err).ok().map(|e| e.0)
-        }),
-        response_code_details: al_ctx
-            .event
-            .event_kind
-            .as_ref()
-            .map_or(EventKind::Failure(EventFailure::ViaUpstream).code_details(), EventKind::code_details)
-            .map(|d| d.0),
-        connection_termination_details: al_ctx
-            .event
-            .event_kind
-            .as_ref()
-            .and_then(EventKind::termination_details)
-            .map(|d| d.0),
-    });
+    with_access_log!(
+        &mut al_ctx.access_loggers,
+        FinishContext {
+            duration: al_ctx.trans_start_time.elapsed(),
+            bytes_received: _bytes_received,
+            bytes_sent: _bytes_sent,
+            response_flags: al_ctx.event.response_flags.0,
+            upstream_failure: al_ctx.event.event_kind.as_ref().and_then(|ev| {
+                let EventKind::Error(err) = ev else {
+                    return None;
+                };
+                UpstreamTransportEventError::try_from(err).ok().map(|e| e.0)
+            }),
+            response_code_details: al_ctx
+                .event
+                .event_kind
+                .as_ref()
+                .map_or(EventKind::Failure(EventFailure::ViaUpstream).code_details(), EventKind::code_details)
+                .map(|d| d.0),
+            connection_termination_details: al_ctx
+                .event
+                .event_kind
+                .as_ref()
+                .and_then(EventKind::termination_details)
+                .map(|d| d.0),
+        }
+    );
 
     #[cfg(feature = "access-log")]
     let mut loggers: Vec<LogFormatter> = std::mem::take(al_ctx.access_loggers);
@@ -1553,7 +1564,7 @@ fn eval_http_finish_context(
 
         #[cfg(feature = "access-log")]
         if let Some(permit) = al_ctx.permit {
-            loggers.with_context(&WireContext { wire_bytes_received, wire_bytes_sent });
+            with_access_log!(&mut loggers, WireContext { wire_bytes_received, wire_bytes_sent });
 
             let messages = loggers.into_iter().map(LogFormatter::into_message).collect::<Vec<_>>();
             log_access(permit, Target::ListenerFilterChain(_listener_name.into(), _filterchain_id), messages);

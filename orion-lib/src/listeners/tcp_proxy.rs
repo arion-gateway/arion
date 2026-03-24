@@ -19,11 +19,11 @@
 use {
     crate::access_log::is_access_log_enabled,
     crate::access_log::{log_access, log_access_reserve_balanced, Target},
+    crate::with_access_log,
     orion_format::LogFormatter,
 };
 
 use crate::{
-    access_log::AccessLogContext,
     clusters::clusters_manager::{self, RoutingContext},
     event_error::{
         find_error_in_chain, ConnectionTerminationDetails, ResponseCodeDetails, UpstreamTransportEventError,
@@ -36,12 +36,16 @@ use orion_configuration::config::{
     access_log::AccessLog, cluster::ClusterSpecifier as ClusterSpecifierConfig,
     network_filters::tcp_proxy::TcpProxy as TcpProxyConfig,
 };
-use orion_format::{
-    context::{FinishContext, InitContext, SocketAddrContext, TcpContext, WireContext},
-    types::ResponseFlags,
-};
 
-use std::{fmt, net::SocketAddr, time::Instant};
+#[cfg(feature = "access-log")]
+use orion_format::context::{FinishContext, InitContext, SocketAddrContext, TcpContext, WireContext};
+
+#[cfg(feature = "access-log")]
+use std::time::Instant;
+
+use orion_format::types::ResponseFlags;
+
+use std::{fmt, net::SocketAddr};
 use tracing::{debug, error};
 
 #[derive(Debug, Clone)]
@@ -98,89 +102,100 @@ impl TcpProxy {
         mut stream: AsyncInstrumentedStream,
         metadata: DownstreamMetadata,
     ) -> Result<()> {
+        #[cfg(feature = "access-log")]
         let start_instant = Instant::now();
+
+        #[cfg(feature = "access-log")]
         let mut access_loggers = self.access_log.iter().map(|al| al.get_logger().clone()).collect::<Vec<_>>();
 
-        access_loggers.with_context_fn(|| InitContext { start_time: std::time::SystemTime::now() });
+        #[cfg(feature = "access-log")]
+        with_access_log!(&mut access_loggers, InitContext { start_time: std::time::SystemTime::now() });
 
         let cluster_selector = &self.cluster;
         let cluster_id = clusters_manager::resolve_cluster(cluster_selector, None)
             .ok_or("Failed to resolve cluster from specifier")?;
         let maybe_connector = clusters_manager::get_tcp_connection(cluster_id, RoutingContext::None);
 
-        let mut bytes_received = 0;
-        let mut bytes_sent = 0;
-        let mut response_flags = ResponseFlags::empty();
-        let mut maybe_upstream_transport_error: Option<UpstreamTransportEventError> = None;
-        let mut maybe_response_code_details: Option<ResponseCodeDetails> = None;
-        let mut maybe_connection_termination_details: Option<ConnectionTerminationDetails> = None;
-
-        let cluster_name: &str;
-        let maybe_upstream_local_addr: Option<SocketAddr>;
-        let maybe_upstream_peer_addr: Option<SocketAddr>;
+        let mut _bytes_received = 0;
+        let mut _bytes_sent = 0;
+        let mut _response_flags = ResponseFlags::empty();
+        let mut _maybe_upstream_transport_error: Option<UpstreamTransportEventError> = None;
+        let mut _maybe_response_code_details: Option<ResponseCodeDetails> = None;
+        let mut _maybe_connection_termination_details: Option<ConnectionTerminationDetails> = None;
+        let _maybe_upstream_local_addr: Option<SocketAddr>;
+        let _maybe_upstream_peer_addr: Option<SocketAddr>;
+        let _cluster_name: &str;
 
         let res = match maybe_connector {
             Ok(connector) => {
                 let channel_result = connector.connect(Some(&metadata.connection)).await;
                 match channel_result {
                     Ok(mut channel) => {
-                        maybe_upstream_local_addr = channel.upstream_local_addr;
-                        maybe_upstream_peer_addr = channel.upstream_peer_addr;
+                        _maybe_upstream_local_addr = channel.upstream_local_addr;
+                        _maybe_upstream_peer_addr = channel.upstream_peer_addr;
 
                         let res = tokio::io::copy_bidirectional(&mut stream, &mut channel.stream).await;
                         match res {
                             Ok((received, sent)) => {
-                                bytes_received = received;
-                                bytes_sent = sent;
+                                _bytes_received = received;
+                                _bytes_sent = sent;
                             },
                             Err(ref e) => {
                                 debug!("Error with TCP stream: {}", e);
-                                maybe_upstream_transport_error = Some(e.into());
-                                maybe_response_code_details = Some(ResponseCodeDetails::from(e));
-                                maybe_connection_termination_details = Some(ConnectionTerminationDetails::from(e));
-                                response_flags.insert(ResponseFlags::UPSTREAM_CONNECTION_FAILURE);
+                                _maybe_upstream_transport_error = Some(e.into());
+                                _maybe_response_code_details = Some(ResponseCodeDetails::from(e));
+                                _maybe_connection_termination_details = Some(ConnectionTerminationDetails::from(e));
+                                _response_flags.insert(ResponseFlags::UPSTREAM_CONNECTION_FAILURE);
                             },
                         }
 
-                        access_loggers.with_context(&TcpContext {
-                            socket_address: SocketAddrContext {
-                                downstream_local_addr: Some(metadata.connection.local_address()),
-                                downstream_peer_addr: Some(metadata.connection.peer_address()),
-                                upstream_local_addr: maybe_upstream_local_addr,
-                                upstream_peer_addr: maybe_upstream_peer_addr,
-                            },
-                            cluster_name: channel.cluster_name,
-                        });
+                        #[cfg(feature = "access-log")]
+                        with_access_log!(
+                            &mut access_loggers,
+                            TcpContext {
+                                socket_address: SocketAddrContext {
+                                    downstream_local_addr: Some(metadata.connection.local_address()),
+                                    downstream_peer_addr: Some(metadata.connection.peer_address()),
+                                    upstream_local_addr: _maybe_upstream_local_addr,
+                                    upstream_peer_addr: _maybe_upstream_peer_addr,
+                                },
+                                cluster_name: channel.cluster_name,
+                            }
+                        );
 
                         Ok(())
                     },
                     Err(e) => {
-                        response_flags.insert(ResponseFlags::UPSTREAM_CONNECTION_FAILURE);
+                        _response_flags.insert(ResponseFlags::UPSTREAM_CONNECTION_FAILURE);
 
                         if let Some(tcp_error) = e.get_context_data::<TcpErrorContext>() {
-                            maybe_upstream_peer_addr = Some(tcp_error.upstream_addr);
-                            response_flags = tcp_error.response_flags.clone();
-                            cluster_name = tcp_error.cluster_name;
+                            _maybe_upstream_peer_addr = Some(tcp_error.upstream_addr);
+                            _response_flags = tcp_error.response_flags.clone();
+                            _cluster_name = tcp_error.cluster_name;
                         } else {
                             // impossible case to make the compiler happy...
-                            maybe_upstream_peer_addr = None;
-                            cluster_name = "impossible";
+                            _maybe_upstream_peer_addr = None;
+                            _cluster_name = "impossible";
                         }
 
                         let io_err = find_error_in_chain::<std::io::Error>(e.inner());
-                        maybe_upstream_transport_error = io_err.map(UpstreamTransportEventError::from);
-                        maybe_response_code_details = io_err.map(ResponseCodeDetails::from);
-                        maybe_connection_termination_details = io_err.map(ConnectionTerminationDetails::from);
+                        _maybe_upstream_transport_error = io_err.map(UpstreamTransportEventError::from);
+                        _maybe_response_code_details = io_err.map(ResponseCodeDetails::from);
+                        _maybe_connection_termination_details = io_err.map(ConnectionTerminationDetails::from);
 
-                        access_loggers.with_context(&TcpContext {
-                            socket_address: SocketAddrContext {
-                                downstream_local_addr: Some(metadata.connection.local_address()),
-                                downstream_peer_addr: Some(metadata.connection.peer_address()),
-                                upstream_local_addr: None,
-                                upstream_peer_addr: maybe_upstream_peer_addr,
-                            },
-                            cluster_name,
-                        });
+                        #[cfg(feature = "access-log")]
+                        with_access_log!(
+                            &mut access_loggers,
+                            TcpContext {
+                                socket_address: SocketAddrContext {
+                                    downstream_local_addr: Some(metadata.connection.local_address()),
+                                    downstream_peer_addr: Some(metadata.connection.peer_address()),
+                                    upstream_local_addr: None,
+                                    upstream_peer_addr: _maybe_upstream_peer_addr,
+                                },
+                                cluster_name: _cluster_name,
+                            }
+                        );
 
                         Err(e)
                     },
@@ -188,38 +203,50 @@ impl TcpProxy {
             },
             Err(e) => {
                 error!("Failed to get TCP connection for cluster {:?}: {}", cluster_selector, e);
-                response_flags.insert(ResponseFlags::NO_ROUTE_FOUND);
+                _response_flags.insert(ResponseFlags::NO_ROUTE_FOUND);
 
                 let io_err = find_error_in_chain::<std::io::Error>(e.inner());
-                maybe_upstream_transport_error = io_err.map(UpstreamTransportEventError::from);
-                maybe_response_code_details = io_err.map(ResponseCodeDetails::from);
-                maybe_connection_termination_details = io_err.map(ConnectionTerminationDetails::from);
+                _maybe_upstream_transport_error = io_err.map(UpstreamTransportEventError::from);
+                _maybe_response_code_details = io_err.map(ResponseCodeDetails::from);
+                _maybe_connection_termination_details = io_err.map(ConnectionTerminationDetails::from);
 
-                access_loggers.with_context(&TcpContext {
-                    socket_address: SocketAddrContext {
-                        downstream_local_addr: Some(metadata.connection.local_address()),
-                        downstream_peer_addr: Some(metadata.connection.peer_address()),
-                        upstream_local_addr: None,
-                        upstream_peer_addr: None,
-                    },
-                    cluster_name: &cluster_selector.name(),
-                });
+                #[cfg(feature = "access-log")]
+                with_access_log!(
+                    &mut access_loggers,
+                    TcpContext {
+                        socket_address: SocketAddrContext {
+                            downstream_local_addr: Some(metadata.connection.local_address()),
+                            downstream_peer_addr: Some(metadata.connection.peer_address()),
+                            upstream_local_addr: None,
+                            upstream_peer_addr: None,
+                        },
+                        cluster_name: &cluster_selector.name(),
+                    }
+                );
 
                 Err(e)
             },
         };
 
-        access_loggers.with_context(&FinishContext {
-            duration: start_instant.elapsed(),
-            bytes_received,
-            bytes_sent,
-            response_flags,
-            upstream_failure: maybe_upstream_transport_error.map(|x| x.0),
-            response_code_details: maybe_response_code_details.map(|x| x.0),
-            connection_termination_details: maybe_connection_termination_details.map(|x| x.0),
-        });
+        #[cfg(feature = "access-log")]
+        with_access_log!(
+            &mut access_loggers,
+            FinishContext {
+                duration: start_instant.elapsed(),
+                bytes_received: _bytes_received,
+                bytes_sent: _bytes_sent,
+                response_flags: _response_flags,
+                upstream_failure: _maybe_upstream_transport_error.as_ref().map(|x| x.0),
+                response_code_details: _maybe_response_code_details.as_ref().map(|x| x.0),
+                connection_termination_details: _maybe_connection_termination_details.as_ref().map(|x| x.0),
+            }
+        );
 
-        access_loggers.with_context(&WireContext { wire_bytes_received: bytes_received, wire_bytes_sent: bytes_sent });
+        #[cfg(feature = "access-log")]
+        with_access_log!(
+            &mut access_loggers,
+            WireContext { wire_bytes_received: _bytes_received, wire_bytes_sent: _bytes_sent }
+        );
 
         #[cfg(feature = "access-log")]
         {

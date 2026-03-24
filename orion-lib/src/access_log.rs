@@ -31,13 +31,25 @@ use smol_str::SmolStr;
 use std::sync::OnceLock;
 use tracing_rolling_file::RollingFrequency;
 
-use orion_format::{context::Context, LogFormatter};
 use std::{fmt::Display, hash::Hash, sync::Arc};
 use tokio::{
     sync::mpsc::{Permit, Sender},
     task::JoinSet,
 };
 use tracing::{error, info};
+
+#[macro_export]
+macro_rules! with_access_log {
+    ($fmt:expr, $ctx:expr) => {{
+        let fmt_val = $fmt;
+        if !fmt_val.is_empty() {
+            let ctx_val = $ctx;
+            for f in fmt_val.iter_mut() {
+                f.with_context(&ctx_val);
+            }
+        }
+    }};
+}
 
 /// Represents the destination for an access logging event.
 ///
@@ -224,43 +236,6 @@ pub async fn update_configuration(target: Target, init: Vec<AccessLogConf>) -> R
         }
     }
     Ok(())
-}
-
-pub trait AccessLogContext {
-    type Type;
-    fn with_context<C: Context>(&mut self, ctx: &C);
-
-    fn with_context_fn<F, Ctx>(&mut self, f: F)
-    where
-        F: FnOnce() -> Ctx,
-        Ctx: Context;
-}
-
-impl AccessLogContext for Vec<LogFormatter> {
-    type Type = Self;
-
-    /// Applies the given context to each `LogFormatter` in the vector.
-    #[inline]
-    fn with_context<C: Context>(&mut self, ctx: &C) {
-        for f in self {
-            f.with_context(ctx);
-        }
-    }
-
-    /// Build the context and applies it to each `LogFormatter` in the vector.
-    #[inline]
-    fn with_context_fn<F, Ctx>(&mut self, f: F)
-    where
-        F: FnOnce() -> Ctx,
-        Ctx: Context,
-    {
-        if !self.is_empty() {
-            let context = f();
-            for f in self {
-                f.with_context(&context);
-            }
-        }
-    }
 }
 
 #[cfg(test)]
