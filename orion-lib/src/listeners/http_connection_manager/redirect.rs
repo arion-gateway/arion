@@ -18,7 +18,7 @@
 use super::{RequestHandler, TransactionHandler};
 
 #[cfg(feature = "access-log")]
-use {crate::listeners::access_log::AccessLogContext, orion_format::context::UpstreamContext};
+use {crate::access_log::AccessLogContext, orion_format::context::UpstreamContext};
 
 use crate::{body::timeout_body::TimeoutBody, Error, OrionRequestBody, OrionResponseBody, PolyBody, Result};
 use http::{

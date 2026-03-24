@@ -15,7 +15,6 @@
 //
 //
 
-pub(crate) mod access_log;
 pub(crate) mod filterchain;
 pub(crate) mod http_connection_manager;
 pub(crate) mod http_filters;

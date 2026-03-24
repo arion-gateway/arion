@@ -39,7 +39,7 @@ use scopeguard::defer;
 
 #[cfg(feature = "access-log")]
 use {
-    crate::listeners::access_log::AccessLogContext,
+    crate::access_log::AccessLogContext,
     orion_format::context::{UpstreamContext, UpstreamRequestContext},
 };
 

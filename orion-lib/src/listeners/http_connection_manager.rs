@@ -62,11 +62,11 @@ use orion_metrics::metrics::http;
 
 #[cfg(feature = "access-log")]
 use {
+    crate::access_log::AccessLogContext,
     crate::access_log::{
         is_access_log_enabled, log_access, log_access_reserve_balanced, ShareableAccessLogPermit, Target,
     },
     crate::event_error::UpstreamTransportEventError,
-    crate::listeners::access_log::AccessLogContext,
     orion_configuration::config::access_log::AccessLog,
     orion_format::context::{
         DownstreamResponseContext, FinishContext, HttpRequestDurationContext, HttpResponseDurationContext,

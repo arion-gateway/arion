@@ -21,7 +21,7 @@ use hyper::{Request, Response};
 use orion_configuration::config::network_filters::http_connection_manager::route::DirectResponseAction;
 
 #[cfg(feature = "access-log")]
-use {crate::listeners::access_log::AccessLogContext, orion_format::context::UpstreamContext};
+use {crate::access_log::AccessLogContext, orion_format::context::UpstreamContext};
 
 impl<'a> RequestHandler<Request<OrionRequestBody>, &'a str> for &DirectResponseAction {
     async fn to_response(

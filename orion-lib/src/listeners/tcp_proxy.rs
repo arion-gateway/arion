@@ -23,11 +23,12 @@ use {
 };
 
 use crate::{
+    access_log::AccessLogContext,
     clusters::clusters_manager::{self, RoutingContext},
     event_error::{
         find_error_in_chain, ConnectionTerminationDetails, ResponseCodeDetails, UpstreamTransportEventError,
     },
-    listeners::{access_log::AccessLogContext, metadata::DownstreamMetadata},
+    listeners::metadata::DownstreamMetadata,
     transport::connector::TcpErrorContext,
     AsyncInstrumentedStream, Result,
 };

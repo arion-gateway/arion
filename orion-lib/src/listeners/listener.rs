@@ -28,8 +28,8 @@ use orion_format::{context::ConnectionContext, LogFormatter};
 
 #[cfg(feature = "access-log")]
 use crate::{
+    access_log::AccessLogContext,
     access_log::{is_access_log_enabled, log_access, log_access_reserve_balanced, Target},
-    listeners::access_log::AccessLogContext,
     utils::instrumented_stream::StreamMetrics,
 };
 
@@ -308,7 +308,6 @@ impl Listener {
 
                                         _ = stream.set_nodelay(true);
                                         _ = stream.set_quickack(true);
-
 
                                         #[cfg(feature = "access-log")]
                                         let permit = if is_access_log_enabled() { Some(log_access_reserve_balanced().await) } else { None };
