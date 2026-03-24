@@ -308,6 +308,9 @@ impl Listener {
                                     tokio::spawn(async move {
                                         let start = Instant::now();
 
+                                        #[cfg(feature = "access-log")]
+                                        let start_time = std::time::SystemTime::now();
+
                                         _ = stream.set_nodelay(true);
                                         _ = stream.set_quickack(true);
 
@@ -319,6 +322,7 @@ impl Listener {
                                             move |metrics: &StreamMetrics| {
                                                #[cfg(feature = "access-log")]
                                                with_access_log!(&mut conn_formatters, ConnectionContext{
+                                                   start_time,
                                                    duration: start.elapsed(),
                                                    wire_bytes_received: metrics.conn_bytes_read(),
                                                    wire_bytes_sent: metrics.conn_bytes_written() });

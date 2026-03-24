@@ -149,14 +149,14 @@ pub struct UpstreamContext<'a> {
 impl Context for UpstreamContext<'_> {
     fn eval_part(&self, op: &Operator) -> StringType {
         match op {
-            Operator::UpstreamHost => {
-                self.authority.map_or(StringType::None, |name| StringType::Smol(SmolStr::new(name)))
-            },
             Operator::UpstreamCluster | Operator::UpstreamClusterRaw => {
                 self.cluster_name.map_or(StringType::None, |cluster_name| StringType::Smol(SmolStr::new(cluster_name)))
             },
+            Operator::UpstreamHost => {
+                self.authority.map_or(StringType::None, |auth| StringType::Smol(SmolStr::new(strip_userinfo(auth.as_str()))))
+            },
             Operator::UpstreamHostName => {
-                self.authority.map_or(StringType::None, |auth| StringType::Smol(SmolStr::new(auth.as_str())))
+                self.authority.map_or(StringType::None, |auth| StringType::Smol(SmolStr::new(strip_userinfo(auth.as_str()))))
             },
             Operator::UpstreamHostNameWithoutPort => {
                 self.authority.map_or(StringType::None, |auth| StringType::Smol(SmolStr::new(auth.host())))
@@ -317,6 +317,7 @@ impl Context for WireContext {
 
 #[derive(Clone, Debug)]
 pub struct ConnectionContext {
+    pub start_time: SystemTime,
     pub duration: Duration,
     pub wire_bytes_received: u64,
     pub wire_bytes_sent: u64,
@@ -325,6 +326,7 @@ pub struct ConnectionContext {
 impl Context for ConnectionContext {
     fn eval_part(&self, op: &Operator) -> StringType {
         match op {
+            Operator::StartTime => StringType::Smol(format_system_time(self.start_time)),
             Operator::BytesReceived | Operator::DownstreamWireBytesReceived => {
                 let mut buffer = itoa::Buffer::new();
                 StringType::Smol(SmolStr::new(buffer.format(self.wire_bytes_received)))
@@ -377,8 +379,8 @@ impl<T> Context for DownstreamContext<'_, T> {
                 StringType::Smol(SmolStr::new(path_str))
             },
             Operator::RequestAuthority => {
-                if let Some(a) = extract_authority_from_request(self.request) {
-                    StringType::Smol(SmolStr::new(a))
+                if let Some(a) = authority_from_request(self.request) {
+                    StringType::Smol(SmolStr::new(strip_userinfo(a)))
                 } else {
                     StringType::None
                 }
@@ -450,15 +452,20 @@ impl<T> Context for DownstreamResponseContext<'_, T> {
     }
 }
 
-pub fn extract_authority_from_request<T>(request: &Request<T>) -> Option<&str> {
+pub fn authority_from_request<T>(request: &Request<T>) -> Option<&str> {
     if let Some(authority) = request.uri().authority() {
         return Some(authority.as_str());
     }
     if let Some(host_header_value) = request.headers().get(http::header::HOST) {
-        return host_header_value.to_str().ok();
+        return host_header_value.to_str().ok().map(strip_userinfo);
     }
 
     None
+}
+
+#[inline]
+fn strip_userinfo(s: &str) -> &str {
+    s.find('@').map_or(s, |i| &s[i + 1..])
 }
 
 const TWO_DIGITS: [&str; 100] = [
