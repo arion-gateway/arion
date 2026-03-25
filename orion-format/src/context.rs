@@ -278,12 +278,12 @@ impl Context for FinishContext {
             Operator::UpstreamTransportFailureReason => {
                 self.upstream_failure.map_or(StringType::None, |msg| StringType::Smol(SmolStr::new_static(msg)))
             },
-            Operator::ResponseCodeDetails => {
-                self.response_code_details.map_or(StringType::None, |msg| StringType::Smol(SmolStr::new_static(msg)))
-            },
             Operator::ConnectionTerminationDetails => self
                 .connection_termination_details
                 .map_or(StringType::None, |msg| StringType::Smol(SmolStr::new_static(msg))),
+            Operator::ResponseCodeDetails => {
+                self.response_code_details.map_or(StringType::None, |msg| StringType::Smol(SmolStr::new_static(msg)))
+            },
             _ => StringType::None,
         }
     }

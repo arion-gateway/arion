@@ -24,13 +24,9 @@ use {
 };
 
 use crate::{
-    clusters::clusters_manager::{self, RoutingContext},
-    event_error::{
-        find_error_in_chain, ConnectionTerminationDetails, ResponseCodeDetails, UpstreamTransportEventError,
-    },
-    listeners::metadata::DownstreamMetadata,
-    transport::connector::TcpErrorContext,
-    AsyncInstrumentedStream, Result,
+    AsyncInstrumentedStream, Result, clusters::clusters_manager::{self, RoutingContext}, event_error::{
+        ConnectionTerminationDetails, ResponseCodeDetails, UpstreamTransportEventError, find_error_in_chain
+    }, listeners::metadata::DownstreamMetadata, transport::connector::TcpErrorContext, utils::tracked_stream::{ErrorSource, TrackedStream}
 };
 use orion_configuration::config::{
     access_log::AccessLog, cluster::ClusterSpecifier as ClusterSpecifierConfig,
@@ -130,11 +126,14 @@ impl TcpProxy {
             Ok(connector) => {
                 let channel_result = connector.connect(Some(&metadata.connection)).await;
                 match channel_result {
-                    Ok(mut channel) => {
+                    Ok(channel) => {
                         _maybe_upstream_local_addr = channel.upstream_local_addr;
                         _maybe_upstream_peer_addr = channel.upstream_peer_addr;
 
-                        let res = tokio::io::copy_bidirectional(&mut stream, &mut channel.stream).await;
+                        let mut down_stream = TrackedStream::new(stream);
+                        let mut up_stream = TrackedStream::new(channel.stream);
+
+                        let res = tokio::io::copy_bidirectional(&mut down_stream, &mut up_stream).await;
                         match res {
                             Ok((received, sent)) => {
                                 _bytes_received = received;
@@ -142,9 +141,13 @@ impl TcpProxy {
                             },
                             Err(ref e) => {
                                 debug!("Error with TCP stream: {}", e);
-                                _maybe_upstream_transport_error = Some(e.into());
+                                if !matches!(down_stream.error_source, ErrorSource::None) { // downstream error
+                                    _maybe_connection_termination_details = Some(ConnectionTerminationDetails::from(e));
+                                } else if !matches!(up_stream.error_source, ErrorSource::None) { // upstream error
+                                    _maybe_upstream_transport_error = Some(e.into());
+                                }
+                                // information related to both upstream and downstream (l7)
                                 _maybe_response_code_details = Some(ResponseCodeDetails::from(e));
-                                _maybe_connection_termination_details = Some(ConnectionTerminationDetails::from(e));
                                 _response_flags.insert(ResponseFlags::UPSTREAM_CONNECTION_FAILURE);
                             },
                         }
@@ -175,13 +178,12 @@ impl TcpProxy {
                         } else {
                             // impossible case to make the compiler happy...
                             _maybe_upstream_peer_addr = None;
-                            _cluster_name = "impossible";
+                            _cluster_name = "-";
                         }
 
                         let io_err = find_error_in_chain::<std::io::Error>(e.inner());
                         _maybe_upstream_transport_error = io_err.map(UpstreamTransportEventError::from);
                         _maybe_response_code_details = io_err.map(ResponseCodeDetails::from);
-                        _maybe_connection_termination_details = io_err.map(ConnectionTerminationDetails::from);
 
                         #[cfg(feature = "access-log")]
                         with_access_log!(
@@ -208,7 +210,6 @@ impl TcpProxy {
                 let io_err = find_error_in_chain::<std::io::Error>(e.inner());
                 _maybe_upstream_transport_error = io_err.map(UpstreamTransportEventError::from);
                 _maybe_response_code_details = io_err.map(ResponseCodeDetails::from);
-                _maybe_connection_termination_details = io_err.map(ConnectionTerminationDetails::from);
 
                 #[cfg(feature = "access-log")]
                 with_access_log!(

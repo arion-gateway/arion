@@ -150,6 +150,7 @@ impl From<&io::Error> for UpstreamTransportEventError {
     }
 }
 
+// valid for both l4 and l7..
 impl From<&io::Error> for ResponseCodeDetails {
     fn from(err: &io::Error) -> Self {
         ResponseCodeDetails(match err.kind() {
@@ -161,7 +162,9 @@ impl From<&io::Error> for ResponseCodeDetails {
             io::ErrorKind::PermissionDenied => "upstream_reset_before_response_started{PERMISSION_DENIED}",
             io::ErrorKind::ConnectionAborted => "upstream_reset_after_response_started{CONNECTION_ABORTED}",
             io::ErrorKind::ConnectionReset => "upstream_reset_after_response_started{TCP_RESET}",
-            io::ErrorKind::TimedOut => "streaming_timeout",
+            io::ErrorKind::TimedOut => "upstream_streaming_timeout{TIMEOUT}",
+            io::ErrorKind::BrokenPipe => "upstream_reset_after_response_started{BROKEN_PIPE}",
+            io::ErrorKind::UnexpectedEof => "upstream_reset_after_response_started{UNEXPECTED_EOF}",
             _ => "connection_reset",
         })
     }
@@ -170,20 +173,45 @@ impl From<&io::Error> for ResponseCodeDetails {
 impl From<&io::Error> for ConnectionTerminationDetails {
     fn from(err: &io::Error) -> Self {
         ConnectionTerminationDetails(match err.kind() {
-            io::ErrorKind::TimedOut => "transport socket timeout was reached",
-            _ => "I/O error",
+            io::ErrorKind::TimedOut => "transport_socket_timeout_was_reached{TIMEOUT}",
+            io::ErrorKind::ConnectionReset => "connection_reset_by_peer{TCP_RESET}", // TCP RST received, common when the client forcefully closes the connection
+            io::ErrorKind::ConnectionAborted => "connection_aborted{CONNECTION_ABORTED}", // Software routing issue or network drop
+            io::ErrorKind::BrokenPipe => "remote_close{BROKEN_PIPE}", // Attempted to write to a socket that was already closed by the downstream
+            io::ErrorKind::UnexpectedEof => "remote_close{UNEXPECTED_EOF}", // Downstream closed the connection cleanly but prematurely
+            io::ErrorKind::NotConnected => "local_close{NOT_CONNECTED}", // Tried to read/write on a disconnected socket
+            _ => "Generic I/O error",
         })
     }
 }
 
 impl TryFrom<&EventError> for UpstreamTransportEventError {
     type Error = ();
+
     fn try_from(value: &EventError) -> Result<Self, Self::Error> {
         match value {
+            // Map standard I/O errors using the previously defined From trait
             EventError::IoError(io_err) => Ok(UpstreamTransportEventError::from(io_err)),
-            EventError::ConnectTimeout(_) => Ok(UpstreamTransportEventError("connect_timeout")),
+
+            // Connection phase timeout
+            EventError::ConnectTimeout(_) => Ok(UpstreamTransportEventError("upstream_connect_timeout")),
+
+            // Timeout for a single retry attempt
+            EventError::PerTryTimeout => Ok(UpstreamTransportEventError("upstream_per_try_timeout")),
+
+            // Overall route/request timeout
+            EventError::RouteTimeout => Ok(UpstreamTransportEventError("upstream_response_timeout")),
+
+            // Generic connection reset
             EventError::Reset => Ok(UpstreamTransportEventError("upstream_reset")),
-            _ => Err(()), // other errors are not transport errors
+
+            // HTTP/2 or HTTP/3 refused stream
+            EventError::RefusedStream => Ok(UpstreamTransportEventError("upstream_refused_stream")),
+
+            // HTTP/3 specific post-connect failure
+            EventError::Http3PostConnectFailure => Ok(UpstreamTransportEventError("http3_post_connect_failure")),
+
+            // Generic or non-transport errors fall through as Err
+            EventError::Error(_) => Err(()),
         }
     }
 }
