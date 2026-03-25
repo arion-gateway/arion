@@ -75,36 +75,24 @@ pub fn build_tokio_runtime(
         }
     }
 
-    let (mut builder, _current_thread) = if num_threads <= 1 {
-        let mut b = Builder::new_current_thread();
-        b.enable_all();
-        (b, true)
-    } else {
-        let mut b = Builder::new_multi_thread();
-        b.worker_threads(num_threads).max_blocking_threads(num_threads).enable_all();
-        (b, false)
-    };
+    let num_threads = num_threads.max(1);
+    let mut builder = Builder::new_multi_thread();
+    builder.worker_threads(num_threads).max_blocking_threads(num_threads).enable_all();
 
     config.global_queue_interval.map(|val| builder.global_queue_interval(val.into()));
     config.event_interval.map(|val| builder.event_interval(val));
     config.max_io_events_per_tick.map(|val| builder.max_io_events_per_tick(val.into()));
 
     // initialize per-thread state: runtime ID and metrics
-    if _current_thread {
+    #[cfg(feature = "metrics")]
+    builder.on_thread_start(move || {
         set_runtime_id(runtime_id);
-        #[cfg(feature = "metrics")]
         init_per_thread_metrics(&metrics);
-    } else {
-        #[cfg(feature = "metrics")]
-        builder.on_thread_start(move || {
-            set_runtime_id(runtime_id);
-            init_per_thread_metrics(&metrics);
-        });
-        #[cfg(not(feature = "metrics"))]
-        builder.on_thread_start(move || {
-            set_runtime_id(runtime_id);
-        });
-    }
+    });
+    #[cfg(not(feature = "metrics"))]
+    builder.on_thread_start(move || {
+        set_runtime_id(runtime_id);
+    });
 
     #[allow(clippy::expect_used)]
     builder.thread_name(thread_name).build().expect("failed to build basic runtime")
