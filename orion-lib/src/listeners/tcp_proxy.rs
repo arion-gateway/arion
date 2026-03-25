@@ -17,16 +17,19 @@
 
 #[cfg(feature = "access-log")]
 use {
-    crate::access_log::is_access_log_enabled,
-    crate::access_log::{reserve_balanced, Target},
-    crate::with_access_log,
+    crate::access_log::Target, crate::with_access_log,
     orion_format::LogFormatter,
 };
 
 use crate::{
-    AsyncInstrumentedStream, Result, clusters::clusters_manager::{self, RoutingContext}, event_error::{
-        ConnectionTerminationDetails, ResponseCodeDetails, UpstreamTransportEventError, find_error_in_chain
-    }, listeners::metadata::DownstreamMetadata, transport::connector::TcpErrorContext, utils::tracked_stream::{ErrorSource, TrackedStream}
+    clusters::clusters_manager::{self, RoutingContext},
+    event_error::{
+        find_error_in_chain, ConnectionTerminationDetails, ResponseCodeDetails, UpstreamTransportEventError,
+    },
+    listeners::metadata::DownstreamMetadata,
+    transport::connector::TcpErrorContext,
+    utils::tracked_stream::{ErrorSource, TrackedStream},
+    AsyncInstrumentedStream, Result,
 };
 use orion_configuration::config::{
     access_log::AccessLog, cluster::ClusterSpecifier as ClusterSpecifierConfig,
@@ -93,11 +96,7 @@ impl fmt::Display for TcpProxy {
 
 impl TcpProxy {
     #[allow(clippy::too_many_lines)]
-    pub async fn serve_connection(
-        &self,
-        stream: AsyncInstrumentedStream,
-        metadata: DownstreamMetadata,
-    ) -> Result<()> {
+    pub async fn serve_connection(&self, stream: AsyncInstrumentedStream, metadata: DownstreamMetadata) -> Result<()> {
         #[cfg(feature = "access-log")]
         let start_instant = Instant::now();
 
@@ -141,9 +140,11 @@ impl TcpProxy {
                             },
                             Err(ref e) => {
                                 debug!("Error with TCP stream: {}", e);
-                                if !matches!(down_stream.error_source, ErrorSource::None) { // downstream error
+                                if !matches!(down_stream.error_source, ErrorSource::None) {
+                                    // downstream error
                                     _maybe_connection_termination_details = Some(ConnectionTerminationDetails::from(e));
-                                } else if !matches!(up_stream.error_source, ErrorSource::None) { // upstream error
+                                } else if !matches!(up_stream.error_source, ErrorSource::None) {
+                                    // upstream error
                                     _maybe_upstream_transport_error = Some(e.into());
                                 }
                                 // information related to both upstream and downstream (l7)
@@ -251,17 +252,12 @@ impl TcpProxy {
 
         #[cfg(feature = "access-log")]
         {
-            let permit = if is_access_log_enabled() { Some(reserve_balanced().await) } else { None };
-
-            if let Some(permit) = permit {
-                use crate::access_log::log_access_blocking;
-                let messages = access_loggers.into_iter().map(LogFormatter::into_message).collect::<Vec<_>>();
-                log_access_blocking(
-                    permit,
-                    Target::ListenerFilterChain(self.listener_name.into(), self.filterchain_id),
-                    messages,
-                );
-            }
+            use crate::access_log::log_access_blocking;
+            let messages = access_loggers.into_iter().map(LogFormatter::into_message).collect::<Vec<_>>();
+            log_access_blocking(
+                Target::ListenerFilterChain(self.listener_name.into(), self.filterchain_id),
+                messages,
+            );
         }
         res
     }

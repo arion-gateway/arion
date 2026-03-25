@@ -48,9 +48,7 @@ impl AccessLogger {
     pub(crate) async fn run(&mut self, mut receiver: Receiver<AccessLogMessage>) {
         let mut buffer: Vec<AccessLogMessage> = Vec::with_capacity(RECEIVER_BATCH_CAPACITY);
         loop {
-            eprintln!("In attesa di un batch di messaggi...");
             let count = receiver.recv_many(&mut buffer, RECEIVER_BATCH_CAPACITY).await;
-            eprintln!("leggi {count} messaggi...");
             if count == 0 {
                 error!("AccessLogger: channel Receiver closed");
                 return;
@@ -84,7 +82,6 @@ impl AccessLogger {
                         }
                     },
                     AccessLogMessage::Message(target, fmt) => {
-                        eprintln!("Scrivo i messsaggi...");
                         if let Some(loggers) = self.map.get_mut(&target) {
                             for (log, fmt) in loggers.iter_mut().zip(fmt.iter()) {
                                 if let Some(logger) = log.get_mut() {
@@ -96,7 +93,6 @@ impl AccessLogger {
                         } else {
                             error!("AccessLogger: no loggers for target '{target}'. Message: {fmt:?}");
                         }
-                        eprintln!("finito di scrivere!");
                     },
                 }
             }

@@ -22,7 +22,6 @@ mod log_writer;
 pub mod logger;
 mod pool;
 
-use atomicoption::AtomicOption;
 use logger::AccessLogger;
 use orion_configuration::config::access_log::{AccessLogConf, AccessLogTarget};
 use orion_format::FormattedMessage;
@@ -32,11 +31,8 @@ use std::sync::OnceLock;
 use tokio::sync::mpsc::error::TrySendError;
 use tracing_rolling_file::RollingFrequency;
 
-use std::{fmt::Display, hash::Hash, sync::Arc};
-use tokio::{
-    sync::mpsc::{Permit, Sender},
-    task::JoinSet,
-};
+use std::{fmt::Display, hash::Hash};
+use tokio::{sync::mpsc::Sender, task::JoinSet};
 use tracing::{error, info};
 
 #[macro_export]
@@ -83,7 +79,7 @@ impl Display for Target {
         match self {
             Target::Listener(name) => write!(f, "Listener({name})"),
             Target::ListenerFilterChain(lister_name, filter_chain_name) => {
-                write!(f, "Listener({lister_name}:FilterChain({filter_chain_name})")
+                write!(f, "Listener({lister_name}):FilterChain({filter_chain_name})")
             },
             Target::Admin => write!(f, "Admin"),
         }
@@ -112,85 +108,6 @@ pub enum LoggerError {
 
 static SENDER_POOL: OnceLock<LoggerPool<AccessLogMessage>> = OnceLock::new();
 
-/// A reserved send slot on one of the logger MPSC channels.
-///
-/// Wraps a [`tokio::sync::mpsc::Permit`] that has already been reserved,
-/// guaranteeing that the subsequent send will never block or fail due to a
-/// full buffer.
-pub type AccessLogPermit = Permit<'static, AccessLogMessage>;
-
-/// A cloneable, shared handle to an optionally-reserved [`AccessLogPermit`].
-///
-/// Internally wraps an [`AtomicOption`] behind an [`Arc`] so that the permit
-/// can be handed to two concurrent execution paths (e.g. the normal response
-/// path and the body-streaming completion callback) while ensuring exactly one
-/// of them consumes it via [`take`](ShareableAccessLogPermit::take).
-///
-/// The default value represents the "no permit" state (i.e. logging is
-/// disabled or the reservation failed).
-#[derive(Clone)]
-pub struct ShareableAccessLogPermit(Arc<AtomicOption<AccessLogPermit>>);
-
-impl Default for ShareableAccessLogPermit {
-    fn default() -> Self {
-        ShareableAccessLogPermit(Arc::new(AtomicOption::none()))
-    }
-}
-
-impl ShareableAccessLogPermit {
-    /// Creates a new handle that owns the given permit.
-    #[inline]
-    pub fn new(permit: AccessLogPermit) -> Self {
-        Self(Arc::new(AtomicOption::some(permit)))
-    }
-
-    /// Atomically takes the permit out of this handle, returning `Some` the
-    /// first time and `None` on every subsequent call.
-    #[inline]
-    pub fn take(&self, order: std::sync::atomic::Ordering) -> Option<AccessLogPermit> {
-        self.0.take(order)
-    }
-}
-
-/// Reserves a send slot on a load-balanced logger sender.
-///
-/// Selects a sender from the global pool based on the current thread id (see
-/// [`LoggerPool::get`]) and awaits a channel permit. Returns a
-/// [`ShareableAccessLogPermit`] that holds `Some(permit)` on success, or the
-/// default empty handle if no sender is available or the reservation fails.
-///
-/// Prefer this function when calling from a context tied to a specific Tokio
-/// worker thread, as it distributes load across all logger instances.
-#[inline]
-pub async fn reserve_balanced() -> ShareableAccessLogPermit {
-    let maybe_permit = if let Some(sender) = get_sender() { sender.reserve().await.ok() } else { None };
-    match maybe_permit {
-        Some(permit) => ShareableAccessLogPermit::new(permit),
-        None => {
-            error!("Failed to reserve access log permit: sender unavailable or reservation failed.");
-            ShareableAccessLogPermit::default()
-        },
-    }
-}
-
-/// Reserves a send slot on the first logger sender (index 0).
-///
-/// Useful when ordering guarantees or a single-logger setup are required.
-/// Returns a [`ShareableAccessLogPermit`] that holds `Some(permit)` on
-/// success, or the default empty handle if the sender is unavailable or the
-/// reservation fails.
-#[inline]
-pub async fn reserve_single() -> ShareableAccessLogPermit {
-    let maybe_permit = if let Some(sender) = get_sender_at(0) { sender.reserve().await.ok() } else { None };
-    match maybe_permit {
-        Some(permit) => ShareableAccessLogPermit::new(permit),
-        None => {
-            error!("Failed to reserve access log permit: sender unavailable or reservation failed.");
-            ShareableAccessLogPermit::default()
-        },
-    }
-}
-
 /// Sends formatted log entries to the logger for the given target.
 ///
 /// Behaviour depends on the `blocking` flag set during [`start_access_loggers`]:
@@ -203,6 +120,9 @@ pub async fn reserve_single() -> ShareableAccessLogPermit {
 #[allow(clippy::needless_pass_by_value)]
 #[inline]
 pub async fn log_access(target: Target, vec: Vec<FormattedMessage>) {
+    if vec.is_empty() {
+        return;
+    }
     if let Some(sender) = get_sender() {
         if is_blocking() {
             if let Err(e) = sender.send(AccessLogMessage::Message(target, vec)).await {
@@ -225,20 +145,21 @@ pub async fn log_access(target: Target, vec: Vec<FormattedMessage>) {
 /// channel is full ([`TrySendError::Full`]) or closed
 /// ([`TrySendError::Closed`]).
 ///
-/// Does not await or block; use [`log_access`] when backpressure is acceptable.
+/// Does not await or block; use [`log_access`] when back-pressure is acceptable.
 #[allow(clippy::needless_pass_by_value)]
 pub fn try_log_access(target: Target, vec: Vec<FormattedMessage>) -> Result<(), TrySendError<Vec<FormattedMessage>>> {
+    if vec.is_empty() {
+        return Ok(());
+    }
     if let Some(sender) = get_sender() {
         sender.try_send(AccessLogMessage::Message(target, vec)).map_err(|e| match e {
             TrySendError::Full(AccessLogMessage::Message(_, msg)) => TrySendError::Full(msg),
             TrySendError::Closed(AccessLogMessage::Message(_, msg)) => {
-                error!("Failed to send access log message: no available sender.");
                 TrySendError::Closed(msg)
             },
             _ => unreachable!(),
         })
     } else {
-        error!("Failed to send access log message: no available sender.");
         Err(TrySendError::Closed(vec))
     }
 }
@@ -255,29 +176,24 @@ pub fn try_log_access(target: Target, vec: Vec<FormattedMessage>) -> Result<(), 
 /// completion callbacks registered on [`InstrumentedBody`]).
 #[allow(clippy::needless_pass_by_value)]
 #[inline]
-pub fn log_access_blocking(permit: ShareableAccessLogPermit, target: Target, vec: Vec<FormattedMessage>) {
-    if let Some(permit) = permit.take(std::sync::atomic::Ordering::Acquire) {
-        permit.send(AccessLogMessage::Message(target, vec));
-    } else {
-        let target_clone = target.clone();
-        match try_log_access(target, vec) {
-            Err(err) => match err {
-                TrySendError::Full(vec) => {
-                    if is_blocking() {
-                        tokio::task::block_in_place(move || {
-                            if let Some(sender) = get_sender() {
-                                println!("sending blocking message...");
-                                let _ = sender.blocking_send(AccessLogMessage::Message(target_clone, vec));
-                            }
-                        });
-                    }
-                },
-                TrySendError::Closed(_) => {
-                    error!("Failed to send access log message: no available sender.");
-                },
+pub fn log_access_blocking(target: Target, vec: Vec<FormattedMessage>) {
+    let target_clone = target.clone();
+    match try_log_access(target, vec) {
+        Err(err) => match err {
+            TrySendError::Full(vec) => {
+                if is_blocking() {
+                    tokio::task::block_in_place(move || {
+                        if let Some(sender) = get_sender() {
+                            let _ = sender.blocking_send(AccessLogMessage::Message(target_clone, vec));
+                        }
+                    });
+                }
             },
-            Ok(_) => (),
-        }
+            TrySendError::Closed(_) => {
+                error!("Failed to send access log message: no available sender (channel closed)");
+            },
+        },
+        Ok(_) => (),
     }
 }
 
@@ -350,13 +266,14 @@ pub fn is_access_log_enabled() -> bool {
 
 /// Returns a reference to a sender selected from the pool by thread-id hash, or `None` if the pool is empty.
 #[inline]
-pub fn get_sender() -> Option<&'static Sender<AccessLogMessage>> {
+fn get_sender() -> Option<&'static Sender<AccessLogMessage>> {
     SENDER_POOL.get().and_then(|pool| pool.get())
 }
 
 /// Returns a reference to the sender at `index`, or `None` if out of bounds.
 #[inline]
-pub fn get_sender_at(index: usize) -> Option<&'static Sender<AccessLogMessage>> {
+#[allow(unused)]
+fn get_sender_at(index: usize) -> Option<&'static Sender<AccessLogMessage>> {
     SENDER_POOL.get().and_then(|pool| pool.get_at(index))
 }
 
@@ -365,7 +282,7 @@ pub fn get_sender_at(index: usize) -> Option<&'static Sender<AccessLogMessage>> 
 /// In blocking mode, [`log_access`] awaits channel capacity rather than
 /// dropping messages when the buffer is full.
 #[inline]
-pub fn is_blocking() -> bool {
+fn is_blocking() -> bool {
     SENDER_POOL.get().and_then(|pool| Some(pool.blocking)).unwrap_or(false)
 }
 
@@ -438,7 +355,7 @@ mod tests {
             bytes_received: 128,
             bytes_sent: 256,
             response_flags: ResponseFlags::NO_HEALTHY_UPSTREAM,
-            upstream_failure: None,
+            upstream_transport_failure_reason: None,
             response_code_details: None,
             connection_termination_details: None,
         });
@@ -456,12 +373,8 @@ mod tests {
         .await
         .unwrap();
 
-        let permit = if is_access_log_enabled() { Some(reserve_single().await) } else { None };
-
-        if let Some(permit) = permit {
-            // log the formatted message to file and stdout...
-            log_access_blocking(permit, Target::Listener("test".into()), vec![message.clone(), message.clone()]);
-        }
+        // log the formatted message to file and stdout...
+        log_access(Target::Listener("test".into()), vec![message.clone(), message.clone()]).await;
 
         _ = timeout(Duration::from_secs(2), handles.join_all()).await;
         std::fs::remove_file("test-access.log").unwrap();
@@ -495,7 +408,7 @@ mod tests {
             bytes_received: 128,
             bytes_sent: 256,
             response_flags: ResponseFlags::NO_HEALTHY_UPSTREAM,
-            upstream_failure: None,
+            upstream_transport_failure_reason: None,
             response_code_details: None,
             connection_termination_details: None,
         });
@@ -515,7 +428,6 @@ mod tests {
 
         // log the formatted message to file and stdout...
         log_access_blocking(
-            ShareableAccessLogPermit::default(),
             Target::Listener("test".into()),
             vec![message.clone(), message.clone()],
         );

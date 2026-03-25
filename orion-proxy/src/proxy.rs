@@ -176,6 +176,8 @@ fn launch_runtimes(bootstrap: Bootstrap, _access_log_config: Option<AccessLogCon
         metrics: metrics.clone(),
     };
 
+    info!("Launching Service runtime with {} threads", rt_config.num_service_threads.get());
+
     let services_handle = spawn_services_runtime_from_thread(
         "services",
         rt_config.num_service_threads.get() as usize,
@@ -195,13 +197,12 @@ fn launch_runtimes(bootstrap: Bootstrap, _access_log_config: Option<AccessLogCon
 
     let num_threads_per_runtime = calculate_num_threads_per_runtime(num_cpus, num_runtimes)
         .with_context_msg("failed to calculate number of threads to use per runtime")?;
-    info!("using {} runtimes with {num_threads_per_runtime} threads each", rt_config.num_runtimes());
 
     // initialize global metrics...
     #[cfg(feature = "metrics")]
     init_global_metrics(&metrics, num_threads_per_runtime * num_runtimes);
 
-    info!("Launching with {} cpus, {} runtimes", num_cpus, num_runtimes);
+    info!("Launching {num_runtimes} worker runtime(s) with {num_threads_per_runtime} thread(s) each");
 
     let proxy_handles = {
         (0..num_runtimes)
@@ -302,6 +303,7 @@ fn spawn_services_runtime_from_thread(
     Ok(rt_handle)
 }
 
+#[inline]
 fn build_thread_name(thread_name: &'static str, affinity_info: Option<&(RuntimeId, Affinity)>) -> String {
     match affinity_info {
         Some((runtime_id, _)) => format!("{thread_name}_RT{runtime_id}"),

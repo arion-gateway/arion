@@ -31,7 +31,6 @@ use orion_format::{
 
 #[cfg(feature = "access-log")]
 use crate::{
-    access_log::ShareableAccessLogPermit,
     access_log::{log_access_blocking, Target},
     utils::instrumented_stream::StreamMetrics,
 };
@@ -344,7 +343,7 @@ impl Listener {
                                                        upstream_peer_addr: None });
 
                                                    let messages = conn_formatters.into_iter().map(LogFormatter::into_message).collect::<Vec<_>>();
-                                                   log_access_blocking(ShareableAccessLogPermit::default(), Target::Listener(_listener_name.into()), messages);
+                                                   log_access_blocking(Target::Listener(_listener_name.into()), messages);
                                                }
                                             })
                                         };

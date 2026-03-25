@@ -66,7 +66,7 @@ use orion_metrics::metrics::http;
 #[cfg(feature = "access-log")]
 use {
     crate::access_log::{
-        is_access_log_enabled, log_access_blocking, reserve_balanced, ShareableAccessLogPermit, Target,
+        is_access_log_enabled, log_access_blocking, Target,
     },
     crate::event_error::UpstreamTransportEventError,
     orion_configuration::config::access_log::AccessLog,
@@ -492,7 +492,6 @@ impl TransactionHandler {
         route_conf: RC,
         manager: Arc<HttpConnectionManager>,
         mut request: Request<OrionRequestBody>,
-        #[cfg(feature = "access-log")] permit: Option<ShareableAccessLogPermit>,
     ) -> Result<Response<OrionRequestBody>>
     where
         RC: RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> + Clone,
@@ -581,7 +580,6 @@ impl TransactionHandler {
                                                 .or(_body_error.map(EventKind::Error)),
                                             response_flags: _ctx_flags | initial_flags | _body_flags,
                                         },
-                                        permit,
                                         access_loggers: trans_ctx.loggers.as_mut(),
                                         trans_start_time: self.start_instant,
                                     },
@@ -1201,19 +1199,6 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
         }
 
         Box::pin(async move {
-            #[cfg(feature = "access-log")]
-            #[allow(clippy::if_then_some_else_none)] // avoid clippy false positive
-            let permit: Option<ShareableAccessLogPermit> = {
-                if is_access_log_enabled() {
-                    Some(reserve_balanced().await)
-                } else {
-                    None
-                }
-            };
-
-            #[cfg(feature = "access-log")]
-            let permit_clone = permit.clone();
-
             // optionally apply a timeout to the body.
             // envoy says this timeout is started when the request is initiated. This is relatively vague, but because at this point we will
             // already have the headers, it seems like a fair start.
@@ -1280,7 +1265,6 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
                                                 .or(_body_error.map(EventKind::Error)),
                                             response_flags: _ctx_flags | initial_flags | _body_flags,
                                         },
-                                        permit: permit_clone,
                                         access_loggers: trans_ctx.loggers.as_mut(),
                                         trans_start_time: trans_handler.start_instant,
                                     },
@@ -1391,7 +1375,6 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
                                                     .or(_body_error.map(EventKind::Error)),
                                                 response_flags: _ctx_flags | initial_flags | _body_flags,
                                             },
-                                            permit,
                                             access_loggers: log_ctx.loggers.as_mut(),
                                             trans_start_time: trans_handler.start_instant,
                                         },
@@ -1424,8 +1407,6 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
                     route_conf,
                     manager,
                     request,
-                    #[cfg(feature = "access-log")]
-                    permit,
                 )
                 .await;
 
@@ -1489,7 +1470,6 @@ fn eval_http_init_context<R>(
 #[cfg(feature = "access-log")]
 struct AccessLogFinishContext<'a> {
     event: EventInfo,
-    permit: Option<ShareableAccessLogPermit>,
     access_loggers: &'a mut Vec<LogFormatter>,
     trans_start_time: Instant,
 }
@@ -1563,11 +1543,10 @@ fn eval_http_finish_context(
         );
 
         #[cfg(feature = "access-log")]
-        if let Some(permit) = al_ctx.permit {
+        {
             with_access_log!(&mut loggers, WireContext { wire_bytes_received, wire_bytes_sent });
-
             let messages = loggers.into_iter().map(LogFormatter::into_message).collect::<Vec<_>>();
-            log_access_blocking(permit, Target::ListenerFilterChain(_listener_name.into(), _filterchain_id), messages);
+            log_access_blocking(Target::ListenerFilterChain(_listener_name.into(), _filterchain_id), messages);
         }
     });
 
