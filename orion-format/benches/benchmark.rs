@@ -96,7 +96,7 @@ fn benchmark_rust_format(c: &mut Criterion) {
         bytes_received: 128,
         bytes_sent: 256,
         response_flags: ResponseFlags::empty(),
-        upstream_failure: None,
+        upstream_transport_failure_reason: None,
         response_code_details: None,
         connection_termination_details: None,
     };
@@ -178,7 +178,7 @@ fn benchmark_log_formatter(c: &mut Criterion) {
         bytes_received: 128,
         bytes_sent: 256,
         response_flags: ResponseFlags::empty(),
-        upstream_failure: None,
+        upstream_transport_failure_reason: None,
         response_code_details: None,
         connection_termination_details: None,
     };
@@ -269,7 +269,7 @@ fn benchmark_request_parts(c: &mut Criterion) {
         bytes_received: 128,
         bytes_sent: 256,
         response_flags: ResponseFlags::empty(),
-        upstream_failure: None,
+        upstream_transport_failure_reason: None,
         response_code_details: None,
         connection_termination_details: None,
     };
@@ -409,7 +409,7 @@ fn benchmark_log_headers(c: &mut Criterion) {
         bytes_received: 128,
         bytes_sent: 256,
         response_flags: ResponseFlags::empty(),
-        upstream_failure: None,
+        upstream_transport_failure_reason: None,
         response_code_details: None,
         connection_termination_details: None,
     };

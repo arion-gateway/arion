@@ -1,13 +1,16 @@
 use std::{
-    pin::Pin, sync::{
-        Arc, atomic::{AtomicU64, Ordering}
-    }, task::{Context, Poll}
+    pin::Pin,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+    task::{Context, Poll},
 };
 
 use atomicoption::AtomicOption;
 use parking_lot::Mutex;
 use pin_project::pin_project;
-use smol_str::{SmolStr, format_smolstr};
+use smol_str::{format_smolstr, SmolStr};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use crate::{transport::AsyncReadWriteInstrumented, utils::rewindable_stream::RewindableHeadAsyncStream};
@@ -118,7 +121,7 @@ impl<S: AsyncRead> AsyncRead for InstrumentedStream<S> {
         let this = self.project();
         let before = buf.filled().len();
         match this.inner.poll_read(cx, buf) {
-            res@Poll::Ready(Ok(())) => {
+            res @ Poll::Ready(Ok(())) => {
                 let bytes = buf.filled().len() - before;
                 this.metrics.conn_bytes_read.fetch_add(bytes as u64, Ordering::Relaxed);
                 this.metrics.txn_bytes_read.fetch_add(bytes as u64, Ordering::Relaxed);
@@ -128,7 +131,7 @@ impl<S: AsyncRead> AsyncRead for InstrumentedStream<S> {
             Poll::Ready(Err(e)) => {
                 this.metrics.connection_termination_details.store(Ordering::Release, format_smolstr!("{e}"));
                 Poll::Ready(Err(e))
-            }
+            },
             res => res,
         }
     }
@@ -147,7 +150,7 @@ impl<S: AsyncWrite> AsyncWrite for InstrumentedStream<S> {
             Poll::Ready(Err(e)) => {
                 this.metrics.connection_termination_details.store(Ordering::Release, format_smolstr!("{e}"));
                 Poll::Ready(Err(e))
-            }
+            },
             res => res,
         }
     }
@@ -166,7 +169,7 @@ impl<S: AsyncWrite> AsyncWrite for InstrumentedStream<S> {
                 this.metrics.connection_termination_details.store(Ordering::Release, format_smolstr!("{e}"));
                 Poll::Ready(Err(e))
             },
-            res => res
+            res => res,
         }
     }
 
@@ -178,7 +181,7 @@ impl<S: AsyncWrite> AsyncWrite for InstrumentedStream<S> {
                 this.metrics.connection_termination_details.store(Ordering::Release, format_smolstr!("{e}"));
                 Poll::Ready(Err(e))
             },
-            res => res
+            res => res,
         }
     }
 }

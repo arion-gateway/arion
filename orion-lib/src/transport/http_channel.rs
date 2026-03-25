@@ -22,7 +22,7 @@ use crate::{
         timeout_body::TimeoutBody,
     },
     clusters::retry_policy::RetryCondition,
-    event_error::{EventError, EventKind, TryInferFrom},
+    event_error::{EventKind, TryInferFrom, UpstreamError},
     get_shard_id, instrument_block, instrument_function,
     listeners::{
         http_connection_manager::{http_modifiers::strip_trailers_headers, RequestHandler, TransactionHandler},
@@ -720,7 +720,7 @@ impl HttpChannel {
 
             // actually send the request and wait for the response...
             let result: StdResult<Response<Incoming>, Error> = if let Some(t) = retry_policy.per_try_timeout() {
-                match fast_timeout(t, sender.request(cloned_req)).await.map_err(|_| EventError::PerTryTimeout) {
+                match fast_timeout(t, sender.request(cloned_req)).await.map_err(|_| UpstreamError::PerTryTimeout) {
                     Ok(result) => result.map_err(Into::into),
                     Err(err) => Err(err.into()),
                 }
@@ -785,7 +785,7 @@ impl HttpChannel {
                 }
             },
             (Err(err), dur) => {
-                if let Some(event_error) = EventError::try_infer_from(err.as_ref()) {
+                if let Some(event_error) = UpstreamError::try_infer_from(err.as_ref()) {
                     let response_flags: ResponseFlags = event_error.clone().into();
                     debug!(
                         "Event ({event_error}) occurred after {:?}: {} ({})",
@@ -795,20 +795,23 @@ impl HttpChannel {
                     );
 
                     match event_error {
-                        EventError::RefusedStream | EventError::IoError(_) | EventError::ConnectTimeout(_) => Ok(
-                            SyntheticHttpResponse::service_unavailable(EventKind::Error(event_error), response_flags)
-                                .into_response(version),
-                        ),
-                        EventError::PerTryTimeout | EventError::RouteTimeout => {
-                            Ok(SyntheticHttpResponse::gateway_timeout(EventKind::Error(event_error), response_flags)
+                        UpstreamError::RefusedStream | UpstreamError::Io(_) | UpstreamError::ConnectTimeout(_) => {
+                            Ok(SyntheticHttpResponse::service_unavailable(
+                                EventKind::Upstream(event_error),
+                                response_flags,
+                            )
+                            .into_response(version))
+                        },
+                        UpstreamError::PerTryTimeout | UpstreamError::RouteTimeout => {
+                            Ok(SyntheticHttpResponse::gateway_timeout(EventKind::Upstream(event_error), response_flags)
                                 .into_response(version))
                         },
-                        EventError::Reset | EventError::Http3PostConnectFailure => {
-                            Ok(SyntheticHttpResponse::bad_gateway(EventKind::Error(event_error), response_flags)
+                        UpstreamError::Reset | UpstreamError::Http3PostConnectFailure => {
+                            Ok(SyntheticHttpResponse::bad_gateway(EventKind::Upstream(event_error), response_flags)
                                 .into_response(version))
                         },
-                        EventError::Error(_) => Ok(SyntheticHttpResponse::internal_server_error(
-                            EventKind::Error(event_error),
+                        UpstreamError::Error(_) => Ok(SyntheticHttpResponse::internal_server_error(
+                            EventKind::Upstream(event_error),
                             response_flags,
                             "internal server error",
                         )

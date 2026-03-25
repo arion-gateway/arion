@@ -15,7 +15,7 @@
 //
 //
 use super::{http_modifiers, upgrades as upgrade_utils, RequestHandler, TransactionHandler};
-use crate::event_error::{EventError, EventFailure, EventKind, TryInferFrom};
+use crate::event_error::{EventFailure, EventKind, TryInferFrom, UpstreamError};
 use crate::{
     body::response_flags::ResponseFlags,
     clusters::{
@@ -211,9 +211,10 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
                 match resp {
                     Err(err) => {
                         let err = err.into_inner();
-                        let event_error = EventError::try_infer_from(&err);
+                        let event_error = UpstreamError::try_infer_from(&err);
                         let flags = event_error.clone().map(ResponseFlags::from).unwrap_or_default();
-                        let event_kind = event_error.map_or(EventFailure::ViaUpstream.into(), |e| EventKind::Error(e));
+                        let event_kind =
+                            event_error.map_or(EventFailure::ViaUpstream.into(), |e| EventKind::Upstream(e));
                         debug!(
                             "HttpConnectionManager Error processing response {:?}: {}({})",
                             err,
@@ -228,9 +229,9 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
             // http connection not available from cluster...
             Err(err) => {
                 let err = err.into_inner();
-                let event_error = EventError::try_infer_from(&err);
+                let event_error = UpstreamError::try_infer_from(&err);
                 let flags = event_error.clone().map(ResponseFlags::from).unwrap_or_default();
-                let event_kind = event_error.map_or(EventFailure::ViaUpstream.into(), |e| EventKind::Error(e));
+                let event_kind = event_error.map_or(EventFailure::ViaUpstream.into(), |e| EventKind::Upstream(e));
                 debug!(
                     "Failed to get an HTTP connection: {:?}: {}({})",
                     err,

@@ -148,12 +148,12 @@ impl Context for UpstreamContext<'_> {
             Operator::UpstreamCluster | Operator::UpstreamClusterRaw => {
                 self.cluster_name.map_or(StringType::None, |cluster_name| StringType::Smol(SmolStr::new(cluster_name)))
             },
-            Operator::UpstreamHost => {
-                self.authority.map_or(StringType::None, |auth| StringType::Smol(SmolStr::new(strip_userinfo(auth.as_str()))))
-            },
-            Operator::UpstreamHostName => {
-                self.authority.map_or(StringType::None, |auth| StringType::Smol(SmolStr::new(strip_userinfo(auth.as_str()))))
-            },
+            Operator::UpstreamHost => self
+                .authority
+                .map_or(StringType::None, |auth| StringType::Smol(SmolStr::new(strip_userinfo(auth.as_str())))),
+            Operator::UpstreamHostName => self
+                .authority
+                .map_or(StringType::None, |auth| StringType::Smol(SmolStr::new(strip_userinfo(auth.as_str())))),
             Operator::UpstreamHostNameWithoutPort => {
                 self.authority.map_or(StringType::None, |auth| StringType::Smol(SmolStr::new(auth.host())))
             },
@@ -253,7 +253,7 @@ pub struct FinishContext {
     pub bytes_received: u64,
     pub bytes_sent: u64,
     pub response_flags: ResponseFlags,
-    pub upstream_failure: Option<&'static str>,
+    pub upstream_transport_failure_reason: Option<&'static str>,
     pub response_code_details: Option<&'static str>,
     pub connection_termination_details: Option<&'static str>,
 }
@@ -275,9 +275,9 @@ impl Context for FinishContext {
                 let mut buffer = itoa::Buffer::new();
                 StringType::Smol(SmolStr::new(buffer.format(self.bytes_sent)))
             },
-            Operator::UpstreamTransportFailureReason => {
-                self.upstream_failure.map_or(StringType::None, |msg| StringType::Smol(SmolStr::new_static(msg)))
-            },
+            Operator::UpstreamTransportFailureReason => self
+                .upstream_transport_failure_reason
+                .map_or(StringType::None, |msg| StringType::Smol(SmolStr::new_static(msg))),
             Operator::ConnectionTerminationDetails => self
                 .connection_termination_details
                 .map_or(StringType::None, |msg| StringType::Smol(SmolStr::new_static(msg))),
@@ -336,9 +336,9 @@ impl Context for ConnectionContext<'_> {
                 let mut buffer = itoa::Buffer::new();
                 StringType::Smol(SmolStr::new(buffer.format(self.duration.as_millis())))
             },
-            Operator::ConnectionTerminationDetails => self
-                .connection_termination_details
-                .map_or(StringType::None, |msg| StringType::Smol(SmolStr::new(msg))),
+            Operator::ConnectionTerminationDetails => {
+                self.connection_termination_details.map_or(StringType::None, |msg| StringType::Smol(SmolStr::new(msg)))
+            },
             _ => StringType::None,
         }
     }

@@ -18,14 +18,14 @@
 use http::Response;
 use http_body::Body;
 
-use crate::event_error::EventError;
+use crate::event_error::UpstreamError;
 use orion_configuration::config::network_filters::http_connection_manager::{RetryOn, RetryPolicy};
 
 use orion_http_header::{X_ENVOY_RATELIMITED, X_ORION_RATELIMITED};
 
 #[derive(Debug)]
 pub enum RetryCondition<'a, B> {
-    Error(EventError),
+    Error(UpstreamError),
     Response(&'a Response<B>),
 }
 
@@ -44,16 +44,16 @@ impl<B: Body> RetryCondition<'_, B> {
     }
 
     pub fn is_per_try_timeout(&self) -> bool {
-        matches!(self, RetryCondition::Error(EventError::PerTryTimeout))
+        matches!(self, RetryCondition::Error(UpstreamError::PerTryTimeout))
     }
 
     #[allow(dead_code)]
     pub fn is_timeout(&self) -> bool {
-        matches!(self, RetryCondition::Error(EventError::ConnectTimeout(_) | EventError::RouteTimeout))
+        matches!(self, RetryCondition::Error(UpstreamError::ConnectTimeout(_) | UpstreamError::RouteTimeout))
     }
 
     pub fn should_retry(&self, retry_policy: &RetryPolicy) -> bool {
-        if let RetryCondition::Error(EventError::PerTryTimeout) = self {
+        if let RetryCondition::Error(UpstreamError::PerTryTimeout) = self {
             return true;
         }
 
@@ -105,22 +105,22 @@ impl<B: Body> RetryCondition<'_, B> {
                     }
                 },
                 RetryOn::Reset => {
-                    if matches!(self, RetryCondition::Error(EventError::Reset)) {
+                    if matches!(self, RetryCondition::Error(UpstreamError::Reset)) {
                         return true;
                     }
                 },
                 RetryOn::ConnectFailure => {
-                    if matches!(self, RetryCondition::Error(EventError::IoError(_) | EventError::ConnectTimeout(_))) {
+                    if matches!(self, RetryCondition::Error(UpstreamError::Io(_) | UpstreamError::ConnectTimeout(_))) {
                         return true;
                     }
                 },
                 RetryOn::RefusedStream => {
-                    if matches!(self, RetryCondition::Error(EventError::RefusedStream)) {
+                    if matches!(self, RetryCondition::Error(UpstreamError::RefusedStream)) {
                         return true;
                     }
                 },
                 RetryOn::Http3PostConnectFailure => {
-                    if matches!(self, RetryCondition::Error(EventError::Http3PostConnectFailure)) {
+                    if matches!(self, RetryCondition::Error(UpstreamError::Http3PostConnectFailure)) {
                         return true;
                     }
                 },

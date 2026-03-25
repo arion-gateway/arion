@@ -41,7 +41,7 @@ use crate::listeners::internal_registry::{self, InternalConnection};
 use crate::listeners::metadata::DownstreamConnectionMetadata;
 use crate::transport::{AsyncInstrumentedStream, HttpConnection};
 use crate::{
-    event_error::{elapsed, EventError},
+    event_error::{elapsed, UpstreamError},
     utils::instrumented_stream::InstrumentedStream,
 };
 
@@ -52,7 +52,7 @@ pub enum ConnectError {
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
-    Event(#[from] EventError),
+    Event(#[from] UpstreamError),
 }
 
 #[derive(Clone, Debug)]
@@ -203,7 +203,7 @@ impl LocalConnectorWithDNSResolver {
             let stream = if let Some(connection_timeout) = connection_timeout {
                 fast_timeout(connection_timeout, sock.connect(addr))
                     .await // Result<Result<TcpStream, io::Error>>, Elapsed>
-                    .map_err(|_| EventError::ConnectTimeout(elapsed()))
+                    .map_err(|_| UpstreamError::ConnectTimeout(elapsed()))
                     .map_err(|e| {
                         WithContext::new(e)
                             .with_context_data(TcpErrorContext {
@@ -213,7 +213,7 @@ impl LocalConnectorWithDNSResolver {
                             })
                             .map_into()
                     })? // Result<TcpStream, io::Error>
-                    .map_err(|orig| EventError::IoError(io::Error::new(orig.kind(), orig.to_string())))
+                    .map_err(|orig| UpstreamError::Io(io::Error::new(orig.kind(), orig.to_string())))
                     .map_err(|e| {
                         WithContext::new(e)
                             .with_context_data(TcpErrorContext {
@@ -226,7 +226,7 @@ impl LocalConnectorWithDNSResolver {
             } else {
                 sock.connect(addr)
                     .await
-                    .map_err(|orig| EventError::IoError(io::Error::new(orig.kind(), orig.to_string())))
+                    .map_err(|orig| UpstreamError::Io(io::Error::new(orig.kind(), orig.to_string())))
                     .map_err(|e| {
                         WithContext::new(e)
                             .with_context_data(TcpErrorContext {

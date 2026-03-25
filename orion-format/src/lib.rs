@@ -455,7 +455,7 @@ mod tests {
             bytes_received: 128,
             bytes_sent: 256,
             response_flags: ResponseFlags::NO_HEALTHY_UPSTREAM,
-            upstream_failure: None,
+            upstream_transport_failure_reason: None,
             response_code_details: None,
             connection_termination_details: None,
         });
@@ -487,7 +487,7 @@ mod tests {
             bytes_received: 128,
             bytes_sent: 256,
             response_flags: ResponseFlags::NO_HEALTHY_UPSTREAM,
-            upstream_failure: None,
+            upstream_transport_failure_reason: None,
             response_code_details: None,
             connection_termination_details: None,
         });

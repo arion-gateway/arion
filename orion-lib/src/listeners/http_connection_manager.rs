@@ -65,9 +65,7 @@ use orion_metrics::metrics::http;
 
 #[cfg(feature = "access-log")]
 use {
-    crate::access_log::{
-        is_access_log_enabled, log_access_blocking, Target,
-    },
+    crate::access_log::{is_access_log_enabled, log_access_blocking, Target},
     crate::event_error::UpstreamTransportEventError,
     orion_configuration::config::access_log::AccessLog,
     orion_format::context::{
@@ -538,9 +536,6 @@ impl TransactionHandler {
                 )
             }
 
-            // #[cfg(feature = "metrics")]
-            // let resp_head_size = response_head_size(&response);
-
             response.map(move |body| {
                 InstrumentedBody::new(
                     BodyKind::Response,
@@ -575,9 +570,7 @@ impl TransactionHandler {
                                     AccessLogFinishContext {
                                         event: EventInfo {
                                             body_kind: BodyKind::Response,
-                                            event_kind: _ctx_event
-                                                .or(initial_event)
-                                                .or(_body_error.map(EventKind::Error)),
+                                            event_kind: _ctx_event.or(initial_event).or(_body_error),
                                             response_flags: _ctx_flags | initial_flags | _body_flags,
                                         },
                                         access_loggers: trans_ctx.loggers.as_mut(),
@@ -589,7 +582,7 @@ impl TransactionHandler {
                                 #[cfg(feature = "access-log")]
                                 {
                                     trans_ctx.flags = initial_flags | _body_flags;
-                                    trans_ctx.event = initial_event.or(_body_error.map(EventKind::Error));
+                                    trans_ctx.event = initial_event.or(_body_error);
                                 }
                             }
                         }
@@ -1260,9 +1253,7 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
                                     AccessLogFinishContext {
                                         event: EventInfo {
                                             body_kind: BodyKind::Request,
-                                            event_kind: _ctx_event
-                                                .or(initial_event)
-                                                .or(_body_error.map(EventKind::Error)),
+                                            event_kind: _ctx_event.or(initial_event).or(_body_error),
                                             response_flags: _ctx_flags | initial_flags | _body_flags,
                                         },
                                         access_loggers: trans_ctx.loggers.as_mut(),
@@ -1273,7 +1264,7 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
                                 trans_ctx.bytes = _body_bytes;
                                 #[cfg(feature = "access-log")]
                                 {
-                                    trans_ctx.event = initial_event.or(_body_error.map(EventKind::Error));
+                                    trans_ctx.event = initial_event.or(_body_error);
                                     trans_ctx.flags = initial_flags | _body_flags;
                                 }
                             }
@@ -1370,9 +1361,7 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
                                         AccessLogFinishContext {
                                             event: EventInfo {
                                                 body_kind: BodyKind::Response,
-                                                event_kind: _ctx_event
-                                                    .or(initial_event)
-                                                    .or(_body_error.map(EventKind::Error)),
+                                                event_kind: _ctx_event.or(initial_event).or(_body_error),
                                                 response_flags: _ctx_flags | initial_flags | _body_flags,
                                             },
                                             access_loggers: log_ctx.loggers.as_mut(),
@@ -1384,7 +1373,7 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
                                     #[cfg(feature = "access-log")]
                                     {
                                         log_ctx.flags = initial_flags | _body_flags;
-                                        log_ctx.event = initial_event.or(_body_error.map(EventKind::Error));
+                                        log_ctx.event = initial_event.or(_body_error);
                                     }
                                 }
                             }
@@ -1401,21 +1390,14 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
                 return Ok(response);
             };
 
-            let response = trans_handler
-                .clone()
-                .handle_transaction(
-                    route_conf,
-                    manager,
-                    request,
-                )
-                .await;
+            let response = trans_handler.clone().handle_transaction(route_conf, manager, request).await;
 
             trans_handler.trace_status_code(&response, listener_name);
             if let Err(err) = response {
                 error!("Error during handling HTTP transaction: {}", err);
                 let msg = err.to_string();
                 let response = SyntheticHttpResponse::internal_server_error(
-                    EventKind::Error(err.into()),
+                    EventKind::Upstream(err.into()),
                     ResponseFlags(FmtResponseFlags::LOCAL_RESET),
                     &msg,
                 )
@@ -1498,8 +1480,8 @@ fn eval_http_finish_context(
             bytes_received: _bytes_received,
             bytes_sent: _bytes_sent,
             response_flags: al_ctx.event.response_flags.0,
-            upstream_failure: al_ctx.event.event_kind.as_ref().and_then(|ev| {
-                let EventKind::Error(err) = ev else {
+            upstream_transport_failure_reason: al_ctx.event.event_kind.as_ref().and_then(|ev| {
+                let EventKind::Upstream(err) = ev else {
                     return None;
                 };
                 UpstreamTransportEventError::try_from(err).ok().map(|e| e.0)

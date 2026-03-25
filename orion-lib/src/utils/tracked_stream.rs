@@ -8,7 +8,7 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 pub enum ErrorSource {
     None,
     Read,
-    Write
+    Write,
 }
 
 // Wrapper for the stream to intercept errors
@@ -19,19 +19,12 @@ pub struct TrackedStream<T> {
 
 impl<T> TrackedStream<T> {
     pub fn new(inner: T) -> Self {
-        Self {
-            inner,
-            error_source: ErrorSource::None,
-        }
+        Self { inner, error_source: ErrorSource::None }
     }
 }
 
 impl<T: AsyncRead + Unpin> AsyncRead for TrackedStream<T> {
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
+    fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
         let res = Pin::new(&mut self.inner).poll_read(cx, buf);
         // Intercept read errors
         if let Poll::Ready(Err(_)) = &res {
@@ -42,11 +35,7 @@ impl<T: AsyncRead + Unpin> AsyncRead for TrackedStream<T> {
 }
 
 impl<T: AsyncWrite + Unpin> AsyncWrite for TrackedStream<T> {
-    fn poll_write(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<io::Result<usize>> {
+    fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
         let res = Pin::new(&mut self.inner).poll_write(cx, buf);
         // Intercept write errors
         if let Poll::Ready(Err(_)) = &res {

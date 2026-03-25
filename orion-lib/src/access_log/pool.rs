@@ -20,9 +20,9 @@ use std::hash::{Hash, Hasher};
 use ahash::AHasher;
 use tokio::sync::mpsc::Sender;
 
-pub(crate) struct LoggerPool<T>{
+pub(crate) struct LoggerPool<T> {
     pub blocking: bool,
-    pub senders: Vec<Sender<T>>
+    pub senders: Vec<Sender<T>>,
 }
 
 impl<T> LoggerPool<T> {

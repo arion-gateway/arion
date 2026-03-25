@@ -154,9 +154,7 @@ pub fn try_log_access(target: Target, vec: Vec<FormattedMessage>) -> Result<(), 
     if let Some(sender) = get_sender() {
         sender.try_send(AccessLogMessage::Message(target, vec)).map_err(|e| match e {
             TrySendError::Full(AccessLogMessage::Message(_, msg)) => TrySendError::Full(msg),
-            TrySendError::Closed(AccessLogMessage::Message(_, msg)) => {
-                TrySendError::Closed(msg)
-            },
+            TrySendError::Closed(AccessLogMessage::Message(_, msg)) => TrySendError::Closed(msg),
             _ => unreachable!(),
         })
     } else {
@@ -427,10 +425,7 @@ mod tests {
         .unwrap();
 
         // log the formatted message to file and stdout...
-        log_access_blocking(
-            Target::Listener("test".into()),
-            vec![message.clone(), message.clone()],
-        );
+        log_access_blocking(Target::Listener("test".into()), vec![message.clone(), message.clone()]);
 
         _ = timeout(Duration::from_secs(2), handles.join_all()).await;
         std::fs::remove_file("test-access.log").unwrap();

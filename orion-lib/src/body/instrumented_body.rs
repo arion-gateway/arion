@@ -21,22 +21,22 @@ use std::{
     task::{Context, Poll},
 };
 
-use crate::{
-    body::response_flags::{BodyKind, ResponseFlags},
-    event_error::EventError,
-};
+use crate::body::response_flags::{BodyKind, ResponseFlags};
 
 #[cfg(any(feature = "access-log", feature = "metrics"))]
 mod metrics_enabled {
     #[allow(clippy::wildcard_imports)]
     use super::*;
-    use crate::{event_error::TryInferFrom, utils::instrumented_stream::StreamMetrics};
+    use crate::{
+        event_error::{DownstreamError, EventKind, TryInferFrom, UpstreamError},
+        utils::instrumented_stream::StreamMetrics,
+    };
     use bytes::Buf;
     use parking_lot::Mutex;
     use pin_project::{pin_project, pinned_drop};
     use std::sync::Arc;
 
-    type MetricsClosure = Box<dyn FnOnce(u64, &StreamMetrics, Option<EventError>, ResponseFlags) + Send + 'static>;
+    type MetricsClosure = Box<dyn FnOnce(u64, &StreamMetrics, Option<EventKind>, ResponseFlags) + Send + 'static>;
 
     #[pin_project(PinnedDrop)]
     pub struct InstrumentedBody<B> {
@@ -72,7 +72,7 @@ mod metrics_enabled {
     impl<B: Default> InstrumentedBody<B> {
         pub fn new<F>(kind: BodyKind, inner: B, metrics: Option<Arc<StreamMetrics>>, on_complete: F) -> Self
         where
-            F: FnOnce(u64, &StreamMetrics, Option<EventError>, ResponseFlags) + Send + 'static,
+            F: FnOnce(u64, &StreamMetrics, Option<EventKind>, ResponseFlags) + Send + 'static,
         {
             Self {
                 inner,
@@ -151,7 +151,11 @@ mod metrics_enabled {
                 Poll::Ready(Some(Err(err))) => {
                     if let Some(closure) = this.on_complete.lock().take() {
                         if let Some(metrics) = this.stream_metrics.as_ref() {
-                            let event_error = EventError::try_infer_from(err);
+                            let event_error: Option<EventKind> = match *this.body_kind {
+                                BodyKind::Request => DownstreamError::try_infer_from(err).map(Into::into),
+                                BodyKind::Response => UpstreamError::try_infer_from(err).map(Into::into),
+                            };
+
                             let flags = ResponseFlags::from((err, *this.body_kind));
                             closure(*this.body_bytes, metrics.as_ref(), event_error, flags);
                         }
@@ -178,7 +182,7 @@ mod metrics_enabled {
 mod metrics_disabled {
     use std::{marker::PhantomData, sync::Arc};
 
-    use crate::utils::instrumented_stream::StreamMetrics;
+    use crate::{event_error::EventKind, utils::instrumented_stream::StreamMetrics};
 
     #[allow(clippy::wildcard_imports)]
     use super::*;
@@ -207,7 +211,7 @@ mod metrics_disabled {
     impl<B> InstrumentedBody<B> {
         pub fn new<F>(kind: BodyKind, inner: B, _metrics: Option<Arc<StreamMetrics>>, _on_complete: F) -> Self
         where
-            F: FnOnce(u64, &StreamMetrics, Option<EventError>, ResponseFlags) + Send + 'static,
+            F: FnOnce(u64, &StreamMetrics, Option<EventKind>, ResponseFlags) + Send + 'static,
         {
             Self { inner, body_kind: kind, body_bytes: 0, stream_metrics: PhantomData, on_complete: PhantomData }
         }

@@ -359,7 +359,7 @@ async fn spawn_services(info: ServiceInfo) -> Result<()> {
                 conf.log_rotation.map(|x| x.0).clone(),
                 conf.log_max_size.clone(),
                 conf.max_log_files.get(),
-                conf.blocking
+                conf.blocking,
             );
 
             info!("Access loggers started with {} instances", conf.num_instances);

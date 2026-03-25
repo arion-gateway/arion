@@ -16,10 +16,7 @@
 //
 
 #[cfg(feature = "access-log")]
-use {
-    crate::access_log::Target, crate::with_access_log,
-    orion_format::LogFormatter,
-};
+use {crate::access_log::Target, crate::with_access_log, orion_format::LogFormatter};
 
 use crate::{
     clusters::clusters_manager::{self, RoutingContext},
@@ -114,7 +111,7 @@ impl TcpProxy {
         let mut _bytes_received = 0;
         let mut _bytes_sent = 0;
         let mut _response_flags = ResponseFlags::empty();
-        let mut _maybe_upstream_transport_error: Option<UpstreamTransportEventError> = None;
+        let mut _maybe_upstream_transport_failure_reason: Option<UpstreamTransportEventError> = None;
         let mut _maybe_response_code_details: Option<ResponseCodeDetails> = None;
         let mut _maybe_connection_termination_details: Option<ConnectionTerminationDetails> = None;
         let _maybe_upstream_local_addr: Option<SocketAddr>;
@@ -145,7 +142,7 @@ impl TcpProxy {
                                     _maybe_connection_termination_details = Some(ConnectionTerminationDetails::from(e));
                                 } else if !matches!(up_stream.error_source, ErrorSource::None) {
                                     // upstream error
-                                    _maybe_upstream_transport_error = Some(e.into());
+                                    _maybe_upstream_transport_failure_reason = Some(e.into());
                                 }
                                 // information related to both upstream and downstream (l7)
                                 _maybe_response_code_details = Some(ResponseCodeDetails::from(e));
@@ -183,7 +180,7 @@ impl TcpProxy {
                         }
 
                         let io_err = find_error_in_chain::<std::io::Error>(e.inner());
-                        _maybe_upstream_transport_error = io_err.map(UpstreamTransportEventError::from);
+                        _maybe_upstream_transport_failure_reason = io_err.map(UpstreamTransportEventError::from);
                         _maybe_response_code_details = io_err.map(ResponseCodeDetails::from);
 
                         #[cfg(feature = "access-log")]
@@ -209,7 +206,7 @@ impl TcpProxy {
                 _response_flags.insert(ResponseFlags::NO_ROUTE_FOUND);
 
                 let io_err = find_error_in_chain::<std::io::Error>(e.inner());
-                _maybe_upstream_transport_error = io_err.map(UpstreamTransportEventError::from);
+                _maybe_upstream_transport_failure_reason = io_err.map(UpstreamTransportEventError::from);
                 _maybe_response_code_details = io_err.map(ResponseCodeDetails::from);
 
                 #[cfg(feature = "access-log")]
@@ -238,7 +235,7 @@ impl TcpProxy {
                 bytes_received: _bytes_received,
                 bytes_sent: _bytes_sent,
                 response_flags: _response_flags,
-                upstream_failure: _maybe_upstream_transport_error.as_ref().map(|x| x.0),
+                upstream_transport_failure_reason: _maybe_upstream_transport_failure_reason.as_ref().map(|x| x.0),
                 response_code_details: _maybe_response_code_details.as_ref().map(|x| x.0),
                 connection_termination_details: _maybe_connection_termination_details.as_ref().map(|x| x.0),
             }
@@ -254,10 +251,7 @@ impl TcpProxy {
         {
             use crate::access_log::log_access_blocking;
             let messages = access_loggers.into_iter().map(LogFormatter::into_message).collect::<Vec<_>>();
-            log_access_blocking(
-                Target::ListenerFilterChain(self.listener_name.into(), self.filterchain_id),
-                messages,
-            );
+            log_access_blocking(Target::ListenerFilterChain(self.listener_name.into(), self.filterchain_id), messages);
         }
         res
     }
