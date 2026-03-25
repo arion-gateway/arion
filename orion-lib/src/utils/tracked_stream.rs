@@ -34,7 +34,7 @@ impl<T: AsyncRead + Unpin> AsyncRead for TrackedStream<T> {
     ) -> Poll<io::Result<()>> {
         let res = Pin::new(&mut self.inner).poll_read(cx, buf);
         // Intercept read errors
-        if let Poll::Ready(Err(e)) = &res {
+        if let Poll::Ready(Err(_)) = &res {
             self.error_source = ErrorSource::Read;
         }
         res

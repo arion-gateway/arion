@@ -23,13 +23,16 @@ use super::{
 #[cfg(feature = "instrumentation")]
 use crate::instrumentation;
 
-use orion_format::context::SocketAddrContext;
 #[cfg(feature = "access-log")]
-use orion_format::{context::ConnectionContext, LogFormatter};
+use orion_format::{
+    context::SocketAddrContext,
+    {context::ConnectionContext, LogFormatter},
+};
 
 #[cfg(feature = "access-log")]
 use crate::{
-    access_log::{is_access_log_enabled, log_access, log_access_reserve_balanced, Target},
+    access_log::ShareableAccessLogPermit,
+    access_log::{log_access_blocking, Target},
     utils::instrumented_stream::StreamMetrics,
 };
 
@@ -276,11 +279,10 @@ impl Listener {
 
         match binding {
             ListenerBinding::Socket { address, bind_device, tcp_backlog_size } => {
-                let listener =
-                    match configure_and_start_tcp_listener(address, bind_device.as_ref(), tcp_backlog_size) {
-                        Ok(x) => x,
-                        Err(e) => return e,
-                    };
+                let listener = match configure_and_start_tcp_listener(address, bind_device.as_ref(), tcp_backlog_size) {
+                    Ok(x) => x,
+                    Err(e) => return e,
+                };
 
                 let actual_address = listener.local_addr().unwrap_or(address);
                 info!("listener '{name}' started: {actual_address}");
@@ -318,13 +320,11 @@ impl Listener {
                                         _ = stream.set_quickack(true);
 
                                         #[cfg(feature = "access-log")]
-                                        let permit = if is_access_log_enabled() { Some(log_access_reserve_balanced().await) } else { None };
+                                        let cb = {
+                                            let downstream_peer_addr = Some(peer_addr);
+                                            let downstream_local_addr = local_address;
 
-                                        let downstream_peer_addr = Some(peer_addr);
-                                        let downstream_local_addr = local_address;
-
-                                        #[cfg(feature = "access-log")]
-                                        let cb = Box::new(
+                                            Box::new(
                                             move |metrics: &StreamMetrics| {
                                                #[cfg(feature = "access-log")]
                                                with_access_log!(&mut conn_formatters, ConnectionContext::<'_> {
@@ -336,18 +336,18 @@ impl Listener {
                                                });
 
                                                #[cfg(feature = "access-log")]
-                                               with_access_log!(&mut conn_formatters, SocketAddrContext {
-                                                   downstream_local_addr,
-                                                   downstream_peer_addr,
-                                                   upstream_local_addr: None,
-                                                   upstream_peer_addr: None });
+                                               {
+                                                   with_access_log!(&mut conn_formatters, SocketAddrContext {
+                                                       downstream_local_addr,
+                                                       downstream_peer_addr,
+                                                       upstream_local_addr: None,
+                                                       upstream_peer_addr: None });
 
-                                               let messages = conn_formatters.into_iter().map(LogFormatter::into_message).collect::<Vec<_>>();
-                                               if let Some(permit) = permit {
-                                                   log_access(permit, Target::Listener(_listener_name.into()), messages);
+                                                   let messages = conn_formatters.into_iter().map(LogFormatter::into_message).collect::<Vec<_>>();
+                                                   log_access_blocking(ShareableAccessLogPermit::default(), Target::Listener(_listener_name.into()), messages);
                                                }
-                                            }
-                                        );
+                                            })
+                                        };
 
                                         #[cfg(feature = "access-log")]
                                         let stream = InstrumentedStream::new(stream, Some(cb));

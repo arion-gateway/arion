@@ -66,7 +66,7 @@ use orion_metrics::metrics::http;
 #[cfg(feature = "access-log")]
 use {
     crate::access_log::{
-        is_access_log_enabled, log_access, log_access_reserve_balanced, ShareableAccessLogPermit, Target,
+        is_access_log_enabled, log_access_blocking, reserve_balanced, ShareableAccessLogPermit, Target,
     },
     crate::event_error::UpstreamTransportEventError,
     orion_configuration::config::access_log::AccessLog,
@@ -1205,14 +1205,14 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
             #[allow(clippy::if_then_some_else_none)] // avoid clippy false positive
             let permit: Option<ShareableAccessLogPermit> = {
                 if is_access_log_enabled() {
-                    Some(log_access_reserve_balanced().await)
+                    Some(reserve_balanced().await)
                 } else {
                     None
                 }
             };
 
             #[cfg(feature = "access-log")]
-            let permit_clone = permit.as_ref().map(Arc::clone);
+            let permit_clone = permit.clone();
 
             // optionally apply a timeout to the body.
             // envoy says this timeout is started when the request is initiated. This is relatively vague, but because at this point we will
@@ -1567,7 +1567,7 @@ fn eval_http_finish_context(
             with_access_log!(&mut loggers, WireContext { wire_bytes_received, wire_bytes_sent });
 
             let messages = loggers.into_iter().map(LogFormatter::into_message).collect::<Vec<_>>();
-            log_access(permit, Target::ListenerFilterChain(_listener_name.into(), _filterchain_id), messages);
+            log_access_blocking(permit, Target::ListenerFilterChain(_listener_name.into(), _filterchain_id), messages);
         }
     });
 

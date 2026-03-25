@@ -18,7 +18,7 @@
 #[cfg(feature = "access-log")]
 use {
     crate::access_log::is_access_log_enabled,
-    crate::access_log::{log_access, log_access_reserve_balanced, Target},
+    crate::access_log::{reserve_balanced, Target},
     crate::with_access_log,
     orion_format::LogFormatter,
 };
@@ -95,7 +95,7 @@ impl TcpProxy {
     #[allow(clippy::too_many_lines)]
     pub async fn serve_connection(
         &self,
-        mut stream: AsyncInstrumentedStream,
+        stream: AsyncInstrumentedStream,
         metadata: DownstreamMetadata,
     ) -> Result<()> {
         #[cfg(feature = "access-log")]
@@ -251,18 +251,18 @@ impl TcpProxy {
 
         #[cfg(feature = "access-log")]
         {
-            let permit = if is_access_log_enabled() { Some(log_access_reserve_balanced().await) } else { None };
+            let permit = if is_access_log_enabled() { Some(reserve_balanced().await) } else { None };
 
             if let Some(permit) = permit {
+                use crate::access_log::log_access_blocking;
                 let messages = access_loggers.into_iter().map(LogFormatter::into_message).collect::<Vec<_>>();
-                log_access(
+                log_access_blocking(
                     permit,
                     Target::ListenerFilterChain(self.listener_name.into(), self.filterchain_id),
                     messages,
                 );
             }
         }
-
         res
     }
 }

@@ -20,19 +20,22 @@ use std::hash::{Hash, Hasher};
 use ahash::AHasher;
 use tokio::sync::mpsc::Sender;
 
-pub(crate) struct LoggerPool<T>(pub Vec<Sender<T>>);
+pub(crate) struct LoggerPool<T>{
+    pub blocking: bool,
+    pub senders: Vec<Sender<T>>
+}
 
 impl<T> LoggerPool<T> {
     #[inline]
     pub(crate) fn get(&self) -> Option<&Sender<T>> {
-        match self.0.len() {
+        match self.senders.len() {
             0 => None,
-            1 => unsafe { Some(self.0.get_unchecked(0)) },
+            1 => unsafe { Some(self.senders.get_unchecked(0)) },
             n => {
                 let idx = Self::hash_thread_id(std::thread::current().id()) % n as u64;
                 #[allow(clippy::cast_possible_truncation)]
                 unsafe {
-                    Some(self.0.get_unchecked(idx as usize))
+                    Some(self.senders.get_unchecked(idx as usize))
                 }
             },
         }
@@ -40,7 +43,7 @@ impl<T> LoggerPool<T> {
 
     #[inline]
     pub(crate) fn get_at(&self, index: usize) -> Option<&Sender<T>> {
-        self.0.get(index)
+        self.senders.get(index)
     }
 
     #[inline]
@@ -53,12 +56,12 @@ impl<T> LoggerPool<T> {
     #[inline]
     #[allow(dead_code)]
     pub(crate) fn len(&self) -> usize {
-        self.0.len()
+        self.senders.len()
     }
 
     #[inline]
     #[allow(dead_code)]
     pub(crate) fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.senders.is_empty()
     }
 }

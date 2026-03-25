@@ -93,6 +93,7 @@ pub struct AccessLogConfig {
     pub log_max_size: Option<u64>,
     #[serde(default = "const_value::<10>")]
     pub max_log_files: NonZeroUsize,
+    pub blocking: bool,
 }
 
 impl Default for AccessLogConfig {
@@ -103,6 +104,7 @@ impl Default for AccessLogConfig {
             log_rotation: None,
             log_max_size: None,
             max_log_files: const_value::<10>(),
+            blocking: false,
         }
     }
 }

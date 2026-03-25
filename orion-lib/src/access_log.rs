@@ -22,13 +22,14 @@ mod log_writer;
 pub mod logger;
 mod pool;
 
+use atomicoption::AtomicOption;
 use logger::AccessLogger;
 use orion_configuration::config::access_log::{AccessLogConf, AccessLogTarget};
 use orion_format::FormattedMessage;
-use parking_lot::Mutex;
 use pool::LoggerPool;
 use smol_str::SmolStr;
 use std::sync::OnceLock;
+use tokio::sync::mpsc::error::TrySendError;
 use tracing_rolling_file::RollingFrequency;
 
 use std::{fmt::Display, hash::Hash, sync::Arc};
@@ -51,11 +52,15 @@ macro_rules! with_access_log {
     }};
 }
 
-/// Represents the destination for an access logging event.
+/// Destination for an access logging event.
 ///
-/// - `Listener`: Identifies a specific listener by name.
-/// - `ListenerFilterChain`: Identifies a specific filterchain of a listener.
-/// - `Admin`: Refers to the Envoy admin interface.
+/// Identifies which logical entity produced a log entry so that loggers can
+/// apply the correct per-target configuration.
+///
+/// - `Listener`: a top-level listener identified by name.
+/// - `ListenerFilterChain`: a specific filter-chain within a listener, identified
+///   by the listener name and a hash of the filter-chain.
+/// - `Admin`: the admin interface.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Target {
     Listener(SmolStr),
@@ -85,10 +90,12 @@ impl Display for Target {
     }
 }
 
-/// Represents messages sent to access loggers.
+/// Messages exchanged with the background access-logger tasks.
 ///
-/// - `Configure`: Updates the logger configuration for a given target.
-/// - `Message`: Sends one or more formatted log entries to be written.
+/// - `Configure`: replaces the logger configuration for a given [`Target`].
+///   Sent once per target during initialiation or on xDS updates.
+/// - `Message`: delivers one or more pre-formatted log entries to be written
+///   to all sinks configured for the given [`Target`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AccessLogMessage {
     Configure(Target, Vec<AccessLogConf>),
@@ -105,65 +112,201 @@ pub enum LoggerError {
 
 static SENDER_POOL: OnceLock<LoggerPool<AccessLogMessage>> = OnceLock::new();
 
+/// A reserved send slot on one of the logger MPSC channels.
+///
+/// Wraps a [`tokio::sync::mpsc::Permit`] that has already been reserved,
+/// guaranteeing that the subsequent send will never block or fail due to a
+/// full buffer.
 pub type AccessLogPermit = Permit<'static, AccessLogMessage>;
-pub type ShareableAccessLogPermit = Arc<Mutex<Option<AccessLogPermit>>>;
 
-/// Asynchronously reserves a permit to send an `AccessLogMessage`, if possible.
+/// A cloneable, shared handle to an optionally-reserved [`AccessLogPermit`].
 ///
-/// Returns an `Arc<Mutex<Option<AccessLogToken>>>`, which contains `Some(permit)` if the sender is available
-/// and the reservation succeeds, or `None` otherwise. The permit can be shared across tasks and
-/// consumed later by one of them to log message.
+/// Internally wraps an [`AtomicOption`] behind an [`Arc`] so that the permit
+/// can be handed to two concurrent execution paths (e.g. the normal response
+/// path and the body-streaming completion callback) while ensuring exactly one
+/// of them consumes it via [`take`](ShareableAccessLogPermit::take).
 ///
-#[inline]
-pub async fn log_access_reserve_balanced() -> ShareableAccessLogPermit {
-    let maybe_permit = if let Some(sender) = get_sender() { sender.reserve().await.ok() } else { None };
-    Arc::new(Mutex::new(maybe_permit))
-}
+/// The default value represents the "no permit" state (i.e. logging is
+/// disabled or the reservation failed).
+#[derive(Clone)]
+pub struct ShareableAccessLogPermit(Arc<AtomicOption<AccessLogPermit>>);
 
-/// Asynchronously reserves a permit from the first access log sender, if available.
-///
-/// Returns an `Arc<Mutex<Option<AccessLogToken>>>` containing `Some(permit)` if the reservation succeeds,
-/// or `None` if the sender is unavailable or the reservation fails. The permit can be shared across tasks
-/// and consumed later by one of them to log a message.
-#[inline]
-pub async fn log_access_reserve_single() -> ShareableAccessLogPermit {
-    let maybe_permit = if let Some(sender) = get_sender_at(0) { sender.reserve().await.ok() } else { None };
-    Arc::new(Mutex::new(maybe_permit))
-}
-
-/// Sends an `AccessLogMessage` using a previously reserved permit, if available.
-///
-/// Consumes the permit inside the given `Arc<Mutex<Option<AccessLogToken>>>` and sends a message
-/// containing the specified `target` and formatted messages.
-#[allow(clippy::needless_pass_by_value)]
-#[inline]
-pub fn log_access(permit: ShareableAccessLogPermit, target: Target, vec: Vec<FormattedMessage>) {
-    if let Some(permit) = permit.lock().take() {
-        permit.send(AccessLogMessage::Message(target, vec));
+impl Default for ShareableAccessLogPermit {
+    fn default() -> Self {
+        ShareableAccessLogPermit(Arc::new(AtomicOption::none()))
     }
 }
 
-/// Initializes and starts a set of asynchronous access loggers.
+impl ShareableAccessLogPermit {
+    /// Creates a new handle that owns the given permit.
+    #[inline]
+    pub fn new(permit: AccessLogPermit) -> Self {
+        Self(Arc::new(AtomicOption::some(permit)))
+    }
+
+    /// Atomically takes the permit out of this handle, returning `Some` the
+    /// first time and `None` on every subsequent call.
+    #[inline]
+    pub fn take(&self, order: std::sync::atomic::Ordering) -> Option<AccessLogPermit> {
+        self.0.take(order)
+    }
+}
+
+/// Reserves a send slot on a load-balanced logger sender.
 ///
-/// This function creates `len` independent logging tasks, each with its own
-/// bounded MPSC channel of capacity `buffer`. These loggers receive messages
-/// through the globally shared `SENDER_POOL`, which is initialized here using
-/// an unsafe swap.
+/// Selects a sender from the global pool based on the current thread id (see
+/// [`LoggerPool::get`]) and awaits a channel permit. Returns a
+/// [`ShareableAccessLogPermit`] that holds `Some(permit)` on success, or the
+/// default empty handle if no sender is available or the reservation fails.
 ///
-/// Each logger runs concurrently in the background using a Tokio `JoinSet`,
-/// and processes incoming messages asynchronously.
+/// Prefer this function when calling from a context tied to a specific Tokio
+/// worker thread, as it distributes load across all logger instances.
+#[inline]
+pub async fn reserve_balanced() -> ShareableAccessLogPermit {
+    let maybe_permit = if let Some(sender) = get_sender() { sender.reserve().await.ok() } else { None };
+    match maybe_permit {
+        Some(permit) => ShareableAccessLogPermit::new(permit),
+        None => {
+            error!("Failed to reserve access log permit: sender unavailable or reservation failed.");
+            ShareableAccessLogPermit::default()
+        },
+    }
+}
+
+/// Reserves a send slot on the first logger sender (index 0).
+///
+/// Useful when ordering guarantees or a single-logger setup are required.
+/// Returns a [`ShareableAccessLogPermit`] that holds `Some(permit)` on
+/// success, or the default empty handle if the sender is unavailable or the
+/// reservation fails.
+#[inline]
+pub async fn reserve_single() -> ShareableAccessLogPermit {
+    let maybe_permit = if let Some(sender) = get_sender_at(0) { sender.reserve().await.ok() } else { None };
+    match maybe_permit {
+        Some(permit) => ShareableAccessLogPermit::new(permit),
+        None => {
+            error!("Failed to reserve access log permit: sender unavailable or reservation failed.");
+            ShareableAccessLogPermit::default()
+        },
+    }
+}
+
+/// Sends formatted log entries to the logger for the given target.
+///
+/// Behaviour depends on the `blocking` flag set during [`start_access_loggers`]:
+/// - **blocking**: awaits [`Sender::send`]; the caller is suspended until the
+///   channel has capacity.
+/// - **non-blocking**: uses [`Sender::try_send`] and logs an error if the
+///   buffer is full.
+///
+/// Logs an error and returns without panicking if no sender is available.
+#[allow(clippy::needless_pass_by_value)]
+#[inline]
+pub async fn log_access(target: Target, vec: Vec<FormattedMessage>) {
+    if let Some(sender) = get_sender() {
+        if is_blocking() {
+            if let Err(e) = sender.send(AccessLogMessage::Message(target, vec)).await {
+                error!("Failed to send access log message: {e}");
+            }
+        } else {
+            if let Err(e) = sender.try_send(AccessLogMessage::Message(target, vec)) {
+                error!("Failed to send access log message: {e}");
+            }
+        }
+    } else {
+        error!("Failed to send access log message: no available sender.");
+    }
+}
+
+/// Attempts a non-blocking send of formatted log entries.
+///
+/// Returns `Ok(())` if the message was enqueued, or a [`TrySendError`]
+/// carrying the original `Vec<FormattedMessage>` back to the caller if the
+/// channel is full ([`TrySendError::Full`]) or closed
+/// ([`TrySendError::Closed`]).
+///
+/// Does not await or block; use [`log_access`] when backpressure is acceptable.
+#[allow(clippy::needless_pass_by_value)]
+pub fn try_log_access(target: Target, vec: Vec<FormattedMessage>) -> Result<(), TrySendError<Vec<FormattedMessage>>> {
+    if let Some(sender) = get_sender() {
+        sender.try_send(AccessLogMessage::Message(target, vec)).map_err(|e| match e {
+            TrySendError::Full(AccessLogMessage::Message(_, msg)) => TrySendError::Full(msg),
+            TrySendError::Closed(AccessLogMessage::Message(_, msg)) => {
+                error!("Failed to send access log message: no available sender.");
+                TrySendError::Closed(msg)
+            },
+            _ => unreachable!(),
+        })
+    } else {
+        error!("Failed to send access log message: no available sender.");
+        Err(TrySendError::Closed(vec))
+    }
+}
+
+/// Sends formatted log entries using a pre-reserved permit, with a fallback path.
+///
+/// First attempts to consume the permit from `permit` via an atomic take
+/// (zero-cost if it was already reserved). If the permit has already been
+/// taken (or was never set), falls back to [`try_log_access`]. When the
+/// `blocking` flag is set and the channel is full, [`tokio::task::block_in_place`]
+/// is used to drive a synchronous send without spawning a new task.
+///
+/// This function is sync and safe to call from non-async contexts (e.g. body
+/// completion callbacks registered on [`InstrumentedBody`]).
+#[allow(clippy::needless_pass_by_value)]
+#[inline]
+pub fn log_access_blocking(permit: ShareableAccessLogPermit, target: Target, vec: Vec<FormattedMessage>) {
+    if let Some(permit) = permit.take(std::sync::atomic::Ordering::Acquire) {
+        permit.send(AccessLogMessage::Message(target, vec));
+    } else {
+        let target_clone = target.clone();
+        match try_log_access(target, vec) {
+            Err(err) => match err {
+                TrySendError::Full(vec) => {
+                    if is_blocking() {
+                        tokio::task::block_in_place(move || {
+                            if let Some(sender) = get_sender() {
+                                println!("sending blocking message...");
+                                let _ = sender.blocking_send(AccessLogMessage::Message(target_clone, vec));
+                            }
+                        });
+                    }
+                },
+                TrySendError::Closed(_) => {
+                    error!("Failed to send access log message: no available sender.");
+                },
+            },
+            Ok(_) => (),
+        }
+    }
+}
+
+/// Initializes the global sender pool and spawns background logger tasks.
+///
+/// Creates `num_instances` independent [`AccessLogger`] tasks, each backed by
+/// its own bounded MPSC channel of capacity `buffer`. The senders are stored
+/// in the process-global [`SENDER_POOL`] (`OnceLock`); calling this function
+/// more than once has no effect and logs an error.
+///
+/// Each logger runs concurrently inside the provided Tokio runtime and
+/// processes [`AccessLogMessage`]s asynchronously.
 ///
 /// # Arguments
 ///
-/// * `len` - The number of logger instances to spawn.
-/// * `buffer` - The size of the message buffer for each logger's channel.
-/// * `frequency` - The optional RollingFrequency variant from tracing_rolling_file lib.
-/// * `max_file_size` - The optional maximum size of file per each target.
-/// * `max_log_files` - The maximum number of files per each target.
+/// * `num_instances` - Number of independent logger tasks to spawn. Using more
+///   than one reduces contention on the send side at the cost of out-of-order
+///   log entries across instances.
+/// * `buffer` - Bounded channel capacity per logger instance.
+/// * `frequency` - Optional log-file rolling frequency (from `tracing_rolling_file`).
+/// * `max_file_size` - Optional maximum size in bytes for each rolling log file.
+/// * `max_log_files` - Maximum number of retained rolling files per target.
+/// * `blocking` - When `true`, senders will await channel capacity instead of
+///   dropping messages when the buffer is full.
 ///
 /// # Returns
 ///
-/// A `JoinSet<()>` containing all spawned logger tasks, which can be awaited
+/// A [`JoinSet<()>`] containing all spawned logger tasks. Dropping it cancels
+/// the loggers; awaiting [`JoinSet::join_all`] waits for them to finish.
 #[allow(clippy::needless_pass_by_value)]
 pub fn start_access_loggers(
     num_instances: usize,
@@ -171,6 +314,7 @@ pub fn start_access_loggers(
     frequency: Option<RollingFrequency>,
     max_file_size: Option<u64>,
     max_log_files: usize,
+    blocking: bool,
 ) -> JoinSet<()> {
     let (mut senders, mut receivers) = (Vec::with_capacity(num_instances), Vec::with_capacity(num_instances));
     for _ in 0..num_instances {
@@ -181,7 +325,7 @@ pub fn start_access_loggers(
 
     info!("Initializing access loggers...");
 
-    if SENDER_POOL.set(LoggerPool(senders)).is_err() {
+    if SENDER_POOL.set(LoggerPool { senders, blocking }).is_err() {
         error!("Unable to initialize logger pool!");
         return JoinSet::new(); // Return an empty JoinSet on error
     }
@@ -189,7 +333,7 @@ pub fn start_access_loggers(
     let mut join_set = JoinSet::new();
     for (i, recv) in receivers.into_iter().enumerate() {
         let frequency = frequency.clone();
-        let max_size = max_file_size.clone();
+        let max_size = max_file_size;
         join_set.spawn(async move {
             let mut logger = AccessLogger::new(i, frequency, max_size, max_log_files);
             logger.run(recv).await
@@ -198,38 +342,43 @@ pub fn start_access_loggers(
     join_set
 }
 
-/// Returns true if the logger has been initialized with active senders.
-///
-/// Checks if the global sender pool contains any senders.
+/// Returns `true` if the global sender pool has been initialized with at least one sender.
 #[inline]
 pub fn is_access_log_enabled() -> bool {
-    SENDER_POOL.get().is_some_and(|pool| !pool.0.is_empty())
+    SENDER_POOL.get().is_some_and(|pool| !pool.senders.is_empty())
 }
 
-/// Returns a reference to an available logger sender, if any.
-///
-/// Accesses the global sender pool unsafely and retrieves one sender.
-/// Returns `None` if no senders are available (if initialized with `init_logger_once`)
+/// Returns a reference to a sender selected from the pool by thread-id hash, or `None` if the pool is empty.
 #[inline]
 pub fn get_sender() -> Option<&'static Sender<AccessLogMessage>> {
     SENDER_POOL.get().and_then(|pool| pool.get())
 }
 
+/// Returns a reference to the sender at `index`, or `None` if out of bounds.
 #[inline]
 pub fn get_sender_at(index: usize) -> Option<&'static Sender<AccessLogMessage>> {
     SENDER_POOL.get().and_then(|pool| pool.get_at(index))
 }
 
-/// Updates logger configuration for the given target.
+/// Returns `true` if the logger pool was started in blocking mode.
 ///
-/// Sends an `AccessLogMessage::Configure` with the new configuration to all active loggers.
-/// Returns `Ok(())` if all sends succeed, otherwise returns a vector of errors.
+/// In blocking mode, [`log_access`] awaits channel capacity rather than
+/// dropping messages when the buffer is full.
+#[inline]
+pub fn is_blocking() -> bool {
+    SENDER_POOL.get().and_then(|pool| Some(pool.blocking)).unwrap_or(false)
+}
+
+/// Broadcasts a configuration update for `target` to every logger instance.
 ///
-/// Logs info if there are active loggers, and errors for each failed send.
+/// Sends an [`AccessLogMessage::Configure`] to all senders in the pool so
+/// that every logger applies the new [`AccessLogConf`] list. Returns
+/// `Ok(())` if all sends succeed, or [`LoggerError::SenderError`] on the
+/// first failure.
 pub async fn update_configuration(target: Target, init: Vec<AccessLogConf>) -> Result<(), LoggerError> {
     let pool =
         SENDER_POOL.get().ok_or_else(|| LoggerError::InitializationError("Logger pool not initialized".into()))?;
-    for (i, senders) in pool.0.iter().enumerate() {
+    for (i, senders) in pool.senders.iter().enumerate() {
         if let Err(e) = senders.send(AccessLogMessage::Configure(target.clone(), init.clone())).await {
             error!("Failed to send logger configuration to sender {i}: {e}");
             return Err(LoggerError::SenderError);
@@ -297,7 +446,7 @@ mod tests {
         let message = fmt.into_message();
 
         // initialize the logger pool with one channel for access log messages
-        let handles = start_access_loggers(8, 100, None, None, 3);
+        let handles = start_access_loggers(8, 100, None, None, 3, false);
 
         // send a new configuration for the logger(s)
         update_configuration(
@@ -307,12 +456,69 @@ mod tests {
         .await
         .unwrap();
 
-        let permit = if is_access_log_enabled() { Some(log_access_reserve_single().await) } else { None };
+        let permit = if is_access_log_enabled() { Some(reserve_single().await) } else { None };
 
         if let Some(permit) = permit {
             // log the formatted message to file and stdout...
-            log_access(permit, Target::Listener("test".into()), vec![message.clone(), message.clone()]);
+            log_access_blocking(permit, Target::Listener("test".into()), vec![message.clone(), message.clone()]);
         }
+
+        _ = timeout(Duration::from_secs(2), handles.join_all()).await;
+        std::fs::remove_file("test-access.log").unwrap();
+    }
+
+    #[allow(clippy::disallowed_methods)]
+    #[tokio::test]
+    async fn test_access_logger_blocking() {
+        let req = build_request();
+        let resp = build_response();
+
+        let formatter = LogFormatter::try_new(DEFAULT_ACCESS_LOG_FORMAT, false).unwrap();
+        let mut fmt = formatter.clone();
+
+        fmt.with_context(&InitContext { start_time: std::time::SystemTime::now() });
+        fmt.with_context(&DownstreamContext {
+            request: &req,
+            trace_id: None,
+            request_head_size: 0,
+            server_name: None,
+            socket_address: Default::default(),
+        });
+        fmt.with_context(&UpstreamContext {
+            authority: Some(req.uri().authority().unwrap()),
+            cluster_name: Some("test_cluster"),
+            route_name: "test_route",
+        });
+        fmt.with_context(&DownstreamResponseContext { response: &resp, response_head_size: 0 });
+        fmt.with_context(&FinishContext {
+            duration: Duration::from_millis(100),
+            bytes_received: 128,
+            bytes_sent: 256,
+            response_flags: ResponseFlags::NO_HEALTHY_UPSTREAM,
+            upstream_failure: None,
+            response_code_details: None,
+            connection_termination_details: None,
+        });
+
+        let message = fmt.into_message();
+
+        // initialize the logger pool with one channel for access log messages
+        let handles = start_access_loggers(8, 100, None, None, 3, true);
+
+        // send a new configuration for the logger(s)
+        update_configuration(
+            Target::Listener("test".into()),
+            vec![AccessLogConf::File("test-access.log".into()), AccessLogConf::Stderr],
+        )
+        .await
+        .unwrap();
+
+        // log the formatted message to file and stdout...
+        log_access_blocking(
+            ShareableAccessLogPermit::default(),
+            Target::Listener("test".into()),
+            vec![message.clone(), message.clone()],
+        );
 
         _ = timeout(Duration::from_secs(2), handles.join_all()).await;
         std::fs::remove_file("test-access.log").unwrap();
