@@ -13,7 +13,7 @@ message McpGateway {
     optional string cluster_header = 1;
     ServerInfo server_info = 2 [(validate.rules).message = {required: true}];
     repeated Tool tools = 3;
-    SemanticSearchTool semantic_search_tool = 4;
+    SemanticSearch semantic_search_tool = 4;
 }
 
 // Server info
@@ -113,11 +113,13 @@ message JwtClaimMatcher {
   string value = 2 [(validate.rules).string = {min_bytes: 1}];
 }
 
-message SemanticSearchTool {
+message SemanticSearch {
     enum EmbeddingsProvider {
         LOCAL = 0;
         REMOTE = 1;
     }
-    bool send_server_side_notification = 1;
+    // Enable assisted discovery mode for clients unaware of semantic search
+    // When true, inject semantic search tool and use notification flow to trigger re-list
+    bool enable_assisted_discovery = 1;
     EmbeddingsProvider embeddings_provider = 2;
 }

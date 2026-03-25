@@ -13,7 +13,7 @@ use dashmap::DashMap;
 use http::{header::InvalidHeaderValue, HeaderValue};
 use jsonschema::Validator;
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::{
-    ClusterHeader, McpBackendTransportUpstream, McpTool, UpstreamBackend,
+    ClusterHeader, McpBackendTransportUpstream, McpSemanticSearch, McpTool, UpstreamBackend,
 };
 use rmcp::{
     model::{
@@ -59,7 +59,7 @@ struct CachedEntry<T> {
 pub struct ToolsRegistry {
     registry: Vec<ToolEntry>,
     cache: DashMap<SmolStr, CachedEntry<Vec<Tool>>, ahash::RandomState>,
-    semantic_search_tool: bool,
+    semantic_search: Option<McpSemanticSearch>,
     bootstrapped: OnceCell<()>,
 }
 
@@ -141,7 +141,10 @@ impl ToolEntry {
 }
 
 impl ToolsRegistry {
-    pub fn with_tools(tools: Vec<McpTool>, semantic_search_tool: bool) -> Result<Self, ToolBuilderError> {
+    pub fn with_tools(
+        tools: Vec<McpTool>,
+        semantic_search: Option<McpSemanticSearch>,
+    ) -> Result<Self, ToolBuilderError> {
         let registry: Vec<ToolEntry> = tools
             .into_iter()
             .map(|tool_conf| -> Result<ToolEntry, ToolBuilderError> {
@@ -186,7 +189,7 @@ impl ToolsRegistry {
         Ok(ToolsRegistry {
             registry,
             cache: DashMap::with_hasher(ahash::RandomState::new()),
-            semantic_search_tool,
+            semantic_search,
             bootstrapped: OnceCell::new(),
         })
     }
@@ -236,8 +239,11 @@ impl ToolsRegistry {
             .await;
 
         let mut tools = Vec::with_capacity(self.registry.len() + 1);
-        if self.semantic_search_tool {
-            let Value::Object(semantic_search_input_schema) = &*SEMANTIC_SEARCH_TOOL_INPUT_SCHEMA else { unreachable!() };
+
+        if self.semantic_search.is_some() {
+            let Value::Object(semantic_search_input_schema) = &*SEMANTIC_SEARCH_TOOL_INPUT_SCHEMA else {
+                unreachable!()
+            };
 
             tools.push(Tool::new(
                 SEMANTIC_SEARCH_TOOL,
@@ -249,7 +255,7 @@ impl ToolsRegistry {
         // FIXME: This is a dummy dynamic tool discovery strategy that
         // returns the complete list of tools after the semantic_search_tool is invoked.
         //
-        if !self.semantic_search_tool || session.as_ref().is_some_and(|session| session.prompt.lock().is_some()) {
+        if self.semantic_search.is_none() || session.as_ref().is_some_and(|session| session.prompt.lock().is_some()) {
             self.fill_list_tools(req_ext, session, &mut tools).await;
         }
 
@@ -304,8 +310,10 @@ impl ToolsRegistry {
                         tool
                     });
 
-                    if self.semantic_search_tool {
-                        session.active_tools.insert(entry.conf.name.clone());
+                    if let Some(semantic_search) = &self.semantic_search {
+                        if semantic_search.enable_assisted_discovery {
+                            session.active_tools.insert(entry.conf.name.clone());
+                        }
                     }
                 },
                 UpstreamBackend::McpServer { transport, url, cache_duration, dynamic_backend } => {
@@ -318,10 +326,12 @@ impl ToolsRegistry {
                         if cache_valid {
                             debug!(target: "mcp_gateway", "Loaded cached entry for MCP backend: {}", &entry.conf.name);
                             tools.extend_from_slice(&cached.entry);
-                            if self.semantic_search_tool {
-                                cached.entry.iter().for_each(|t| {
-                                    session.active_tools.insert(t.name.to_smolstr());
-                                });
+                            if let Some(semantic_search) = &self.semantic_search {
+                                if semantic_search.enable_assisted_discovery {
+                                    cached.entry.iter().for_each(|t| {
+                                        session.active_tools.insert(t.name.to_smolstr());
+                                    });
+                                }
                             }
                             continue;
                         }
@@ -341,10 +351,12 @@ impl ToolsRegistry {
                                 CachedEntry { entry: up_tools.clone(), expiration },
                             );
 
-                            if self.semantic_search_tool {
-                                up_tools.iter().for_each(|t| {
-                                    session.active_tools.insert(t.name.to_smolstr());
-                                });
+                            if let Some(semantic_search) = &self.semantic_search {
+                                if semantic_search.enable_assisted_discovery {
+                                    up_tools.iter().for_each(|t| {
+                                        session.active_tools.insert(t.name.to_smolstr());
+                                    });
+                                }
                             }
                             tools.extend(up_tools);
                         },
@@ -471,8 +483,11 @@ impl ToolsRegistry {
             None => debug!(target: "mcp_gateway", "call: method:{} tool name '{tool_name}'", rpc.request.method),
         }
 
-        if self.semantic_search_tool && tool_name == SEMANTIC_SEARCH_TOOL {
-            return self.call_semantic_search_tool(rpc, session).await;
+        if tool_name == SEMANTIC_SEARCH_TOOL {
+            if self.semantic_search.is_some() {
+                return self.call_semantic_search_tool(rpc, session).await;
+            }
+            // TODO we should send back an error if agent is invoking semantic_search tool and none is configured
         }
 
         let (index, entry) = self
@@ -480,7 +495,7 @@ impl ToolsRegistry {
             .iter()
             .enumerate()
             .find(|(_, e)| e.conf.name == tool_name)
-            .filter(|(_, e)| !self.semantic_search_tool || session.active_tools.contains(&e.conf.name))
+            .filter(|(_, e)| self.semantic_search.is_none() || session.active_tools.contains(&e.conf.name))
             .ok_or_else(|| CallToolError::ToolNotFound(tool_name.to_string()))?;
 
         if let Some(rbac) = &entry.rbac {

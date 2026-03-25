@@ -239,7 +239,7 @@ impl TryFrom<McpGatewayConfig> for McpGateway {
     type Error = ToolBuilderError;
 
     fn try_from(config: McpGatewayConfig) -> Result<Self, Self::Error> {
-        let tools = ToolsRegistry::with_tools(config.tools.clone(), config.semantic_search_tool)?;
+        let tools = ToolsRegistry::with_tools(config.tools.clone(), config.semantic_search_tool.clone())?;
         Ok(Self {
             inner: Arc::new(McpGatewayInner { config, tools }),
             current_session: None,

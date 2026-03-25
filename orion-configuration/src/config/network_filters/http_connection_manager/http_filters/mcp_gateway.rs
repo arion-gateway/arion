@@ -80,7 +80,9 @@ pub enum McpRbacPermission {
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct McpSemanticSearch {
-    pub send_server_side_notification: bool,
+    /// Enable assisted discovery mode for clients unaware of semantic search.
+    /// When true, inject semantic search tool and use notification flow to trigger re-list.
+    pub enable_assisted_discovery: bool,
     pub embeddings_provider: EmbeddingsProvider,
 }
 
@@ -101,9 +103,9 @@ mod envoy_conversions {
     use super::*;
     use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::mcp::mcp_gateway::v3::{
         mcp_server_backend::TransportUpstream as OrionTransportUpstream, permission,
-        tool::UpstreamBackend as OrionUpstreamBackend, tool_rbac::Action as OrionAction, JwtClaimMatcher,
-        JwtHeaderMatcher, McpGateway as OrionMcpGateway, Permission as OrionPermission,
-        QueryParam as OrionMcpQueryParams, SemanticSearchTool as OrionSemanticSearchTool,
+        semantic_search::EmbeddingsProvider as OrionEmbeddingsProvider, tool::UpstreamBackend as OrionUpstreamBackend,
+        tool_rbac::Action as OrionAction, JwtClaimMatcher, JwtHeaderMatcher, McpGateway as OrionMcpGateway,
+        Permission as OrionPermission, QueryParam as OrionMcpQueryParams, SemanticSearch as OrionSemanticSearch,
         ServerInfo as OrionMcpServerInfo, Tool as OrionTool, ToolRbac as OrionToolRbac,
     };
     use tracing::warn;
@@ -296,20 +298,21 @@ mod envoy_conversions {
         }
     }
 
-    impl TryFrom<OrionSemanticSearchTool> for McpSemanticSearch {
+    impl TryFrom<OrionSemanticSearch> for McpSemanticSearch {
         type Error = GenericError;
-        fn try_from(orion: OrionSemanticSearchTool) -> Result<Self, Self::Error> {
-            use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::mcp::mcp_gateway::v3::semantic_search_tool::EmbeddingsProvider as OrionEmbeddingsProvider;
-
-            let OrionSemanticSearchTool { send_server_side_notification, embeddings_provider } = orion;
+        fn try_from(orion: OrionSemanticSearch) -> Result<Self, Self::Error> {
+            let OrionSemanticSearch { enable_assisted_discovery, embeddings_provider } = orion;
 
             let embeddings_provider = match OrionEmbeddingsProvider::try_from(embeddings_provider) {
                 Ok(OrionEmbeddingsProvider::Local) => EmbeddingsProvider::Local,
-                Ok(OrionEmbeddingsProvider::Remote) => EmbeddingsProvider::Remote,
+                Ok(OrionEmbeddingsProvider::Remote) => {
+                    warn!("Currently only dummy local embeddings are supported, the embeddings_provider field will be ignored");
+                    EmbeddingsProvider::Remote
+                },
                 Err(_) => return Err(GenericError::from_msg("Invalid embeddings_provider value")),
             };
 
-            Ok(McpSemanticSearch { send_server_side_notification, embeddings_provider })
+            Ok(McpSemanticSearch { enable_assisted_discovery, embeddings_provider })
         }
     }
 
