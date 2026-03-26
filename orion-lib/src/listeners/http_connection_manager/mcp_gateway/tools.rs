@@ -37,7 +37,7 @@ use tokio::sync::OnceCell;
 use tracing::{debug, info, warn};
 use upon::Engine;
 
-const SEMANTIC_SEARCH_TOOL: &str = "semantic_search_tool";
+const SEMANTIC_SEARCH_TOOL_NAME: &str = "semantic_search";
 
 static SEMANTIC_SEARCH_TOOL_INPUT_SCHEMA: LazyLock<Value> = LazyLock::new(|| {
     json!({
@@ -216,6 +216,7 @@ impl ToolsRegistry {
                     },
                 }
             }
+
         }
     }
 
@@ -246,16 +247,30 @@ impl ToolsRegistry {
             };
 
             tools.push(Tool::new(
-                SEMANTIC_SEARCH_TOOL,
+                SEMANTIC_SEARCH_TOOL_NAME,
                 "Pass the user prompt or a summary to discover relevant tools.",
                 Arc::new(semantic_search_input_schema.clone()),
             ));
         }
 
-        // FIXME: This is a dummy dynamic tool discovery strategy that
-        // returns the complete list of tools after the semantic_search_tool is invoked.
-        //
-        if self.semantic_search.is_none() || session.as_ref().is_some_and(|session| session.prompt.lock().is_some()) {
+        // Handle different semantic search modes:
+        // - No semantic search: always fill all tools
+        // - Assisted discovery mode: only fill tools after prompt is set (notification flow)
+        // - Direct call mode: always fill all tools (client calls semantic search tool directly)
+        let should_fill_tools = if let Some(semantic_search) = &self.semantic_search {
+            if semantic_search.enable_assisted_discovery {
+                // Assisted mode: only fill if prompt exists
+                session.as_ref().is_some_and(|s| s.prompt.lock().is_some())
+            } else {
+                // Direct mode: always fill (but will be filtered if prompt exists)
+                true
+            }
+        } else {
+            // No semantic search: always fill
+            true
+        };
+
+        if should_fill_tools {
             self.fill_list_tools(req_ext, session, &mut tools).await;
         }
 
@@ -272,6 +287,21 @@ impl ToolsRegistry {
         };
 
         let description_words = tool.conf.description.split_whitespace().map(|w| w.to_lowercase()).collect::<Vec<_>>();
+        words.iter().any(|word| description_words.contains(word))
+    }
+
+    fn filter_mcp_tool_by_vector_similarity(tool: &Tool, prompt_words: Option<&[String]>) -> bool {
+        // Filter individual MCP tools by their description
+        let Some(words) = prompt_words else {
+            return true;
+        };
+
+        let Some(ref description) = tool.description else {
+            // If no description, don't filter out
+            return true;
+        };
+
+        let description_words = description.as_ref().split_whitespace().map(|w| w.to_lowercase()).collect::<Vec<_>>();
         words.iter().any(|word| description_words.contains(word))
     }
 
@@ -294,9 +324,12 @@ impl ToolsRegistry {
             .registry
             .iter()
             .filter(|entry| entry.rbac.as_ref().map_or(true, |rbac| rbac.is_permitted(req_ext)))
-            .filter(|entry| Self::filter_tool_by_vector_similarity(entry, prompt_words.as_deref()))
         {
             match &entry.conf.backend {
+                // For REST backends, filter the entry itself by vector similarity
+                UpstreamBackend::Rest { .. } if !Self::filter_tool_by_vector_similarity(entry, prompt_words.as_deref()) => {
+                    continue;
+                },
                 UpstreamBackend::Rest { .. } => {
                     let tool = Tool::new(
                         entry.conf.name.to_string(),
@@ -310,10 +343,9 @@ impl ToolsRegistry {
                         tool
                     });
 
-                    if let Some(semantic_search) = &self.semantic_search {
-                        if semantic_search.enable_assisted_discovery {
-                            session.active_tools.insert(entry.conf.name.clone());
-                        }
+                    // Track active tools when semantic search is enabled and a prompt exists
+                    if self.semantic_search.is_some() && prompt_words.is_some() {
+                        session.active_tools.insert(entry.conf.name.clone());
                     }
                 },
                 UpstreamBackend::McpServer { transport, url, cache_duration, dynamic_backend } => {
@@ -325,13 +357,18 @@ impl ToolsRegistry {
 
                         if cache_valid {
                             debug!(target: "mcp_gateway", "Loaded cached entry for MCP backend: {}", &entry.conf.name);
-                            tools.extend_from_slice(&cached.entry);
-                            if let Some(semantic_search) = &self.semantic_search {
-                                if semantic_search.enable_assisted_discovery {
-                                    cached.entry.iter().for_each(|t| {
-                                        session.active_tools.insert(t.name.to_smolstr());
-                                    });
-                                }
+                            // Filter MCP tools individually by vector similarity
+                            let filtered_tools: Vec<&Tool> = cached.entry.iter()
+                                .filter(|t| Self::filter_mcp_tool_by_vector_similarity(t, prompt_words.as_deref()))
+                                .collect();
+                            
+                            tools.extend(filtered_tools.iter().map(|&t| t.clone()));
+                            
+                            // Track active tools when semantic search is enabled and a prompt exists
+                            if self.semantic_search.is_some() && prompt_words.is_some() {
+                                filtered_tools.iter().for_each(|t| {
+                                    session.active_tools.insert(t.name.to_smolstr());
+                                });
                             }
                             continue;
                         }
@@ -351,14 +388,18 @@ impl ToolsRegistry {
                                 CachedEntry { entry: up_tools.clone(), expiration },
                             );
 
-                            if let Some(semantic_search) = &self.semantic_search {
-                                if semantic_search.enable_assisted_discovery {
-                                    up_tools.iter().for_each(|t| {
-                                        session.active_tools.insert(t.name.to_smolstr());
-                                    });
-                                }
+                            // Filter MCP tools individually by vector similarity
+                            let filtered_tools: Vec<&Tool> = up_tools.iter()
+                                .filter(|t| Self::filter_mcp_tool_by_vector_similarity(t, prompt_words.as_deref()))
+                                .collect();
+                            
+                            // Track active tools when semantic search is enabled and a prompt exists
+                            if self.semantic_search.is_some() && prompt_words.is_some() {
+                                filtered_tools.iter().for_each(|t| {
+                                    session.active_tools.insert(t.name.to_smolstr());
+                                });
                             }
-                            tools.extend(up_tools);
+                            tools.extend(filtered_tools.iter().map(|&t| t.clone()));
                         },
                         Err(err) => {
                             info!(target: "mcp_gateway", "Failed to list tools: {}!", err);
@@ -414,8 +455,9 @@ impl ToolsRegistry {
 
     pub async fn call_semantic_search_tool(
         &self,
+        req_ext: &http::Extensions,
         rpc: &model::JsonRpcRequest,
-        session: &Session,
+        session: &Arc<Session>,
     ) -> Result<MessageResult, CallToolError> {
         let arguments = match &rpc.request.params.get("arguments") {
             Some(&serde_json::Value::Object(ref o)) => o.clone(),
@@ -430,31 +472,58 @@ impl ToolsRegistry {
             ));
         };
 
-        // send a notifications/tools/list_changed...
-        //
+        // Store the prompt in the session
+        {
+            let mut session_prompt = session.prompt.lock();
+            *session_prompt = Some(prompt.clone());
+        }
 
-        // Wrap the server notification inside the generic JSON-RPC structure.
-        let json_rpc_notification = JsonRpcNotification::<ServerNotification> {
-            jsonrpc: model::JsonRpcVersion2_0,
-            notification: ServerNotification::ToolListChangedNotification(ToolListChangedNotification::default()),
+        // Get the semantic search configuration
+        let Some(semantic_search) = &self.semantic_search else {
+            return Err(CallToolError::ValidationError(
+                "Semantic search not configured".into(),
+            ));
         };
 
-        let mut session_prompt = session.prompt.lock();
-        *session_prompt = Some(prompt.clone());
-        drop(session_prompt);
+        if semantic_search.enable_assisted_discovery {
+            // Assisted discovery mode: send notification to trigger client re-list
+            let json_rpc_notification = JsonRpcNotification::<ServerNotification> {
+                jsonrpc: model::JsonRpcVersion2_0,
+                notification: ServerNotification::ToolListChangedNotification(ToolListChangedNotification::default()),
+            };
 
-        let text_content = RawTextContent {
-            text: "Context acquired. Relevant APIs loaded. The tool list has been updated, please proceed with the new tools.".to_string(),
-            meta: None
-        };
+            let text_content = RawTextContent {
+                text: "Context acquired. Relevant APIs loaded. The tool list has been updated, please proceed with the new tools.".to_string(),
+                meta: None
+            };
 
-        let success_message = Content { raw: RawContent::Text(text_content), annotations: None };
-        let json_result = serde_json::to_value(CallToolResult::success(vec![success_message]))?;
+            let success_message = Content { raw: RawContent::Text(text_content), annotations: None };
+            let json_result = serde_json::to_value(CallToolResult::success(vec![success_message]))?;
 
-        let json_rpc_response =
-            model::JsonRpcResponse { jsonrpc: model::JsonRpcVersion2_0, id: rpc.id.clone(), result: json_result };
+            let json_rpc_response =
+                model::JsonRpcResponse { jsonrpc: model::JsonRpcVersion2_0, id: rpc.id.clone(), result: json_result };
 
-        Ok(MessageResult::JsonRpcNotificationResponse(json_rpc_notification, json_rpc_response))
+            Ok(MessageResult::JsonRpcNotificationResponse(json_rpc_notification, json_rpc_response))
+        } else {
+            // Direct call mode: perform filtering and populate active_tools, then return tool list
+            let list_result = self.build_list_tools(req_ext, &Some(Arc::clone(session))).await;
+            let tool_count = list_result.tools.len();
+
+            let text_content = RawTextContent {
+                text: format!("Found {} relevant tools based on your query. You can now call list_tools to see the filtered results.",
+                    tool_count
+                ),
+                meta: None
+            };
+
+            let success_message = Content { raw: RawContent::Text(text_content), annotations: None };
+            let json_result = serde_json::to_value(CallToolResult::success(vec![success_message]))?;
+
+            let json_rpc_response =
+                model::JsonRpcResponse { jsonrpc: model::JsonRpcVersion2_0, id: rpc.id.clone(), result: json_result };
+
+            Ok(MessageResult::JsonRpcResponse(json_rpc_response))
+        }
     }
 
     pub async fn call(
@@ -463,7 +532,7 @@ impl ToolsRegistry {
         req_headers: &http::HeaderMap,
         rpc: &model::JsonRpcRequest,
         cluster_header: &Option<ClusterHeader>,
-        session: &Session,
+        session: &Arc<Session>,
     ) -> Result<MessageResult, CallToolError> {
         // get tool name, and in case of upstream MCP, sub-tool name as well...
         let (tool_name, upstream_tool_name) = {
@@ -483,19 +552,25 @@ impl ToolsRegistry {
             None => debug!(target: "mcp_gateway", "call: method:{} tool name '{tool_name}'", rpc.request.method),
         }
 
-        if tool_name == SEMANTIC_SEARCH_TOOL {
+        if tool_name == SEMANTIC_SEARCH_TOOL_NAME {
             if self.semantic_search.is_some() {
-                return self.call_semantic_search_tool(rpc, session).await;
+                return self.call_semantic_search_tool(req_ext, rpc, session).await;
             }
             // TODO we should send back an error if agent is invoking semantic_search tool and none is configured
         }
+
+        // In assisted discovery mode, only allow tools that are in active_tools
+        // In direct mode or when semantic search is disabled, allow all tools (RBAC filtering happens later)
+        let should_filter_by_active_tools = self.semantic_search.as_ref()
+            .map(|ss| ss.enable_assisted_discovery)
+            .unwrap_or(false);
 
         let (index, entry) = self
             .registry
             .iter()
             .enumerate()
             .find(|(_, e)| e.conf.name == tool_name)
-            .filter(|(_, e)| self.semantic_search.is_none() || session.active_tools.contains(&e.conf.name))
+            .filter(|(_, e)| !should_filter_by_active_tools || session.active_tools.contains(&e.conf.name))
             .ok_or_else(|| CallToolError::ToolNotFound(tool_name.to_string()))?;
 
         if let Some(rbac) = &entry.rbac {
