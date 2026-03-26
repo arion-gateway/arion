@@ -34,6 +34,7 @@ atomic-take = "1.1.0"
 tokio-rustls = "0.26"
 rustls = { version = "0.23", features = ["aws_lc_rs"] }
 rustls-pemfile = "2"
+ctor = "0.2"
 
 [dev-dependencies]
 tracing-test.workspace = true

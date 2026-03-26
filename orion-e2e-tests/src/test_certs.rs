@@ -110,6 +110,35 @@ impl TestCerts {
         std::fs::read(path)
     }
 
+    fn sni_test_dir(&self) -> PathBuf {
+        self.test_certs_dir().join("sni-test")
+    }
+
+    #[must_use]
+    pub fn sni_test_ca(&self) -> PathBuf {
+        self.sni_test_dir().join("ca.cert.pem")
+    }
+
+    #[must_use]
+    pub fn sni_test_specific_cert(&self) -> PathBuf {
+        self.sni_test_dir().join("specific.cert.pem")
+    }
+
+    #[must_use]
+    pub fn sni_test_specific_key(&self) -> PathBuf {
+        self.sni_test_dir().join("specific.key.pem")
+    }
+
+    #[must_use]
+    pub fn sni_test_default_cert(&self) -> PathBuf {
+        self.sni_test_dir().join("default.cert.pem")
+    }
+
+    #[must_use]
+    pub fn sni_test_default_key(&self) -> PathBuf {
+        self.sni_test_dir().join("default.key.pem")
+    }
+
     #[must_use]
     pub fn path_to_string(path: &PathBuf) -> String {
         path.to_str().expect("Path is not valid UTF-8").to_string()

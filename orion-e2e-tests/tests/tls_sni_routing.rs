@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use ctor::ctor;
 use http::StatusCode;
 use orion_e2e_tests::config_builder::{
     presets, BootstrapBuilder, ClusterBuilder, DownstreamTlsBuilder, FilterChainBuilder, HcmBuilder, ListenerBuilder,
@@ -20,6 +21,13 @@ use orion_e2e_tests::config_builder::{
 use orion_e2e_tests::{
     OrionInstance, PreConfiguredResponse, SpawnOptions, TestBackend, TestCerts, TlsTestClientBuilder,
 };
+
+#[ctor]
+fn init() {
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .expect("Could not install crypto provider (aws-lc-rs)");
+}
 
 fn sni_filter_chain(
     name: &str,
@@ -332,6 +340,81 @@ async fn test_sni_routing_post_with_body() {
 
     let req2 = backend2.await_request().await.expect("No request to backend2");
     assert_eq!(req2.body_str(), Some(body2));
+
+    orion.shutdown();
+    let _ = std::fs::remove_file(&config_path);
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_sni_routing_mismatched_sni() {
+    let mut backend_specific = TestBackend::start().await.expect("Failed to start specific backend");
+    let mut backend_default = TestBackend::start().await.expect("Failed to start default backend");
+    backend_specific.set_default_response(PreConfiguredResponse::with_body("specific")).await;
+    backend_default.set_default_response(PreConfiguredResponse::with_body("default")).await;
+
+    let certs = TestCerts::new();
+    let specific_cert = TestCerts::path_to_string(&certs.sni_test_specific_cert());
+    let specific_key = TestCerts::path_to_string(&certs.sni_test_specific_key());
+    let default_cert = TestCerts::path_to_string(&certs.sni_test_default_cert());
+    let default_key = TestCerts::path_to_string(&certs.sni_test_default_key());
+
+    let tls_specific = DownstreamTlsBuilder::new().cert_files(&specific_cert, &specific_key);
+    let tls_default = DownstreamTlsBuilder::new().cert_files(&default_cert, &default_key);
+
+    let listener =
+        ListenerBuilder::new("https")
+            .port(0)
+            .with_tls_inspector()
+            .filter_chain(sni_filter_chain("specific", &["specific.example.com"], tls_specific, "backend_specific"))
+            .filter_chain(FilterChainBuilder::new("default").downstream_tls(tls_default).hcm(
+                HcmBuilder::new().route_config(
+                    RouteConfigBuilder::new("routes").virtual_host(
+                        VirtualHostBuilder::new("default").route(presets::default_route("backend_default")),
+                    ),
+                ),
+            ));
+
+    let bootstrap = BootstrapBuilder::new()
+        .listener(listener)
+        .cluster(ClusterBuilder::with_endpoint("backend_specific", backend_specific.addr()))
+        .cluster(ClusterBuilder::with_endpoint("backend_default", backend_default.addr()));
+
+    let config_path = bootstrap.build_to_temp().expect("Failed to build config");
+
+    let orion = OrionInstance::spawn_auto_port(&config_path, "https", SpawnOptions::default())
+        .await
+        .expect("Failed to spawn Orion");
+
+    let addr = orion.listener_addr().unwrap();
+
+    // Test 1: Matching SNI should work and route to specific backend
+    let client_matching = TlsTestClientBuilder::new(addr)
+        .server_name("specific.example.com")
+        .root_ca(certs.sni_test_ca())
+        .build()
+        .expect("Failed to build client for matching SNI");
+
+    let response = client_matching.get("/test").await.expect("Failed to send matching SNI request");
+    response.assert_status(StatusCode::OK);
+    response.assert_body("specific");
+    let _ = backend_specific.await_request().await;
+
+    // Test 2: Non-matching SNI should fall back to default chain
+    // Client sends SNI "unknown.example.com" which doesn't match any filter chain
+    // Filter chain selection falls back to the default chain
+    // Default chain presents its certificate (for "default.example.com")
+    // Connection succeeds (client skips verification since cert won't match SNI)
+    let client_mismatched = TlsTestClientBuilder::new(addr)
+        .server_name("unknown.example.com")
+        .skip_verification() // Server presents cert for default.example.com, but we sent SNI for unknown
+        .build()
+        .expect("Failed to build client for mismatched SNI");
+
+    let response = client_mismatched.get("/test").await.expect("Failed to send mismatched SNI request");
+    response.assert_status(StatusCode::OK);
+    response.assert_body("default");
+    let _ = backend_default.await_request().await;
 
     orion.shutdown();
     let _ = std::fs::remove_file(&config_path);

@@ -234,7 +234,11 @@ impl FilterChainMatch {
         }
     }
 
-    ///For criteria that allow ranges or wildcards, the most specific value in any of the configured filter chains that matches the incoming connection is going to be used (e.g. for SNI www.example.com the most specific match would be www.example.com, then *.example.com, then *.com, then any filter chain without `server_names` requirements).
+    /// For criteria that allow ranges or wildcards, the most specific value in
+    /// any of the configured filter chains that matches the incoming connection is
+    /// going to be used (e.g. for SNI www.example.com the most specific match would
+    /// be www.example.com, then *.example.com, then *.com, then any filter chain
+    /// without `server_names` requirements).
     pub fn matches_destination_ip(&self, ip: IpAddr) -> MatchResult {
         self.destination_prefix_ranges
             .iter()

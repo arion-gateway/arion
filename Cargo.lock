@@ -852,6 +852,16 @@ dependencies = [
 
 [[package]]
 name = "ctor"
+version = "0.2.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32a2785755761f3ddc1492979ce1e48d2c00d09311c39e4466429188f3dd6501"
+dependencies = [
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "ctor"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "424e0138278faeb2b401f174ad17e715c829512d74f3d1e81eb43365c2e0590e"
@@ -2712,6 +2722,7 @@ version = "0.1.0"
 dependencies = [
  "atomic-take",
  "bytes",
+ "ctor 0.2.9",
  "dashmap",
  "futures",
  "http",
@@ -2803,7 +2814,7 @@ dependencies = [
  "bytes",
  "chrono",
  "contatori",
- "ctor",
+ "ctor 0.6.3",
  "dashmap",
  "enum_dispatch",
  "exponential-backoff",
