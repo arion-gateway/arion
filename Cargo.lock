@@ -2768,6 +2768,7 @@ dependencies = [
  "orion-interner",
  "ptrie",
  "serde",
+ "smallvec",
  "smol_str",
  "thiserror 2.0.18",
  "thread_local",

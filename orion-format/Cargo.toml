@@ -25,6 +25,7 @@ hyper          = { version = "1" }
 itoa           = "1.0.15"
 ptrie          = "0.7.2"
 serde          = { workspace = true, features = ["rc"] }
+smallvec       = { workspace = true }
 thread_local   = "1.1.9"
 traceparent    = "0.0.3"
 uuid           = { version = "1.18.1", features = ["v4"] }
