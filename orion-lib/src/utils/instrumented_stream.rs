@@ -8,7 +8,6 @@ use std::{
 };
 
 use atomicoption::AtomicOption;
-use parking_lot::Mutex;
 use pin_project::pin_project;
 use smol_str::{format_smolstr, SmolStr};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
@@ -21,8 +20,8 @@ pub struct StreamMetrics {
     txn_bytes_read: AtomicU64,
     txn_bytes_written: AtomicU64,
     connection_termination_details: AtomicOption<SmolStr>,
-    log_txn: Mutex<Option<Box<dyn FnOnce(u64, u64) + Send>>>,
-    log_conn: Mutex<Option<Box<dyn FnOnce(&StreamMetrics) + Send>>>,
+    log_txn: AtomicOption<Box<dyn FnOnce(u64, u64) + Send>>,
+    log_conn: AtomicOption<Box<dyn FnOnce(&StreamMetrics) + Send>>,
 }
 
 impl std::fmt::Debug for StreamMetrics {
@@ -38,7 +37,7 @@ impl std::fmt::Debug for StreamMetrics {
 
 impl Drop for StreamMetrics {
     fn drop(&mut self) {
-        if let Some(log_fn) = self.log_conn.lock().take() {
+        if let Some(log_fn) = self.log_conn.take(Ordering::Acquire) {
             log_fn(self);
         }
     }
@@ -53,15 +52,17 @@ impl StreamMetrics {
             txn_bytes_read: AtomicU64::new(0),
             txn_bytes_written: AtomicU64::new(0),
             connection_termination_details: AtomicOption::none(),
-            log_txn: Mutex::new(None),
-            log_conn: Mutex::new(log_fn),
+            log_txn: AtomicOption::none(),
+            log_conn: match log_fn {
+                Some(f) => AtomicOption::some(f),
+                None => AtomicOption::none(),
+            }
         }
     }
 
     #[inline]
     pub fn log_and_reset(&self, log_fn: Box<dyn FnOnce(u64, u64) + Send>) {
-        let mut self_log_fn = self.log_txn.lock();
-        *self_log_fn = Some(log_fn);
+        self.log_txn.store(Ordering::Release, log_fn);
     }
 
     #[inline]
@@ -158,7 +159,7 @@ impl<S: AsyncWrite> AsyncWrite for InstrumentedStream<S> {
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         let this = self.project();
         // println!("POLL FLUSH! @{:p}", this.metrics.as_ref() as *const StreamMetrics);
-        if let Some(log_access) = this.metrics.log_txn.lock().take() {
+        if let Some(log_access) = this.metrics.log_txn.take(Ordering::Acquire) {
             // println!("=> FLUSHING LOG  @{:p}", this.metrics.as_ref() as *const StreamMetrics);
             log_access(this.metrics.txn_bytes_read(), this.metrics.txn_bytes_written());
             this.metrics.reset();
