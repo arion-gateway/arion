@@ -31,10 +31,10 @@ mod metrics_enabled {
         event_error::{DownstreamError, EventKind, TryInferFrom, UpstreamError},
         utils::instrumented_stream::StreamMetrics,
     };
+    use atomicoption::AtomicOption;
     use bytes::Buf;
-    use parking_lot::Mutex;
     use pin_project::{pin_project, pinned_drop};
-    use std::sync::Arc;
+    use std::sync::{Arc, atomic::Ordering};
 
     type MetricsClosure = Box<dyn FnOnce(u64, &StreamMetrics, Option<EventKind>, ResponseFlags) + Send + 'static>;
 
@@ -45,14 +45,14 @@ mod metrics_enabled {
         pub body_kind: BodyKind,
         pub body_bytes: u64,
         pub stream_metrics: Option<Arc<StreamMetrics>>,
-        pub on_complete: Arc<Mutex<Option<MetricsClosure>>>,
+        pub on_complete: Arc<AtomicOption<MetricsClosure>>,
     }
 
     #[pinned_drop]
     impl<B> PinnedDrop for InstrumentedBody<B> {
         fn drop(self: std::pin::Pin<&mut Self>) {
             let this = self.project();
-            if let Some(closure) = this.on_complete.lock().take() {
+            if let Some(closure) = this.on_complete.take(Ordering::Acquire) {
                 if let Some(metrics) = this.stream_metrics.as_ref() {
                     closure(*this.body_bytes, metrics.as_ref(), None, ResponseFlags::default());
                 }
@@ -79,7 +79,7 @@ mod metrics_enabled {
                 body_kind: kind,
                 body_bytes: 0,
                 stream_metrics: metrics,
-                on_complete: Arc::new(Mutex::new(Some(Box::new(on_complete)))),
+                on_complete: Arc::new(AtomicOption::some(Box::new(on_complete))),
             }
         }
 
@@ -142,14 +142,14 @@ mod metrics_enabled {
                     }
                 },
                 Poll::Ready(None) => {
-                    if let Some(closure) = this.on_complete.lock().take() {
+                    if let Some(closure) = this.on_complete.take(Ordering::Acquire) {
                         if let Some(metrics) = this.stream_metrics.as_ref() {
                             closure(*this.body_bytes, metrics.as_ref(), None, ResponseFlags::default());
                         }
                     }
                 },
                 Poll::Ready(Some(Err(err))) => {
-                    if let Some(closure) = this.on_complete.lock().take() {
+                    if let Some(closure) = this.on_complete.take(Ordering::Acquire) {
                         if let Some(metrics) = this.stream_metrics.as_ref() {
                             let event_error: Option<EventKind> = match *this.body_kind {
                                 BodyKind::Request => DownstreamError::try_infer_from(err).map(Into::into),
