@@ -22,6 +22,7 @@ pub mod operator;
 pub mod types;
 
 use crate::grammar::AccessLogGrammar;
+use arrayvec::{ArrayString};
 use context::Context;
 use operator::{Category, Operator};
 use serde::{Deserialize, Serialize};
@@ -94,6 +95,7 @@ impl Display for Template {
 pub enum StringType {
     Smol(SmolStr),
     Bytes(Box<[u8]>),
+    Array(ArrayString<64>),
     None,
 }
 
@@ -200,6 +202,7 @@ impl FormattedMessage {
             match out {
                 StringType::Smol(s) => slices.push(IoSlice::new(s.as_bytes())),
                 StringType::Bytes(v) => slices.push(IoSlice::new(v.as_ref())),
+                StringType::Array(v) => slices.push(IoSlice::new(v.as_bytes())),
                 StringType::None if !self.omit_empty_values => slices.push(IoSlice::new(none_bytes)),
                 StringType::None => {},
             }
@@ -241,6 +244,7 @@ impl Display for FormattedMessage {
             match out {
                 StringType::Smol(s) => f.write_str(s.as_ref())?,
                 StringType::Bytes(v) => f.write_str(&String::from_utf8_lossy(v))?,
+                StringType::Array(v) => f.write_str(&v)?,
                 StringType::None => {
                     if !self.omit_empty_values {
                         f.write_str("-")?

@@ -25,7 +25,7 @@ use crate::{
     types::{ResponseFlags, ResponseFlagsLong, ResponseFlagsShort},
     StringType,
 };
-use ahash::AHasher;
+use arrayvec::{ArrayString};
 use chrono::{DateTime, Datelike, Timelike, Utc};
 use http::{uri::Authority, Request, Response};
 use orion_http_header::{X_ENVOY_ORIGINAL_PATH, X_REQUEST_ID};
@@ -86,10 +86,10 @@ impl Context for SocketAddrContext {
                 self.downstream_peer_addr.map_or(StringType::None, |addr| StringType::Smol(addr.port().to_smolstr()))
             },
             Operator::ConnectionId => {
-                hash_connection(self.downstream_local_addr.as_ref(), self.downstream_peer_addr.as_ref(), &Protocol::Tcp)
+                StringType::Array(hash_connection(self.downstream_local_addr.as_ref(), self.downstream_peer_addr.as_ref(), &Protocol::Tcp))
             },
             Operator::UpstreamConnectionId => {
-                hash_connection(self.upstream_local_addr.as_ref(), self.upstream_peer_addr.as_ref(), &Protocol::Tcp)
+                StringType::Array(hash_connection(self.upstream_local_addr.as_ref(), self.upstream_peer_addr.as_ref(), &Protocol::Tcp))
             },
             _ => StringType::None,
         }
@@ -120,19 +120,44 @@ enum Protocol {
     Udp,
 }
 
-#[inline]
-fn hash_connection(local: Option<&SocketAddr>, peer: Option<&SocketAddr>, protocol: &Protocol) -> StringType {
-    use std::hash::{Hash, Hasher};
-    match (local, peer) {
-        (Some(local), Some(peer)) => {
-            let mut hasher = AHasher::default();
-            local.hash(&mut hasher);
-            peer.hash(&mut hasher);
-            protocol.hash(&mut hasher);
-            StringType::Smol(format_smolstr!("{:x}", hasher.finish()))
-        },
-        _ => StringType::None,
+impl Protocol {
+    // Returns the protocol as a byte slice for zero-allocation hashing
+    fn as_bytes(&self) -> &[u8] {
+        match self {
+            Protocol::Tcp => b"TCP",
+            Protocol::Udp => b"UDP",
+        }
     }
+}
+
+fn hash_connection(local: Option<&SocketAddr>, peer: Option<&SocketAddr>, protocol: &Protocol) -> ArrayString<64> {
+    let mut hasher = blake3::Hasher::new();
+
+    // Helper closure to serialize SocketAddr without allocations
+    let mut feed_addr = |addr: Option<&SocketAddr>| {
+        if let Some(a) = addr {
+            hasher.update(&[1]); // Marker for 'Some'
+            match a {
+                SocketAddr::V4(v4) => {
+                    hasher.update(&[4]); // Marker for IPv4
+                    hasher.update(&v4.ip().octets());
+                    hasher.update(&v4.port().to_be_bytes());
+                }
+                SocketAddr::V6(v6) => {
+                    hasher.update(&[6]); // Marker for IPv6
+                    hasher.update(&v6.ip().octets());
+                    hasher.update(&v6.port().to_be_bytes());
+                }
+            }
+        } else {
+            hasher.update(&[0]); // Marker for 'None'
+        }
+    };
+
+    feed_addr(local);
+    feed_addr(peer);
+    hasher.update(protocol.as_bytes());
+    hasher.finalize().to_hex()
 }
 
 #[derive(Debug, Clone, Default)]
