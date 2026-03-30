@@ -33,7 +33,7 @@ use serde_json::{json, Value};
 use smol_str::{SmolStr, ToSmolStr};
 use std::sync::LazyLock;
 use std::{borrow::Cow, sync::Arc, time::Instant};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use upon::Engine;
 
 const DYNAMIC_TOOL_DISCOVERY: &str = "dynamic_tool_discovery";
@@ -399,16 +399,22 @@ impl ToolsRegistry {
         session: &Session,
     ) -> Result<MessageResult, CallToolError> {
         // get tool name, and in case of upstream MCP, sub-tool name as well...
-        let (tool_name, tool_sub_name) = {
+        let (tool_name, upstream_tool_name) = {
             let name = rpc.request.params.get("name").ok_or(CallToolError::NameNotString)?;
             let name = name.as_str().ok_or(CallToolError::NameNotString)?;
+            debug!(target: "mcp_gateway", "call: method:{} original tool name {name}", rpc.request.method);
             match name.split_once("__") {
-                Some((tool_name, sub_name)) => (tool_name, sub_name),
-                None => (name, name),
+                Some((tool_name, upstream_tool_name)) => (tool_name, Some(upstream_tool_name)),
+                None => (name, None),
             }
         };
 
-        debug!(target: "mcp_gateway", "call: method:{} tool {tool_sub_name}@{tool_name}", rpc.request.method);
+        match upstream_tool_name {
+            Some(tool) => {
+                debug!(target: "mcp_gateway", "call: method:{} upstream tool {tool} @namespace {tool_name:?}", rpc.request.method)
+            },
+            None => debug!(target: "mcp_gateway", "call: method:{} tool {tool_name}", rpc.request.method),
+        }
 
         if self.dynamic_tool_discovery && tool_name == DYNAMIC_TOOL_DISCOVERY {
             return self.call_dynamic_tool_discovery(rpc, session).await;
@@ -453,6 +459,13 @@ impl ToolsRegistry {
                 Ok(MessageResult::UpstreamRequest((upstream_request, *r#async, ToolRegistryIndex(index))))
             },
             (UpstreamBackend::McpServer { url, .. }, TranscoderType::NoTranscoder) => {
+                let upstream_tool_name = upstream_tool_name.unwrap_or_else(|| {
+                    // this is an internal bug. At this point the upstream_tool_name should be available. Just in case use the
+                    // original tool_name to avoid panicking, but log a warning.
+                    warn!(target: "mcp_gateway", "call: unspecified upstream_tool_name name for backend mcp server (using tool_name as workaround)!");
+                    tool_name
+                });
+
                 let client = match session.mcp_upstreams.entry(url.to_owned()) {
                     dashmap::Entry::Occupied(entry) => entry.into_ref(),
                     dashmap::Entry::Vacant(vacant_entry) => {
@@ -463,9 +476,9 @@ impl ToolsRegistry {
 
                 let call_params = match &rpc.request.params.get("arguments") {
                     Some(&serde_json::Value::Object(ref args)) => {
-                        CallToolRequestParams::new(tool_sub_name.to_owned()).with_arguments(args.clone())
+                        CallToolRequestParams::new(upstream_tool_name.to_owned()).with_arguments(args.clone())
                     },
-                    _ => CallToolRequestParams::new(tool_sub_name.to_owned()),
+                    _ => CallToolRequestParams::new(upstream_tool_name.to_owned()),
                 };
 
                 let tool_result = match client.call_tool(call_params).await {
@@ -485,7 +498,7 @@ impl ToolsRegistry {
                     },
                 };
 
-                debug!(target: "mcp_gateway", "Received result from tool{tool_name}@{tool_sub_name}: {:?}", tool_result);
+                debug!(target: "mcp_gateway", "Received result from tool{tool_name}@{upstream_tool_name}: {:?}", tool_result);
 
                 let json_result = serde_json::to_value(tool_result)?;
 
