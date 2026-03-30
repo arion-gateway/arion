@@ -548,11 +548,6 @@ impl McpGateway {
 
         let body = body.to_bytes();
 
-        // get session ID from the request. It may return None, in which case we create a new session id in the "initialize" method
-        //
-
-        let mut session_id = request.get_mcp_session_id();
-
         let json_rpc_message = match serde_json::from_slice::<model::JsonRpcMessage>(&body) {
             Ok(message) => message,
             Err(err) => {
@@ -577,17 +572,22 @@ impl McpGateway {
             model::JsonRpcMessage::Notification(_) => NumberOrString::Number(0),
         };
 
+        // get session ID from the request. It may return None, in which case we create a new session id in the "initialize" method
+        //
+        let mut session_id = request.get_mcp_session_id();
+
         let mut session: Option<Arc<Session>> = match &session_id {
             Some(session_id) => {
-                match (self.get_valid_session(ctx, session_id), &json_rpc_message) {
-                    (_, model::JsonRpcMessage::Request(r))
+                match (self.get_valid_session(ctx, session_id), &json_rpc_message, transport) {
+                    (_, model::JsonRpcMessage::Request(r), Transport::StreamableHttp)
                         if r.request.method.as_str() == InitializeResultMethod::VALUE =>
                     {
+                        debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: workaround for buggy clients (e.g. opencode)!");
                         None
-                    }, // workaround for buggy agent clients
-                    (Some(session), _) => Some(session),
-                    (None, _) => {
-                        debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: invalid session id: {session_id} (return 404)");
+                    },
+                    (Some(session), _, _) => Some(session),
+                    (None, _, Transport::Sse) => {
+                        debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: invalid session id: {session_id}!");
 
                         let headers = self.build_http_headers_with_content_type(None);
                         match self.build_mcp_http_response(
@@ -599,6 +599,7 @@ impl McpGateway {
                             Err(e) => return e,
                         };
                     },
+                    (None, _, Transport::StreamableHttp) => None,
                 }
             },
             None => None,
@@ -1155,7 +1156,8 @@ impl McpGateway {
         };
 
         session.last_activity.store(std::time::Instant::now(), std::sync::atomic::Ordering::Relaxed);
-        debug!(target: "mcp_gateway", "get_valid_session: found session {}", session_id);
+        let session : Arc<Session> = session.clone();
+        debug!(target: "mcp_gateway", "get_valid_session: {session_id} -> {session:?}");
         Some(session.clone())
     }
 
