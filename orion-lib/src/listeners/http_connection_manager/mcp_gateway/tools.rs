@@ -402,7 +402,7 @@ impl ToolsRegistry {
         let (tool_name, upstream_tool_name) = {
             let name = rpc.request.params.get("name").ok_or(CallToolError::NameNotString)?;
             let name = name.as_str().ok_or(CallToolError::NameNotString)?;
-            debug!(target: "mcp_gateway", "call: method:{} original tool name {name}", rpc.request.method);
+            debug!(target: "mcp_gateway", "call: method:{} original tool name '{name}'", rpc.request.method);
             match name.split_once("__") {
                 Some((tool_name, upstream_tool_name)) => (tool_name, Some(upstream_tool_name)),
                 None => (name, None),
@@ -410,10 +410,10 @@ impl ToolsRegistry {
         };
 
         match upstream_tool_name {
-            Some(tool) => {
-                debug!(target: "mcp_gateway", "call: method:{} upstream tool {tool} @namespace {tool_name:?}", rpc.request.method)
+            Some(up_tool) => {
+                debug!(target: "mcp_gateway", "call: method:{} upstream tool name '{up_tool}' @local tool '{tool_name}'", rpc.request.method)
             },
-            None => debug!(target: "mcp_gateway", "call: method:{} tool {tool_name}", rpc.request.method),
+            None => debug!(target: "mcp_gateway", "call: method:{} tool name '{tool_name}'", rpc.request.method),
         }
 
         if self.dynamic_tool_discovery && tool_name == DYNAMIC_TOOL_DISCOVERY {
