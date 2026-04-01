@@ -22,12 +22,15 @@ pub mod operator;
 pub mod types;
 
 use crate::grammar::AccessLogGrammar;
+use arrayvec::{ArrayString};
 use context::Context;
 use operator::{Category, Operator};
 use serde::{Deserialize, Serialize};
+use smallvec::SmallVec;
 use smol_str::SmolStr;
 use std::{
-    fmt::{self, Display, Formatter, Write},
+    fmt::{self, Display, Formatter},
+    io::IoSlice,
     sync::Arc,
 };
 use thiserror::Error;
@@ -90,9 +93,9 @@ impl Display for Template {
 
 #[derive(Hash, PartialEq, Eq, Debug, Clone, Serialize, Deserialize)]
 pub enum StringType {
-    Char(char),
     Smol(SmolStr),
     Bytes(Box<[u8]>),
+    Array(ArrayString<64>),
     None,
 }
 
@@ -137,7 +140,12 @@ impl LogFormatter {
 
         for t in &templates {
             match t {
-                Template::Char(c) => format.push(StringType::Char(*c)),
+                Template::Char(c) => {
+                    // Pre-encode once at construction time; eliminates encode_utf8 from the write hot path.
+                    let mut buf = [0u8; 4];
+                    let s = c.encode_utf8(&mut buf);
+                    format.push(StringType::Smol(SmolStr::new(s)));
+                },
                 Template::Literal(smol_str) => format.push(StringType::Smol(smol_str.clone())),
                 Template::Placeholder(_, _) => format.push(StringType::None),
             }
@@ -186,35 +194,37 @@ pub struct FormattedMessage {
 
 impl FormattedMessage {
     pub fn write_to<W: std::io::Write>(&self, w: &mut W) -> std::io::Result<usize> {
-        let mut total_bytes = 0;
-        for out in &self.format {
-            let mut write_chunk = |data: &[u8]| -> std::io::Result<()> {
-                w.write_all(data)?;
-                total_bytes += data.len();
-                Ok(())
-            };
+        let none_bytes: &[u8] = b"-";
 
+        let mut slices: SmallVec<[IoSlice<'_>; 64]> = SmallVec::new();
+
+        for out in &self.format {
             match out {
-                StringType::Smol(s) => {
-                    write_chunk(s.as_bytes())?;
-                },
-                StringType::Char(c) => {
-                    let mut buf = [0u8; 4];
-                    let bytes = c.encode_utf8(&mut buf).as_bytes();
-                    write_chunk(bytes)?;
-                },
-                StringType::Bytes(v) => {
-                    write_chunk(v.as_ref())?;
-                },
-                StringType::None => {
-                    if !self.omit_empty_values {
-                        write_chunk("-".as_bytes())?;
-                    }
-                },
-            };
+                StringType::Smol(s) => slices.push(IoSlice::new(s.as_bytes())),
+                StringType::Bytes(v) => slices.push(IoSlice::new(v.as_ref())),
+                StringType::Array(v) => slices.push(IoSlice::new(v.as_bytes())),
+                StringType::None if !self.omit_empty_values => slices.push(IoSlice::new(none_bytes)),
+                StringType::None => {},
+            }
         }
 
-        Ok(total_bytes)
+        let total: usize = slices.iter().map(|s| s.len()).sum();
+
+        // Single write_vectored call instead of one write_all per element.
+        //
+        let mut remaining = slices.as_mut_slice();
+        while !remaining.is_empty() {
+            let n = w.write_vectored(remaining)?;
+            if n == 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::WriteZero,
+                    "write_to: write_vectored wrote 0 bytes",
+                ));
+            }
+            IoSlice::advance_slices(&mut remaining, n);
+        }
+
+        Ok(total)
     }
 
     #[inline]
@@ -233,8 +243,8 @@ impl Display for FormattedMessage {
         for out in &self.format {
             match out {
                 StringType::Smol(s) => f.write_str(s.as_ref())?,
-                StringType::Char(c) => f.write_char(*c)?,
                 StringType::Bytes(v) => f.write_str(&String::from_utf8_lossy(v))?,
+                StringType::Array(v) => f.write_str(&v)?,
                 StringType::None => {
                     if !self.omit_empty_values {
                         f.write_str("-")?
@@ -455,7 +465,7 @@ mod tests {
             bytes_received: 128,
             bytes_sent: 256,
             response_flags: ResponseFlags::NO_HEALTHY_UPSTREAM,
-            upstream_failure: None,
+            upstream_transport_failure_reason: None,
             response_code_details: None,
             connection_termination_details: None,
         });
@@ -487,7 +497,7 @@ mod tests {
             bytes_received: 128,
             bytes_sent: 256,
             response_flags: ResponseFlags::NO_HEALTHY_UPSTREAM,
-            upstream_failure: None,
+            upstream_transport_failure_reason: None,
             response_code_details: None,
             connection_termination_details: None,
         });
@@ -500,4 +510,5 @@ mod tests {
         println!("SmolStr:   {}", std::mem::size_of::<SmolStr>());
         println!("Box<[u8]>: {}", std::mem::size_of::<Box<[u8]>>());
     }
+
 }

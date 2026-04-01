@@ -25,7 +25,7 @@ use crate::{
     types::{ResponseFlags, ResponseFlagsLong, ResponseFlagsShort},
     StringType,
 };
-use ahash::AHasher;
+use arrayvec::{ArrayString};
 use chrono::{DateTime, Datelike, Timelike, Utc};
 use http::{uri::Authority, Request, Response};
 use orion_http_header::{X_ENVOY_ORIGINAL_PATH, X_REQUEST_ID};
@@ -76,24 +76,20 @@ impl Context for SocketAddrContext {
             Operator::DownstreamLocalPort => {
                 self.downstream_local_addr.map_or(StringType::None, |addr| StringType::Smol(addr.port().to_smolstr()))
             },
-
             Operator::DownstreamRemoteAddress => {
                 self.downstream_peer_addr.map_or(StringType::None, |addr| StringType::Smol(addr.to_smolstr()))
             },
-
             Operator::DownstreamRemoteAddressWithoutPort => {
                 self.downstream_peer_addr.map_or(StringType::None, |addr| StringType::Smol(addr.ip().to_smolstr()))
             },
-
             Operator::DownstreamRemotePort => {
                 self.downstream_peer_addr.map_or(StringType::None, |addr| StringType::Smol(addr.port().to_smolstr()))
             },
-
             Operator::ConnectionId => {
-                hash_connection(self.downstream_local_addr.as_ref(), self.downstream_peer_addr.as_ref(), &Protocol::Tcp)
+                StringType::Array(hash_connection(self.downstream_local_addr.as_ref(), self.downstream_peer_addr.as_ref(), &Protocol::Tcp))
             },
             Operator::UpstreamConnectionId => {
-                hash_connection(self.upstream_local_addr.as_ref(), self.upstream_peer_addr.as_ref(), &Protocol::Tcp)
+                StringType::Array(hash_connection(self.upstream_local_addr.as_ref(), self.upstream_peer_addr.as_ref(), &Protocol::Tcp))
             },
             _ => StringType::None,
         }
@@ -124,19 +120,44 @@ enum Protocol {
     Udp,
 }
 
-#[inline]
-fn hash_connection(local: Option<&SocketAddr>, peer: Option<&SocketAddr>, protocol: &Protocol) -> StringType {
-    use std::hash::{Hash, Hasher};
-    match (local, peer) {
-        (Some(local), Some(peer)) => {
-            let mut hasher = AHasher::default();
-            local.hash(&mut hasher);
-            peer.hash(&mut hasher);
-            protocol.hash(&mut hasher);
-            StringType::Smol(format_smolstr!("{:x}", hasher.finish()))
-        },
-        _ => StringType::None,
+impl Protocol {
+    // Returns the protocol as a byte slice for zero-allocation hashing
+    fn as_bytes(&self) -> &[u8] {
+        match self {
+            Protocol::Tcp => b"TCP",
+            Protocol::Udp => b"UDP",
+        }
     }
+}
+
+fn hash_connection(local: Option<&SocketAddr>, peer: Option<&SocketAddr>, protocol: &Protocol) -> ArrayString<64> {
+    let mut hasher = blake3::Hasher::new();
+
+    // Helper closure to serialize SocketAddr without allocations
+    let mut feed_addr = |addr: Option<&SocketAddr>| {
+        if let Some(a) = addr {
+            hasher.update(&[1]); // Marker for 'Some'
+            match a {
+                SocketAddr::V4(v4) => {
+                    hasher.update(&[4]); // Marker for IPv4
+                    hasher.update(&v4.ip().octets());
+                    hasher.update(&v4.port().to_be_bytes());
+                }
+                SocketAddr::V6(v6) => {
+                    hasher.update(&[6]); // Marker for IPv6
+                    hasher.update(&v6.ip().octets());
+                    hasher.update(&v6.port().to_be_bytes());
+                }
+            }
+        } else {
+            hasher.update(&[0]); // Marker for 'None'
+        }
+    };
+
+    feed_addr(local);
+    feed_addr(peer);
+    hasher.update(protocol.as_bytes());
+    hasher.finalize().to_hex()
 }
 
 #[derive(Debug, Clone, Default)]
@@ -149,15 +170,15 @@ pub struct UpstreamContext<'a> {
 impl Context for UpstreamContext<'_> {
     fn eval_part(&self, op: &Operator) -> StringType {
         match op {
-            Operator::UpstreamHost => {
-                self.authority.map_or(StringType::None, |name| StringType::Smol(SmolStr::new(name)))
-            },
             Operator::UpstreamCluster | Operator::UpstreamClusterRaw => {
                 self.cluster_name.map_or(StringType::None, |cluster_name| StringType::Smol(SmolStr::new(cluster_name)))
             },
-            Operator::UpstreamHostName => {
-                self.authority.map_or(StringType::None, |auth| StringType::Smol(SmolStr::new(auth.as_str())))
-            },
+            Operator::UpstreamHost => self
+                .authority
+                .map_or(StringType::None, |auth| StringType::Smol(SmolStr::new(strip_userinfo(auth.as_str())))),
+            Operator::UpstreamHostName => self
+                .authority
+                .map_or(StringType::None, |auth| StringType::Smol(SmolStr::new(strip_userinfo(auth.as_str())))),
             Operator::UpstreamHostNameWithoutPort => {
                 self.authority.map_or(StringType::None, |auth| StringType::Smol(SmolStr::new(auth.host())))
             },
@@ -257,7 +278,7 @@ pub struct FinishContext {
     pub bytes_received: u64,
     pub bytes_sent: u64,
     pub response_flags: ResponseFlags,
-    pub upstream_failure: Option<&'static str>,
+    pub upstream_transport_failure_reason: Option<&'static str>,
     pub response_code_details: Option<&'static str>,
     pub connection_termination_details: Option<&'static str>,
 }
@@ -279,15 +300,70 @@ impl Context for FinishContext {
                 let mut buffer = itoa::Buffer::new();
                 StringType::Smol(SmolStr::new(buffer.format(self.bytes_sent)))
             },
-            Operator::UpstreamTransportFailureReason => {
-                self.upstream_failure.map_or(StringType::None, |msg| StringType::Smol(SmolStr::new_static(msg)))
-            },
-            Operator::ResponseCodeDetails => {
-                self.response_code_details.map_or(StringType::None, |msg| StringType::Smol(SmolStr::new_static(msg)))
-            },
+            Operator::UpstreamTransportFailureReason => self
+                .upstream_transport_failure_reason
+                .map_or(StringType::None, |msg| StringType::Smol(SmolStr::new_static(msg))),
             Operator::ConnectionTerminationDetails => self
                 .connection_termination_details
                 .map_or(StringType::None, |msg| StringType::Smol(SmolStr::new_static(msg))),
+            Operator::ResponseCodeDetails => {
+                self.response_code_details.map_or(StringType::None, |msg| StringType::Smol(SmolStr::new_static(msg)))
+            },
+            _ => StringType::None,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct WireContext {
+    pub wire_bytes_received: u64,
+    pub wire_bytes_sent: u64,
+}
+
+impl Context for WireContext {
+    fn eval_part(&self, op: &Operator) -> StringType {
+        match op {
+            Operator::DownstreamWireBytesReceived => {
+                let mut buffer = itoa::Buffer::new();
+                StringType::Smol(SmolStr::new(buffer.format(self.wire_bytes_received)))
+            },
+            Operator::DownstreamWireBytesSent => {
+                let mut buffer = itoa::Buffer::new();
+                StringType::Smol(SmolStr::new(buffer.format(self.wire_bytes_sent)))
+            },
+            _ => StringType::None,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ConnectionContext<'a> {
+    pub start_time: SystemTime,
+    pub duration: Duration,
+    pub wire_bytes_received: u64,
+    pub wire_bytes_sent: u64,
+    pub connection_termination_details: Option<&'a str>,
+}
+
+impl Context for ConnectionContext<'_> {
+    fn eval_part(&self, op: &Operator) -> StringType {
+        match op {
+            Operator::StartTime => StringType::Smol(format_system_time(self.start_time)),
+            Operator::BytesReceived | Operator::DownstreamWireBytesReceived => {
+                let mut buffer = itoa::Buffer::new();
+                StringType::Smol(SmolStr::new(buffer.format(self.wire_bytes_received)))
+            },
+            Operator::BytesSent | Operator::DownstreamWireBytesSent => {
+                let mut buffer = itoa::Buffer::new();
+                StringType::Smol(SmolStr::new(buffer.format(self.wire_bytes_sent)))
+            },
+            Operator::Duration => {
+                let mut buffer = itoa::Buffer::new();
+                StringType::Smol(SmolStr::new(buffer.format(self.duration.as_millis())))
+            },
+            Operator::ConnectionTerminationDetails => {
+                self.connection_termination_details.map_or(StringType::None, |msg| StringType::Smol(SmolStr::new(msg)))
+            },
             _ => StringType::None,
         }
     }
@@ -328,8 +404,8 @@ impl<T> Context for DownstreamContext<'_, T> {
                 StringType::Smol(SmolStr::new(path_str))
             },
             Operator::RequestAuthority => {
-                if let Some(a) = extract_authority_from_request(self.request) {
-                    StringType::Smol(SmolStr::new(a))
+                if let Some(a) = authority_from_request(self.request) {
+                    StringType::Smol(SmolStr::new(strip_userinfo(a)))
                 } else {
                     StringType::None
                 }
@@ -401,15 +477,20 @@ impl<T> Context for DownstreamResponseContext<'_, T> {
     }
 }
 
-pub fn extract_authority_from_request<T>(request: &Request<T>) -> Option<&str> {
+pub fn authority_from_request<T>(request: &Request<T>) -> Option<&str> {
     if let Some(authority) = request.uri().authority() {
         return Some(authority.as_str());
     }
     if let Some(host_header_value) = request.headers().get(http::header::HOST) {
-        return host_header_value.to_str().ok();
+        return host_header_value.to_str().ok().map(strip_userinfo);
     }
 
     None
+}
+
+#[inline]
+fn strip_userinfo(s: &str) -> &str {
+    s.find('@').map_or(s, |i| &s[i + 1..])
 }
 
 const TWO_DIGITS: [&str; 100] = [

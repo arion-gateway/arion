@@ -19,11 +19,12 @@ use std::{net::SocketAddr, sync::Arc};
 
 use super::{
     connector::{ConnectUsing, UnifiedConnector},
-    AsyncStream, UpstreamTransportSocketConfigurator,
+    AsyncInstrumentedStream, UpstreamTransportSocketConfigurator,
 };
 use crate::{
     listeners::metadata::DownstreamConnectionMetadata,
     secrets::{TlsConfigurator, WantsToBuildClient},
+    utils::instrumented_stream::InstrumentedStream,
 };
 use futures::future::BoxFuture;
 use rustls::ClientConfig;
@@ -37,7 +38,7 @@ pub struct TcpChannelConnector {
 }
 
 pub struct TcpChannel {
-    pub stream: AsyncStream,
+    pub stream: AsyncInstrumentedStream,
     pub cluster_name: &'static str,
     pub upstream_local_addr: Option<SocketAddr>,
     pub upstream_peer_addr: Option<SocketAddr>,
@@ -73,7 +74,7 @@ impl TcpChannelConnector {
 
                     let upstream_local_addr = tcp_stream.local_addr().ok();
                     let upstream_peer_addr = tcp_stream.peer_addr().ok();
-                    let stream: AsyncStream = Box::new(tcp_stream);
+                    let stream: AsyncInstrumentedStream = Box::new(InstrumentedStream::new(tcp_stream, None));
 
                     (stream, cluster_name, upstream_local_addr, upstream_peer_addr)
                 },
@@ -87,7 +88,7 @@ impl TcpChannelConnector {
                 },
             };
 
-            let stream: AsyncStream = match &transport_socket {
+            let stream: AsyncInstrumentedStream = match &transport_socket {
                 UpstreamTransportSocketConfigurator::Tls(tls_configurator) => {
                     configure_tls(tls_configurator, base_stream).await?
                 },
@@ -115,8 +116,8 @@ impl TcpChannelConnector {
 
 async fn configure_tls(
     tls_config: &TlsConfigurator<ClientConfig, WantsToBuildClient>,
-    stream: AsyncStream,
-) -> crate::Result<AsyncStream> {
+    stream: AsyncInstrumentedStream,
+) -> crate::Result<AsyncInstrumentedStream> {
     let client_config = tls_config.clone().into_inner();
     let server_name = ServerName::try_from(tls_config.sni())
         .map_err(|e| -> crate::Error { format!("Invalid server name: {e}").into() })?;
@@ -125,5 +126,5 @@ async fn configure_tls(
         .connect(server_name, stream)
         .await
         .map_err(|e| -> crate::Error { format!("TLS connection failed: {e}").into() })?;
-    Ok(Box::new(tls_stream))
+    Ok(Box::new(InstrumentedStream::new(tls_stream, None)))
 }

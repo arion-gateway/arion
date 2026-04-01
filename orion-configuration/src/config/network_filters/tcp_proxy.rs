@@ -17,10 +17,8 @@
 
 #![allow(deprecated)]
 
-use crate::config::cluster::ClusterSpecifier;
+use crate::config::{access_log::AccessLog, cluster::ClusterSpecifier};
 use serde::{Deserialize, Serialize};
-
-use super::access_log::AccessLog;
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct TcpProxy {
@@ -33,7 +31,7 @@ pub struct TcpProxy {
 mod envoy_conversions {
     #![allow(deprecated)]
     use super::TcpProxy;
-    use crate::config::{common::*, network_filters::access_log::AccessLog};
+    use crate::config::{access_log::AccessLog, common::*};
     use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::network::tcp_proxy::v3::TcpProxy as EnvoyTcpProxy;
 
     impl TryFrom<EnvoyTcpProxy> for TcpProxy {

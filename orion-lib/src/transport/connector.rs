@@ -37,10 +37,13 @@ use tokio::net::{TcpSocket, TcpStream};
 use tower::Service;
 use tracing::debug;
 
-use crate::event_error::{elapsed, EventError};
 use crate::listeners::internal_registry::{self, InternalConnection};
 use crate::listeners::metadata::DownstreamConnectionMetadata;
-use crate::transport::{AsyncStream, HttpConnection};
+use crate::transport::{AsyncInstrumentedStream, HttpConnection};
+use crate::{
+    event_error::{elapsed, UpstreamError},
+    utils::instrumented_stream::InstrumentedStream,
+};
 
 use super::{bind_device::BindDevice, resolve};
 
@@ -49,7 +52,7 @@ pub enum ConnectError {
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
-    Event(#[from] EventError),
+    Event(#[from] UpstreamError),
 }
 
 #[derive(Clone, Debug)]
@@ -200,7 +203,7 @@ impl LocalConnectorWithDNSResolver {
             let stream = if let Some(connection_timeout) = connection_timeout {
                 fast_timeout(connection_timeout, sock.connect(addr))
                     .await // Result<Result<TcpStream, io::Error>>, Elapsed>
-                    .map_err(|_| EventError::ConnectTimeout(elapsed()))
+                    .map_err(|_| UpstreamError::ConnectTimeout(elapsed()))
                     .map_err(|e| {
                         WithContext::new(e)
                             .with_context_data(TcpErrorContext {
@@ -210,7 +213,7 @@ impl LocalConnectorWithDNSResolver {
                             })
                             .map_into()
                     })? // Result<TcpStream, io::Error>
-                    .map_err(|orig| EventError::IoError(io::Error::new(orig.kind(), orig.to_string())))
+                    .map_err(|orig| UpstreamError::Io(io::Error::new(orig.kind(), orig.to_string())))
                     .map_err(|e| {
                         WithContext::new(e)
                             .with_context_data(TcpErrorContext {
@@ -223,7 +226,7 @@ impl LocalConnectorWithDNSResolver {
             } else {
                 sock.connect(addr)
                     .await
-                    .map_err(|orig| EventError::IoError(io::Error::new(orig.kind(), orig.to_string())))
+                    .map_err(|orig| UpstreamError::Io(io::Error::new(orig.kind(), orig.to_string())))
                     .map_err(|e| {
                         WithContext::new(e)
                             .with_context_data(TcpErrorContext {
@@ -271,7 +274,7 @@ impl InternalConnector {
     pub async fn connect(
         &self,
         downstream_metadata: Option<Arc<DownstreamConnectionMetadata>>,
-    ) -> std::result::Result<(AsyncStream, &'static str), WithContext<io::Error>> {
+    ) -> std::result::Result<(AsyncInstrumentedStream, &'static str), WithContext<io::Error>> {
         debug!("Connecting to internal listener '{}' from cluster '{}'", self.listener_name, self.cluster_name);
 
         let sender = internal_registry::get_connection_sender_for_listener(self.listener_name).ok_or_else(|| {
@@ -289,7 +292,7 @@ impl InternalConnector {
             })
         });
         let internal_conn = InternalConnection {
-            stream: Box::new(server_stream) as AsyncStream,
+            stream: Box::new(InstrumentedStream::new(server_stream, None)) as AsyncInstrumentedStream,
             downstream_metadata,
             start_instant: Instant::now(),
         };
@@ -302,7 +305,7 @@ impl InternalConnector {
         }
         debug!("Successfully connected to internal listener '{}'", self.listener_name);
 
-        Ok((Box::new(client_stream) as AsyncStream, self.cluster_name))
+        Ok((Box::new(InstrumentedStream::new(client_stream, None)) as AsyncInstrumentedStream, self.cluster_name))
     }
 }
 
@@ -356,7 +359,9 @@ impl Service<Uri> for UnifiedConnector {
                 Box::pin(async move {
                     let stream = fut.await?;
                     let tcp_stream = stream.into_inner();
-                    Ok(HttpConnection::new(TokioIo::new(Box::new(tcp_stream) as AsyncStream)))
+                    Ok(HttpConnection::new(TokioIo::new(
+                        Box::new(InstrumentedStream::new(tcp_stream, None)) as AsyncInstrumentedStream
+                    )))
                 })
             },
             UnifiedConnector::Internal(c) => {

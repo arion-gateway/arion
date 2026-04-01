@@ -63,6 +63,15 @@ where
     }
 }
 
+impl<B> Default for TimeoutBody<B>
+where
+    B: Default,
+{
+    fn default() -> Self {
+        Self { timeout: None, sleep: None, inner: Default::default() }
+    }
+}
+
 impl<B> TimeoutBody<B> {
     /// Creates a new [`TimeoutBody`].
     pub fn new(timeout: Option<Duration>, body: B) -> Self {

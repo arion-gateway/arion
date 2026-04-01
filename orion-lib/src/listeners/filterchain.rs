@@ -23,8 +23,9 @@ use crate::{
     get_shard_id,
     listeners::metadata::{DownstreamConnectionMetadata, DownstreamMetadata},
     secrets::{TlsConfigurator, WantsToBuildServer},
-    transport::AsyncReadWrite,
-    AsyncStream, ConversionContext, Error, Result,
+    transport::AsyncReadWriteInstrumented,
+    utils::instrumented_stream::StreamMetrics,
+    AsyncInstrumentedStream, ConversionContext, Error, Result,
 };
 use futures::TryFutureExt;
 use hyper::{service::Service, Request};
@@ -93,8 +94,8 @@ impl TryFrom<ConversionContext<'_, MainFilter>> for MainFilterBuilder {
 #[derive(Debug, Clone)]
 pub struct FilterchainBuilder {
     name: SmolStr,
+    filterchain_id: u64,
     listener_name: Option<&'static str>,
-    filter_chain_match_hash: u64,
     main_filter: MainFilterBuilder,
     rbac_filters: Vec<NetworkRbac>,
     tls_configurator: Option<TlsConfigurator<ServerConfig, WantsToBuildServer>>,
@@ -117,12 +118,12 @@ impl FilterchainBuilder {
             MainFilterBuilder::Http(http_connection_manager) => ConnectionHandler::Http(Arc::new(
                 http_connection_manager
                     .with_listener_name(listener_name)
-                    .with_filter_chain_match_hash(self.filter_chain_match_hash)
+                    .with_filterchain_id(self.filterchain_id)
                     .build()?,
             )),
-            MainFilterBuilder::Tcp(tcp_proxy) => {
-                ConnectionHandler::Tcp(tcp_proxy.with_listener_name(listener_name).build()?)
-            },
+            MainFilterBuilder::Tcp(tcp_proxy) => ConnectionHandler::Tcp(
+                tcp_proxy.with_listener_name(listener_name).with_filterchain_id(self.filterchain_id).build()?,
+            ),
         };
         Ok(FilterchainType { config, handler })
     }
@@ -139,7 +140,7 @@ impl TryFrom<ConversionContext<'_, FilterChainConfig>> for FilterchainBuilder {
             tls_config.map(|tls_config| TlsConfigurator::try_from((tls_config, secret_manager))).transpose()?;
         Ok(FilterchainBuilder {
             name: filter_chain.name,
-            filter_chain_match_hash: filter_chain.filter_chain_match_hash,
+            filterchain_id: filter_chain.id,
             listener_name: None,
             main_filter,
             rbac_filters,
@@ -155,10 +156,10 @@ impl FilterchainType {
 
     pub fn apply_rbac(
         &self,
-        stream: AsyncStream,
+        stream: AsyncInstrumentedStream,
         connection_metadata: &DownstreamConnectionMetadata,
         server_name: Option<&str>,
-    ) -> Option<AsyncStream> {
+    ) -> Option<AsyncInstrumentedStream> {
         let rbac_filters = &self.filter_chain().rbac_filters;
         let network_context =
             NetworkContext::new(connection_metadata.local_address(), connection_metadata.peer_address(), server_name);
@@ -174,7 +175,7 @@ impl FilterchainType {
     #[allow(clippy::used_underscore_binding)]
     pub async fn start_filterchain(
         &self,
-        stream: AsyncStream,
+        stream: AsyncInstrumentedStream,
         metadata: DownstreamMetadata,
         listener_name: &'static str,
         start_instant: std::time::Instant,
@@ -228,12 +229,12 @@ impl FilterchainType {
                     // and only useful in the cases where the listener is not using TLS.
                     // any deployment that does not want to do TLS to downstream, is probably already in the private network
                     // and would prefer prior-knowledge http2
-                    let stream: Box<dyn AsyncReadWrite> = Box::new(stream);
                     (stream, codec_type)
                 };
 
                 debug!("{listener_name} tried to negotiate {codec_type:?}, got {selected_codec:?}");
                 let mut hyper_server = HyperServerBuilder::new(TokioExecutor::new());
+                let metrics = stream.shared_metrics();
                 let stream = TokioIo::new(stream);
                 //todo(hayley): we should be applying listener http settings here
                 hyper_server = match selected_codec {
@@ -244,8 +245,9 @@ impl FilterchainType {
                 hyper_server
                     .serve_connection_with_upgrades(
                         stream,
-                        hyper::service::service_fn(|mut req: Request<hyper::body::Incoming>| {
+                        hyper::service::service_fn(move |mut req: Request<hyper::body::Incoming>| {
                             req.extensions_mut().insert::<DownstreamMetadata>(metadata.clone());
+                            req.extensions_mut().insert::<Arc<StreamMetrics>>(metrics.clone());
                             req_handler.call(req).map_err(orion_error::Error::into_inner)
                         }),
                     )
@@ -269,11 +271,11 @@ impl FilterchainType {
                     .clone()
                     .map(TlsConfigurator::<ServerConfig, WantsToBuildServer>::into_inner);
 
-                let (stream, _alpns): (Box<dyn AsyncReadWrite>, Option<AlpnCodecs>) =
+                let (stream, _alpns): (Box<dyn AsyncReadWriteInstrumented>, Option<AlpnCodecs>) =
                     if let Some(server_config) = server_config {
                         start_tls(listener_name, stream, server_config, None).await?
                     } else {
-                        (Box::new(stream), None)
+                        (stream, None)
                     };
 
                 debug!("Starting tcp proxy");
@@ -295,10 +297,10 @@ fn negotiate_codec_type<'a>(codec_type: CodecType, client_alpns: impl Iterator<I
 
 async fn start_tls(
     listener_name: &'static str,
-    stream: AsyncStream,
+    stream: AsyncInstrumentedStream,
     mut config: ServerConfig,
     codec_type: Option<CodecType>,
-) -> Result<(AsyncStream, Option<AlpnCodecs>)> {
+) -> Result<(AsyncInstrumentedStream, Option<AlpnCodecs>)> {
     let acceptor = tokio_rustls::LazyConfigAcceptor::new(Acceptor::default(), stream);
     tokio::pin!(acceptor);
     match acceptor.as_mut().await {

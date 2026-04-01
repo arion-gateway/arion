@@ -18,7 +18,7 @@
 use crate::clusters::cached_watch::{CachedWatch, CachedWatcher};
 use crate::listeners::metadata::DownstreamConnectionMetadata;
 use crate::runtime_context::get_runtime_id;
-use crate::transport::AsyncStream;
+use crate::transport::AsyncInstrumentedStream;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -27,7 +27,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
 pub struct InternalConnection {
-    pub stream: AsyncStream,
+    pub stream: AsyncInstrumentedStream,
     pub downstream_metadata: Arc<DownstreamConnectionMetadata>,
     pub start_instant: Instant,
 }

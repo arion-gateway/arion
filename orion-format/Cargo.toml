@@ -25,9 +25,12 @@ hyper          = { version = "1" }
 itoa           = "1.0.15"
 ptrie          = "0.7.2"
 serde          = { workspace = true, features = ["rc"] }
+smallvec       = { workspace = true }
 thread_local   = "1.1.9"
 traceparent    = "0.0.3"
 uuid           = { version = "1.18.1", features = ["v4"] }
+blake3         = "1.8.3"
+arrayvec = { version = "0.7.6", features = ["serde"] }
 
 [features]
 dhat-heap = []

@@ -15,7 +15,7 @@
 //
 //
 use super::{http_modifiers, upgrades as upgrade_utils, RequestHandler, TransactionHandler};
-use crate::event_error::{EventError, EventFailure, EventKind, TryInferFrom};
+use crate::event_error::{EventFailure, EventKind, TryInferFrom, UpstreamError};
 use crate::{
     body::response_flags::ResponseFlags,
     clusters::{
@@ -25,6 +25,10 @@ use crate::{
     listeners::{http_connection_manager::HttpConnectionManager, synthetic_http_response::SyntheticHttpResponse},
     Result,
 };
+
+#[cfg(feature = "access-log")]
+use crate::with_access_log;
+
 use crate::{instrument_block, instrument_function, OrionRequestBody, OrionResponseBody, RequestContext};
 
 use http::{uri::Parts as UriParts, Uri};
@@ -38,11 +42,7 @@ use orion_error::Context;
 use scopeguard::defer;
 
 #[cfg(feature = "access-log")]
-use {
-    crate::listeners::access_log::AccessLogContext,
-    orion_format::context::{UpstreamContext, UpstreamRequestContext},
-};
-
+use orion_format::context::{UpstreamContext, UpstreamRequestContext};
 use orion_format::types::{ResponseFlags as FmtResponseFlags, ResponseFlagsLong, ResponseFlagsShort};
 
 #[cfg(feature = "tracing")]
@@ -109,13 +109,14 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
         match maybe_channel {
             Ok(svc_channel) => {
                 #[cfg(feature = "access-log")]
-                if let Some(ctx) = trans_handler.access_log_ctx.as_ref() {
-                    ctx.lock().loggers.with_context(&UpstreamContext {
+                with_access_log!(
+                    &mut trans_handler.trans_ctx.lock().loggers,
+                    UpstreamContext {
                         authority: Some(svc_channel.upstream_authority()),
                         cluster_name: Some(svc_channel.cluster_name()),
                         route_name,
-                    })
-                }
+                    }
+                );
 
                 let ver = downstream_request.version();
 
@@ -169,9 +170,10 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
                 }
 
                 #[cfg(feature = "access-log")]
-                if let Some(ctx) = trans_handler.access_log_ctx.as_ref() {
-                    ctx.lock().loggers.with_context(&UpstreamRequestContext(&upstream_request));
-                }
+                with_access_log!(
+                    &mut trans_handler.trans_ctx.lock().loggers,
+                    UpstreamRequestContext(&upstream_request)
+                );
 
                 let websocket_enabled = if let Some(upgrade_config) = self.upgrade_config {
                     upgrade_config.is_websocket_enabled(websocket_enabled_by_default)
@@ -209,9 +211,10 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
                 match resp {
                     Err(err) => {
                         let err = err.into_inner();
-                        let event_error = EventError::try_infer_from(&err);
+                        let event_error = UpstreamError::try_infer_from(&err);
                         let flags = event_error.clone().map(ResponseFlags::from).unwrap_or_default();
-                        let event_kind = event_error.map_or(EventFailure::ViaUpstream.into(), |e| EventKind::Error(e));
+                        let event_kind =
+                            event_error.map_or(EventFailure::ViaUpstream.into(), |e| EventKind::Upstream(e));
                         debug!(
                             "HttpConnectionManager Error processing response {:?}: {}({})",
                             err,
@@ -226,9 +229,9 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
             // http connection not available from cluster...
             Err(err) => {
                 let err = err.into_inner();
-                let event_error = EventError::try_infer_from(&err);
+                let event_error = UpstreamError::try_infer_from(&err);
                 let flags = event_error.clone().map(ResponseFlags::from).unwrap_or_default();
-                let event_kind = event_error.map_or(EventFailure::ViaUpstream.into(), |e| EventKind::Error(e));
+                let event_kind = event_error.map_or(EventFailure::ViaUpstream.into(), |e| EventKind::Upstream(e));
                 debug!(
                     "Failed to get an HTTP connection: {:?}: {}({})",
                     err,

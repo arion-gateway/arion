@@ -20,7 +20,7 @@ use std::ops::BitOr;
 use crate::body::{poly_body::PolyBodyError, timeout_body::TimeoutBodyError};
 use orion_format::types::ResponseFlags as FmtResponseFlags;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct ResponseFlags(pub FmtResponseFlags);
 
 impl Default for ResponseFlags {

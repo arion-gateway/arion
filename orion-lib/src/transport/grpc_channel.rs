@@ -30,6 +30,7 @@ use crate::{
     body::{instrumented_body::InstrumentedBody, response_flags::BodyKind, timeout_body::TimeoutBody},
     listeners::http_connection_manager::{RequestHandler, TransactionHandler},
     transport::HttpChannel,
+    utils::instrumented_stream::StreamMetrics,
     RequestContext,
 };
 
@@ -55,6 +56,8 @@ impl GrpcService {
 
 impl GrpcService {
     async fn do_call(self, grpc_req: Request<GrpcBody>) -> std::result::Result<http::Response<GrpcBody>, crate::Error> {
+        let stream_metrics = grpc_req.extensions().get::<Arc<StreamMetrics>>().map(Clone::clone);
+
         let (mut parts, grpc_body) = grpc_req.into_parts();
 
         // Add scheme and authority to gRPC URLs to make them valid HTTP
@@ -68,7 +71,8 @@ impl GrpcService {
             InstrumentedBody::new(
                 BodyKind::Request,
                 TimeoutBody::new(None, grpc_body.into()),
-                |_bytes, _event_error, _flags| {
+                stream_metrics,
+                |_body_bytes, _stream_metrics, _event_error, _flags| {
                     debug!("gRPC request body finalized");
                 },
             ),

@@ -14,6 +14,10 @@
 // limitations under the License.
 //
 //
+
+#[cfg(feature = "access-log")]
+use crate::with_access_log;
+
 use super::{RequestHandler, TransactionHandler};
 use crate::{body::timeout_body::TimeoutBody, OrionRequestBody, OrionResponseBody, Result};
 use http_body_util::Full;
@@ -21,7 +25,7 @@ use hyper::{Request, Response};
 use orion_configuration::config::network_filters::http_connection_manager::route::DirectResponseAction;
 
 #[cfg(feature = "access-log")]
-use {crate::listeners::access_log::AccessLogContext, orion_format::context::UpstreamContext};
+use orion_format::context::UpstreamContext;
 
 impl<'a> RequestHandler<Request<OrionRequestBody>, &'a str> for &DirectResponseAction {
     async fn to_response(
@@ -31,13 +35,11 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, &'a str> for &DirectResponseA
         _route_name: &'a str,
     ) -> Result<Response<OrionResponseBody>> {
         #[cfg(feature = "access-log")]
-        if let Some(ctx) = _trans_handler.access_log_ctx.as_ref() {
-            ctx.lock().loggers.with_context(&UpstreamContext {
-                authority: None,
-                cluster_name: None,
-                route_name: _route_name,
-            })
-        }
+        with_access_log!(
+            &mut _trans_handler.trans_ctx.lock().loggers,
+            UpstreamContext { authority: None, cluster_name: None, route_name: _route_name }
+        );
+
         let body = Full::new(self.body.as_ref().map(|b| bytes::Bytes::copy_from_slice(b.data())).unwrap_or_default());
         let mut resp = Response::new(TimeoutBody::new(None, body.into()));
         *resp.status_mut() = self.status;

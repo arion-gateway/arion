@@ -256,7 +256,7 @@ mod config_dump_tests {
                     FilterChainMatch::default(),
                     FilterChain {
                         name: SmolStr::new_static("fc1"),
-                        filter_chain_match_hash: 0,
+                        id: 0,
                         tls_config: None,
                         rbac: vec![],
                         terminal_filter: MainFilter::Http(HttpConnectionManager {
@@ -310,6 +310,7 @@ mod config_dump_tests {
             proxy_protocol_config: None,
             with_tls_inspector: false,
             tcp_backlog_size: 128,
+            access_log: vec![],
         };
         let (configuration_senders, handle) = spawn_mock_listener_manager(Some(vec![listener]));
         let admin_state = AdminState {

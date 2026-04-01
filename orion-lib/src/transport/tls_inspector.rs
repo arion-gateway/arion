@@ -15,7 +15,7 @@
 //
 //
 
-use super::AsyncReadWrite;
+use super::AsyncReadWriteInstrumented;
 use crate::utils::rewindable_stream::RewindableHeadAsyncStream;
 
 use rustls::server::Acceptor;
@@ -32,7 +32,9 @@ pub enum InspectorResult {
     TlsError(io::Error),
 }
 
-pub async fn inspect_client_hello(stream: Box<dyn AsyncReadWrite>) -> (InspectorResult, Box<dyn AsyncReadWrite>) {
+pub async fn inspect_client_hello(
+    stream: Box<dyn AsyncReadWriteInstrumented>,
+) -> (InspectorResult, Box<dyn AsyncReadWriteInstrumented>) {
     let mut inspector = RewindableHeadAsyncStream::new(stream);
     let acceptor = tokio_rustls::LazyConfigAcceptor::new(Acceptor::default(), &mut inspector);
     let result = match acceptor.await {
@@ -48,6 +50,8 @@ pub async fn inspect_client_hello(stream: Box<dyn AsyncReadWrite>) -> (Inspector
 
 #[cfg(test)]
 mod tests {
+    use crate::utils::instrumented_stream::InstrumentedStream;
+
     use super::*;
     use rustls::{pki_types::ServerName, ClientConfig, ClientConnection};
     use std::{io::Cursor, sync::Arc};
@@ -69,7 +73,7 @@ mod tests {
     async fn test_sni_detection() {
         let tls_data = create_client_hello_with_sni("example.com");
         let cursor = std::io::Cursor::new(tls_data.clone());
-        let inbound = Box::new(cursor) as Box<dyn AsyncReadWrite>;
+        let inbound = Box::new(InstrumentedStream::new(cursor, None)) as Box<dyn AsyncReadWriteInstrumented>;
         let (result, rewound) = inspect_client_hello(inbound).await;
         assert!(matches!(result, InspectorResult::Success(ref sni) if sni == "example.com"));
 
@@ -85,7 +89,7 @@ mod tests {
     async fn test_no_sni() {
         let tls_data = create_client_hello_with_sni("127.0.0.1");
         let cursor = std::io::Cursor::new(tls_data);
-        let inbound = Box::new(cursor) as Box<dyn AsyncReadWrite>;
+        let inbound = Box::new(InstrumentedStream::new(cursor, None)) as Box<dyn AsyncReadWriteInstrumented>;
         let (result, _) = inspect_client_hello(inbound).await;
         assert!(matches!(result, InspectorResult::SuccessNoSni));
     }
@@ -98,7 +102,7 @@ mod tests {
         write_stream.write_all(http_data).await.unwrap();
         write_stream.shutdown().await.unwrap();
 
-        let inbound = Box::new(read_stream) as Box<dyn AsyncReadWrite>;
+        let inbound = Box::new(InstrumentedStream::new(read_stream, None)) as Box<dyn AsyncReadWriteInstrumented>;
         let (result, mut rewound) = inspect_client_hello(inbound).await;
         assert!(matches!(result, InspectorResult::TlsError(_)));
 

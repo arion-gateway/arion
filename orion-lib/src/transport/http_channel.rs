@@ -22,7 +22,7 @@ use crate::{
         timeout_body::TimeoutBody,
     },
     clusters::retry_policy::RetryCondition,
-    event_error::{EventError, EventKind, TryInferFrom},
+    event_error::{EventKind, TryInferFrom, UpstreamError},
     get_shard_id, instrument_block, instrument_function,
     listeners::{
         http_connection_manager::{http_modifiers::strip_trailers_headers, RequestHandler, TransactionHandler},
@@ -405,11 +405,12 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
             HttpChannels::Single(channel) => channel.to_response(trans_handler, request, ctx).await,
             HttpChannels::MultiWithFailover { channel, failover_channels } => {
                 let RequestContext { route_timeout, .. } = ctx;
-                let (parts, body) = request.into_parts();
-                let InstrumentedBody { inner, guard, state } = body;
+                let (parts, mut body) = request.into_parts();
+                let free_body = std::mem::replace(&mut body.inner, TimeoutBody::<PolyBody>::default());
+                let InstrumentedBody { body_kind, body_bytes, ref stream_metrics, ref on_complete, .. } = body;
 
-                let body_timeout = inner.timeout;
-                let collected = inner.collect().await.map_err(Error::from)?;
+                let body_timeout = free_body.timeout;
+                let collected = free_body.collect().await.map_err(Error::from)?;
                 let replay_body = http_body_util::Full::new(collected.to_bytes());
 
                 let mut last_error: Option<Error> = None;
@@ -418,8 +419,10 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
                 for (attempt, channel) in std::iter::once(channel).chain(failover_channels.iter()).enumerate() {
                     let cloned_body = InstrumentedBody {
                         inner: TimeoutBody::new(body_timeout, replay_body.clone().into()),
-                        guard: guard.clone(),
-                        state: state.clone(),
+                        body_kind,
+                        body_bytes,
+                        stream_metrics: stream_metrics.clone(),
+                        on_complete: on_complete.clone(),
                     };
                     let rebuilt_req = Request::from_parts(parts.clone(), cloned_body);
                     let attempt_ctx = RequestContext { route_timeout, retry_policy: None };
@@ -694,10 +697,11 @@ impl HttpChannel {
             crate::instrumentation::metrics::SEND_REQUEST_WITH_RETRY.observe(nanos as usize)
         });
 
-        let (parts, body) = req.into_parts();
-        let InstrumentedBody { inner, guard, state } = body;
+        let (parts, mut body) = req.into_parts();
+        let free_body = std::mem::replace(&mut body.inner, TimeoutBody::<PolyBody>::default());
+        let InstrumentedBody { body_kind, body_bytes, ref stream_metrics, ref on_complete, .. } = body;
 
-        let body = inner.collect().await?;
+        let body = free_body.collect().await?;
         let body = http_body_util::Full::new(body.to_bytes());
         let mut last_error: Option<Error> = None;
 
@@ -706,15 +710,17 @@ impl HttpChannel {
 
             let cloned_body = InstrumentedBody {
                 inner: TimeoutBody::new(None, body.clone().into()),
-                guard: guard.clone(),
-                state: state.clone(),
+                body_kind,
+                body_bytes,
+                stream_metrics: stream_metrics.clone(),
+                on_complete: on_complete.clone(),
             };
 
             let cloned_req: Request<OrionRequestBody> = Request::from_parts(parts.clone(), cloned_body);
 
             // actually send the request and wait for the response...
             let result: StdResult<Response<Incoming>, Error> = if let Some(t) = retry_policy.per_try_timeout() {
-                match fast_timeout(t, sender.request(cloned_req)).await.map_err(|_| EventError::PerTryTimeout) {
+                match fast_timeout(t, sender.request(cloned_req)).await.map_err(|_| UpstreamError::PerTryTimeout) {
                     Ok(result) => result.map_err(Into::into),
                     Err(err) => Err(err.into()),
                 }
@@ -779,7 +785,7 @@ impl HttpChannel {
                 }
             },
             (Err(err), dur) => {
-                if let Some(event_error) = EventError::try_infer_from(err.as_ref()) {
+                if let Some(event_error) = UpstreamError::try_infer_from(err.as_ref()) {
                     let response_flags: ResponseFlags = event_error.clone().into();
                     debug!(
                         "Event ({event_error}) occurred after {:?}: {} ({})",
@@ -789,20 +795,23 @@ impl HttpChannel {
                     );
 
                     match event_error {
-                        EventError::RefusedStream | EventError::IoError(_) | EventError::ConnectTimeout(_) => Ok(
-                            SyntheticHttpResponse::service_unavailable(EventKind::Error(event_error), response_flags)
-                                .into_response(version),
-                        ),
-                        EventError::PerTryTimeout | EventError::RouteTimeout => {
-                            Ok(SyntheticHttpResponse::gateway_timeout(EventKind::Error(event_error), response_flags)
+                        UpstreamError::RefusedStream | UpstreamError::Io(_) | UpstreamError::ConnectTimeout(_) => {
+                            Ok(SyntheticHttpResponse::service_unavailable(
+                                EventKind::Upstream(event_error),
+                                response_flags,
+                            )
+                            .into_response(version))
+                        },
+                        UpstreamError::PerTryTimeout | UpstreamError::RouteTimeout => {
+                            Ok(SyntheticHttpResponse::gateway_timeout(EventKind::Upstream(event_error), response_flags)
                                 .into_response(version))
                         },
-                        EventError::Reset | EventError::Http3PostConnectFailure => {
-                            Ok(SyntheticHttpResponse::bad_gateway(EventKind::Error(event_error), response_flags)
+                        UpstreamError::Reset | UpstreamError::Http3PostConnectFailure => {
+                            Ok(SyntheticHttpResponse::bad_gateway(EventKind::Upstream(event_error), response_flags)
                                 .into_response(version))
                         },
-                        EventError::Error(_) => Ok(SyntheticHttpResponse::internal_server_error(
-                            EventKind::Error(event_error),
+                        UpstreamError::Error(_) => Ok(SyntheticHttpResponse::internal_server_error(
+                            EventKind::Upstream(event_error),
                             response_flags,
                             "internal server error",
                         )

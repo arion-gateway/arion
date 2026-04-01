@@ -29,11 +29,11 @@ use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 use std::{collections::HashMap, str::FromStr, time::Duration};
 
+use crate::config::access_log::AccessLog;
+
 use crate::config::{
     common::*,
-    network_filters::{
-        access_log::AccessLog, http_connection_manager::header_modifier::HeaderValueOption, tracing::TracingConfig,
-    },
+    network_filters::{http_connection_manager::header_modifier::HeaderValueOption, tracing::TracingConfig},
 };
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -580,13 +580,12 @@ mod envoy_conversions {
         CodecType, ConfigSource, ConfigSourceSpecifier, HttpConnectionManager, RdsSpecifier, RetryBackoff, RetryOn,
         RetryPolicy, Route, RouteConfiguration, RouteSpecifier, UpgradeType, VirtualHost, XffSettings,
     };
+    use crate::config::access_log::AccessLog;
+
     use crate::config::{
         common::*,
         core::RustType,
-        network_filters::{
-            access_log::AccessLog,
-            http_connection_manager::{HeaderModifiersAdd, HeaderModifiersRemove},
-        },
+        network_filters::http_connection_manager::{HeaderModifiersAdd, HeaderModifiersRemove},
     };
     use http::{HeaderName, StatusCode};
     use orion_data_plane_api::envoy_data_plane_api::envoy::{

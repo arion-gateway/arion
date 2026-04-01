@@ -15,7 +15,7 @@
 //
 //
 
-use orion_configuration::config::network_filters::access_log::AccessLogConf;
+use orion_configuration::config::access_log::AccessLogConf;
 use tracing_appender::non_blocking::{NonBlocking, WorkerGuard};
 use tracing_rolling_file::{RollingConditionBase, RollingFileAppender, RollingFrequency};
 
@@ -40,8 +40,8 @@ impl LogWriter {
         max_log_files: usize,
     ) -> Self {
         let handle = match conf {
-            AccessLogConf::Stdout => DeferredInit::new(|| Ok(tracing_appender::non_blocking(std::io::stdout()))),
-            AccessLogConf::Stderr => DeferredInit::new(|| Ok(tracing_appender::non_blocking(std::io::stderr()))),
+            AccessLogConf::Stdout => DeferredInit::new(|| Ok(tracing_appender::non_blocking::NonBlockingBuilder::default().lossy(false).finish(std::io::stdout()))),
+            AccessLogConf::Stderr => DeferredInit::new(|| Ok(tracing_appender::non_blocking::NonBlockingBuilder::default().lossy(false).finish(std::io::stderr()))),
             AccessLogConf::File(ref path) => {
                 let path = path.clone();
                 DeferredInit::new(move || {
@@ -56,7 +56,7 @@ impl LogWriter {
                         if let Some(freq) = rolling_frequency { condition.frequency(freq) } else { condition };
 
                     match RollingFileAppender::new(filename, condition, max_log_files) {
-                        Ok(app) => Ok(tracing_appender::non_blocking(app)),
+                        Ok(app) => Ok(tracing_appender::non_blocking::NonBlockingBuilder::default().lossy(false).finish(app)),
                         Err(e) => Err(LoggerError::InitializationError(format!(
                             "Failed to create RollingFileAppender for path: {path}. Error: {e}"
                         ))),

@@ -15,7 +15,7 @@
 //
 //
 
-use std::str::FromStr;
+use std::{fmt::Display, str::FromStr};
 
 use orion_data_plane_api::envoy_data_plane_api::envoy::{
     config::accesslog::v3::{access_log::ConfigType, AccessLog as EnvoyAccessLog},
@@ -43,8 +43,33 @@ use orion_data_plane_api::envoy_data_plane_api::{
 
 use orion_format::{LogFormatter, DEFAULT_ACCESS_LOG_FORMAT};
 use serde::{Deserialize, Serialize};
+use smol_str::SmolStr;
 
 use crate::config::{common::*, core::DataSource};
+
+/// Represents the destination for an access logging event.
+///
+/// - `Listener`: Identifies a specific listener by name.
+/// - `ListenerFilterChain`: Identifies a specific filterchain of a listener.
+/// - `Admin`: Refers to the Envoy admin interface.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub enum AccessLogTarget {
+    Listener(SmolStr),
+    ListenerFilterChain(SmolStr, u64),
+    Admin,
+}
+
+impl Display for AccessLogTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AccessLogTarget::Listener(name) => write!(f, "Listener({name})"),
+            AccessLogTarget::ListenerFilterChain(lister_name, id) => {
+                write!(f, "Listener({lister_name}:FilterChain({id})")
+            },
+            AccessLogTarget::Admin => write!(f, "Admin"),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub enum AccessLogType {
@@ -67,8 +92,8 @@ pub enum AccessLogConf {
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct AccessLog {
-    pub config: AccessLogConf,
-    pub logger: LogFormatter,
+    config: AccessLogConf,
+    logger: LogFormatter,
 }
 
 impl AccessLog {

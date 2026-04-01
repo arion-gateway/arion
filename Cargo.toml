@@ -47,6 +47,7 @@ dashmap             = "6.1.0"
 abort-on-drop       = "0.2"
 bounded-integer     = "0.6.1"
 bytes               = "1"
+smallvec            = { version = "1", features = ["union"] }
 smol_str            = { version = "0.3.4", features = ["serde"] }
 exponential-backoff = "2.1"
 futures             = "0.3"

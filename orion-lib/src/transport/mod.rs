@@ -34,6 +34,8 @@ pub mod timer;
 pub mod tls_inspector;
 pub mod transport_socket;
 
+use crate::utils::instrumented_stream::Instrumented;
+
 pub use self::{
     grpc_channel::{GrpcService, SimpleRoundRobinGrpcServiceLB},
     http_channel::{HttpChannel, HttpChannelBuilder, HttpChannels},
@@ -42,22 +44,22 @@ pub use self::{
     transport_socket::UpstreamTransportSocketConfigurator,
 };
 
-pub trait AsyncReadWrite: AsyncRead + AsyncWrite + Send + Sync + Unpin {}
-impl<T> AsyncReadWrite for T where T: AsyncRead + AsyncWrite + Send + Sync + Unpin {}
+pub trait AsyncReadWriteInstrumented: AsyncRead + AsyncWrite + Instrumented + Send + Sync + Unpin {}
+impl<T> AsyncReadWriteInstrumented for T where T: AsyncRead + AsyncWrite + Instrumented + Send + Sync + Unpin {}
 
-pub type AsyncStream = Box<dyn AsyncReadWrite>;
+pub type AsyncInstrumentedStream = Box<dyn AsyncReadWriteInstrumented>;
 
 pub struct HttpConnection {
-    inner: TokioIo<AsyncStream>,
+    inner: TokioIo<AsyncInstrumentedStream>,
     is_http2: bool,
 }
 
 impl HttpConnection {
-    pub fn new(stream: TokioIo<AsyncStream>) -> Self {
+    pub fn new(stream: TokioIo<AsyncInstrumentedStream>) -> Self {
         Self { inner: stream, is_http2: false }
     }
 
-    pub fn new_http2(stream: TokioIo<AsyncStream>) -> Self {
+    pub fn new_http2(stream: TokioIo<AsyncInstrumentedStream>) -> Self {
         Self { inner: stream, is_http2: true }
     }
 }
@@ -74,7 +76,7 @@ impl Connection for HttpConnection {
 }
 
 impl Deref for HttpConnection {
-    type Target = TokioIo<AsyncStream>;
+    type Target = TokioIo<AsyncInstrumentedStream>;
 
     fn deref(&self) -> &Self::Target {
         &self.inner

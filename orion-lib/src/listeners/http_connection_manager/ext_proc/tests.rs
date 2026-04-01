@@ -1,6 +1,9 @@
 use super::*;
 use crate::{
-    body::{instrumented_body::InstrumentedBody, response_flags::BodyKind},
+    body::{
+        instrumented_body::InstrumentedBody, poly_body::PolyBodyError, response_flags::BodyKind,
+        timeout_body::TimeoutBodyError,
+    },
     listeners::http_connection_manager::ext_proc::{
         kind::{MsgKind, RequestMsg, ResponseMsg},
         mutation::apply_header_mutations,
@@ -284,7 +287,7 @@ async fn build_request_from_mock(mock_request: &Mock<RequestMsg>) -> Request<Ori
     )
     .await;
 
-    req.body(InstrumentedBody::new(BodyKind::Request, TimeoutBody::new(None, body), |_, _, _| {})).unwrap()
+    req.body(InstrumentedBody::new(BodyKind::Request, TimeoutBody::new(None, body), None, |_, _, _, _| {})).unwrap()
 }
 
 async fn build_response_from_mock(mock_response: &Mock<ResponseMsg>) -> Response<OrionResponseBody> {
@@ -1952,7 +1955,7 @@ async fn test_request_header_timeout_failure_mode_allow_true() {
     assert_matches!(result, FilterDecision::Continue);
 
     let (_, body) = request.into_parts();
-    let body_bytes = body.inner.collect().await;
+    let body_bytes: Result<Collected<Bytes>, TimeoutBodyError<PolyBodyError>> = body.into_inner().collect().await;
 
     assert!(body_bytes.is_ok());
     if let Ok(bytes) = body_bytes {
@@ -2013,7 +2016,7 @@ async fn test_request_body_timeout_failure_mode_allow_true() {
     assert_matches!(result, FilterDecision::Continue);
 
     let (_, body) = request.into_parts();
-    let body_bytes = body.inner.collect().await;
+    let body_bytes: Result<Collected<Bytes>, TimeoutBodyError<PolyBodyError>> = body.into_inner().collect().await;
 
     assert!(body_bytes.is_ok());
     if let Ok(bytes) = body_bytes {

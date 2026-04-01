@@ -16,5 +16,7 @@
 //
 
 pub mod http;
+pub mod instrumented_stream;
 pub mod rewindable_stream;
+pub mod tracked_stream;
 pub mod truncated_debug;

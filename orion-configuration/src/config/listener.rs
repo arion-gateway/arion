@@ -15,16 +15,15 @@
 //
 //
 
+use super::access_log::{AccessLog, AccessLogConf};
+
 use super::{
-    network_filters::{
-        access_log::{AccessLog, AccessLogConf},
-        HttpConnectionManager, NetworkRbac, TcpProxy,
-    },
+    network_filters::{HttpConnectionManager, NetworkRbac, TcpProxy},
     transport::{BindDevice, CommonTlsContext},
     GenericError,
 };
-use crate::config::listener;
 use crate::config::network_filters::tracing::{TracingConfig, TracingKey};
+use crate::config::{access_log::AccessLogTarget, listener};
 use ipnet::IpNet;
 use orion_data_plane_api::envoy_data_plane_api::google::protobuf::UInt32Value;
 use serde::{Deserialize, Serialize, Serializer};
@@ -70,21 +69,36 @@ pub struct Listener {
     pub proxy_protocol_config: Option<super::listener_filters::DownstreamProxyProtocolConfig>,
     #[serde(default = "Default::default")]
     pub tcp_backlog_size: u32,
+    #[serde(skip_serializing_if = "Vec::is_empty", default = "Default::default")]
+    pub access_log: Vec<AccessLog>,
 }
 
 impl Listener {
-    pub fn get_access_log_configurations(&self) -> Vec<AccessLogConf> {
-        self.filter_chains
+    //
+    // return all AccessLogConfs for the listener, indexed by either listener name or specific filterchain_id ...
+    //
+    pub fn all_access_log_configs(&self) -> Vec<(AccessLogTarget, Vec<AccessLogConf>)> {
+        let listener_logs: Vec<(AccessLogTarget, Vec<AccessLogConf>)> = vec![(
+            AccessLogTarget::Listener(self.name.clone()),
+            self.access_log.iter().map(|al| al.get_config().clone()).collect::<Vec<_>>(),
+        )];
+
+        let filter_chains_logs: Vec<(AccessLogTarget, Vec<AccessLogConf>)> = self
+            .filter_chains
             .iter()
-            .flat_map(|(_, filter_chain)| match &filter_chain.terminal_filter {
-                MainFilter::Http(http_connection_manager) => {
-                    http_connection_manager.access_log.iter().map(AccessLog::get_config).cloned().collect::<Vec<_>>()
-                },
-                MainFilter::Tcp(tcp_proxy) => {
-                    tcp_proxy.access_log.iter().map(AccessLog::get_config).cloned().collect::<Vec<_>>()
-                },
+            .map(|(_, filter_chain)| match &filter_chain.terminal_filter {
+                MainFilter::Http(http_connection_manager) => (
+                    AccessLogTarget::ListenerFilterChain(self.name.clone(), filter_chain.id),
+                    http_connection_manager.access_log.iter().map(AccessLog::get_config).cloned().collect::<Vec<_>>(),
+                ),
+                MainFilter::Tcp(tcp_proxy) => (
+                    AccessLogTarget::ListenerFilterChain(self.name.clone(), filter_chain.id),
+                    tcp_proxy.access_log.iter().map(AccessLog::get_config).cloned().collect::<Vec<_>>(),
+                ),
             })
-            .collect::<Vec<_>>()
+            .collect();
+
+        listener_logs.into_iter().chain(filter_chains_logs).collect()
     }
 
     pub fn get_tracing_configurations(&self) -> HashMap<TracingKey, TracingConfig> {
@@ -153,8 +167,8 @@ mod serde_filterchains {
 }
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct FilterChain {
-    pub filter_chain_match_hash: u64,
     pub name: SmolStr,
+    pub id: u64,
     #[serde(skip_serializing_if = "Option::is_none", default = "Default::default")]
     pub tls_config: Option<listener::TlsConfig>,
     #[serde(skip_serializing_if = "Vec::is_empty", default = "Default::default")]
@@ -344,6 +358,7 @@ mod envoy_conversions {
     use super::{
         EmptyConfig, FilterChain, FilterChainMatch, Listener, ListenerType, MainFilter, ServerNameMatch, TlsConfig,
     };
+    use crate::config::access_log::AccessLog;
     use crate::config::core::RustType;
     use crate::config::listener::DEFAULT_TCP_BACKLOG_SIZE;
     use crate::config::{
@@ -442,7 +457,7 @@ mod envoy_conversions {
                 connection_balance_config,
                 reuse_port,
                 enable_reuse_port,
-                access_log,
+                //access_log,
                 //tcp_backlog_size,
                 max_connections_to_accept_per_socket_event,
                 bind_to_port,
@@ -473,6 +488,9 @@ mod envoy_conversions {
                         ListenerType::Socket { address, bind_device }
                     },
                 };
+
+                let access_log =
+                    access_log.iter().map(|al| AccessLog::try_from(al.clone())).collect::<Result<Vec<_>, _>>()?;
 
                 let filter_chains: Vec<FilterChainWrapper> = convert_non_empty_vec!(filter_chains)?;
                 let n_filter_chains = filter_chains.len();
@@ -513,6 +531,7 @@ mod envoy_conversions {
                     with_tls_inspector,
                     proxy_protocol_config,
                     tcp_backlog_size,
+                    access_log,
                 })
             }())
             .with_name(name)
@@ -624,13 +643,7 @@ mod envoy_conversions {
                 filter_chain_match.hash(&mut s);
                 Ok(FilterChainWrapper((
                     filter_chain_match,
-                    FilterChain {
-                        filter_chain_match_hash: s.finish(),
-                        name: SmolStr::new(&name),
-                        rbac,
-                        terminal_filter,
-                        tls_config,
-                    },
+                    FilterChain { id: s.finish(), name: SmolStr::new(&name), rbac, terminal_filter, tls_config },
                 )))
             }())
             .with_name(name)

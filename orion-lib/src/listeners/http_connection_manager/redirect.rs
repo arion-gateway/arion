@@ -18,7 +18,10 @@
 use super::{RequestHandler, TransactionHandler};
 
 #[cfg(feature = "access-log")]
-use {crate::listeners::access_log::AccessLogContext, orion_format::context::UpstreamContext};
+use orion_format::context::UpstreamContext;
+
+#[cfg(feature = "access-log")]
+use crate::with_access_log;
 
 use crate::{body::timeout_body::TimeoutBody, Error, OrionRequestBody, OrionResponseBody, PolyBody, Result};
 use http::{
@@ -42,13 +45,11 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (&'a RouteMatchResult, &'a st
         (route_match_result, _route_name): (&'a RouteMatchResult, &'a str),
     ) -> Result<Response<OrionResponseBody>> {
         #[cfg(feature = "access-log")]
-        if let Some(ctx) = _trans_handler.access_log_ctx.as_ref() {
-            ctx.lock().loggers.with_context(&UpstreamContext {
-                authority: None,
-                cluster_name: None,
-                route_name: _route_name,
-            })
-        }
+        with_access_log!(
+            &mut _trans_handler.trans_ctx.lock().loggers,
+            UpstreamContext { authority: None, cluster_name: None, route_name: _route_name }
+        );
+
         let (parts, _) = request.into_parts();
         let mut rsp = Response::builder().status(StatusCode::from(self.response_code)).version(parts.version);
 
