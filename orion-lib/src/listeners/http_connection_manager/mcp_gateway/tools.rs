@@ -361,9 +361,9 @@ impl ToolsRegistry {
                             let filtered_tools: Vec<&Tool> = cached.entry.iter()
                                 .filter(|t| Self::filter_mcp_tool_by_vector_similarity(t, prompt_words.as_deref()))
                                 .collect();
-                            
+
                             tools.extend(filtered_tools.iter().map(|&t| t.clone()));
-                            
+
                             // Track active tools when semantic search is enabled and a prompt exists
                             if self.semantic_search.is_some() && prompt_words.is_some() {
                                 filtered_tools.iter().for_each(|t| {
@@ -392,7 +392,7 @@ impl ToolsRegistry {
                             let filtered_tools: Vec<&Tool> = up_tools.iter()
                                 .filter(|t| Self::filter_mcp_tool_by_vector_similarity(t, prompt_words.as_deref()))
                                 .collect();
-                            
+
                             // Track active tools when semantic search is enabled and a prompt exists
                             if self.semantic_search.is_some() && prompt_words.is_some() {
                                 filtered_tools.iter().for_each(|t| {
@@ -509,10 +509,11 @@ impl ToolsRegistry {
             let list_result = self.build_list_tools(req_ext, &Some(Arc::clone(session))).await;
             let tool_count = list_result.tools.len();
 
+            let tools_json = serde_json::to_value(&list_result.tools)
+                .unwrap_or_else(|_| serde_json::Value::Array(vec![]));
+
             let text_content = RawTextContent {
-                text: format!("Found {} relevant tools based on your query. You can now call list_tools to see the filtered results.",
-                    tool_count
-                ),
+                text: serde_json::to_string_pretty(&tools_json).unwrap_or_else(|_| "[]".to_string()),
                 meta: None
             };
 
