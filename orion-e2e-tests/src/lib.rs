@@ -41,7 +41,7 @@ pub use grpc_test_client::GrpcTestClient;
 pub use mcp_gateway::{
     generate_jwt_token, mcp_gateway_config, mcp_gateway_with_jwt_config, mcp_server_tool_config, rbac_config,
     rest_tool_config, CallToolParams, CallToolResult, JwtKeyPair, ListToolsResult, McpJsonRpcError, McpJsonRpcRequest,
-    McpJsonRpcResponse, McpTestClient, McpTool, MockMcpServer, TestJwtClaims, ToolContent,
+    McpJsonRpcResponse, McpResultExt, McpTestClient, McpTool, MockMcpServer, TestJwtClaims, ToolContent,
 };
 pub use orion_instance::{OrionInstance, SpawnOptions};
 pub use port_allocator::PortBlock;

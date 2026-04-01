@@ -70,8 +70,16 @@ impl TestJwtClaims {
         }
     }
 
-    pub fn with_claim(mut self, key: impl Into<String>, value: impl Into<Value>) -> Self {
-        self.extra.insert(key.into(), value.into());
+    /// Add a custom claim to the JWT
+    /// 
+    /// # Example
+    /// ```
+    /// let claims = TestJwtClaims::new("user", "user")
+    ///     .with_claim("department", "security")
+    ///     .with_claim("level", 5);
+    /// ```
+    pub fn with_claim(mut self, key: &str, value: impl Into<Value>) -> Self {
+        self.extra.insert(key.to_string(), value.into());
         self
     }
 
@@ -1073,4 +1081,59 @@ pub fn rbac_config(action: &str, permissions: Vec<(String, String, String)>) -> 
         },
         "permissions": perms
     })
+}
+
+// ============================================================================
+// Test Helper Utilities
+// ============================================================================
+
+/// Extension trait for better MCP result assertions
+pub trait McpResultExt {
+    /// Assert the tool call succeeded (no error)
+    fn assert_success(&self);
+
+    /// Assert the tool call failed with an error containing the expected text
+    fn assert_error_contains(&self, expected: &str);
+
+    /// Assert the tool call failed with a "not found" error
+    fn assert_tool_not_found(&self);
+}
+
+impl McpResultExt for crate::Result<CallToolResult> {
+    fn assert_success(&self) {
+        let result = self.as_ref().expect("Expected Ok result, got Err");
+        assert!(
+            !result.is_error.unwrap_or(false),
+            "Tool returned error: {:?}",
+            result.content.first().map(|c| &c.text)
+        );
+    }
+
+    fn assert_error_contains(&self, expected: &str) {
+        match self {
+            Err(e) => {
+                let error_str = e.to_string();
+                assert!(
+                    error_str.contains(expected),
+                    "Error '{}' doesn't contain '{}'",
+                    error_str,
+                    expected
+                );
+            }
+            Ok(result) if result.is_error.unwrap_or(false) => {
+                let content = result.content.first().map(|c| c.text.as_str()).unwrap_or("");
+                assert!(
+                    content.contains(expected),
+                    "Error content '{}' doesn't contain '{}'",
+                    content,
+                    expected
+                );
+            }
+            Ok(_) => panic!("Expected error containing '{}' but got success", expected),
+        }
+    }
+
+    fn assert_tool_not_found(&self) {
+        self.assert_error_contains("not found");
+    }
 }

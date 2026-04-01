@@ -218,11 +218,19 @@ async fn test_mcp_gateway_rest_path_templating() {
         .await
         .expect("Failed to call tool");
 
-    assert!(!result.is_error.unwrap_or(false));
+    assert!(
+        !result.is_error.unwrap_or(false),
+        "Tool call should succeed with valid arguments"
+    );
 
     // Verify the backend received the request with substituted path
     let request = backend.await_request().await.expect("No request received");
-    assert_eq!(request.path(), "/api/items/12345");
+    assert_eq!(
+        request.path(),
+        "/api/items/12345",
+        "Path template should substitute item_id variable"
+    );
+    assert_eq!(request.method, "GET", "Request method should be GET");
 
     orion.shutdown();
     let _ = std::fs::remove_file(&config_path);
@@ -296,9 +304,10 @@ async fn test_mcp_gateway_rest_query_params() {
     // Verify query parameters were substituted
     let request = backend.await_request().await.expect("No request received");
     let path = request.path();
-    assert!(path.contains("name=John"));
-    assert!(path.contains("age=30"));
-    assert!(path.contains("active=true"));
+    assert!(path.starts_with("/api/users"), "Path should start with /api/users");
+    assert!(path.contains("name=John"), "Query params should include name=John");
+    assert!(path.contains("age=30"), "Query params should include age=30");
+    assert!(path.contains("active=true"), "Query params should map is_active to active=true");
 
     orion.shutdown();
     let _ = std::fs::remove_file(&config_path);
@@ -370,12 +379,14 @@ async fn test_mcp_gateway_rest_body_templating() {
 
     // Verify body was templated correctly
     let request = backend.await_request().await.expect("No request received");
+    assert_eq!(request.method, "POST", "Request method should be POST");
+    
     let body = request.body_str().expect("Request has no body");
     let body_json: serde_json::Value = serde_json::from_str(body).expect("Invalid JSON body");
 
-    assert_eq!(body_json["username"], "johndoe");
-    assert_eq!(body_json["email"], "john@example.com");
-    assert_eq!(body_json["age"], 30);
+    assert_eq!(body_json["username"], "johndoe", "Body should contain templated username");
+    assert_eq!(body_json["email"], "john@example.com", "Body should contain templated email");
+    assert_eq!(body_json["age"], 30, "Body should contain templated age as number");
 
     orion.shutdown();
     let _ = std::fs::remove_file(&config_path);
@@ -452,13 +463,20 @@ async fn test_mcp_gateway_rest_full_transcoding() {
 
     // Verify all substitutions
     let request = backend.await_request().await.expect("No request received");
-    assert!(request.path().starts_with("/api/resources/res-123"));
-    assert!(request.path().contains("force=true"));
+    assert_eq!(request.method, "PUT", "Request method should be PUT");
+    assert!(
+        request.path().starts_with("/api/resources/res-123"),
+        "Path should include templated resource_id"
+    );
+    assert!(
+        request.path().contains("force=true"),
+        "Query params should include force_update mapped to force=true"
+    );
 
     let body = request.body_str().expect("Request has no body");
     let body_json: serde_json::Value = serde_json::from_str(body).expect("Invalid JSON body");
-    assert_eq!(body_json["data"], "new data");
-    assert_eq!(body_json["metadata"]["version"], 2);
+    assert_eq!(body_json["data"], "new data", "Body should contain templated content");
+    assert_eq!(body_json["metadata"]["version"], 2, "Body should contain nested templated version");
 
     orion.shutdown();
     let _ = std::fs::remove_file(&config_path);
@@ -476,7 +494,7 @@ async fn test_mcp_gateway_mcp_backend() {
 
     // Create MCP gateway configuration with MCP backend
     let tool = mcp_server_tool_config(
-        "remote_echo",
+        "mock_echo",
         "Call remote echo tool",
         format!("http://{}/mcp", mock_mcp.addr()),
         "streamable_http",
@@ -502,7 +520,7 @@ async fn test_mcp_gateway_mcp_backend() {
     // Call the remote tool through the gateway
     let result = client
         .call_tool(
-            "remote_echo",
+            "mock_echo",
             json!({
                 "message": "Hello, MCP!"
             }),
@@ -511,9 +529,13 @@ async fn test_mcp_gateway_mcp_backend() {
         .expect("Failed to call tool");
 
     // Verify the result contains the echoed message
-    assert!(!result.is_error.unwrap_or(false));
+    assert!(!result.is_error.unwrap_or(false), "Tool call returned error");
     let content_text = result.content.first().map(|c| c.text.clone()).unwrap_or_default();
-    assert!(content_text.contains("Hello, MCP!"));
+    assert!(
+        content_text.contains("Hello, MCP!"),
+        "Expected echoed message in response, got: {}",
+        content_text
+    );
 
     mock_mcp.shutdown();
     orion.shutdown();
@@ -573,7 +595,7 @@ async fn test_mcp_gateway_rbac_jwt_claim_allow() {
     admin_client.initialize().await.expect("Failed to initialize");
 
     let result = admin_client.call_tool("admin_only_tool", json!({})).await.expect("Failed to call tool");
-    assert!(!result.is_error.unwrap_or(false));
+    assert!(!result.is_error.unwrap_or(false), "Admin should have access to tool");
 
     // Verify backend received the request
     let _ = backend.await_request().await.expect("No request received");
@@ -587,7 +609,7 @@ async fn test_mcp_gateway_rbac_jwt_claim_allow() {
     user_client.initialize().await.expect("Failed to initialize");
 
     let result = user_client.call_tool("admin_only_tool", json!({})).await;
-    assert!(result.is_err());
+    assert!(result.is_err(), "User without admin role should be denied access");
 
     orion.shutdown();
     let _ = std::fs::remove_file(&config_path);
@@ -645,7 +667,7 @@ async fn test_mcp_gateway_rbac_jwt_claim_deny() {
     user_client.initialize().await.expect("Failed to initialize");
 
     let result = user_client.call_tool("premium_tool", json!({})).await.expect("Failed to call tool");
-    assert!(!result.is_error.unwrap_or(false));
+    assert!(!result.is_error.unwrap_or(false), "User with non-guest role should have access");
 
     let _ = backend.await_request().await.expect("No request received");
 
@@ -657,8 +679,9 @@ async fn test_mcp_gateway_rbac_jwt_claim_deny() {
         McpTestClient::new(format!("http://{}", orion.listener_addr().unwrap())).with_jwt(&guest_token);
     guest_client.initialize().await.expect("Failed to initialize");
 
+    // Guest can initialize (not protected) but should be denied tool access
     let result = guest_client.call_tool("premium_tool", json!({})).await;
-    assert!(result.is_err());
+    assert!(result.is_err(), "Guest should be denied access to premium_tool");
 
     orion.shutdown();
     let _ = std::fs::remove_file(&config_path);
@@ -723,7 +746,7 @@ async fn test_mcp_gateway_rbac_multiple_permissions() {
         client.initialize().await.expect("Failed to initialize");
 
         let result = client.call_tool("multi_perm_tool", json!({})).await.expect("Failed to call tool");
-        assert!(!result.is_error.unwrap_or(false));
+        assert!(!result.is_error.unwrap_or(false), "User with role '{}' should have access", role);
 
         let _ = backend.await_request().await.expect("No request received");
     }
@@ -737,7 +760,7 @@ async fn test_mcp_gateway_rbac_multiple_permissions() {
     dept_client.initialize().await.expect("Failed to initialize");
 
     let result = dept_client.call_tool("multi_perm_tool", json!({})).await.expect("Failed to call tool");
-    assert!(!result.is_error.unwrap_or(false));
+    assert!(!result.is_error.unwrap_or(false), "User with department 'security' should have access");
 
     // Test with regular user - should fail
     let regular_claims = TestJwtClaims::new("user", "user");
@@ -748,7 +771,7 @@ async fn test_mcp_gateway_rbac_multiple_permissions() {
     regular_client.initialize().await.expect("Failed to initialize");
 
     let result = regular_client.call_tool("multi_perm_tool", json!({})).await;
-    assert!(result.is_err());
+    assert!(result.is_err(), "Regular user without any matching permissions should be denied");
 
     orion.shutdown();
     let _ = std::fs::remove_file(&config_path);
@@ -805,7 +828,7 @@ async fn test_mcp_gateway_rbac_jwt_header() {
     client.initialize().await.expect("Failed to initialize");
 
     let result = client.call_tool("header_protected_tool", json!({})).await.expect("Failed to call tool");
-    assert!(!result.is_error.unwrap_or(false));
+    assert!(!result.is_error.unwrap_or(false), "Tool call should succeed with valid JWT kid header");
 
     orion.shutdown();
     let _ = std::fs::remove_file(&config_path);
@@ -908,7 +931,7 @@ async fn test_mcp_gateway_tool_without_rbac() {
     client.initialize().await.expect("Failed to initialize");
 
     let result = client.call_tool("public_tool", json!({})).await.expect("Failed to call tool");
-    assert!(!result.is_error.unwrap_or(false));
+    assert!(!result.is_error.unwrap_or(false), "Any authenticated user should access public tool");
 
     orion.shutdown();
     let _ = std::fs::remove_file(&config_path);
@@ -954,7 +977,7 @@ async fn test_mcp_gateway_tool_not_found() {
 
     // Try to call a non-existent tool
     let result = client.call_tool("non_existent_tool", json!({})).await;
-    assert!(result.is_err());
+    assert!(result.is_err(), "Calling non-existent tool should return an error");
 
     orion.shutdown();
     let _ = std::fs::remove_file(&config_path);
@@ -1009,7 +1032,7 @@ async fn test_mcp_gateway_invalid_arguments() {
     // Call with missing required parameter
     let result = client.call_tool("param_tool", json!({})).await;
     // Should fail validation
-    assert!(result.is_err());
+    assert!(result.is_err(), "Calling tool with missing required parameter should return an error");
 
     orion.shutdown();
     let _ = std::fs::remove_file(&config_path);
@@ -1042,9 +1065,9 @@ async fn test_mcp_gateway_mixed_backends() {
     );
 
     let mcp_tool = mcp_server_tool_config(
-        "mcp_tool",
+        "mock_echo",
         "MCP backend tool",
-        &format!("http://{}/mcp", mock_mcp.addr()),
+        format!("http://{}/mcp", mock_mcp.addr()),
         "streamable_http",
         Some("10s".to_string()),
     );
@@ -1074,14 +1097,16 @@ async fn test_mcp_gateway_mixed_backends() {
 
     // Call REST backend tool
     let rest_result = client.call_tool("rest_tool", json!({})).await.expect("Failed to call REST tool");
-    assert!(!rest_result.is_error.unwrap_or(false));
+    assert!(!rest_result.is_error.unwrap_or(false), "REST tool call should succeed");
 
     // Verify REST backend received request
     let _ = rest_backend.await_request().await.expect("No request to REST backend");
 
     // Call MCP backend tool
-    let mcp_result = client.call_tool("mcp_tool", json!({"input": "test"})).await.expect("Failed to call MCP tool");
-    assert!(!mcp_result.is_error.unwrap_or(false));
+    let mcp_result = client.call_tool("mock_echo", json!({"message": "test"})).await.expect("Failed to call MCP tool");
+    assert!(!mcp_result.is_error.unwrap_or(false), "MCP tool call should succeed");
+    let mcp_content = mcp_result.content.first().map(|c| c.text.clone()).unwrap_or_default();
+    assert!(mcp_content.contains("test"), "MCP response should echo the message");
 
     mock_mcp.shutdown();
     orion.shutdown();
