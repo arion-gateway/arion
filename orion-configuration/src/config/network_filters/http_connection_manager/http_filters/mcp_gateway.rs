@@ -80,8 +80,6 @@ pub enum McpRbacPermission {
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct McpSemanticSearch {
-    /// Enable assisted discovery mode for clients unaware of semantic search.
-    /// When true, inject semantic search tool and use notification flow to trigger re-list.
     pub enable_assisted_discovery: bool,
     pub embeddings_provider: EmbeddingsProvider,
 }

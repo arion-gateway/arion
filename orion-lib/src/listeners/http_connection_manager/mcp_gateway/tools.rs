@@ -256,18 +256,18 @@ impl ToolsRegistry {
         // - No semantic search: always fill all tools
         // - Assisted discovery mode: only fill tools after prompt is set (notification flow)
         // - Direct call mode: always fill all tools (client calls semantic search tool directly)
-        let should_fill_tools = if let Some(semantic_search) = &self.semantic_search {
-            if semantic_search.enable_assisted_discovery {
-                // Assisted mode: only fill if prompt exists
-                session.as_ref().is_some_and(|s| s.prompt.lock().is_some())
-            } else {
-                // Direct mode: always fill (but will be filtered if prompt exists)
-                true
-            }
-        } else {
-            // No semantic search: always fill
-            true
-        };
+        let should_fill_tools = self.semantic_search.as_ref().map_or(
+            true, // No semantic search: always fill
+            |ss| {
+                if ss.enable_assisted_discovery {
+                    // Assisted mode: only fill if prompt exists
+                    session.as_ref().is_some_and(|s| s.prompt.lock().is_some())
+                } else {
+                    // Direct mode: always fill (but will be filtered if prompt exists)
+                    true
+                }
+            },
+        );
 
         if should_fill_tools {
             self.fill_list_tools(req_ext, session, &mut tools).await;
@@ -276,7 +276,7 @@ impl ToolsRegistry {
         ListToolsResult { tools, next_cursor: None, meta: None }
     }
 
-    fn filter_tool_by_vector_similarity(tool: &ToolEntry, prompt_words: Option<&[String]>) -> bool {
+    fn filter_by_vector_similarity(description: Option<&str>, prompt_words: Option<&[String]>) -> bool {
         // TODO: This is a dummy implementation of vector similarity.
         // If any word in the prompt is present in the tool description,
         // the tool is selected.
@@ -285,7 +285,11 @@ impl ToolsRegistry {
             return true;
         };
 
-        let description_words = tool.conf.description.split_whitespace().map(|w| w.to_lowercase()).collect::<Vec<_>>();
+        let Some(desc) = description else {
+            return true;
+        };
+
+        let description_words = desc.split_whitespace().map(|w| w.to_lowercase()).collect::<Vec<_>>();
         words.iter().any(|word| description_words.contains(word))
     }
 
@@ -325,7 +329,7 @@ impl ToolsRegistry {
             match &entry.conf.backend {
                 // For REST backends, filter the entry itself by vector similarity
                 UpstreamBackend::Rest { .. }
-                    if !Self::filter_tool_by_vector_similarity(entry, prompt_words.as_deref()) =>
+                    if !Self::filter_by_vector_similarity(Some(&entry.conf.description), prompt_words.as_deref()) =>
                 {
                     continue;
                 },
@@ -360,7 +364,12 @@ impl ToolsRegistry {
                             let filtered_tools: Vec<&Tool> = cached
                                 .entry
                                 .iter()
-                                .filter(|t| Self::filter_mcp_tool_by_vector_similarity(t, prompt_words.as_deref()))
+                                .filter(|t| {
+                                    Self::filter_by_vector_similarity(
+                                        t.description.as_ref().map(|d| d.as_ref()),
+                                        prompt_words.as_deref(),
+                                    )
+                                })
                                 .collect();
 
                             tools.extend(filtered_tools.iter().map(|&t| t.clone()));
@@ -392,7 +401,12 @@ impl ToolsRegistry {
                             // Filter MCP tools individually by vector similarity
                             let filtered_tools: Vec<&Tool> = up_tools
                                 .iter()
-                                .filter(|t| Self::filter_mcp_tool_by_vector_similarity(t, prompt_words.as_deref()))
+                                .filter(|t| {
+                                    Self::filter_by_vector_similarity(
+                                        t.description.as_ref().map(|d| d.as_ref()),
+                                        prompt_words.as_deref(),
+                                    )
+                                })
                                 .collect();
 
                             // Track active tools when semantic search is enabled and a prompt exists
@@ -507,7 +521,6 @@ impl ToolsRegistry {
         } else {
             // Direct call mode: perform filtering and populate active_tools, then return tool list
             let list_result = self.build_list_tools(req_ext, &Some(Arc::clone(session))).await;
-            let tool_count = list_result.tools.len();
 
             let tools_json =
                 serde_json::to_value(&list_result.tools).unwrap_or_else(|_| serde_json::Value::Array(vec![]));
@@ -536,13 +549,13 @@ impl ToolsRegistry {
         session: &Arc<Session>,
     ) -> Result<MessageResult, CallToolError> {
         // get tool name, and in case of upstream MCP, sub-tool name as well...
-        let (tool_name, upstream_tool_name) = {
+        let (tool_name, upstream_tool_name, full_tool_name) = {
             let name = rpc.request.params.get("name").ok_or(CallToolError::NameNotString)?;
             let name = name.as_str().ok_or(CallToolError::NameNotString)?;
             debug!(target: "mcp_gateway", "call: method:{} original tool name '{name}'", rpc.request.method);
             match name.split_once("__") {
-                Some((tool_name, upstream_tool_name)) => (tool_name, Some(upstream_tool_name)),
-                None => (name, None),
+                Some((tool_name, upstream_tool_name)) => (tool_name, Some(upstream_tool_name), name.to_smolstr()),
+                None => (name, None, name.to_smolstr()),
             }
         };
 
@@ -557,11 +570,9 @@ impl ToolsRegistry {
             if self.semantic_search.is_some() {
                 return self.call_semantic_search_tool(req_ext, rpc, session).await;
             }
-            // TODO we should send back an error if agent is invoking semantic_search tool and none is configured
+            // todo(francesco) we should send back an error if agent is invoking semantic_search tool and none is configured
         }
 
-        // In assisted discovery mode, only allow tools that are in active_tools
-        // In direct mode or when semantic search is disabled, allow all tools (RBAC filtering happens later)
         let should_filter_by_active_tools =
             self.semantic_search.as_ref().map(|ss| ss.enable_assisted_discovery).unwrap_or(false);
 
@@ -570,7 +581,16 @@ impl ToolsRegistry {
             .iter()
             .enumerate()
             .find(|(_, e)| e.conf.name == tool_name)
-            .filter(|(_, e)| !should_filter_by_active_tools || session.active_tools.contains(&e.conf.name))
+            .filter(|(_, e)| {
+                if !should_filter_by_active_tools {
+                    return true;
+                }
+                if upstream_tool_name.is_some() {
+                    session.active_tools.contains(&full_tool_name)
+                } else {
+                    session.active_tools.contains(&e.conf.name)
+                }
+            })
             .ok_or_else(|| CallToolError::ToolNotFound(tool_name.to_string()))?;
 
         if let Some(rbac) = &entry.rbac {
