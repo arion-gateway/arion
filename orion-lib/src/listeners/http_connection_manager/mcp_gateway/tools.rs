@@ -216,7 +216,6 @@ impl ToolsRegistry {
                     },
                 }
             }
-
         }
     }
 
@@ -320,14 +319,14 @@ impl ToolsRegistry {
         };
 
         // populate the list of active tools as well as the list of tools to return...
-        for entry in self
-            .registry
-            .iter()
-            .filter(|entry| entry.rbac.as_ref().map_or(true, |rbac| rbac.is_permitted(req_ext)))
+        for entry in
+            self.registry.iter().filter(|entry| entry.rbac.as_ref().map_or(true, |rbac| rbac.is_permitted(req_ext)))
         {
             match &entry.conf.backend {
                 // For REST backends, filter the entry itself by vector similarity
-                UpstreamBackend::Rest { .. } if !Self::filter_tool_by_vector_similarity(entry, prompt_words.as_deref()) => {
+                UpstreamBackend::Rest { .. }
+                    if !Self::filter_tool_by_vector_similarity(entry, prompt_words.as_deref()) =>
+                {
                     continue;
                 },
                 UpstreamBackend::Rest { .. } => {
@@ -358,7 +357,9 @@ impl ToolsRegistry {
                         if cache_valid {
                             debug!(target: "mcp_gateway", "Loaded cached entry for MCP backend: {}", &entry.conf.name);
                             // Filter MCP tools individually by vector similarity
-                            let filtered_tools: Vec<&Tool> = cached.entry.iter()
+                            let filtered_tools: Vec<&Tool> = cached
+                                .entry
+                                .iter()
                                 .filter(|t| Self::filter_mcp_tool_by_vector_similarity(t, prompt_words.as_deref()))
                                 .collect();
 
@@ -389,7 +390,8 @@ impl ToolsRegistry {
                             );
 
                             // Filter MCP tools individually by vector similarity
-                            let filtered_tools: Vec<&Tool> = up_tools.iter()
+                            let filtered_tools: Vec<&Tool> = up_tools
+                                .iter()
                                 .filter(|t| Self::filter_mcp_tool_by_vector_similarity(t, prompt_words.as_deref()))
                                 .collect();
 
@@ -480,9 +482,7 @@ impl ToolsRegistry {
 
         // Get the semantic search configuration
         let Some(semantic_search) = &self.semantic_search else {
-            return Err(CallToolError::ValidationError(
-                "Semantic search not configured".into(),
-            ));
+            return Err(CallToolError::ValidationError("Semantic search not configured".into()));
         };
 
         if semantic_search.enable_assisted_discovery {
@@ -509,12 +509,12 @@ impl ToolsRegistry {
             let list_result = self.build_list_tools(req_ext, &Some(Arc::clone(session))).await;
             let tool_count = list_result.tools.len();
 
-            let tools_json = serde_json::to_value(&list_result.tools)
-                .unwrap_or_else(|_| serde_json::Value::Array(vec![]));
+            let tools_json =
+                serde_json::to_value(&list_result.tools).unwrap_or_else(|_| serde_json::Value::Array(vec![]));
 
             let text_content = RawTextContent {
                 text: serde_json::to_string_pretty(&tools_json).unwrap_or_else(|_| "[]".to_string()),
-                meta: None
+                meta: None,
             };
 
             let success_message = Content { raw: RawContent::Text(text_content), annotations: None };
@@ -562,9 +562,8 @@ impl ToolsRegistry {
 
         // In assisted discovery mode, only allow tools that are in active_tools
         // In direct mode or when semantic search is disabled, allow all tools (RBAC filtering happens later)
-        let should_filter_by_active_tools = self.semantic_search.as_ref()
-            .map(|ss| ss.enable_assisted_discovery)
-            .unwrap_or(false);
+        let should_filter_by_active_tools =
+            self.semantic_search.as_ref().map(|ss| ss.enable_assisted_discovery).unwrap_or(false);
 
         let (index, entry) = self
             .registry

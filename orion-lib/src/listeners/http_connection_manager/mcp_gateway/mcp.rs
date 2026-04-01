@@ -577,30 +577,28 @@ impl McpGateway {
         let mut session_id = request.get_mcp_session_id();
 
         let mut session: Option<Arc<Session>> = match &session_id {
-            Some(session_id) => {
-                match (self.get_valid_session(ctx, session_id), &json_rpc_message, transport) {
-                    (_, model::JsonRpcMessage::Request(r), Transport::StreamableHttp)
-                        if r.request.method.as_str() == InitializeResultMethod::VALUE =>
-                    {
-                        debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: workaround for buggy clients (e.g. opencode)!");
-                        None
-                    },
-                    (Some(session), _, _) => Some(session),
-                    (None, _, Transport::Sse) => {
-                        debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: invalid session id: {session_id}!");
+            Some(session_id) => match (self.get_valid_session(ctx, session_id), &json_rpc_message, transport) {
+                (_, model::JsonRpcMessage::Request(r), Transport::StreamableHttp)
+                    if r.request.method.as_str() == InitializeResultMethod::VALUE =>
+                {
+                    debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: workaround for buggy clients (e.g. opencode)!");
+                    None
+                },
+                (Some(session), _, _) => Some(session),
+                (None, _, Transport::Sse) => {
+                    debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: invalid session id: {session_id}!");
 
-                        let headers = self.build_http_headers_with_content_type(None);
-                        match self.build_mcp_http_response(
-                            StatusCode::NOT_FOUND,
-                            Self::build_mcp_response_body(None),
-                            &headers,
-                        ) {
-                            Ok(http_response) => return FilterDecision::DirectResponse(http_response),
-                            Err(e) => return e,
-                        };
-                    },
-                    (None, _, Transport::StreamableHttp) => None,
-                }
+                    let headers = self.build_http_headers_with_content_type(None);
+                    match self.build_mcp_http_response(
+                        StatusCode::NOT_FOUND,
+                        Self::build_mcp_response_body(None),
+                        &headers,
+                    ) {
+                        Ok(http_response) => return FilterDecision::DirectResponse(http_response),
+                        Err(e) => return e,
+                    };
+                },
+                (None, _, Transport::StreamableHttp) => None,
             },
             None => None,
         };
@@ -1156,7 +1154,7 @@ impl McpGateway {
         };
 
         session.last_activity.store(std::time::Instant::now(), std::sync::atomic::Ordering::Relaxed);
-        let session : Arc<Session> = session.clone();
+        let session: Arc<Session> = session.clone();
         debug!(target: "mcp_gateway", "get_valid_session: {session_id} -> {session:?}");
         Some(session.clone())
     }
