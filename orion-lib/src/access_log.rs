@@ -327,7 +327,7 @@ mod tests {
 
     #[allow(clippy::disallowed_methods)]
     #[tokio::test]
-    async fn test_access_logger() {
+    async fn test_access_loggers() {
         let req = build_request();
         let resp = build_response();
 
@@ -361,7 +361,7 @@ mod tests {
         let message = fmt.into_message();
 
         // initialize the logger pool with one channel for access log messages
-        let handles = start_access_loggers(8, 100, None, None, 3, false);
+        let handles = start_access_loggers(1, 100, None, None, 3, true);
 
         // send a new configuration for the logger(s)
         update_configuration(
@@ -373,58 +373,8 @@ mod tests {
 
         // log the formatted message to file and stdout...
         log_access(Target::Listener("test".into()), vec![message.clone(), message.clone()]).await;
-
-        _ = timeout(Duration::from_secs(2), handles.join_all()).await;
-        std::fs::remove_file("test-access.log").unwrap();
-    }
-
-    #[allow(clippy::disallowed_methods)]
-    #[tokio::test]
-    async fn test_access_logger_blocking() {
-        let req = build_request();
-        let resp = build_response();
-
-        let formatter = LogFormatter::try_new(DEFAULT_ACCESS_LOG_FORMAT, false).unwrap();
-        let mut fmt = formatter.clone();
-
-        fmt.with_context(&InitContext { start_time: std::time::SystemTime::now() });
-        fmt.with_context(&DownstreamContext {
-            request: &req,
-            trace_id: None,
-            request_head_size: 0,
-            server_name: None,
-            socket_address: Default::default(),
-        });
-        fmt.with_context(&UpstreamContext {
-            authority: Some(req.uri().authority().unwrap()),
-            cluster_name: Some("test_cluster"),
-            route_name: "test_route",
-        });
-        fmt.with_context(&DownstreamResponseContext { response: &resp, response_head_size: 0 });
-        fmt.with_context(&FinishContext {
-            duration: Duration::from_millis(100),
-            bytes_received: 128,
-            bytes_sent: 256,
-            response_flags: ResponseFlags::NO_HEALTHY_UPSTREAM,
-            upstream_transport_failure_reason: None,
-            response_code_details: None,
-            connection_termination_details: None,
-        });
-
-        let message = fmt.into_message();
-
-        // initialize the logger pool with one channel for access log messages
-        let handles = start_access_loggers(8, 100, None, None, 3, true);
-
-        // send a new configuration for the logger(s)
-        update_configuration(
-            Target::Listener("test".into()),
-            vec![AccessLogConf::File("test-access.log".into()), AccessLogConf::Stderr],
-        )
-        .await
-        .unwrap();
-
-        // log the formatted message to file and stdout...
+        
+        // test blocking access as well
         log_access_blocking(Target::Listener("test".into()), vec![message.clone(), message.clone()]);
 
         _ = timeout(Duration::from_secs(2), handles.join_all()).await;
