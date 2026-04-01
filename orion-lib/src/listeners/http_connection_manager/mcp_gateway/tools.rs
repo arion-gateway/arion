@@ -293,21 +293,6 @@ impl ToolsRegistry {
         words.iter().any(|word| description_words.contains(word))
     }
 
-    fn filter_mcp_tool_by_vector_similarity(tool: &Tool, prompt_words: Option<&[String]>) -> bool {
-        // Filter individual MCP tools by their description
-        let Some(words) = prompt_words else {
-            return true;
-        };
-
-        let Some(ref description) = tool.description else {
-            // If no description, don't filter out
-            return true;
-        };
-
-        let description_words = description.as_ref().split_whitespace().map(|w| w.to_lowercase()).collect::<Vec<_>>();
-        words.iter().any(|word| description_words.contains(word))
-    }
-
     async fn fill_list_tools(&self, req_ext: &http::Extensions, session: &Option<Arc<Session>>, tools: &mut Vec<Tool>) {
         let Some(session) = session.as_ref() else {
             debug!(target: "mcp_gateway", "build_list_tool_apis without session!");
@@ -779,7 +764,7 @@ mod tests {
         .unwrap();
 
         let tool = create_test_tool_with_schemas(input_schema, serde_json::Map::new());
-        let registry = ToolsRegistry::with_tools(vec![tool], false).unwrap();
+        let registry = ToolsRegistry::with_tools(vec![tool], None).unwrap();
         let tool_entry = registry.get_tool_by_index(ToolRegistryIndex(0)).unwrap();
 
         let args = json!({
@@ -802,7 +787,7 @@ mod tests {
         .unwrap();
 
         let tool = create_test_tool_with_schemas(input_schema, serde_json::Map::new());
-        let registry = ToolsRegistry::with_tools(vec![tool], false).unwrap();
+        let registry = ToolsRegistry::with_tools(vec![tool], None).unwrap();
         let tool_entry = registry.get_tool_by_index(ToolRegistryIndex(0)).unwrap();
 
         let args = json!({});
@@ -824,7 +809,7 @@ mod tests {
         .unwrap();
 
         let tool = create_test_tool_with_schemas(input_schema, serde_json::Map::new());
-        let registry = ToolsRegistry::with_tools(vec![tool], false).unwrap();
+        let registry = ToolsRegistry::with_tools(vec![tool], None).unwrap();
         let tool_entry = registry.get_tool_by_index(ToolRegistryIndex(0)).unwrap();
 
         let args = json!({
@@ -844,7 +829,7 @@ mod tests {
     #[test]
     fn test_input_schema_validation_skips_when_empty() {
         let tool = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
-        let registry = ToolsRegistry::with_tools(vec![tool], false).unwrap();
+        let registry = ToolsRegistry::with_tools(vec![tool], None).unwrap();
         let tool_entry = registry.get_tool_by_index(ToolRegistryIndex(0)).unwrap();
 
         // Any args should pass when schema is empty
@@ -869,7 +854,7 @@ mod tests {
         .unwrap();
 
         let tool = create_test_tool_with_schemas(serde_json::Map::new(), output_schema);
-        let registry = ToolsRegistry::with_tools(vec![tool], false).unwrap();
+        let registry = ToolsRegistry::with_tools(vec![tool], None).unwrap();
         let tool_entry = registry.get_tool_by_index(ToolRegistryIndex(0)).unwrap();
 
         let response = json!({
@@ -892,7 +877,7 @@ mod tests {
         .unwrap();
 
         let tool = create_test_tool_with_schemas(serde_json::Map::new(), output_schema);
-        let registry = ToolsRegistry::with_tools(vec![tool], false).unwrap();
+        let registry = ToolsRegistry::with_tools(vec![tool], None).unwrap();
         let tool_entry = registry.get_tool_by_index(ToolRegistryIndex(0)).unwrap();
 
         let response = json!({
@@ -906,7 +891,7 @@ mod tests {
     #[test]
     fn test_output_schema_validation_skips_when_empty() {
         let tool = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
-        let registry = ToolsRegistry::with_tools(vec![tool], false).unwrap();
+        let registry = ToolsRegistry::with_tools(vec![tool], None).unwrap();
         let tool_entry = registry.get_tool_by_index(ToolRegistryIndex(0)).unwrap();
 
         // Any response should pass when schema is empty
@@ -928,7 +913,7 @@ mod tests {
         .unwrap();
 
         let tool = create_test_tool_with_schemas(input_schema, serde_json::Map::new());
-        let result = ToolsRegistry::with_tools(vec![tool], false);
+        let result = ToolsRegistry::with_tools(vec![tool], None);
 
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), ToolBuilderError::InvalidInputSchema(_)));
@@ -942,7 +927,7 @@ mod tests {
         .unwrap();
 
         let tool = create_test_tool_with_schemas(serde_json::Map::new(), output_schema);
-        let result = ToolsRegistry::with_tools(vec![tool], false);
+        let result = ToolsRegistry::with_tools(vec![tool], None);
 
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), ToolBuilderError::InvalidOutputSchema(_)));
@@ -966,7 +951,7 @@ mod tests {
         .unwrap();
 
         let tool = create_test_tool_with_schemas(input_schema, serde_json::Map::new());
-        let registry = ToolsRegistry::with_tools(vec![tool], false).unwrap();
+        let registry = ToolsRegistry::with_tools(vec![tool], None).unwrap();
         let tool_entry = registry.get_tool_by_index(ToolRegistryIndex(0)).unwrap();
 
         // Valid nested object
@@ -1001,7 +986,7 @@ mod tests {
         .unwrap();
 
         let tool = create_test_tool_with_schemas(input_schema, serde_json::Map::new());
-        let registry = ToolsRegistry::with_tools(vec![tool], false).unwrap();
+        let registry = ToolsRegistry::with_tools(vec![tool], None).unwrap();
         let tool_entry = registry.get_tool_by_index(ToolRegistryIndex(0)).unwrap();
 
         // Valid array
@@ -1039,7 +1024,7 @@ mod tests {
             rbac: None,
         };
 
-        let registry = ToolsRegistry::with_tools(vec![static_tool], false).unwrap();
+        let registry = ToolsRegistry::with_tools(vec![static_tool], None).unwrap();
 
         // Verify the registry was created successfully
         assert_eq!(registry.registry.len(), 1);
