@@ -39,7 +39,8 @@ pub use grpc_test_backend::test_proto::EchoResponse;
 pub use grpc_test_backend::{GrpcTestBackend, GrpcTestBackendBuilder};
 pub use grpc_test_client::GrpcTestClient;
 pub use mcp_gateway::{
-    generate_jwt_token, mcp_gateway_config, mcp_gateway_with_jwt_config, mcp_server_tool_config, rbac_config,
+    generate_jwt_token, mcp_gateway_config, mcp_gateway_with_direct_semantic_search_config,
+    mcp_gateway_with_jwt_and_semantic_search_config, mcp_gateway_with_jwt_config, mcp_server_tool_config, rbac_config,
     rest_tool_config, CallToolParams, CallToolResult, JwtKeyPair, ListToolsResult, McpJsonRpcError, McpJsonRpcRequest,
     McpJsonRpcResponse, McpResultExt, McpTestClient, McpTool, MockMcpServer, TestJwtClaims, ToolContent,
 };

@@ -36,11 +36,7 @@ use tokio::sync::{mpsc, RwLock};
 
 use crate::{Error, Result};
 
-// ============================================================================
-// JWT Token Generation for RBAC Testing
-// ============================================================================
-
-/// JWT claims structure for testing
+/// JWT Token Generation for RBAC Testing
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TestJwtClaims {
     pub sub: String,
@@ -70,14 +66,6 @@ impl TestJwtClaims {
         }
     }
 
-    /// Add a custom claim to the JWT
-    /// 
-    /// # Example
-    /// ```
-    /// let claims = TestJwtClaims::new("user", "user")
-    ///     .with_claim("department", "security")
-    ///     .with_claim("level", 5);
-    /// ```
     pub fn with_claim(mut self, key: &str, value: impl Into<Value>) -> Self {
         self.extra.insert(key.to_string(), value.into());
         self
@@ -89,7 +77,6 @@ impl TestJwtClaims {
     }
 }
 
-/// RSA key pair for JWT signing/verification
 pub struct JwtKeyPair {
     pub private_key: String,
     pub public_key: String,
@@ -97,42 +84,51 @@ pub struct JwtKeyPair {
 }
 
 impl JwtKeyPair {
-    /// Generate a new RSA key pair for testing
-    ///
-    /// Note: This uses a hardcoded key pair for testing that matches the one in docs/jwt/jwt-gen.py
     pub fn generate() -> Self {
-        // For testing, we use a hardcoded key pair that matches the one in docs/jwt/jwt-gen.py
-        let private_key = r#"-----BEGIN RSA PRIVATE KEY-----
-MIIEpQIBAAKCAQEAhi3pcXuRrhy2gHjkHCq6JBcxpeC5udojlLukmsyAZ7x1vHwH
-Tx/9c6s73XhfJoRBnd3V3SL1JAUuBiVJ68Pnrtuztp5j8Cdw33S5jKf+8PranMuc
-G/4wWejWm1gbKomZBm79Baf/fJkDOwumsTXvO9dgX7c2dHtA0oO15eVdzSDf7azg
-LU7OvVukiE71tqoQwnPgK47xDvjw83ZN8eWZzDPGpA9DVoEjhwOeasDgUdVv1L+b
-2uOqCMYcLixYJ58O48cQSEOreIi1FbIJGoT19VKtJ528JrTkKihZb+BmFIvyIu36
-lGRpeJ1pbarIMx+sC/+UfKEawHmYQp7MwB1dnQIDAQABAoIBAFcr3q4L3b5d0r3Y
-JDH9+eP5H0/K3zYlNkYDKhZ3I3eXDkXq0FQ6VVLv1TpL7KzJQF3Ej4F1Vz9J1X5X
-1X5X1X5X1X5X1X5X1X5X1X5X1X5X1X5X1X5X1X5X1X5X1X5X1X5X1X5X1X5X
-1X5X1X5X1X5X1X5X1X5X1X5X1X5X1X5X1X5X1X5X1X5X1X5X1X5X1X5X1X5X
-1X5X1X5X1X5X1X5X1X5X1X5X1X5X1X5X1X5X1X5X1X5X1X5X1X5X1X5X1X5X
-1X5X1X5X1X5X1X5X1X5X1X5X1X5X1X5X1X5X1X5X1X5X1X5X1X5X1X5X1X5X
-1X5X1X5X1X5X1X5X1X5X1X5X1X5X1X5X1X5X1X5X1X5X1X5X1X5X1X5X1X5X
------END RSA PRIVATE KEY-----"#
+        let private_key = r#"-----BEGIN PRIVATE KEY-----
+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDCM0wgZFmF6Kgj
+xYF1JWERld6n+jJZLwtoD/brIxGUvRiamB5JLEyg9kyVX/xfdi4KlAmf+dZtw3IU
+VcY0jf+GxsTJpeJtfwJs9elGZnPBlRRhGhPBQrqeim1g0Pi49N+jml4OFONoSfzS
+8IIujpUMy3GUWehbIk1L9sfn1dTj4vEx7pkS7StMvmy0JbOXdaKNg7w535siyMIT
+eKOg+qTFRN8R9jHYfoNqvFohrdW0/m0lhAiyR6o5vuYkQDIwf2YVBUM3rGC9ZMBn
+JA1+xKM1zLSbuHMSHT4tvh9dbGTACrHPaans7zrXpDO0Dfnd8AK0y3cTWBjxDw3+
+LxqEBhFTAgMBAAECggEAHAFfyhAOpPP/Q2FZIPap/+o3+Mto9VmGcJRUzGX7RBLc
++HZVb8H2rwO12ZjFAVM+ooHkvXA/DwcvbWVNNwj/P4VsnZPRim7Vf7ca0+80ZEdG
+cBZdoPIpjXFzApJAPBP8KFC7nZY/kSuSTS0n6OTg875m+7jXfET/FqRZAcLhd5dj
+O/ihOebFtjUf/bl4ki/tg6ccYLFpvWQODFQuGkJI8lIxW3lhBcWYodjfbyt93AhD
+zNrqqheNH8sqVJhmb3df65g30SXEfLk8o0xwd0HYeIlevCyTzogQPMbqA0mOwFOK
+ixsYmeWNj8qFUPpuAr1nZJ9lskUy8D9ei84JkvX7IQKBgQDsVxesqiKDNkAGkJNB
+xGgCrCWRnkUv2xIeBwvjYz2LD/AiHDLEELDLVlX6gxT8gJqMQcXgev7+M93xrx/9
+FsAKDSLlEHPQmMefzkp+b1HE2Lid5W13ngyHeOVVmrX9svS8lzuKcOJlkSaxStW7
+I7deuOPrMRiaMReViL6ORKEmsQKBgQDSWtRmJsDcjlvGvE23eX1k14Su9erNQmjx
+c/j4FTS2Hqs8YvxTSQTwTOq9jm2W73os+VbAawOs4WJ0c1F6XajysKINSdKJMgeD
+/f2sGx1jnyXuhvabQ6MZOfnJL7IKXL2vQ1mNL/xFPnhjFbeU6fbsd+NCDavkV2b3
+cDIu4OZBQwKBgAzEF49IEV0tDQBNxuaCiWu7iLv45JvVJYFhuA6sSaK9VadCBqv4
+itQw8av6cKPC/pYc52dcvXFVs+NeJkgxdmYUl5Hv9ZGK7x1+sx9pO+16F17QCb2w
+V9TpftnE5Zeylu2o7ZpoxpHd6U0iUbEuGLWRHx6RJFcP18pH/KMKqfnBAoGBAI/4
+uLy9s2yBRtFLmkmELk2xsE9rYuxfkqIHhRSOtwgbD4oCGb8LEAVEL7nTXLBccZuM
+gFKsK9TMYe1f7Bk7N2H7gL5lk2JxSnGNimycFk5T48tQtkJoVZ3zb0HCkjHDbdQh
+3Y3jlN7ztcPjXkXeqDEKkRFpeAeNxpx+PuqU5SMvAoGALp6rpXjuWmijwc4MnLoc
+z/NIew06epFYIP1ZrAY+DUXgJIjK2vwxwlI1Die2REps7aE/HKc62li1ejjHA0ij
+fmFAOQc8ayw2/jjJHfQMKdmNLd9s1av6fFY31XsulfKakOBpFhtJAOEbpIz28r0P
+o2G9LxgDhY0dWG+u+9Rai7I=
+-----END PRIVATE KEY-----"#
             .to_string();
 
         let public_key = r#"-----BEGIN PUBLIC KEY-----
-MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAhi3pcXuRrhy2gHjkHCq6
-JBcxpeC5udojlLukmsyAZ7x1vHwHTx/9c6s73XhfJoRBnd3V3SL1JAUuBiVJ68Pn
-rtuztp5j8Cdw33S5jKf+8PranMucG/4wWejWm1gbKomZBm79Baf/fJkDOwumsTXv
-O9dgX7c2dHtA0oO15eVdzSDf7azgLU7OvVukiE71tqoQwnPgK47xDvjw83ZN8eWZ
-zDPGpA9DVoEjhwOeasDgUdVv1L+b2uOqCMYcLixYJ58O48cQSEOreIi1FbIJGoT1
-9VKtJ528JrTkKihZb+BmFIvyIu36lGRpeJ1pbarIMx+sC/+UfKEawHmYQp7MwB1d
-nQIDAQAB
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwjNMIGRZheioI8WBdSVh
+EZXep/oyWS8LaA/26yMRlL0YmpgeSSxMoPZMlV/8X3YuCpQJn/nWbcNyFFXGNI3/
+hsbEyaXibX8CbPXpRmZzwZUUYRoTwUK6noptYND4uPTfo5peDhTjaEn80vCCLo6V
+DMtxlFnoWyJNS/bH59XU4+LxMe6ZEu0rTL5stCWzl3WijYO8Od+bIsjCE3ijoPqk
+xUTfEfYx2H6DarxaIa3VtP5tJYQIskeqOb7mJEAyMH9mFQVDN6xgvWTAZyQNfsSj
+Ncy0m7hzEh0+Lb4fXWxkwAqxz2mp7O8616QztA353fACtMt3E1gY8Q8N/i8ahAYR
+UwIDAQAB
 -----END PUBLIC KEY-----"#
             .to_string();
 
         Self { private_key, public_key, kid: "test-key-id".to_string() }
     }
 
-    /// Get the JWKS JSON for this key pair
     pub fn get_jwks(&self) -> Value {
         json!({
             "keys": [{
@@ -141,18 +137,16 @@ nQIDAQAB
                 "use": "sig",
                 "kid": &self.kid,
                 "alg": "RS256",
-                "n": "hi3pcXuRrhy2gHjkHCq6JBcxpeC5udojlLukmsyAZ7x1vHwHTx_9c6s73XhfJoRBnd3V3SL1JAUuBiVJ68Pnrtuztp5j8Cdw33S5jKf-8PranMucG_4wWejWm1gbKomZBm79Baf_fJkDOwumsTXvO9dgX7c2dHtA0oO15eVdzSDf7azgLU7OvVukiE71tqoQwnPgK47xDvjw83ZN8eWZzDPGpA9DVoEjhwOeasDgUdVv1L-b2uOqCMYcLixYJ58O48cQSEOreIi1FbIJGoT19VKtJ528JrTkKihZb-BmFIvyIu36lGRpeJ1pbarIMx-sC_-UfKEawHmYQp7MwB1dnQ"
+                "n": "wjNMIGRZheioI8WBdSVhEZXep_oyWS8LaA_26yMRlL0YmpgeSSxMoPZMlV_8X3YuCpQJn_nWbcNyFFXGNI3_hsbEyaXibX8CbPXpRmZzwZUUYRoTwUK6noptYND4uPTfo5peDhTjaEn80vCCLo6VDMtxlFnoWyJNS_bH59XU4-LxMe6ZEu0rTL5stCWzl3WijYO8Od-bIsjCE3ijoPqkxUTfEfYx2H6DarxaIa3VtP5tJYQIskeqOb7mJEAyMH9mFQVDN6xgvWTAZyQNfsSjNcy0m7hzEh0-Lb4fXWxkwAqxz2mp7O8616QztA353fACtMt3E1gY8Q8N_i8ahAYRUw"
             }]
         })
     }
 
-    /// Get the JWKS inline string for Envoy configuration
     pub fn get_jwks_inline(&self) -> String {
         self.get_jwks().to_string()
     }
 }
 
-/// Generate a JWT token for testing
 pub fn generate_jwt_token(claims: &TestJwtClaims, private_key: &str) -> Result<String> {
     let mut header = Header::new(Algorithm::RS256);
     header.kid = Some("test-key-id".to_string());
@@ -164,11 +158,6 @@ pub fn generate_jwt_token(claims: &TestJwtClaims, private_key: &str) -> Result<S
         .map_err(|e| Error::Config(format!("Failed to encode JWT: {e}")))
 }
 
-// ============================================================================
-// MCP Protocol Types
-// ============================================================================
-
-/// MCP JSON-RPC request
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpJsonRpcRequest {
     pub jsonrpc: String,
@@ -178,7 +167,6 @@ pub struct McpJsonRpcRequest {
     pub params: Value,
 }
 
-/// MCP JSON-RPC response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpJsonRpcResponse {
     pub jsonrpc: String,
@@ -189,7 +177,6 @@ pub struct McpJsonRpcResponse {
     pub error: Option<McpJsonRpcError>,
 }
 
-/// MCP JSON-RPC error
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpJsonRpcError {
     pub code: i32,
@@ -198,8 +185,8 @@ pub struct McpJsonRpcError {
     pub data: Option<Value>,
 }
 
-/// MCP Tool definition
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct McpTool {
     pub name: String,
     pub description: String,
@@ -208,20 +195,17 @@ pub struct McpTool {
     pub output_schema: Option<Value>,
 }
 
-/// MCP ListTools result
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListToolsResult {
     pub tools: Vec<McpTool>,
 }
 
-/// MCP CallTool request parameters
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CallToolParams {
     pub name: String,
     pub arguments: Value,
 }
 
-/// MCP CallTool result
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CallToolResult {
     pub content: Vec<ToolContent>,
@@ -229,7 +213,6 @@ pub struct CallToolResult {
     pub is_error: Option<bool>,
 }
 
-/// Tool content item
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolContent {
     #[serde(rename = "type")]
@@ -237,11 +220,6 @@ pub struct ToolContent {
     pub text: String,
 }
 
-// ============================================================================
-// MCP Test Client
-// ============================================================================
-
-/// Client for making MCP protocol requests
 pub struct McpTestClient {
     http_client: reqwest::Client,
     base_url: String,
@@ -281,7 +259,6 @@ impl McpTestClient {
         headers
     }
 
-    /// Send raw MCP request
     pub async fn send_request(&self, request: &McpJsonRpcRequest) -> Result<(McpJsonRpcResponse, Option<String>)> {
         let url = format!("{}/mcp", self.base_url);
         let headers = self.build_headers();
@@ -297,13 +274,8 @@ impl McpTestClient {
 
         let status = response.status();
 
-        // Extract session ID from response headers
         let session_id = response.headers().get("mcp-session-id").and_then(|v| v.to_str().ok()).map(|s| s.to_string());
-
         let body_text = response.text().await.map_err(|e| Error::Http(format!("Failed to read body: {e}")))?;
-
-        // Debug output for troubleshooting
-        eprintln!("DEBUG: HTTP Status: {status}, Body: {body_text}");
 
         if !status.is_success() {
             return Err(Error::Http(format!("HTTP error: {status} - {body_text}")));
@@ -315,7 +287,6 @@ impl McpTestClient {
         Ok((rpc_response, session_id))
     }
 
-    /// Initialize MCP session
     pub async fn initialize(&mut self) -> Result<Value> {
         let request = McpJsonRpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -337,7 +308,6 @@ impl McpTestClient {
             return Err(Error::Http(format!("Initialize failed: {}", error.message)));
         }
 
-        // Store session ID for subsequent requests
         if let Some(sid) = session_id {
             self.session_id = Some(sid);
         }
@@ -345,7 +315,6 @@ impl McpTestClient {
         Ok(response.result.unwrap_or(Value::Null))
     }
 
-    /// List available tools
     pub async fn list_tools(&self) -> Result<ListToolsResult> {
         let request = McpJsonRpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -364,7 +333,6 @@ impl McpTestClient {
         serde_json::from_value(result).map_err(|e| Error::Http(format!("Failed to parse tools: {e}")))
     }
 
-    /// Call a tool
     pub async fn call_tool(&self, name: impl Into<String>, arguments: Value) -> Result<CallToolResult> {
         let request = McpJsonRpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -386,7 +354,6 @@ impl McpTestClient {
         serde_json::from_value(result).map_err(|e| Error::Http(format!("Failed to parse tool result: {e}")))
     }
 
-    /// Ping the server
     pub async fn ping(&self) -> Result<()> {
         let request = McpJsonRpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -405,11 +372,6 @@ impl McpTestClient {
     }
 }
 
-// ============================================================================
-// Mock MCP Server Backend
-// ============================================================================
-
-/// Mock MCP server for testing MCP backend transcoding
 pub struct MockMcpServer {
     addr: SocketAddr,
     tools: Arc<RwLock<Vec<McpTool>>>,
@@ -418,7 +380,6 @@ pub struct MockMcpServer {
 }
 
 impl MockMcpServer {
-    /// Start a mock MCP server
     pub async fn start() -> Result<Self> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let addr = listener.local_addr()?;
@@ -625,16 +586,11 @@ async fn handle_mcp_request(
         .unwrap())
 }
 
-// ============================================================================
-// Configuration Builders for MCP Gateway
-// ============================================================================
-
 use crate::config_builder::{
     BootstrapBuilder, ClusterBuilder, FilterChainBuilder, HcmBuilder, ListenerBuilder, RouteBuilder,
     RouteConfigBuilder, VirtualHostBuilder,
 };
 
-/// Create an MCP Gateway configuration
 pub fn mcp_gateway_config(
     server_name: impl Into<String>,
     server_version: impl Into<String>,
@@ -643,7 +599,6 @@ pub fn mcp_gateway_config(
 ) -> BootstrapBuilder {
     let mcp_filter = create_mcp_filter(server_name, server_version, tools, false);
 
-    // Create route config with cluster_header for MCP gateway routing
     let route_config = RouteConfigBuilder::new("mcp_routes").virtual_host(
         VirtualHostBuilder::new("mcp")
             .route(RouteBuilder::new().match_prefix("/").cluster_header("x-mcp-target-cluster")),
@@ -655,7 +610,6 @@ pub fn mcp_gateway_config(
         }),
     ));
 
-    // Add a dummy cluster for the route config - MCP gateway uses cluster_header routing
     let mut bootstrap = BootstrapBuilder::new()
         .listener(listener)
         .cluster(ClusterBuilder::new("dummy").endpoint(crate::config_builder::EndpointBuilder::new("127.0.0.1", 1)));
@@ -665,7 +619,6 @@ pub fn mcp_gateway_config(
     bootstrap
 }
 
-/// Create an MCP Gateway configuration with JWT authentication
 pub fn mcp_gateway_with_jwt_config(
     server_name: impl Into<String>,
     server_version: impl Into<String>,
@@ -692,6 +645,77 @@ pub fn mcp_gateway_with_jwt_config(
             let mut filters = vec![jwt_filter];
             filters.extend(mcp_filter);
             hcm.http_filters = filters;
+        }),
+    ));
+
+    let mut bootstrap = BootstrapBuilder::new()
+        .listener(listener)
+        .cluster(ClusterBuilder::new("dummy").endpoint(crate::config_builder::EndpointBuilder::new("127.0.0.1", 1)));
+    for cluster in clusters {
+        bootstrap = bootstrap.cluster(cluster);
+    }
+    bootstrap
+}
+
+pub fn mcp_gateway_with_jwt_and_semantic_search_config(
+    server_name: impl Into<String>,
+    server_version: impl Into<String>,
+    tools: Vec<Value>,
+    clusters: Vec<ClusterBuilder>,
+    jwks_inline: impl Into<String>,
+) -> BootstrapBuilder {
+    let server_name = server_name.into();
+    let server_version = server_version.into();
+    let jwks_inline = jwks_inline.into();
+
+    let route_config = RouteConfigBuilder::new("mcp_routes").virtual_host(
+        VirtualHostBuilder::new("mcp")
+            .route(RouteBuilder::new().match_prefix("/").cluster_header("x-mcp-target-cluster")),
+    );
+
+    let listener = ListenerBuilder::new("http").port(0).filter_chain(FilterChainBuilder::new("main").hcm(
+        HcmBuilder::new().route_config(route_config).with_proto(move |hcm| {
+            // Add JWT auth filter
+            let jwt_filter = create_jwt_filter(&jwks_inline);
+            let mcp_filter = create_mcp_filter(&server_name, &server_version, tools.clone(), true);
+
+            let mut filters = vec![jwt_filter];
+            filters.extend(mcp_filter);
+            hcm.http_filters = filters;
+        }),
+    ));
+
+    let mut bootstrap = BootstrapBuilder::new()
+        .listener(listener)
+        .cluster(ClusterBuilder::new("dummy").endpoint(crate::config_builder::EndpointBuilder::new("127.0.0.1", 1)));
+    for cluster in clusters {
+        bootstrap = bootstrap.cluster(cluster);
+    }
+    bootstrap
+}
+
+/// Create an MCP Gateway configuration with semantic search in direct call mode (no JWT auth)
+pub fn mcp_gateway_with_direct_semantic_search_config(
+    server_name: impl Into<String>,
+    server_version: impl Into<String>,
+    tools: Vec<Value>,
+    clusters: Vec<ClusterBuilder>,
+) -> BootstrapBuilder {
+    let server_name = server_name.into();
+    let server_version = server_version.into();
+
+    // Create route config with cluster_header for MCP gateway routing
+    let route_config = RouteConfigBuilder::new("mcp_routes").virtual_host(
+        VirtualHostBuilder::new("mcp")
+            .route(RouteBuilder::new().match_prefix("/").cluster_header("x-mcp-target-cluster")),
+    );
+
+    let listener = ListenerBuilder::new("http").port(0).filter_chain(FilterChainBuilder::new("main").hcm(
+        HcmBuilder::new().route_config(route_config).with_proto(move |hcm| {
+            // Use direct mode semantic search (enable_assisted_discovery = false)
+            let mcp_filter =
+                create_mcp_filter_with_semantic_search(&server_name, &server_version, tools.clone(), false);
+            hcm.http_filters = mcp_filter;
         }),
     ));
 
@@ -793,7 +817,6 @@ fn create_jwt_filter(jwks_inline: &str) -> orion_data_plane_api::envoy_data_plan
     }
 }
 
-/// Convert a JSON Value to a Tool protobuf message
 fn tool_value_to_proto(
     tool_value: &Value,
 ) -> orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::mcp::mcp_gateway::v3::Tool {
@@ -807,26 +830,40 @@ fn tool_value_to_proto(
     let description = tool_value.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string();
 
     // Handle input_schema
-    let input_schema = tool_value.get("input_schema").map(|schema| DataSource {
-        specifier: Some(
-            orion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::data_source::Specifier::InlineString(
-                schema.to_string(),
+    let input_schema = tool_value.get("input_schema").map(|schema| {
+        let inline_string = if let Some(inline) = schema.get("inline_string") {
+            // If schema has inline_string field, extract it
+            inline.as_str().unwrap_or("").to_string()
+        } else {
+            // Otherwise, convert the whole schema to string
+            schema.to_string()
+        };
+        DataSource {
+            specifier: Some(
+                orion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::data_source::Specifier::InlineString(
+                    inline_string,
+                ),
             ),
-        ),
-        watched_directory: None,
+            watched_directory: None,
+        }
     });
 
-    // Handle output_schema
-    let output_schema = tool_value.get("output_schema").map(|schema| DataSource {
-        specifier: Some(
-            orion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::data_source::Specifier::InlineString(
-                schema.to_string(),
+    let output_schema = tool_value.get("output_schema").map(|schema| {
+        let inline_string = if let Some(inline) = schema.get("inline_string") {
+            inline.as_str().unwrap_or("").to_string()
+        } else {
+            schema.to_string()
+        };
+        DataSource {
+            specifier: Some(
+                orion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::data_source::Specifier::InlineString(
+                    inline_string,
+                ),
             ),
-        ),
-        watched_directory: None,
+            watched_directory: None,
+        }
     });
 
-    // Handle upstream_backend
     let upstream_backend = if let Some(rest) = tool_value.get("rest_backend") {
         let cluster = rest.get("cluster").and_then(|v| v.as_str()).map(|s| s.to_string());
         let method = rest.get("method").and_then(|v| v.as_str()).unwrap_or("GET").to_string();
@@ -846,13 +883,22 @@ fn tool_value_to_proto(
             })
             .unwrap_or_default();
 
-        let body_template = rest.get("body_template").and_then(|v| v.as_str()).map(|s| DataSource {
-            specifier: Some(
-                orion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::data_source::Specifier::InlineString(
-                    s.to_string()
-                )
-            ),
-            watched_directory: None,
+        let body_template = rest.get("body_template").map(|v| {
+            let inline_string = if let Some(inline) = v.get("inline_string") {
+                inline.as_str().unwrap_or("").to_string()
+            } else if let Some(s) = v.as_str() {
+                s.to_string()
+            } else {
+                v.to_string()
+            };
+            DataSource {
+                specifier: Some(
+                    orion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::data_source::Specifier::InlineString(
+                        inline_string
+                    )
+                ),
+                watched_directory: None,
+            }
         });
 
         Some(tool::UpstreamBackend::RestBackend(RestBackend {
@@ -867,12 +913,16 @@ fn tool_value_to_proto(
         let transport = mcp.get("transport").and_then(|v| v.as_u64()).unwrap_or(1) as i32;
         let url = mcp.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string();
 
-        Some(tool::UpstreamBackend::McpServerBackend(McpServerBackend { transport, url, cache_duration: None }))
+        Some(tool::UpstreamBackend::McpServerBackend(McpServerBackend {
+            transport,
+            url,
+            cache_duration: None,
+            dynamic_backend: false,
+        }))
     } else {
         None
     };
 
-    // Handle RBAC
     let rbac = tool_value.get("rbac").map(|rbac_val| {
         let action = rbac_val.get("action").and_then(|v| v.as_u64()).unwrap_or(0) as i32;
         let permissions: Vec<Permission> = rbac_val
@@ -921,16 +971,16 @@ fn tool_value_to_proto(
     Tool { name, description, input_schema, output_schema, upstream_backend, rbac }
 }
 
-/// Create MCP Gateway filter
-fn create_mcp_filter(
+/// Create MCP Gateway filter with configurable semantic search
+fn create_mcp_filter_with_semantic_search(
     server_name: impl Into<String>,
     server_version: impl Into<String>,
     tools: Vec<Value>,
-    dynamic_tool_discovery: bool,
+    enable_assisted_discovery: bool,
 ) -> Vec<orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::network::http_connection_manager::v3::HttpFilter>{
     use orion_data_plane_api::envoy_data_plane_api::google::protobuf::Any;
     use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::mcp::mcp_gateway::v3::{
-        McpGateway, ServerInfo, Tool,
+        McpGateway, SemanticSearch, ServerInfo, Tool,
     };
     use prost::Message;
 
@@ -938,14 +988,18 @@ fn create_mcp_filter(
     let server_version = server_version.into();
 
     // Convert Value tools to Tool protobuf messages
-    // Since Tool doesn't implement Deserialize, we need to build it manually
     let proto_tools: Vec<Tool> = tools.iter().map(|tool_value| tool_value_to_proto(tool_value)).collect();
+
+    let semantic_search_tool = Some(SemanticSearch {
+        enable_assisted_discovery,
+        embeddings_provider: 0, // LOCAL
+    });
 
     let mcp_gateway = McpGateway {
         cluster_header: Some("x-mcp-target-cluster".to_string()),
         server_info: Some(ServerInfo { name: server_name, version: server_version }),
         tools: proto_tools,
-        dynamic_tool_discovery,
+        semantic_search_tool,
     };
 
     let mcp_any = Any {
@@ -954,17 +1008,16 @@ fn create_mcp_filter(
     };
 
     let mcp_filter = orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::network::http_connection_manager::v3::HttpFilter {
-        name: "orion.filters.http.mcp".to_string(),
+        name: "envoy.filters.http.mcp_gateway".to_string(),
         config_type: Some(orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::network::http_connection_manager::v3::http_filter::ConfigType::TypedConfig(mcp_any)),
         ..Default::default()
     };
 
-    // Add router filter at the end
-    let router =
-        orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::router::v3::Router::default();
+    use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::router::v3::Router;
+
     let router_any = Any {
         type_url: "type.googleapis.com/envoy.extensions.filters.http.router.v3.Router".to_string(),
-        value: router.encode_to_vec(),
+        value: Router::default().encode_to_vec(),
     };
 
     let router_filter = orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::network::http_connection_manager::v3::HttpFilter {
@@ -976,7 +1029,66 @@ fn create_mcp_filter(
     vec![mcp_filter, router_filter]
 }
 
-/// Helper to create a REST backend tool configuration
+/// Create MCP Gateway filter (backward compatibility wrapper)
+fn create_mcp_filter(
+    server_name: impl Into<String>,
+    server_version: impl Into<String>,
+    tools: Vec<Value>,
+    enable_semantic_search: bool,
+) -> Vec<orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::network::http_connection_manager::v3::HttpFilter>{
+    let server_name = server_name.into();
+    let server_version = server_version.into();
+
+    if enable_semantic_search {
+        create_mcp_filter_with_semantic_search(server_name, server_version, tools, true)
+    } else {
+        // No semantic search
+        use orion_data_plane_api::envoy_data_plane_api::google::protobuf::Any;
+        use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::mcp::mcp_gateway::v3::{
+            McpGateway, ServerInfo, Tool,
+        };
+        use prost::Message;
+
+        let server_name = server_name.into();
+        let server_version = server_version.into();
+
+        let proto_tools: Vec<Tool> = tools.iter().map(|tool_value| tool_value_to_proto(tool_value)).collect();
+
+        let mcp_gateway = McpGateway {
+            cluster_header: Some("x-mcp-target-cluster".to_string()),
+            server_info: Some(ServerInfo { name: server_name, version: server_version }),
+            tools: proto_tools,
+            semantic_search_tool: None,
+        };
+
+        let mcp_any = Any {
+            type_url: "type.googleapis.com/orion.extensions.filters.http.mcp.mcp_gateway.v3.McpGateway".to_string(),
+            value: mcp_gateway.encode_to_vec(),
+        };
+
+        let mcp_filter = orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::network::http_connection_manager::v3::HttpFilter {
+            name: "envoy.filters.http.mcp_gateway".to_string(),
+            config_type: Some(orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::network::http_connection_manager::v3::http_filter::ConfigType::TypedConfig(mcp_any)),
+            ..Default::default()
+        };
+
+        use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::router::v3::Router;
+
+        let router_any = Any {
+            type_url: "type.googleapis.com/envoy.extensions.filters.http.router.v3.Router".to_string(),
+            value: Router::default().encode_to_vec(),
+        };
+
+        let router_filter = orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::network::http_connection_manager::v3::HttpFilter {
+            name: "envoy.filters.http.router".to_string(),
+            config_type: Some(orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::network::http_connection_manager::v3::http_filter::ConfigType::TypedConfig(router_any)),
+            ..Default::default()
+        };
+
+        vec![mcp_filter, router_filter]
+    }
+}
+
 pub fn rest_tool_config(
     name: impl Into<String>,
     description: impl Into<String>,
@@ -1019,7 +1131,6 @@ pub fn rest_tool_config(
     tool
 }
 
-/// Helper to create an MCP server backend tool configuration
 pub fn mcp_server_tool_config(
     name: impl Into<String>,
     description: impl Into<String>,
@@ -1050,7 +1161,6 @@ pub fn mcp_server_tool_config(
     })
 }
 
-/// Helper to create RBAC configuration
 pub fn rbac_config(action: &str, permissions: Vec<(String, String, String)>) -> Value {
     let perms: Vec<Value> = permissions
         .into_iter()
@@ -1083,19 +1193,10 @@ pub fn rbac_config(action: &str, permissions: Vec<(String, String, String)>) -> 
     })
 }
 
-// ============================================================================
-// Test Helper Utilities
-// ============================================================================
-
 /// Extension trait for better MCP result assertions
 pub trait McpResultExt {
-    /// Assert the tool call succeeded (no error)
     fn assert_success(&self);
-
-    /// Assert the tool call failed with an error containing the expected text
     fn assert_error_contains(&self, expected: &str);
-
-    /// Assert the tool call failed with a "not found" error
     fn assert_tool_not_found(&self);
 }
 
@@ -1113,22 +1214,12 @@ impl McpResultExt for crate::Result<CallToolResult> {
         match self {
             Err(e) => {
                 let error_str = e.to_string();
-                assert!(
-                    error_str.contains(expected),
-                    "Error '{}' doesn't contain '{}'",
-                    error_str,
-                    expected
-                );
-            }
+                assert!(error_str.contains(expected), "Error '{}' doesn't contain '{}'", error_str, expected);
+            },
             Ok(result) if result.is_error.unwrap_or(false) => {
                 let content = result.content.first().map(|c| c.text.as_str()).unwrap_or("");
-                assert!(
-                    content.contains(expected),
-                    "Error content '{}' doesn't contain '{}'",
-                    content,
-                    expected
-                );
-            }
+                assert!(content.contains(expected), "Error content '{}' doesn't contain '{}'", content, expected);
+            },
             Ok(_) => panic!("Expected error containing '{}' but got success", expected),
         }
     }
