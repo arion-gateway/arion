@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use ctor::ctor;
 use std::net::SocketAddr;
 use std::time::Duration;
 
@@ -23,6 +24,13 @@ use orion_e2e_tests::config_builder::{
 use orion_e2e_tests::{
     PreConfiguredResponse, TestBackend, TestCerts, TlsTestBackend, TlsTestClientBuilder, XdsEnabledHarness,
 };
+
+#[ctor]
+fn init() {
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .expect("Could not install crypto provider (aws-lc-rs)");
+}
 
 #[tokio::test]
 #[ignore]
