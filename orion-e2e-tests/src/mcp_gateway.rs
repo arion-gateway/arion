@@ -26,7 +26,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
-use http::{HeaderMap, Method, Request, Response, StatusCode};
+use http::{Method, Request, Response, StatusCode};
 use http_body_util::Full;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use serde::{Deserialize, Serialize};
@@ -34,7 +34,7 @@ use serde_json::{json, Value};
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, RwLock};
 
-use crate::{Error, Result};
+use crate::{Error, RequestBuilder, Result, TestClient};
 
 /// JWT Token Generation for RBAC Testing
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -221,15 +221,14 @@ pub struct ToolContent {
 }
 
 pub struct McpTestClient {
-    http_client: reqwest::Client,
-    base_url: String,
+    http_client: TestClient,
     session_id: Option<String>,
     jwt_token: Option<String>,
 }
 
 impl McpTestClient {
-    pub fn new(base_url: impl Into<String>) -> Self {
-        Self { http_client: reqwest::Client::new(), base_url: base_url.into(), session_id: None, jwt_token: None }
+    pub fn new(addr: SocketAddr) -> Self {
+        Self { http_client: TestClient::new(addr), session_id: None, jwt_token: None }
     }
 
     pub fn with_jwt(mut self, token: impl Into<String>) -> Self {
@@ -242,47 +241,42 @@ impl McpTestClient {
         self
     }
 
-    fn build_headers(&self) -> HeaderMap {
-        let mut headers = HeaderMap::new();
-        headers.insert("Content-Type", "application/json".parse().unwrap());
-        // MCP StreamableHttp transport requires both event-stream and json in Accept header
-        headers.insert("Accept", "text/event-stream, application/json".parse().unwrap());
+    fn build_request_builder(&self, path: &str, body: Bytes) -> RequestBuilder {
+        let mut builder = RequestBuilder::post(path)
+            .header("Content-Type", "application/json")
+            .header("Accept", "text/event-stream, application/json")
+            .body(body);
 
         if let Some(ref token) = self.jwt_token {
-            headers.insert("Authorization", format!("Bearer {}", token).parse().unwrap());
+            builder = builder.header("Authorization", format!("Bearer {}", token));
         }
 
         if let Some(ref session_id) = self.session_id {
-            headers.insert("Mcp-Session-Id", session_id.parse().unwrap());
+            builder = builder.header("Mcp-Session-Id", session_id);
         }
 
-        headers
+        builder
     }
 
     pub async fn send_request(&self, request: &McpJsonRpcRequest) -> Result<(McpJsonRpcResponse, Option<String>)> {
-        let url = format!("{}/mcp", self.base_url);
-        let headers = self.build_headers();
+        let json_body =
+            serde_json::to_vec(request).map_err(|e| Error::Http(format!("Failed to serialize request: {e}")))?;
 
-        let response = self
-            .http_client
-            .post(&url)
-            .headers(headers)
-            .json(request)
-            .send()
-            .await
-            .map_err(|e| Error::Http(format!("Request failed: {e}")))?;
+        let request_builder = self.build_request_builder("/mcp", Bytes::from(json_body));
 
-        let status = response.status();
+        let response = self.http_client.send(request_builder).await?;
 
-        let session_id = response.headers().get("mcp-session-id").and_then(|v| v.to_str().ok()).map(|s| s.to_string());
-        let body_text = response.text().await.map_err(|e| Error::Http(format!("Failed to read body: {e}")))?;
+        let status = response.status;
+        let session_id = response.header("mcp-session-id").map(|s| s.to_string());
+        let body_text =
+            response.body_str().ok_or_else(|| Error::Http("Response body is not valid UTF-8".to_string()))?;
 
         if !status.is_success() {
             return Err(Error::Http(format!("HTTP error: {status} - {body_text}")));
         }
 
         let rpc_response: McpJsonRpcResponse =
-            serde_json::from_str(&body_text).map_err(|e| Error::Http(format!("Failed to parse JSON: {e}")))?;
+            serde_json::from_str(body_text).map_err(|e| Error::Http(format!("Failed to parse JSON: {e}")))?;
 
         Ok((rpc_response, session_id))
     }

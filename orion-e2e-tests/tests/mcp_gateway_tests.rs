@@ -64,7 +64,7 @@ async fn test_mcp_gateway_initialize_and_ping() {
         .await
         .expect("Failed to spawn Orion");
 
-    let mut client = McpTestClient::new(format!("http://{}", orion.listener_addr().unwrap()));
+    let mut client = McpTestClient::new(orion.listener_addr().unwrap());
 
     let init_result = client.initialize().await.expect("Failed to initialize");
     assert!(!init_result.is_null());
@@ -132,7 +132,7 @@ async fn test_mcp_gateway_tools_list() {
         .await
         .expect("Failed to spawn Orion");
 
-    let mut client = McpTestClient::new(format!("http://{}", orion.listener_addr().unwrap()));
+    let mut client = McpTestClient::new(orion.listener_addr().unwrap());
     client.initialize().await.expect("Failed to initialize");
 
     let tools = client.list_tools().await.expect("Failed to list tools");
@@ -183,7 +183,7 @@ async fn test_mcp_gateway_rest_path_templating() {
         .await
         .expect("Failed to spawn Orion");
 
-    let mut client = McpTestClient::new(format!("http://{}", orion.listener_addr().unwrap()));
+    let mut client = McpTestClient::new(orion.listener_addr().unwrap());
     client.initialize().await.expect("Failed to initialize");
 
     let result = client
@@ -250,7 +250,7 @@ async fn test_mcp_gateway_rest_query_params() {
         .await
         .expect("Failed to spawn Orion");
 
-    let mut client = McpTestClient::new(format!("http://{}", orion.listener_addr().unwrap()));
+    let mut client = McpTestClient::new(orion.listener_addr().unwrap());
     client.initialize().await.expect("Failed to initialize");
 
     client
@@ -323,7 +323,7 @@ async fn test_mcp_gateway_rest_body_templating() {
         .await
         .expect("Failed to spawn Orion");
 
-    let mut client = McpTestClient::new(format!("http://{}", orion.listener_addr().unwrap()));
+    let mut client = McpTestClient::new(orion.listener_addr().unwrap());
     client.initialize().await.expect("Failed to initialize");
 
     client
@@ -404,7 +404,7 @@ async fn test_mcp_gateway_rest_full_transcoding() {
         .await
         .expect("Failed to spawn Orion");
 
-    let mut client = McpTestClient::new(format!("http://{}", orion.listener_addr().unwrap()));
+    let mut client = McpTestClient::new(orion.listener_addr().unwrap());
     client.initialize().await.expect("Failed to initialize");
 
     client
@@ -463,7 +463,7 @@ async fn test_mcp_gateway_mcp_backend() {
         .await
         .expect("Failed to spawn Orion");
 
-    let mut client = McpTestClient::new(format!("http://{}", orion.listener_addr().unwrap()));
+    let mut client = McpTestClient::new(orion.listener_addr().unwrap());
     client.initialize().await.expect("Failed to initialize");
 
     let result = client
@@ -527,8 +527,7 @@ async fn test_mcp_gateway_rbac_jwt_claim_allow() {
     let admin_claims = TestJwtClaims::new("user1", "admin");
     let admin_token = generate_jwt_token(&admin_claims, &jwt_keys.private_key).expect("Failed to generate token");
 
-    let mut admin_client =
-        McpTestClient::new(format!("http://{}", orion.listener_addr().unwrap())).with_jwt(&admin_token);
+    let mut admin_client = McpTestClient::new(orion.listener_addr().unwrap()).with_jwt(&admin_token);
     admin_client.initialize().await.expect("Failed to initialize");
 
     let result = admin_client.call_tool("admin_only_tool", json!({})).await.expect("Failed to call tool");
@@ -540,8 +539,7 @@ async fn test_mcp_gateway_rbac_jwt_claim_allow() {
     let user_claims = TestJwtClaims::new("user2", "user");
     let user_token = generate_jwt_token(&user_claims, &jwt_keys.private_key).expect("Failed to generate token");
 
-    let mut user_client =
-        McpTestClient::new(format!("http://{}", orion.listener_addr().unwrap())).with_jwt(&user_token);
+    let mut user_client = McpTestClient::new(orion.listener_addr().unwrap()).with_jwt(&user_token);
     user_client.initialize().await.expect("Failed to initialize");
 
     let result = user_client.call_tool("admin_only_tool", json!({})).await;
@@ -593,8 +591,7 @@ async fn test_mcp_gateway_rbac_jwt_claim_deny() {
     let user_claims = TestJwtClaims::new("user1", "user");
     let user_token = generate_jwt_token(&user_claims, &jwt_keys.private_key).expect("Failed to generate token");
 
-    let mut user_client =
-        McpTestClient::new(format!("http://{}", orion.listener_addr().unwrap())).with_jwt(&user_token);
+    let mut user_client = McpTestClient::new(orion.listener_addr().unwrap()).with_jwt(&user_token);
     user_client.initialize().await.expect("Failed to initialize");
 
     let result = user_client.call_tool("premium_tool", json!({})).await.expect("Failed to call tool");
@@ -606,8 +603,7 @@ async fn test_mcp_gateway_rbac_jwt_claim_deny() {
     let guest_claims = TestJwtClaims::new("user2", "guest");
     let guest_token = generate_jwt_token(&guest_claims, &jwt_keys.private_key).expect("Failed to generate token");
 
-    let mut guest_client =
-        McpTestClient::new(format!("http://{}", orion.listener_addr().unwrap())).with_jwt(&guest_token);
+    let mut guest_client = McpTestClient::new(orion.listener_addr().unwrap()).with_jwt(&guest_token);
     guest_client.initialize().await.expect("Failed to initialize");
 
     // Guest can initialize (not protected) but should be denied tool access
@@ -668,7 +664,7 @@ async fn test_mcp_gateway_rbac_multiple_permissions() {
         let claims = TestJwtClaims::new("user", role);
         let token = generate_jwt_token(&claims, &jwt_keys.private_key).expect("Failed to generate token");
 
-        let mut client = McpTestClient::new(format!("http://{}", orion.listener_addr().unwrap())).with_jwt(&token);
+        let mut client = McpTestClient::new(orion.listener_addr().unwrap()).with_jwt(&token);
         client.initialize().await.expect("Failed to initialize");
 
         let result = client.call_tool("multi_perm_tool", json!({})).await.expect("Failed to call tool");
@@ -681,8 +677,7 @@ async fn test_mcp_gateway_rbac_multiple_permissions() {
     let dept_claims = TestJwtClaims::new("user", "user").with_claim("department", "security");
     let dept_token = generate_jwt_token(&dept_claims, &jwt_keys.private_key).expect("Failed to generate token");
 
-    let mut dept_client =
-        McpTestClient::new(format!("http://{}", orion.listener_addr().unwrap())).with_jwt(&dept_token);
+    let mut dept_client = McpTestClient::new(orion.listener_addr().unwrap()).with_jwt(&dept_token);
     dept_client.initialize().await.expect("Failed to initialize");
 
     let result = dept_client.call_tool("multi_perm_tool", json!({})).await.expect("Failed to call tool");
@@ -692,8 +687,7 @@ async fn test_mcp_gateway_rbac_multiple_permissions() {
     let regular_claims = TestJwtClaims::new("user", "user");
     let regular_token = generate_jwt_token(&regular_claims, &jwt_keys.private_key).expect("Failed to generate token");
 
-    let mut regular_client =
-        McpTestClient::new(format!("http://{}", orion.listener_addr().unwrap())).with_jwt(&regular_token);
+    let mut regular_client = McpTestClient::new(orion.listener_addr().unwrap()).with_jwt(&regular_token);
     regular_client.initialize().await.expect("Failed to initialize");
 
     let result = regular_client.call_tool("multi_perm_tool", json!({})).await;
@@ -745,7 +739,7 @@ async fn test_mcp_gateway_rbac_jwt_header() {
     let claims = TestJwtClaims::new("user", "admin");
     let token = generate_jwt_token(&claims, &jwt_keys.private_key).expect("Failed to generate token");
 
-    let mut client = McpTestClient::new(format!("http://{}", orion.listener_addr().unwrap())).with_jwt(&token);
+    let mut client = McpTestClient::new(orion.listener_addr().unwrap()).with_jwt(&token);
     client.initialize().await.expect("Failed to initialize");
 
     let result = client.call_tool("header_protected_tool", json!({})).await.expect("Failed to call tool");
@@ -784,7 +778,7 @@ async fn test_mcp_gateway_semantic_search_tool() {
     let claims = TestJwtClaims::new("user1", "user");
     let token = generate_jwt_token(&claims, &jwt_keys.private_key).expect("Failed to generate token");
 
-    let mut client = McpTestClient::new(format!("http://{}", orion.listener_addr().unwrap())).with_jwt(&token);
+    let mut client = McpTestClient::new(orion.listener_addr().unwrap()).with_jwt(&token);
     client.initialize().await.expect("Failed to initialize");
 
     // List tools - should include semantic_search tool
@@ -836,7 +830,7 @@ async fn test_mcp_gateway_tool_without_rbac() {
     let claims = TestJwtClaims::new("user", "any_role");
     let token = generate_jwt_token(&claims, &jwt_keys.private_key).expect("Failed to generate token");
 
-    let mut client = McpTestClient::new(format!("http://{}", orion.listener_addr().unwrap())).with_jwt(&token);
+    let mut client = McpTestClient::new(orion.listener_addr().unwrap()).with_jwt(&token);
     client.initialize().await.expect("Failed to initialize");
 
     let result = client.call_tool("public_tool", json!({})).await.expect("Failed to call tool");
@@ -877,7 +871,7 @@ async fn test_mcp_gateway_tool_not_found() {
         .await
         .expect("Failed to spawn Orion");
 
-    let mut client = McpTestClient::new(format!("http://{}", orion.listener_addr().unwrap()));
+    let mut client = McpTestClient::new(orion.listener_addr().unwrap());
     client.initialize().await.expect("Failed to initialize");
 
     // Try to call a non-existent tool
@@ -926,7 +920,7 @@ async fn test_mcp_gateway_invalid_arguments() {
         .await
         .expect("Failed to spawn Orion");
 
-    let mut client = McpTestClient::new(format!("http://{}", orion.listener_addr().unwrap()));
+    let mut client = McpTestClient::new(orion.listener_addr().unwrap());
     client.initialize().await.expect("Failed to initialize");
 
     // Call with missing required parameter
@@ -982,7 +976,7 @@ async fn test_mcp_gateway_mixed_backends() {
         .await
         .expect("Failed to spawn Orion");
 
-    let mut client = McpTestClient::new(format!("http://{}", orion.listener_addr().unwrap()));
+    let mut client = McpTestClient::new(orion.listener_addr().unwrap());
     client.initialize().await.expect("Failed to initialize");
 
     let tools = client.list_tools().await.expect("Failed to list tools");
@@ -1069,7 +1063,7 @@ async fn test_mcp_gateway_semantic_search_direct_mode() {
         .await
         .expect("Failed to spawn Orion");
 
-    let mut client = McpTestClient::new(format!("http://{}", orion.listener_addr().unwrap()));
+    let mut client = McpTestClient::new(orion.listener_addr().unwrap());
     client.initialize().await.expect("Failed to initialize");
 
     let initial_tools = client.list_tools().await.expect("Failed to list initial tools");
@@ -1164,7 +1158,7 @@ async fn test_mcp_gateway_semantic_search_assisted_discovery() {
     let claims = TestJwtClaims::new("user1", "user");
     let token = generate_jwt_token(&claims, &jwt_keys.private_key).expect("Failed to generate token");
 
-    let mut client = McpTestClient::new(format!("http://{}", orion.listener_addr().unwrap())).with_jwt(&token);
+    let mut client = McpTestClient::new(orion.listener_addr().unwrap()).with_jwt(&token);
     client.initialize().await.expect("Failed to initialize");
 
     let initial_tools = client.list_tools().await.expect("Failed to list initial tools");

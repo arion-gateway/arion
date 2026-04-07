@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use ctor::ctor;
 use http::StatusCode;
 use orion_e2e_tests::config_builder::{
     presets, BootstrapBuilder, ClusterBuilder, EndpointBuilder, FilterChainBuilder, HcmBuilder, ListenerBuilder,
@@ -21,13 +20,6 @@ use orion_e2e_tests::config_builder::{
 use orion_e2e_tests::{
     OrionInstance, PreConfiguredResponse, SpawnOptions, TestCerts, TestClient, TlsBackendConfig, TlsTestBackend,
 };
-
-#[ctor]
-fn init() {
-    rustls::crypto::aws_lc_rs::default_provider()
-        .install_default()
-        .expect("Could not install crypto provider (aws-lc-rs)");
-}
 
 fn http_listener(name: &str, cluster_name: &str) -> ListenerBuilder {
     ListenerBuilder::new(name).port(0).filter_chain(
