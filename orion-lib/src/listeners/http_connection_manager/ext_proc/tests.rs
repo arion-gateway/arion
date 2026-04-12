@@ -878,7 +878,7 @@ async fn test_request_combinatorial_modes_continue() {
                 let result = match result {
                     Ok(res) => res,
                     Err(_) => {
-                        warn!(target: "ext_proc_tests", "test_request_combinatorial_modes_continue: ############ test {test_case_num} TIMED OUT ############");
+                        warn!(target: "ext_proc_tests", "test_request_combinatorial_modes_continue: ############ test {test_case_num} HANGS ############");
                         timed_out_tests.push(test_case_num);
                         continue;
                     },
@@ -913,7 +913,7 @@ async fn test_request_combinatorial_modes_continue() {
     info!(target: "ext_proc_tests", "test_request_combinatorial_modes_continue: total test cases executed: {test_case_num}");
     assert!(
         timed_out_tests.is_empty(),
-        "test_request_combinatorial_modes_continue: tests cases timed out: {timed_out_tests:?}"
+        "test_request_combinatorial_modes_continue: tests cases stuck: {timed_out_tests:?}"
     );
 }
 
@@ -932,9 +932,9 @@ async fn test_response_combinatorial_modes_continue() {
             let mock_states = generate_mock_external_processors_states(status, mock_response, processing_mode);
             for mock_state in &mock_states {
                 debug!(target: "ext_proc_tests", "test_response_combinatorial_modes_continue: test case #: {test_case_num}");
-                debug!(target: "ext_proc_tests", "test_response_combinatorial_modes_continue: filter processing mode: {processing_mode:?}");
-                debug!(target: "ext_proc_tests", "test_response_combinatorial_modes_continue: mock request: {mock_response:?}");
-                debug!(target: "ext_proc_tests", "test_response_combinatorial_modes_continue: mock ext_proc state: {mock_state:?}");
+                debug!(target: "ext_proc_tests", "test_response_combinatorial_modes_continue: filter processing mode: {processing_mode:#?}");
+                debug!(target: "ext_proc_tests", "test_response_combinatorial_modes_continue: mock request: {mock_response:#?}");
+                debug!(target: "ext_proc_tests", "test_response_combinatorial_modes_continue: mock ext_proc state: {mock_state:#?}");
                 let (server_addr, server_handle) = start_mock_server(mock_state.clone()).await;
                 let mut config = create_default_config_for_ext_proc_filter(server_addr, processing_mode.clone());
                 config.observability_mode = false;
@@ -945,7 +945,7 @@ async fn test_response_combinatorial_modes_continue() {
                 let result = match result {
                     Ok(res) => res,
                     Err(_) => {
-                        warn!(target: "ext_proc_tests", "test_response_combinatorial_modes_continue: ############ test {test_case_num} TIMED OUT ############");
+                        warn!(target: "ext_proc_tests", "test_response_combinatorial_modes_continue: ############ test {test_case_num} HANGS ############");
                         timed_out_tests.push(test_case_num);
                         continue;
                     },
@@ -980,7 +980,7 @@ async fn test_response_combinatorial_modes_continue() {
     info!(target: "ext_proc_tests", "test_response_combinatorial_modes_continue: total test cases executed: {test_case_num}");
     assert!(
         timed_out_tests.is_empty(),
-        "test_response_combinatorial_modes_continue: tests cases timed out: {timed_out_tests:?}"
+        "test_response_combinatorial_modes_continue: tests cases stuck: {timed_out_tests:?}"
     );
 }
 
@@ -997,9 +997,9 @@ async fn test_request_combinatorial_modes_observability() {
     for processing_mode in &processing_modes {
         for mock_request in &mock_requests {
             debug!(target: "ext_proc_tests", "test_request_combinatorial_modes_observability: test case #: {test_case_num}");
-            debug!(target: "ext_proc_tests", "test_request_combinatorial_modes_observability: filter processing mode: {processing_mode:?}");
-            debug!(target: "ext_proc_tests", "test_request_combinatorial_modes_observability: mock request: {mock_request:?}");
-            debug!(target: "ext_proc_tests", "test_request_combinatorial_modes_observability: mock ext_proc state: {mock_state:?}");
+            debug!(target: "ext_proc_tests", "test_request_combinatorial_modes_observability: filter processing mode: {processing_mode:#?}");
+            debug!(target: "ext_proc_tests", "test_request_combinatorial_modes_observability: mock request: {mock_request:#?}");
+            debug!(target: "ext_proc_tests", "test_request_combinatorial_modes_observability: mock ext_proc state: {mock_state:#?}");
             let (server_addr, server_handle) = start_mock_server(mock_state.clone()).await;
             let mut config = create_default_config_for_ext_proc_filter(server_addr, processing_mode.clone());
             config.observability_mode = true;
@@ -1010,7 +1010,7 @@ async fn test_request_combinatorial_modes_observability() {
             let result = match result {
                 Ok(res) => res,
                 Err(_) => {
-                    warn!(target: "ext_proc_tests", "test_request_combinatorial_modes_observability: ############ test {test_case_num} TIMED OUT ############");
+                    warn!(target: "ext_proc_tests", "test_request_combinatorial_modes_observability: ############ test {test_case_num} HANGS ############");
                     timed_out_tests.push(test_case_num);
                     continue;
                 },
@@ -1041,7 +1041,7 @@ async fn test_request_combinatorial_modes_observability() {
     info!(target: "ext_proc_tests", "test_request_combinatorial_modes_observability: total test cases executed: {test_case_num}");
     assert!(
         timed_out_tests.is_empty(),
-        "test_request_combinatorial_modes_observability: tests cases timed out: {timed_out_tests:?}"
+        "test_request_combinatorial_modes_observability: tests cases stuck: {timed_out_tests:?}"
     );
 }
 
@@ -1058,9 +1058,9 @@ async fn test_response_combinatorial_modes_observability() {
     for processing_mode in &processing_modes {
         for mock_response in &mock_responses {
             debug!(target: "ext_proc_tests", "test_response_combinatorial_modes_observability: test case #: {test_case_num}");
-            debug!(target: "ext_proc_tests", "test_response_combinatorial_modes_observability: filter processing mode: {processing_mode:?}");
-            debug!(target: "ext_proc_tests", "test_response_combinatorial_modes_observability: mock request: {mock_response:?}");
-            debug!(target: "ext_proc_tests", "test_response_combinatorial_modes_observability: mock ext_proc state: {mock_state:?}");
+            debug!(target: "ext_proc_tests", "test_response_combinatorial_modes_observability: filter processing mode: {processing_mode:#?}");
+            debug!(target: "ext_proc_tests", "test_response_combinatorial_modes_observability: mock request: {mock_response:#?}");
+            debug!(target: "ext_proc_tests", "test_response_combinatorial_modes_observability: mock ext_proc state: {mock_state:#?}");
             let (server_addr, server_handle) = start_mock_server(mock_state.clone()).await;
             let mut config = create_default_config_for_ext_proc_filter(server_addr, processing_mode.clone());
             config.observability_mode = true;
@@ -1071,7 +1071,7 @@ async fn test_response_combinatorial_modes_observability() {
             let result = match result {
                 Ok(res) => res,
                 Err(_) => {
-                    warn!(target: "ext_proc_tests", "test_response_combinatorial_modes_observability: ############ test {test_case_num} TIMED OUT ############");
+                    warn!(target: "ext_proc_tests", "test_response_combinatorial_modes_observability: ############ test {test_case_num} HANGS ############");
                     timed_out_tests.push(test_case_num);
                     continue;
                 },
@@ -1102,7 +1102,7 @@ async fn test_response_combinatorial_modes_observability() {
     info!(target: "ext_proc_tests", "test_response_combinatorial_modes_observability: total test cases executed: {test_case_num}");
     assert!(
         timed_out_tests.is_empty(),
-        "test_response_combinatorial_modes_observability: tests cases timed out: {timed_out_tests:?}"
+        "test_response_combinatorial_modes_observability: tests cases stuck: {timed_out_tests:?}"
     );
 }
 

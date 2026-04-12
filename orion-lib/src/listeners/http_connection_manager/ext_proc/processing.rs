@@ -624,7 +624,9 @@ impl<M: kind::Mode + Default, Msg: kind::MsgKind + OverridableModeSelector> Proc
         let send_body_or_trailers = !self.end_of_stream;
 
         if M::OBSERVABILITY || (self.send_body_without_waiting_for_header_response && send_body_or_trailers) {
-            _ = self.try_enable_streaming_body();
+            // force enable streaming body. Note: in observability mode we want to enable streaming body regardless of the presence of body/trailers
+            // to properly handle the termination condition.
+            self.enable_streaming_body();
         }
 
         Action::Send(processing_request)
@@ -830,6 +832,12 @@ impl<M: kind::Mode + Default, Msg: kind::MsgKind + OverridableModeSelector> Proc
             self.frame_bridge.close();
             false
         }
+    }
+
+    #[inline]
+    pub fn enable_streaming_body(&mut self) {
+        debug!(target: "ext_proc", "enabling body streaming...");
+        self.streaming_body_enabled = true;
     }
 
     #[inline]
