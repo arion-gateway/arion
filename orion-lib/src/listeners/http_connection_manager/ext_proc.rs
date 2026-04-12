@@ -340,7 +340,8 @@ impl ExternalProcessor {
             (OverridableBodyMode::Buffered | OverridableBodyMode::BufferedPartial, trailers_mode) => {
                 debug!(target: "ext_proc", "request processing body(Buffered) with trailers:{trailers_mode:?}");
                 if body.is_end_stream() {
-                    let (new_body, bridge) = ChannelBody::new(body, Some(BodyType::Empty), CHANNEL_BODY_PREFETCH_FRAMES);
+                    let (new_body, bridge) =
+                        ChannelBody::new(body, Some(BodyType::Empty), CHANNEL_BODY_PREFETCH_FRAMES);
                     request.body_mut().inner.inner = PolyBody::from(new_body);
                     bridge
                 } else {
@@ -518,7 +519,8 @@ impl ExternalProcessor {
             (OverridableBodyMode::Buffered | OverridableBodyMode::BufferedPartial, trailers_mode) => {
                 debug!(target: "ext_proc", "response processing body(Buffered) with trailers:{trailers_mode:?}");
                 if body.is_end_stream() {
-                    let (new_body, bridge) = ChannelBody::new(body, Some(BodyType::Empty), CHANNEL_BODY_PREFETCH_FRAMES);
+                    let (new_body, bridge) =
+                        ChannelBody::new(body, Some(BodyType::Empty), CHANNEL_BODY_PREFETCH_FRAMES);
                     response.body_mut().inner = PolyBody::from(new_body);
                     bridge
                 } else {
@@ -953,14 +955,15 @@ impl ExternalProcessingWorker<kind::Processing> {
 
             tokio::select! {
                 outbound_processing_request = processing_request_channel.recv(), if !streaming_enabled => {
-                    debug!(target: "ext_proc", "processing {outbound_processing_request:?}...");
                     match outbound_processing_request {
                         Some(ProcessingTask{ data: ProcessingData::Request(headers, frame_bridge), reply_channel, http_version}) => {
-                            let action = self.request_processing.process(headers, frame_bridge, reply_channel, http_version, &self.overridable_modes);
+                            debug!(target: "ext_proc", "-> starting processing request...");
+                            let action = self.request_processing.process(headers, frame_bridge, reply_channel, http_version, &self.overridable_modes).await;
                             run_action!(self, self.request_processing, action, "process_request");
                         }
                         Some(ProcessingTask{ data: ProcessingData::Response(headers, frame_bridge), reply_channel, http_version}) => {
-                            let action = self.response_processing.process(headers, frame_bridge, reply_channel, http_version, &self.overridable_modes);
+                            debug!(target: "ext_proc", "-> starting processing response...");
+                            let action = self.response_processing.process(headers, frame_bridge, reply_channel, http_version, &self.overridable_modes).await;
                             run_action!(self, self.response_processing, action, "process_response");
                         }
                         _ => {
@@ -1311,11 +1314,11 @@ impl ExternalProcessingWorker<kind::Observability> {
                     debug!(target: "ext_proc", "processing {outbound_processing_request:?}...");
                     match outbound_processing_request {
                         Some(ProcessingTask{ data: ProcessingData::Request(headers, frame_bridge), reply_channel, http_version}) => {
-                            let action = self.request_processing.process(headers, frame_bridge, reply_channel, http_version, &self.overridable_modes);
+                            let action = self.request_processing.process(headers, frame_bridge, reply_channel, http_version, &self.overridable_modes).await;
                             run_action!(self, self.request_processing, action, "process_request");
                         }
                         Some(ProcessingTask{ data: ProcessingData::Response(headers, frame_bridge), reply_channel, http_version}) => {
-                            let action = self.response_processing.process(headers, frame_bridge, reply_channel, http_version, &self.overridable_modes);
+                            let action = self.response_processing.process(headers, frame_bridge, reply_channel, http_version, &self.overridable_modes).await;
                             run_action!(self, self.response_processing, action, "process_response");
                         }
                         _ => {

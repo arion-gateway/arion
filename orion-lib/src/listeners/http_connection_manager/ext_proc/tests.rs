@@ -777,6 +777,7 @@ fn assert_result<M>(
     let mut expected_body: Vec<Bytes> = mock.body.clone().into_iter().map(Into::into).collect::<Vec<_>>();
     let mut expected_trailers = mock.orig_trailers_map();
     let mut idx = 0;
+    debug!(target: "ext_proc", "original_headers: {expected_headers:?}");
     for response_opt in &mock_state.responses {
         if let Some(response) = response_opt.response.as_ref() {
             match response {
@@ -791,7 +792,10 @@ fn assert_result<M>(
                 | ProcessingResponseType::ResponseBody(BodyResponse {
                     response: Some(CommonResponse { header_mutation, body_mutation, .. }),
                 }) => {
-                    if matches!(<M as ModeSelector>::body_mode(processing_mode), BodyProcessingMode::Buffered) {
+                    if matches!(
+                        <M as ModeSelector>::body_mode(processing_mode),
+                        BodyProcessingMode::Buffered | BodyProcessingMode::BufferedPartial
+                    ) {
                         // Orion can perform header mutations on body response only in BodyProcessingMode::Buffered
                         if let Some(header_mut) = header_mutation {
                             let header_mutation = should_send_body.then_some(header_mut);
@@ -817,7 +821,7 @@ fn assert_result<M>(
     assert_eq!(
         *headers,
         expected_headers,
-        "test_case #: {}, asserting headers, original {} {:#?}, ext_proc server conf: {:#?}, ext_proc_filter processing mode: {:#?}",
+        "test_case #: {}, asserting headers: original {} {:#?}, ext_proc server conf: {:#?}, ext_proc_filter processing mode: {:#?}",
         test_case_num,
         <M as MsgKind>::NAME,
         mock,

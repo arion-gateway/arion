@@ -1,6 +1,5 @@
 use crate::body::channel_body::FrameBridge;
 use crate::event_error::EventFailure;
-use crate::listeners::http_connection_manager::ext_proc::kind;
 use crate::listeners::http_connection_manager::ext_proc::mutation::apply_trailer_mutations;
 use crate::listeners::http_connection_manager::ext_proc::pseudo_header::CombinedHeaderMap;
 use crate::listeners::http_connection_manager::ext_proc::r#override::{
@@ -9,6 +8,7 @@ use crate::listeners::http_connection_manager::ext_proc::r#override::{
 use crate::listeners::http_connection_manager::ext_proc::status::{Action, ProcessingStatus, ReadyStatus};
 use crate::listeners::http_connection_manager::ext_proc::worker_config::ExternalProcessingWorkerConfig;
 use crate::listeners::http_connection_manager::ext_proc::EnvoyHeaderMap;
+use crate::listeners::http_connection_manager::ext_proc::{kind, r#override};
 use crate::utils::truncated_debug::TruncatedDebug;
 use crate::{body::response_flags::ResponseFlags, listeners::synthetic_http_response::SyntheticHttpResponse};
 use bytes::{Bytes, BytesMut};
@@ -77,7 +77,7 @@ pub struct FramesBuffer {
 pub enum Phase {
     Headers,
     Body,
-    Trailers
+    Trailers,
 }
 
 impl FramesBuffer {
@@ -301,8 +301,10 @@ impl<Msg: kind::MsgKind + OverridableModeSelector> Processing<kind::Processing, 
                     self.frame_bridge.source_has_pending_trailers());
 
             let embedded_status = ResponseStatus::try_from(response_data.status).unwrap_or(ResponseStatus::Continue);
-            if matches!(override_mode.body_mode::<Msg>(), OverridableBodyMode::Buffered)
-                && override_mode.should_process_body::<Msg>()
+            if matches!(
+                override_mode.body_mode::<Msg>(),
+                OverridableBodyMode::Buffered | OverridableBodyMode::BufferedPartial
+            ) && override_mode.should_process_body::<Msg>()
                 && self.frame_bridge.source_has_non_empty_body() == Some(true)
                 && !matches!(embedded_status, ResponseStatus::ContinueAndReplace)
             {
@@ -512,14 +514,7 @@ impl<Msg: kind::MsgKind + OverridableModeSelector> Processing<kind::Processing, 
 
             self.end_of_stream = true;
             self.frame_bridge_close(timeout_active).await;
-
-            let status = if Msg::IS_REQUEST {
-                ProcessingStatus::RequestReady(ReadyStatus::default())
-            } else {
-                ProcessingStatus::ResponseReady(ReadyStatus::default())
-            };
-
-            Action::Return(status)
+            Action::Return(ProcessingStatus::ready::<Msg>())
         } else {
             debug!(target: "ext_proc", "frame bridge closed (handle trailers response)!");
             self.frame_bridge_close(timeout_active).await;
@@ -541,7 +536,7 @@ impl<Msg: kind::MsgKind + OverridableModeSelector> Processing<kind::Processing, 
 impl<M: kind::Mode + Default, Msg: kind::MsgKind + OverridableModeSelector> Processing<M, Msg> {
     #[must_use = "must handle the returned Action"]
     #[allow(clippy::too_many_arguments)]
-    pub fn process(
+    pub async fn process(
         &mut self,
         headers: Option<CombinedHeaderMap>,
         frame_bridge: FrameBridge,
@@ -549,32 +544,41 @@ impl<M: kind::Mode + Default, Msg: kind::MsgKind + OverridableModeSelector> Proc
         http_version: http::Version,
         override_mode: &OverridableGlobalModes,
     ) -> Action<ProcessingRequest> {
+        debug!(target: "ext_proc", "process: processing headers/body/trailers started");
+
         self.reply_channel = Some(reply_channel);
         self.http_version = Some(http_version);
         self.http_headers = headers;
         self.frame_bridge = frame_bridge;
 
-        if self.http_headers.is_some() {
+        //
+        // 1) process headers if available and configured...
+        //
+        if self.http_headers.is_some() && override_mode.should_process_headers::<Msg>() {
+            debug!(target: "ext_proc", "process: processing headers...");
             return self.process_headers(override_mode);
         }
 
-        // headers are skipped, let's process the body...
+        //
+        // 2) headers are skipped, let's process the body...
         //
 
-        debug!(target: "ext_proc", "process: turning streaming_body_enabled -> true");
-
-        if self.try_enable_streaming_body() && matches!(override_mode.body_mode::<Msg>(), OverridableBodyMode::Buffered)
+        if self.frame_bridge.source_has_non_empty_body_or_trailers()
+            && (override_mode.should_process_body::<Msg>() || override_mode.should_process_trailers::<Msg>())
         {
-            return Action::None;
+            debug!(target: "ext_proc", "process: processing body and trailers...");
+            return self.process_body_and_trailers(override_mode).await;
         }
 
-        let status = if Msg::IS_REQUEST {
-            ProcessingStatus::RequestReady(ReadyStatus::default())
-        } else {
-            ProcessingStatus::ResponseReady(ReadyStatus::default())
-        };
+        debug!(target: "ext_proc", "process: nothing to do!");
 
-        Action::Return(status)
+        //
+        // 3) Nothing to do with this request or response.
+        //
+
+        self.frame_bridge.complete().await;
+        self.frame_bridge.close();
+        return Action::Return(ProcessingStatus::ready::<Msg>());
     }
 
     #[must_use = "must handle the returned Action"]
@@ -624,6 +628,33 @@ impl<M: kind::Mode + Default, Msg: kind::MsgKind + OverridableModeSelector> Proc
         }
 
         Action::Send(processing_request)
+    }
+
+    #[must_use = "must handle the returned Action"]
+    async fn process_body_and_trailers(&mut self, override_mode: &OverridableGlobalModes) -> Action<ProcessingRequest> {
+        debug!(target: "ext_proc", "process: body and trailers (headers are skipped)...");
+
+        let streaming_enabled = self.try_enable_streaming_body();
+
+        if M::OBSERVABILITY {
+            return Action::Return(ProcessingStatus::ready::<Msg>());
+        }
+
+        if matches!(
+            override_mode.body_mode::<Msg>(),
+            OverridableBodyMode::Buffered | OverridableBodyMode::BufferedPartial
+        ) {
+            if self.frame_bridge.source_has_non_empty_body() == Some(true) && override_mode.should_process_body::<Msg>()
+            {
+                if streaming_enabled {
+                    return Action::None;
+                } else {
+                    debug!(target: "ext_proc", "process_body_and_trailers: no body/trailers to stream (internal error)");
+                }
+            }
+        }
+
+        return Action::Return(ProcessingStatus::ready::<Msg>());
     }
 
     #[must_use = "must handle the returned Action"]
@@ -771,8 +802,8 @@ impl<M: kind::Mode + Default, Msg: kind::MsgKind + OverridableModeSelector> Proc
         // Determine if the body will actually be sent.
         // Note: If you are in Buffered mode, Envoy sends an empty body anyway,
         // so you might only rely on `should_process_body` depending on its internal implementation.
-        let will_send_body = override_mode.should_process_body::<Msg>()
-            && self.frame_bridge.source_has_non_empty_body().unwrap_or(true);
+        let will_send_body =
+            override_mode.should_process_body::<Msg>() && self.frame_bridge.source_has_non_empty_body().unwrap_or(true);
 
         match phase {
             // In the Headers phase, it is the end of the stream ONLY IF no body and no trailers will follow.
