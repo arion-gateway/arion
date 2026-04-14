@@ -6099,3 +6099,57 @@ async fn test_request_response_trailers_observability_mode() {
     assert_eq!(res_trailers.get("x-res-trailer").unwrap(), "res-val");
     assert!(res_trailers.get("x-res-trailer-mutated").is_none());
 }
+
+#[tokio::test]
+async fn test_request_header_mutation_with_large_body() {
+    let mock_state = MockExternalProcessorState::new().add_response(
+        create_headers_response::<RequestMsg>(
+            vec![Some(("x-processed", "true")), Some(("x-custom-header", "custom-value"))],
+            None,
+            vec![],
+            ResponseStatus::Continue as i32,
+            None,
+        )
+        .into(),
+    );
+    let (server_addr, _) = start_mock_server(mock_state).await;
+    let processing_mode = ProcessingMode {
+        request_header_mode: HeaderProcessingMode::Send,
+        request_body_mode: BodyProcessingMode::None,
+        request_trailer_mode: TrailerProcessingMode::Skip,
+        response_header_mode: HeaderProcessingMode::Skip,
+        response_body_mode: BodyProcessingMode::None,
+        response_trailer_mode: TrailerProcessingMode::Skip,
+    };
+
+    let mut config = create_default_config_for_ext_proc_filter(server_addr, processing_mode);
+    config.observability_mode = false;
+    config.failure_mode_allow = false;
+    let mut ext_proc = ExternalProcessor::from(config);
+
+    // 1MB buffer
+    let large_body = Box::leak(vec!['a'; 1024 * 1024].into_iter().collect::<String>().into_boxed_str());
+
+    let mut request = build_request_from_mock(&MockMessage::<RequestMsg> {
+        headers: vec![Some(("content-type", "text/plain"))],
+        body: vec![large_body],
+        trailers: vec![],
+        _marker: std::marker::PhantomData,
+    })
+    .await;
+
+    let result = ext_proc.apply_request(&mut request).await;
+
+    assert_matches!(result, FilterDecision::Continue);
+    assert_eq!(request.headers().get("x-processed").unwrap(), "true");
+    assert_eq!(request.headers().get("x-custom-header").unwrap(), "custom-value");
+    assert_eq!(request.headers().get("content-type").unwrap(), "text/plain");
+
+    let body_chunks = to_body_data_chunks(std::mem::take(&mut request.body_mut().inner.inner).collect().await.unwrap()).await;
+    let mut actual_body = String::new();
+    for chunk in body_chunks {
+        actual_body.push_str(std::str::from_utf8(&chunk).unwrap());
+    }
+    assert_eq!(actual_body.len(), 1024 * 1024);
+    assert_eq!(actual_body, &*large_body);
+}
