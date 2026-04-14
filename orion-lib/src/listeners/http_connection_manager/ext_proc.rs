@@ -1383,6 +1383,7 @@ impl ExternalProcessingWorker<kind::Observability> {
                             let action = Action::Return(ProcessingStatus::RequestReady(ReadyStatus::default()));
                             run_action!(self, self.request_processing, action, "request streaming completed");
                             self.request_processing.end_of_stream = true;
+                            self.request_processing.frame_bridge_close(&mut self.timeout_state.active).await;
                         }
                     }
                 },
@@ -1442,6 +1443,7 @@ impl ExternalProcessingWorker<kind::Observability> {
                             let action = Action::Return(ProcessingStatus::ResponseReady(ReadyStatus::default()));
                             run_action!(self, self.response_processing, action, "response streaming completed");
                             self.response_processing.end_of_stream = true;
+                            self.response_processing.frame_bridge_close(&mut self.timeout_state.active).await;
                         }
                     }
                 },

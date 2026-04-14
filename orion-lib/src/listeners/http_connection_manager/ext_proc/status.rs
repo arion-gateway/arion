@@ -1,4 +1,4 @@
-use crate::{OrionResponseBody, listeners::http_connection_manager::ext_proc::kind::MsgKind};
+use crate::{listeners::http_connection_manager::ext_proc::kind::MsgKind, OrionResponseBody};
 
 use orion_data_plane_api::envoy_data_plane_api::envoy::service::ext_proc::v3::HeaderMutation;
 
