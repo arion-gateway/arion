@@ -452,6 +452,9 @@ impl ExternalProcessor {
 
         let ver = request.version();
         let Ok(response_rx) = self.send_processing_data(processing_data, ver).await else {
+            if self.inner.worker_config.failure_mode_allow {
+                return FilterDecision::Continue;
+            }
             return self.on_filter_error(
                 "Failed to schedule sending request data to external processor",
                 None,
@@ -628,6 +631,9 @@ impl ExternalProcessor {
 
         let ver = response.version();
         let Ok(response_rx) = self.send_processing_data(processing_data, ver).await else {
+            if self.inner.worker_config.failure_mode_allow {
+                return FilterDecision::Continue;
+            }
             return self.on_filter_error(
                 "Failed to schedule sending response data to external processor",
                 None,
@@ -896,16 +902,16 @@ impl ExternalProcessingWorker<kind::Processing> {
     async fn recover_or_failure(&mut self, err: ExtProcError, log_msg: &str) {
         if self.inner.worker_config.failure_mode_allow {
             info!(target: "ext_proc", "{} - continue (failure_mode_allow is true)", log_msg);
-            self.request_processing.inject_inflight_frames_and_complete().await;
-            self.request_processing.frame_bridge_close(&mut self.timeout_state.active).await;
-            self.response_processing.inject_inflight_frames_and_complete().await;
-            self.response_processing.frame_bridge_close(&mut self.timeout_state.active).await;
+            let frames = std::mem::take(&mut self.request_processing.inflight_frames);
+            self.request_processing.frame_bridge_close(Some(&mut self.timeout_state.active), frames, true).await;
+            let frames = std::mem::take(&mut self.response_processing.inflight_frames);
+            self.response_processing.frame_bridge_close(Some(&mut self.timeout_state.active), frames, true).await;
         } else {
             info!(target: "ext_proc", "{} - abort (failure_mode_allow is false)", log_msg);
             _ = self.request_processing.frame_bridge.inject_frame(Err(Box::new(err.clone()))).await;
-            self.request_processing.frame_bridge_close(&mut self.timeout_state.active).await;
+            self.request_processing.frame_bridge_close(Some(&mut self.timeout_state.active), std::iter::empty(), false).await;
             _ = self.response_processing.frame_bridge.inject_frame(Err(Box::new(err.clone()))).await;
-            self.response_processing.frame_bridge_close(&mut self.timeout_state.active).await;
+            self.response_processing.frame_bridge_close(Some(&mut self.timeout_state.active), std::iter::empty(), false).await;
         }
 
         match err {
@@ -1001,7 +1007,8 @@ impl ExternalProcessingWorker<kind::Processing> {
                                          run_action!(self, processing, status, "immediate_response_disabled");
                                      }
                                      {
-                                         processing.inject_inflight_frames_and_complete().await;
+                                         let frames = std::mem::take(&mut processing.inflight_frames);
+                                         processing.frame_bridge_close(None, frames, true).await;
                                      });
 
                                  } else {
@@ -1026,7 +1033,8 @@ impl ExternalProcessingWorker<kind::Processing> {
 
                             with_current_processing!(self, processing,
                             {
-                                 processing.inject_inflight_frames_and_complete().await;
+                                 let frames = std::mem::take(&mut processing.inflight_frames);
+                                         processing.frame_bridge_close(None, frames, true).await;
                             });
 
                             break 'transaction_loop;
@@ -1178,7 +1186,7 @@ impl ExternalProcessingWorker<kind::Processing> {
 
                             if self.request_processing.inflight_frames.is_empty() {
                                 debug!(target: "ext_proc", "outbound request body frame: frame bridge closed (request body)!");
-                                self.request_processing.frame_bridge_close(&mut self.timeout_state.active).await;
+                                self.request_processing.frame_bridge_close(Some(&mut self.timeout_state.active), std::iter::empty(), false).await;
                             }
                         }
                     }
@@ -1248,7 +1256,7 @@ impl ExternalProcessingWorker<kind::Processing> {
 
                             if self.response_processing.inflight_frames.is_empty() {
                                 debug!(target: "ext_proc", "outbound response body frame: frame bridge closed (response body)!");
-                                self.response_processing.frame_bridge_close(&mut self.timeout_state.active).await;
+                                self.response_processing.frame_bridge_close(Some(&mut self.timeout_state.active), std::iter::empty(), false).await;
                            }
                         }
                     }
@@ -1383,7 +1391,7 @@ impl ExternalProcessingWorker<kind::Observability> {
                             let action = Action::Return(ProcessingStatus::RequestReady(ReadyStatus::default()));
                             run_action!(self, self.request_processing, action, "request streaming completed");
                             self.request_processing.end_of_stream = true;
-                            self.request_processing.frame_bridge_close(&mut self.timeout_state.active).await;
+                            self.request_processing.frame_bridge_close(Some(&mut self.timeout_state.active), std::iter::empty(), false).await;
                         }
                     }
                 },
@@ -1443,7 +1451,7 @@ impl ExternalProcessingWorker<kind::Observability> {
                             let action = Action::Return(ProcessingStatus::ResponseReady(ReadyStatus::default()));
                             run_action!(self, self.response_processing, action, "response streaming completed");
                             self.response_processing.end_of_stream = true;
-                            self.response_processing.frame_bridge_close(&mut self.timeout_state.active).await;
+                            self.response_processing.frame_bridge_close(Some(&mut self.timeout_state.active), std::iter::empty(), false).await;
                         }
                     }
                 },

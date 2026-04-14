@@ -355,14 +355,14 @@ impl<Msg: kind::MsgKind + OverridableModeSelector> Processing<kind::Processing, 
                 }
 
                 debug!(target: "ext_proc", "frame bridge closed (handle header response)!");
-                self.frame_bridge_close(timeout_active).await;
+                self.frame_bridge_close(Some(timeout_active), std::iter::empty(), false).await;
             } else {
                 debug!(target: "ext_proc", "handle_headers_response: ResponseStatus:Continue: headers processed");
                 if !override_mode.should_process_body::<Msg>() && !override_mode.should_process_trailers::<Msg>() {
                     debug!(target: "ext_proc", "handle_headers_response: complete to stream original body and close!");
-                    self.frame_bridge.complete().await;
+                    self.frame_bridge.drain().await;
                     debug!(target: "ext_proc", "frame bridge closed (handle header response)!");
-                    self.frame_bridge_close(timeout_active).await;
+                    self.frame_bridge_close(Some(timeout_active), std::iter::empty(), false).await;
                 } else {
                     let stream_body_enabled = self.try_enable_streaming_body();
                     debug!(target: "ext_proc", "handle_headers_response: trying to enable streaming body: {stream_body_enabled}");
@@ -468,13 +468,13 @@ impl<Msg: kind::MsgKind + OverridableModeSelector> Processing<kind::Processing, 
 
             if matches!(embedded_status, ResponseStatus::ContinueAndReplace) {
                 debug!(target: "ext_proc", "handle_body_response: CONTINUE_AND_REPLACE: sending message status {status:?}");
-                self.frame_bridge_close(timeout_active).await;
+                self.frame_bridge_close(Some(timeout_active), std::iter::empty(), false).await;
                 return Action::Return(status);
             }
 
             if self.end_of_stream && self.inflight_frames.is_empty() {
                 debug!(target: "ext_proc", "handle_body_response: end_of_stream (closing frame bridge)!");
-                self.frame_bridge_close(timeout_active).await;
+                self.frame_bridge_close(Some(timeout_active), std::iter::empty(), false).await;
             }
 
             Action::Return(status)
@@ -514,24 +514,17 @@ impl<Msg: kind::MsgKind + OverridableModeSelector> Processing<kind::Processing, 
             _ = self.frame_bridge.inject_frame(Ok(Frame::trailers(trailers))).await;
 
             self.end_of_stream = true;
-            self.frame_bridge_close(timeout_active).await;
+            self.frame_bridge_close(Some(timeout_active), std::iter::empty(), false).await;
             Action::Return(ProcessingStatus::ready::<Msg>())
         } else {
             debug!(target: "ext_proc", "frame bridge closed (handle trailers response)!");
-            self.frame_bridge_close(timeout_active).await;
+            self.frame_bridge_close(Some(timeout_active), std::iter::empty(), false).await;
             Action::Return(
                 self.status_error("handle_trailers_response: No trailers to process", self.failure_mode_allow),
             )
         }
     }
 
-    pub async fn inject_inflight_frames_and_complete(&mut self) {
-        debug!(target: "ext_proc", "interrupt_and_complete!");
-        for frame in self.inflight_frames.drain(..) {
-            _ = self.frame_bridge.inject_frame(Ok(frame)).await;
-        }
-        self.frame_bridge.complete().await;
-    }
 }
 
 impl<M: kind::Mode + Default, Msg: kind::MsgKind + OverridableModeSelector> Processing<M, Msg> {
@@ -577,7 +570,7 @@ impl<M: kind::Mode + Default, Msg: kind::MsgKind + OverridableModeSelector> Proc
         // 3) Nothing to do with this request or response.
         //
 
-        self.frame_bridge.complete().await;
+        self.frame_bridge.drain().await;
         self.frame_bridge.close();
         return Action::Return(ProcessingStatus::ready::<Msg>());
     }
@@ -785,11 +778,27 @@ impl<M: kind::Mode + Default, Msg: kind::MsgKind + OverridableModeSelector> Proc
     }
 
     #[inline]
-    pub async fn frame_bridge_close(&mut self, timeout_active: &mut bool) {
-        *timeout_active = false;
+    pub async fn frame_bridge_close(
+        &mut self,
+        timeout_active: Option<&mut bool>,
+        frames_to_inject: impl IntoIterator<Item = Frame<Bytes>>,
+        complete_bridge: bool,
+    ) {
+        if let Some(timeout_active) = timeout_active {
+            *timeout_active = false;
+        }
         self.streaming_body_enabled = false;
+
+        for frame in frames_to_inject {
+            _ = self.frame_bridge.inject_frame(Ok(frame)).await;
+        }
+
         if let Some(trailers) = self.parked_trailers.take() {
             _ = self.frame_bridge.inject_frame(Ok(trailers)).await;
+        }
+
+        if complete_bridge {
+            self.frame_bridge.drain().await;
         }
         self.frame_bridge.close();
     }

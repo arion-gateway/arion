@@ -167,6 +167,22 @@ impl Default for FrameBridge {
     }
 }
 
+impl Drop for FrameBridge {
+    fn drop(&mut self) {
+        if let Some(injector) = self.injector.take() {
+            let mut body_stream = std::mem::replace(&mut self.body_stream, Box::pin(futures::stream::empty()));
+            tokio::spawn(async move {
+                while let Some(frame_result) = body_stream.next().await {
+                    // If sending fails, it means the receiver has been dropped
+                    if injector.send(frame_result).await.is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+    }
+}
+
 impl FrameBridge {
     fn new<B>(
         body: B,
@@ -206,8 +222,8 @@ impl FrameBridge {
         self.injector.take();
     }
 
-    /// Consumes the entire original body, injecting each frame into the `ChannelBody`.
-    pub async fn complete(&mut self) {
+    /// Drain the stream body, injecting each frame into the `ChannelBody`.
+    pub async fn drain(&mut self) {
         let Some(injector) = &mut self.injector else {
             return;
         };
@@ -354,7 +370,7 @@ mod tests {
 
         // Spawn bridge task
         let bridge_handle = tokio::spawn(async move {
-            bridge.complete().await;
+            bridge.drain().await;
         });
 
         // Consume the channel body
@@ -414,7 +430,7 @@ mod tests {
         assert!(matches!(Pin::new(&mut channel_body).poll_frame(&mut ctx), Poll::Pending));
 
         let bridge_handle = tokio::spawn(async move {
-            bridge.complete().await;
+            bridge.drain().await;
         });
         bridge_handle.await.unwrap();
 
