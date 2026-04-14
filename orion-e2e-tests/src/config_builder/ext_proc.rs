@@ -29,9 +29,10 @@ impl ExtProcBuilder {
                         cluster_name: cluster_name.into(),
                         ..Default::default()
                     })),
-                    timeout: Some(ProtoDuration { seconds: 5, nanos: 0 }),
+                    timeout: Some(ProtoDuration { seconds: 4, nanos: 0 }),
                     ..Default::default()
                 }),
+                message_timeout: Some(ProtoDuration{ seconds: 5, nanos: 0 }),
                 ..Default::default()
             },
         }

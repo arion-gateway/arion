@@ -255,6 +255,7 @@ async fn test_ext_proc_headers_and_body_mode() {
 }
 
 #[tokio::test]
+#[test_log::test]
 #[ignore]
 async fn test_ext_proc_failure_mode_allow() {
     let unused_addr = "127.0.0.1:1".parse().unwrap();
@@ -361,6 +362,7 @@ async fn test_ext_proc_multiple_sequential_requests() {
 }
 
 #[tokio::test]
+#[test_log::test]
 #[ignore]
 async fn test_ext_proc_observability_mode() {
     let (mut backend, _ext_proc, _orion, client, _cfg) = setup(
