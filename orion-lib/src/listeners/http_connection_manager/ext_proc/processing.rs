@@ -1,5 +1,6 @@
 use crate::body::channel_body::FrameBridge;
 use crate::event_error::EventFailure;
+use crate::listeners::http_connection_manager::ext_proc::kind;
 use crate::listeners::http_connection_manager::ext_proc::mutation::apply_trailer_mutations;
 use crate::listeners::http_connection_manager::ext_proc::pseudo_header::CombinedHeaderMap;
 use crate::listeners::http_connection_manager::ext_proc::r#override::{
@@ -8,7 +9,6 @@ use crate::listeners::http_connection_manager::ext_proc::r#override::{
 use crate::listeners::http_connection_manager::ext_proc::status::{Action, ProcessingStatus, ReadyStatus};
 use crate::listeners::http_connection_manager::ext_proc::worker_config::ExternalProcessingWorkerConfig;
 use crate::listeners::http_connection_manager::ext_proc::EnvoyHeaderMap;
-use crate::listeners::http_connection_manager::ext_proc::{kind, r#override};
 use crate::utils::truncated_debug::TruncatedDebug;
 use crate::{body::response_flags::ResponseFlags, listeners::synthetic_http_response::SyntheticHttpResponse};
 use bytes::{Bytes, BytesMut};
@@ -74,6 +74,7 @@ pub struct FramesBuffer {
     frame_merge_window: Duration,
 }
 
+#[allow(dead_code)]
 pub enum Phase {
     Headers,
     Body,
