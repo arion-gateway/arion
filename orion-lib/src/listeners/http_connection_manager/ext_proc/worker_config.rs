@@ -22,4 +22,5 @@ pub struct ExternalProcessingWorkerConfig {
     // -- additional configuration options
     pub frame_merge_limit: u32,
     pub frame_merge_window: Duration,
+    pub max_receive_message_length: usize,
 }

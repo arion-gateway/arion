@@ -43,7 +43,8 @@ use orion_configuration::config::{
     cluster::ClusterSpecifier,
     network_filters::http_connection_manager::http_filters::{
         ext_proc::{
-            ExternalProcessor as ExternalProcessorConfig, GrpcServiceSpecifier, HeaderForwardingRules, ProcessingMode,
+            ExternalProcessor as ExternalProcessorConfig, GrpcServiceSpecifier, HeaderForwardingRules,
+            ProcessingMode,
         },
         ExtProcPerRoute,
     },
@@ -174,6 +175,14 @@ impl From<(ExternalProcessorConfig, Option<ExtProcPerRoute>, Option<ExternalProc
                 }
             }
         }
+        let max_receive_message_length = match &grpc_service.service_specifier {
+            GrpcServiceSpecifier::Cluster(cluster_grpc) => {
+                cluster_grpc.max_receive_message_length
+                    .map(|v| v as usize)
+                    .unwrap_or(EXT_PROC_BUFFERED_BODY_LIMIT)
+            },
+            GrpcServiceSpecifier::GoogleGrpc(_) => EXT_PROC_BUFFERED_BODY_LIMIT,
+        };
 
         Self {
             grpc_service_specifier: grpc_service.clone().service_specifier,
@@ -196,6 +205,7 @@ impl From<(ExternalProcessorConfig, Option<ExtProcPerRoute>, Option<ExternalProc
                 .as_ref()
                 .map(|e| e.frame_merge_window)
                 .unwrap_or(EXT_PROC_MERGE_WINDOW),
+            max_receive_message_length,
         }
     }
 }
@@ -317,7 +327,7 @@ impl ExternalProcessor {
                     request.body_mut().inner.inner = PolyBody::from(new_body);
                     bridge
                 } else {
-                    let body = Limited::new(body, EXT_PROC_BUFFERED_BODY_LIMIT);
+                    let body = Limited::new(body, self.inner.worker_config.max_receive_message_length);
                     let collected = match body.collect().await {
                         Ok(collected) => collected,
                         Err(e) => {
@@ -465,7 +475,7 @@ impl ExternalProcessor {
                     response.body_mut().inner = PolyBody::from(new_body);
                     bridge
                 } else {
-                    let body = Limited::new(body, EXT_PROC_BUFFERED_BODY_LIMIT);
+                    let body = Limited::new(body, self.inner.worker_config.max_receive_message_length);
                     let collected = match body.collect().await {
                         Ok(collected) => collected,
                         Err(e) => {
@@ -1368,6 +1378,7 @@ impl ExternalProcessingWorker<kind::Observability> {
 impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
     async fn connect(
         grpc_service_specifier: &GrpcServiceSpecifier,
+        max_receive_message_length: usize,
         first_request: ProcessingRequest,
     ) -> Result<BidiStream, Error> {
         // Create a channel to send requests to the gRPC stream.
@@ -1379,14 +1390,18 @@ impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
             }
         };
         let response_stream = match grpc_service_specifier {
-            GrpcServiceSpecifier::Cluster(cluster_name) => {
-                let cluster_spec = ClusterSpecifier::Cluster(cluster_name.clone());
+            GrpcServiceSpecifier::Cluster(cluster_grpc) => {
+                let cluster_spec = ClusterSpecifier::Cluster(cluster_grpc.cluster_name.clone());
                 let cluster_id = clusters_manager::resolve_cluster(&cluster_spec, None).ok_or_else(|| {
-                    Error::from(format!("Failed to resolve cluster '{cluster_name}' for external processor"))
+                    Error::from(format!(
+                        "Failed to resolve cluster '{}' for external processor",
+                        cluster_grpc.cluster_name
+                    ))
                 })?;
                 let grpc_service = clusters_manager::get_grpc_connection(cluster_id, RoutingContext::None)?;
                 let mut client = ExternalProcessorClient::new(grpc_service)
-                    .max_decoding_message_size(EXT_PROC_BUFFERED_BODY_LIMIT);
+                    .max_decoding_message_size(max_receive_message_length);
+
                 client
                     .process(request_stream)
                     .await
@@ -1399,7 +1414,8 @@ impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
                     .map_err(|e| {
                         Error::from(format!("Failed to connect to external processor (GoogleGrpc endpoint): {e}"))
                     })?
-                    .max_decoding_message_size(EXT_PROC_BUFFERED_BODY_LIMIT);
+                    .max_decoding_message_size(max_receive_message_length);
+
                 client
                     .process(request_stream)
                     .await
@@ -1418,7 +1434,11 @@ impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
             let first_request = pending_request.take().ok_or_else(|| {
                 Error::from("Internal error: attempted to establish bidi stream with external processor without a ProcessingRequest")
             })?;
-            let stream = Self::connect(&self.inner.worker_config.grpc_service_specifier, first_request).await?;
+            let stream = Self::connect(
+                &self.inner.worker_config.grpc_service_specifier,
+                self.inner.worker_config.max_receive_message_length,
+                first_request
+            ).await?;
             Ok(self.bidi_stream.insert(stream))
         }
     }
