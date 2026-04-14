@@ -74,7 +74,7 @@ use tracing::{debug, info, warn};
 const CHANNEL_BODY_PREFETCH_FRAMES: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(4) };
 const EXT_PROC_FRAME_MERGE_LIMIT: u32 = 4; // max number of frames to merge in streaming mode
 const EXT_PROC_MERGE_WINDOW: Duration = tokio::time::Duration::from_millis(1); // time window to wait for more frames to merge
-const EXT_PROC_BUFFERED_BODY_LIMIT: usize = 4 * 1024 * 1024; // this is the default limit for GRPC payload lenght
+const EXT_PROC_BUFFERED_BODY_LIMIT: usize = 100 * 1024 * 1024; // extend the default gRPC payload limit from 4MB to 100MB
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum ExtProcError {
@@ -1385,7 +1385,8 @@ impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
                     Error::from(format!("Failed to resolve cluster '{cluster_name}' for external processor"))
                 })?;
                 let grpc_service = clusters_manager::get_grpc_connection(cluster_id, RoutingContext::None)?;
-                let mut client = ExternalProcessorClient::new(grpc_service);
+                let mut client = ExternalProcessorClient::new(grpc_service)
+                    .max_decoding_message_size(EXT_PROC_BUFFERED_BODY_LIMIT);
                 client
                     .process(request_stream)
                     .await
@@ -1393,10 +1394,12 @@ impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
                     .into_inner()
             },
             GrpcServiceSpecifier::GoogleGrpc(google_grpc) => {
-                let mut client =
-                    ExternalProcessorClient::connect(google_grpc.target_uri.clone()).await.map_err(|e| {
+                let mut client = ExternalProcessorClient::connect(google_grpc.target_uri.clone())
+                    .await
+                    .map_err(|e| {
                         Error::from(format!("Failed to connect to external processor (GoogleGrpc endpoint): {e}"))
-                    })?;
+                    })?
+                    .max_decoding_message_size(EXT_PROC_BUFFERED_BODY_LIMIT);
                 client
                     .process(request_stream)
                     .await
