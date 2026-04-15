@@ -31,7 +31,7 @@ envoy_bootstrap:
                     - name: envoy.filters.http.ext_proc
                       typed_config:
                         "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor
-                        failure_mode_allow: true
+                        failure_mode_allow: false
                         processing_mode:
                           request_header_mode: "SEND"
                           response_header_mode: "SKIP"
@@ -41,7 +41,8 @@ envoy_bootstrap:
                           response_trailer_mode: "SKIP"
                         grpc_service:
                           envoy_grpc:
-                            cluster_name: ext-proc-server
+                            cluster_name: ext_proc_server
+                            max_receive_message_length: 4194304 #Orion default max is 100MB
                     - name: envoy.filters.http.router
                       typedConfig:
                         "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
@@ -63,18 +64,8 @@ envoy_bootstrap:
                                 inline_string: "meow! 🐱"
                           - match:
                               prefix: "/"
-                              headers:
-                                - name: ":method"
-                                  exactMatch: "GET"
                             route:
                               cluster: cluster_http_1
-                          - match:
-                              prefix: "/"
-                              headers:
-                                - name: ":method"
-                                  exactMatch: "POST"
-                            route:
-                              cluster: cluster_http_2
 
     clusters:
       - name: cluster_http_1
@@ -89,16 +80,16 @@ envoy_bootstrap:
                       socket_address:
                         address: 127.0.0.1
                         port_value: 4001
-                - endpoint:
-                    address:
-                      socket_address:
-                        address: 127.0.0.1
-                        port_value: 4002
 
-      - name: cluster_http_2
+      - name: ext_proc_server
         connect_timeout: 0.25s
         type: STATIC
         lb_policy: ROUND_ROBIN
+        typed_extension_protocol_options:
+          envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+            "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+            explicit_http_config:
+              http2_protocol_options: {}
         load_assignment:
           endpoints:
             - lb_endpoints:
@@ -106,9 +97,4 @@ envoy_bootstrap:
                     address:
                       socket_address:
                         address: 127.0.0.1
-                        port_value: 4003
-                - endpoint:
-                    address:
-                      socket_address:
-                        address: 127.0.0.1
-                        port_value: 4004
+                        port_value: 18080

@@ -65,8 +65,15 @@ pub struct GrpcService {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum GrpcServiceSpecifier {
-    Cluster(SmolStr),
+    Cluster(ClusterGrpc),
     GoogleGrpc(GoogleGrpc),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ClusterGrpc {
+    pub cluster_name: SmolStr,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub max_receive_message_length: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -353,7 +360,10 @@ mod envoy_conversions {
             )?;
 
             let service_specifier = match required!(target_specifier)? {
-                TargetSpecifier::EnvoyGrpc(eg) => GrpcServiceSpecifier::Cluster(eg.cluster_name.into()),
+                TargetSpecifier::EnvoyGrpc(eg) => GrpcServiceSpecifier::Cluster(ClusterGrpc {
+                    cluster_name: eg.cluster_name.into(),
+                    max_receive_message_length: eg.max_receive_message_length.map(|v| v.value),
+                }),
                 TargetSpecifier::GoogleGrpc(gg) => {
                     let google_grpc: GoogleGrpc = gg.try_into().with_node("google_grpc")?;
                     GrpcServiceSpecifier::GoogleGrpc(google_grpc)
