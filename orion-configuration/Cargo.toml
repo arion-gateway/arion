@@ -14,35 +14,36 @@ base64-serde = "0.7.0"
 bounded-integer = { version = "0.6.1", features = ["serde1"] }
 bytes.workspace = true
 smol_str.workspace = true
-clap = { version = "4.5.51", features = ["derive"] }
 exponential-backoff.workspace = true
 http.workspace = true
+num_cpus.workspace = true
+orion-error.workspace = true
+orion-format.workspace = true
+orion-interner.workspace = true
+orion-auth.workspace = true
+regex.workspace = true
+tracing-rolling-file.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+url.workspace = true
+clap = { version = "4.5.51", features = ["derive"] }
 http-serde-ext = "1.0.2"
 humantime-serde = "1.1.1"
 ipnet = { version = "2.11", features = ["serde"] }
 itertools = "0.14.0"
-num_cpus.workspace = true
 opentelemetry-otlp = { version = "0.29.0", features = [
   "serde",
   "serde_json",
   "serialize",
 ] }
 orion-data-plane-api = { workspace = true, optional = true }
-orion-error.workspace = true
-orion-format.workspace = true
-orion-interner.workspace = true
-regex.workspace = true
-tracing-rolling-file.workspace = true
 serde = { workspace = true, features = ["rc"] }
-serde_json.workspace = true
 serde_path_to_error = "0.1.20"
 serde_regex = "1.1.0"
-serde_yaml.workspace = true
-thiserror.workspace = true
-tracing.workspace = true
 tracing-appender = { version = "0.2.4", features = ["parking_lot"] }
 tracing-subscriber = { workspace = true, features = ["env-filter", "std"] }
-url.workspace = true
 jsonschema = "0.42.1"
 
 

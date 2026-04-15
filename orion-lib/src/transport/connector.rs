@@ -109,6 +109,7 @@ impl ConnectUsing {
     }
 }
 
+#[allow(dead_code)]
 pub struct TcpErrorContext {
     pub upstream_addr: SocketAddr,
     pub response_flags: ResponseFlags,
@@ -292,7 +293,7 @@ impl InternalConnector {
             })
         });
         let internal_conn = InternalConnection {
-            stream: Box::new(InstrumentedStream::new(server_stream, None)) as AsyncInstrumentedStream,
+            stream: Box::new(InstrumentedStream::new(server_stream)) as AsyncInstrumentedStream,
             downstream_metadata,
             start_instant: Instant::now(),
         };
@@ -305,7 +306,7 @@ impl InternalConnector {
         }
         debug!("Successfully connected to internal listener '{}'", self.listener_name);
 
-        Ok((Box::new(InstrumentedStream::new(client_stream, None)) as AsyncInstrumentedStream, self.cluster_name))
+        Ok((Box::new(InstrumentedStream::new(client_stream)) as AsyncInstrumentedStream, self.cluster_name))
     }
 }
 
@@ -360,7 +361,7 @@ impl Service<Uri> for UnifiedConnector {
                     let stream = fut.await?;
                     let tcp_stream = stream.into_inner();
                     Ok(HttpConnection::new(TokioIo::new(
-                        Box::new(InstrumentedStream::new(tcp_stream, None)) as AsyncInstrumentedStream
+                        Box::new(InstrumentedStream::new(tcp_stream)) as AsyncInstrumentedStream
                     )))
                 })
             },

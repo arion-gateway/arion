@@ -31,6 +31,20 @@ macro_rules! init_observable_counter {
     };
 }
 
+macro_rules! init_observable_histogram {
+    ($histogram: ident, $prefix: literal, $name: literal, $descr: literal, $buckets: expr) => {
+        let otel_histogram =
+            global::meter(concat!("orion.", $prefix)).u64_histogram($name).with_description($descr).build();
+
+        _ = $histogram.set(Metric::new(
+            $prefix,
+            $name,
+            $descr,
+            crate::sharded::ShardedHistogram::new($buckets, Some(otel_histogram)),
+        ));
+    };
+}
+
 macro_rules! init_observable_gauge {
     ($counter: ident, $prefix: literal, $name: literal, $descr: literal) => {
         _ = $counter.set(Metric::new($prefix, $name, $descr, ShardedU64::new()));

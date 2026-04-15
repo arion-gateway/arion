@@ -16,7 +16,7 @@
 //
 
 use orion_configuration::{config::Config, options::Options};
-use orion_lib::{Result, RUNTIME_CONFIG};
+use orion_lib::{metrics, Result, RUNTIME_CONFIG};
 
 #[macro_use]
 mod admin;
@@ -29,9 +29,13 @@ pub fn run() -> Result<()> {
     let mut tracing_manager = proxy_tracing::TracingManager::new();
 
     let options = Options::parse_options();
-    let Config { runtime, logging, access_logging, bootstrap } = Config::new(&options)?;
+    let Config { runtime, logging, access_logging, metrics, bootstrap } = Config::new(&options)?;
 
     RUNTIME_CONFIG.set(runtime).map_err(|_| "runtime config was somehow set before we had a chance to set it")?;
+
+    if let Some(user_id_header_name) = metrics.as_ref().and_then(|uid| uid.user_id_header_name.as_ref()).cloned() {
+        metrics::set_user_header_name(user_id_header_name);
+    }
 
     tracing_manager.update(logging)?;
 

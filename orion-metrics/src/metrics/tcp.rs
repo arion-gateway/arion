@@ -15,22 +15,29 @@
 //
 //
 
-use crate::{metrics::Metric, sharded::ShardedU64};
+use crate::{
+    metrics::Metric,
+    sharded::{ShardedHistogram, ShardedU64},
+};
 use opentelemetry::global;
-use opentelemetry::metrics::Histogram;
+
 use std::{sync::OnceLock, thread::ThreadId};
 
 pub static DOWNSTREAM_CX_TOTAL: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 pub static DOWNSTREAM_CX_DESTROY: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 pub static DOWNSTREAM_CX_ACTIVE: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
-pub static DOWNSTREAM_CX_LENGTH_MS: OnceLock<Histogram<u64>> = OnceLock::new();
+pub static DOWNSTREAM_CX_LENGTH_MS: OnceLock<Metric<ShardedHistogram<ThreadId>>> = OnceLock::new();
 
-pub(crate) fn init_tcp_metrics() {
-    _ = DOWNSTREAM_CX_LENGTH_MS.set(
-        global::meter("orion.tcp")
-            .u64_histogram("downstream_cx_length_ms")
-            .with_description("Duration of downstream connections in milliseconds")
-            .build(),
+pub static CX_RX_BYTES_RECEIVED: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
+pub static CX_TX_BYTES_SENT: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
+
+pub(crate) fn init_metrics() {
+    init_observable_histogram!(
+        DOWNSTREAM_CX_LENGTH_MS,
+        "tcp",
+        "downstream_cx_length_ms",
+        "Connection length milliseconds",
+        vec![5, 10, 50, 100, 500, 1000, 5000, 10000, u64::MAX]
     );
 
     init_observable_counter!(
@@ -50,5 +57,17 @@ pub(crate) fn init_tcp_metrics() {
         "tcp",
         "downstream_cx_active",
         "Current number of active downstream TCP connections"
+    );
+    init_observable_counter!(
+        CX_RX_BYTES_RECEIVED,
+        "tcp",
+        "cx_rx_bytes_received",
+        "Total number of bytes received in TCP connections"
+    );
+    init_observable_counter!(
+        CX_TX_BYTES_SENT,
+        "tcp",
+        "cx_tx_bytes_sent",
+        "Total number of bytes sent in TCP connections"
     );
 }

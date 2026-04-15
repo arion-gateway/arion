@@ -25,7 +25,7 @@ use crate::{
     types::{ResponseFlags, ResponseFlagsLong, ResponseFlagsShort},
     StringType,
 };
-use arrayvec::{ArrayString};
+use arrayvec::ArrayString;
 use chrono::{DateTime, Datelike, Timelike, Utc};
 use http::{uri::Authority, Request, Response};
 use orion_http_header::{X_ENVOY_ORIGINAL_PATH, X_REQUEST_ID};
@@ -85,12 +85,16 @@ impl Context for SocketAddrContext {
             Operator::DownstreamRemotePort => {
                 self.downstream_peer_addr.map_or(StringType::None, |addr| StringType::Smol(addr.port().to_smolstr()))
             },
-            Operator::ConnectionId => {
-                StringType::Array(hash_connection(self.downstream_local_addr.as_ref(), self.downstream_peer_addr.as_ref(), &Protocol::Tcp))
-            },
-            Operator::UpstreamConnectionId => {
-                StringType::Array(hash_connection(self.upstream_local_addr.as_ref(), self.upstream_peer_addr.as_ref(), &Protocol::Tcp))
-            },
+            Operator::ConnectionId => StringType::Array(hash_connection(
+                self.downstream_local_addr.as_ref(),
+                self.downstream_peer_addr.as_ref(),
+                &Protocol::Tcp,
+            )),
+            Operator::UpstreamConnectionId => StringType::Array(hash_connection(
+                self.upstream_local_addr.as_ref(),
+                self.upstream_peer_addr.as_ref(),
+                &Protocol::Tcp,
+            )),
             _ => StringType::None,
         }
     }
@@ -142,12 +146,12 @@ fn hash_connection(local: Option<&SocketAddr>, peer: Option<&SocketAddr>, protoc
                     hasher.update(&[4]); // Marker for IPv4
                     hasher.update(&v4.ip().octets());
                     hasher.update(&v4.port().to_be_bytes());
-                }
+                },
                 SocketAddr::V6(v6) => {
                     hasher.update(&[6]); // Marker for IPv6
                     hasher.update(&v6.ip().octets());
                     hasher.update(&v6.port().to_be_bytes());
-                }
+                },
             }
         } else {
             hasher.update(&[0]); // Marker for 'None'

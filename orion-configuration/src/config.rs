@@ -37,7 +37,7 @@ pub mod secret;
 pub mod transport;
 
 pub use crate::config::common::*;
-use crate::{options::Options, Result};
+use crate::{config::metrics::MetricsConfig, options::Options, Result};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{fs::File, path::Path};
 
@@ -49,6 +49,8 @@ pub struct Config {
     pub logging: LogConfig,
     #[serde(skip_serializing_if = "Option::is_none", default = "Default::default")]
     pub access_logging: Option<AccessLogConfig>,
+    #[serde(skip_serializing_if = "Option::is_none", default = "Default::default")]
+    pub metrics: Option<MetricsConfig>,
     #[serde(skip_serializing_if = "is_default", default)]
     pub bootstrap: Bootstrap,
 }
@@ -87,7 +89,7 @@ mod envoy_conversions {
 
     use super::{deserialize_yaml, log::AccessLogConfig, Bootstrap, Config};
     use crate::{
-        config::{log::LogConfig, runtime::Runtime},
+        config::{log::LogConfig, metrics::MetricsConfig, runtime::Runtime},
         options::Options,
         Result,
     };
@@ -107,6 +109,8 @@ mod envoy_conversions {
         pub logging: LogConfig,
         #[serde(default)]
         pub access_logging: Option<AccessLogConfig>,
+        #[serde(default)]
+        pub metrics: Option<MetricsConfig>,
         #[serde(default)]
         pub bootstrap: Option<Bootstrap>,
         pub envoy_bootstrap: Option<Wrapper>,
@@ -135,10 +139,16 @@ mod envoy_conversions {
                 (None, None) => return Err("no config file specified".into()),
                 (None, Some(envoy_path)) => {
                     let bootstrap = bootstrap_from_path_to_envoy_bootstrap(envoy_path)?;
-                    Self { runtime: Runtime::default(), logging: LogConfig::default(), access_logging: None, bootstrap }
+                    Self {
+                        runtime: Runtime::default(),
+                        logging: LogConfig::default(),
+                        access_logging: None,
+                        metrics: None,
+                        bootstrap,
+                    }
                 },
                 (Some(config), maybe_override) => {
-                    let ShimConfig { runtime, logging, access_logging, bootstrap, envoy_bootstrap } =
+                    let ShimConfig { runtime, logging, access_logging, bootstrap, metrics, envoy_bootstrap } =
                         deserialize_yaml(config).with_context_fn(|| {
                             ErrorInfo::default().with_message(format!("failed to deserialize \"{}\"", config.display()))
                         })?;
@@ -154,7 +164,7 @@ mod envoy_conversions {
                     if let Some(bootstrap_override) = maybe_override {
                         bootstrap = bootstrap_from_path_to_envoy_bootstrap(bootstrap_override)?;
                     }
-                    Self { runtime, logging, access_logging, bootstrap }
+                    Self { runtime, logging, access_logging, metrics, bootstrap }
                 },
             };
             Ok(config.apply_options(opt))

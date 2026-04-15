@@ -22,6 +22,7 @@ extern crate assert_matches;
 
 pub mod configuration;
 pub mod event_error;
+pub mod extensions_context;
 
 pub mod access_log;
 mod body;

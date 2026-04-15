@@ -17,22 +17,25 @@
 
 use std::{sync::OnceLock, thread::ThreadId};
 
-use crate::{metrics::Metric, sharded::ShardedU64};
+use crate::{
+    metrics::Metric,
+    sharded::{ShardedHistogram, ShardedU64},
+};
 use opentelemetry::global;
-use opentelemetry::metrics::Histogram;
 
 pub static DOWNSTREAM_CX_TOTAL: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 pub static DOWNSTREAM_CX_DESTROY: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 pub static DOWNSTREAM_CX_ACTIVE: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 pub static NO_FILTER_CHAIN_MATCH: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
-pub static DOWNSTREAM_CX_LENGTH_MS: OnceLock<Histogram<u64>> = OnceLock::new();
+pub static DOWNSTREAM_CX_LENGTH_MS: OnceLock<Metric<ShardedHistogram<ThreadId>>> = OnceLock::new();
 
-pub(crate) fn init_listeners_metrics() {
-    _ = DOWNSTREAM_CX_LENGTH_MS.set(
-        global::meter("orion.listeners")
-            .u64_histogram("downstream_cx_length_ms")
-            .with_description("Duration of downstream connections in milliseconds")
-            .build(),
+pub(crate) fn init_metrics() {
+    init_observable_histogram!(
+        DOWNSTREAM_CX_LENGTH_MS,
+        "listeners",
+        "downstream_cx_length_ms",
+        "Connection length milliseconds",
+        vec![5, 10, 50, 100, 500, 1000, 5000, 10000, u64::MAX]
     );
 
     init_observable_counter!(DOWNSTREAM_CX_TOTAL, "listeners", "downstream_cx_total", "Total downstream connections");

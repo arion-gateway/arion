@@ -34,7 +34,7 @@ mod metrics_enabled {
     use atomicoption::AtomicOption;
     use bytes::Buf;
     use pin_project::{pin_project, pinned_drop};
-    use std::sync::{Arc, atomic::Ordering};
+    use std::sync::{atomic::Ordering, Arc};
 
     type MetricsClosure = Box<dyn FnOnce(u64, &StreamMetrics, Option<EventKind>, ResponseFlags) + Send + 'static>;
 

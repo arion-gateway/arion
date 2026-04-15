@@ -36,6 +36,7 @@ use crate::{
         sink_body::{SinkBody, SinkSender},
         timeout_body::TimeoutBody,
     },
+    extensions_context::MetadataContext,
     listeners::{
         http_connection_manager::mcp_gateway::{
             tools::{CallToolError, ToolBuilderError, ToolsRegistry},
@@ -46,7 +47,6 @@ use crate::{
         },
         http_filters::{FilterDecision, FilterFactory},
         listener::FilterListenerContext,
-        metadata::DownstreamMetadata,
     },
     OrionRequestBody, OrionResponseBody, PolyBody,
 };
@@ -271,27 +271,27 @@ impl McpGateway {
 
         self.version = request.version();
 
-        let Some(metadata) = request.extensions().get::<DownstreamMetadata>() else {
+        let Some(metadata) = request.extensions().get::<MetadataContext>() else {
             debug!(target: "mcp_gateway", "apply_request: failed to retrieve metadata");
             return FilterDecision::internal_server_error("Failed to retrieve metadata", self.version);
         };
 
         // get global context for this listener
-        let ctx = McpGatewayListenerContext::get_filter_context(metadata.listener_name);
+        let ctx = McpGatewayListenerContext::get_filter_context(metadata.downstream.listener_name);
 
         // ensure cleanup task is running
         ctx.start_cleanup_task();
 
         match (request.method(), request.uri().path()) {
             (&Method::GET, SSE_MESSAGE_ENDPOINT) => {
-                self.handle_sse_handshake(&ctx, request, metadata.listener_name).await
+                self.handle_sse_handshake(&ctx, request, metadata.downstream.listener_name).await
             },
             (&Method::GET, MCP_MESSAGE_ENDPOINT) => FilterDecision::method_not_allowed(request.version()),
             // (&Method::OPTIONS, SSE_MESSAGE_ENDPOINT) | (&Method::OPTIONS, MCP_MESSAGE_ENDPOINT) => {
             //     self.handle_cors_options(request).await
             // },
             (&Method::POST, MCP_MESSAGE_ENDPOINT) => {
-                self.handle_mcp_post_endpoint(&ctx, request, metadata.listener_name).await
+                self.handle_mcp_post_endpoint(&ctx, request, metadata.downstream.listener_name).await
             },
             (&Method::DELETE, MCP_MESSAGE_ENDPOINT) => self.handle_mcp_delete_endpoint(&ctx, request).await,
             _ => {

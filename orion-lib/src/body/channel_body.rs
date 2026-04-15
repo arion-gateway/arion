@@ -18,13 +18,20 @@ pub struct ChannelBody {
     is_end_stream: bool,
 }
 
+pub enum BodyType {
+    Empty,
+    Body,
+    Trailers,
+    BodyAndTrailers,
+}
+
 impl ChannelBody {
     /// Creates a new `ChannelBody` wrapping an existing body.
     ///
     /// Returns a tuple of (`ChannelBody`, `FrameBridge`). `FrameBridge` must be used
     /// to inject frames (either manually or via `complete()`), otherwise the `ChannelBody`
     /// will never produce any frames.
-    pub fn new<B>(body: B, prefetch_num_frames: NonZeroUsize) -> (Self, FrameBridge)
+    pub fn new<B>(body: B, body_type: Option<BodyType>, prefetch_num_frames: NonZeroUsize) -> (Self, FrameBridge)
     where
         B: Body<Data = Bytes> + Send + 'static,
         B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
@@ -36,7 +43,7 @@ impl ChannelBody {
         let stream_of_body = ReceiverStream::new(rx);
 
         // Create the bridge with the original body
-        let bridge = FrameBridge::new(body, tx);
+        let bridge = FrameBridge::new(body, body_type, tx);
 
         (
             ChannelBody {
@@ -137,7 +144,9 @@ impl Body for ChannelBody {
 pub struct FrameBridge {
     body_stream: Pin<Box<dyn Stream<Item = FrameResult> + Send>>,
     injector: Option<mpsc::Sender<FrameResult>>,
-    orig_empty_body: bool,
+    source_has_body: Option<bool>,
+    source_has_trailers: Option<bool>,
+    source_has_body_or_trailers: bool,
 }
 
 impl std::fmt::Debug for FrameBridge {
@@ -148,12 +157,22 @@ impl std::fmt::Debug for FrameBridge {
 
 impl Default for FrameBridge {
     fn default() -> Self {
-        Self { body_stream: Box::pin(futures::stream::empty()), injector: None, orig_empty_body: true }
+        Self {
+            body_stream: Box::pin(futures::stream::empty()),
+            injector: None,
+            source_has_body: Some(false),
+            source_has_trailers: Some(false),
+            source_has_body_or_trailers: false,
+        }
     }
 }
 
 impl FrameBridge {
-    fn new<B>(body: B, injector: mpsc::Sender<Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>>) -> Self
+    fn new<B>(
+        body: B,
+        body_type: Option<BodyType>,
+        injector: mpsc::Sender<Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>>,
+    ) -> Self
     where
         B: Body<Data = Bytes> + Send + 'static,
         B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
@@ -164,7 +183,22 @@ impl FrameBridge {
         let body_stream: Pin<Box<dyn Stream<Item = FrameResult> + Send>> =
             Box::pin(http_body_util::BodyStream::new(body).map(|result| result.map_err(Into::into)));
 
-        Self { body_stream, injector: Some(injector), orig_empty_body: end_of_stream }
+        let (orig_has_body, orig_has_trailers) = match (end_of_stream, body_type) {
+            (false, Some(BodyType::Empty)) => (Some(false), Some(false)),
+            (false, Some(BodyType::Body)) => (Some(true), Some(false)),
+            (false, Some(BodyType::Trailers)) => (Some(false), Some(true)),
+            (false, Some(BodyType::BodyAndTrailers)) => (Some(true), Some(true)),
+            (false, None) => (None, None),
+            (true, _) => (Some(false), Some(false)),
+        };
+
+        Self {
+            body_stream,
+            injector: Some(injector),
+            source_has_body: orig_has_body,
+            source_has_trailers: orig_has_trailers,
+            source_has_body_or_trailers: !end_of_stream,
+        }
     }
 
     /// Close the `FrameBridge` to prevent further frame injections.
@@ -280,8 +314,18 @@ impl FrameBridge {
     }
 
     /// Check if the `FrameBridge` has been constructed with an empty body.
-    pub fn is_orig_empty_body(&self) -> bool {
-        self.orig_empty_body
+    pub fn source_has_non_empty_body(&self) -> Option<bool> {
+        self.source_has_body
+    }
+
+    /// Check if the `FrameBridge` has been constructed with trailers.
+    pub fn source_has_pending_trailers(&self) -> Option<bool> {
+        self.source_has_trailers
+    }
+
+    /// Check if the `FrameBridge` has been constructed with a non-empty body or trailers.
+    pub fn source_has_non_empty_body_or_trailers(&self) -> bool {
+        self.source_has_body_or_trailers
     }
 }
 
@@ -306,7 +350,7 @@ mod tests {
     #[tokio::test]
     async fn test_complete() {
         let body = Full::new(Bytes::from("Hello, World!"));
-        let (mut channel_body, mut bridge) = ChannelBody::new(body, NonZeroUsize::new(1).unwrap());
+        let (mut channel_body, mut bridge) = ChannelBody::new(body, None, NonZeroUsize::new(1).unwrap());
 
         // Spawn bridge task
         let bridge_handle = tokio::spawn(async move {
@@ -328,7 +372,7 @@ mod tests {
     #[tokio::test]
     async fn test_manual_injection() {
         let body = Full::new(Bytes::from("Test"));
-        let (mut channel_body, mut bridge) = ChannelBody::new(body, NonZeroUsize::new(1).unwrap());
+        let (mut channel_body, mut bridge) = ChannelBody::new(body, None, NonZeroUsize::new(1).unwrap());
 
         // Spawn a task that consumes the ChannelBody
         let consumer_handle = tokio::spawn(async move {
@@ -364,7 +408,7 @@ mod tests {
     #[tokio::test]
     async fn test_channel_body_debug() {
         let body = Full::new(Bytes::from("Debug Test"));
-        let (mut channel_body, mut bridge) = ChannelBody::new(body, NonZeroUsize::new(1).unwrap());
+        let (mut channel_body, mut bridge) = ChannelBody::new(body, None, NonZeroUsize::new(1).unwrap());
         assert!(!channel_body.is_end_stream());
         let mut ctx = dummy_context();
         assert!(matches!(Pin::new(&mut channel_body).poll_frame(&mut ctx), Poll::Pending));

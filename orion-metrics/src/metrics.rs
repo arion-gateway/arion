@@ -17,11 +17,6 @@
 
 use tracing::info;
 
-use crate::metrics::{
-    clusters::init_clusters_metrics, http::init_http_metrics, listeners::init_listeners_metrics,
-    server::init_server_metrics, tcp::init_tcp_metrics, tls::init_tls_metrics,
-};
-
 use crate::Metrics;
 pub mod clusters;
 pub mod http;
@@ -29,6 +24,7 @@ pub mod listeners;
 pub mod server;
 pub mod tcp;
 pub mod tls;
+pub mod user;
 
 pub struct Metric<T> {
     pub prefix: &'static str,
@@ -54,10 +50,11 @@ pub fn init_per_thread_metrics(_metrics: &[Metrics]) {
 //
 pub fn init_global_metrics(_metrics: &[Metrics], number_of_threads: usize) {
     info!("Initializing global metrics...");
-    init_tcp_metrics();
-    init_tls_metrics();
-    init_http_metrics();
-    init_listeners_metrics();
-    init_clusters_metrics();
-    init_server_metrics(number_of_threads);
+    tcp::init_metrics();
+    tls::init_metrics();
+    http::init_metrics();
+    listeners::init_metrics();
+    clusters::init_metrics();
+    server::init_metrics(number_of_threads);
+    user::init_metrics();
 }

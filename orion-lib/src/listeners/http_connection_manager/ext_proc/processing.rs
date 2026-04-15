@@ -4,7 +4,7 @@ use crate::listeners::http_connection_manager::ext_proc::kind;
 use crate::listeners::http_connection_manager::ext_proc::mutation::apply_trailer_mutations;
 use crate::listeners::http_connection_manager::ext_proc::pseudo_header::CombinedHeaderMap;
 use crate::listeners::http_connection_manager::ext_proc::r#override::{
-    OverridableGlobalModes, OverridableModeSelector,
+    OverridableBodyMode, OverridableGlobalModes, OverridableModeSelector,
 };
 use crate::listeners::http_connection_manager::ext_proc::status::{Action, ProcessingStatus, ReadyStatus};
 use crate::listeners::http_connection_manager::ext_proc::worker_config::ExternalProcessingWorkerConfig;
@@ -17,7 +17,7 @@ use orion_configuration::config::network_filters::http_connection_manager::http_
     BodyProcessingMode, HeaderProcessingMode, ProcessingMode, RouteCacheAction, TrailerProcessingMode,
 };
 use orion_data_plane_api::envoy_data_plane_api::envoy::service::ext_proc::v3::common_response::ResponseStatus;
-use orion_data_plane_api::envoy_data_plane_api::envoy::service::ext_proc::v3::HttpTrailers;
+use orion_data_plane_api::envoy_data_plane_api::envoy::service::ext_proc::v3::{HeaderMutation, HttpTrailers};
 use orion_data_plane_api::envoy_data_plane_api::envoy::{
     extensions::filters::http::ext_proc::v3::ProcessingMode as EnvoyProcessingMode,
     service::ext_proc::v3::{
@@ -72,6 +72,12 @@ pub struct FramesBuffer {
     count: u32,
     frame_merge_limit: u32,
     frame_merge_window: Duration,
+}
+
+pub enum Phase {
+    Headers,
+    Body,
+    Trailers
 }
 
 impl FramesBuffer {
@@ -155,11 +161,12 @@ pub struct Processing<M: kind::Mode, Msg: kind::MsgKind> {
     http_version: Option<http::Version>,
     send_body_without_waiting_for_header_response: bool,
     pub failure_mode_allow: bool,
-    pub streaming_body_enabled: bool,
+    streaming_body_enabled: bool,
     pub end_of_stream: bool,
     pub frames_buffer: FramesBuffer,
     pub inflight_frames: SmallVec<[Frame<Bytes>; 2]>,
     pub parked_trailers: Option<Frame<Bytes>>,
+    pub headers_ready_status: Option<ReadyStatus>, // ready_status saved headers response and fused with body response before in Action::Return
     _mode: std::marker::PhantomData<M>,
     _msg: std::marker::PhantomData<Msg>,
 }
@@ -182,6 +189,7 @@ impl<M: kind::Mode + Default, Msg: kind::MsgKind> From<&ExternalProcessingWorker
             frames_buffer: FramesBuffer::new(config.frame_merge_limit, config.frame_merge_window),
             inflight_frames: SmallVec::new(),
             parked_trailers: None,
+            headers_ready_status: None,
             _mode: std::marker::PhantomData,
             _msg: std::marker::PhantomData,
         }
@@ -279,7 +287,7 @@ impl<Msg: kind::MsgKind + OverridableModeSelector> Processing<kind::Processing, 
         override_mode: &OverridableGlobalModes,
         timeout_active: &mut bool,
     ) -> Action<ProcessingRequest> {
-        let status;
+        let mut status = None;
 
         if let Some(response_data) = response.response {
             let should_clear_route_cache = match route_cache_action {
@@ -288,19 +296,37 @@ impl<Msg: kind::MsgKind + OverridableModeSelector> Processing<kind::Processing, 
                 RouteCacheAction::Default => response_data.clear_route_cache,
             };
 
-            status = if Msg::IS_REQUEST {
-                ProcessingStatus::RequestReady(ReadyStatus {
-                    headers_modifications: response_data.header_mutation,
-                    clear_route_cache: should_clear_route_cache,
-                })
-            } else {
-                ProcessingStatus::ResponseReady(ReadyStatus {
-                    headers_modifications: response_data.header_mutation,
-                    clear_route_cache: should_clear_route_cache,
-                })
-            };
+            debug!(target: "ext_proc", "handle_headers_response: non_empty_body:{:?}, has_pending_trailers:{:?}",
+                    self.frame_bridge.source_has_non_empty_body(),
+                    self.frame_bridge.source_has_pending_trailers());
 
             let embedded_status = ResponseStatus::try_from(response_data.status).unwrap_or(ResponseStatus::Continue);
+            if matches!(override_mode.body_mode::<Msg>(), OverridableBodyMode::Buffered)
+                && override_mode.should_process_body::<Msg>()
+                && self.frame_bridge.source_has_non_empty_body() == Some(true)
+                && !matches!(embedded_status, ResponseStatus::ContinueAndReplace)
+            {
+                debug!(target: "ext_proc", "handle_headers_response: parking ReadyStatus to return when the response on body is received");
+                // let's park the ReadyStatus to delay the Action::Ready and to fuse later
+                //  with the ReadyStatus in the handle_body_response.
+                self.headers_ready_status = Some(ReadyStatus {
+                    headers_modifications: response_data.header_mutation,
+                    clear_route_cache: should_clear_route_cache,
+                });
+            } else {
+                status = if Msg::IS_REQUEST {
+                    Some(ProcessingStatus::RequestReady(ReadyStatus {
+                        headers_modifications: response_data.header_mutation,
+                        clear_route_cache: should_clear_route_cache,
+                    }))
+                } else {
+                    Some(ProcessingStatus::ResponseReady(ReadyStatus {
+                        headers_modifications: response_data.header_mutation,
+                        clear_route_cache: should_clear_route_cache,
+                    }))
+                };
+                debug!(target: "ext_proc", "handle_headers_response: return status {status:?}");
+            }
 
             if matches!(embedded_status, ResponseStatus::ContinueAndReplace) {
                 debug!(target: "ext_proc", "handle_headers_response: ResponseStatus:ContinueAndReplace");
@@ -335,23 +361,33 @@ impl<Msg: kind::MsgKind + OverridableModeSelector> Processing<kind::Processing, 
                     debug!(target: "ext_proc", "frame bridge closed (handle header response)!");
                     self.frame_bridge_close(timeout_active).await;
                 } else {
-                    debug!(target: "ext_proc", "handle_headers_response: streaming body enabled...");
-                    self.streaming_body_enabled = true;
+                    let stream_body_enabled = self.try_enable_streaming_body();
+                    debug!(target: "ext_proc", "handle_headers_response: trying to enable streaming body: {stream_body_enabled}");
                 }
             }
         } else {
             // todo(Nicola): this is UB; we are not sure what to do if response.response is None
             status = if Msg::IS_REQUEST {
-                ProcessingStatus::RequestReady(ReadyStatus { headers_modifications: None, clear_route_cache: false })
+                Some(ProcessingStatus::RequestReady(ReadyStatus {
+                    headers_modifications: None,
+                    clear_route_cache: false,
+                }))
             } else {
-                ProcessingStatus::ResponseReady(ReadyStatus { headers_modifications: None, clear_route_cache: false })
+                Some(ProcessingStatus::ResponseReady(ReadyStatus {
+                    headers_modifications: None,
+                    clear_route_cache: false,
+                }))
             };
 
-            self.streaming_body_enabled = true;
+            let stream_body_enabled = self.try_enable_streaming_body();
+            debug!(target: "ext_proc", "handle_headers_response: (UB) trying to enable streaming body: {stream_body_enabled}");
         }
 
         *timeout_active = false;
-        Action::Return(status)
+        match status {
+            Some(status) => Action::Return(status),
+            None => Action::None,
+        }
     }
 
     #[allow(clippy::too_many_lines)]
@@ -372,12 +408,6 @@ impl<Msg: kind::MsgKind + OverridableModeSelector> Processing<kind::Processing, 
                 Some(Mutation::StreamedResponse(chunk)) => Some(Frame::data(chunk.body.into())),
             };
 
-            let mut status = if Msg::IS_REQUEST {
-                ProcessingStatus::RequestReady(ReadyStatus::default())
-            } else {
-                ProcessingStatus::ResponseReady(ReadyStatus::default())
-            };
-
             if let Some(new_chunk) = chunk_replacement {
                 debug!(target: "ext_proc", "handle_body_response: chunk replacement -> {new_chunk:?}");
                 _ = self.frame_bridge.inject_frame(Ok(new_chunk)).await;
@@ -393,26 +423,42 @@ impl<Msg: kind::MsgKind + OverridableModeSelector> Processing<kind::Processing, 
                 }
             }
 
-            if let Some(route_cache_action) = route_cache_action {
-                if let Some(header_modifications) = response_data.header_mutation {
-                    let should_clear_route_cache = match route_cache_action {
-                        RouteCacheAction::Clear => true,
-                        RouteCacheAction::Retain => false,
-                        RouteCacheAction::Default => response_data.clear_route_cache,
-                    };
+            let should_clear_route_cache = route_cache_action
+                .map(|action| match action {
+                    RouteCacheAction::Clear => true,
+                    RouteCacheAction::Retain => false,
+                    RouteCacheAction::Default => response_data.clear_route_cache,
+                })
+                .unwrap_or(false);
 
-                    if Msg::IS_REQUEST {
-                        status.with_request_ready(|req_ready| {
-                            req_ready.headers_modifications = Some(header_modifications);
-                            req_ready.clear_route_cache = should_clear_route_cache;
-                        });
-                    } else {
-                        status.with_response_ready(|resp_ready| {
-                            resp_ready.headers_modifications = Some(header_modifications);
-                            resp_ready.clear_route_cache = should_clear_route_cache;
-                        });
-                    }
-                }
+            let mut status = if Msg::IS_REQUEST {
+                ProcessingStatus::RequestReady(ReadyStatus::default())
+            } else {
+                ProcessingStatus::ResponseReady(ReadyStatus::default())
+            };
+
+            if Msg::IS_REQUEST {
+                debug!(target: "ext_proc", "handle_body_response: request status {status:?}");
+                status.with_request_ready(|req_ready| {
+                    let ready_status = self.headers_ready_status.take();
+                    req_ready.clear_route_cache = should_clear_route_cache
+                        || ready_status.as_ref().map(|status| status.clear_route_cache).unwrap_or(false);
+                    req_ready.headers_modifications = Self::concat_header_mutations(
+                        ready_status.map(|status| status.headers_modifications).flatten(),
+                        response_data.header_mutation,
+                    );
+                });
+            } else {
+                debug!(target: "ext_proc", "handle_body_response: response status {status:?}");
+                status.with_response_ready(|resp_ready| {
+                    let ready_status = self.headers_ready_status.take();
+                    resp_ready.clear_route_cache = should_clear_route_cache
+                        || ready_status.as_ref().map(|status| status.clear_route_cache).unwrap_or(false);
+                    resp_ready.headers_modifications = Self::concat_header_mutations(
+                        ready_status.map(|status| status.headers_modifications).flatten(),
+                        response_data.header_mutation,
+                    );
+                });
             }
 
             let embedded_status = ResponseStatus::try_from(response_data.status).unwrap_or(ResponseStatus::Continue);
@@ -433,6 +479,19 @@ impl<Msg: kind::MsgKind + OverridableModeSelector> Processing<kind::Processing, 
             Action::Return(
                 self.status_error("handle_body_response: No response data in body response", self.failure_mode_allow),
             )
+        }
+    }
+
+    #[inline]
+    fn concat_header_mutations(left: Option<HeaderMutation>, right: Option<HeaderMutation>) -> Option<HeaderMutation> {
+        match (left, right) {
+            (None, None) => None,
+            (None, r @ Some(_)) => r,
+            (l @ Some(_), None) => l,
+            (Some(l), Some(r)) => Some(HeaderMutation {
+                set_headers: [l.set_headers, r.set_headers].concat(),
+                remove_headers: [l.remove_headers, r.remove_headers].concat(),
+            }),
         }
     }
 
@@ -499,8 +558,15 @@ impl<M: kind::Mode + Default, Msg: kind::MsgKind + OverridableModeSelector> Proc
             return self.process_headers(override_mode);
         }
 
+        // headers are skipped, let's process the body...
+        //
+
         debug!(target: "ext_proc", "process: turning streaming_body_enabled -> true");
-        self.streaming_body_enabled = true;
+
+        if self.try_enable_streaming_body() && matches!(override_mode.body_mode::<Msg>(), OverridableBodyMode::Buffered)
+        {
+            return Action::None;
+        }
 
         let status = if Msg::IS_REQUEST {
             ProcessingStatus::RequestReady(ReadyStatus::default())
@@ -521,8 +587,7 @@ impl<M: kind::Mode + Default, Msg: kind::MsgKind + OverridableModeSelector> Proc
             ));
         };
 
-        let end_of_stream = self.frame_bridge.is_orig_empty_body()
-            || (!override_mode.should_process_body::<Msg>() && !override_mode.should_process_trailers::<Msg>());
+        self.end_of_stream = self.is_end_stream(Phase::Headers, override_mode);
 
         let envmap: EnvoyHeaderMap = headers.into();
 
@@ -531,7 +596,7 @@ impl<M: kind::Mode + Default, Msg: kind::MsgKind + OverridableModeSelector> Proc
                 request: Some(ProcessingRequestType::RequestHeaders(HttpHeaders {
                     headers: Some(envmap.0),
                     attributes: HashMap::default(),
-                    end_of_stream,
+                    end_of_stream: self.end_of_stream,
                 })),
                 metadata_context: None,
                 attributes: HashMap::default(),
@@ -543,7 +608,7 @@ impl<M: kind::Mode + Default, Msg: kind::MsgKind + OverridableModeSelector> Proc
                 request: Some(ProcessingRequestType::ResponseHeaders(HttpHeaders {
                     headers: Some(envmap.0),
                     attributes: HashMap::default(),
-                    end_of_stream,
+                    end_of_stream: self.end_of_stream,
                 })),
                 metadata_context: None,
                 attributes: HashMap::default(),
@@ -552,11 +617,10 @@ impl<M: kind::Mode + Default, Msg: kind::MsgKind + OverridableModeSelector> Proc
             }
         };
 
-        let send_body_or_trailers =
-            override_mode.should_process_body::<Msg>() || override_mode.should_process_trailers::<Msg>();
+        let send_body_or_trailers = !self.end_of_stream;
 
         if M::OBSERVABILITY || (self.send_body_without_waiting_for_header_response && send_body_or_trailers) {
-            self.streaming_body_enabled = true;
+            _ = self.try_enable_streaming_body();
         }
 
         Action::Send(processing_request)
@@ -656,6 +720,7 @@ impl<M: kind::Mode + Default, Msg: kind::MsgKind + OverridableModeSelector> Proc
         }
     }
 
+    #[inline]
     pub fn status_error(&mut self, msg: &str, failure_mode_allow: bool) -> ProcessingStatus {
         if failure_mode_allow {
             ProcessingStatus::HaltedOnError
@@ -672,6 +737,7 @@ impl<M: kind::Mode + Default, Msg: kind::MsgKind + OverridableModeSelector> Proc
         }
     }
 
+    #[inline]
     pub fn status_internal_error(&mut self, msg: &str) -> ProcessingStatus {
         let http_version = self.http_version.unwrap_or(http::Version::HTTP_11);
         ProcessingStatus::EndWithDirectResponse(
@@ -684,6 +750,7 @@ impl<M: kind::Mode + Default, Msg: kind::MsgKind + OverridableModeSelector> Proc
         )
     }
 
+    #[inline]
     pub async fn frame_bridge_close(&mut self, timeout_active: &mut bool) {
         *timeout_active = false;
         self.streaming_body_enabled = false;
@@ -691,5 +758,51 @@ impl<M: kind::Mode + Default, Msg: kind::MsgKind + OverridableModeSelector> Proc
             _ = self.frame_bridge.inject_frame(Ok(trailers)).await;
         }
         self.frame_bridge.close();
+    }
+
+    #[inline]
+    fn is_end_stream(&self, phase: Phase, override_mode: &OverridableGlobalModes) -> bool {
+        // Determine if trailers will actually be sent.
+        // It requires both the configuration to allow it and the physical presence of trailers.
+        // If the presence is unknown (None), we assume true to keep the stream open safely.
+        let will_send_trailers = override_mode.should_process_trailers::<Msg>()
+            && self.frame_bridge.source_has_pending_trailers().unwrap_or(true);
+
+        // Determine if the body will actually be sent.
+        // Note: If you are in Buffered mode, Envoy sends an empty body anyway,
+        // so you might only rely on `should_process_body` depending on its internal implementation.
+        let will_send_body = override_mode.should_process_body::<Msg>()
+            && self.frame_bridge.source_has_non_empty_body().unwrap_or(true);
+
+        match phase {
+            // In the Headers phase, it is the end of the stream ONLY IF no body and no trailers will follow.
+            Phase::Headers => !will_send_body && !will_send_trailers,
+
+            // In the Body phase, it is the end of the stream ONLY IF no trailers will follow.
+            Phase::Body => !will_send_trailers,
+
+            // The Trailers phase is strictly the last element, so it always closes the stream.
+            Phase::Trailers => true,
+        }
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn try_enable_streaming_body(&mut self) -> bool {
+        // enable streaming only if we have a body to stream
+        if self.frame_bridge.source_has_non_empty_body_or_trailers() {
+            debug!(target: "ext_proc", "enabling body streaming...");
+            self.streaming_body_enabled = true;
+            true
+        } else {
+            debug!(target: "ext_proc", "body streaming not enabled (body and trailers are empty)");
+            self.frame_bridge.close();
+            false
+        }
+    }
+
+    #[inline]
+    pub fn is_streaming_body_enabled(&self) -> bool {
+        self.streaming_body_enabled
     }
 }

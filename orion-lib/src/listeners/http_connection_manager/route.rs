@@ -68,11 +68,12 @@ pub struct RouteContext<'a> {
 
 impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConnectionManager)> for &RouteAction {
     #[allow(clippy::too_many_lines)]
+    #[allow(unused_variables)]
     async fn to_response(
         self,
         trans_handler: &TransactionHandler,
         downstream_request: Request<OrionRequestBody>,
-        (route_context, _connection_manager): (RouteContext<'a>, &HttpConnectionManager),
+        (route_context, connection_manager): (RouteContext<'a>, &HttpConnectionManager),
     ) -> Result<Response<OrionResponseBody>> {
         instrument_function!(trans_handler.clock, |nanos| {
             crate::instrumentation::metrics::TOTAL_ROUTE_ACTION.observe(nanos as usize)
@@ -144,9 +145,9 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
                 };
 
                 #[cfg(feature = "tracing")]
-                let mut client_span = _connection_manager.http_tracer.try_create_span(
+                let mut client_span = connection_manager.http_tracer.try_create_span(
                     trans_handler.trace_ctx.as_ref(),
-                    &_connection_manager.get_tracing_key(),
+                    &connection_manager.get_tracing_key(),
                     SpanKind::Client,
                     SpanName::Str::<()>(svc_channel.upstream_authority().as_str()),
                 );
@@ -192,10 +193,18 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
                 } else {
                     false
                 };
+
                 if should_upgrade_websocket {
-                    return upgrade_utils::handle_websocket_upgrade(trans_handler, upstream_request, &svc_channel)
-                        .await;
+                    return upgrade_utils::handle_websocket_upgrade(
+                        trans_handler,
+                        upstream_request,
+                        &svc_channel,
+                        #[cfg(feature = "metrics")]
+                        connection_manager.listener_name,
+                    )
+                    .await;
                 }
+
                 if let Some(direct_response) = http_modifiers::apply_preflight_functions(&mut upstream_request) {
                     return Ok(direct_response);
                 }

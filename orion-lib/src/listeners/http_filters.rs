@@ -104,6 +104,13 @@ impl FilterDecision {
             .into_response(ver),
         )
     }
+
+    #[inline]
+    pub fn unauthorized(msg: &str, ver: http::Version) -> FilterDecision {
+        FilterDecision::DirectResponse(
+            SyntheticHttpResponse::unauthorized(EventFailure::ExtProcError.into(), msg).into_response(ver),
+        )
+    }
 }
 
 #[derive(Debug, Clone)]

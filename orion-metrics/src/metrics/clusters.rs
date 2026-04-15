@@ -32,13 +32,15 @@ pub static UPSTREAM_RQ_RETRY: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock:
 // Metrics are aggregated using the `ShardedU64` type.
 
 pub static UPSTREAM_CX_TOTAL: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
-pub static UPSTREAM_CX_IDLE_TIMEOUT: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
-pub static UPSTREAM_CX_DESTROY: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 pub static UPSTREAM_CX_ACTIVE: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
+pub static UPSTREAM_CX_DESTROY: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
+pub static UPSTREAM_CX_IDLE_TIMEOUT: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 pub static UPSTREAM_CX_CONNECT_FAIL: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 pub static UPSTREAM_CX_CONNECT_TIMEOUT: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
+pub static UPSTREAM_CX_RX_BYTES_TOTAL: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
+pub static UPSTREAM_CX_TX_BYTES_TOTAL: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 
-pub(crate) fn init_clusters_metrics() {
+pub(crate) fn init_metrics() {
     init_observable_counter!(UPSTREAM_RQ_TOTAL, "cluster", "upstream_rq_total", "Total number of upstream requests");
     init_observable_gauge!(UPSTREAM_RQ_ACTIVE, "cluster", "upstream_rq_active", "Number of active upstream requests");
     init_observable_counter!(UPSTREAM_RQ_TIMEOUT, "cluster", "upstream_rq_timeout", "Total upstream request timeouts");

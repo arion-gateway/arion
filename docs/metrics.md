@@ -289,3 +289,17 @@ You can combine both configurations to export metrics to OpenTelemetry and scrap
 |static_unknown_fields| Gauge| | Number of messages in static configuration with unknown fields
 |dynamic_unknown_fields| Gauge| | Number of messages in dynamic configuration with unknown fields
 |wip_protos| Counter | Number of messages and fields marked as work-in-progress being used
+
+### User statistics
+| Name | Type | Status | Description |
+| :--- | :--- | :--- | :--- |
+| `invocations` | Counter | ✅ | Total number of API calls |
+| `throttles` | Counter | ✅ | Total number of API calls that were throttled |
+| `system_errors` | Counter | ✅ | Total number of API calls that resulted in a system error |
+| `user_errors` | Counter | ✅ | Total number of API calls that resulted in a user error |
+| `total_errors` | Counter | ✅ | Total number of API calls that resulted in any error |
+| `latency` | Histogram | ✅ | Latency of API calls in milliseconds |
+| `bytes_tx` | Counter | ✅ | Total number of bytes transmitted in API calls (tcp+http) |
+| `bytes_rx` | Counter | ✅ | Total number of bytes received in API calls (tcp+http) |
+| `inbound_streaming_bytes_processed` | Counter | ✅ | Total number of bytes processed in inbound streaming API calls (websocket) |
+| `outbound_streaming_bytes_processed` | Counter | ✅ | Total number of bytes processed in outbound streaming API calls (websocket) |

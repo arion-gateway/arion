@@ -23,7 +23,7 @@ use crate::{
     },
     clusters::retry_policy::RetryCondition,
     event_error::{EventKind, TryInferFrom, UpstreamError},
-    get_shard_id, instrument_block, instrument_function,
+    instrument_block, instrument_function,
     listeners::{
         http_connection_manager::{http_modifiers::strip_trailers_headers, RequestHandler, TransactionHandler},
         synthetic_http_response::SyntheticHttpResponse,
@@ -52,10 +52,9 @@ use orion_format::types::{ResponseFlagsLong, ResponseFlagsShort};
 
 use crate::with_metric;
 use hyperlocal::UnixConnector;
+
 #[cfg(feature = "metrics")]
-use opentelemetry::KeyValue;
-#[cfg(feature = "metrics")]
-use orion_metrics::metrics::clusters;
+use {crate::get_shard_id, opentelemetry::KeyValue, orion_metrics::metrics::clusters};
 
 use pingora_timeout::fast_timeout::fast_timeout;
 use pretty_duration::pretty_duration;
@@ -310,6 +309,7 @@ impl HttpChannelBuilder {
 fn update_upstream_stats(event: PoolEvent, tag: &dyn Any, keys: &[&PoolKey]) {
     use tracing::debug;
     let cluster_name = *(tag.downcast_ref::<&str>().unwrap_or(&""));
+    #[cfg(feature = "metrics")]
     let shard_id = get_shard_id!();
 
     for key in keys {
@@ -478,11 +478,12 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
         });
 
         let version = request.version();
-        let _shard_id = get_shard_id!();
+        #[cfg(feature = "metrics")]
+        let shard_id = get_shard_id!();
 
-        with_metric!(clusters::UPSTREAM_RQ_ACTIVE, add, 1, _shard_id, &[KeyValue::new("cluster", self.cluster_name)]);
+        with_metric!(clusters::UPSTREAM_RQ_ACTIVE, add, 1, shard_id, &[KeyValue::new("cluster", self.cluster_name)]);
         defer! {
-            with_metric!(clusters::UPSTREAM_RQ_ACTIVE, sub, 1, _shard_id, &[KeyValue::new("cluster", self.cluster_name)]);
+            with_metric!(clusters::UPSTREAM_RQ_ACTIVE, sub, 1, shard_id, &[KeyValue::new("cluster", self.cluster_name)]);
         }
 
         let RequestContext { route_timeout, retry_policy } = ctx;
@@ -508,20 +509,14 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
         );
 
         if result.is_ok() {
-            with_metric!(
-                clusters::UPSTREAM_RQ_TOTAL,
-                add,
-                1,
-                _shard_id,
-                &[KeyValue::new("cluster", self.cluster_name)]
-            );
+            with_metric!(clusters::UPSTREAM_RQ_TOTAL, add, 1, shard_id, &[KeyValue::new("cluster", self.cluster_name)]);
         }
 
         with_metric!(
             clusters::UPSTREAM_RQ_RETRY,
             add,
             retries.requests as u64,
-            _shard_id,
+            shard_id,
             &[KeyValue::new("cluster", self.cluster_name)]
         );
 
@@ -529,7 +524,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
             clusters::UPSTREAM_RQ_PER_TRY_TIMEOUT,
             add,
             retries.timeouts as u64,
-            _shard_id,
+            shard_id,
             &[KeyValue::new("cluster", self.cluster_name)]
         );
 

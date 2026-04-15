@@ -3,6 +3,7 @@ members = [
   "envoy-data-plane-api",
   "orion-configuration",
   "orion-data-plane-api",
+  "orion-auth",
   "orion-error",
   "orion-http-header",
   "orion-e2e-tests",
@@ -34,6 +35,7 @@ envoy-data-plane-api    = { path = "envoy-data-plane-api" }
 orion-configuration     = { path = "orion-configuration" }
 orion-data-plane-api    = { path = "orion-data-plane-api" }
 orion-error             = { path = "orion-error" }
+orion-auth              = { path = "orion-auth" }
 orion-format            = { path = "orion-format" }
 orion-http-header       = { path = "orion-http-header" }
 orion-e2e-tests         = { path = "orion-e2e-tests" }
@@ -79,6 +81,7 @@ tracing-test        = { version = "0.2", features = ["no-env-filter"] }
 url                 = "2"
 hyper-util          = { version = "0.1.17",   features = ["full"] }
 tracing-rolling-file = { version = "0.1.3", features = ["non-blocking"] }
+ahash               = "0.8.12"
 
 [profile.release]
 codegen-units    = 1

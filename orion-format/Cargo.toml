@@ -14,8 +14,8 @@ orion-http-header.workspace = true
 orion-interner.workspace = true
 thiserror.workspace = true
 smol_str.workspace = true
+ahash.workspace = true
 
-ahash          = "0.8.12"
 bitflags        = { version = "2.10.0", features = ["serde"] }
 chrono         = "0.4.42"
 criterion      = "0.5.1"

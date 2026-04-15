@@ -17,9 +17,8 @@
 
 use super::upgrade_utils;
 use crate::{
-    event_error::EventFailure,
-    listeners::{metadata::DownstreamMetadata, synthetic_http_response::SyntheticHttpResponse},
-    OrionResponseBody,
+    event_error::EventFailure, extensions_context::MetadataContext,
+    listeners::synthetic_http_response::SyntheticHttpResponse, OrionResponseBody,
 };
 use http::{header, HeaderMap, HeaderName, HeaderValue, Method, Request, Response};
 use orion_configuration::config::{
@@ -352,10 +351,10 @@ impl HeaderValueModifier for HeaderValueOption {
     fn apply_to_request<B>(&self, req: &mut Request<B>) -> bool {
         let has_key_already = req.headers_mut().get(&self.header.key).is_some();
 
-        let socket_address = || match req.extensions().get::<DownstreamMetadata>() {
+        let socket_address = || match req.extensions().get::<MetadataContext>() {
             Some(meta) => SocketAddrContext {
-                downstream_local_addr: Some(meta.connection.local_address()),
-                downstream_peer_addr: Some(meta.connection.peer_address()),
+                downstream_local_addr: Some(meta.downstream.connection.local_address()),
+                downstream_peer_addr: Some(meta.downstream.connection.peer_address()),
                 upstream_local_addr: None,
                 upstream_peer_addr: None,
             },

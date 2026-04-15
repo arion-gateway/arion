@@ -15,10 +15,13 @@
 //
 //
 
-use crate::{metrics::Metric, sharded::ShardedU64};
+use crate::{
+    metrics::Metric,
+    sharded::{ShardedHistogram, ShardedU64},
+};
 
 use opentelemetry::global;
-use opentelemetry::metrics::Histogram;
+
 use std::{sync::OnceLock, thread::ThreadId};
 
 pub static DOWNSTREAM_CX_TOTAL: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
@@ -26,7 +29,11 @@ pub static DOWNSTREAM_CX_SSL_TOTAL: OnceLock<Metric<ShardedU64<ThreadId>>> = Onc
 pub static DOWNSTREAM_CX_SSL_ACTIVE: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 pub static DOWNSTREAM_CX_DESTROY: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 pub static DOWNSTREAM_CX_ACTIVE: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
-pub static DOWNSTREAM_CX_LENGTH_MS: OnceLock<Histogram<u64>> = OnceLock::new();
+pub static DOWNSTREAM_CX_LENGTH_MS: OnceLock<Metric<ShardedHistogram<ThreadId>>> = OnceLock::new();
+
+pub static DOWNSTREAM_CX_WS_UPGRADES_TOTAL: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
+pub static DOWNSTREAM_CX_WS_UPGRADES_ACTIVE: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
+pub static DOWNSTREAM_RQ_WS_ON_NON_WS_ROUTE: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 
 pub static DOWNSTREAM_RQ_1XX: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 pub static DOWNSTREAM_RQ_2XX: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
@@ -39,12 +46,13 @@ pub static DOWNSTREAM_RQ_ACTIVE: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLo
 pub static DOWNSTREAM_CX_RX_BYTES_TOTAL: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 pub static DOWNSTREAM_CX_TX_BYTES_TOTAL: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 
-pub(crate) fn init_http_metrics() {
-    _ = DOWNSTREAM_CX_LENGTH_MS.set(
-        global::meter("orion.http")
-            .u64_histogram("downstream_cx_length_ms")
-            .with_description("Duration of downstream HTTP connections in milliseconds")
-            .build(),
+pub(crate) fn init_metrics() {
+    init_observable_histogram!(
+        DOWNSTREAM_CX_LENGTH_MS,
+        "http",
+        "downstream_cx_length_ms",
+        "Connection length milliseconds",
+        vec![5, 10, 50, 100, 500, 1000, 5000, 10000, u64::MAX]
     );
 
     init_observable_counter!(
@@ -123,5 +131,24 @@ pub(crate) fn init_http_metrics() {
         "http",
         "downstream_cx_tx_bytes_total",
         "Total number of bytes sent on downstream HTTP connections"
+    );
+
+    init_observable_counter!(
+        DOWNSTREAM_CX_WS_UPGRADES_TOTAL,
+        "http",
+        "downstream_cx_ws_upgrades_total",
+        "Total successfully upgraded connections"
+    );
+    init_observable_counter!(
+        DOWNSTREAM_CX_WS_UPGRADES_ACTIVE,
+        "http",
+        "downstream_cx_ws_upgrades_active",
+        "Total active upgraded connections"
+    );
+    init_observable_counter!(
+        DOWNSTREAM_RQ_WS_ON_NON_WS_ROUTE,
+        "http",
+        "downstream_rq_ws_on_non_ws_route",
+        "Total upgrade requests rejected by non upgrade routes"
     );
 }

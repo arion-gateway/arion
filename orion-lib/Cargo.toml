@@ -23,6 +23,7 @@ orion-format.workspace = true
 orion-http-header.workspace = true
 orion-interner.workspace = true
 orion-tracing.workspace = true
+orion-auth.workspace = true
 orion-xds.workspace = true
 bounded-integer.workspace = true
 ppp.workspace = true
@@ -36,7 +37,10 @@ tracing.workspace = true
 url.workspace = true
 atomic_enum.workspace = true
 serde_json.workspace = true
-ahash = "0.8.12"
+tracing-rolling-file.workspace = true
+
+ahash.workspace = true
+
 arc-swap = "1.7.1"
 arrayvec = "0.7.6"
 async-stream = "0.3"
@@ -91,7 +95,6 @@ jsonschema = "0.41.0"
 ctor = "0.6.3"
 upon = "0.8"
 percent-encoding = "2.3.2"
-tracing-rolling-file.workspace = true
 atomicoption = "0.2.0"
 
 
