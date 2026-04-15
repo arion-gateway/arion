@@ -267,7 +267,8 @@ impl ExternalProcessor {
     async fn to_buffered(original: Collected<Bytes>) -> Collected<Bytes> {
         let trailers = original.trailers().cloned().map(Ok::<_, Infallible>);
         let aggregated_bytes = original.to_bytes();
-        Full::new(aggregated_bytes).with_trailers(ready(trailers)).collect().await.unwrap()
+        // e is Infallible, the compiler is able to optimize that branch out.
+        Full::new(aggregated_bytes).with_trailers(ready(trailers)).collect().await.unwrap_or_else(|e| match e {})
     }
 
     #[allow(clippy::too_many_lines)]

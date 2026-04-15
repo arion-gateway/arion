@@ -106,7 +106,7 @@ impl Cors {
             }
 
             // If valid, generate the response immediately.
-            return self.generate_preflight_response();
+            return self.generate_preflight_response(req.version());
         }
 
         FilterDecision::Continue
@@ -149,14 +149,19 @@ impl Cors {
         FilterDecision::Continue
     }
 
-    fn generate_preflight_response(&self) -> FilterDecision {
+    fn generate_preflight_response(&self, ver: http::Version) -> FilterDecision {
         debug!(target: "cors", "generating preflight response");
-        let allowed_origin = self.validated_origin.as_ref().unwrap();
+        let Some(allowed_origin) = self.validated_origin.as_ref() else {
+            return FilterDecision::internal_server_error("CORS preflight generation called without a validated origin", ver);
+        };
+
         let conf = &self.inner;
 
         // Use 204 No Content for Preflight (Best Practice).
         let mut builder = Response::builder().status(StatusCode::NO_CONTENT);
-        let headers = builder.headers_mut().unwrap();
+        let Some(headers) = builder.headers_mut() else {
+            unreachable!("failed to get headers mut reference from response builder");
+        };
 
         // A. Origin
         headers.insert(ACCESS_CONTROL_ALLOW_ORIGIN, allowed_origin.clone());
@@ -204,8 +209,8 @@ impl Cors {
         headers.append(VARY, HeaderValue::from_static("Access-Control-Request-Headers"));
 
         // Construct empty body for Orion
-        let Ok(response) = builder.body(TimeoutBody::new(None, PolyBody::from(Empty::new()))) else {
-            unreachable!("failed to build CORS response body");
+        let Ok(response) = builder.version(ver).body(TimeoutBody::new(None, PolyBody::from(Empty::new()))) else {
+            return FilterDecision::internal_server_error("failed to build CORS response", ver);
         };
 
         FilterDecision::DirectResponse(response)

@@ -756,7 +756,7 @@ impl HttpChannel {
                 pingora_timeout::sleep(back_off).await;
             }
 
-            last_error = Some(result.err().unwrap());
+            last_error = result.err();
         }
 
         match last_error {

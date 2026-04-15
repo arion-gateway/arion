@@ -490,11 +490,11 @@ impl RelaxedResolvesServerCertUsingSni {
         let name = name.to_ascii_lowercase();
         // 1. Check if it's a wildcard early on
         let is_wildcard = name.starts_with("*.");
-        let base_domain = if is_wildcard { name.strip_prefix("*.").unwrap() } else { &name };
+        let base_domain = name.strip_prefix("*.").unwrap_or(&name);
 
         // 2. Create a valid DNS name for rustls validation.
         // If it's a wildcard like "*.example.com", we test if the cert covers "dummy.example.com"
-        let test_name_str = if is_wildcard { format!("dummy.{}", base_domain) } else { name.clone() };
+        let test_name_str = if is_wildcard { format!("dummy.{base_domain}") } else { name.clone() };
 
         let server_name = rustls::pki_types::ServerName::try_from(test_name_str)
             .map_err(|_| rustls::Error::General("Bad Server/DNS name".into()))?;
