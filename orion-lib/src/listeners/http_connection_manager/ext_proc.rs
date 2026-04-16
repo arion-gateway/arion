@@ -73,7 +73,7 @@ use tracing::{debug, info, warn};
 
 const CHANNEL_BODY_PREFETCH_FRAMES: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(4) };
 const EXT_PROC_FRAME_MERGE_LIMIT: u32 = 4; // max number of frames to merge in streaming mode
-const EXT_PROC_MERGE_WINDOW: Duration = tokio::time::Duration::from_millis(1); // time window to wait for more frames to merge
+const EXT_PROC_MERGE_WINDOW: Duration = tokio::time::Duration::from_micros(100); // time window to wait for more frames to merge
 const EXT_PROC_BUFFERED_BODY_LIMIT: usize = 100 * 1024 * 1024; // extend the default gRPC payload limit from 4MB to 100MB
 
 pub struct ExtProcHeaderValue<'a> {
