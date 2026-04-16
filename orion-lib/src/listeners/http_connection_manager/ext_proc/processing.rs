@@ -781,7 +781,7 @@ impl<M: kind::Mode + Default, Msg: kind::MsgKind + OverridableModeSelector> Proc
         let streaming_enabled = self.try_enable_streaming_body();
 
         if M::OBSERVABILITY {
-            self.return_status(ProcessingStatus::ready::<Msg>(), "observability!");
+            _ = self.return_status(ProcessingStatus::ready::<Msg>(), "observability!");
             return None;
         }
 
@@ -799,7 +799,7 @@ impl<M: kind::Mode + Default, Msg: kind::MsgKind + OverridableModeSelector> Proc
             }
         }
 
-        self.return_status(ProcessingStatus::ready::<Msg>(), "process_body_and_trailers (ready status)!");
+        _ = self.return_status(ProcessingStatus::ready::<Msg>(), "process_body_and_trailers (ready status)!");
         None
     }
 
@@ -875,7 +875,7 @@ impl<M: kind::Mode + Default, Msg: kind::MsgKind + OverridableModeSelector> Proc
         } else {
             let msg = "handle_body_chunk: unexpected non-data frame to send";
             let status_error = self.status_error(msg, self.failure_mode_allow);
-            self.return_status(status_error, "handle_body_chunk: unexpected non-data frame to send");
+            _ = self.return_status(status_error, "handle_body_chunk: unexpected non-data frame to send");
             return None;
         };
 

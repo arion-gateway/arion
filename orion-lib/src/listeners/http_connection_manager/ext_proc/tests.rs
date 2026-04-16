@@ -83,6 +83,7 @@ impl DerefMut for MockProcessingResponse {
 }
 
 impl MockProcessingResponse {
+    #[allow(dead_code)]
     pub fn new(response: ProcessingResponse) -> Self {
         Self { response, delay: None, expected_end_of_stream: None }
     }
@@ -2307,7 +2308,7 @@ async fn test_request_header_timeout() {
             ResponseStatus::Continue as i32,
             None,
         )
-        .with_delay(std::time::Duration::from_secs(10)),
+        .with_delay(Duration::from_secs(10)),
     );
 
     let (server_addr, _) = start_mock_server(mock_state).await;
@@ -2349,7 +2350,7 @@ async fn test_request_header_timeout_failure_mode_allow_true() {
             ResponseStatus::Continue as i32,
             None,
         )
-        .with_delay(std::time::Duration::from_secs(10)),
+        .with_delay(Duration::from_secs(10)),
     );
 
     let (server_addr, _) = start_mock_server(mock_state).await;
@@ -2392,7 +2393,7 @@ async fn test_request_body_timeout_failure_mode_allow_false() {
             ResponseStatus::Continue as i32,
             None,
         )
-        .with_delay(std::time::Duration::from_secs(10)),
+        .with_delay(Duration::from_secs(10)),
     );
     let (server_addr, _) = start_mock_server(mock_state).await;
     let processing_mode = ProcessingMode {
@@ -2429,7 +2430,7 @@ async fn test_request_body_timeout_failure_mode_allow_true() {
             ResponseStatus::Continue as i32,
             None,
         )
-        .with_delay(std::time::Duration::from_secs(10)),
+        .with_delay(Duration::from_secs(10)),
     );
 
     let (server_addr, _) = start_mock_server(mock_state).await;
@@ -2527,7 +2528,7 @@ async fn test_request_multichunk_body_timeout_failure_mode_allow_true() {
             ResponseStatus::Continue as i32,
             None,
         )
-        .with_delay(std::time::Duration::from_secs(10)),
+        .with_delay(Duration::from_secs(10)),
     );
     let (server_addr, _) = start_mock_server(mock_state).await;
     let processing_mode = ProcessingMode {
@@ -2568,7 +2569,7 @@ async fn test_response_header_timeout() {
             ResponseStatus::Continue as i32,
             None,
         )
-        .with_delay(std::time::Duration::from_secs(10)),
+        .with_delay(Duration::from_secs(10)),
     );
     let (server_addr, _) = start_mock_server(mock_state).await;
     let processing_mode = ProcessingMode {
@@ -2604,7 +2605,7 @@ async fn test_response_header_timeout_failure_mode_allow_true() {
             ResponseStatus::Continue as i32,
             None,
         )
-        .with_delay(std::time::Duration::from_secs(10)),
+        .with_delay(Duration::from_secs(10)),
     );
     let (server_addr, _) = start_mock_server(mock_state).await;
     let processing_mode = ProcessingMode {
@@ -2646,7 +2647,7 @@ async fn test_response_body_timeout_failure_mode_allow_false() {
             ResponseStatus::Continue as i32,
             None,
         )
-        .with_delay(std::time::Duration::from_secs(10)),
+        .with_delay(Duration::from_secs(10)),
     );
 
     let (server_addr, _) = start_mock_server(mock_state).await;
@@ -2684,7 +2685,7 @@ async fn test_response_body_timeout_failure_mode_allow_true() {
             ResponseStatus::Continue as i32,
             None,
         )
-        .with_delay(std::time::Duration::from_secs(10)),
+        .with_delay(Duration::from_secs(10)),
     );
 
     let (server_addr, _) = start_mock_server(mock_state).await;
@@ -6203,4 +6204,308 @@ async fn test_request_header_mutation_with_multichunk_large_body() {
     }
     assert_eq!(actual_body.len(), 1024 * 1024);
     assert_eq!(actual_body, body_chunks_input.join(""));
+}
+
+#[tokio::test]
+#[test_log::test]
+async fn test_request_mutation_with_streamed_10m_body_4k_chunks() {
+    const BODY_SIZE : usize = 10 * 1024 * 1024;
+    let chunk_size = 4 * 1024; // 4 KB per chunk
+    let num_chunks = BODY_SIZE / chunk_size;
+
+    // Create the chunk strings
+    let req_chunk_str: &'static str = Box::leak(vec!['a'; chunk_size].into_iter().collect::<String>().into_boxed_str());
+    let req_body_chunks_input = vec![req_chunk_str; num_chunks];
+
+    let req_chunk_upper_bytes = req_chunk_str.to_uppercase().into_bytes();
+
+    let mut mock_state = MockExternalProcessorState::new();
+
+    // 1. Mock response for Request Headers
+    mock_state = mock_state.add_response(
+        create_headers_response::<RequestMsg>(
+            vec![],
+            None,
+            vec![],
+            ResponseStatus::Continue as i32,
+            None,
+        )
+        .into(),
+    );
+
+    // 2. Mock responses for Request Body chunks in Streamed mode
+    for _ in 0..num_chunks {
+        mock_state = mock_state.add_response(
+            create_body_response::<RequestMsg>(
+                vec![],
+                Some(req_chunk_upper_bytes.clone()),
+                vec![],
+                ResponseStatus::Continue as i32,
+                None,
+            ).into()
+        );
+    }
+
+    let (server_addr, _) = start_mock_server(mock_state).await;
+
+    // Configuration: Send for headers, Streamed for body, Skip for trailers
+    let processing_mode = ProcessingMode {
+        request_header_mode: HeaderProcessingMode::Send,
+        request_body_mode: BodyProcessingMode::Streamed,
+        request_trailer_mode: TrailerProcessingMode::Skip,
+        response_header_mode: HeaderProcessingMode::Skip,
+        response_body_mode: BodyProcessingMode::Streamed,
+        response_trailer_mode: TrailerProcessingMode::Skip,
+    };
+
+    let mut config = create_default_config_for_ext_proc_filter(server_addr, processing_mode);
+    config.observability_mode = false;
+    config.failure_mode_allow = false;
+
+    let ext_config = ExternalProcessorConfigExt { frame_merge_limit: 1, frame_merge_window: Duration::from_millis(0) };
+    let mut ext_proc = ExternalProcessor::from((config, None, Some(ext_config)));
+
+    // Create request
+    let mut request = build_request_from_mock(&MockMessage::<RequestMsg> {
+        headers: vec![Some(("content-type", "text/plain"))],
+        body: req_body_chunks_input.clone(),
+        trailers: vec![],
+        _marker: std::marker::PhantomData,
+    })
+    .await;
+
+    // Process Request
+    let req_result = ext_proc.apply_request(&mut request).await;
+    assert_matches!(req_result, FilterDecision::Continue);
+
+    // Consume and verify the mutated request body
+    let req_inner = std::mem::take(&mut request.body_mut().inner.inner);
+    let req_body_chunks = to_body_data_chunks(req_inner.collect().await.unwrap()).await;
+
+    let mut actual_req_body_len = 0;
+    for chunk in req_body_chunks {
+        let chunk_str = std::str::from_utf8(&chunk).unwrap();
+        assert!(chunk_str.chars().all(|c| c == 'A'), "Request characters must be transformed to 'A'");
+        actual_req_body_len += chunk_str.len();
+    }
+    assert_eq!(actual_req_body_len, BODY_SIZE);
+}
+
+
+#[tokio::test]
+#[test_log::test]
+async fn test_response_mutation_with_streamed_10m_body_4k_chunks() {
+    const BODY_SIZE : usize = 10 * 1024 * 1024;
+    let chunk_size = 4 * 1024; // 4 KB per chunk
+    let num_chunks = BODY_SIZE / chunk_size;
+
+    let res_chunk_str: &'static str = Box::leak(vec!['b'; chunk_size].into_iter().collect::<String>().into_boxed_str());
+    let res_body_chunks_input = vec![res_chunk_str; num_chunks];
+    let res_chunk_upper_bytes = res_chunk_str.to_uppercase().into_bytes();
+
+    let mut mock_state = MockExternalProcessorState::new();
+
+    // 1. Mock response for Response Headers
+    mock_state = mock_state.add_response(
+        create_headers_response::<ResponseMsg>(
+            vec![],
+            None,
+            vec![],
+            ResponseStatus::Continue as i32,
+            None,
+        )
+        .into(),
+    );
+
+    // 2. Mock responses for Response Body chunks in Streamed mode
+    for _ in 0..num_chunks {
+        mock_state = mock_state.add_response(
+            create_body_response::<ResponseMsg>(
+                vec![],
+                Some(res_chunk_upper_bytes.clone()),
+                vec![],
+                ResponseStatus::Continue as i32,
+                None,
+            ).into()
+        );
+    }
+
+    let (server_addr, _) = start_mock_server(mock_state).await;
+
+    let processing_mode = ProcessingMode {
+        request_header_mode: HeaderProcessingMode::Skip,
+        request_body_mode: BodyProcessingMode::None,
+        request_trailer_mode: TrailerProcessingMode::Skip,
+        response_header_mode: HeaderProcessingMode::Send,
+        response_body_mode: BodyProcessingMode::Streamed,
+        response_trailer_mode: TrailerProcessingMode::Skip,
+    };
+
+    let mut config = create_default_config_for_ext_proc_filter(server_addr, processing_mode);
+    config.observability_mode = false;
+    config.failure_mode_allow = false;
+
+    let ext_config = ExternalProcessorConfigExt { frame_merge_limit: 1, frame_merge_window: Duration::from_millis(0) };
+    let mut ext_proc = ExternalProcessor::from((config, None, Some(ext_config)));
+
+    let mut response = build_response_from_mock(&MockMessage::<ResponseMsg> {
+        headers: vec![Some(("content-type", "text/plain"))],
+        body: res_body_chunks_input.clone(),
+        trailers: vec![],
+        _marker: std::marker::PhantomData,
+    })
+    .await;
+
+    let res_result = ext_proc.apply_response(&mut response).await;
+    assert_matches!(res_result, FilterDecision::Continue);
+
+    let res_inner = std::mem::take(&mut response.body_mut().inner);
+    let res_body_chunks = to_body_data_chunks(res_inner.collect().await.unwrap()).await;
+
+    let mut actual_res_body_len = 0;
+    for chunk in res_body_chunks {
+        let chunk_str = std::str::from_utf8(&chunk).unwrap();
+        assert!(chunk_str.chars().all(|c| c == 'B'), "Response characters must be transformed to 'B'");
+        actual_res_body_len += chunk_str.len();
+    }
+    assert_eq!(actual_res_body_len, BODY_SIZE);
+}
+
+#[tokio::test]
+#[test_log::test]
+async fn test_request_and_response_mutation_with_streamed_10m_body_4k_chunks() {
+    const BODY_SIZE : usize = 10 * 1024 * 1024;
+    let chunk_size = 4 * 1024; // 4 KB per chunk
+    let num_chunks = BODY_SIZE / chunk_size;
+
+    // Create the chunk strings
+    let req_chunk_str: &'static str = Box::leak(vec!['a'; chunk_size].into_iter().collect::<String>().into_boxed_str());
+    let req_body_chunks_input = vec![req_chunk_str; num_chunks];
+
+    let res_chunk_str: &'static str = Box::leak(vec!['b'; chunk_size].into_iter().collect::<String>().into_boxed_str());
+    let res_body_chunks_input = vec![res_chunk_str; num_chunks];
+
+    let req_chunk_upper_bytes = req_chunk_str.to_uppercase().into_bytes();
+    let res_chunk_upper_bytes = res_chunk_str.to_uppercase().into_bytes();
+
+    let mut mock_state = MockExternalProcessorState::new();
+
+    // 1. Mock response for Request Headers
+    mock_state = mock_state.add_response(
+        create_headers_response::<RequestMsg>(
+            vec![],
+            None,
+            vec![],
+            ResponseStatus::Continue as i32,
+            None,
+        )
+        .into(),
+    );
+
+    // 2. Mock responses for Request Body chunks in Streamed mode
+    for _ in 0..num_chunks {
+        mock_state = mock_state.add_response(
+            create_body_response::<RequestMsg>(
+                vec![],
+                Some(req_chunk_upper_bytes.clone()),
+                vec![],
+                ResponseStatus::Continue as i32,
+                None,
+            ).into()
+        );
+    }
+
+    // 3. Mock response for Response Headers
+    mock_state = mock_state.add_response(
+        create_headers_response::<ResponseMsg>(
+            vec![],
+            None,
+            vec![],
+            ResponseStatus::Continue as i32,
+            None,
+        )
+        .into(),
+    );
+
+    // 4. Mock responses for Response Body chunks in Streamed mode
+    for _ in 0..num_chunks {
+        mock_state = mock_state.add_response(
+            create_body_response::<ResponseMsg>(
+                vec![],
+                Some(res_chunk_upper_bytes.clone()),
+                vec![],
+                ResponseStatus::Continue as i32,
+                None,
+            ).into()
+        );
+    }
+
+    let (server_addr, _) = start_mock_server(mock_state).await;
+
+    // Configuration: Send for headers, Streamed for body, Skip for trailers
+    let processing_mode = ProcessingMode {
+        request_header_mode: HeaderProcessingMode::Send,
+        request_body_mode: BodyProcessingMode::Streamed,
+        request_trailer_mode: TrailerProcessingMode::Skip,
+        response_header_mode: HeaderProcessingMode::Send,
+        response_body_mode: BodyProcessingMode::Streamed,
+        response_trailer_mode: TrailerProcessingMode::Skip,
+    };
+
+    let mut config = create_default_config_for_ext_proc_filter(server_addr, processing_mode);
+    config.observability_mode = false;
+    config.failure_mode_allow = false;
+
+    let ext_config = ExternalProcessorConfigExt { frame_merge_limit: 1, frame_merge_window: Duration::from_millis(0) };
+    let mut ext_proc = ExternalProcessor::from((config, None, Some(ext_config)));
+
+    // Create request
+    let mut request = build_request_from_mock(&MockMessage::<RequestMsg> {
+        headers: vec![Some(("content-type", "text/plain"))],
+        body: req_body_chunks_input.clone(),
+        trailers: vec![],
+        _marker: std::marker::PhantomData,
+    })
+    .await;
+
+    // Create response
+    let mut response = build_response_from_mock(&MockMessage::<ResponseMsg> {
+        headers: vec![Some(("content-type", "text/plain"))],
+        body: res_body_chunks_input.clone(),
+        trailers: vec![],
+        _marker: std::marker::PhantomData,
+    })
+    .await;
+
+    // Process Request
+    let req_result = ext_proc.apply_request(&mut request).await;
+    assert_matches!(req_result, FilterDecision::Continue);
+
+    // Consume and verify the mutated request body
+    let req_inner = std::mem::take(&mut request.body_mut().inner.inner);
+    let req_body_chunks = to_body_data_chunks(req_inner.collect().await.unwrap()).await;
+
+    let mut actual_req_body_len = 0;
+    for chunk in req_body_chunks {
+        let chunk_str = std::str::from_utf8(&chunk).unwrap();
+        assert!(chunk_str.chars().all(|c| c == 'A'), "Request characters must be transformed to 'A'");
+        actual_req_body_len += chunk_str.len();
+    }
+    assert_eq!(actual_req_body_len, BODY_SIZE);
+
+    // Process Response
+    let res_result = ext_proc.apply_response(&mut response).await;
+    assert_matches!(res_result, FilterDecision::Continue);
+
+    // Consume and verify the mutated response body
+    let res_inner = std::mem::take(&mut response.body_mut().inner);
+    let res_body_chunks = to_body_data_chunks(res_inner.collect().await.unwrap()).await;
+
+    let mut actual_res_body_len = 0;
+    for chunk in res_body_chunks {
+        let chunk_str = std::str::from_utf8(&chunk).unwrap();
+        assert!(chunk_str.chars().all(|c| c == 'B'), "Response characters must be transformed to 'B'");
+        actual_res_body_len += chunk_str.len();
+    }
+    assert_eq!(actual_res_body_len, BODY_SIZE);
 }
