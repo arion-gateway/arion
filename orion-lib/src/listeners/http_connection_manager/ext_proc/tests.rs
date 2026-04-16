@@ -1762,6 +1762,7 @@ async fn test_request_body_buffered_mode_send_body_without_waiting_for_header_re
 }
 
 #[tokio::test]
+#[test_log::test]
 async fn test_request_body_streaming_mode() {
     let mock_state = MockExternalProcessorState::new()
         .add_response(create_headers_response::<RequestMsg>(
@@ -2942,6 +2943,7 @@ async fn test_request_header_override_request_trailers() {
     assert!(trailers.is_some());
     let trailers = trailers.unwrap();
     assert_matches!(result, FilterDecision::Continue);
+    assert_eq!(trailers.get("x-original-trailer").unwrap(), "original trailer value");
     assert_eq!(trailers.get("x-ext-proc-trailer").unwrap(), "ext-proc trailer value");
 }
 
@@ -3176,7 +3178,7 @@ async fn test_request_body_buffered_too_large() {
     config.failure_mode_allow = false;
     let mut ext_proc = ExternalProcessor::from(config);
 
-    let very_large_body = "a".repeat(10 * 1024 * 1024); // 10 MB body
+    let very_large_body = "a".repeat(200 * 1024 * 1024); // 200 MB body
     let boxed_str: Box<str> = very_large_body.clone().into_boxed_str();
 
     let mut request = build_request_from_mock(&MockMessage::<RequestMsg> {
@@ -3198,6 +3200,7 @@ async fn test_request_body_buffered_too_large() {
 }
 
 #[tokio::test]
+#[test_log::test]
 async fn test_request_multichunk_merged_body_streaming_mode() {
     let mock_state = MockExternalProcessorState::new()
         .add_response(create_headers_response::<RequestMsg>(
@@ -3249,6 +3252,7 @@ async fn test_request_multichunk_merged_body_streaming_mode() {
 }
 
 #[tokio::test]
+#[test_log::test]
 async fn test_request_multichunk_merged_body_buffered_mode() {
     let mock_state = MockExternalProcessorState::new()
         .add_response(create_headers_response::<RequestMsg>(
@@ -3300,6 +3304,7 @@ async fn test_request_multichunk_merged_body_buffered_mode() {
 }
 
 #[tokio::test]
+#[test_log::test]
 async fn test_request_multichunk_not_merged_body_streaming_mode() {
     let mock_state = MockExternalProcessorState::new()
         .add_response(create_headers_response::<RequestMsg>(
@@ -4130,7 +4135,7 @@ async fn test_response_body_buffered_too_large() {
     config.failure_mode_allow = false;
     let mut ext_proc = ExternalProcessor::from(config);
 
-    let very_large_body = "a".repeat(10 * 1024 * 1024); // 10 MB body
+    let very_large_body = "a".repeat(200 * 1024 * 1024); // 200 MB body
     let boxed_str: Box<str> = very_large_body.clone().into_boxed_str();
 
     let mut response = build_response_from_mock(&MockMessage::<ResponseMsg> {
@@ -4152,6 +4157,7 @@ async fn test_response_body_buffered_too_large() {
 }
 
 #[tokio::test]
+#[test_log::test]
 async fn test_response_multichunk_merged_body_streaming_mode() {
     let mock_state = MockExternalProcessorState::new()
         .add_response(create_headers_response::<ResponseMsg>(
@@ -4199,6 +4205,7 @@ async fn test_response_multichunk_merged_body_streaming_mode() {
 }
 
 #[tokio::test]
+#[test_log::test]
 async fn test_response_multichunk_merged_body_buffered_mode() {
     let mock_state = MockExternalProcessorState::new()
         .add_response(create_headers_response::<ResponseMsg>(
@@ -4246,6 +4253,7 @@ async fn test_response_multichunk_merged_body_buffered_mode() {
 }
 
 #[tokio::test]
+#[test_log::test]
 async fn test_response_multichunk_not_merged_body_streaming_mode() {
     let mock_state = MockExternalProcessorState::new()
         .add_response(create_headers_response::<ResponseMsg>(
@@ -5835,12 +5843,8 @@ async fn test_request_response_body_buffered_processing_mode() {
 async fn test_request_response_body_buffered_observability_mode() {
     let mock_state = MockExternalProcessorState::new()
         .with_observability(true)
-        .add_response(create_body_response::<RequestMsg>(
-            vec![], None, vec![], ResponseStatus::Continue as i32, None
-        ))
-        .add_response(create_body_response::<ResponseMsg>(
-            vec![], None, vec![], ResponseStatus::Continue as i32, None
-        ));
+        .add_response(create_body_response::<RequestMsg>(vec![], None, vec![], ResponseStatus::Continue as i32, None))
+        .add_response(create_body_response::<ResponseMsg>(vec![], None, vec![], ResponseStatus::Continue as i32, None));
 
     let (server_addr, _) = start_mock_server(mock_state).await;
 
@@ -5945,12 +5949,8 @@ async fn test_request_response_body_streamed_processing_mode() {
 async fn test_request_response_body_streamed_observability_mode() {
     let mock_state = MockExternalProcessorState::new()
         .with_observability(true)
-        .add_response(create_body_response::<RequestMsg>(
-            vec![], None, vec![], ResponseStatus::Continue as i32, None
-        ))
-        .add_response(create_body_response::<ResponseMsg>(
-            vec![], None, vec![], ResponseStatus::Continue as i32, None
-        ));
+        .add_response(create_body_response::<RequestMsg>(vec![], None, vec![], ResponseStatus::Continue as i32, None))
+        .add_response(create_body_response::<ResponseMsg>(vec![], None, vec![], ResponseStatus::Continue as i32, None));
 
     let (server_addr, _) = start_mock_server(mock_state).await;
 
@@ -5996,12 +5996,8 @@ async fn test_request_response_body_streamed_observability_mode() {
 #[test_log::test]
 async fn test_request_response_trailers_processing_mode() {
     let mock_state = MockExternalProcessorState::new()
-        .add_response(create_trailers_response::<RequestMsg>(
-            vec![Some(("x-req-trailer-mutated", "true"))],
-        ))
-        .add_response(create_trailers_response::<ResponseMsg>(
-            vec![Some(("x-res-trailer-mutated", "true"))],
-        ));
+        .add_response(create_trailers_response::<RequestMsg>(vec![Some(("x-req-trailer-mutated", "true"))]))
+        .add_response(create_trailers_response::<ResponseMsg>(vec![Some(("x-res-trailer-mutated", "true"))]));
 
     let (server_addr, _) = start_mock_server(mock_state).await;
 
@@ -6049,12 +6045,8 @@ async fn test_request_response_trailers_processing_mode() {
 async fn test_request_response_trailers_observability_mode() {
     let mock_state = MockExternalProcessorState::new()
         .with_observability(true)
-        .add_response(create_trailers_response::<RequestMsg>(
-            vec![],
-        ))
-        .add_response(create_trailers_response::<ResponseMsg>(
-            vec![],
-        ));
+        .add_response(create_trailers_response::<RequestMsg>(vec![]))
+        .add_response(create_trailers_response::<ResponseMsg>(vec![]));
 
     let (server_addr, _) = start_mock_server(mock_state).await;
 
@@ -6146,7 +6138,8 @@ async fn test_request_header_mutation_with_large_body() {
     assert_eq!(request.headers().get("x-custom-header").unwrap(), "custom-value");
     assert_eq!(request.headers().get("content-type").unwrap(), "text/plain");
 
-    let body_chunks = to_body_data_chunks(std::mem::take(&mut request.body_mut().inner.inner).collect().await.unwrap()).await;
+    let body_chunks =
+        to_body_data_chunks(std::mem::take(&mut request.body_mut().inner.inner).collect().await.unwrap()).await;
     let mut actual_body = String::new();
     for chunk in body_chunks {
         actual_body.push_str(std::str::from_utf8(&chunk).unwrap());
@@ -6202,7 +6195,8 @@ async fn test_request_header_mutation_with_multichunk_large_body() {
     assert_eq!(request.headers().get("x-custom-header").unwrap(), "custom-value");
     assert_eq!(request.headers().get("content-type").unwrap(), "text/plain");
 
-    let body_chunks = to_body_data_chunks(std::mem::take(&mut request.body_mut().inner.inner).collect().await.unwrap()).await;
+    let body_chunks =
+        to_body_data_chunks(std::mem::take(&mut request.body_mut().inner.inner).collect().await.unwrap()).await;
     let mut actual_body = String::new();
     for chunk in body_chunks {
         actual_body.push_str(std::str::from_utf8(&chunk).unwrap());

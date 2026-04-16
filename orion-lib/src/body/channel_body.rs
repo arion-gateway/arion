@@ -223,7 +223,7 @@ impl FrameBridge {
     }
 
     /// Drain the stream body, injecting each frame into the `ChannelBody`.
-    pub async fn drain(&mut self) {
+    pub async fn drain_and_inject(&mut self) {
         let Some(injector) = &mut self.injector else {
             return;
         };
@@ -370,7 +370,7 @@ mod tests {
 
         // Spawn bridge task
         let bridge_handle = tokio::spawn(async move {
-            bridge.drain().await;
+            bridge.drain_and_inject().await;
         });
 
         // Consume the channel body
@@ -430,7 +430,7 @@ mod tests {
         assert!(matches!(Pin::new(&mut channel_body).poll_frame(&mut ctx), Poll::Pending));
 
         let bridge_handle = tokio::spawn(async move {
-            bridge.drain().await;
+            bridge.drain_and_inject().await;
         });
         bridge_handle.await.unwrap();
 

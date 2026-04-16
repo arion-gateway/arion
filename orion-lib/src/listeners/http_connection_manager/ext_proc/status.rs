@@ -4,14 +4,6 @@ use orion_data_plane_api::envoy_data_plane_api::envoy::service::ext_proc::v3::He
 
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
-pub enum Action<P> {
-    Send(P),
-    Return(ProcessingStatus),
-    None,
-}
-
-#[allow(clippy::large_enum_variant)]
-#[derive(Debug)]
 pub enum ProcessingStatus {
     RequestReady(ReadyStatus),
     ResponseReady(ReadyStatus),
