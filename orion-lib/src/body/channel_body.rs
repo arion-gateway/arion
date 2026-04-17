@@ -147,6 +147,7 @@ pub struct FrameBridge {
     source_has_body: Option<bool>,
     source_has_trailers: Option<bool>,
     source_has_body_or_trailers: bool,
+    injected_frames: usize,
 }
 
 impl std::fmt::Debug for FrameBridge {
@@ -163,6 +164,7 @@ impl Default for FrameBridge {
             source_has_body: Some(false),
             source_has_trailers: Some(false),
             source_has_body_or_trailers: false,
+            injected_frames: 0,
         }
     }
 }
@@ -214,12 +216,18 @@ impl FrameBridge {
             source_has_body: orig_has_body,
             source_has_trailers: orig_has_trailers,
             source_has_body_or_trailers: !end_of_stream,
+            injected_frames: 0,
         }
     }
 
     /// Close the `FrameBridge` to prevent further frame injections.
     pub fn close(&mut self) {
         self.injector.take();
+    }
+
+    /// Returns `true` if the `FrameBridge` is closed, `false` otherwise.
+    pub fn is_closed(&self) -> bool {
+        self.injector.is_none()
     }
 
     /// Drain the stream body, injecting each frame into the `ChannelBody`.
@@ -232,6 +240,7 @@ impl FrameBridge {
             if injector.send(frame_result).await.is_err() {
                 break;
             }
+            self.injected_frames += 1;
         }
     }
 
@@ -250,6 +259,7 @@ impl FrameBridge {
                     if injector.send(frame_result).await.is_err() {
                         break;
                     }
+                    self.injected_frames += 1;
                 },
                 _ => {
                     return Some(frame_result);
@@ -273,6 +283,7 @@ impl FrameBridge {
             if injector.send(transformed).await.is_err() {
                 break;
             }
+            self.injected_frames += 1;
         }
     }
 
@@ -294,7 +305,11 @@ impl FrameBridge {
         let Some(injector) = &mut self.injector else {
             return Err(mpsc::error::SendError(frame));
         };
-        injector.send(frame).await
+        let res = injector.send(frame).await;
+        if res.is_ok() {
+            self.injected_frames += 1;
+        }
+        res
     }
 
     /// Observes the next frame and automatically injects it into the `ChannelBody`.
@@ -323,10 +338,17 @@ impl FrameBridge {
 
         // Inject the original frame
         if let Some(injector) = &mut self.injector {
-            let _ = injector.send(frame).await;
+            if injector.send(frame).await.is_ok() {
+                self.injected_frames += 1;
+            }
         }
 
         Some(cloned)
+    }
+
+    /// Returns the number of frames injected into the `ChannelBody` so far.
+    pub fn injected_frames(&self) -> usize {
+        self.injected_frames
     }
 
     /// Check if the `FrameBridge` has been constructed with an empty body.
