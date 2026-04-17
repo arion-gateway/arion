@@ -163,7 +163,7 @@ pub struct Processing<M: kind::Mode, Msg: kind::MessageKind> {
     send_body_without_waiting_for_header_response: bool,
     pub failure_mode_allow: bool,
     streaming_body_enabled: bool,
-    pub end_of_stream: bool,
+    end_of_stream: bool,
     pub frames_buffer: FramesBuffer,
     pub inflight_frames: SmallVec<[Frame<Bytes>; 2]>,
     pub parked_trailers: Option<Frame<Bytes>>,
@@ -263,10 +263,7 @@ pub(crate) mod protected {
         }
 
         #[inline]
-        pub fn close(
-            &mut self,
-            timeout_active: Option<&mut bool>,
-        ) {
+        pub fn close(&mut self, timeout_active: Option<&mut bool>) {
             if let Some(timeout_active) = timeout_active {
                 *timeout_active = false;
             }
@@ -544,7 +541,6 @@ impl<Msg: kind::MessageKind + OverridableModeSelector> Processing<kind::Processi
                     debug!(target: "ext_proc", "frame bridge closed (handle header response)!");
                     self.frame_bridge.close(Some(timeout_active));
                     self.set_streaming_body(false);
-
                 } else {
                     debug!(target: "ext_proc", "handle_headers_response: ResponseStatus:Continue: headers processed: should_process_body:{}, should_process_trailers:{}",
                         override_mode.should_process_body::<Msg>(), override_mode.should_process_trailers::<Msg>());
@@ -659,7 +655,7 @@ impl<Msg: kind::MessageKind + OverridableModeSelector> Processing<kind::Processi
                 return None;
             }
 
-            if self.end_of_stream && self.inflight_frames.is_empty() {
+            if self.end_of_stream() && self.inflight_frames.is_empty() {
                 debug!(target: "ext_proc", "handle_body_response: end_of_stream (closing frame bridge) -> trailers: {:?}", self.parked_trailers);
                 let trailers = std::mem::take(&mut self.parked_trailers);
                 self.frame_bridge.drain_and_close(proof, None, trailers, Some(timeout_active)).await;
@@ -705,7 +701,6 @@ impl<Msg: kind::MessageKind + OverridableModeSelector> Processing<kind::Processi
 
             _ = self.frame_bridge.inject_frame(Ok(Frame::trailers(trailers)), proof).await;
 
-            self.end_of_stream = true;
             self.frame_bridge.close(Some(timeout_active));
             self.set_streaming_body(false);
             None
@@ -791,16 +786,16 @@ impl<M: kind::Mode + Default, Msg: kind::MessageKind + OverridableModeSelector> 
             return None;
         };
 
-        self.end_of_stream = self.is_end_stream(Phase::Headers, override_mode);
-
         let envmap: EnvoyHeaderMap = headers.into();
+
+        self.update_end_stream(Phase::Headers, override_mode);
 
         let processing_request = if Msg::IS_REQUEST {
             ProcessingRequest {
                 request: Some(ProcessingRequestType::RequestHeaders(HttpHeaders {
                     headers: Some(envmap.0),
                     attributes: HashMap::default(),
-                    end_of_stream: self.end_of_stream,
+                    end_of_stream: self.end_of_stream(),
                 })),
                 metadata_context: None,
                 attributes: HashMap::default(),
@@ -812,7 +807,7 @@ impl<M: kind::Mode + Default, Msg: kind::MessageKind + OverridableModeSelector> 
                 request: Some(ProcessingRequestType::ResponseHeaders(HttpHeaders {
                     headers: Some(envmap.0),
                     attributes: HashMap::default(),
-                    end_of_stream: self.end_of_stream,
+                    end_of_stream: self.end_of_stream(),
                 })),
                 metadata_context: None,
                 attributes: HashMap::default(),
@@ -821,7 +816,7 @@ impl<M: kind::Mode + Default, Msg: kind::MessageKind + OverridableModeSelector> 
             }
         };
 
-        let send_body_or_trailers = !self.end_of_stream;
+        let send_body_or_trailers = !self.end_of_stream();
 
         if M::OBSERVABILITY || (self.send_body_without_waiting_for_header_response && send_body_or_trailers) {
             // force enable streaming body. Note: in observability mode we want to enable streaming body regardless of the presence of body/trailers
@@ -987,7 +982,7 @@ impl<M: kind::Mode + Default, Msg: kind::MessageKind + OverridableModeSelector> 
     }
 
     #[inline]
-    fn is_end_stream(&self, phase: Phase, override_mode: &OverridableGlobalModes) -> bool {
+    fn update_end_stream(&mut self, phase: Phase, override_mode: &OverridableGlobalModes) {
         // Determine if trailers will actually be sent.
         // It requires both the configuration to allow it and the physical presence of trailers.
         // If the presence is unknown (None), we assume true to keep the stream open safely.
@@ -1000,7 +995,7 @@ impl<M: kind::Mode + Default, Msg: kind::MessageKind + OverridableModeSelector> 
         let will_send_body =
             override_mode.should_process_body::<Msg>() && self.frame_bridge.source_has_non_empty_body().unwrap_or(true);
 
-        match phase {
+        self.end_of_stream = match phase {
             // In the Headers phase, it is the end of the stream ONLY IF no body and no trailers will follow.
             Phase::Headers => !will_send_body && !will_send_trailers,
 
@@ -1009,7 +1004,19 @@ impl<M: kind::Mode + Default, Msg: kind::MessageKind + OverridableModeSelector> 
 
             // The Trailers phase is strictly the last element, so it always closes the stream.
             Phase::Trailers => true,
-        }
+        };
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn end_of_stream(&self) -> bool {
+        self.end_of_stream
+    }
+
+    #[inline]
+    #[allow(dead_code)]
+    pub fn set_end_of_stream(&mut self, value: bool) {
+        self.end_of_stream = value;
     }
 
     #[inline]
@@ -1031,6 +1038,9 @@ impl<M: kind::Mode + Default, Msg: kind::MessageKind + OverridableModeSelector> 
     pub fn set_streaming_body(&mut self, value: bool) {
         debug!(target: "ext_proc", "set streaming to {value}.");
         self.streaming_body_enabled = value;
+        if value == false {
+            self.end_of_stream = true;
+        }
     }
 
     #[inline]

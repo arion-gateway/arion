@@ -39,5 +39,5 @@ impl MessageKind for ResponseMsg {
 
 pub enum MessageType {
     Request,
-    Response
+    Response,
 }

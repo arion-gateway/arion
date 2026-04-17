@@ -6207,7 +6207,7 @@ async fn test_request_header_mutation_with_multichunk_large_body() {
 #[tokio::test]
 #[test_log::test]
 async fn test_request_mutation_with_streamed_10m_body_4k_chunks() {
-    const BODY_SIZE : usize = 10 * 1024 * 1024;
+    const BODY_SIZE: usize = 10 * 1024 * 1024;
     let chunk_size = 4 * 1024; // 4 KB per chunk
     let num_chunks = BODY_SIZE / chunk_size;
 
@@ -6221,14 +6221,7 @@ async fn test_request_mutation_with_streamed_10m_body_4k_chunks() {
 
     // 1. Mock response for Request Headers
     mock_state = mock_state.add_response(
-        create_headers_response::<RequestMsg>(
-            vec![],
-            None,
-            vec![],
-            ResponseStatus::Continue as i32,
-            None,
-        )
-        .into(),
+        create_headers_response::<RequestMsg>(vec![], None, vec![], ResponseStatus::Continue as i32, None).into(),
     );
 
     // 2. Mock responses for Request Body chunks in Streamed mode
@@ -6240,7 +6233,8 @@ async fn test_request_mutation_with_streamed_10m_body_4k_chunks() {
                 vec![],
                 ResponseStatus::Continue as i32,
                 None,
-            ).into()
+            )
+            .into(),
         );
     }
 
@@ -6289,11 +6283,10 @@ async fn test_request_mutation_with_streamed_10m_body_4k_chunks() {
     assert_eq!(actual_req_body_len, BODY_SIZE);
 }
 
-
 #[tokio::test]
 #[test_log::test]
 async fn test_response_mutation_with_streamed_10m_body_4k_chunks() {
-    const BODY_SIZE : usize = 10 * 1024 * 1024;
+    const BODY_SIZE: usize = 10 * 1024 * 1024;
     let chunk_size = 4 * 1024; // 4 KB per chunk
     let num_chunks = BODY_SIZE / chunk_size;
 
@@ -6305,14 +6298,7 @@ async fn test_response_mutation_with_streamed_10m_body_4k_chunks() {
 
     // 1. Mock response for Response Headers
     mock_state = mock_state.add_response(
-        create_headers_response::<ResponseMsg>(
-            vec![],
-            None,
-            vec![],
-            ResponseStatus::Continue as i32,
-            None,
-        )
-        .into(),
+        create_headers_response::<ResponseMsg>(vec![], None, vec![], ResponseStatus::Continue as i32, None).into(),
     );
 
     // 2. Mock responses for Response Body chunks in Streamed mode
@@ -6324,7 +6310,8 @@ async fn test_response_mutation_with_streamed_10m_body_4k_chunks() {
                 vec![],
                 ResponseStatus::Continue as i32,
                 None,
-            ).into()
+            )
+            .into(),
         );
     }
 
@@ -6372,7 +6359,7 @@ async fn test_response_mutation_with_streamed_10m_body_4k_chunks() {
 #[tokio::test]
 #[test_log::test]
 async fn test_request_and_response_mutation_with_streamed_10m_body_4k_chunks() {
-    const BODY_SIZE : usize = 10 * 1024 * 1024;
+    const BODY_SIZE: usize = 10 * 1024 * 1024;
     let chunk_size = 4 * 1024; // 4 KB per chunk
     let num_chunks = BODY_SIZE / chunk_size;
 
@@ -6390,14 +6377,7 @@ async fn test_request_and_response_mutation_with_streamed_10m_body_4k_chunks() {
 
     // 1. Mock response for Request Headers
     mock_state = mock_state.add_response(
-        create_headers_response::<RequestMsg>(
-            vec![],
-            None,
-            vec![],
-            ResponseStatus::Continue as i32,
-            None,
-        )
-        .into(),
+        create_headers_response::<RequestMsg>(vec![], None, vec![], ResponseStatus::Continue as i32, None).into(),
     );
 
     // 2. Mock responses for Request Body chunks in Streamed mode
@@ -6409,20 +6389,14 @@ async fn test_request_and_response_mutation_with_streamed_10m_body_4k_chunks() {
                 vec![],
                 ResponseStatus::Continue as i32,
                 None,
-            ).into()
+            )
+            .into(),
         );
     }
 
     // 3. Mock response for Response Headers
     mock_state = mock_state.add_response(
-        create_headers_response::<ResponseMsg>(
-            vec![],
-            None,
-            vec![],
-            ResponseStatus::Continue as i32,
-            None,
-        )
-        .into(),
+        create_headers_response::<ResponseMsg>(vec![], None, vec![], ResponseStatus::Continue as i32, None).into(),
     );
 
     // 4. Mock responses for Response Body chunks in Streamed mode
@@ -6434,7 +6408,8 @@ async fn test_request_and_response_mutation_with_streamed_10m_body_4k_chunks() {
                 vec![],
                 ResponseStatus::Continue as i32,
                 None,
-            ).into()
+            )
+            .into(),
         );
     }
 

@@ -213,7 +213,6 @@ impl From<(ExternalProcessorConfig, Option<ExtProcPerRoute>, Option<ExternalProc
     }
 }
 
-
 impl ExternalProcessor {
     // aggregate frames of Collected in a single buffer (frame), returning
     // as a Collected<Bytes> along with original trailers.
@@ -872,21 +871,21 @@ impl ExternalProcessingWorker<kind::Processing> {
             let frames = std::mem::take(&mut self.request_processing.inflight_frames);
             let trailers = std::mem::take(&mut self.request_processing.parked_trailers);
             self.request_processing
-                .frame_bridge.drain_and_close(proof_request, frames, trailers, Some(&mut self.timeout_state.active))
+                .frame_bridge
+                .drain_and_close(proof_request, frames, trailers, Some(&mut self.timeout_state.active))
                 .await;
             let frames = std::mem::take(&mut self.response_processing.inflight_frames);
             let trailers = std::mem::take(&mut self.response_processing.parked_trailers);
             self.response_processing
-                .frame_bridge.drain_and_close(proof_response, frames, trailers, Some(&mut self.timeout_state.active))
+                .frame_bridge
+                .drain_and_close(proof_response, frames, trailers, Some(&mut self.timeout_state.active))
                 .await;
         } else {
             info!(target: "ext_proc", "{} - abort (failure_mode_allow is false)", log_msg);
             _ = self.request_processing.frame_bridge.inject_frame(Err(Box::new(err.clone())), proof_request).await;
-            self.request_processing
-                .frame_bridge.close(Some(&mut self.timeout_state.active));
+            self.request_processing.frame_bridge.close(Some(&mut self.timeout_state.active));
             _ = self.response_processing.frame_bridge.inject_frame(Err(Box::new(err.clone())), proof_response).await;
-            self.response_processing
-                .frame_bridge.close(Some(&mut self.timeout_state.active));
+            self.response_processing.frame_bridge.close(Some(&mut self.timeout_state.active));
         }
 
         self.request_processing.set_streaming_body(false);
@@ -905,8 +904,8 @@ impl ExternalProcessingWorker<kind::Processing> {
         let mut response_body_to_ext_proc_complete = false;
 
         'transaction_loop: loop {
-            let streaming_enabled = self.request_processing.streaming_body_enabled()
-                || self.response_processing.streaming_body_enabled();
+            let streaming_enabled =
+                self.request_processing.streaming_body_enabled() || self.response_processing.streaming_body_enabled();
             let outbound_req_enabled =
                 self.request_processing.streaming_body_enabled() && !request_body_to_ext_proc_complete;
             let outbound_resp_enabled =
@@ -1218,7 +1217,6 @@ impl ExternalProcessingWorker<kind::Processing> {
                                 }
                             }
 
-                            self.request_processing.end_of_stream = true;
 
                             if self.request_processing.inflight_frames.is_empty() {
                                 let proof = self.request_processing.make_proof().unwrap_or_else(|| {
@@ -1229,8 +1227,8 @@ impl ExternalProcessingWorker<kind::Processing> {
                                 debug!(target: "ext_proc", "outbound request body frame: frame bridge closed (request body)!");
                                 let trailers = std::mem::take(&mut self.request_processing.parked_trailers);
                                 self.request_processing.frame_bridge.drain_and_close(proof, std::iter::empty(), trailers, Some(&mut self.timeout_state.active)).await;
-                                self.request_processing.set_streaming_body(false);
                             }
+                            self.request_processing.set_streaming_body(false);
                         }
                     }
                 },
@@ -1310,7 +1308,6 @@ impl ExternalProcessingWorker<kind::Processing> {
                                 }
                             }
 
-                            self.response_processing.end_of_stream = true;
 
                             if self.response_processing.inflight_frames.is_empty() {
                                 debug!(target: "ext_proc", "outbound response body frame: frame bridge closed (response body)!");
@@ -1321,8 +1318,8 @@ impl ExternalProcessingWorker<kind::Processing> {
 
                                 let trailers = std::mem::take(&mut self.response_processing.parked_trailers);
                                 self.response_processing.frame_bridge.drain_and_close(proof, std::iter::empty(), trailers, Some(&mut self.timeout_state.active)).await;
-                                self.response_processing.set_streaming_body(false);
                             }
+                            self.response_processing.set_streaming_body(false);
                         }
                     }
                 },
@@ -1372,8 +1369,8 @@ impl ExternalProcessingWorker<kind::Observability> {
         let mut response_body_to_ext_proc_complete = false;
 
         'transaction_loop: loop {
-            let streaming_enabled = self.request_processing.streaming_body_enabled()
-                || self.response_processing.streaming_body_enabled();
+            let streaming_enabled =
+                self.request_processing.streaming_body_enabled() || self.response_processing.streaming_body_enabled();
             let outbound_req_enabled =
                 self.request_processing.streaming_body_enabled() && !request_body_to_ext_proc_complete;
             let outbound_resp_enabled =
@@ -1481,7 +1478,6 @@ impl ExternalProcessingWorker<kind::Observability> {
                             let trailers = std::mem::take(&mut self.request_processing.parked_trailers);
                             self.request_processing.frame_bridge.drain_and_close(proof, std::iter::empty(), trailers, Some(&mut self.timeout_state.active)).await;
                             self.request_processing.set_streaming_body(false);
-                            self.request_processing.end_of_stream = true;
                         }
                     }
                 },
@@ -1556,7 +1552,6 @@ impl ExternalProcessingWorker<kind::Observability> {
                             let trailers = std::mem::take(&mut self.response_processing.parked_trailers);
                             self.response_processing.frame_bridge.drain_and_close(proof, std::iter::empty(), trailers, Some(&mut self.timeout_state.active)).await;
                             self.response_processing.set_streaming_body(false);
-                            self.response_processing.end_of_stream = true;
                         }
                     }
                 },
@@ -1748,13 +1743,11 @@ impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
     }
 
     fn can_handle_immediate_response(&self) -> Option<MessageType> {
-        if self.request_processing.reply_channel.is_some()
-        {
+        if self.request_processing.reply_channel.is_some() {
             return Some(MessageType::Request);
         }
 
-        if self.response_processing.reply_channel.is_some()
-        {
+        if self.response_processing.reply_channel.is_some() {
             return Some(MessageType::Response);
         }
 
