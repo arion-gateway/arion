@@ -10,7 +10,6 @@ description            = "E2E test harness for Orion Proxy"
 tokio.workspace       = true
 futures.workspace     = true
 tokio-stream.workspace = true
-hyper           = { version = "1.7", features = ["server", "http1"] }
 hyper-util.workspace  = true
 http.workspace        = true
 http-body.workspace   = true
@@ -27,6 +26,7 @@ prost.workspace = true
 tonic.workspace = true
 tonic-health.workspace = true
 tonic-prost.workspace = true
+hyper           = { version = "1.7", features = ["server", "http1"] }
 uuid = { version = "1", features = ["v4"] }
 pingora-timeout = "0.3.0"
 dashmap = "6"
@@ -35,6 +35,7 @@ tokio-rustls = "0.26"
 rustls = { version = "0.23", features = ["aws_lc_rs"] }
 rustls-pemfile = "2"
 ctor = "0.2"
+test-log = { version = "0.2.19", features = ["trace"] }
 
 [dev-dependencies]
 tracing-test.workspace = true

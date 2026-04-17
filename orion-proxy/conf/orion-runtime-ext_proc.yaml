@@ -39,6 +39,7 @@ envoy_bootstrap:
                           response_body_mode: "NONE"
                           request_trailer_mode: "SKIP"
                           response_trailer_mode: "SKIP"
+                        message_timeout: 5s
                         grpc_service:
                           envoy_grpc:
                             cluster_name: ext_proc_server

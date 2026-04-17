@@ -9,7 +9,8 @@ End-to-end testing utilities for Orion Proxy.
 cargo build -p orion-proxy
 
 # Run e2e tests (ignored by default)
-cargo test -p orion-e2e-tests -- --ignored
+# We reccomend using a single thread for e2e tests to avoid race conditions
+cargo test -p orion-e2e-tests -- --ignored --test-threads=1
 ```
 
 ## Architecture

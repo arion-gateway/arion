@@ -15,6 +15,7 @@
 mod bootstrap;
 mod cluster;
 mod endpoint;
+mod ext_proc;
 mod filter_chain;
 mod hcm;
 mod health_check;
@@ -34,6 +35,7 @@ pub mod xds;
 pub use bootstrap::BootstrapBuilder;
 pub use cluster::{Cluster, ClusterBuilder, HttpVersion, LbPolicy};
 pub use endpoint::{Endpoint, EndpointBuilder, HealthStatus};
+pub use ext_proc::ExtProcBuilder;
 pub use filter_chain::{FilterChain, FilterChainBuilder};
 pub use hcm::{CodecType, Hcm, HcmBuilder};
 pub use health_check::{GrpcHealthCheckBuilder, HealthCheckMethod, HttpHealthCheckBuilder, TcpHealthCheckBuilder};

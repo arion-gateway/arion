@@ -21,7 +21,7 @@ use orion_data_plane_api::envoy_data_plane_api::{
             route::v3::RouteConfiguration,
         },
         extensions::filters::{
-            http::{rbac::v3::Rbac as HttpRbac, router::v3::Router},
+            http::{ext_proc::v3::ExternalProcessor as EnvoyExternalProcessor, {rbac::v3::Rbac as HttpRbac, router::v3::Router}},
             network::http_connection_manager::v3::{
                 http_connection_manager::{CodecType as ProtoCodecType, RouteSpecifier},
                 http_filter::ConfigType as HttpFilterConfigType,
@@ -124,6 +124,21 @@ impl HcmBuilder {
     #[must_use]
     pub fn preserve_external_request_id(mut self, preserve: bool) -> Self {
         self.proto.preserve_external_request_id = preserve;
+        self
+    }
+
+    #[must_use]
+    pub fn ext_proc(mut self, ext_proc: impl Into<EnvoyExternalProcessor>) -> Self {
+        let proto: EnvoyExternalProcessor = ext_proc.into();
+        let any = Any {
+            type_url: "type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor".into(),
+            value: proto.encode_to_vec(),
+        };
+        self.proto.http_filters.push(HttpFilter {
+            name: "envoy.filters.http.ext_proc".into(),
+            config_type: Some(HttpFilterConfigType::TypedConfig(any)),
+            ..Default::default()
+        });
         self
     }
 
