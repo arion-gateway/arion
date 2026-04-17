@@ -17,17 +17,17 @@
 
 use std::{
     collections::HashMap,
-    hash::{BuildHasherDefault, Hash},
+    hash::Hash,
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use ahash::AHasher;
+use ahash::RandomState;
 use dashmap::DashMap;
 use opentelemetry::KeyValue;
 use std::{collections::hash_map, fmt};
 
 pub struct ShardedU64<S> {
-    data: DashMap<S, HashMap<Vec<KeyValue>, AtomicU64>, BuildHasherDefault<AHasher>>,
+    data: DashMap<S, HashMap<Vec<KeyValue>, AtomicU64, RandomState>, RandomState>,
 }
 
 impl<S: Eq + Hash> ShardedU64<S> {
@@ -43,6 +43,7 @@ impl<S: Eq + Hash> ShardedU64<S> {
             shard.entry(key.to_vec()).or_insert(AtomicU64::new(value));
         }
     }
+
     pub fn sub(&self, value: u64, shard_id: S, key: &[KeyValue]) {
         if let Some(shard) = self.data.get_mut(&shard_id) {
             if let Some(counter) = shard.get(key) {
@@ -58,8 +59,8 @@ impl<S: Eq + Hash> ShardedU64<S> {
         }
     }
 
-    pub fn load_all(&self) -> HashMap<Vec<KeyValue>, u64> {
-        let mut result = HashMap::new();
+    pub fn load_all(&self) -> HashMap<Vec<KeyValue>, u64, RandomState> {
+        let mut result = HashMap::with_capacity_and_hasher(self.data.len(), RandomState::new());
         for shard in self.data.iter() {
             for (key, counter) in shard.value().iter() {
                 let value = counter.load(Ordering::Relaxed);
@@ -132,6 +133,56 @@ impl<S: Eq + Hash> Default for ShardedU64<S> {
 impl<S: Eq + Hash> fmt::Debug for ShardedU64<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_map().entries(self.load_all()).finish()
+    }
+}
+
+pub struct ShardedHistogram<S> {
+    buckets: Vec<u64>,
+    counts: Vec<ShardedU64<S>>,
+    sum: ShardedU64<S>,
+    count: ShardedU64<S>,
+    otel_histogram: Option<opentelemetry::metrics::Histogram<u64>>,
+}
+
+impl<S: Eq + Hash + Clone + Copy> ShardedHistogram<S> {
+    pub fn new(mut buckets: Vec<u64>, otel_histogram: Option<opentelemetry::metrics::Histogram<u64>>) -> Self {
+        buckets.sort_unstable();
+        let mut counts = Vec::with_capacity(buckets.len());
+        for _ in 0..buckets.len() {
+            counts.push(ShardedU64::new());
+        }
+        Self { buckets, counts, sum: ShardedU64::new(), count: ShardedU64::new(), otel_histogram }
+    }
+
+    pub fn record(&self, value: u64, shard_id: S, key: &[KeyValue]) {
+        if let Some(otel) = &self.otel_histogram {
+            otel.record(value, key);
+        }
+
+        self.sum.add(value, shard_id, key);
+        self.count.add(1, shard_id, key);
+
+        for (i, &bound) in self.buckets.iter().enumerate() {
+            if value <= bound {
+                self.counts[i].add(1, shard_id, key);
+            }
+        }
+    }
+
+    pub fn buckets(&self) -> &[u64] {
+        &self.buckets
+    }
+
+    pub fn counts(&self) -> &[ShardedU64<S>] {
+        &self.counts
+    }
+
+    pub fn sum(&self) -> &ShardedU64<S> {
+        &self.sum
+    }
+
+    pub fn count(&self) -> &ShardedU64<S> {
+        &self.count
     }
 }
 

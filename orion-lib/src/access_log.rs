@@ -373,7 +373,7 @@ mod tests {
 
         // log the formatted message to file and stdout...
         log_access(Target::Listener("test".into()), vec![message.clone(), message.clone()]).await;
-        
+
         // test blocking access as well
         log_access_blocking(Target::Listener("test".into()), vec![message.clone(), message.clone()]);
 

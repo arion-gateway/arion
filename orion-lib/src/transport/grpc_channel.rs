@@ -28,9 +28,9 @@ use tower::Service;
 
 use crate::{
     body::{instrumented_body::InstrumentedBody, response_flags::BodyKind, timeout_body::TimeoutBody},
+    extensions_context::MetadataContext,
     listeners::http_connection_manager::{RequestHandler, TransactionHandler},
     transport::HttpChannel,
-    utils::instrumented_stream::StreamMetrics,
     RequestContext,
 };
 
@@ -56,7 +56,7 @@ impl GrpcService {
 
 impl GrpcService {
     async fn do_call(self, grpc_req: Request<GrpcBody>) -> std::result::Result<http::Response<GrpcBody>, crate::Error> {
-        let stream_metrics = grpc_req.extensions().get::<Arc<StreamMetrics>>().map(Clone::clone);
+        let stream_metrics = grpc_req.extensions().get::<MetadataContext>().map(|md| md.metrics.clone());
 
         let (mut parts, grpc_body) = grpc_req.into_parts();
 

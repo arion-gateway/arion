@@ -69,14 +69,14 @@ impl From<TrailerProcessingMode> for OverridableTrailerMode {
 // The following code is inspired by Haskell DataKind/TypeFamilies and TypeApplications
 //
 
-pub struct OverridableModes<K: kind::MsgKind> {
+pub struct OverridableModes<K: kind::MessageKind> {
     header_mode: AtomicOverridableHeaderMode,
     body_mode: AtomicOverridableBodyMode,
     trailer_mode: AtomicOverridableTrailerMode,
     _kind: std::marker::PhantomData<K>,
 }
 
-impl<K: kind::MsgKind> Clone for OverridableModes<K> {
+impl<K: kind::MessageKind> Clone for OverridableModes<K> {
     fn clone(&self) -> Self {
         Self {
             header_mode: AtomicOverridableHeaderMode::new(self.header_mode.load(Ordering::Relaxed)),
@@ -87,7 +87,7 @@ impl<K: kind::MsgKind> Clone for OverridableModes<K> {
     }
 }
 
-impl<K: kind::MsgKind> OverridableModes<K> {
+impl<K: kind::MessageKind> OverridableModes<K> {
     #[inline]
     #[allow(dead_code)]
     pub fn header_mode(&self) -> OverridableHeaderMode {
@@ -147,7 +147,7 @@ impl<K: kind::MsgKind> OverridableModes<K> {
     }
 }
 
-impl<K: kind::MsgKind> Default for OverridableModes<K> {
+impl<K: kind::MessageKind> Default for OverridableModes<K> {
     fn default() -> Self {
         Self {
             header_mode: AtomicOverridableHeaderMode::new(OverridableHeaderMode::Default),
@@ -158,7 +158,7 @@ impl<K: kind::MsgKind> Default for OverridableModes<K> {
     }
 }
 
-impl<K: kind::MsgKind> std::fmt::Debug for OverridableModes<K> {
+impl<K: kind::MessageKind> std::fmt::Debug for OverridableModes<K> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct(format!("OverridableModes<{}>", std::any::type_name::<K>()).as_str())
             .field("header_mode", &self.header_mode)
@@ -235,7 +235,7 @@ impl OverridableGlobalModes {
 }
 
 #[allow(dead_code)]
-pub trait ModeSelector: Sized + kind::MsgKind {
+pub trait ModeSelector: Sized + kind::MessageKind {
     fn header_mode(mode: &ProcessingMode) -> HeaderProcessingMode;
     fn body_mode(mode: &ProcessingMode) -> BodyProcessingMode;
     fn trailer_mode(mode: &ProcessingMode) -> TrailerProcessingMode;
@@ -275,7 +275,7 @@ impl ModeSelector for kind::ResponseMsg {
     }
 }
 
-pub trait OverridableModeSelector: Sized + kind::MsgKind {
+pub trait OverridableModeSelector: Sized + kind::MessageKind {
     fn get(global_mode: &OverridableGlobalModes) -> &OverridableModes<Self>;
 }
 

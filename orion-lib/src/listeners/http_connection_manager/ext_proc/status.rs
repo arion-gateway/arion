@@ -1,13 +1,6 @@
-use crate::OrionResponseBody;
+use crate::{listeners::http_connection_manager::ext_proc::kind::MessageKind, OrionResponseBody};
 
 use orion_data_plane_api::envoy_data_plane_api::envoy::service::ext_proc::v3::HeaderMutation;
-
-#[allow(clippy::large_enum_variant)]
-#[derive(Debug)]
-pub enum Action<P> {
-    Send(P),
-    Return(ProcessingStatus),
-}
 
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
@@ -34,6 +27,15 @@ impl ProcessingStatus {
     {
         if let ProcessingStatus::ResponseReady(ready) = self {
             f(ready);
+        }
+    }
+
+    #[inline]
+    pub fn ready<M: MessageKind>() -> ProcessingStatus {
+        if M::IS_REQUEST {
+            Self::RequestReady(ReadyStatus::default())
+        } else {
+            Self::ResponseReady(ReadyStatus::default())
         }
     }
 }

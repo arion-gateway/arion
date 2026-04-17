@@ -211,7 +211,7 @@ pub struct OriginalDstConfig {
 pub struct TlsConfig {
     //todo(hayley): This field is not marked as required by envoy
     // but sni is required in our client TLS stack.
-    //  We could technically fall back to using the endpoint adress/name for the sni
+    //  We could technically fall back to using the endpoint address/name for the sni
     // where no sni is configured here but that would require a major refactor.
     // previous behaviour was to set sni to the empty string if missing.
     pub sni: SmolStr,

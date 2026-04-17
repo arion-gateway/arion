@@ -152,7 +152,10 @@ impl Cors {
     fn generate_preflight_response(&self, ver: http::Version) -> FilterDecision {
         debug!(target: "cors", "generating preflight response");
         let Some(allowed_origin) = self.validated_origin.as_ref() else {
-            return FilterDecision::internal_server_error("CORS preflight generation called without a validated origin", ver);
+            return FilterDecision::internal_server_error(
+                "CORS preflight generation called without a validated origin",
+                ver,
+            );
         };
 
         let conf = &self.inner;

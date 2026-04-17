@@ -23,20 +23,20 @@ use super::{
 #[cfg(feature = "instrumentation")]
 use crate::instrumentation;
 
-#[cfg(feature = "access-log")]
-use orion_format::{
-    context::SocketAddrContext,
-    {context::ConnectionContext, LogFormatter},
-};
+#[cfg(any(feature = "access-log", feature = "metrics"))]
+use crate::utils::instrumented_stream::StreamMetrics;
 
 #[cfg(feature = "access-log")]
-use crate::{
-    access_log::{log_access_blocking, Target},
-    utils::instrumented_stream::StreamMetrics,
+use {
+    crate::access_log::{log_access_blocking, Target},
+    orion_format::context::SocketAddrContext,
+    orion_format::{context::ConnectionContext, LogFormatter},
 };
 
+#[cfg(feature = "metrics")]
+use crate::get_shard_id;
+
 use crate::{
-    get_shard_id,
     listeners::{
         http_connection_manager::mcp_gateway::mcp::McpGatewayListenerContext,
         metadata::{DownstreamConnectionMetadata, DownstreamMetadata},
@@ -65,7 +65,7 @@ use owning_ref::ArcRef;
 use crate::{with_histogram, with_metric};
 use dashmap::DashMap;
 #[cfg(feature = "metrics")]
-use orion_metrics::metrics::{http, listeners};
+use orion_metrics::metrics::{http, listeners, tcp};
 
 use rustls::ServerConfig;
 use scopeguard::defer;
@@ -274,7 +274,8 @@ impl Listener {
 
         let mut filter_chains = Arc::new(filter_chains);
         let proxy_protocol_config = proxy_protocol_config.map(Arc::new);
-        let _listener_name = name;
+        #[allow(unused_variables)]
+        let listener_name = name;
 
         match binding {
             ListenerBinding::Socket { address, bind_device, tcp_backlog_size } => {
@@ -318,24 +319,47 @@ impl Listener {
                                         _ = stream.set_nodelay(true);
                                         _ = stream.set_quickack(true);
 
-                                        #[cfg(feature = "access-log")]
-                                        let cb = {
+                                        #[cfg(feature = "metrics")]
+                                        let shard_id = get_shard_id!();
+
+                                        #[cfg(any(feature = "access-log", feature = "metrics"))]
+                                        let drop_cb = {
+                                            #[cfg(feature = "access-log")]
                                             let downstream_peer_addr = Some(peer_addr);
+                                            #[cfg(feature = "access-log")]
                                             let downstream_local_addr = local_address;
 
                                             Box::new(
                                             move |metrics: &StreamMetrics| {
-                                               #[cfg(feature = "access-log")]
-                                               with_access_log!(&mut conn_formatters, ConnectionContext::<'_> {
-                                                   start_time,
-                                                   duration: start.elapsed(),
-                                                   wire_bytes_received: metrics.conn_bytes_read(),
-                                                   wire_bytes_sent: metrics.conn_bytes_written(),
-                                                   connection_termination_details: metrics.connection_termination_details(),
-                                               });
+                                                #[cfg(feature = "metrics")]
+                                                {
+                                                    with_metric!(
+                                                        tcp::CX_RX_BYTES_RECEIVED,
+                                                        add,
+                                                        metrics.bytes_read(),
+                                                        shard_id,
+                                                        &[KeyValue::new("listener", listener_name)]
+                                                    );
 
-                                               #[cfg(feature = "access-log")]
-                                               {
+                                                    with_metric!(
+                                                        tcp::CX_TX_BYTES_SENT,
+                                                        add,
+                                                        metrics.bytes_written(),
+                                                        shard_id,
+                                                        &[KeyValue::new("listener", listener_name)]
+                                                    );
+                                                }
+                                                #[cfg(feature = "access-log")]
+                                                {
+                                                    let err_descr = metrics.error().map(ToString::to_string);
+                                                    with_access_log!(&mut conn_formatters, ConnectionContext::<'_> {
+                                                        start_time,
+                                                        duration: start.elapsed(),
+                                                        wire_bytes_received: metrics.bytes_read(),
+                                                        wire_bytes_sent: metrics.bytes_written(),
+                                                        connection_termination_details: err_descr.as_deref(),
+                                                    });
+
                                                    with_access_log!(&mut conn_formatters, SocketAddrContext {
                                                        downstream_local_addr,
                                                        downstream_peer_addr,
@@ -343,20 +367,19 @@ impl Listener {
                                                        upstream_peer_addr: None });
 
                                                    let messages = conn_formatters.into_iter().map(LogFormatter::into_message).collect::<Vec<_>>();
-                                                   log_access_blocking(Target::Listener(_listener_name.into()), messages);
+                                                   log_access_blocking(Target::Listener(listener_name.into()), messages);
                                                }
                                             })
                                         };
 
-                                        #[cfg(feature = "access-log")]
-                                        let stream = InstrumentedStream::new(stream, Some(cb));
+                                        let stream = InstrumentedStream::new(stream);
+                                        #[cfg(any(feature = "access-log", feature = "metrics"))]
+                                        {
+                                           stream.metrics().with_drop_fn(drop_cb);
+                                        }
 
-                                        #[cfg(not(feature = "access-log"))]
-                                        let stream = InstrumentedStream::new(stream, None);
-
-                                        let _shard_id = get_shard_id!();
-                                        with_metric!(listeners::DOWNSTREAM_CX_TOTAL, add, 1, _shard_id,&[KeyValue::new("listener", _listener_name)]);
-                                        with_metric!(listeners::DOWNSTREAM_CX_ACTIVE, add, 1, _shard_id,&[KeyValue::new("listener", _listener_name)]);
+                                        with_metric!(listeners::DOWNSTREAM_CX_TOTAL, add, 1, shard_id,&[KeyValue::new("listener", listener_name)]);
+                                        with_metric!(listeners::DOWNSTREAM_CX_ACTIVE, add, 1, shard_id,&[KeyValue::new("listener", listener_name)]);
 
                                         _ = tokio::spawn(Self::process_connection(
                                             name,
@@ -412,9 +435,10 @@ impl Listener {
                         maybe_connection = rx.recv() => {
                             match maybe_connection {
                                 Some(InternalConnection { stream, downstream_metadata, start_instant }) => {
-                                    let _shard_id = get_shard_id!();
-                                    with_metric!(listeners::DOWNSTREAM_CX_TOTAL, add, 1, _shard_id, &[KeyValue::new("listener", _listener_name)]);
-                                    with_metric!(listeners::DOWNSTREAM_CX_ACTIVE, add, 1, _shard_id, &[KeyValue::new("listener", _listener_name)]);
+                                    #[cfg(feature = "metrics")]
+                                    let shard_id = get_shard_id!();
+                                    with_metric!(listeners::DOWNSTREAM_CX_TOTAL, add, 1, shard_id, &[KeyValue::new("listener", listener_name)]);
+                                    with_metric!(listeners::DOWNSTREAM_CX_ACTIVE, add, 1, shard_id, &[KeyValue::new("listener", listener_name)]);
 
                                     let filter_chains = Arc::clone(&filter_chains);
                                     tokio::spawn(Self::process_connection(
@@ -551,16 +575,17 @@ impl Listener {
         mut stream: AsyncInstrumentedStream,
         start_instant: std::time::Instant,
     ) -> Result<()> {
-        let _shard_id = get_shard_id!();
+        #[cfg(feature = "metrics")]
+        let shard_id = get_shard_id!();
         let ssl = AtomicBool::new(false);
         defer! {
-            with_metric!(listeners::DOWNSTREAM_CX_DESTROY, add, 1, _shard_id, &[KeyValue::new("listener", listener_name)]);
-            with_metric!(listeners::DOWNSTREAM_CX_ACTIVE, sub, 1, _shard_id, &[KeyValue::new("listener", listener_name)]);
+            with_metric!(listeners::DOWNSTREAM_CX_DESTROY, add, 1, shard_id, &[KeyValue::new("listener", listener_name)]);
+            with_metric!(listeners::DOWNSTREAM_CX_ACTIVE, sub, 1, shard_id, &[KeyValue::new("listener", listener_name)]);
             if ssl.load(Ordering::Relaxed) {
-                with_metric!(http::DOWNSTREAM_CX_SSL_ACTIVE, add, 1, _shard_id, &[KeyValue::new("listener", listener_name)]);
+                with_metric!(http::DOWNSTREAM_CX_SSL_ACTIVE, add, 1, shard_id, &[KeyValue::new("listener", listener_name)]);
             }
             let _ms = u64::try_from(start_instant.elapsed().as_millis()).unwrap_or(u64::MAX);
-            with_histogram!(listeners::DOWNSTREAM_CX_LENGTH_MS, record, _ms, &[KeyValue::new("listener", listener_name)]);
+            with_histogram!(listeners::DOWNSTREAM_CX_LENGTH_MS, record, _ms, shard_id, &[KeyValue::new("listener", listener_name)]);
         }
 
         let sni = if with_tls_inspector {
@@ -573,14 +598,14 @@ impl Listener {
                         http::DOWNSTREAM_CX_SSL_TOTAL,
                         add,
                         1,
-                        _shard_id,
+                        shard_id,
                         &[KeyValue::new("listener", listener_name)]
                     );
                     with_metric!(
                         http::DOWNSTREAM_CX_SSL_ACTIVE,
                         add,
                         1,
-                        _shard_id,
+                        shard_id,
                         &[KeyValue::new("listener", listener_name)]
                     );
                     ssl.store(true, Ordering::Relaxed);
@@ -592,14 +617,14 @@ impl Listener {
                         http::DOWNSTREAM_CX_SSL_TOTAL,
                         add,
                         1,
-                        _shard_id,
+                        shard_id,
                         &[KeyValue::new("listener", listener_name)]
                     );
                     with_metric!(
                         http::DOWNSTREAM_CX_SSL_ACTIVE,
                         add,
                         1,
-                        _shard_id,
+                        shard_id,
                         &[KeyValue::new("listener", listener_name)]
                     );
                     ssl.store(true, Ordering::Relaxed);
@@ -652,7 +677,7 @@ impl Listener {
                 listeners::NO_FILTER_CHAIN_MATCH,
                 add,
                 1,
-                _shard_id,
+                shard_id,
                 &[KeyValue::new("listener", listener_name)]
             );
             warn!(

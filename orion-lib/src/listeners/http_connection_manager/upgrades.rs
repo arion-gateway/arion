@@ -18,29 +18,40 @@
 use super::{RequestHandler, TransactionHandler};
 use crate::{
     body::response_flags::ResponseFlags, event_error::EventFailure,
-    listeners::synthetic_http_response::SyntheticHttpResponse, transport::HttpChannels, OrionRequestBody,
-    OrionResponseBody, RequestContext, Result,
+    listeners::synthetic_http_response::SyntheticHttpResponse, transport::HttpChannels,
+    utils::instrumented_stream::InstrumentedStream, with_metric, OrionRequestBody, OrionResponseBody, RequestContext,
+    Result,
 };
 use orion_format::types::ResponseFlags as FmtResponseFlags;
 
+use crate::get_shard_id;
 use http::{header, HeaderMap, HeaderValue, StatusCode, Version};
 use hyper::{Request, Response};
 use hyper_util::rt::TokioIo;
+#[cfg(feature = "metrics")]
+use opentelemetry::KeyValue;
 use orion_configuration::config::network_filters::http_connection_manager::UpgradeType;
+use scopeguard::defer;
 use tokio::io::copy_bidirectional;
-use tracing::error;
+use tracing::{debug, error};
+
+#[cfg(feature = "metrics")]
+use orion_metrics::metrics::{clusters, http as http_metrics, tcp, user};
 
 const UPGRADE: &str = "upgrade";
 const WEBSOCKET: &str = "websocket";
 
+#[inline]
 pub fn is_upgrade_connection(header_value: &str) -> bool {
     header_value.to_lowercase() == UPGRADE
 }
 
+#[inline]
 pub fn is_websocket_upgrade(header_value: &str) -> bool {
     header_value.to_lowercase() == WEBSOCKET
 }
 
+#[inline]
 pub fn is_valid_header(header_value: &HeaderValue) -> std::result::Result<&str, http::header::ToStrError> {
     header_value.to_str()
 }
@@ -64,6 +75,7 @@ pub fn is_valid_websocket_upgrade_request(headers: &HeaderMap) -> std::result::R
     }
 }
 
+#[inline]
 pub fn is_websocket_enabled_by_hcm(hcm_enabled_upgrades: &[UpgradeType]) -> bool {
     hcm_enabled_upgrades.iter().any(|upgrade| matches!(upgrade, UpgradeType::Websocket))
 }
@@ -72,28 +84,128 @@ pub async fn handle_websocket_upgrade(
     trans_handler: &TransactionHandler,
     mut request: Request<OrionRequestBody>,
     svc_channel: &HttpChannels,
+    #[cfg(feature = "metrics")] listener_name: &'static str,
 ) -> Result<Response<OrionResponseBody>> {
     let version = request.version();
     match version {
         Version::HTTP_11 => {
+            #[cfg(feature = "metrics")]
+            let user_id = {
+                use orion_interner::StringInterner;
+                let uid = crate::metrics::get_user_header_name()
+                    .and_then(|user_id_header_name| {
+                        request.headers().get(user_id_header_name).map(|value| value.to_str())
+                    })
+                    .transpose()
+                    .ok()
+                    .flatten()
+                    .map(|s| s.to_static_str());
+                uid
+            };
+
             let request_upgrade = hyper::upgrade::on(&mut request);
             match svc_channel.to_response(trans_handler, request, RequestContext::default()).await {
                 Ok(mut upstream_response) if upstream_response.status() == StatusCode::SWITCHING_PROTOCOLS => {
                     let response_upgrade = hyper::upgrade::on(&mut upstream_response);
+                    #[cfg(feature = "metrics")]
+                    let cluster_name = svc_channel.cluster_name();
                     tokio::spawn(async move {
+                        with_metric!(
+                            http_metrics::DOWNSTREAM_CX_WS_UPGRADES_TOTAL,
+                            add,
+                            1,
+                            get_shard_id!(),
+                            &[KeyValue::new("listener", listener_name)]
+                        );
+                        with_metric!(
+                            http_metrics::DOWNSTREAM_CX_WS_UPGRADES_ACTIVE,
+                            add,
+                            1,
+                            get_shard_id!(),
+                            &[KeyValue::new("listener", listener_name)]
+                        );
+                        defer! {
+                            with_metric!(http_metrics::DOWNSTREAM_CX_WS_UPGRADES_ACTIVE, sub, 1, get_shard_id!(), &[KeyValue::new("listener", listener_name)]);
+                        }
                         match (request_upgrade.await, response_upgrade.await) {
                             (Ok(request_upgraded), Ok(response_upgraded)) => {
-                                let _ = copy_bidirectional(
-                                    &mut TokioIo::new(request_upgraded),
-                                    &mut TokioIo::new(response_upgraded),
-                                )
-                                .await
-                                .map_err(|err| {
+                                let mut downstream = InstrumentedStream::new(TokioIo::new(request_upgraded));
+                                let mut upstream = InstrumentedStream::new(TokioIo::new(response_upgraded));
+
+                                #[allow(unused_variables)]
+                                let shard_id = get_shard_id!();
+
+                                let _ = copy_bidirectional(&mut downstream, &mut upstream).await.map_err(|err| {
                                     error!("Upgrade failure, bidi copy failed for websocket {:?}", err);
                                     err
                                 });
+
+                                #[allow(unused_variables)]
+                                let bytes_received_down = downstream.metrics().bytes_read();
+                                #[allow(unused_variables)]
+                                let bytes_sent_down = downstream.metrics().bytes_written();
+                                #[allow(unused_variables)]
+                                let bytes_received_up = upstream.metrics().bytes_read();
+                                #[allow(unused_variables)]
+                                let bytes_sent_up = upstream.metrics().bytes_written();
+
+                                debug!(target: "websocket", "downstream_rx: {bytes_received_down}, downstream_tx: {bytes_sent_down}, upstream_rx: {bytes_received_up}, upstream_tx: {bytes_sent_up}");
+
+                                with_metric!(
+                                    tcp::CX_RX_BYTES_RECEIVED,
+                                    add,
+                                    bytes_received_down,
+                                    shard_id,
+                                    &[KeyValue::new("listener", listener_name)]
+                                );
+                                with_metric!(
+                                    tcp::CX_TX_BYTES_SENT,
+                                    add,
+                                    bytes_sent_down,
+                                    shard_id,
+                                    &[KeyValue::new("listener", listener_name)]
+                                );
+                                with_metric!(
+                                    clusters::UPSTREAM_CX_RX_BYTES_TOTAL,
+                                    add,
+                                    bytes_received_up,
+                                    shard_id,
+                                    &[KeyValue::new("cluster", cluster_name)]
+                                );
+                                with_metric!(
+                                    clusters::UPSTREAM_CX_TX_BYTES_TOTAL,
+                                    add,
+                                    bytes_sent_up,
+                                    shard_id,
+                                    &[KeyValue::new("cluster", cluster_name)]
+                                );
+
+                                #[cfg(feature = "metrics")]
+                                if let Some(user_id) = user_id {
+                                    with_metric!(
+                                        user::INBOUND_STREAMING_BYTES_PROCESSED,
+                                        add,
+                                        bytes_received_down,
+                                        shard_id,
+                                        &[KeyValue::new("user_id", user_id)]
+                                    );
+                                    with_metric!(
+                                        user::OUTBOUND_STREAMING_BYTES_PROCESSED,
+                                        add,
+                                        bytes_sent_down,
+                                        shard_id,
+                                        &[KeyValue::new("user_id", user_id)]
+                                    );
+                                }
                             },
                             (req_state, resp_state) => {
+                                with_metric!(
+                                    http_metrics::DOWNSTREAM_RQ_WS_ON_NON_WS_ROUTE,
+                                    add,
+                                    1,
+                                    get_shard_id!(),
+                                    &[KeyValue::new("listener", listener_name)]
+                                );
                                 error!(
                                     "Upgrade attempt failure, occurred during connection upgrade {:?},{:?}",
                                     req_state, resp_state

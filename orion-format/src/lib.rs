@@ -22,7 +22,7 @@ pub mod operator;
 pub mod types;
 
 use crate::grammar::AccessLogGrammar;
-use arrayvec::{ArrayString};
+use arrayvec::ArrayString;
 use context::Context;
 use operator::{Category, Operator};
 use serde::{Deserialize, Serialize};
@@ -510,5 +510,4 @@ mod tests {
         println!("SmolStr:   {}", std::mem::size_of::<SmolStr>());
         println!("Box<[u8]>: {}", std::mem::size_of::<Box<[u8]>>());
     }
-
 }

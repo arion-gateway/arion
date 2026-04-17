@@ -28,3 +28,6 @@
 [submodule "hyper-util"]
 	path = hyper-util
 	url = https://internal.invalid/hyper-util.git
+[submodule "orion-auth"]
+	path = orion-auth
+	url = https://internal.invalid/orion-auth.git

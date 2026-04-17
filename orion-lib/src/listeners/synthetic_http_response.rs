@@ -22,6 +22,7 @@ use http_body_util::Full;
 use crate::{
     body::{response_flags::ResponseFlags, timeout_body::TimeoutBody},
     event_error::EventKind,
+    extensions_context::EventContext,
     OrionResponseBody,
 };
 
@@ -161,8 +162,8 @@ impl SyntheticHttpResponse {
         let mut rsp = Response::new(TimeoutBody::new(None, Full::from(self.body).into()));
         *rsp.status_mut() = self.http_status;
         *rsp.version_mut() = version;
-        rsp.extensions_mut().insert(self.response_flags);
-        rsp.extensions_mut().insert(Some(self.event_kind));
+        rsp.extensions_mut()
+            .insert(EventContext { response_flags: self.response_flags, event_kind: Some(self.event_kind) });
         if self.close_connection && (version == HttpVersion::HTTP_10 || version == HttpVersion::HTTP_11) {
             // Notify the (proxy or non-proxy) client that the connection will be closed.
             rsp.headers_mut().insert(http::header::CONNECTION, HeaderValue::from_static("close"));

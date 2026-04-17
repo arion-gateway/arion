@@ -64,7 +64,7 @@ pub fn update_server_metrics() {
         .store(memory_allocated, shard_id, &[]);
 }
 
-pub(crate) fn init_server_metrics(number_of_threads: usize) {
+pub(crate) fn init_metrics(number_of_threads: usize) {
     _ = STARTUP_TIME.set(Instant::now());
     let shard_id = std::thread::current().id();
 

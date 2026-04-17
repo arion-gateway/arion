@@ -34,7 +34,7 @@ pub mod timer;
 pub mod tls_inspector;
 pub mod transport_socket;
 
-use crate::utils::instrumented_stream::Instrumented;
+use crate::utils::instrumented_stream::HasMetrics;
 
 pub use self::{
     grpc_channel::{GrpcService, SimpleRoundRobinGrpcServiceLB},
@@ -44,8 +44,8 @@ pub use self::{
     transport_socket::UpstreamTransportSocketConfigurator,
 };
 
-pub trait AsyncReadWriteInstrumented: AsyncRead + AsyncWrite + Instrumented + Send + Sync + Unpin {}
-impl<T> AsyncReadWriteInstrumented for T where T: AsyncRead + AsyncWrite + Instrumented + Send + Sync + Unpin {}
+pub trait AsyncReadWriteInstrumented: AsyncRead + AsyncWrite + HasMetrics + Send + Sync + Unpin {}
+impl<T> AsyncReadWriteInstrumented for T where T: AsyncRead + AsyncWrite + HasMetrics + Send + Sync + Unpin {}
 
 pub type AsyncInstrumentedStream = Box<dyn AsyncReadWriteInstrumented>;
 

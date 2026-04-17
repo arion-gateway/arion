@@ -15,6 +15,7 @@
 //
 //
 use crate::config::{common::envoy_conversions::IsUsed, grpc::GrpcService, unsupported_field, GenericError};
+use http::HeaderName;
 use orion_data_plane_api::envoy_data_plane_api::{
     envoy::extensions::stat_sinks::open_telemetry::v3::SinkConfig as EnvoySinkConfig, google::protobuf::Any,
     prost::Message,
@@ -49,6 +50,12 @@ impl TryFrom<Any> for StatsSink {
 pub struct SinkConfig {
     pub grpc_service: GrpcService,
     pub prefix: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct MetricsConfig {
+    #[serde(with = "http_serde_ext::header_name::option")]
+    pub user_id_header_name: Option<HeaderName>,
 }
 
 #[cfg(feature = "envoy-conversions")]

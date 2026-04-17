@@ -27,6 +27,7 @@ pingora-timeout                = "0.3.0"
 tokio.workspace                = true
 tower.workspace                = true
 tracing.workspace              = true
+ahash.workspace                = true
 
 axum = "0.8.6"
 smol_str.workspace = true
@@ -45,6 +46,7 @@ tracing-subscriber = { workspace = true, features = [
   "registry",
   "std",
 ] }
+smallvec = "1.15.1"
 
 [features]
 config-dump = []

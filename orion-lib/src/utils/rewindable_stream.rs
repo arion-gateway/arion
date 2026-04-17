@@ -15,7 +15,6 @@
 //
 //
 
-use crate::{transport::AsyncReadWriteInstrumented, utils::instrumented_stream::Instrumented};
 use bytes::Bytes;
 use std::{
     pin::Pin,
@@ -23,9 +22,11 @@ use std::{
 };
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
+use crate::transport::AsyncReadWriteInstrumented;
+
 pub enum RewindableHeadAsyncStream<R>
 where
-    R: AsyncReadWriteInstrumented + Instrumented + ?Sized,
+    R: AsyncReadWriteInstrumented + ?Sized,
 {
     HeadBufferingReadOnlyMode { inner: Box<R>, buffer: Vec<u8> },
     FullReplayMode { inner: Box<R>, replay_buffer: Bytes, read_pos: usize },
@@ -33,7 +34,7 @@ where
 
 impl<R> RewindableHeadAsyncStream<R>
 where
-    R: AsyncReadWriteInstrumented + Instrumented + ?Sized,
+    R: AsyncReadWriteInstrumented + ?Sized,
 {
     pub fn new(inner: Box<R>) -> Self {
         Self::HeadBufferingReadOnlyMode { inner, buffer: Vec::new() }
@@ -62,11 +63,19 @@ where
             RewindableHeadAsyncStream::FullReplayMode { inner, .. } => inner.as_ref(),
         }
     }
+
+    #[allow(dead_code)]
+    pub fn get_mut(&mut self) -> &mut R {
+        match self {
+            RewindableHeadAsyncStream::HeadBufferingReadOnlyMode { inner, .. } => inner.as_mut(),
+            RewindableHeadAsyncStream::FullReplayMode { inner, .. } => inner.as_mut(),
+        }
+    }
 }
 
 impl<R> AsyncRead for RewindableHeadAsyncStream<R>
 where
-    R: AsyncReadWriteInstrumented + Instrumented + ?Sized,
+    R: AsyncReadWriteInstrumented + ?Sized,
 {
     fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<std::io::Result<()>> {
         match &mut *self {
@@ -97,7 +106,7 @@ where
 
 impl<R> AsyncWrite for RewindableHeadAsyncStream<R>
 where
-    R: AsyncReadWriteInstrumented + Instrumented + ?Sized,
+    R: AsyncReadWriteInstrumented + ?Sized,
 {
     fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, write_buf: &[u8]) -> Poll<std::io::Result<usize>> {
         match &mut *self {
@@ -144,7 +153,7 @@ mod tests {
         let test_data = b"hello world".to_vec();
         let (mut write_side, read_side) = tokio::io::duplex(1024);
         write_side.write_all(&test_data).await.unwrap();
-        let mut rewindable = RewindableHeadAsyncStream::new(Box::new(InstrumentedStream::new(read_side, None)));
+        let mut rewindable = RewindableHeadAsyncStream::new(Box::new(InstrumentedStream::new(read_side)));
 
         let mut read_buf = vec![0u8; 5];
         rewindable.read_exact(&mut read_buf).await.unwrap();
@@ -166,7 +175,7 @@ mod tests {
         let test_data = b"hello world".to_vec();
         let (mut write_side, read_side) = tokio::io::duplex(1024);
         write_side.write_all(&test_data).await.unwrap();
-        let mut rewindable = RewindableHeadAsyncStream::new(Box::new(InstrumentedStream::new(read_side, None)));
+        let mut rewindable = RewindableHeadAsyncStream::new(Box::new(InstrumentedStream::new(read_side)));
 
         let mut read_buf = vec![0u8; 11];
         rewindable.read_exact(&mut read_buf).await.unwrap();
