@@ -1,4 +1,4 @@
-use crate::{listeners::http_connection_manager::ext_proc::kind::MsgKind, OrionResponseBody};
+use crate::{listeners::http_connection_manager::ext_proc::kind::MessageKind, OrionResponseBody};
 
 use orion_data_plane_api::envoy_data_plane_api::envoy::service::ext_proc::v3::HeaderMutation;
 
@@ -31,7 +31,7 @@ impl ProcessingStatus {
     }
 
     #[inline]
-    pub fn ready<M: MsgKind>() -> ProcessingStatus {
+    pub fn ready<M: MessageKind>() -> ProcessingStatus {
         if M::IS_REQUEST {
             Self::RequestReady(ReadyStatus::default())
         } else {

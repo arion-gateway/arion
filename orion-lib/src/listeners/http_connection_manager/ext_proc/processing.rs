@@ -2,7 +2,6 @@ use crate::body::channel_body::FrameBridge;
 use crate::event_error::EventFailure;
 use crate::listeners::http_connection_manager::ext_proc::kind;
 use crate::listeners::http_connection_manager::ext_proc::mutation::apply_trailer_mutations;
-use crate::listeners::http_connection_manager::ext_proc::processing::protected::ReturnStatusProof;
 use crate::listeners::http_connection_manager::ext_proc::pseudo_header::CombinedHeaderMap;
 use crate::listeners::http_connection_manager::ext_proc::r#override::{
     OverridableBodyMode, OverridableGlobalModes, OverridableModeSelector,
@@ -155,7 +154,7 @@ impl FramesBuffer {
 }
 
 #[allow(clippy::struct_excessive_bools)]
-pub struct Processing<M: kind::Mode, Msg: kind::MsgKind> {
+pub struct Processing<M: kind::Mode, Msg: kind::MessageKind> {
     http_headers: Option<CombinedHeaderMap>,
     pub trailers: Option<http::HeaderMap>,
     pub frame_bridge: protected::FrameBridge,
@@ -212,12 +211,12 @@ pub(crate) mod protected {
     #[derive(Clone, Copy)]
     pub struct ReturnStatusProof(());
 
-    impl<M: kind::Mode, Msg: kind::MsgKind> Processing<M, Msg> {
+    impl<M: kind::Mode, Msg: kind::MessageKind> Processing<M, Msg> {
         #[inline]
         #[must_use = "ProofReturn must be used to ensure correct usage of the API"]
         pub fn return_status(&mut self, status: ProcessingStatus, msg: &str) -> ReturnStatusProof {
             if let Some(reply_channel) = self.reply_channel.take() {
-                debug!(target: "ext_proc", "{msg} @{kind}: action -> return {status:?}", kind = Msg::NAME);
+                debug!(target: "ext_proc", "{msg} @{kind}: -> return {status:?}", kind = Msg::NAME);
                 if let Err(_) = reply_channel.send(status) {
                     warn!(target: "ext_proc", "{msg} @{kind}: failed to send response status through reply channel", kind = Msg::NAME);
                 }
@@ -258,9 +257,58 @@ pub(crate) mod protected {
             let _ = self.inner.drain_and_inject().await;
         }
 
+        /// Returns the number of frames injected into the `ChannelBody` so far.
+        pub fn injected_frames(&self) -> usize {
+            self.inner.injected_frames()
+        }
+
         #[inline]
-        pub fn close(&mut self) {
+        pub fn close(
+            &mut self,
+            timeout_active: Option<&mut bool>,
+        ) {
+            if let Some(timeout_active) = timeout_active {
+                *timeout_active = false;
+            }
             self.inner.close();
+        }
+
+        #[inline]
+        pub async fn drain_and_close(
+            &mut self,
+            proof: ReturnStatusProof,
+            frames: impl IntoIterator<Item = Frame<Bytes>>,
+            trailers: Option<Frame<Bytes>>,
+            timeout_active: Option<&mut bool>,
+        ) {
+            // 1. frames to inject first...
+            for frame in frames {
+                _ = self.inject_frame(Ok(frame), proof).await;
+            }
+
+            // 2. remaining frames if not yet processed...
+            _ = self.drain_and_inject(proof).await;
+
+            // 3. frame bridge could be already drained, but we might have parked trailers to inject...
+            if let Some(trailers) = trailers {
+                _ = self.inject_frame(Ok(trailers), proof).await;
+            }
+
+            self.close(timeout_active);
+        }
+
+        #[inline]
+        #[allow(dead_code)]
+        #[must_use]
+        pub fn is_closed(&self) -> bool {
+            self.inner.is_closed()
+        }
+
+        #[inline]
+        #[allow(dead_code)]
+        #[must_use]
+        pub fn is_open(&self) -> bool {
+            !self.inner.is_closed()
         }
 
         /// Check if the `FrameBridge` has been constructed with an empty body.
@@ -280,7 +328,7 @@ pub(crate) mod protected {
     }
 }
 
-impl<M: kind::Mode + Default, Msg: kind::MsgKind> From<&ExternalProcessingWorkerConfig> for Processing<M, Msg> {
+impl<M: kind::Mode + Default, Msg: kind::MessageKind> From<&ExternalProcessingWorkerConfig> for Processing<M, Msg> {
     fn from(config: &ExternalProcessingWorkerConfig) -> Self {
         debug!(target: "ext_proc", "From<&ExternalProcessingWorkerConfig for Processing<>");
 
@@ -387,7 +435,7 @@ impl Processing<kind::Processing, kind::ResponseMsg> {
     }
 }
 
-impl<Msg: kind::MsgKind + OverridableModeSelector> Processing<kind::Processing, Msg> {
+impl<Msg: kind::MessageKind + OverridableModeSelector> Processing<kind::Processing, Msg> {
     #[must_use = "must handle the returned Processing Request"]
     pub async fn handle_headers_response(
         &mut self,
@@ -427,7 +475,7 @@ impl<Msg: kind::MsgKind + OverridableModeSelector> Processing<kind::Processing, 
                     clear_route_cache: should_clear_route_cache,
                 });
 
-                let stream_body_enabled = self.try_enable_streaming_body();
+                let stream_body_enabled = self.try_enable_streaming_body().await;
                 debug!(target: "ext_proc", "handle_headers_response: trying to enable streaming body: {stream_body_enabled}");
             } else {
                 let headers_modifications = response_data.header_mutation.clone();
@@ -494,7 +542,9 @@ impl<Msg: kind::MsgKind + OverridableModeSelector> Processing<kind::Processing, 
                     }
 
                     debug!(target: "ext_proc", "frame bridge closed (handle header response)!");
-                    self.frame_bridge_close(Some(timeout_active), std::iter::empty(), proof, false).await;
+                    self.frame_bridge.close(Some(timeout_active));
+                    self.set_streaming_body(false);
+
                 } else {
                     debug!(target: "ext_proc", "handle_headers_response: ResponseStatus:Continue: headers processed: should_process_body:{}, should_process_trailers:{}",
                         override_mode.should_process_body::<Msg>(), override_mode.should_process_trailers::<Msg>());
@@ -505,9 +555,10 @@ impl<Msg: kind::MsgKind + OverridableModeSelector> Processing<kind::Processing, 
                     {
                         debug!(target: "ext_proc", "handle_headers_response: complete to stream original body and close!");
                         self.frame_bridge.drain_and_inject(proof).await;
-                        self.frame_bridge_close(Some(timeout_active), std::iter::empty(), proof, false).await;
+                        self.frame_bridge.close(Some(timeout_active));
+                        self.set_streaming_body(false);
                     } else {
-                        let stream_body_enabled = self.try_enable_streaming_body();
+                        let stream_body_enabled = self.try_enable_streaming_body().await;
                         debug!(target: "ext_proc", "handle_headers_response: enable streaming body: {stream_body_enabled}");
                     }
                 }
@@ -603,13 +654,16 @@ impl<Msg: kind::MsgKind + OverridableModeSelector> Processing<kind::Processing, 
 
             if matches!(embedded_status, ResponseStatus::ContinueAndReplace) {
                 debug!(target: "ext_proc", "handle_body_response: CONTINUE_AND_REPLACE: closing the frame bridge.");
-                self.frame_bridge_close(Some(timeout_active), std::iter::empty(), proof, false).await;
+                self.frame_bridge.close(Some(timeout_active));
+                self.set_streaming_body(false);
                 return None;
             }
 
             if self.end_of_stream && self.inflight_frames.is_empty() {
-                debug!(target: "ext_proc", "handle_body_response: end_of_stream (closing frame bridge)!");
-                self.frame_bridge_close(Some(timeout_active), std::iter::empty(), proof, false).await;
+                debug!(target: "ext_proc", "handle_body_response: end_of_stream (closing frame bridge) -> trailers: {:?}", self.parked_trailers);
+                let trailers = std::mem::take(&mut self.parked_trailers);
+                self.frame_bridge.drain_and_close(proof, None, trailers, Some(timeout_active)).await;
+                self.set_streaming_body(false);
             }
 
             return None;
@@ -652,24 +706,27 @@ impl<Msg: kind::MsgKind + OverridableModeSelector> Processing<kind::Processing, 
             _ = self.frame_bridge.inject_frame(Ok(Frame::trailers(trailers)), proof).await;
 
             self.end_of_stream = true;
-            self.frame_bridge_close(Some(timeout_active), std::iter::empty(), proof, false).await;
+            self.frame_bridge.close(Some(timeout_active));
+            self.set_streaming_body(false);
             None
         } else {
             debug!(target: "ext_proc", "frame bridge closed (handle trailers response)!");
 
-            let proof = self.make_proof().unwrap_or_else(|| {
+            let _proof = self.make_proof().unwrap_or_else(|| {
                 let status =
                     self.status_error("handle_trailers_response: No trailers to process", self.failure_mode_allow);
                 self.return_status(status, "handle_headers_response: returning status in body response")
             });
 
-            self.frame_bridge_close(Some(timeout_active), std::iter::empty(), proof, false).await;
+            self.frame_bridge.close(Some(timeout_active));
+            self.set_streaming_body(false);
+
             None
         }
     }
 }
 
-impl<M: kind::Mode + Default, Msg: kind::MsgKind + OverridableModeSelector> Processing<M, Msg> {
+impl<M: kind::Mode + Default, Msg: kind::MessageKind + OverridableModeSelector> Processing<M, Msg> {
     #[must_use = "must handle the returned Action"]
     #[allow(clippy::too_many_arguments)]
     pub async fn process(
@@ -714,7 +771,7 @@ impl<M: kind::Mode + Default, Msg: kind::MsgKind + OverridableModeSelector> Proc
 
         let proof = self.return_status(ProcessingStatus::ready::<Msg>(), "No action required");
         self.frame_bridge.drain_and_inject(proof).await;
-        self.frame_bridge.close();
+        self.frame_bridge.close(None);
         None
     }
 
@@ -729,7 +786,8 @@ impl<M: kind::Mode + Default, Msg: kind::MsgKind + OverridableModeSelector> Proc
 
             let proof = self.return_status(status_error, "Unexpected missing headers!");
             self.frame_bridge.drain_and_inject(proof).await;
-            self.frame_bridge.close();
+            self.frame_bridge.close(None);
+            self.set_streaming_body(false);
             return None;
         };
 
@@ -768,7 +826,7 @@ impl<M: kind::Mode + Default, Msg: kind::MsgKind + OverridableModeSelector> Proc
         if M::OBSERVABILITY || (self.send_body_without_waiting_for_header_response && send_body_or_trailers) {
             // force enable streaming body. Note: in observability mode we want to enable streaming body regardless of the presence of body/trailers
             // to properly handle the termination condition.
-            self.enable_streaming_body();
+            self.set_streaming_body(true);
         }
 
         Some(processing_request)
@@ -778,7 +836,7 @@ impl<M: kind::Mode + Default, Msg: kind::MsgKind + OverridableModeSelector> Proc
     async fn process_body_and_trailers(&mut self, override_mode: &OverridableGlobalModes) -> Option<ProcessingRequest> {
         debug!(target: "ext_proc", "process: body and trailers (headers are skipped)...");
 
-        let streaming_enabled = self.try_enable_streaming_body();
+        let streaming_enabled = self.try_enable_streaming_body().await;
 
         if M::OBSERVABILITY {
             _ = self.return_status(ProcessingStatus::ready::<Msg>(), "observability!");
@@ -929,34 +987,6 @@ impl<M: kind::Mode + Default, Msg: kind::MsgKind + OverridableModeSelector> Proc
     }
 
     #[inline]
-    pub async fn frame_bridge_close(
-        &mut self,
-        timeout_active: Option<&mut bool>,
-        frames_to_inject: impl IntoIterator<Item = Frame<Bytes>>,
-        proof: ReturnStatusProof,
-        drain: bool,
-    ) {
-        if let Some(timeout_active) = timeout_active {
-            *timeout_active = false;
-        }
-
-        if let Some(trailers) = self.parked_trailers.take() {
-            _ = self.frame_bridge.inject_frame(Ok(trailers), proof).await;
-        }
-
-        for frame in frames_to_inject {
-            _ = self.frame_bridge.inject_frame(Ok(frame), proof).await;
-        }
-
-        if drain {
-            _ = self.frame_bridge.drain_and_inject(proof).await;
-        }
-
-        self.frame_bridge.close();
-        self.streaming_body_enabled = false;
-    }
-
-    #[inline]
     fn is_end_stream(&self, phase: Phase, override_mode: &OverridableGlobalModes) -> bool {
         // Determine if trailers will actually be sent.
         // It requires both the configuration to allow it and the physical presence of trailers.
@@ -984,7 +1014,7 @@ impl<M: kind::Mode + Default, Msg: kind::MsgKind + OverridableModeSelector> Proc
 
     #[inline]
     #[must_use]
-    pub fn try_enable_streaming_body(&mut self) -> bool {
+    pub async fn try_enable_streaming_body(&mut self) -> bool {
         // enable streaming only if we have a body to stream
         if self.frame_bridge.source_has_non_empty_body_or_trailers() {
             debug!(target: "ext_proc", "enabling body streaming...");
@@ -992,19 +1022,19 @@ impl<M: kind::Mode + Default, Msg: kind::MsgKind + OverridableModeSelector> Proc
             true
         } else {
             debug!(target: "ext_proc", "body streaming not enabled (body and trailers are empty)");
-            self.frame_bridge.close();
+            self.frame_bridge.close(None);
             false
         }
     }
 
     #[inline]
-    pub fn enable_streaming_body(&mut self) {
-        debug!(target: "ext_proc", "enabling body streaming...");
-        self.streaming_body_enabled = true;
+    pub fn set_streaming_body(&mut self, value: bool) {
+        debug!(target: "ext_proc", "set streaming to {value}.");
+        self.streaming_body_enabled = value;
     }
 
     #[inline]
-    pub fn is_streaming_body_enabled(&self) -> bool {
+    pub fn streaming_body_enabled(&self) -> bool {
         self.streaming_body_enabled
     }
 }

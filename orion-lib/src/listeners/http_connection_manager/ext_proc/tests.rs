@@ -5,7 +5,7 @@ use crate::{
         timeout_body::TimeoutBodyError,
     },
     listeners::http_connection_manager::ext_proc::{
-        kind::{MsgKind, RequestMsg, ResponseMsg},
+        kind::{MessageKind, RequestMsg, ResponseMsg},
         mutation::apply_header_mutations,
         r#override::ModeSelector,
     },
@@ -264,9 +264,7 @@ impl ExternalProcessorService for MockExternalProcessor {
                             }
 
                             if let Some(delay) = processing_response.delay() {
-                                println!("sleeping: {delay:?}...");
                                 tokio::time::sleep(delay).await;
-                                println!("sleeping: done!");
                             }
 
                             if !state.is_observability_mode() {
@@ -318,14 +316,14 @@ async fn start_mock_server(state: MockExternalProcessorState) -> (SocketAddr, Jo
 }
 
 #[derive(Debug, Default)]
-struct MockMessage<M: MsgKind> {
+struct MockMessage<M: MessageKind> {
     headers: Vec<Option<(&'static str, &'static str)>>,
     body: Vec<&'static str>,
     trailers: Vec<Option<(&'static str, &'static str)>>,
     _marker: std::marker::PhantomData<M>,
 }
 
-impl<M: MsgKind> MockMessage<M> {
+impl<M: MessageKind> MockMessage<M> {
     fn new(
         headers: Vec<Option<(&'static str, &'static str)>>,
         body: Vec<&'static str>,
@@ -561,7 +559,7 @@ fn create_immediate_response(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn create_headers_response<M: MsgKind>(
+fn create_headers_response<M: MessageKind>(
     headers: Vec<Option<(&str, &str)>>,
     body_data: Option<Vec<u8>>,
     trailers: Vec<Option<(&str, &str)>>,
@@ -640,7 +638,7 @@ pub async fn to_body_data_chunks(mut body: Collected<Bytes>) -> Vec<Bytes> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn create_body_response<M: MsgKind>(
+fn create_body_response<M: MessageKind>(
     headers: Vec<Option<(&str, &str)>>,
     body_data: Option<Vec<u8>>,
     trailers: Vec<Option<(&str, &str)>>,
@@ -682,7 +680,7 @@ fn create_body_response<M: MsgKind>(
     .into()
 }
 
-fn create_trailers_response<M: MsgKind>(trailers: Vec<Option<(&str, &str)>>) -> MockProcessingResponse {
+fn create_trailers_response<M: MessageKind>(trailers: Vec<Option<(&str, &str)>>) -> MockProcessingResponse {
     let trailer_mutation = transform(trailers).and_then(|trls| create_trailer_mutation(trls));
 
     let trailers_response = TrailersResponse { header_mutation: trailer_mutation };
@@ -713,7 +711,7 @@ static BODY_PROCESSING_MODE: [BodyProcessingMode; 5] = [
 static TRAILER_PROCESSING_MODE: [TrailerProcessingMode; 3] =
     [TrailerProcessingMode::Default, TrailerProcessingMode::Skip, TrailerProcessingMode::Send];
 
-fn generate_processing_mode_configurations<M: MsgKind>() -> Vec<ProcessingMode> {
+fn generate_processing_mode_configurations<M: MessageKind>() -> Vec<ProcessingMode> {
     if M::IS_RESPONSE {
         HEADER_PROCESSING_MODE
             .iter()
@@ -754,7 +752,7 @@ static REQUEST_HEADERS: [Option<(&str, &str)>; 1] = [Some(("x-test-header", "ori
 static REQUEST_BODIES: [&[&str]; 2] = [&[], &["original body"]];
 static REQUEST_TRAILERS: [Option<(&str, &str)>; 2] = [None, Some(("x-test-trailer", "original-trailer-value"))];
 
-fn generate_mock_messages<M: MsgKind>() -> Vec<MockMessage<M>> {
+fn generate_mock_messages<M: MessageKind>() -> Vec<MockMessage<M>> {
     REQUEST_HEADERS
         .iter()
         .flat_map(|&headers| {
@@ -779,7 +777,7 @@ fn transform<T>(vec: Vec<Option<T>>) -> Option<Vec<T>> {
     (!filtered.is_empty()).then_some(filtered)
 }
 
-fn generate_header_processing_response<M: MsgKind>(status: ResponseStatus) -> Vec<MockProcessingResponse> {
+fn generate_header_processing_response<M: MessageKind>(status: ResponseStatus) -> Vec<MockProcessingResponse> {
     HEADER_MODIFICATIONS
         .iter()
         .flat_map(|&headers| {
@@ -799,7 +797,7 @@ fn generate_header_processing_response<M: MsgKind>(status: ResponseStatus) -> Ve
         .collect()
 }
 
-fn generate_body_processing_response<M: MsgKind>(status: ResponseStatus) -> Vec<MockProcessingResponse> {
+fn generate_body_processing_response<M: MessageKind>(status: ResponseStatus) -> Vec<MockProcessingResponse> {
     HEADER_MODIFICATIONS
         .iter()
         .flat_map(|&headers| {
@@ -819,11 +817,11 @@ fn generate_body_processing_response<M: MsgKind>(status: ResponseStatus) -> Vec<
         .collect()
 }
 
-fn generate_trailer_processing_response<M: MsgKind>() -> Vec<MockProcessingResponse> {
+fn generate_trailer_processing_response<M: MessageKind>() -> Vec<MockProcessingResponse> {
     TRAILER_MODIFICATIONS.iter().map(move |&trailers| create_trailers_response::<M>(vec![trailers])).collect()
 }
 
-fn generate_mock_external_processors_states<M: MsgKind + ModeSelector>(
+fn generate_mock_external_processors_states<M: MessageKind + ModeSelector>(
     status: ResponseStatus,
     mock_msg: &MockMessage<M>,
     processing_mode: &ProcessingMode,
@@ -876,7 +874,7 @@ fn assert_result<M>(
     mock_state: &MockExternalProcessorState,
     processing_mode: &ProcessingMode,
 ) where
-    M: std::fmt::Debug + MsgKind + ModeSelector,
+    M: std::fmt::Debug + MessageKind + ModeSelector,
 {
     // ProcessingMode predicates
     let has_headers = transform(mock.headers.clone()).is_some();
@@ -949,7 +947,7 @@ fn assert_result<M>(
         expected_headers,
         "test_case #: {}, asserting headers: original {} {:#?}, ext_proc server conf: {:#?}, ext_proc_filter processing mode: {:#?}",
         test_case_num,
-        <M as MsgKind>::NAME,
+        <M as MessageKind>::NAME,
         mock,
         mock_state,
         processing_mode
@@ -959,7 +957,7 @@ fn assert_result<M>(
         expected_body,
         "test_case #: {}, asserting body, original {} {:#?}, ext_proc server conf: {:#?}, ext_proc_filter processing mode: {:#?}",
         test_case_num,
-        <M as MsgKind>::NAME,
+        <M as MessageKind>::NAME,
         mock,
         mock_state,
         processing_mode
@@ -969,7 +967,7 @@ fn assert_result<M>(
         expected_trailers,
         "test_case #: {}, asserting trailers, original {} {:#?}, ext_proc server conf: {:#?}, ext_proc_filter processing mode: {:#?}",
         test_case_num,
-        <M as MsgKind>::NAME,
+        <M as MessageKind>::NAME,
         mock,
         mock_state,
         processing_mode
@@ -3477,7 +3475,7 @@ where
 
 #[tokio::test]
 #[test_log::test]
-async fn test_request_body_and_trailer_out_of_order() {
+async fn test_request_body_and_trailer_processing_out_of_order() {
     let mock_state = MockExternalProcessorState::new()
         .add_response(
             create_headers_response::<RequestMsg>(vec![], None, vec![], ResponseStatus::Continue as i32, None)
@@ -4799,7 +4797,7 @@ fn create_clear_body_mutation() -> BodyMutation {
     BodyMutation { mutation: Some(Mutation::ClearBody(true)) }
 }
 
-fn create_body_response_with_clear_body<M: MsgKind>(
+fn create_body_response_with_clear_body<M: MessageKind>(
     headers: Vec<Option<(&str, &str)>>,
     status: i32,
 ) -> MockProcessingResponse {
@@ -4915,7 +4913,7 @@ async fn test_response_body_clear_body_mutation() {
     assert_eq!(body_bytes, Bytes::new());
 }
 
-fn create_headers_response_with_clear_body<M: MsgKind>(
+fn create_headers_response_with_clear_body<M: MessageKind>(
     headers: Vec<Option<(&str, &str)>>,
     status: i32,
 ) -> MockProcessingResponse {

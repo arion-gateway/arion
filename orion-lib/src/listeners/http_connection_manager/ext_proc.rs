@@ -11,6 +11,7 @@ mod worker_config;
 use crate::body::channel_body::{BodyType, ChannelBody, FrameBridge};
 use crate::body::timeout_body::TimeoutBody;
 use crate::event_error::EventFailure;
+use crate::listeners::http_connection_manager::ext_proc::kind::{MessageType, RequestMsg, ResponseMsg};
 use crate::listeners::http_connection_manager::ext_proc::pseudo_header::CombinedHeaderMap;
 use crate::{OrionRequestBody, OrionResponseBody};
 use http_body_util::{BodyExt, Collected, LengthLimitError, Limited};
@@ -212,29 +213,6 @@ impl From<(ExternalProcessorConfig, Option<ExtProcPerRoute>, Option<ExternalProc
     }
 }
 
-macro_rules! with_current_processing {
-    (
-        $self:ident,
-        $processing:ident,
-        $($body:block)+
-    ) => {
-        if $self.request_processing.reply_channel.is_some() {
-            $(
-                {
-                    let $processing = &mut $self.request_processing;
-                    $body
-                }
-            )+
-        } else {
-            $(
-                {
-                    let $processing = &mut $self.response_processing;
-                    $body
-                }
-            )+
-        }
-    };
-}
 
 impl ExternalProcessor {
     // aggregate frames of Collected in a single buffer (frame), returning
@@ -892,24 +870,27 @@ impl ExternalProcessingWorker<kind::Processing> {
         if self.inner.worker_config.failure_mode_allow {
             info!(target: "ext_proc", "{} - continue (failure_mode_allow is true)", log_msg);
             let frames = std::mem::take(&mut self.request_processing.inflight_frames);
+            let trailers = std::mem::take(&mut self.request_processing.parked_trailers);
             self.request_processing
-                .frame_bridge_close(Some(&mut self.timeout_state.active), frames, proof_request, true)
+                .frame_bridge.drain_and_close(proof_request, frames, trailers, Some(&mut self.timeout_state.active))
                 .await;
             let frames = std::mem::take(&mut self.response_processing.inflight_frames);
+            let trailers = std::mem::take(&mut self.response_processing.parked_trailers);
             self.response_processing
-                .frame_bridge_close(Some(&mut self.timeout_state.active), frames, proof_response, true)
+                .frame_bridge.drain_and_close(proof_response, frames, trailers, Some(&mut self.timeout_state.active))
                 .await;
         } else {
             info!(target: "ext_proc", "{} - abort (failure_mode_allow is false)", log_msg);
             _ = self.request_processing.frame_bridge.inject_frame(Err(Box::new(err.clone())), proof_request).await;
             self.request_processing
-                .frame_bridge_close(Some(&mut self.timeout_state.active), std::iter::empty(), proof_request, false)
-                .await;
+                .frame_bridge.close(Some(&mut self.timeout_state.active));
             _ = self.response_processing.frame_bridge.inject_frame(Err(Box::new(err.clone())), proof_response).await;
             self.response_processing
-                .frame_bridge_close(Some(&mut self.timeout_state.active), std::iter::empty(), proof_response, false)
-                .await;
+                .frame_bridge.close(Some(&mut self.timeout_state.active));
         }
+
+        self.request_processing.set_streaming_body(false);
+        self.response_processing.set_streaming_body(false);
     }
 
     #[allow(clippy::too_many_lines)]
@@ -924,12 +905,12 @@ impl ExternalProcessingWorker<kind::Processing> {
         let mut response_body_to_ext_proc_complete = false;
 
         'transaction_loop: loop {
-            let streaming_enabled = self.request_processing.is_streaming_body_enabled()
-                || self.response_processing.is_streaming_body_enabled();
+            let streaming_enabled = self.request_processing.streaming_body_enabled()
+                || self.response_processing.streaming_body_enabled();
             let outbound_req_enabled =
-                self.request_processing.is_streaming_body_enabled() && !request_body_to_ext_proc_complete;
+                self.request_processing.streaming_body_enabled() && !request_body_to_ext_proc_complete;
             let outbound_resp_enabled =
-                self.response_processing.is_streaming_body_enabled() && !response_body_to_ext_proc_complete;
+                self.response_processing.streaming_body_enabled() && !response_body_to_ext_proc_complete;
 
             debug!(target: "ext_proc", "----- select! [ process_task:{} inbound:true outbound_req:{outbound_req_enabled} outbound_resp:{outbound_resp_enabled} timeout:{} ] -----",
                 !streaming_enabled, self.timeout_state.active);
@@ -976,51 +957,89 @@ impl ExternalProcessingWorker<kind::Processing> {
                         },
                         Ok(Some(ProcessingResponse { response: Some(ProcessingResponseType::ImmediateResponse(response_attempt)), ..})) => {
                             debug!(target: "ext_proc", "<- ImmediateResponse received");
-                            if self.inner.worker_config.disable_immediate_response {
-                                info!(target: "ext_proc", "External processor attempted to send immediate response which is disabled by config");
 
-                                 if self.inner.worker_config.failure_mode_allow {
-                                     with_current_processing!(self, processing,
-                                     {
-                                         let proof = processing.make_proof().unwrap_or_else(|| {
-                                             processing.return_status(ProcessingStatus::HaltedOnError, "immediate_response_disabled")
-                                         });
-                                         let frames = std::mem::take(&mut processing.inflight_frames);
-                                         processing.frame_bridge_close(None, frames, proof, true).await;
-                                     });
+                            if self.inner.worker_config.disable_immediate_response { // disabled
+                                if self.inner.worker_config.failure_mode_allow {
+                                    // simply continue with the current processing, either with request or response...
 
-                                 } else {
-                                    with_current_processing!(self, processing,
-                                     {
-                                         let proof = processing.make_proof().unwrap_or_else(|| {
-                                             let status = processing.status_internal_error("ext_proc returned an immediate response despite being disabled by configuration");
-                                             processing.return_status(status, "immediate_response_disabled (proof for immediate response disabled)")
-                                         });
+                                    if self.request_processing.frame_bridge.is_open() {
+                                        let proof = self.request_processing.make_proof().unwrap_or_else(|| {
+                                            self.request_processing.return_status(ProcessingStatus::ready::<RequestMsg>(), "disabled immediate response, with failure mode allowed")
+                                        });
 
-                                         _ = processing.frame_bridge.inject_frame(Err(Box::new(ExtProcError::Timeout("immediate response disabled"))), proof).await;
-                                     }
-                                    );
-                                 }
-                            } else {
-                                let response = self.build_direct_response(&response_attempt);
-                                with_current_processing!(self, processing, {
-                                    let _ = processing.make_proof().unwrap_or_else(|| {
-                                        let status = ProcessingStatus::EndWithDirectResponse(response);
-                                        processing.return_status(status, "immediate_response_disabled")
+                                        self.request_processing.frame_bridge.drain_and_inject(proof).await;
+                                        self.request_processing.frame_bridge.close(None);
+                                    } else if self.response_processing.frame_bridge.is_open() {
+                                        let proof = self.response_processing.make_proof().unwrap_or_else(|| {
+                                            self.response_processing.return_status(ProcessingStatus::ready::<ResponseMsg>(), "disabled immediate response, with failure mode allowed")
+                                        });
+
+                                        self.response_processing.frame_bridge.drain_and_inject(proof).await;
+                                        self.response_processing.frame_bridge.close(None);
+                                    }
+                                } else {
+                                    // failure, immediate response is disable. return an error and/or abort the body processing
+                                    let proof_request = self.request_processing.make_proof().unwrap_or_else(|| {
+                                        let status = self.request_processing.status_internal_error("ext_proc returned an immediate response despite being disabled by configuration");
+                                        self.request_processing.return_status(status, "immediate_response_disabled")
                                     });
-                                });
+
+                                    let proof_response = self.response_processing.make_proof().unwrap_or_else(|| {
+                                        let status = self.response_processing.status_internal_error("ext_proc returned an immediate response despite being disabled by configuration");
+                                        self.response_processing.return_status(status, "immediate_response_disabled")
+                                    });
+
+                                    _ = self.request_processing.frame_bridge.inject_frame(Err(Box::new(ExtProcError::Timeout("immediate response disabled"))), proof_request).await;
+                                    _ = self.response_processing.frame_bridge.inject_frame(Err(Box::new(ExtProcError::Timeout("immediate response disabled"))), proof_response).await;
+                                }
+
+                            } else { // enabled
+                                match self.can_handle_immediate_response() {
+                                    Some(MessageType::Request) => {
+                                        let direct_response = self.build_direct_response(&response_attempt);
+                                        let proof = self.request_processing.make_proof().unwrap_or_else(|| {
+                                            let status = ProcessingStatus::EndWithDirectResponse(direct_response);
+                                            self.request_processing.return_status(status, "immediate_response on request")
+                                        });
+
+                                        let frames = std::mem::take(&mut self.request_processing.inflight_frames);
+                                        let trailers = std::mem::take(&mut self.request_processing.parked_trailers);
+                                        self.request_processing.frame_bridge.drain_and_close(proof, frames, trailers, Some(&mut self.timeout_state.active)).await;
+                                        self.request_processing.set_streaming_body(false);
+                                    }
+                                    Some(MessageType::Response) => {
+                                        let direct_response = self.build_direct_response(&response_attempt);
+                                        let proof = self.response_processing.make_proof().unwrap_or_else(|| {
+                                            let status = ProcessingStatus::EndWithDirectResponse(direct_response);
+                                            self.response_processing.return_status(status, "immediate_response on response")
+                                        });
+
+                                        let frames = std::mem::take(&mut self.response_processing.inflight_frames);
+                                        let trailers = std::mem::take(&mut self.request_processing.parked_trailers);
+                                        self.response_processing.frame_bridge.drain_and_close(proof, frames, trailers, Some(&mut self.timeout_state.active)).await;
+                                        self.response_processing.set_streaming_body(false);
+                                    }
+                                    None => {
+                                        // immediate response can no longer be handled.
+                                        // let's return an error if processing channel is still available and stop processing
+                                        // request/response
+
+                                        let _proof_request = self.request_processing.make_proof().unwrap_or_else(|| {
+                                            self.request_processing.return_status(ProcessingStatus::HaltedOnError, "immediate_response (failure)")
+                                        });
+
+                                        let _proof_response = self.response_processing.make_proof().unwrap_or_else(|| {
+                                            self.response_processing.return_status(ProcessingStatus::HaltedOnError, "immediate_response (failure)")
+                                        });
+
+                                        self.request_processing.frame_bridge.close(Some(&mut self.timeout_state.active));
+                                        self.response_processing.frame_bridge.close(Some(&mut self.timeout_state.active));
+
+                                        self.request_processing.set_streaming_body(false);
+                                        self.response_processing.set_streaming_body(false);
+                                    }
+                                }
                             }
-
-                            with_current_processing!(self, processing,
-                            {
-                                let proof = processing.make_proof().unwrap_or_else(|| {
-                                    let status = processing.status_internal_error("ext_proc returned an immediate response despite being disabled by configuration");
-                                    processing.return_status(status, "immediate_response_disabled (proof for immediate response disabled)")
-                                });
-
-                                let frames = std::mem::take(&mut processing.inflight_frames);
-                                processing.frame_bridge_close(None, frames, proof, true).await;
-                            });
 
                             break 'transaction_loop;
                         },
@@ -1208,7 +1227,9 @@ impl ExternalProcessingWorker<kind::Processing> {
                                 });
 
                                 debug!(target: "ext_proc", "outbound request body frame: frame bridge closed (request body)!");
-                                self.request_processing.frame_bridge_close(Some(&mut self.timeout_state.active), std::iter::empty(), proof, false).await;
+                                let trailers = std::mem::take(&mut self.request_processing.parked_trailers);
+                                self.request_processing.frame_bridge.drain_and_close(proof, std::iter::empty(), trailers, Some(&mut self.timeout_state.active)).await;
+                                self.request_processing.set_streaming_body(false);
                             }
                         }
                     }
@@ -1298,8 +1319,10 @@ impl ExternalProcessingWorker<kind::Processing> {
                                     self.response_processing.return_status(status, "proof for frame injection at end of stream when inflight frames are empty")
                                 });
 
-                                self.response_processing.frame_bridge_close(Some(&mut self.timeout_state.active), std::iter::empty(), proof, false).await;
-                           }
+                                let trailers = std::mem::take(&mut self.response_processing.parked_trailers);
+                                self.response_processing.frame_bridge.drain_and_close(proof, std::iter::empty(), trailers, Some(&mut self.timeout_state.active)).await;
+                                self.response_processing.set_streaming_body(false);
+                            }
                         }
                     }
                 },
@@ -1349,12 +1372,12 @@ impl ExternalProcessingWorker<kind::Observability> {
         let mut response_body_to_ext_proc_complete = false;
 
         'transaction_loop: loop {
-            let streaming_enabled = self.request_processing.is_streaming_body_enabled()
-                || self.response_processing.is_streaming_body_enabled();
+            let streaming_enabled = self.request_processing.streaming_body_enabled()
+                || self.response_processing.streaming_body_enabled();
             let outbound_req_enabled =
-                self.request_processing.is_streaming_body_enabled() && !request_body_to_ext_proc_complete;
+                self.request_processing.streaming_body_enabled() && !request_body_to_ext_proc_complete;
             let outbound_resp_enabled =
-                self.response_processing.is_streaming_body_enabled() && !response_body_to_ext_proc_complete;
+                self.response_processing.streaming_body_enabled() && !response_body_to_ext_proc_complete;
 
             debug!(target: "ext_proc", "----- select! [ process_task:{} inbound:true outbound_req:{outbound_req_enabled} outbound_resp:{outbound_resp_enabled} timeout:{} ] -----",
                 !streaming_enabled, self.timeout_state.active);
@@ -1455,8 +1478,10 @@ impl ExternalProcessingWorker<kind::Observability> {
                                 self.request_processing.return_status(status, "request_streaming_completed")
                             });
 
+                            let trailers = std::mem::take(&mut self.request_processing.parked_trailers);
+                            self.request_processing.frame_bridge.drain_and_close(proof, std::iter::empty(), trailers, Some(&mut self.timeout_state.active)).await;
+                            self.request_processing.set_streaming_body(false);
                             self.request_processing.end_of_stream = true;
-                            self.request_processing.frame_bridge_close(Some(&mut self.timeout_state.active), std::iter::empty(), proof, false).await;
                         }
                     }
                 },
@@ -1528,8 +1553,10 @@ impl ExternalProcessingWorker<kind::Observability> {
                                 }
                             }
 
+                            let trailers = std::mem::take(&mut self.response_processing.parked_trailers);
+                            self.response_processing.frame_bridge.drain_and_close(proof, std::iter::empty(), trailers, Some(&mut self.timeout_state.active)).await;
+                            self.response_processing.set_streaming_body(false);
                             self.response_processing.end_of_stream = true;
-                            self.response_processing.frame_bridge_close(Some(&mut self.timeout_state.active), std::iter::empty(), proof, false).await;
                         }
                     }
                 },
@@ -1718,5 +1745,19 @@ impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
             }
         }
         response
+    }
+
+    fn can_handle_immediate_response(&self) -> Option<MessageType> {
+        if self.request_processing.reply_channel.is_some()
+        {
+            return Some(MessageType::Request);
+        }
+
+        if self.response_processing.reply_channel.is_some()
+        {
+            return Some(MessageType::Response);
+        }
+
+        None
     }
 }
