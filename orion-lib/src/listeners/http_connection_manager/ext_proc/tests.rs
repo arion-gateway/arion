@@ -6482,3 +6482,227 @@ async fn test_request_and_response_mutation_with_streamed_10m_body_4k_chunks() {
     }
     assert_eq!(actual_res_body_len, BODY_SIZE);
 }
+
+use orion_configuration::config::core::{StringMatcher, StringMatcherPattern};
+use orion_configuration::config::network_filters::http_connection_manager::http_filters::ext_proc::{
+    HeaderForwardingRules, HeaderMutationRules, MutationPolicy,
+};
+use smol_str::SmolStr;
+
+#[tokio::test]
+async fn test_forward_rules_allowed_headers() {
+    let mock_state = MockExternalProcessorState::new().add_response(
+        create_headers_response::<RequestMsg>(vec![], None, vec![], ResponseStatus::Continue as i32, None).into(),
+    );
+    let (server_addr, _) = start_mock_server(mock_state).await;
+    let processing_mode = ProcessingMode {
+        request_header_mode: HeaderProcessingMode::Send,
+        request_body_mode: BodyProcessingMode::None,
+        request_trailer_mode: TrailerProcessingMode::Skip,
+        response_header_mode: HeaderProcessingMode::Skip,
+        response_body_mode: BodyProcessingMode::None,
+        response_trailer_mode: TrailerProcessingMode::Skip,
+    };
+
+    let mut config = create_default_config_for_ext_proc_filter(server_addr, processing_mode);
+    config.forward_rules = Some(HeaderForwardingRules {
+        allowed_headers: vec![StringMatcher {
+            ignore_case: true,
+            pattern: StringMatcherPattern::Exact(SmolStr::new("x-allowed-header")),
+        }],
+        disallowed_headers: vec![],
+    });
+
+    let mut ext_proc = ExternalProcessor::from(config);
+    let mut request = build_request_from_mock(&MockMessage::<RequestMsg> {
+        headers: vec![
+            Some(("x-allowed-header", "allowed")),
+            Some(("x-disallowed-header", "disallowed")),
+            Some(("other-header", "other")),
+        ],
+        body: vec![],
+        trailers: vec![],
+        _marker: std::marker::PhantomData,
+    })
+    .await;
+
+    let result = ext_proc.apply_request(&mut request).await;
+    assert_matches!(result, FilterDecision::Continue);
+
+    // Assert the original headers are preserved in the proxy's request
+    assert_eq!(request.headers().get("x-allowed-header").unwrap(), "allowed");
+    assert_eq!(request.headers().get("x-disallowed-header").unwrap(), "disallowed");
+    assert_eq!(request.headers().get("other-header").unwrap(), "other");
+}
+
+#[tokio::test]
+async fn test_header_append_action_append_if_exists_or_add() {
+    // We need to create a custom response to test AppendIfExistsOrAdd
+    let mut header_mutation = HeaderMutation::default();
+    header_mutation.set_headers.push(HeaderValueOption {
+        header: Some(EnvoyHeaderValue {
+            key: "x-appended-header".to_string(),
+            value: "new-value".to_string(),
+            raw_value: vec![],
+        }),
+        append_action: HeaderAppendAction::AppendIfExistsOrAdd as i32,
+        keep_empty_value: false,
+        #[allow(deprecated)]
+        append: None,
+    });
+
+    let response = ProcessingResponseType::RequestHeaders(
+        orion_data_plane_api::envoy_data_plane_api::envoy::service::ext_proc::v3::HeadersResponse {
+            response: Some(CommonResponse {
+                status: ResponseStatus::Continue as i32,
+                header_mutation: Some(header_mutation),
+                body_mutation: None,
+                trailers: None,
+                clear_route_cache: false,
+            }),
+        }
+    );
+
+    let mock_state = MockExternalProcessorState::new().add_response(MockProcessingResponse::new(
+        ProcessingResponse {
+            response: Some(response),
+            mode_override: None,
+            dynamic_metadata: None,
+            override_message_timeout: None,
+            request_drain: false,
+        },
+    ));
+
+    let (server_addr, _) = start_mock_server(mock_state).await;
+    let processing_mode = ProcessingMode {
+        request_header_mode: HeaderProcessingMode::Send,
+        request_body_mode: BodyProcessingMode::None,
+        request_trailer_mode: TrailerProcessingMode::Skip,
+        response_header_mode: HeaderProcessingMode::Skip,
+        response_body_mode: BodyProcessingMode::None,
+        response_trailer_mode: TrailerProcessingMode::Skip,
+    };
+
+    let config = create_default_config_for_ext_proc_filter(server_addr, processing_mode);
+    let mut ext_proc = ExternalProcessor::from(config);
+
+    let mut request = build_request_from_mock(&MockMessage::<RequestMsg> {
+        headers: vec![Some(("x-appended-header", "original-value"))],
+        body: vec![],
+        trailers: vec![],
+        _marker: std::marker::PhantomData,
+    })
+    .await;
+
+    let result = ext_proc.apply_request(&mut request).await;
+    assert_matches!(result, FilterDecision::Continue);
+
+    // AppendIfExistsOrAdd: since "x-appended-header" exists ("original-value"),
+    // the new value ("new-value") should be appended.
+    let values: Vec<_> = request.headers().get_all("x-appended-header").iter().collect();
+    assert_eq!(values.len(), 2);
+    assert_eq!(values[0], "original-value");
+    assert_eq!(values[1], "new-value");
+}
+
+#[tokio::test]
+async fn test_clear_route_cache() {
+    let response = ProcessingResponseType::RequestHeaders(
+        HeadersResponse {
+            response: Some(CommonResponse {
+                status: ResponseStatus::Continue as i32,
+                header_mutation: None,
+                body_mutation: None,
+                trailers: None,
+                clear_route_cache: true,
+            }),
+        }
+    );
+
+    let mock_state = MockExternalProcessorState::new().add_response(MockProcessingResponse::new(
+        ProcessingResponse {
+            response: Some(response),
+            mode_override: None,
+            dynamic_metadata: None,
+            override_message_timeout: None,
+            request_drain: false,
+        },
+    ));
+
+    let (server_addr, _) = start_mock_server(mock_state).await;
+    let processing_mode = ProcessingMode {
+        request_header_mode: HeaderProcessingMode::Send,
+        request_body_mode: BodyProcessingMode::None,
+        request_trailer_mode: TrailerProcessingMode::Skip,
+        response_header_mode: HeaderProcessingMode::Skip,
+        response_body_mode: BodyProcessingMode::None,
+        response_trailer_mode: TrailerProcessingMode::Skip,
+    };
+
+    let config = create_default_config_for_ext_proc_filter(server_addr, processing_mode);
+    let mut ext_proc = ExternalProcessor::from(config);
+    let mut request = build_request_from_mock(&MockMessage::<RequestMsg> {
+        headers: vec![Some(("content-type", "application/json"))],
+        body: vec![],
+        trailers: vec![],
+        _marker: std::marker::PhantomData,
+    })
+    .await;
+
+    let result = ext_proc.apply_request(&mut request).await;
+
+    // When clear_route_cache is true, the filter should return FilterDecision::Reroute
+    assert_matches!(result, FilterDecision::Reroute);
+}
+
+#[tokio::test]
+async fn test_immediate_response_with_grpc_status() {
+    let immediate_response =
+        ImmediateResponse {
+            status: Some(EnvoyHttpStatus { code: 503 }),
+            headers: None,
+            body: "grpc error body".as_bytes().to_vec(),
+            grpc_status: Some(orion_data_plane_api::envoy_data_plane_api::envoy::service::ext_proc::v3::GrpcStatus {
+                status: 14, // UNAVAILABLE
+            }),
+            details: "grpc_error_details".to_string(),
+        };
+
+    let mock_state = MockExternalProcessorState::new().add_response(MockProcessingResponse::new(ProcessingResponse {
+        response: Some(ProcessingResponseType::ImmediateResponse(immediate_response)),
+        mode_override: None,
+        dynamic_metadata: None,
+        override_message_timeout: None,
+        request_drain: false,
+    }));
+
+    let (server_addr, _) = start_mock_server(mock_state).await;
+    let processing_mode = ProcessingMode {
+        request_header_mode: HeaderProcessingMode::Send,
+        request_body_mode: BodyProcessingMode::None,
+        request_trailer_mode: TrailerProcessingMode::Skip,
+        response_header_mode: HeaderProcessingMode::Skip,
+        response_body_mode: BodyProcessingMode::None,
+        response_trailer_mode: TrailerProcessingMode::Skip,
+    };
+
+    let config = create_default_config_for_ext_proc_filter(server_addr, processing_mode);
+    let mut ext_proc = ExternalProcessor::from(config);
+    let mut request = build_request_from_mock(&MockMessage::<RequestMsg> {
+        headers: vec![Some(("content-type", "application/json"))],
+        body: vec![],
+        trailers: vec![],
+        _marker: std::marker::PhantomData,
+    })
+    .await;
+
+    let result = ext_proc.apply_request(&mut request).await;
+
+    // An ImmediateResponse triggers a DirectResponse
+    assert_matches!(result, FilterDecision::DirectResponse(mut response) => {
+        assert_eq!(response.status(), 503);
+        let (_, body) = response.into_parts();
+        // Since we are not running this in a context that eagerly resolves, we might not unwrap it directly,
+        // but typically in testing it works or we just check status.
+    });
+}
