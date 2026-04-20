@@ -32,7 +32,7 @@ impl ExtProcBuilder {
                     timeout: Some(ProtoDuration { seconds: 4, nanos: 0 }),
                     ..Default::default()
                 }),
-                message_timeout: Some(ProtoDuration{ seconds: 5, nanos: 0 }),
+                message_timeout: Some(ProtoDuration { seconds: 5, nanos: 0 }),
                 ..Default::default()
             },
         }
