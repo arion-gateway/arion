@@ -2810,6 +2810,7 @@ dependencies = [
  "ctor 0.2.9",
  "dashmap",
  "futures",
+ "futures-util",
  "http",
  "http-body",
  "http-body-util",
