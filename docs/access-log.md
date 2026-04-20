@@ -90,7 +90,7 @@ access_log:
 
 
 
-| Operator                               |Listener | HCM | TCPProxy| 
+| Operator                               |Listener: tcp, http, websocket | HCM | TCPProxy| 
 | :------------------------------------- |:-------:| :-: | :------:| 
 | **BYTES_RECEIVED**                     |   ✅   | ✅  |    ✅   | 
 | **BYTES_SENT**                         |   ✅   | ✅  |    ✅   | 
@@ -144,11 +144,11 @@ access_log:
 | REQUESTED_SERVER_NAME                  |   -    | ✅  |    -    | 
 | ROUTE_NAME                             |   -    | ✅  |    -    | 
 
-NOTE 1: %UPSTREAM_CLUSTER% and %UPSTREAM_CLUSTER_RAW% are identical as we are not currently supporting `alt_stat_name` for clusters
-NOTE 2: The UNIQUE_ID is consistent with envoy's unique ID: if the x-request-id is present and valid, it is used; otherwise, a new unique ID is generated.
-NOTE 3: %UPSTREAM_HOST_NAME% and %UPSTREAM_HOST% are currently identical, as both return the authority without userinfo. The distinction (hostname vs host+port) is not yet implemented.
-NOTE 4: %REQUESTED_SERVER_NAME% is the TLS SNI value negotiated during the handshake. It is only populated on TLS connections; on plaintext connections it will be empty.
-NOTE 5: Listener-level metrics (BYTES_RECEIVED, BYTES_SENT, DURATION, etc.) represent cumulative totals for the entire connection, not for a single request/transaction.
-NOTE 6: %BYTES_RECEIVED% and %DOWNSTREAM_WIRE_BYTES_RECEIVED% are identical at the Listener level (both reflect the total bytes read from the downstream connection). The same applies to %BYTES_SENT% and %DOWNSTREAM_WIRE_BYTES_SENT%.
-NOTE 7: At the HCM level, %BYTES_RECEIVED% and %BYTES_SENT% refer to the HTTP request/response body bytes only. The corresponding %DOWNSTREAM_WIRE_BYTES_RECEIVED% and %DOWNSTREAM_WIRE_BYTES_SENT% are measured at the TCP layer and therefore also include HTTP header bytes; in the case of TLS connections, they additionally include the bytes exchanged during the TLS handshake.
-NOTE 8: At the Listener and TCPProxy level, %BYTES_RECEIVED%/%BYTES_SENT% and %DOWNSTREAM_WIRE_BYTES_RECEIVED%/%DOWNSTREAM_WIRE_BYTES_SENT% both refer to raw TCP byte counts — there is no distinction between body and headers at this level.
+* NOTE 1: %UPSTREAM_CLUSTER% and %UPSTREAM_CLUSTER_RAW% are identical as we are not currently supporting `alt_stat_name` for clusters
+* NOTE 2: The UNIQUE_ID is consistent with envoy's unique ID: if the x-request-id is present and valid, it is used; otherwise, a new unique ID is generated.
+* NOTE 3: %UPSTREAM_HOST_NAME% and %UPSTREAM_HOST% are currently identical, as both return the authority without userinfo. The distinction (hostname vs host+port) is not yet implemented.
+* NOTE 4: %REQUESTED_SERVER_NAME% is the TLS SNI value negotiated during the handshake. It is only populated on TLS connections; on plaintext connections it will be empty.
+* NOTE 5: Listener-level metrics (BYTES_RECEIVED, BYTES_SENT, DURATION, etc.) represent cumulative totals for the entire connection, not for a single request/transaction.
+* NOTE 6: %BYTES_RECEIVED% and %DOWNSTREAM_WIRE_BYTES_RECEIVED% are identical at the Listener level (both reflect the total bytes read from the downstream connection). The same applies to %BYTES_SENT% and %DOWNSTREAM_WIRE_BYTES_SENT%.
+* NOTE 7: At the HCM level, %BYTES_RECEIVED% and %BYTES_SENT% refer to the HTTP request/response body bytes only. The corresponding %DOWNSTREAM_WIRE_BYTES_RECEIVED% and %DOWNSTREAM_WIRE_BYTES_SENT% are measured at the TCP layer and therefore also include HTTP header bytes; in the case of TLS connections, they additionally include the bytes exchanged during the TLS handshake.
+* NOTE 8: At the Listener and TCPProxy level, %BYTES_RECEIVED%/%BYTES_SENT% and %DOWNSTREAM_WIRE_BYTES_RECEIVED%/%DOWNSTREAM_WIRE_BYTES_SENT% both refer to raw TCP byte counts — there is no distinction between body and headers at this level.
