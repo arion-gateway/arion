@@ -90,7 +90,7 @@ access_log:
 
 
 
-| Operator                               |Listener: tcp, http, websocket | HCM | TCPProxy| 
+| Operator                               |Listener: tcp/http/websocket (connection) | HCM (transaction) | TCPProxy (connection) | 
 | :------------------------------------- |:-------:| :-: | :------:| 
 | **BYTES_RECEIVED**                     |   ✅   | ✅  |    ✅   | 
 | **BYTES_SENT**                         |   ✅   | ✅  |    ✅   | 
