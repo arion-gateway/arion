@@ -160,6 +160,45 @@ async fn test_ext_proc_request_body_passthrough() {
 }
 
 #[tokio::test]
+#[test_log::test]
+#[ignore]
+async fn test_ext_proc_request_body_passthrough_multi_chunk() {
+    let (mut backend, _ext_proc, _orion, client, _cfg) = setup(
+        ExtProcBuilder::new("ext-proc-cluster").request_only().request_body_mode(BodySendMode::Streamed),
+        ExtProcTestServerBuilder::new()
+            .with_response(ext_proc_responses::continue_request_headers())
+            .with_response(ext_proc_responses::continue_request_body(None)),
+    )
+    .await;
+
+    let response = client
+        .post_multichunk(
+            "/test",
+            vec![
+                "o".into(),
+                "r".into(),
+                "i".into(),
+                "g".into(),
+                "i".into(),
+                "n".into(),
+                "a".into(),
+                "l".into(),
+                " ".into(),
+                "b".into(),
+                "o".into(),
+                "d".into(),
+                "y".into(),
+            ],
+        )
+        .await
+        .expect("request");
+    response.assert_status(StatusCode::OK);
+
+    let captured = backend.await_request().await.expect("backend request");
+    assert_eq!(captured.body_str(), Some("original body"));
+}
+
+#[tokio::test]
 #[ignore]
 async fn test_ext_proc_request_body_replace() {
     let (mut backend, _ext_proc, _orion, client, _cfg) = setup(

@@ -36,6 +36,7 @@ rustls = { version = "0.23", features = ["aws_lc_rs"] }
 rustls-pemfile = "2"
 ctor = "0.2"
 test-log = { version = "0.2.19", features = ["trace"] }
+futures-util = "0.3.32"
 
 [dev-dependencies]
 tracing-test.workspace = true
