@@ -183,6 +183,7 @@ async fn test_tc0510_obsolete_line_folding() {
 }
 
 #[tokio::test]
+#[test_log::test]
 #[ignore]
 async fn test_tc0601_missing_host() {
     let (orion, _backend, tcp_client, config_path) = setup().await;
@@ -191,13 +192,13 @@ async fn test_tc0601_missing_host() {
     let req = RawHttpRequestBuilder::new().build();
 
     let response = tcp_client.send(&req).await.expect("Failed to send");
-    // Orion returns 404 (vhost lookup miss) when Host is missing rather than 400.
-    assert_rejected(&response, &[404]);
+    assert_rejected(&response, &[400]);
 
     cleanup(orion, config_path);
 }
 
 #[tokio::test]
+#[test_log::test]
 #[ignore]
 async fn test_tc0602_duplicate_host() {
     let (orion, _backend, tcp_client, config_path) = setup().await;

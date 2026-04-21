@@ -88,7 +88,7 @@ use {parking_lot::Mutex, std::time::Instant};
 use arc_swap::ArcSwap;
 use core::time::Duration;
 use futures::future::BoxFuture;
-use hyper::{body::Incoming, service::Service, Request, Response};
+use hyper::{body::Incoming, header::HOST, service::Service, Request, Response};
 use orion_configuration::config::network_filters::http_connection_manager::route::RouteMatch;
 use orion_configuration::config::network_filters::http_connection_manager::{
     route::{Action, RouteMatchResult},
@@ -1285,6 +1285,34 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
                 (ec.map(|ec| ec.response_flags).unwrap_or_default(), ec.and_then(|ec| ec.event_kind.clone()))
             };
 
+            // check if route config is available....
+            //
+
+            let Some(route_conf) = route_conf else {
+                return handle_route_conf_not_found(
+                    request.version(),
+                    &trans_handler,
+                    &stream_metrics,
+                    listener_name,
+                    user_id,
+                    filterchain_id,
+                );
+            };
+
+            // check if the request is valid....
+            //
+
+            if let Some(response_error) = reject_request_if_invalid(
+                &request,
+                &trans_handler,
+                &stream_metrics,
+                listener_name,
+                user_id,
+                filterchain_id,
+            ) {
+                return Ok(response_error);
+            }
+
             let request = request.map(|body| {
                 #[cfg(any(feature = "access-log", feature = "tracing", feature = "metrics"))]
                 let trans_handler = Arc::clone(&trans_handler);
@@ -1357,125 +1385,8 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
                 )
             });
 
-            let Some(route_conf) = route_conf else {
-                // immediately return a SyntheticHttpResponse, and calculate the first byte instant
-                let response = SyntheticHttpResponse::not_found(
-                    EventFailure::RouteNotFound.into(),
-                    ResponseFlags(FmtResponseFlags::NO_ROUTE_FOUND),
-                )
-                .into_response(request.version());
-
-                #[cfg(feature = "access-log")]
-                let first_byte_instant = Instant::now();
-
-                with_metric!(
-                    http::DOWNSTREAM_RQ_4XX,
-                    add,
-                    1,
-                    trans_handler.shard_id(),
-                    &[KeyValue::new("listener", listener_name)]
-                );
-
-                #[cfg(feature = "tracing")]
-                if let Some(state) = trans_handler.span_state.as_ref() {
-                    if let Some(ref mut span) = *state.server_span.lock() {
-                        span.set_attribute(KeyValue::new(HTTP_RESPONSE_STATUS_CODE, 400));
-                    }
-                }
-
-                #[cfg(feature = "access-log")]
-                with_access_log!(
-                    &mut trans_handler.trans_ctx.lock().loggers,
-                    DownstreamResponseContext {
-                        response: &response,
-                        response_head_size: response_head_size(&response)
-                    }
-                );
-
-                #[cfg(feature = "access-log")]
-                let (initial_flags, initial_event) = {
-                    let ec = response.extensions().get::<EventContext>();
-                    (ec.map(|ec| ec.response_flags).unwrap_or_default(), ec.and_then(|ec| ec.event_kind.clone()))
-                };
-
-                // #[cfg(feature = "metrics")]
-                // let resp_head_size = response_head_size(&resp);
-
-                let response = response.map(|body| {
-                    InstrumentedBody::new(
-                        BodyKind::Response,
-                        body,
-                        stream_metrics,
-                        #[allow(unused_variables)]
-                        move |body_bytes, stream_metrics, body_error, body_flags| {
-                            #[cfg(any(feature = "access-log", feature = "metrics"))]
-                            {
-                                let mut log_ctx = trans_handler.trans_ctx.lock();
-
-                                #[cfg(feature = "access-log")]
-                                {
-                                    use crate::with_access_log;
-
-                                    #[allow(unused_variables)]
-                                    let duration =
-                                        first_byte_instant.saturating_duration_since(trans_handler.start_instant);
-                                    #[allow(unused_variables)]
-                                    let tx_duration = Instant::now().saturating_duration_since(first_byte_instant);
-                                    with_access_log!(
-                                        &mut log_ctx.loggers,
-                                        HttpResponseDurationContext { duration, tx_duration }
-                                    );
-                                }
-
-                                if trans_handler.trans_phase.is_complete() {
-                                    #[allow(unused_variables)]
-                                    let ctx_bytes = log_ctx.bytes;
-                                    #[allow(unused_variables)]
-                                    let ctx_flags = log_ctx.flags;
-                                    #[allow(unused_variables)]
-                                    let ctx_event = log_ctx.event.clone();
-
-                                    eval_http_finish_context(FinishContextParams {
-                                        stream_metrics: stream_metrics,
-                                        listener_name,
-                                        user_id,
-                                        filterchain_id,
-                                        bytes_received: ctx_bytes,
-                                        bytes_sent: body_bytes,
-                                        trans_start_time: trans_handler.start_instant,
-                                        #[cfg(feature = "metrics")]
-                                        m_ctx: MetricsFinishContext { shard_id: trans_handler.shard_id() },
-                                        #[cfg(feature = "access-log")]
-                                        al_ctx: AccessLogFinishContext {
-                                            event: EventInfo {
-                                                body_kind: BodyKind::Response,
-                                                event_kind: ctx_event.or(initial_event).or(body_error),
-                                                response_flags: ctx_flags | initial_flags | body_flags,
-                                            },
-                                            access_loggers: log_ctx.loggers.as_mut(),
-                                        },
-                                    });
-                                } else {
-                                    log_ctx.bytes = body_bytes;
-                                    #[cfg(feature = "access-log")]
-                                    {
-                                        log_ctx.flags = initial_flags | body_flags;
-                                        log_ctx.event = initial_event.or(body_error);
-                                    }
-                                }
-                            }
-
-                            #[cfg(feature = "tracing")]
-                            if trans_handler.trans_phase.is_complete() {
-                                if let Some(span) = trans_handler.span_state.as_ref() {
-                                    span.end();
-                                }
-                            }
-                        },
-                    )
-                });
-                return Ok(response);
-            };
+            // proxy the request to the upstream...
+            //
 
             let response = trans_handler.clone().handle_transaction(route_conf, manager, request).await;
 
@@ -1669,6 +1580,169 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
     });
 
     params.stream_metrics.on_flush(log_fn);
+}
+
+#[allow(clippy::too_many_arguments)]
+#[allow(unused_variables)]
+fn instrument_early_failure_response(
+    response: Response<crate::OrionResponseBody>,
+    trans_handler: &Arc<TransactionHandler>,
+    stream_metrics: &Option<Arc<crate::utils::instrumented_stream::StreamMetrics>>,
+    listener_name: &'static str,
+    user_id: Option<&'static str>,
+    filterchain_id: u64,
+) -> Response<OrionRequestBody> {
+    #[cfg(feature = "access-log")]
+    let first_byte_instant = Instant::now();
+
+    with_metric!(
+        http::DOWNSTREAM_RQ_4XX,
+        add,
+        1,
+        trans_handler.shard_id(),
+        &[KeyValue::new("listener", listener_name)]
+    );
+
+    #[cfg(feature = "tracing")]
+    if let Some(state) = trans_handler.span_state.as_ref() {
+        if let Some(ref mut span) = *state.server_span.lock() {
+            span.set_attribute(KeyValue::new(HTTP_RESPONSE_STATUS_CODE, 400));
+        }
+    }
+
+    #[cfg(feature = "access-log")]
+    with_access_log!(
+        &mut trans_handler.trans_ctx.lock().loggers,
+        DownstreamResponseContext { response: &response, response_head_size: response_head_size(&response) }
+    );
+
+    #[cfg(feature = "access-log")]
+    let (initial_flags, initial_event) = {
+        let ec = response.extensions().get::<EventContext>();
+        (ec.map(|ec| ec.response_flags).unwrap_or_default(), ec.and_then(|ec| ec.event_kind.clone()))
+    };
+
+    #[cfg(any(feature = "access-log", feature = "tracing", feature = "metrics"))]
+    let trans_handler = Arc::clone(trans_handler);
+
+    response.map(|body| {
+        InstrumentedBody::new(
+            BodyKind::Response,
+            body,
+            stream_metrics.clone(),
+            #[allow(unused_variables)]
+            move |body_bytes, stream_metrics, body_error, body_flags| {
+                #[cfg(any(feature = "access-log", feature = "metrics"))]
+                {
+                    let mut log_ctx = trans_handler.trans_ctx.lock();
+
+                    #[cfg(feature = "access-log")]
+                    {
+                        use crate::with_access_log;
+
+                        #[allow(unused_variables)]
+                        let duration = first_byte_instant.saturating_duration_since(trans_handler.start_instant);
+                        #[allow(unused_variables)]
+                        let tx_duration = Instant::now().saturating_duration_since(first_byte_instant);
+                        with_access_log!(
+                            &mut log_ctx.loggers,
+                            HttpResponseDurationContext { duration, tx_duration }
+                        );
+                    }
+
+                    if trans_handler.trans_phase.is_complete() {
+                        #[allow(unused_variables)]
+                        let ctx_bytes = log_ctx.bytes;
+                        #[allow(unused_variables)]
+                        let ctx_flags = log_ctx.flags;
+                        #[allow(unused_variables)]
+                        let ctx_event = log_ctx.event.clone();
+
+                        eval_http_finish_context(FinishContextParams {
+                            stream_metrics: stream_metrics,
+                            listener_name,
+                            user_id,
+                            filterchain_id,
+                            bytes_received: ctx_bytes,
+                            bytes_sent: body_bytes,
+                            trans_start_time: trans_handler.start_instant,
+                            #[cfg(feature = "metrics")]
+                            m_ctx: MetricsFinishContext { shard_id: trans_handler.shard_id() },
+                            #[cfg(feature = "access-log")]
+                            al_ctx: AccessLogFinishContext {
+                                event: EventInfo {
+                                    body_kind: BodyKind::Response,
+                                    event_kind: ctx_event.or(initial_event).or(body_error),
+                                    response_flags: ctx_flags | initial_flags | body_flags,
+                                },
+                                access_loggers: log_ctx.loggers.as_mut(),
+                            },
+                        });
+                    } else {
+                        log_ctx.bytes = body_bytes;
+                        #[cfg(feature = "access-log")]
+                        {
+                            log_ctx.flags = initial_flags | body_flags;
+                            log_ctx.event = initial_event.or(body_error);
+                        }
+                    }
+                }
+
+                #[cfg(feature = "tracing")]
+                if trans_handler.trans_phase.is_complete() {
+                    if let Some(span) = trans_handler.span_state.as_ref() {
+                        span.end();
+                    }
+                }
+            },
+        )
+    })
+}
+
+fn reject_request_if_invalid(
+    request: &Request<Incoming>,
+    trans_handler: &Arc<TransactionHandler>,
+    stream_metrics: &Option<Arc<crate::utils::instrumented_stream::StreamMetrics>>,
+    listener_name: &'static str,
+    user_id: Option<&'static str>,
+    filterchain_id: u64,
+) -> Option<Response<crate::OrionRequestBody>> {
+    // check if request has no host header, or if it has multiple ones (invalid for http1.1)
+    //
+    let response = if matches!(request.version(), ::http::Version::HTTP_11) {
+        match request.headers().get_all(HOST).iter().count() {
+            1 => None,
+            n => {
+                debug!("Invalid number of host headers: {}", n);
+                Some(
+                SyntheticHttpResponse::bad_request(EventFailure::DirectResponse.into()).into_response(request.version()),
+            )
+            },
+        }
+    } else {
+        None
+    };
+
+    response.map(|r| instrument_early_failure_response(r, trans_handler, stream_metrics, listener_name, user_id, filterchain_id))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle_route_conf_not_found(
+    version: ::http::Version,
+    trans_handler: &Arc<TransactionHandler>,
+    stream_metrics: &Option<Arc<crate::utils::instrumented_stream::StreamMetrics>>,
+    listener_name: &'static str,
+    user_id: Option<&'static str>,
+    filterchain_id: u64,
+) -> StdResult<Response<crate::OrionRequestBody>, crate::Error> {
+    // immediately return a SyntheticHttpResponse, and calculate the first byte instant
+    let response = SyntheticHttpResponse::not_found(
+        EventFailure::RouteNotFound.into(),
+        ResponseFlags(FmtResponseFlags::NO_ROUTE_FOUND),
+    )
+    .into_response(version);
+
+    Ok(instrument_early_failure_response(response, trans_handler, stream_metrics, listener_name, user_id, filterchain_id))
 }
 
 #[cfg(test)]
