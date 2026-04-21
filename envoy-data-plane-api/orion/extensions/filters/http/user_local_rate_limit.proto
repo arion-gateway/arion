@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+package orion.extensions.filters.http.user_local_rate_limit.v3;
+
+import "envoy/extensions/filters/http/local_ratelimit/v3/local_rate_limit.proto";
+import "validate/validate.proto";
+import "google/protobuf/duration.proto";
+
+// [#protodoc-title: UserLocalRateLimit Filter]
+// configuration for UserLocalRateLimit
+message UserLocalRateLimit {
+    string user_id_header = 1;
+    envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit local_rate_limit = 2;
+}

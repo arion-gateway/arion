@@ -9,6 +9,7 @@ use crate::{
             ext_proc::ExternalProcessor,
             jwt_authn::{JwtAuthentication, JwtAuthenticationBuilder},
             mcp_gateway::mcp::McpGateway,
+            user_local_rate_limiter::UserLocalRateLimiter,
         },
         rate_limiter::LocalRateLimit,
         rbac::HttpRbac,
@@ -22,9 +23,7 @@ use smol_str::SmolStr;
 use tracing::debug;
 
 use orion_configuration::config::network_filters::http_connection_manager::{
-    http_filters::{FilterConfigOverride, FilterOverride, HttpFilter as HttpFilterConfig, HttpFilterType},
-    route::RouteMatch,
-    RouteConfiguration,
+    RouteConfiguration, http_filters::{FilterConfigOverride, FilterOverride, HttpFilter as HttpFilterConfig, HttpFilterType}, route::RouteMatch
 };
 
 use crate::Result;
@@ -129,6 +128,7 @@ pub enum HttpFilterValue {
     JwtAuthentication(JwtAuthentication),
     Cors(Cors),
     McpGateway(McpGateway),
+    UserLocalRateLimit(UserLocalRateLimiter),
 }
 
 pub trait FilterFactory {
@@ -144,6 +144,7 @@ impl FilterFactory for HttpFilterValue {
             HttpFilterValue::JwtAuthentication(conf) => HttpFilterValue::JwtAuthentication(conf.new_from()),
             HttpFilterValue::McpGateway(conf) => HttpFilterValue::McpGateway(conf.new_from()),
             HttpFilterValue::Cors(conf) => HttpFilterValue::Cors(conf.clone()),
+            HttpFilterValue::UserLocalRateLimit(conf) => HttpFilterValue::UserLocalRateLimit(conf.clone()),
         }
     }
 }
@@ -170,6 +171,7 @@ impl TryFrom<HttpFilterConfig> for HttpFilter {
             HttpFilterType::Cors(conf) => HttpFilterValue::Cors(conf.into()),
             HttpFilterType::CorsPolicy(conf) => HttpFilterValue::Cors(conf.into()),
             HttpFilterType::McpGateway(mcp) => HttpFilterValue::McpGateway(mcp.try_into()?),
+            HttpFilterType::UserLocalRateLimit(user_rate_limit) => HttpFilterValue::UserLocalRateLimit(user_rate_limit.try_into()?),
         };
         Ok(Self { name, disabled, filter: Some(filter), base_config: hcm_config })
     }
@@ -184,6 +186,7 @@ impl HttpFilterValue {
             HttpFilterValue::JwtAuthentication(jwt) => jwt.apply_request(request).await,
             HttpFilterValue::Cors(cors) => cors.apply_request(request),
             HttpFilterValue::McpGateway(mcp) => mcp.apply_request(request).await,
+            HttpFilterValue::UserLocalRateLimit(user_rate_limiter) => user_rate_limiter.apply_request(request).await,
         }
     }
     pub async fn apply_response(&mut self, response: &mut Response<OrionResponseBody>) -> FilterDecision {
@@ -194,6 +197,7 @@ impl HttpFilterValue {
             HttpFilterValue::JwtAuthentication(_) => FilterDecision::Continue,
             HttpFilterValue::McpGateway(mcp) => mcp.apply_response(response).await,
             HttpFilterValue::Cors(cors) => cors.apply_response(response),
+            HttpFilterValue::UserLocalRateLimit(_) => FilterDecision::Continue,
         }
     }
     pub(crate) fn from_filter_override(value: &FilterOverride, base_config: Option<&HttpFilterConfig>) -> Option<Self> {

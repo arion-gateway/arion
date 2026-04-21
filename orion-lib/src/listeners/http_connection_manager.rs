@@ -29,6 +29,7 @@ pub mod ext_proc;
 pub mod http_modifiers;
 pub mod jwt_authn;
 pub mod mcp_gateway;
+pub mod user_local_rate_limiter;
 mod redirect;
 mod route;
 mod upgrades;

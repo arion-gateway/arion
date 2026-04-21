@@ -21,10 +21,11 @@ pub mod http_rbac;
 pub mod jwt;
 pub mod mcp_gateway;
 pub mod router;
+pub mod local_rate_limit;
+pub mod user_local_rate_limit;
 
 use http_rbac::HttpRbac;
 use smol_str::SmolStr;
-pub mod local_rate_limit;
 pub use ext_proc::{ExtProcPerRoute, ExternalProcessor};
 use local_rate_limit::LocalRateLimit;
 pub use mcp_gateway::McpGateway;
@@ -71,12 +72,13 @@ pub enum HttpFilterType {
     Cors(CorsConfig),
     CorsPolicy(CorsConfig),
     McpGateway(McpGateway),
+    UserLocalRateLimit(UserLocalRateLimit),
 }
 
 #[cfg(feature = "envoy-conversions")]
 pub(crate) use envoy_conversions::*;
 
-use crate::config::network_filters::http_connection_manager::http_filters::{cors::CorsConfig, jwt::JwtAuthentication};
+use crate::config::network_filters::http_connection_manager::http_filters::{cors::CorsConfig, jwt::JwtAuthentication, user_local_rate_limit::UserLocalRateLimit};
 
 use super::is_default;
 
@@ -90,6 +92,7 @@ mod envoy_conversions {
     use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::cors::v3::Cors;
     use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::cors::v3::CorsPolicy;
     use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::mcp::mcp_gateway::v3::McpGateway as OrionMcpGateway;
+    use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::user_local_rate_limit::v3::UserLocalRateLimit as OrionUserLocalRateLimit;
     use orion_data_plane_api::envoy_data_plane_api::{
         envoy::{
             config::route::v3::FilterConfig as EnvoyFilterConfig,
@@ -160,6 +163,7 @@ mod envoy_conversions {
                 SupportedEnvoyFilter::JwtAuthentication(jwt) => jwt.try_into().map(Self::JwtAuthentication),
                 SupportedEnvoyFilter::Cors(c) => c.try_into().map(Self::Cors),
                 SupportedEnvoyFilter::CorsPolicy(c) => c.try_into().map(Self::CorsPolicy),
+                SupportedEnvoyFilter::UserLocalRateLimiter(user_rate_limit) => user_rate_limit.try_into().map(Self::UserLocalRateLimit),
             }
         }
     }
@@ -175,6 +179,7 @@ mod envoy_conversions {
         Cors(Cors),
         CorsPolicy(CorsPolicy),
         McpGateway(OrionMcpGateway),
+        UserLocalRateLimiter(OrionUserLocalRateLimit),
     }
 
     impl TryFrom<Any> for SupportedEnvoyFilter {
@@ -204,6 +209,9 @@ mod envoy_conversions {
                 },
                 "type.googleapis.com/orion.extensions.filters.http.mcp.mcp_gateway.v3.McpGateway" => {
                     OrionMcpGateway::decode(typed_config.value.as_slice()).map(Self::McpGateway)
+                },
+                "type.googleapis.com/orion.extensions.filters.http.user_local_rate_limit.v3.UserLocalRateLimit" => {
+                    OrionUserLocalRateLimit::decode(typed_config.value.as_slice()).map(Self::UserLocalRateLimiter)
                 },
                 _ => return Err(GenericError::unsupported_variant(typed_config.type_url)),
             }
