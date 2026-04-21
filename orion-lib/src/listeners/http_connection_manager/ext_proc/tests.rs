@@ -6699,9 +6699,9 @@ async fn test_immediate_response_with_grpc_status() {
     let result = ext_proc.apply_request(&mut request).await;
 
     // An ImmediateResponse triggers a DirectResponse
-    assert_matches!(result, FilterDecision::DirectResponse(mut response) => {
+    assert_matches!(result, FilterDecision::DirectResponse(response) => {
         assert_eq!(response.status(), 503);
-        let (_, body) = response.into_parts();
+        let (_, _body) = response.into_parts();
         // Since we are not running this in a context that eagerly resolves, we might not unwrap it directly,
         // but typically in testing it works or we just check status.
     });

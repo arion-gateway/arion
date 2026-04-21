@@ -21,7 +21,10 @@ use orion_data_plane_api::envoy_data_plane_api::{
             route::v3::RouteConfiguration,
         },
         extensions::filters::{
-            http::{ext_proc::v3::ExternalProcessor as EnvoyExternalProcessor, {rbac::v3::Rbac as HttpRbac, router::v3::Router}},
+            http::{
+                ext_proc::v3::ExternalProcessor as EnvoyExternalProcessor,
+                {rbac::v3::Rbac as HttpRbac, router::v3::Router},
+            },
             network::http_connection_manager::v3::{
                 http_connection_manager::{CodecType as ProtoCodecType, RouteSpecifier},
                 http_filter::ConfigType as HttpFilterConfigType,
