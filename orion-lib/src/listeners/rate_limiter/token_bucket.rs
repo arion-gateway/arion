@@ -15,7 +15,7 @@
 //
 //
 
-use std::{hash::Hash, sync::atomic::Ordering};
+use std::{cmp::max, fmt, hash::Hash, sync::atomic::Ordering};
 
 use atomic_time::AtomicInstant;
 use std::{
@@ -31,7 +31,41 @@ pub struct TokenBucket {
     max_tokens: usize,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum TokenBucketError {
+    ZeroRate,
+    ZeroCapacity,
+}
+
+impl fmt::Display for TokenBucketError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TokenBucketError::ZeroRate => write!(f, "events_per_second must be strictly greater than 0"),
+            TokenBucketError::ZeroCapacity => write!(f, "max_tokens must be strictly greater than 0"),
+        }
+    }
+}
+
 impl TokenBucket {
+    /// Construct a `TokenBucket` only using max_token and events per second information.
+    ///
+    /// * `max_tokens`: The maximum number of tokens that the bucket can hold.
+    /// * `events_per_second`: Expected number of events per second.
+    #[allow(dead_code)]
+    pub fn with_rate_and_capacity(max_tokens: u32, events_per_second: u32) -> Result<TokenBucket, TokenBucketError> {
+        if max_tokens == 0 {
+            return Err(TokenBucketError::ZeroCapacity);
+        }
+        if events_per_second == 0 {
+            return Err(TokenBucketError::ZeroRate);
+        }
+
+        let tokens_per_fill = 1;
+        let fill_interval = Duration::from_secs(1) / events_per_second;
+
+        Ok(Self::new(max_tokens, tokens_per_fill, fill_interval))
+    }
+
     /// Construct a `TokenBucket`
     //
     /// * `max_token`: The maximum tokens that the bucket can hold.

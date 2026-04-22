@@ -105,6 +105,7 @@ impl FilterDecision {
     }
 
     #[inline]
+    #[allow(dead_code)]
     pub fn unauthorized(msg: &str, ver: http::Version) -> FilterDecision {
         FilterDecision::DirectResponse(
             SyntheticHttpResponse::unauthorized(EventFailure::ExtProcError.into(), msg).into_response(ver),
