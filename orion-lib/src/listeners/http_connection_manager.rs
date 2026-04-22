@@ -29,10 +29,10 @@ pub mod ext_proc;
 pub mod http_modifiers;
 pub mod jwt_authn;
 pub mod mcp_gateway;
-pub mod user_local_rate_limiter;
 mod redirect;
 mod route;
 mod upgrades;
+pub mod user_rate_limiter;
 
 #[cfg(feature = "metrics")]
 use orion_interner::StringInterner;
@@ -1645,10 +1645,7 @@ fn instrument_early_failure_response(
                         let duration = first_byte_instant.saturating_duration_since(trans_handler.start_instant);
                         #[allow(unused_variables)]
                         let tx_duration = Instant::now().saturating_duration_since(first_byte_instant);
-                        with_access_log!(
-                            &mut log_ctx.loggers,
-                            HttpResponseDurationContext { duration, tx_duration }
-                        );
+                        with_access_log!(&mut log_ctx.loggers, HttpResponseDurationContext { duration, tx_duration });
                     }
 
                     if trans_handler.trans_phase.is_complete() {
@@ -1716,15 +1713,18 @@ fn reject_request_if_invalid(
             n => {
                 debug!("Invalid number of host headers: {}", n);
                 Some(
-                SyntheticHttpResponse::bad_request(EventFailure::DirectResponse.into()).into_response(request.version()),
-            )
+                    SyntheticHttpResponse::bad_request(EventFailure::DirectResponse.into())
+                        .into_response(request.version()),
+                )
             },
         }
     } else {
         None
     };
 
-    response.map(|r| instrument_early_failure_response(r, trans_handler, stream_metrics, listener_name, user_id, filterchain_id))
+    response.map(|r| {
+        instrument_early_failure_response(r, trans_handler, stream_metrics, listener_name, user_id, filterchain_id)
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1743,7 +1743,14 @@ fn handle_route_conf_not_found(
     )
     .into_response(version);
 
-    Ok(instrument_early_failure_response(response, trans_handler, stream_metrics, listener_name, user_id, filterchain_id))
+    Ok(instrument_early_failure_response(
+        response,
+        trans_handler,
+        stream_metrics,
+        listener_name,
+        user_id,
+        filterchain_id,
+    ))
 }
 
 #[cfg(test)]

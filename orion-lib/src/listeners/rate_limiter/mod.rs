@@ -21,7 +21,7 @@ use std::sync::Arc;
 use http::{status::StatusCode, Request};
 use tracing::warn;
 
-use token_bucket::TokenBucket;
+pub(crate) use token_bucket::TokenBucket;
 
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::local_rate_limit::LocalRateLimit as LocalRateLimitConfig;
 

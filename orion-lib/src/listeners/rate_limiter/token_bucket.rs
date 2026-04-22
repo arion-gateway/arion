@@ -15,7 +15,7 @@
 //
 //
 
-use std::{cmp::max, fmt, hash::Hash, sync::atomic::Ordering};
+use std::{fmt, hash::Hash, sync::atomic::Ordering};
 
 use atomic_time::AtomicInstant;
 use std::{
@@ -131,6 +131,12 @@ impl TokenBucket {
         } else {
             n
         }
+    }
+
+    /// Return the last consume timestamp
+    #[allow(dead_code)]
+    pub fn last_consume(&self) -> Instant {
+        self.time.load(Ordering::Relaxed)
     }
 }
 
