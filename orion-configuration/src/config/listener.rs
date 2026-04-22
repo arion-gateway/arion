@@ -67,6 +67,8 @@ pub struct Listener {
     pub with_tls_inspector: bool,
     #[serde(skip_serializing_if = "Option::is_none", default = "Default::default")]
     pub proxy_protocol_config: Option<super::listener_filters::DownstreamProxyProtocolConfig>,
+    #[serde(skip_serializing_if = "Option::is_none", default = "Default::default")]
+    pub listener_local_rate_limit_config: Option<super::listener_filters::ListenerLocalRateLimitConfig>,
     #[serde(default = "Default::default")]
     pub tcp_backlog_size: u32,
     #[serde(skip_serializing_if = "Vec::is_empty", default = "Default::default")]
@@ -504,22 +506,18 @@ mod envoy_conversions {
                 let listener_filters: Vec<ListenerFilter> = convert_vec!(listener_filters)?;
                 let mut with_tls_inspector = false;
                 let mut proxy_protocol_config = None;
+                let mut listener_local_rate_limit_config = None;
 
                 for filter in listener_filters {
                     match filter.config {
                         ListenerFilterConfig::TlsInspector => {
-                            if with_tls_inspector {
-                                return Err(GenericError::from_msg("duplicate TLS inspector listener filter"))
-                                    .with_node("listener_filters");
-                            }
                             with_tls_inspector = true;
                         },
                         ListenerFilterConfig::ProxyProtocol(config) => {
-                            if proxy_protocol_config.is_some() {
-                                return Err(GenericError::from_msg("duplicate proxy protocol listener filter"))
-                                    .with_node("listener_filters");
-                            }
                             proxy_protocol_config = Some(config);
+                        },
+                        ListenerFilterConfig::LocalRateLimit(config) => {
+                            listener_local_rate_limit_config = Some(config);
                         },
                     }
                 }
@@ -530,6 +528,7 @@ mod envoy_conversions {
                     filter_chains,
                     with_tls_inspector,
                     proxy_protocol_config,
+                    listener_local_rate_limit_config,
                     tcp_backlog_size,
                     access_log,
                 })

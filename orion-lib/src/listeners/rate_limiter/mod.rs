@@ -31,7 +31,12 @@ use {
 
 pub(crate) use token_bucket::TokenBucket;
 
-use orion_configuration::config::network_filters::http_connection_manager::http_filters::local_rate_limit::LocalRateLimit as LocalRateLimitConfig;
+use orion_configuration::config::{
+    listener_filters::ListenerLocalRateLimitConfig,
+    network_filters::http_connection_manager::http_filters::local_rate_limit::{
+        LocalRateLimit as LocalRateLimitConfig, TokenBucket as TokenBucketConfig,
+    },
+};
 
 use crate::{body::response_flags::ResponseFlags, event_error::EventFailure};
 use orion_format::types::ResponseFlags as FmtResponseFlags;
@@ -51,6 +56,11 @@ pub struct LocalRateLimitInner {
 #[derive(Debug, Clone)]
 pub struct LocalRateLimit {
     pub inner: Arc<LocalRateLimitInner>, // shared across sessions...
+}
+
+#[derive(Debug, Clone)]
+pub struct ListenerLocalRateLimit {
+    pub token_bucket: Option<TokenBucket>,
 }
 
 impl LocalRateLimit {
@@ -102,25 +112,50 @@ impl LocalRateLimit {
     }
 }
 
+impl ListenerLocalRateLimit {
+    pub fn allow(&self) -> bool {
+        if let Some(token_bucket) = &self.token_bucket {
+            if !token_bucket.consume(1) {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+fn build_token_bucket(tb_conf: TokenBucketConfig) -> TokenBucket {
+    let max_tokens = tb_conf.max_tokens;
+    let tokens_per_fill = tb_conf.tokens_per_fill;
+    let fill_interval = tb_conf.fill_interval;
+    let adjusted_fill_interval = fill_interval.checked_mul(runtime_config().num_runtimes.into());
+    let fill_interval = if let Some(value) = adjusted_fill_interval {
+        value
+    } else {
+        warn!("failed to adjust fill interval to number of configured runtimes (overflow)");
+        fill_interval
+    };
+    TokenBucket::new(max_tokens, tokens_per_fill, fill_interval)
+}
+
 impl From<LocalRateLimitConfig> for LocalRateLimit {
     fn from(rate_limit: LocalRateLimitConfig) -> Self {
         let LocalRateLimitConfig { status, stat_prefix, token_bucket } = rate_limit;
-        if let Some(token_bucket) = token_bucket {
-            let max_tokens = token_bucket.max_tokens;
-            let tokens_per_fill = token_bucket.tokens_per_fill;
-            let fill_interval = token_bucket.fill_interval;
-            let adjusted_fill_interval = fill_interval.checked_mul(runtime_config().num_runtimes.into());
-            let fill_interval = if let Some(value) = adjusted_fill_interval {
-                value
-            } else {
-                warn!("failed to adjust fill interval to number of configured runtimes (overflow)");
-                fill_interval
-            };
-            let token_bucket = TokenBucket::new(max_tokens, tokens_per_fill, fill_interval);
+        if let Some(tb_conf) = token_bucket {
+            let token_bucket = build_token_bucket(tb_conf);
             return Self {
                 inner: Arc::new(LocalRateLimitInner { status, token_bucket: Some(token_bucket), stat_prefix }),
             };
         }
         Self { inner: Arc::new(LocalRateLimitInner { status, token_bucket: None, stat_prefix }) }
+    }
+}
+
+impl From<ListenerLocalRateLimitConfig> for ListenerLocalRateLimit {
+    fn from(rate_limit: ListenerLocalRateLimitConfig) -> Self {
+        if let Some(tb_conf) = rate_limit.token_bucket {
+            let token_bucket = build_token_bucket(tb_conf);
+            return Self { token_bucket: Some(token_bucket) };
+        }
+        Self { token_bucket: None }
     }
 }
