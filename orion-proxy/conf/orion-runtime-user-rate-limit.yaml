@@ -1,0 +1,83 @@
+runtime:
+    num_cpus: 1
+    num_runtimes: 1
+    event_interval: 31 # estimated optimal value
+    global_queue_interval: null # default
+    max_io_events_per_tick: null # default
+
+logging:
+    log_level: "info"
+
+envoy_bootstrap:
+    static_resources:
+        listeners:
+            - name: listener_http
+              address:
+                  socket_address: { address: 0.0.0.0, port_value: 8000 }
+              filterChains:
+                  - name: filter_chain_http
+                    filter_chain_match:
+                        destination_port: 8000
+                    filters:
+                        - name: http_gateway
+                          typedConfig:
+                              "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                              statPrefix: ingress_http
+                              codecType: HTTP1
+                              http_filters:
+                                  - name: envoy.filters.http.cors
+                                    typed_config:
+                                      "@type": type.googleapis.com/envoy.extensions.filters.http.cors.v3.Cors
+                                  - name: envoy.filter.http.user_rate_limit
+                                    typed_config:
+                                        "@type": type.googleapis.com/orion.extensions.filters.http.user_rate_limit.v3.UserRateLimiter
+                                        user_id_header_name: "x-session-id"
+                                        user_rate_limits:
+                                          - user_id: "session-123"
+                                            local_rate_limit:
+                                              stat_prefix: http_local_rate_limiter
+                                              token_bucket:
+                                                max_tokens: 1
+                                                tokens_per_fill: 1
+                                                fill_interval: 5s
+
+                                          - user_id: "session-456"
+                                            simple_rate_limit:
+                                                max_tokens: 10
+                                                rate: 10
+
+                                          - simple_rate_limit: # default configuration for other sessions
+                                                max_tokens: 2
+                                                rate: 2
+
+                                  - name: envoy.filters.http.router
+                                    typedConfig:
+                                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                                      start_child_span: false
+
+                              route_config:
+                                name: basic_http_route
+                                #request_headers_to_remove:
+                                #    - x-envoy-original-dst-host
+                                virtual_hosts:
+                                  - name: backend
+                                    domains: ["*"]
+                                    routes:
+                                      - match:
+                                          prefix: "/"
+                                        route:
+                                           cluster: default
+
+        clusters:
+            - name: default
+              connect_timeout: 0.25s
+              type: STATIC
+              lb_policy: ROUND_ROBIN
+              load_assignment:
+                endpoints:
+                  - lb_endpoints:
+                      - endpoint:
+                          address:
+                            socket_address:
+                              address: 127.0.0.1
+                              port_value: 9000
