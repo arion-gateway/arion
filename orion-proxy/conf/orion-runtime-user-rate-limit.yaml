@@ -32,6 +32,9 @@ envoy_bootstrap:
                                     typed_config:
                                         "@type": type.googleapis.com/orion.extensions.filters.http.user_rate_limit.v3.UserRateLimiter
                                         user_id_header_name: "x-session-id"
+                                        # optional status code
+                                        # status:
+                                        #     code: 429
                                         user_rate_limits:
                                           - user_id: "session-123"
                                             local_rate_limit:

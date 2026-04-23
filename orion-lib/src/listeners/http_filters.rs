@@ -94,10 +94,10 @@ impl FilterDecision {
     }
 
     #[inline]
-    pub fn rate_limited(ver: http::Version) -> FilterDecision {
+    pub fn rate_limited(status: Option<StatusCode>, ver: http::Version) -> FilterDecision {
         FilterDecision::DirectResponse(
             SyntheticHttpResponse::custom_error(
-                http::StatusCode::TOO_MANY_REQUESTS,
+                status.unwrap_or(http::StatusCode::TOO_MANY_REQUESTS),
                 None,
                 EventFailure::RateLimited.into(),
                 ResponseFlags(FmtResponseFlags::RATE_LIMITED),

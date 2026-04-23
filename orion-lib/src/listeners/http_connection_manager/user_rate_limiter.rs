@@ -122,7 +122,8 @@ impl UserRateLimiter {
                         KeyValue::new("result", filters::EVENT_RATE_LIMITED)
                     ]
                 );
-                return FilterDecision::rate_limited(request.version());
+
+                return FilterDecision::rate_limited(Some(self.inner.status), request.version());
             }
         }
 
@@ -210,7 +211,7 @@ impl UserRateLimiter {
                             KeyValue::new("result", filters::EVENT_RATE_LIMITED)
                         ]
                     );
-                    FilterDecision::rate_limited(request.version())
+                    FilterDecision::rate_limited(Some(self.inner.status), request.version())
                 }
             },
         }
