@@ -77,11 +77,6 @@ const EXT_PROC_FRAME_MERGE_LIMIT: u32 = 4; // max number of frames to merge in s
 const EXT_PROC_MERGE_WINDOW: Duration = tokio::time::Duration::from_micros(100); // time window to wait for more frames to merge
 const EXT_PROC_BUFFERED_BODY_LIMIT: usize = 100 * 1024 * 1024; // extend the default gRPC payload limit from 4MB to 100MB
 
-pub struct ExtProcHeaderValue<'a> {
-    pub key: &'a str,
-    pub value: &'a str,
-}
-
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum ExtProcError {
     #[error("Timeout Error: {0}")]

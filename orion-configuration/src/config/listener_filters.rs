@@ -15,7 +15,12 @@
 //
 //
 
-use crate::config::{common::ProxyProtocolVersion, transport::ProxyProtocolPassThroughTlvs};
+use crate::config::{
+    common::ProxyProtocolVersion,
+    network_filters::http_connection_manager::http_filters::local_rate_limit::TokenBucket,
+    transport::ProxyProtocolPassThroughTlvs,
+};
+use orion_interner::InternedStr;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
@@ -27,6 +32,7 @@ pub struct ListenerFilter {
 pub enum ListenerFilterConfig {
     TlsInspector,
     ProxyProtocol(DownstreamProxyProtocolConfig),
+    LocalRateLimit(ListenerLocalRateLimitConfig),
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
@@ -41,12 +47,23 @@ pub struct DownstreamProxyProtocolConfig {
     pub pass_through_tlvs: Option<ProxyProtocolPassThroughTlvs>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ListenerLocalRateLimitConfig {
+    pub stat_prefix: InternedStr,
+    pub token_bucket: TokenBucket,
+}
+
 #[cfg(feature = "envoy-conversions")]
 mod envoy_conversions {
     #![allow(deprecated)]
+    use std::time::Duration;
+
     use super::{DownstreamProxyProtocolConfig, ListenerFilter, ListenerFilterConfig};
     use crate::config::{
         common::{ProxyProtocolVersion, *},
+        core::RustType,
+        listener_filters::ListenerLocalRateLimitConfig,
+        network_filters::http_connection_manager::http_filters::local_rate_limit::TokenBucket,
         transport::ProxyProtocolPassThroughTlvs,
     };
     use orion_data_plane_api::envoy_data_plane_api::{
@@ -55,18 +72,22 @@ mod envoy_conversions {
                 listener_filter::ConfigType as EnvoyListenerFilterConfigType, ListenerFilter as EnvoyListenerFilter,
             },
             extensions::filters::listener::{
+                local_ratelimit::v3::LocalRateLimit as EnvoyListenerLocalRateLimit,
                 proxy_protocol::v3::ProxyProtocol as EnvoyProxyProtocol,
                 tls_inspector::v3::TlsInspector as EnvoyTlsInspector,
             },
+            r#type::v3::TokenBucket as EnvoyTokenBucket,
         },
         google::protobuf::Any,
         prost::Message,
     };
+    use orion_interner::InternedStr;
     use smol_str::SmolStr;
     #[derive(Debug, Clone)]
     enum SupportedEnvoyListenerFilter {
         TlsInspector(EnvoyTlsInspector),
         ProxyProtocol(EnvoyProxyProtocol),
+        ListenerLocalRateLimit(EnvoyListenerLocalRateLimit),
     }
 
     impl TryFrom<Any> for SupportedEnvoyListenerFilter {
@@ -78,6 +99,9 @@ mod envoy_conversions {
                 },
                 "type.googleapis.com/envoy.extensions.filters.listener.proxy_protocol.v3.ProxyProtocol" => {
                     EnvoyProxyProtocol::decode(typed_config.value.as_slice()).map(Self::ProxyProtocol)
+                },
+                "type.googleapis.com/envoy.extensions.filters.listener.local_ratelimit.v3.LocalRateLimit" => {
+                    EnvoyListenerLocalRateLimit::decode(typed_config.value.as_slice()).map(Self::ListenerLocalRateLimit)
                 },
                 _ => {
                     return Err(GenericError::unsupported_variant(typed_config.type_url));
@@ -151,6 +175,10 @@ mod envoy_conversions {
                     let config = DownstreamProxyProtocolConfig::try_from(envoy_proxy_protocol)?;
                     Ok(Self::ProxyProtocol(config))
                 },
+                SupportedEnvoyListenerFilter::ListenerLocalRateLimit(local_rate_limit) => {
+                    let config = ListenerLocalRateLimitConfig::try_from(local_rate_limit)?;
+                    Ok(Self::LocalRateLimit(config))
+                },
             }
         }
     }
@@ -179,6 +207,33 @@ mod envoy_conversions {
                 .collect::<Result<Vec<_>, _>>()?;
             let pass_through_tlvs = pass_through_tlvs.map(ProxyProtocolPassThroughTlvs::try_from).transpose()?;
             Ok(Self { allow_requests_without_proxy_protocol, stat_prefix, disallowed_versions, pass_through_tlvs })
+        }
+    }
+
+    impl TryFrom<EnvoyListenerLocalRateLimit> for ListenerLocalRateLimitConfig {
+        type Error = GenericError;
+        fn try_from(value: EnvoyListenerLocalRateLimit) -> Result<Self, Self::Error> {
+            let EnvoyListenerLocalRateLimit { stat_prefix, token_bucket, runtime_enabled } = value;
+            unsupported_field!(
+                //stat_prefix,
+                // status,
+                runtime_enabled
+            )?;
+            let stat_prefix: InternedStr = required!(stat_prefix)?.into();
+            let tb = required!(token_bucket)?;
+            let EnvoyTokenBucket { max_tokens, tokens_per_fill, fill_interval } = tb;
+            let max_tokens = required!(max_tokens).with_node("token_bucket")?;
+            let tokens_per_fill = tokens_per_fill.map(|t| t.value).unwrap_or(1);
+            if tokens_per_fill == 0 {
+                return Err(GenericError::from_msg("tokens per fill can't be zero")
+                    .with_node("tokens_per_fill")
+                    .with_node("token_bucket"));
+            }
+            let fill_interval = RustType::<Duration>::try_from(required!(fill_interval)?)
+                .with_node("fill_interval")
+                .with_node("token_bucket")?
+                .into_inner();
+            return Ok(Self { token_bucket: TokenBucket { max_tokens, tokens_per_fill, fill_interval }, stat_prefix });
         }
     }
 }

@@ -9,6 +9,7 @@ use crate::{
             ext_proc::ExternalProcessor,
             jwt_authn::{JwtAuthentication, JwtAuthenticationBuilder},
             mcp_gateway::mcp::McpGateway,
+            user_rate_limiter::UserRateLimiter,
         },
         rate_limiter::LocalRateLimit,
         rbac::HttpRbac,
@@ -93,10 +94,10 @@ impl FilterDecision {
     }
 
     #[inline]
-    pub fn rate_limited(ver: http::Version) -> FilterDecision {
+    pub fn rate_limited(status: Option<StatusCode>, ver: http::Version) -> FilterDecision {
         FilterDecision::DirectResponse(
             SyntheticHttpResponse::custom_error(
-                http::StatusCode::TOO_MANY_REQUESTS,
+                status.unwrap_or(http::StatusCode::TOO_MANY_REQUESTS),
                 None,
                 EventFailure::RateLimited.into(),
                 ResponseFlags(FmtResponseFlags::RATE_LIMITED),
@@ -106,6 +107,7 @@ impl FilterDecision {
     }
 
     #[inline]
+    #[allow(dead_code)]
     pub fn unauthorized(msg: &str, ver: http::Version) -> FilterDecision {
         FilterDecision::DirectResponse(
             SyntheticHttpResponse::unauthorized(EventFailure::ExtProcError.into(), msg).into_response(ver),
@@ -129,6 +131,7 @@ pub enum HttpFilterValue {
     JwtAuthentication(JwtAuthentication),
     Cors(Cors),
     McpGateway(McpGateway),
+    UserRateLimit(UserRateLimiter),
 }
 
 pub trait FilterFactory {
@@ -144,6 +147,7 @@ impl FilterFactory for HttpFilterValue {
             HttpFilterValue::JwtAuthentication(conf) => HttpFilterValue::JwtAuthentication(conf.new_from()),
             HttpFilterValue::McpGateway(conf) => HttpFilterValue::McpGateway(conf.new_from()),
             HttpFilterValue::Cors(conf) => HttpFilterValue::Cors(conf.clone()),
+            HttpFilterValue::UserRateLimit(conf) => HttpFilterValue::UserRateLimit(conf.clone()),
         }
     }
 }
@@ -170,6 +174,9 @@ impl TryFrom<HttpFilterConfig> for HttpFilter {
             HttpFilterType::Cors(conf) => HttpFilterValue::Cors(conf.into()),
             HttpFilterType::CorsPolicy(conf) => HttpFilterValue::Cors(conf.into()),
             HttpFilterType::McpGateway(mcp) => HttpFilterValue::McpGateway(mcp.try_into()?),
+            HttpFilterType::UserRateLimit(user_rate_limit) => {
+                HttpFilterValue::UserRateLimit(user_rate_limit.try_into()?)
+            },
         };
         Ok(Self { name, disabled, filter: Some(filter), base_config: hcm_config })
     }
@@ -184,6 +191,7 @@ impl HttpFilterValue {
             HttpFilterValue::JwtAuthentication(jwt) => jwt.apply_request(request).await,
             HttpFilterValue::Cors(cors) => cors.apply_request(request),
             HttpFilterValue::McpGateway(mcp) => mcp.apply_request(request).await,
+            HttpFilterValue::UserRateLimit(user_rate_limiter) => user_rate_limiter.apply_request(request).await,
         }
     }
     pub async fn apply_response(&mut self, response: &mut Response<OrionResponseBody>) -> FilterDecision {
@@ -194,12 +202,13 @@ impl HttpFilterValue {
             HttpFilterValue::JwtAuthentication(_) => FilterDecision::Continue,
             HttpFilterValue::McpGateway(mcp) => mcp.apply_response(response).await,
             HttpFilterValue::Cors(cors) => cors.apply_response(response),
+            HttpFilterValue::UserRateLimit(_) => FilterDecision::Continue,
         }
     }
     pub(crate) fn from_filter_override(value: &FilterOverride, base_config: Option<&HttpFilterConfig>) -> Option<Self> {
         match &value.filter_settings {
             Some(filter_settings) => match filter_settings {
-                FilterConfigOverride::LocalRateLimit(rl) => Some(HttpFilterValue::RateLimit((*rl).into())),
+                FilterConfigOverride::LocalRateLimit(rl) => Some(HttpFilterValue::RateLimit(rl.clone().into())),
                 FilterConfigOverride::Rbac(Some(rbac)) => Some(HttpFilterValue::Rbac(HttpRbac::new(&rbac))),
                 FilterConfigOverride::Rbac(None) => None,
                 FilterConfigOverride::ExternalProcessor(ext_proc_per_route) => {

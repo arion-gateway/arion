@@ -121,7 +121,7 @@ async fn test_tc0506_control_chars_in_value() {
 async fn test_tc0507_oversized_header() {
     let (orion, _backend, tcp_client, config_path) = setup().await;
 
-    let big_value = "x".repeat(65536*16);
+    let big_value = "x".repeat(65536 * 16);
     let req = RawHttpRequestBuilder::new().host("localhost").header(b"X-Big-Header", big_value.as_bytes()).build();
 
     let response = tcp_client.send(&req).await.expect("Failed to send");

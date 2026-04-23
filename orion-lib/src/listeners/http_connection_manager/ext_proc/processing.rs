@@ -258,6 +258,7 @@ pub(crate) mod protected {
         }
 
         /// Returns the number of frames injected into the `ChannelBody` so far.
+        #[allow(dead_code)]
         pub fn injected_frames(&self) -> usize {
             self.inner.injected_frames()
         }

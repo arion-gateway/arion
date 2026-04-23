@@ -194,6 +194,7 @@ mod tests {
             filter_chains: HashMap::default(),
             with_tls_inspector: false,
             proxy_protocol_config: None,
+            listener_local_rate_limit_config: None,
             tcp_backlog_size: 128,
             access_log: vec![],
         };
@@ -236,6 +237,7 @@ mod tests {
             filter_chains: HashMap::default(),
             with_tls_inspector: false,
             proxy_protocol_config: None,
+            listener_local_rate_limit_config: None,
             tcp_backlog_size: 128,
             access_log: vec![],
         };

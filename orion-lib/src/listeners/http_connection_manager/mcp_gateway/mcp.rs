@@ -710,7 +710,7 @@ impl McpGateway {
                         debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: legacy SSE...");
                         if !ctx.try_start_async_request() {
                             debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: rate limited!");
-                            return FilterDecision::rate_limited(request.version());
+                            return FilterDecision::rate_limited(None, request.version());
                         }
 
                         let Ok(accepted) = self.build_mcp_http_response(
@@ -726,7 +726,7 @@ impl McpGateway {
                         debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: streamable http...");
                         if !ctx.try_start_async_request() {
                             debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: rate limited!");
-                            return FilterDecision::rate_limited(request.version());
+                            return FilterDecision::rate_limited(None, request.version());
                         }
 
                         let (body, mut sender) = SinkBody::new();

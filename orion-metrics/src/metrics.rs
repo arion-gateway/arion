@@ -19,6 +19,7 @@ use tracing::info;
 
 use crate::Metrics;
 pub mod clusters;
+pub mod filters;
 pub mod http;
 pub mod listeners;
 pub mod server;
@@ -57,4 +58,5 @@ pub fn init_global_metrics(_metrics: &[Metrics], number_of_threads: usize) {
     clusters::init_metrics();
     server::init_metrics(number_of_threads);
     user::init_metrics();
+    filters::init_metrics();
 }

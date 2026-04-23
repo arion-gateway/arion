@@ -15,10 +15,11 @@
 //
 //
 
-use std::cell::RefCell;
+use std::{cell::RefCell, ops::Deref};
 
 use http::Version;
 use lasso::Rodeo;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use smol_str::SmolStr;
 
 // static GLOBAL_INTERNER: OnceLock<ThreadedRodeo> = OnceLock::new();
@@ -72,5 +73,46 @@ impl StringInterner for Version {
             Version::HTTP_3 => "HTTP/3",
             _ => "HTTP/unknown",
         }
+    }
+}
+
+// Create a wrapper type to hide the 'static lifetime from Serde's macros
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct InternedStr(pub &'static str);
+
+impl<'de> Deserialize<'de> for InternedStr {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+
+        // Assuming your interner has a function that takes a String and returns &'static str.
+        // Adjust the function call to match your actual orion_interner API.
+        Ok(InternedStr(s.to_static_str()))
+    }
+}
+
+impl Serialize for InternedStr {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.0)
+    }
+}
+
+// 4. Implement Deref so you can use InternedStr exactly like a &str in your logic
+impl Deref for InternedStr {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        self.0
+    }
+}
+
+impl<T: StringInterner> From<T> for InternedStr {
+    fn from(value: T) -> Self {
+        InternedStr(value.to_static_str())
     }
 }
