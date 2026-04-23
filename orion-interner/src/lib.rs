@@ -77,7 +77,7 @@ impl StringInterner for Version {
 }
 
 // Create a wrapper type to hide the 'static lifetime from Serde's macros
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct InternedStr(pub &'static str);
 
 impl<'de> Deserialize<'de> for InternedStr {
@@ -108,5 +108,11 @@ impl Deref for InternedStr {
 
     fn deref(&self) -> &Self::Target {
         self.0
+    }
+}
+
+impl<T: StringInterner> From<T> for InternedStr{
+    fn from(value: T) -> Self {
+        InternedStr(value.to_static_str())
     }
 }

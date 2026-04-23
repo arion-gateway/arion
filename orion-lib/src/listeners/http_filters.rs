@@ -208,7 +208,7 @@ impl HttpFilterValue {
     pub(crate) fn from_filter_override(value: &FilterOverride, base_config: Option<&HttpFilterConfig>) -> Option<Self> {
         match &value.filter_settings {
             Some(filter_settings) => match filter_settings {
-                FilterConfigOverride::LocalRateLimit(rl) => Some(HttpFilterValue::RateLimit((*rl).into())),
+                FilterConfigOverride::LocalRateLimit(rl) => Some(HttpFilterValue::RateLimit(rl.clone().into())),
                 FilterConfigOverride::Rbac(Some(rbac)) => Some(HttpFilterValue::Rbac(HttpRbac::new(&rbac))),
                 FilterConfigOverride::Rbac(None) => None,
                 FilterConfigOverride::ExternalProcessor(ext_proc_per_route) => {

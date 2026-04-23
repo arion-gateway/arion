@@ -68,15 +68,17 @@ impl UserRateLimiter {
         // Obtain the user-id from header (using the value of user_id_header)
         //
 
-        let Some(user) = request.headers().get(self.inner.user_id_header.as_str()).and_then(|v| v.to_str().ok())
-        else {
+        let Some(user) = request.headers().get(self.inner.user_id_header.as_str()).and_then(|v| v.to_str().ok()) else {
             debug!(target: "user_rate_limiter", "no user found in request headers");
             with_metric!(
                 filters::USER_RATE_LIMIT,
                 add,
                 1,
                 get_shard_id!(),
-                &[KeyValue::new("result", filters::EVENT_NOT_APPLICABLE)]
+                &[
+                    KeyValue::new("filter", self.inner.stat_prefix.0),
+                    KeyValue::new("result", filters::EVENT_NOT_APPLICABLE)
+                ]
             );
             return FilterDecision::Continue;
         };
@@ -97,7 +99,11 @@ impl UserRateLimiter {
                     add,
                     1,
                     get_shard_id!(),
-                    &[KeyValue::new("user", user.to_static_str()), KeyValue::new("result", filters::EVENT_OK)]
+                    &[
+                        KeyValue::new("filter", self.inner.stat_prefix.0),
+                        KeyValue::new("user", user.to_static_str()),
+                        KeyValue::new("result", filters::EVENT_OK)
+                    ]
                 );
                 return FilterDecision::Continue;
             } else {
@@ -108,6 +114,7 @@ impl UserRateLimiter {
                     1,
                     get_shard_id!(),
                     &[
+                        KeyValue::new("filter", self.inner.stat_prefix.0),
                         KeyValue::new("user", user.to_static_str()),
                         KeyValue::new("result", filters::EVENT_RATE_LIMITED)
                     ]
@@ -132,6 +139,7 @@ impl UserRateLimiter {
                     1,
                     get_shard_id!(),
                     &[
+                        KeyValue::new("filter", self.inner.stat_prefix.0),
                         KeyValue::new("user", user.to_static_str()),
                         KeyValue::new("result", filters::EVENT_NOT_APPLICABLE)
                     ]
@@ -150,6 +158,7 @@ impl UserRateLimiter {
                             1,
                             get_shard_id!(),
                             &[
+                                KeyValue::new("filter", self.inner.stat_prefix.0),
                                 KeyValue::new("user", user.to_static_str()),
                                 KeyValue::new("result", filters::EVENT_NOT_APPLICABLE)
                             ]
@@ -174,7 +183,11 @@ impl UserRateLimiter {
                         add,
                         1,
                         get_shard_id!(),
-                        &[KeyValue::new("user", user.to_static_str()), KeyValue::new("result", filters::EVENT_OK)]
+                        &[
+                            KeyValue::new("filter", self.inner.stat_prefix.0),
+                            KeyValue::new("user", user.to_static_str()),
+                            KeyValue::new("result", filters::EVENT_OK)
+                        ]
                     );
                     FilterDecision::Continue
                 } else {
@@ -185,6 +198,7 @@ impl UserRateLimiter {
                         1,
                         get_shard_id!(),
                         &[
+                            KeyValue::new("filter", self.inner.stat_prefix.0),
                             KeyValue::new("user", user.to_static_str()),
                             KeyValue::new("result", filters::EVENT_RATE_LIMITED)
                         ]

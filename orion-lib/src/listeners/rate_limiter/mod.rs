@@ -19,7 +19,15 @@ mod token_bucket;
 use std::sync::Arc;
 
 use http::{status::StatusCode, Request};
+use orion_interner::InternedStr;
 use tracing::warn;
+
+#[cfg(feature = "metrics")]
+use {
+    crate::{get_shard_id, with_metric},
+    opentelemetry::KeyValue,
+    orion_metrics::metrics::filters,
+};
 
 pub(crate) use token_bucket::TokenBucket;
 
@@ -35,6 +43,7 @@ use crate::{
 
 #[derive(Debug, Clone)]
 pub struct LocalRateLimitInner {
+    pub stat_prefix: InternedStr,
     pub status: StatusCode,
     pub token_bucket: Option<TokenBucket>,
 }
@@ -49,6 +58,16 @@ impl LocalRateLimit {
         if let Some(token_bucket) = &self.inner.token_bucket {
             if !token_bucket.consume(1) {
                 let status = self.inner.status;
+                with_metric!(
+                    filters::LOCAL_RATE_LIMIT,
+                    add,
+                    1,
+                    get_shard_id!(),
+                    &[
+                        KeyValue::new("filter", self.inner.stat_prefix.0),
+                        KeyValue::new("result", filters::EVENT_RATE_LIMITED)
+                    ]
+                );
                 return FilterDecision::DirectResponse(
                     SyntheticHttpResponse::custom_error(
                         status,
@@ -58,16 +77,35 @@ impl LocalRateLimit {
                     )
                     .into_response(req.version()),
                 );
+            } else {
+                with_metric!(
+                    filters::LOCAL_RATE_LIMIT,
+                    add,
+                    1,
+                    get_shard_id!(),
+                    &[KeyValue::new("filter", self.inner.stat_prefix.0), KeyValue::new("result", filters::EVENT_OK)]
+                );
+                return FilterDecision::Continue;
             }
         }
+        with_metric!(
+            filters::LOCAL_RATE_LIMIT,
+            add,
+            1,
+            get_shard_id!(),
+            &[
+                KeyValue::new("filter", self.inner.stat_prefix.0),
+                KeyValue::new("result", filters::EVENT_NOT_APPLICABLE)
+            ]
+        );
         FilterDecision::Continue
     }
 }
 
 impl From<LocalRateLimitConfig> for LocalRateLimit {
     fn from(rate_limit: LocalRateLimitConfig) -> Self {
-        let status = rate_limit.status;
-        if let Some(token_bucket) = rate_limit.token_bucket {
+        let LocalRateLimitConfig { status, stat_prefix, token_bucket } = rate_limit;
+        if let Some(token_bucket) = token_bucket {
             let max_tokens = token_bucket.max_tokens;
             let tokens_per_fill = token_bucket.tokens_per_fill;
             let fill_interval = token_bucket.fill_interval;
@@ -79,8 +117,10 @@ impl From<LocalRateLimitConfig> for LocalRateLimit {
                 fill_interval
             };
             let token_bucket = TokenBucket::new(max_tokens, tokens_per_fill, fill_interval);
-            return Self { inner: Arc::new(LocalRateLimitInner { status, token_bucket: Some(token_bucket) }) };
+            return Self {
+                inner: Arc::new(LocalRateLimitInner { status, token_bucket: Some(token_bucket), stat_prefix }),
+            };
         }
-        Self { inner: Arc::new(LocalRateLimitInner { status, token_bucket: None }) }
+        Self { inner: Arc::new(LocalRateLimitInner { status, token_bucket: None, stat_prefix }) }
     }
 }
