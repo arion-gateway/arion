@@ -64,6 +64,7 @@ pub struct HttpFilter {
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case", tag = "filter_type", content = "filter_settings")]
+#[serde(bound(deserialize = ""))]
 pub enum HttpFilterType {
     Rbac(HttpRbac),
     RateLimit(LocalRateLimit),
