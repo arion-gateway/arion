@@ -19,13 +19,13 @@ use tracing::info;
 
 use crate::Metrics;
 pub mod clusters;
+pub mod filters;
 pub mod http;
 pub mod listeners;
 pub mod server;
 pub mod tcp;
 pub mod tls;
 pub mod user;
-pub mod filters;
 
 pub struct Metric<T> {
     pub prefix: &'static str,

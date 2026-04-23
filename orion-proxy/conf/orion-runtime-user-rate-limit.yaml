@@ -57,8 +57,6 @@ envoy_bootstrap:
 
                               route_config:
                                 name: basic_http_route
-                                #request_headers_to_remove:
-                                #    - x-envoy-original-dst-host
                                 virtual_hosts:
                                   - name: backend
                                     domains: ["*"]

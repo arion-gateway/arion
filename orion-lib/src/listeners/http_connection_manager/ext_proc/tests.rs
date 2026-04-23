@@ -163,6 +163,7 @@ impl MockExternalProcessorState {
         self.responses.pop_front()
     }
 
+    #[allow(dead_code)]
     pub fn responses_len(&self) -> usize {
         self.responses.len()
     }
@@ -6484,9 +6485,7 @@ async fn test_request_and_response_mutation_with_streamed_10m_body_4k_chunks() {
 }
 
 use orion_configuration::config::core::{StringMatcher, StringMatcherPattern};
-use orion_configuration::config::network_filters::http_connection_manager::http_filters::ext_proc::{
-    HeaderForwardingRules, HeaderMutationRules, MutationPolicy,
-};
+use orion_configuration::config::network_filters::http_connection_manager::http_filters::ext_proc::HeaderForwardingRules;
 use smol_str::SmolStr;
 
 #[tokio::test]

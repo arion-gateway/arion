@@ -22,9 +22,9 @@ use std::collections::HashMap;
 use axum::extract::State;
 use orion_metrics::{
     metrics::{
-        clusters, http, listeners,
+        clusters, filters, http, listeners,
         server::{self, update_server_metrics},
-        tcp, tls, user, filters
+        tcp, tls, user,
     },
     sharded::ShardedU64,
 };
@@ -242,11 +242,14 @@ pub(crate) async fn prometheus_handler(
     process_metric!(registry, &user::TOTAL_ERRORS, IntCounterVec, populate_counter_vec);
     process_metric!(registry, &user::BYTES_TX, IntCounterVec, populate_counter_vec);
     process_metric!(registry, &user::BYTES_RX, IntCounterVec, populate_counter_vec);
-    process_metric!(registry, &filters::USER_RATE_LIMIT, IntCounterVec, populate_counter_vec);
-    process_metric!(registry, &filters::LOCAL_RATE_LIMIT, IntCounterVec, populate_counter_vec);
     process_metric!(registry, &user::INBOUND_STREAMING_BYTES_PROCESSED, IntCounterVec, populate_counter_vec);
     process_metric!(registry, &user::OUTBOUND_STREAMING_BYTES_PROCESSED, IntCounterVec, populate_counter_vec);
     process_histogram!(registry, &user::LATENCY);
+
+    // filters
+    process_metric!(registry, &filters::CONNECTION_RATE_LIMIT, IntCounterVec, populate_counter_vec);
+    process_metric!(registry, &filters::LOCAL_RATE_LIMIT, IntCounterVec, populate_counter_vec);
+    process_metric!(registry, &filters::USER_RATE_LIMIT, IntCounterVec, populate_counter_vec);
 
     // Encode and return
 

@@ -54,6 +54,8 @@ use orion_configuration::config::{
     listener_filters::{DownstreamProxyProtocolConfig, ListenerLocalRateLimitConfig},
 };
 use orion_interner::StringInterner;
+#[cfg(feature = "metrics")]
+use orion_metrics::metrics::filters;
 use tokio::sync::mpsc;
 
 #[cfg(feature = "access-log")]
@@ -323,11 +325,33 @@ impl Listener {
 
                                     if let Some(rate_limiter) = &listener_local_rate_limit {
                                         if !rate_limiter.allow() {
-                                            // todo(francesco): should we add some counters for
-                                            // rate-limited connections at the listener level?
                                             debug!("Connection from {} rate-limited", peer_addr);
+                                            #[cfg(feature = "metrics")]
+                                            with_metric!(
+                                                filters::CONNECTION_RATE_LIMIT,
+                                                add,
+                                                1,
+                                                get_shard_id!(),
+                                                &[
+                                                    KeyValue::new("listener", listener_name),
+                                                    KeyValue::new("filter", rate_limiter.stat_prefix.0),
+                                                    KeyValue::new("result", filters::EVENT_RATE_LIMITED),
+                                                ]
+                                            );
                                             continue;
                                         }
+                                        #[cfg(feature = "metrics")]
+                                        with_metric!(
+                                            filters::CONNECTION_RATE_LIMIT,
+                                            add,
+                                            1,
+                                            get_shard_id!(),
+                                            &[
+                                                KeyValue::new("listener", listener_name),
+                                                KeyValue::new("filter", rate_limiter.stat_prefix.0),
+                                                KeyValue::new("result", filters::EVENT_OK)
+                                            ]
+                                        );
                                     }
                                     let local_address = stream.local_addr().ok();
 

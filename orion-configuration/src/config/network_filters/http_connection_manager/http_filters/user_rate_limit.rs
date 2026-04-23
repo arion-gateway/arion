@@ -1,7 +1,7 @@
-use std::collections::HashMap;
+use orion_interner::InternedStr;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
-use orion_interner::InternedStr;
+use std::collections::HashMap;
 
 use crate::config::network_filters::http_connection_manager::http_filters::local_rate_limit::LocalRateLimit;
 

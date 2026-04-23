@@ -111,7 +111,7 @@ impl Deref for InternedStr {
     }
 }
 
-impl<T: StringInterner> From<T> for InternedStr{
+impl<T: StringInterner> From<T> for InternedStr {
     fn from(value: T) -> Self {
         InternedStr(value.to_static_str())
     }

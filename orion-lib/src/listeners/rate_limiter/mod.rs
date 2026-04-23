@@ -48,6 +48,7 @@ use crate::{
 
 #[derive(Debug, Clone)]
 pub struct LocalRateLimitInner {
+    #[allow(unused)]
     pub stat_prefix: InternedStr,
     pub status: StatusCode,
     pub token_bucket: Option<TokenBucket>,
@@ -60,7 +61,9 @@ pub struct LocalRateLimit {
 
 #[derive(Debug, Clone)]
 pub struct ListenerLocalRateLimit {
-    pub token_bucket: Option<TokenBucket>,
+    #[allow(unused)]
+    pub stat_prefix: InternedStr,
+    pub token_bucket: TokenBucket,
 }
 
 impl LocalRateLimit {
@@ -68,6 +71,7 @@ impl LocalRateLimit {
         if let Some(token_bucket) = &self.inner.token_bucket {
             if !token_bucket.consume(1) {
                 let status = self.inner.status;
+                #[cfg(feature = "metrics")]
                 with_metric!(
                     filters::LOCAL_RATE_LIMIT,
                     add,
@@ -88,6 +92,7 @@ impl LocalRateLimit {
                     .into_response(req.version()),
                 );
             } else {
+                #[cfg(feature = "metrics")]
                 with_metric!(
                     filters::LOCAL_RATE_LIMIT,
                     add,
@@ -98,6 +103,7 @@ impl LocalRateLimit {
                 return FilterDecision::Continue;
             }
         }
+        #[cfg(feature = "metrics")]
         with_metric!(
             filters::LOCAL_RATE_LIMIT,
             add,
@@ -113,13 +119,9 @@ impl LocalRateLimit {
 }
 
 impl ListenerLocalRateLimit {
+    #[inline]
     pub fn allow(&self) -> bool {
-        if let Some(token_bucket) = &self.token_bucket {
-            if !token_bucket.consume(1) {
-                return false;
-            }
-        }
-        true
+        self.token_bucket.consume(1)
     }
 }
 
@@ -152,10 +154,7 @@ impl From<LocalRateLimitConfig> for LocalRateLimit {
 
 impl From<ListenerLocalRateLimitConfig> for ListenerLocalRateLimit {
     fn from(rate_limit: ListenerLocalRateLimitConfig) -> Self {
-        if let Some(tb_conf) = rate_limit.token_bucket {
-            let token_bucket = build_token_bucket(tb_conf);
-            return Self { token_bucket: Some(token_bucket) };
-        }
-        Self { token_bucket: None }
+        let token_bucket = build_token_bucket(rate_limit.token_bucket);
+        Self { token_bucket, stat_prefix: rate_limit.stat_prefix }
     }
 }

@@ -12,12 +12,12 @@ use tracing::debug;
 use crate::listeners::rate_limiter::TokenBucket;
 use crate::{listeners::http_filters::FilterDecision, OrionRequestBody};
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::user_rate_limit::Limit;
-use orion_interner::StringInterner;
 
 #[cfg(feature = "metrics")]
 use {
     crate::{get_shard_id, with_metric},
     opentelemetry::KeyValue,
+    orion_interner::StringInterner,
     orion_metrics::metrics::filters,
 };
 
@@ -70,6 +70,7 @@ impl UserRateLimiter {
 
         let Some(user) = request.headers().get(self.inner.user_id_header.as_str()).and_then(|v| v.to_str().ok()) else {
             debug!(target: "user_rate_limiter", "no user found in request headers");
+            #[cfg(feature = "metrics")]
             with_metric!(
                 filters::USER_RATE_LIMIT,
                 add,
@@ -94,6 +95,7 @@ impl UserRateLimiter {
         if let Some(tb) = USER_RATE_LIMITERS.get(user) {
             if tb.consume(1) {
                 debug!(target: "user_rate_limiter", "consumed token for user: {user}");
+                #[cfg(feature = "metrics")]
                 with_metric!(
                     filters::USER_RATE_LIMIT,
                     add,
@@ -108,6 +110,7 @@ impl UserRateLimiter {
                 return FilterDecision::Continue;
             } else {
                 debug!(target: "user_rate_limiter", "rate limited for user: {user}");
+                #[cfg(feature = "metrics")]
                 with_metric!(
                     filters::USER_RATE_LIMIT,
                     add,
@@ -133,6 +136,7 @@ impl UserRateLimiter {
             } else {
                 // Configuration not found for this user... return Continue
                 debug!(target: "user_rate_limiter", "no rate limit found for user: {user}");
+                #[cfg(feature = "metrics")]
                 with_metric!(
                     filters::USER_RATE_LIMIT,
                     add,
@@ -152,6 +156,7 @@ impl UserRateLimiter {
                     let Some(tb) = &l.token_bucket else {
                         // Token bucket is not configured for this user, return Continue.
                         debug!(target: "user_rate_limiter", "no token bucket found for user: {user}");
+                        #[cfg(feature = "metrics")]
                         with_metric!(
                             filters::USER_RATE_LIMIT,
                             add,
@@ -178,6 +183,7 @@ impl UserRateLimiter {
             Ok(tb) => {
                 if tb.consume(1) {
                     debug!(target: "user_rate_limiter", "consumed token for user: {user}");
+                    #[cfg(feature = "metrics")]
                     with_metric!(
                         filters::USER_RATE_LIMIT,
                         add,
@@ -192,6 +198,7 @@ impl UserRateLimiter {
                     FilterDecision::Continue
                 } else {
                     debug!(target: "user_rate_limiter", "rate limited for user: {user}");
+                    #[cfg(feature = "metrics")]
                     with_metric!(
                         filters::USER_RATE_LIMIT,
                         add,

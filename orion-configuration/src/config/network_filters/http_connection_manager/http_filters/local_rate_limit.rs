@@ -16,9 +16,9 @@
 //
 
 use http::StatusCode;
+use orion_interner::InternedStr;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use orion_interner::InternedStr;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LocalRateLimit {
