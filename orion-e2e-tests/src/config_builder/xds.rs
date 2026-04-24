@@ -21,9 +21,16 @@ use orion_data_plane_api::envoy_data_plane_api::{
         service::discovery::v3::Resource,
     },
     google::protobuf::Any,
+    orion::extensions::filters::http::mcp::mcp_gateway::v3::{
+        DynamicMcpServer as OrionDynamicMcpServer, Tool as OrionTool,
+    },
     prost::Message,
 };
 use orion_xds::xds::model::TypeUrl;
+
+use crate::mcp_gateway::{
+    dynamic_mcp_server_xds_resource, mcp_tool_xds_resource, MCP_DYNAMIC_SERVER_TYPE_URL, MCP_TOOL_TYPE_URL,
+};
 use pingora_timeout::timeout as fast_timeout;
 use thiserror::Error;
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -147,7 +154,7 @@ impl ServerEventReceiver {
                     Ok(ServerEvent::ClientConnected { remote_addr, node_id }) => {
                         return Ok((remote_addr, node_id));
                     },
-                    Ok(ServerEvent::ClientDisconnected { .. }) => continue,
+                    Ok(_) => continue,
                     Err(_) => return Err(XdsError::ConnectionTimeout),
                 }
             }
@@ -232,6 +239,41 @@ impl ConfigPusher {
 
     pub async fn remove_endpoints(&self, cluster_name: &str, timeout: Duration) -> Result<PushResult, XdsError> {
         let resource = create_removal_resource(cluster_name, TypeUrl::ClusterLoadAssignment);
+        self.send(ServerAction::Remove(resource), timeout).await
+    }
+
+    pub async fn push_mcp_tool(
+        &self,
+        resource_id: &str,
+        tool: &OrionTool,
+        timeout: Duration,
+    ) -> Result<PushResult, XdsError> {
+        let resource = mcp_tool_xds_resource(resource_id, tool);
+        self.send(ServerAction::Add(resource), timeout).await
+    }
+
+    pub async fn remove_mcp_tool(&self, resource_id: &str, timeout: Duration) -> Result<PushResult, XdsError> {
+        let resource = create_removal_resource(resource_id, TypeUrl::Extension(MCP_TOOL_TYPE_URL.to_string()));
+        self.send(ServerAction::Remove(resource), timeout).await
+    }
+
+    pub async fn push_dynamic_mcp_server(
+        &self,
+        resource_id: &str,
+        server: &OrionDynamicMcpServer,
+        timeout: Duration,
+    ) -> Result<PushResult, XdsError> {
+        let resource = dynamic_mcp_server_xds_resource(resource_id, server);
+        self.send(ServerAction::Add(resource), timeout).await
+    }
+
+    pub async fn remove_dynamic_mcp_server(
+        &self,
+        resource_id: &str,
+        timeout: Duration,
+    ) -> Result<PushResult, XdsError> {
+        let resource =
+            create_removal_resource(resource_id, TypeUrl::Extension(MCP_DYNAMIC_SERVER_TYPE_URL.to_string()));
         self.send(ServerAction::Remove(resource), timeout).await
     }
 

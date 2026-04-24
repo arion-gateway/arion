@@ -16,15 +16,21 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::mcp::mcp_gateway::v3::{
+    DynamicMcpServer as OrionDynamicMcpServer, Tool as OrionTool,
+};
 use thiserror::Error;
 use tokio::sync::mpsc;
 use tracing::info;
 
+use tokio::sync::broadcast;
+
 use crate::config_builder::xds::{ConfigPusher, PushResult, ServerEventReceiver, XdsError};
 use crate::config_builder::{BootstrapBuilder, Cluster, Endpoint, Listener, RouteConfig, Secret};
 use crate::port_allocator::PortBlock;
-use crate::xds_server::{start_tracked_aggregate_server, ServerAction, TrackedXdsServer};
-use crate::{OrionInstance, SpawnOptions};
+use crate::xds_server::{start_tracked_aggregate_server, ServerAction, ServerEvent, TrackedXdsServer};
+use crate::OrionInstance;
+use crate::SpawnOptions;
 
 #[derive(Debug, Error)]
 pub enum HarnessError {
@@ -145,6 +151,30 @@ impl XdsEnabledHarness {
         Self::check_result(result)
     }
 
+    pub async fn push_mcp_tool(&self, resource_id: &str, tool: &OrionTool) -> Result<(), HarnessError> {
+        let result = self.pusher.push_mcp_tool(resource_id, tool, self.timeouts.push).await?;
+        Self::check_result(result)
+    }
+
+    pub async fn remove_mcp_tool(&self, resource_id: &str) -> Result<(), HarnessError> {
+        let result = self.pusher.remove_mcp_tool(resource_id, self.timeouts.push).await?;
+        Self::check_result(result)
+    }
+
+    pub async fn push_dynamic_mcp_server(
+        &self,
+        resource_id: &str,
+        server: &OrionDynamicMcpServer,
+    ) -> Result<(), HarnessError> {
+        let result = self.pusher.push_dynamic_mcp_server(resource_id, server, self.timeouts.push).await?;
+        Self::check_result(result)
+    }
+
+    pub async fn remove_dynamic_mcp_server(&self, resource_id: &str) -> Result<(), HarnessError> {
+        let result = self.pusher.remove_dynamic_mcp_server(resource_id, self.timeouts.push).await?;
+        Self::check_result(result)
+    }
+
     #[must_use]
     pub fn pusher(&self) -> &ConfigPusher {
         &self.pusher
@@ -171,6 +201,11 @@ impl XdsEnabledHarness {
 
     pub fn allocate_listener_port(&self) -> Result<u16, HarnessError> {
         Ok(self.port_block.allocate()?)
+    }
+
+    #[must_use]
+    pub fn subscribe_events(&self) -> broadcast::Receiver<ServerEvent> {
+        self._xds_server.event_rx.resubscribe()
     }
 
     #[must_use]

@@ -1221,3 +1221,186 @@ impl McpResultExt for crate::Result<CallToolResult> {
         self.assert_error_contains("not found");
     }
 }
+
+use orion_data_plane_api::envoy_data_plane_api::{
+    envoy::{
+        extensions::filters::{
+            http::router::v3::Router,
+            network::http_connection_manager::v3::{http_filter::ConfigType, HttpFilter},
+        },
+        service::discovery::v3::Resource as XdsResource,
+    },
+    google::protobuf::{Any, Duration as ProstDuration},
+    orion::extensions::filters::http::mcp::mcp_gateway::v3::{
+        permission::PermissionType, DynamicMcpServer as OrionDynamicMcpServer, JwtClaimMatcher, JwtHeaderMatcher,
+        McpGateway, Permission, ServerInfo, TdsSpecifier, Tool as OrionTool, ToolRbac,
+    },
+};
+use prost::Message as _;
+
+pub const MCP_TOOL_TYPE_URL: &str = "type.googleapis.com/orion.extensions.filters.http.mcp.mcp_gateway.v3.Tool";
+pub const MCP_DYNAMIC_SERVER_TYPE_URL: &str =
+    "type.googleapis.com/orion.extensions.filters.http.mcp.mcp_gateway.v3.DynamicMcpServer";
+
+const MCP_GATEWAY_TYPE_URL: &str = "type.googleapis.com/orion.extensions.filters.http.mcp.mcp_gateway.v3.McpGateway";
+const ROUTER_TYPE_URL: &str = "type.googleapis.com/envoy.extensions.filters.http.router.v3.Router";
+
+#[must_use]
+pub fn mcp_resource_id(server_name: &str, config_name: &str, resource_name: &str) -> String {
+    format!("{server_name}/{config_name}/{resource_name}")
+}
+
+#[must_use]
+pub fn build_tool_proto(tool_value: &Value) -> OrionTool {
+    tool_value_to_proto(tool_value)
+}
+
+#[must_use]
+pub fn build_dynamic_mcp_server_proto(
+    name: impl Into<String>,
+    description: impl Into<String>,
+    url: impl Into<String>,
+    transport: &str,
+    cache_duration: Option<std::time::Duration>,
+    rbac: Option<Value>,
+) -> OrionDynamicMcpServer {
+    let transport_val: i32 = if transport == "sse" { 0 } else { 1 };
+
+    let cache_duration = cache_duration.map(|d| ProstDuration {
+        seconds: i64::try_from(d.as_secs()).unwrap_or(i64::MAX),
+        nanos: i32::try_from(d.subsec_nanos()).unwrap_or(0),
+    });
+
+    let rbac_proto = rbac.map(|rbac_val| {
+        let action = rbac_val.get("action").and_then(|v| v.as_u64()).unwrap_or(0) as i32;
+        let permissions: Vec<Permission> = rbac_val
+            .get("permissions")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|p| {
+                        if let Some(jwt_claim) = p.get("jwt_claim") {
+                            let field = jwt_claim.get("field").and_then(|v| v.as_str())?;
+                            let value = jwt_claim.get("value").and_then(|v| v.as_str())?;
+                            Some(Permission {
+                                permission_type: Some(PermissionType::JwtClaim(JwtClaimMatcher {
+                                    field: field.to_string(),
+                                    value: value.to_string(),
+                                })),
+                            })
+                        } else if let Some(jwt_header) = p.get("jwt_header") {
+                            let field = jwt_header.get("field").and_then(|v| v.as_str())?;
+                            let value = jwt_header.get("value").and_then(|v| v.as_str())?;
+                            Some(Permission {
+                                permission_type: Some(PermissionType::JwtHeader(JwtHeaderMatcher {
+                                    field: field.to_string(),
+                                    value: value.to_string(),
+                                })),
+                            })
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        ToolRbac { action, permissions }
+    });
+
+    OrionDynamicMcpServer {
+        name: name.into(),
+        description: description.into(),
+        transport: transport_val,
+        url: url.into(),
+        cache_duration,
+        rbac: rbac_proto,
+    }
+}
+
+#[must_use]
+pub fn mcp_tool_xds_resource(resource_id: impl Into<String>, tool: &OrionTool) -> XdsResource {
+    let any = Any { type_url: MCP_TOOL_TYPE_URL.to_string(), value: tool.encode_to_vec() };
+    XdsResource { name: resource_id.into(), resource: Some(any), ..Default::default() }
+}
+
+#[must_use]
+pub fn dynamic_mcp_server_xds_resource(resource_id: impl Into<String>, server: &OrionDynamicMcpServer) -> XdsResource {
+    let any = Any { type_url: MCP_DYNAMIC_SERVER_TYPE_URL.to_string(), value: server.encode_to_vec() };
+    XdsResource { name: resource_id.into(), resource: Some(any), ..Default::default() }
+}
+
+fn build_mcp_http_filters(
+    server_name: impl Into<String>,
+    server_version: impl Into<String>,
+    tds_config_name: impl Into<String>,
+    static_tools: Vec<Value>,
+) -> (HttpFilter, HttpFilter) {
+    let proto_tools: Vec<OrionTool> = static_tools.iter().map(tool_value_to_proto).collect();
+    let mcp_gateway = McpGateway {
+        cluster_header: Some("x-mcp-target-cluster".to_string()),
+        server_info: Some(ServerInfo { name: server_name.into(), version: server_version.into() }),
+        tools: proto_tools,
+        dynamic_mcp_servers: Vec::new(),
+        tds: Some(TdsSpecifier { config_name: tds_config_name.into() }),
+        semantic_search_tool: None,
+    };
+    let mcp_any = Any { type_url: MCP_GATEWAY_TYPE_URL.to_string(), value: mcp_gateway.encode_to_vec() };
+    let mcp = HttpFilter {
+        name: "envoy.filters.http.mcp_gateway".to_string(),
+        config_type: Some(ConfigType::TypedConfig(mcp_any)),
+        ..Default::default()
+    };
+    let router_any = Any { type_url: ROUTER_TYPE_URL.to_string(), value: Router::default().encode_to_vec() };
+    let router = HttpFilter {
+        name: "envoy.filters.http.router".to_string(),
+        config_type: Some(ConfigType::TypedConfig(router_any)),
+        ..Default::default()
+    };
+    (mcp, router)
+}
+
+fn mcp_listener_from_filters(
+    listener_name: impl Into<String>,
+    listener_port: u16,
+    http_filters: Vec<HttpFilter>,
+) -> crate::config_builder::Listener {
+    let route_config = RouteConfigBuilder::new("mcp_routes").virtual_host(
+        VirtualHostBuilder::new("mcp")
+            .route(RouteBuilder::new().match_prefix("/").cluster_header("x-mcp-target-cluster")),
+    );
+
+    ListenerBuilder::new(listener_name)
+        .port(listener_port)
+        .filter_chain(FilterChainBuilder::new("main").hcm(HcmBuilder::new().route_config(route_config).with_proto(
+            move |hcm| {
+                hcm.http_filters = http_filters.clone();
+            },
+        )))
+        .build()
+}
+
+pub fn mcp_gateway_tds_listener(
+    listener_name: impl Into<String>,
+    listener_port: u16,
+    server_name: impl Into<String>,
+    server_version: impl Into<String>,
+    tds_config_name: impl Into<String>,
+    static_tools: Vec<Value>,
+) -> crate::config_builder::Listener {
+    let (mcp, router) = build_mcp_http_filters(server_name, server_version, tds_config_name, static_tools);
+    mcp_listener_from_filters(listener_name, listener_port, vec![mcp, router])
+}
+
+pub fn mcp_gateway_tds_listener_with_jwt(
+    listener_name: impl Into<String>,
+    listener_port: u16,
+    server_name: impl Into<String>,
+    server_version: impl Into<String>,
+    tds_config_name: impl Into<String>,
+    static_tools: Vec<Value>,
+    jwks_inline: &str,
+) -> crate::config_builder::Listener {
+    let (mcp, router) = build_mcp_http_filters(server_name, server_version, tds_config_name, static_tools);
+    let jwt = create_jwt_filter(jwks_inline);
+    mcp_listener_from_filters(listener_name, listener_port, vec![jwt, mcp, router])
+}
