@@ -20,9 +20,12 @@ use orion_data_plane_api::envoy_data_plane_api::{
             core::v3::{address::Address as AddressType, socket_address::PortSpecifier, Address, SocketAddress},
             listener::v3::{listener_filter::ConfigType, FilterChain, Listener as EnvoyListener, ListenerFilter},
         },
-        extensions::filters::listener::tls_inspector::v3::TlsInspector,
+        extensions::filters::listener::{
+            local_ratelimit::v3::LocalRateLimit as EnvoyListenerLocalRateLimit, tls_inspector::v3::TlsInspector,
+        },
+        r#type::v3::TokenBucket as EnvoyTokenBucket,
     },
-    google::protobuf::Any,
+    google::protobuf::{Any, Duration as ProtoDuration, UInt32Value},
     prost::Message,
 };
 
@@ -91,6 +94,37 @@ impl ListenerBuilder {
                 type_url: "type.googleapis.com/envoy.extensions.filters.listener.tls_inspector.v3.TlsInspector"
                     .to_string(),
                 value: tls_inspector.encode_to_vec(),
+            })),
+            ..Default::default()
+        };
+        self.proto.listener_filters.push(listener_filter);
+        self
+    }
+
+    #[must_use]
+    pub fn listener_local_rate_limit(
+        mut self,
+        stat_prefix: impl Into<String>,
+        max_tokens: u32,
+        tokens_per_fill: u32,
+        fill_interval_secs: u64,
+    ) -> Self {
+        let token_bucket = EnvoyTokenBucket {
+            max_tokens,
+            tokens_per_fill: Some(UInt32Value { value: tokens_per_fill }),
+            fill_interval: Some(ProtoDuration { seconds: fill_interval_secs as i64, nanos: 0 }),
+        };
+        let local_ratelimit = EnvoyListenerLocalRateLimit {
+            stat_prefix: stat_prefix.into(),
+            token_bucket: Some(token_bucket),
+            runtime_enabled: None,
+        };
+        let listener_filter = ListenerFilter {
+            name: "envoy.filters.listener.local_ratelimit".to_string(),
+            config_type: Some(ConfigType::TypedConfig(Any {
+                type_url: "type.googleapis.com/envoy.extensions.filters.listener.local_ratelimit.v3.LocalRateLimit"
+                    .to_string(),
+                value: local_ratelimit.encode_to_vec(),
             })),
             ..Default::default()
         };
