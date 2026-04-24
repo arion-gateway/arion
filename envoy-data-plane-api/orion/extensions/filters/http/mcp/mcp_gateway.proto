@@ -14,6 +14,13 @@ message McpGateway {
     ServerInfo server_info = 2 [(validate.rules).message = {required: true}];
     repeated Tool tools = 3;
     SemanticSearch semantic_search_tool = 4;
+    // Optional xDS Tool Discovery Service. When set, Tool and DynamicMcpServer
+    // resources streamed on the associated config_name augment the statically
+    // configured tools/dynamic servers above.
+    TdsSpecifier tds = 5;
+    // Upstream MCP servers whose tools are discovered at runtime by calling
+    // tools/list on the upstream and materialised into this filter's registry.
+    repeated DynamicMcpServer dynamic_mcp_servers = 6;
 }
 
 // Server info
@@ -61,12 +68,31 @@ message McpServerBackend {
   }
   TransportUpstream transport = 1;
   string url = 2 [(validate.rules).string = {min_bytes: 1}];
-  // DEPRECATED: Use dynamic_backend = true with cache_duration instead.
-  // For static backends (dynamic_backend = false), this field is ignored.
-  google.protobuf.Duration cache_duration = 3;
-  // If true, backend is dynamic and tools list may change over time.
-  // If false (default), backend is static and tools are fetched once at bootstrap and cached indefinitely.
-  bool dynamic_backend = 4;
+  // Fields 3 (cache_duration) and 4 (dynamic_backend) were removed: dynamic
+  // tool discovery now lives on DynamicMcpServer.
+  reserved 3, 4;
+  reserved "cache_duration", "dynamic_backend";
+}
+
+// Source of dynamically discovered tools. The gateway calls tools/list on the
+// upstream at bootstrap (and again after cache_duration expires) and exposes
+// each returned tool as {name}__{upstream_tool_name} in the registry.
+message DynamicMcpServer {
+  string name = 1 [(validate.rules).string = {min_bytes: 1}];
+  string description = 2;
+  McpServerBackend.TransportUpstream transport = 3;
+  string url = 4 [(validate.rules).string = {min_bytes: 1}];
+  // If unset, the first fetch is cached indefinitely.
+  google.protobuf.Duration cache_duration = 5;
+  // Applied to every tool materialised from this server.
+  optional ToolRbac rbac = 6;
+}
+
+// Tool Discovery Service binding. config_name selects which TDS stream's
+// Tool / DynamicMcpServer resources this filter consumes (resource IDs are
+// of the form "{config_name}/{resource_name}").
+message TdsSpecifier {
+  string config_name = 1 [(validate.rules).string = {min_bytes: 1}];
 }
 
 // RBAC configuration for individual MCP tools

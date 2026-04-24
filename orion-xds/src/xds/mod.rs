@@ -17,6 +17,7 @@
 
 pub mod bindings;
 pub mod client;
+pub mod extension;
 pub mod model;
 
 mod request;

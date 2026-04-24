@@ -907,12 +907,7 @@ fn tool_value_to_proto(
         let transport = mcp.get("transport").and_then(|v| v.as_u64()).unwrap_or(1) as i32;
         let url = mcp.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string();
 
-        Some(tool::UpstreamBackend::McpServerBackend(McpServerBackend {
-            transport,
-            url,
-            cache_duration: None,
-            dynamic_backend: false,
-        }))
+        Some(tool::UpstreamBackend::McpServerBackend(McpServerBackend { transport, url }))
     } else {
         None
     };
@@ -993,6 +988,8 @@ fn create_mcp_filter_with_semantic_search(
         cluster_header: Some("x-mcp-target-cluster".to_string()),
         server_info: Some(ServerInfo { name: server_name, version: server_version }),
         tools: proto_tools,
+        dynamic_mcp_servers: Vec::new(),
+        tds: None,
         semantic_search_tool,
     };
 
@@ -1052,6 +1049,8 @@ fn create_mcp_filter(
             cluster_header: Some("x-mcp-target-cluster".to_string()),
             server_info: Some(ServerInfo { name: server_name, version: server_version }),
             tools: proto_tools,
+            dynamic_mcp_servers: Vec::new(),
+            tds: None,
             semantic_search_tool: None,
         };
 
