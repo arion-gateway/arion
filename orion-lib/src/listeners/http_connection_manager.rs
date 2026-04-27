@@ -69,7 +69,7 @@ use crate::with_access_log;
 use crate::with_histogram;
 
 #[cfg(feature = "metrics")]
-use orion_metrics::metrics::{http, user};
+use orion_metrics::metrics::{dynamic::DYNAMIC_METRICS, http, user};
 
 #[cfg(feature = "access-log")]
 use {
@@ -641,7 +641,13 @@ impl TransactionHandler {
                 if status_code == 429 {
                     with_metric!(user::THROTTLES, add, 1, self.shard_id(), &[KeyValue::new(user::attr_key(), user_id)]);
                 } else {
-                    with_metric!(user::INVOCATIONS, add, 1, self.shard_id(), &[KeyValue::new(user::attr_key(), user_id)]);
+                    with_metric!(
+                        user::INVOCATIONS,
+                        add,
+                        1,
+                        self.shard_id(),
+                        &[KeyValue::new(user::attr_key(), user_id)]
+                    );
                 }
             }
 
@@ -684,8 +690,20 @@ impl TransactionHandler {
 
                     #[cfg(feature = "metrics")]
                     if let Some(user_id) = self.user_id {
-                        with_metric!(user::USER_ERRORS, add, 1, self.shard_id(), &[KeyValue::new(user::attr_key(), user_id)]);
-                        with_metric!(user::TOTAL_ERRORS, add, 1, self.shard_id(), &[KeyValue::new(user::attr_key(), user_id)]);
+                        with_metric!(
+                            user::USER_ERRORS,
+                            add,
+                            1,
+                            self.shard_id(),
+                            &[KeyValue::new(user::attr_key(), user_id)]
+                        );
+                        with_metric!(
+                            user::TOTAL_ERRORS,
+                            add,
+                            1,
+                            self.shard_id(),
+                            &[KeyValue::new(user::attr_key(), user_id)]
+                        );
                     }
                 },
                 500..600 => {
@@ -707,7 +725,13 @@ impl TransactionHandler {
                             &[KeyValue::new(user::attr_key(), user_id)]
                         );
 
-                        with_metric!(user::TOTAL_ERRORS, add, 1, self.shard_id(), &[KeyValue::new(user::attr_key(), user_id)]);
+                        with_metric!(
+                            user::TOTAL_ERRORS,
+                            add,
+                            1,
+                            self.shard_id(),
+                            &[KeyValue::new(user::attr_key(), user_id)]
+                        );
                     }
 
                     with_server_span!(self.span_state, |srv_span: &mut BoxedSpan| {
@@ -1255,11 +1279,14 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
             &[KeyValue::new("listener", listener_name)]
         );
 
-        #[cfg(feature = "metrics")]
-        let thread_id = trans_handler.shard_id();
+        let shard_id = get_shard_id!();
+
         defer! {
-            with_metric!(http::DOWNSTREAM_RQ_ACTIVE, sub, 1, thread_id, &[KeyValue::new("listener", listener_name)]);
+            with_metric!(http::DOWNSTREAM_RQ_ACTIVE, sub, 1, shard_id, &[KeyValue::new("listener", listener_name)]);
         }
+
+        #[cfg(feature = "metrics")]
+        DYNAMIC_METRICS.get().map(|dyn_metrics| dyn_metrics.with_request_headers(&request.headers(), &[]));
 
         Box::pin(async move {
             // optionally apply a timeout to the body.

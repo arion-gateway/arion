@@ -2992,6 +2992,7 @@ dependencies = [
  "ahash",
  "dashmap",
  "http",
+ "http-serde-ext",
  "memory-stats",
  "nohash",
  "opentelemetry",

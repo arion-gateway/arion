@@ -52,11 +52,36 @@ pub struct SinkConfig {
     pub prefix: String,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DynamicCounterConfig {
+    pub name: String,
+    pub description: String,
+    #[serde(with = "http_serde_ext::header_name")]
+    pub http_header_name: HeaderName,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DynamicHistogramConfig {
+    pub name: String,
+    pub description: String,
+    #[serde(with = "http_serde_ext::header_name")]
+    pub http_header_name: HeaderName,
+    pub buckets: Vec<u64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum DynamicMetric {
+    Counter(DynamicCounterConfig),
+    Histogram(DynamicHistogramConfig),
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct MetricsConfig {
     #[serde(with = "http_serde_ext::header_name::option")]
     pub user_id_header_name: Option<HeaderName>,
     pub user_id_attr_key: Option<String>,
+    #[serde(default)]
+    pub dynamic_metrics: Vec<DynamicMetric>,
 }
 
 #[cfg(feature = "envoy-conversions")]

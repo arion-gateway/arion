@@ -36,7 +36,9 @@ pub fn run() -> Result<()> {
 
     // Set the header_name from which to extract the user_id
     //
-    if let Some(user_id_header_name) = metrics.as_ref().and_then(|metrics| metrics.user_id_header_name.as_ref()).cloned() {
+    if let Some(user_id_header_name) =
+        metrics.as_ref().and_then(|metrics| metrics.user_id_header_name.as_ref()).cloned()
+    {
         metrics::set_user_header_name(user_id_header_name);
     }
 
@@ -55,7 +57,7 @@ pub fn run() -> Result<()> {
         tracing::warn!("CAP_NET_RAW is NOT available, SO_BINDTODEVICE will not work");
     }
 
-    proxy::run_orion(bootstrap, access_logging);
+    proxy::run_orion(bootstrap, metrics, access_logging);
     Ok(())
 }
 

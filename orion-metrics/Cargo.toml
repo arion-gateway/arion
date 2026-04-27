@@ -13,6 +13,7 @@ metrics  = []
 ahash.workspace = true
 dashmap.workspace = true
 http.workspace = true
+http-serde-ext = "1.0.2"
 memory-stats = "1.2.0"
 nohash = "0.2.0"
 opentelemetry = "0.29.0"

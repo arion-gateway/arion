@@ -22,7 +22,7 @@ use std::collections::HashMap;
 use axum::extract::State;
 use orion_metrics::{
     metrics::{
-        clusters, filters, http, listeners,
+        clusters, dynamic, filters, http, listeners,
         server::{self, update_server_metrics},
         tcp, tls, user,
     },
@@ -90,20 +90,82 @@ fn get_label_keys(data: &HashMap<Vec<KeyValue>, u64, RandomState>) -> SmallVec<[
     sorted_keys
 }
 
+/// A macro to register a metric directly.
+macro_rules! register_metric {
+    ($registry:expr, $counter:expr, $metric_type:ty, $populate_fn:ident) => {
+        let data = $counter.value.load_all();
+        if !data.is_empty() {
+            let label_keys = get_label_keys(&data);
+            let prom_metric = <$metric_type>::new(
+                Opts::new(format!("{}_{}", $counter.prefix, $counter.name), $counter.descr),
+                &label_keys,
+            )
+            .unwrap();
+            $registry.register(Box::new(prom_metric.clone())).unwrap();
+            $populate_fn(&$counter.value, &prom_metric, &label_keys);
+        }
+    };
+}
+
 /// A macro to process and register a metric if its source is initialized.
 macro_rules! process_metric {
     ($registry:expr, $source:expr, $metric_type:ty, $populate_fn:ident) => {
         if let Some(counter) = $source.get() {
-            let data = counter.value.load_all();
-            if !data.is_empty() {
-                let label_keys = get_label_keys(&data);
-                let prom_metric = <$metric_type>::new(
-                    Opts::new(format!("{}_{}", counter.prefix, counter.name), counter.descr),
-                    &label_keys,
-                )
-                .unwrap();
-                $registry.register(Box::new(prom_metric.clone())).unwrap();
-                $populate_fn(&counter.value, &prom_metric, &label_keys);
+            register_metric!($registry, counter, $metric_type, $populate_fn);
+        }
+    };
+}
+
+/// A macro to register a histogram directly.
+macro_rules! register_histogram {
+    ($registry:expr, $metric:expr) => {
+        let count_data = $metric.value.count().load_all();
+        if !count_data.is_empty() {
+            let label_keys = get_label_keys(&count_data);
+
+            let count_metric = IntCounterVec::new(
+                Opts::new(format!("{}_{}_count", $metric.prefix, $metric.name), $metric.descr),
+                &label_keys,
+            )
+            .unwrap();
+            $registry.register(Box::new(count_metric.clone())).unwrap();
+            populate_counter_vec($metric.value.count(), &count_metric, &label_keys);
+
+            let sum_metric = IntCounterVec::new(
+                Opts::new(format!("{}_{}_sum", $metric.prefix, $metric.name), $metric.descr),
+                &label_keys,
+            )
+            .unwrap();
+            $registry.register(Box::new(sum_metric.clone())).unwrap();
+            populate_counter_vec($metric.value.sum(), &sum_metric, &label_keys);
+
+            let mut bucket_label_keys = label_keys.clone();
+            bucket_label_keys.push("le");
+            let bucket_metric = IntCounterVec::new(
+                Opts::new(format!("{}_{}_bucket", $metric.prefix, $metric.name), $metric.descr),
+                &bucket_label_keys,
+            )
+            .unwrap();
+            $registry.register(Box::new(bucket_metric.clone())).unwrap();
+
+            for (i, &bound) in $metric.value.buckets().iter().enumerate() {
+                let bound_str = if bound == u64::MAX { "+Inf".to_string() } else { bound.to_string() };
+                let bucket_data = $metric.value.counts()[i].load_all();
+                for (key_values, value) in bucket_data {
+                    let mut cow_values = smallvec::SmallVec::<[std::borrow::Cow<'_, str>; 4]>::new();
+                    for k in &label_keys {
+                        let val = key_values
+                            .iter()
+                            .find(|kv| kv.key.as_str() == *k)
+                            .map(|kv| kv.value.as_str())
+                            .unwrap_or(std::borrow::Cow::Borrowed(""));
+                        cow_values.push(val);
+                    }
+                    cow_values.push(std::borrow::Cow::Owned(bound_str.clone()));
+                    let label_values: smallvec::SmallVec<[&str; 4]> =
+                        cow_values.iter().map(|cow| cow.as_ref()).collect();
+                    bucket_metric.with_label_values(&label_values).inc_by(value);
+                }
             }
         }
     };
@@ -112,55 +174,7 @@ macro_rules! process_metric {
 macro_rules! process_histogram {
     ($registry:expr, $source:expr) => {
         if let Some(metric) = $source.get() {
-            let count_data = metric.value.count().load_all();
-            if !count_data.is_empty() {
-                let label_keys = get_label_keys(&count_data);
-
-                let count_metric = IntCounterVec::new(
-                    Opts::new(format!("{}_{}_count", metric.prefix, metric.name), metric.descr),
-                    &label_keys,
-                )
-                .unwrap();
-                $registry.register(Box::new(count_metric.clone())).unwrap();
-                populate_counter_vec(metric.value.count(), &count_metric, &label_keys);
-
-                let sum_metric = IntCounterVec::new(
-                    Opts::new(format!("{}_{}_sum", metric.prefix, metric.name), metric.descr),
-                    &label_keys,
-                )
-                .unwrap();
-                $registry.register(Box::new(sum_metric.clone())).unwrap();
-                populate_counter_vec(metric.value.sum(), &sum_metric, &label_keys);
-
-                let mut bucket_label_keys = label_keys.clone();
-                bucket_label_keys.push("le");
-                let bucket_metric = IntCounterVec::new(
-                    Opts::new(format!("{}_{}_bucket", metric.prefix, metric.name), metric.descr),
-                    &bucket_label_keys,
-                )
-                .unwrap();
-                $registry.register(Box::new(bucket_metric.clone())).unwrap();
-
-                for (i, &bound) in metric.value.buckets().iter().enumerate() {
-                    let bound_str = if bound == u64::MAX { "+Inf".to_string() } else { bound.to_string() };
-                    let bucket_data = metric.value.counts()[i].load_all();
-                    for (key_values, value) in bucket_data {
-                        let mut cow_values = smallvec::SmallVec::<[std::borrow::Cow<'_, str>; 4]>::new();
-                        for k in &label_keys {
-                            let val = key_values
-                                .iter()
-                                .find(|kv| kv.key.as_str() == *k)
-                                .map(|kv| kv.value.as_str())
-                                .unwrap_or(std::borrow::Cow::Borrowed(""));
-                            cow_values.push(val);
-                        }
-                        cow_values.push(std::borrow::Cow::Owned(bound_str.clone()));
-                        let label_values: smallvec::SmallVec<[&str; 4]> =
-                            cow_values.iter().map(|cow| cow.as_ref()).collect();
-                        bucket_metric.with_label_values(&label_values).inc_by(value);
-                    }
-                }
-            }
+            register_histogram!($registry, metric);
         }
     };
 }
@@ -250,6 +264,16 @@ pub(crate) async fn prometheus_handler(
     process_metric!(registry, &filters::CONNECTION_RATE_LIMIT, IntCounterVec, populate_counter_vec);
     process_metric!(registry, &filters::LOCAL_RATE_LIMIT, IntCounterVec, populate_counter_vec);
     process_metric!(registry, &filters::USER_RATE_LIMIT, IntCounterVec, populate_counter_vec);
+
+    // dynamic metrics
+    if let Some(dynamic_metrics) = dynamic::DYNAMIC_METRICS.get() {
+        for counter in dynamic_metrics.counters() {
+            register_metric!(registry, counter.metric, IntCounterVec, populate_counter_vec);
+        }
+        for histogram in dynamic_metrics.histograms() {
+            register_histogram!(registry, histogram.metric);
+        }
+    }
 
     // Encode and return
 

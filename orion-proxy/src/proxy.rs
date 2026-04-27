@@ -22,7 +22,9 @@ use crate::{
     xds_configurator::XdsConfigurationHandler,
 };
 use futures::future::join_all;
-use orion_configuration::config::{bootstrap::Node, log::AccessLogConfig, runtime::Affinity, Bootstrap};
+use orion_configuration::config::{
+    bootstrap::Node, log::AccessLogConfig, metrics::MetricsConfig, runtime::Affinity, Bootstrap,
+};
 
 #[cfg(feature = "tracing")]
 use {
@@ -52,11 +54,11 @@ use std::{
 
 use tracing::{debug, error, info, warn};
 
-pub fn run_orion(bootstrap: Bootstrap, access_log_config: Option<AccessLogConfig>) {
+pub fn run_orion(bootstrap: Bootstrap, metrics: Option<MetricsConfig>, access_log_config: Option<AccessLogConfig>) {
     debug!("Starting on thread {:?}", std::thread::current().name());
 
     // launch the runtimes...
-    if let Err(e) = launch_runtimes(bootstrap, access_log_config) {
+    if let Err(e) = launch_runtimes(bootstrap, metrics, access_log_config) {
         error!("Failed to launch runtimes: {e:?}");
         std::process::exit(1);
     }
@@ -106,7 +108,11 @@ struct ServiceInfo {
 
 type SenderGuards = Vec<ConfigurationSenders>;
 
-fn launch_runtimes(bootstrap: Bootstrap, _access_log_config: Option<AccessLogConfig>) -> Result<SenderGuards> {
+fn launch_runtimes(
+    bootstrap: Bootstrap,
+    metrics_config: Option<MetricsConfig>,
+    _access_log_config: Option<AccessLogConfig>,
+) -> Result<SenderGuards> {
     let rt_config = runtime_config();
     let num_runtimes = rt_config.num_runtimes();
     let num_cpus = rt_config.num_cpus();
@@ -200,7 +206,11 @@ fn launch_runtimes(bootstrap: Bootstrap, _access_log_config: Option<AccessLogCon
 
     // initialize global metrics...
     #[cfg(feature = "metrics")]
-    init_global_metrics(&metrics, num_threads_per_runtime * num_runtimes);
+    init_global_metrics(
+        &metrics,
+        metrics_config.as_ref().and_then(|m| Some(m.dynamic_metrics.as_slice())).unwrap_or(&[]),
+        num_threads_per_runtime * num_runtimes,
+    );
 
     info!("Launching {num_runtimes} worker runtime(s) with {num_threads_per_runtime} thread(s) each");
 
