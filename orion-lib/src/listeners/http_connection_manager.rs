@@ -1564,9 +1564,20 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
 
         #[cfg(feature = "metrics")]
         if let Some(user_id) = user_id {
-            with_metric!(user::BYTES_RX, add, wire_bytes_received, shard_id, &[KeyValue::new("user_id", user_id)]);
-
-            with_metric!(user::BYTES_TX, add, wire_bytes_sent, shard_id, &[KeyValue::new("user_id", user_id)]);
+            with_metric!(
+                user::BYTES_RX,
+                add,
+                wire_bytes_received,
+                shard_id,
+                &[KeyValue::new("user_id", user_id), KeyValue::new("listener", params.listener_name)]
+            );
+            with_metric!(
+                user::BYTES_TX,
+                add,
+                wire_bytes_sent,
+                shard_id,
+                &[KeyValue::new("user_id", user_id), KeyValue::new("listener", params.listener_name)]
+            );
         }
 
         #[cfg(feature = "access-log")]
