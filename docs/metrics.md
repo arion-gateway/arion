@@ -56,18 +56,18 @@ You can combine both configurations to export metrics to OpenTelemetry and scrap
 | `downstream_cx_destroy` | Counter | ✅ | Total destroyed connections |
 | `downstream_cx_active` | Gauge | ✅ | Total active connections |
 | `downstream_cx_length_ms` | Histogram | ✅ | Connection length milliseconds |
-| `downstream_cx_transport_socket_connect_timeout` | Counter | 🚧 | Total connections that timed out during transport socket connection negotiation |
+| `downstream_cx_transport_socket_connect_timeout` | Counter | | Total connections that timed out during transport socket connection negotiation |
 | `downstream_cx_overflow` | Counter | | Total connections rejected due to enforcement of listener connection limit |
 | `downstream_cx_overload_reject` | Counter | | Total connections rejected due to configured overload actions |
 | `downstream_global_cx_overflow` | Counter | | Total connections rejected due to enforcement of global connection limit |
 | `connections_accepted_per_socket_event` | Histogram | ❌ | Number of connections accepted per listener socket event |
-| `downstream_pre_cx_timeout` | Counter | 🚧 | Sockets that timed out during listener filter processing |
+| `downstream_pre_cx_timeout` | Counter | | Sockets that timed out during listener filter processing |
 | `downstream_pre_cx_active` | Gauge | | Sockets currently undergoing listener filter processing |
-| `extension_config_missing` | Counter | 🚧 | Total connections closed due to missing listener filter extension configuration |
+| `extension_config_missing` | Counter | | Total connections closed due to missing listener filter extension configuration |
 | `network_extension_config_missing` | Counter | | Total connections closed due to missing network filter extension configuration |
 | `no_filter_chain_match` | Counter |  ✅ | Total connections that didn’t match any filter chain |
-| `downstream_listener_filter_remote_close` | Counter | 🚧 | Total connections closed by remote when peek data for listener filters |
-| `downstream_listener_filter_error` | Counter | 🚧 | Total numbers of read errors when peeking data for listener filters |
+| `downstream_listener_filter_remote_close` | Counter | | Total connections closed by remote when peek data for listener filters |
+| `downstream_listener_filter_error` | Counter | | Total numbers of read errors when peeking data for listener filters |
 
 ### TLS statistics
 | Name | Type | Status | Description |
@@ -100,18 +100,20 @@ You can combine both configurations to export metrics to OpenTelemetry and scrap
 | `downstream_cx_http2_total` | Counter | | Total HTTP/2 connections |
 | `downstream_cx_http3_total` | Counter | | Total HTTP/3 connections |
 | `downstream_cx_destroy` | Counter |  ✅  | Total connections destroyed |
-| `downstream_cx_destroy_remote` | Counter | 🚧 | Total connections destroyed due to remote close |
-| `downstream_cx_destroy_local` | Counter | 🚧 | Total connections destroyed due to local close |
+| `downstream_cx_destroy_remote` | Counter | | Total connections destroyed due to remote close |
+| `downstream_cx_destroy_local` | Counter | | Total connections destroyed due to local close |
 | `downstream_cx_destroy_active_rq` | Counter | | Total connections destroyed with 1+ active request |
 | `downstream_cx_destroy_local_active_rq` | Counter | | Total connections destroyed locally with 1+ active request |
 | `downstream_cx_destroy_remote_active_rq` | Counter | | Total connections destroyed remotely with 1+ active request |
 | `downstream_cx_active` | Gauge |  ✅  | Total active connections |
-| `downstream_cx_ssl_active` |  ✅ | | Total active TLS connections |
+| `downstream_cx_ssl_active` | Gauge | ✅ | Total active TLS connections |
 | `downstream_cx_http1_active` | Gauge | | Total active HTTP/1.1 connections |
 | `downstream_cx_upgrades_active` | Gauge | | Total active upgraded connections. These are also counted as active http1/http2 connections. |
 | `downstream_cx_http1_soft_drain` | Gauge | | Total active HTTP/1.x connections waiting for another downstream request to safely close the connection. |
 | `downstream_cx_http2_active` | Gauge | | Total active HTTP/2 connections |
 | `downstream_cx_http3_active` | Gauge | | Total active HTTP/3 connections |
+| `downstream_cx_ws_upgrades_total` | Counter | ✅ | Total websocket upgrades |
+| `downstream_cx_ws_upgrades_active` | Gauge | ✅ | Total active websocket upgrades |
 | `downstream_cx_protocol_error` | Counter | | Total protocol errors |
 | `downstream_cx_length_ms` | Histogram |  ✅ | Connection length milliseconds |
 | `downstream_cx_rx_bytes_total` | Counter | ✅ | Total bytes received |
@@ -143,7 +145,7 @@ You can combine both configurations to export metrics to OpenTelemetry and scrap
 | `downstream_rq_3xx` | Counter | ✅ | Total 3xx responses |
 | `downstream_rq_4xx` | Counter | ✅ | Total 4xx responses |
 | `downstream_rq_5xx` | Counter | ✅ | Total 5xx responses |
-| `downstream_rq_ws_on_non_ws_route` | Counter | | Total upgrade requests rejected by non upgrade routes. This now applies both to WebSocket and non-WebSocket upgrades |
+| `downstream_rq_ws_on_non_ws_route` | Counter | ✅ | Total upgrade requests rejected by non upgrade routes. This now applies both to WebSocket and non-WebSocket upgrades |
 | `downstream_rq_time` | Histogram | | Total time for request and response (milliseconds) |
 | `downstream_rq_idle_timeout` | Counter | | Total requests closed due to idle timeout |
 | `downstream_rq_max_duration_reached` | Counter | | Total requests closed due to max duration reached |
@@ -165,6 +167,8 @@ You can combine both configurations to export metrics to OpenTelemetry and scrap
 | downstream_cx_tx_bytes_buffered | Gauge | | Total bytes currently buffered to the downstream connection |
 | downstream_cx_rx_bytes_total | Counter | | Total bytes read from the downstream connection |
 | downstream_cx_rx_bytes_buffered | Gauge | | Total bytes currently buffered from the downstream connection |
+| cx_rx_bytes_received | Counter | ✅ | Total number of bytes received in TCP connections |
+| cx_tx_bytes_sent | Counter | ✅ | Total number of bytes sent in TCP connections |
 | downstream_flow_control_paused_reading_total | Counter | | Total number of times flow control paused reading from downstream |
 | downstream_flow_control_resumed_reading_total | Counter | | Total number of times flow control resumed reading from downstream |
 | early_data_received_count_total | Counter | | Total number of connections where tcp proxy received data before upstream connection establishment is complete |
@@ -201,9 +205,9 @@ You can combine both configurations to export metrics to OpenTelemetry and scrap
 | `upstream_cx_destroy_local_with_active_rq` | Counter | | Total connections destroyed locally with 1+ active request |
 | `upstream_cx_destroy_remote_with_active_rq` | Counter | | Total connections destroyed remotely with 1+ active request |
 | `upstream_cx_close_notify` | Counter | | Total connections closed via HTTP/1.1 connection close header or HTTP/2 or HTTP/3 GOAWAY |
-| `upstream_cx_rx_bytes_total` | Counter | 🚧 | Total received connection bytes |
+| `upstream_cx_rx_bytes_total` | Counter | | Total received connection bytes |
 | `upstream_cx_rx_bytes_buffered` | Gauge | | Received connection bytes currently buffered |
-| `upstream_cx_tx_bytes_total` | Counter | 🚧 | Total sent connection bytes |
+| `upstream_cx_tx_bytes_total` | Counter | | Total sent connection bytes |
 | `upstream_cx_tx_bytes_buffered` | Gauge | | Send connection bytes currently buffered |
 | `upstream_cx_pool_overflow` | Counter | | Total times that the cluster’s connection pool circuit breaker overflowed |
 | `upstream_cx_protocol_error` | Counter | | Total connection protocol errors |
@@ -263,7 +267,7 @@ You can combine both configurations to export metrics to OpenTelemetry and scrap
 | `passive_failure` | Counter | | Number of health check failures due to passive events (e.g. x-envoy-immediate-health-check-fail) |
 | `network_failure` | Counter | | Number of health check failures due to network error |
 | `verify_cluster` | Counter | | Number of health checks that attempted cluster name verification |
-| `healthy` | Gauge | 🚧 | Number of healthy members |
+| `healthy` | Gauge | | Number of healthy members |
 
 
 ### Server statistics
@@ -278,7 +282,7 @@ You can combine both configurations to export metrics to OpenTelemetry and scrap
 |state| Gauge| | Current State of the Server.
 |parent_connections | Gauge| | Total connections of the old Envoy process on hot restart
 |total_connections | Gauge| | Total connections of both new and old Envoy processes
-|version| Gauge|  🚧 | Integer represented version number based on SCM revision or stats_server_version_override if set.
+|version| Gauge| | Integer represented version number based on SCM revision or stats_server_version_override if set.
 |days_until_first_cert_expiring| Gauge| | Number of days until the next certificate being managed will expire
 |days_until_first_ocsp_response_expiring| Gauge| | Number of days until the next OCSP response being managed will expire
 |hot_restart_epoch| Gauge| | Current hot restart epoch – an integer passed via command line flag --restart-epoch usually indicating generation.
@@ -290,7 +294,29 @@ You can combine both configurations to export metrics to OpenTelemetry and scrap
 |dynamic_unknown_fields| Gauge| | Number of messages in dynamic configuration with unknown fields
 |wip_protos| Counter | Number of messages and fields marked as work-in-progress being used
 
+### Filter statistics
+
+The counters in this section generally have an attribute to indicate the result of the rate limiting evaluation. The possible values are:
+- `ok`: Counts the requests that were successfully admitted by the rate limiter.
+- `rate_limited`: Counts the requests that were rejected because they exceeded the token bucket limits.
+- `not_applicable`: Incremented when the configured rate limiting cannot be applied to a request (for example, during the processing of the `user_rate_limit` token bucket, when the request lacks the specified header to identify the user or session).
+
+| Name | Type | Status | Description |
+| :--- | :--- | :--- | :--- |
+| `connection_rate_limit` | Counter | ✅ | Connections rate limit filter invocations |
+| `local_rate_limit` | Counter | ✅ | Local rate limit filter invocations |
+| `user_rate_limit` | Counter | ✅ | User rate limit filter invocations |
+
 ### User statistics
+
+The user-based metrics have a "user" attribute extracted for HTTP requests from the request header, configurable in Orion.
+
+Example:
+```yaml
+metrics:
+  user_id_header_name: "x-user-id"
+```
+
 | Name | Type | Status | Description |
 | :--- | :--- | :--- | :--- |
 | `invocations` | Counter | ✅ | Total number of API calls |
@@ -299,7 +325,7 @@ You can combine both configurations to export metrics to OpenTelemetry and scrap
 | `user_errors` | Counter | ✅ | Total number of API calls that resulted in a user error |
 | `total_errors` | Counter | ✅ | Total number of API calls that resulted in any error |
 | `latency` | Histogram | ✅ | Latency of API calls in milliseconds |
-| `bytes_tx` | Counter | ✅ | Total number of bytes transmitted in API calls (tcp+http) |
-| `bytes_rx` | Counter | ✅ | Total number of bytes received in API calls (tcp+http) |
+| `bytes_tx` | Counter | ✅ | Total number of bytes transmitted in API calls (http) |
+| `bytes_rx` | Counter | ✅ | Total number of bytes received in API calls (http) |
 | `inbound_streaming_bytes_processed` | Counter | ✅ | Total number of bytes processed in inbound streaming API calls (websocket) |
 | `outbound_streaming_bytes_processed` | Counter | ✅ | Total number of bytes processed in outbound streaming API calls (websocket) |
