@@ -56,6 +56,7 @@ pub struct SinkConfig {
 pub struct MetricsConfig {
     #[serde(with = "http_serde_ext::header_name::option")]
     pub user_id_header_name: Option<HeaderName>,
+    pub user_id_attr_key: Option<String>,
 }
 
 #[cfg(feature = "envoy-conversions")]

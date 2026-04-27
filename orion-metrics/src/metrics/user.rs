@@ -20,6 +20,14 @@ pub static OUTBOUND_STREAMING_BYTES_PROCESSED: OnceLock<Metric<ShardedU64<Thread
 
 pub static LATENCY: OnceLock<Metric<ShardedHistogram<ThreadId>>> = OnceLock::new();
 
+pub static ATTR_KEY: OnceLock<String> = OnceLock::new();
+
+pub fn attr_key() -> &'static str {
+    ATTR_KEY.get()
+        .map(|s| s.as_str())
+        .unwrap_or("user_id")
+}
+
 pub(crate) fn init_metrics() {
     init_observable_counter!(INVOCATIONS, "user", "invocations", "Total number of API calls");
     init_observable_counter!(THROTTLES, "user", "throttles", "Total number of API calls that were throttled");

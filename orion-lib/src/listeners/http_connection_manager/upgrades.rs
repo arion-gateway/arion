@@ -187,14 +187,14 @@ pub async fn handle_websocket_upgrade(
                                         add,
                                         bytes_received_down,
                                         shard_id,
-                                        &[KeyValue::new("user_id", user_id)]
+                                        &[KeyValue::new(user::attr_key(), user_id)]
                                     );
                                     with_metric!(
                                         user::OUTBOUND_STREAMING_BYTES_PROCESSED,
                                         add,
                                         bytes_sent_down,
                                         shard_id,
-                                        &[KeyValue::new("user_id", user_id)]
+                                        &[KeyValue::new(user::attr_key(), user_id)]
                                     );
                                 }
                             },

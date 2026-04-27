@@ -639,9 +639,9 @@ impl TransactionHandler {
             #[cfg(feature = "metrics")]
             if let Some(user_id) = self.user_id {
                 if status_code == 429 {
-                    with_metric!(user::THROTTLES, add, 1, self.shard_id(), &[KeyValue::new("user_id", user_id)]);
+                    with_metric!(user::THROTTLES, add, 1, self.shard_id(), &[KeyValue::new(user::attr_key(), user_id)]);
                 } else {
-                    with_metric!(user::INVOCATIONS, add, 1, self.shard_id(), &[KeyValue::new("user_id", user_id)]);
+                    with_metric!(user::INVOCATIONS, add, 1, self.shard_id(), &[KeyValue::new(user::attr_key(), user_id)]);
                 }
             }
 
@@ -684,9 +684,8 @@ impl TransactionHandler {
 
                     #[cfg(feature = "metrics")]
                     if let Some(user_id) = self.user_id {
-                        with_metric!(user::USER_ERRORS, add, 1, self.shard_id(), &[KeyValue::new("user_id", user_id)]);
-
-                        with_metric!(user::TOTAL_ERRORS, add, 1, self.shard_id(), &[KeyValue::new("user_id", user_id)]);
+                        with_metric!(user::USER_ERRORS, add, 1, self.shard_id(), &[KeyValue::new(user::attr_key(), user_id)]);
+                        with_metric!(user::TOTAL_ERRORS, add, 1, self.shard_id(), &[KeyValue::new(user::attr_key(), user_id)]);
                     }
                 },
                 500..600 => {
@@ -705,10 +704,10 @@ impl TransactionHandler {
                             add,
                             1,
                             self.shard_id(),
-                            &[KeyValue::new("user_id", user_id)]
+                            &[KeyValue::new(user::attr_key(), user_id)]
                         );
 
-                        with_metric!(user::TOTAL_ERRORS, add, 1, self.shard_id(), &[KeyValue::new("user_id", user_id)]);
+                        with_metric!(user::TOTAL_ERRORS, add, 1, self.shard_id(), &[KeyValue::new(user::attr_key(), user_id)]);
                     }
 
                     with_server_span!(self.span_state, |srv_span: &mut BoxedSpan| {
@@ -1491,7 +1490,7 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
             record,
             latency.as_millis() as u64,
             params.m_ctx.shard_id,
-            &[KeyValue::new("user_id", user_id)]
+            &[KeyValue::new(user::attr_key(), user_id)]
         );
     }
 
@@ -1569,14 +1568,14 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
                 add,
                 wire_bytes_received,
                 shard_id,
-                &[KeyValue::new("user_id", user_id), KeyValue::new("listener", params.listener_name)]
+                &[KeyValue::new(user::attr_key(), user_id), KeyValue::new("listener", params.listener_name)]
             );
             with_metric!(
                 user::BYTES_TX,
                 add,
                 wire_bytes_sent,
                 shard_id,
-                &[KeyValue::new("user_id", user_id), KeyValue::new("listener", params.listener_name)]
+                &[KeyValue::new(user::attr_key(), user_id), KeyValue::new("listener", params.listener_name)]
             );
         }
 

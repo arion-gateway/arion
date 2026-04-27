@@ -17,6 +17,7 @@
 
 use orion_configuration::{config::Config, options::Options};
 use orion_lib::{metrics, Result, RUNTIME_CONFIG};
+use orion_metrics::metrics::user;
 
 #[macro_use]
 mod admin;
@@ -33,8 +34,18 @@ pub fn run() -> Result<()> {
 
     RUNTIME_CONFIG.set(runtime).map_err(|_| "runtime config was somehow set before we had a chance to set it")?;
 
-    if let Some(user_id_header_name) = metrics.as_ref().and_then(|uid| uid.user_id_header_name.as_ref()).cloned() {
+    // Set the header_name from which to extract the user_id
+    //
+    if let Some(user_id_header_name) = metrics.as_ref().and_then(|metrics| metrics.user_id_header_name.as_ref()).cloned() {
         metrics::set_user_header_name(user_id_header_name);
+    }
+
+    // Set the attribute key value used to export user metrics. If not specified the default 'user_id' is used.
+    //
+    if let Some(user_id_attr_key) = metrics.as_ref().and_then(|metrics| metrics.user_id_attr_key.as_ref()).cloned() {
+        if let Err(e) = user::ATTR_KEY.set(user_id_attr_key) {
+            tracing::warn!("Failed to set user_id attribute key for metrics: {}", e);
+        }
     }
 
     tracing_manager.update(logging)?;
