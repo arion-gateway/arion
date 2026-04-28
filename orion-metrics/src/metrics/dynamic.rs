@@ -48,9 +48,9 @@ impl DynamicMetrics {
         info!("{:#?}", metrics);
         for metric in metrics {
             match metric {
-                DynamicMetric::Counter(info) => {
-                    let name = info.name.to_static_str();
-                    let description = info.description.to_static_str();
+                DynamicMetric::Counter { name, description, http_header_name } => {
+                    let name = name.to_static_str();
+                    let description = description.to_static_str();
 
                     let metric_obj = Arc::new(Metric::new("http", name, description, ShardedU64::new()));
                     let metric_clone = metric_obj.clone();
@@ -67,24 +67,24 @@ impl DynamicMetrics {
                         .build();
 
                     counters.push(HeaderMetric {
-                        header_name: info.http_header_name.clone(),
-                        label_name: info.http_header_name.as_str().replace('-', "_").to_static_str(),
+                        header_name: http_header_name.clone(),
+                        label_name: http_header_name.as_str().replace('-', "_").to_static_str(),
                         metric: metric_obj,
                     });
                 },
-                DynamicMetric::Histogram(info) => {
-                    let name = info.name.to_static_str();
-                    let description = info.description.to_static_str();
+                DynamicMetric::Histogram { name, description, http_header_name, buckets } => {
+                    let name = name.to_static_str();
+                    let description = description.to_static_str();
 
                     let otel_histogram =
                         global::meter("orion.http").u64_histogram(name).with_description(description).build();
 
-                    let sharded = ShardedHistogram::new(info.buckets.clone(), Some(otel_histogram));
+                    let sharded = ShardedHistogram::new(buckets.clone(), Some(otel_histogram));
                     let metric_obj = Arc::new(Metric::new("http", name, description, sharded));
 
                     histograms.push(HeaderMetric {
-                        header_name: info.http_header_name.clone(),
-                        label_name: info.http_header_name.as_str().replace('-', "_").to_static_str(),
+                        header_name: http_header_name.clone(),
+                        label_name: http_header_name.as_str().replace('-', "_").to_static_str(),
                         metric: metric_obj,
                     });
                 },

@@ -53,26 +53,20 @@ pub struct SinkConfig {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct DynamicCounterConfig {
-    pub name: String,
-    pub description: String,
-    #[serde(with = "http_serde_ext::header_name")]
-    pub http_header_name: HeaderName,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct DynamicHistogramConfig {
-    pub name: String,
-    pub description: String,
-    #[serde(with = "http_serde_ext::header_name")]
-    pub http_header_name: HeaderName,
-    pub buckets: Vec<u64>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum DynamicMetric {
-    Counter(DynamicCounterConfig),
-    Histogram(DynamicHistogramConfig),
+    Counter {
+        name: String,
+        description: String,
+        #[serde(with = "http_serde_ext::header_name")]
+        http_header_name: HeaderName,
+    },
+    Histogram {
+        name: String,
+        description: String,
+        #[serde(with = "http_serde_ext::header_name")]
+        http_header_name: HeaderName,
+        buckets: Vec<u64>,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
