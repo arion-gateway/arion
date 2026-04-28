@@ -15,63 +15,61 @@
 //
 //
 
-use crate::{metrics::Metric, sharded::ShardedU64};
-use std::{sync::OnceLock, thread::ThreadId};
+use crate::{metrics::Metric, sharded::Gauge};
+use std::sync::OnceLock;
 
 use {opentelemetry::global, std::time::Instant};
 
 static STARTUP_TIME: OnceLock<Instant> = OnceLock::new();
 
-pub static UPTIME: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
-pub static CONCURRENCY: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
-pub static MEMORY_HEAP_SIZE: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
-pub static MEMORY_PHYSICAL_SIZE: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
-pub static MEMORY_ALLOCATED: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
+pub static UPTIME: OnceLock<Metric<Gauge>> = OnceLock::new();
+pub static CONCURRENCY: OnceLock<Metric<Gauge>> = OnceLock::new();
+pub static MEMORY_HEAP_SIZE: OnceLock<Metric<Gauge>> = OnceLock::new();
+pub static MEMORY_PHYSICAL_SIZE: OnceLock<Metric<Gauge>> = OnceLock::new();
+pub static MEMORY_ALLOCATED: OnceLock<Metric<Gauge>> = OnceLock::new();
 
 const SERVER_PREFIX: &str = "orion.server";
 
 pub fn update_server_metrics() {
-    let shard_id = std::thread::current().id();
     let uptime = util::server_uptime();
     let physical_memory = util::get_memory_physical_size().unwrap_or(0);
     let memory_heap_size = util::get_memory_heap_size().unwrap_or(physical_memory) as u64;
     let memory_allocated = util::get_memory_allocated().unwrap_or(physical_memory) as u64;
 
     UPTIME
-        .get_or_init(|| Metric::new("server", "uptime", "Current server uptime in seconds", ShardedU64::new()))
+        .get_or_init(|| Metric::new("server", "uptime", "Current server uptime in seconds", Gauge::new()))
         .value
-        .store(uptime, shard_id, &[]);
+        .record(uptime, &[]);
 
     MEMORY_HEAP_SIZE
         .get_or_init(|| {
-            Metric::new("server", "memory_heap_size", "Current memory heap size in bytes", ShardedU64::new())
+            Metric::new("server", "memory_heap_size", "Current memory heap size in bytes", Gauge::new())
         })
         .value
-        .store(memory_heap_size as u64, shard_id, &[]);
+        .record(memory_heap_size as u64, &[]);
 
     MEMORY_PHYSICAL_SIZE
         .get_or_init(|| {
-            Metric::new("server", "memory_physical_size", "Current memory phyisical size", ShardedU64::new())
+            Metric::new("server", "memory_physical_size", "Current memory physical size", Gauge::new())
         })
         .value
-        .store(physical_memory as u64, shard_id, &[]);
+        .record(physical_memory as u64, &[]);
 
     MEMORY_ALLOCATED
         .get_or_init(|| {
-            Metric::new("server", "memory_allocated", "Current memory allocated in bytes", ShardedU64::new())
+            Metric::new("server", "memory_allocated", "Current memory allocated in bytes", Gauge::new())
         })
         .value
-        .store(memory_allocated, shard_id, &[]);
+        .record(memory_allocated, &[]);
 }
 
 pub(crate) fn init_metrics(number_of_threads: usize) {
     _ = STARTUP_TIME.set(Instant::now());
-    let shard_id = std::thread::current().id();
 
     CONCURRENCY
-        .get_or_init(|| Metric::new("server", "concurrency", "Number of worker threads", ShardedU64::new()))
+        .get_or_init(|| Metric::new("server", "concurrency", "Number of worker threads", Gauge::new()))
         .value
-        .store(number_of_threads as u64, shard_id, &[]);
+        .record(number_of_threads as u64, &[]);
 
     update_server_metrics();
 

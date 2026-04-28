@@ -166,15 +166,21 @@ fn format_histogram<S: Eq + Hash + Clone + Copy>(
     }
 }
 
-fn process_counter<S: Eq + Hash>(out: &mut String, source: &OnceLock<Metric<ShardedU64<S>>>) {
+fn process_metric_as_counter<S: Eq + Hash>(out: &mut String, source: &OnceLock<Metric<ShardedU64<S>>>) {
     if let Some(metric) = source.get() {
         format_metric(out, metric.prefix, metric.name, metric.descr, "counter", &metric.value);
     }
 }
 
-fn process_gauge<S: Eq + Hash>(out: &mut String, source: &OnceLock<Metric<ShardedU64<S>>>) {
+fn process_metric_as_gauge<S: Eq + Hash>(out: &mut String, source: &OnceLock<Metric<ShardedU64<S>>>) {
     if let Some(metric) = source.get() {
         format_metric(out, metric.prefix, metric.name, metric.descr, "gauge", &metric.value);
+    }
+}
+
+fn process_gauge(out: &mut String, source: &OnceLock<Metric<Gauge>>) {
+    if let Some(metric) = source.get() {
+        format_gauge(out, metric.prefix, metric.name, metric.descr, "gauge", &metric.value);
     }
 }
 
@@ -194,41 +200,41 @@ pub(crate) async fn prometheus_handler(
     let mut out = String::with_capacity(16384);
 
     // listeners metrics
-    process_counter(&mut out, &listeners::DOWNSTREAM_CX_TOTAL);
-    process_counter(&mut out, &listeners::DOWNSTREAM_CX_DESTROY);
-    process_gauge(&mut out, &listeners::DOWNSTREAM_CX_ACTIVE);
-    process_counter(&mut out, &listeners::NO_FILTER_CHAIN_MATCH);
+    process_metric_as_counter(&mut out, &listeners::DOWNSTREAM_CX_TOTAL);
+    process_metric_as_counter(&mut out, &listeners::DOWNSTREAM_CX_DESTROY);
+    process_metric_as_gauge(&mut out, &listeners::DOWNSTREAM_CX_ACTIVE);
+    process_metric_as_counter(&mut out, &listeners::NO_FILTER_CHAIN_MATCH);
     process_histogram(&mut out, &listeners::DOWNSTREAM_CX_LENGTH_MS);
 
     // clusters metrics
-    process_counter(&mut out, &clusters::UPSTREAM_RQ_TOTAL);
-    process_gauge(&mut out, &clusters::UPSTREAM_RQ_ACTIVE);
-    process_counter(&mut out, &clusters::UPSTREAM_RQ_TIMEOUT);
-    process_counter(&mut out, &clusters::UPSTREAM_RQ_PER_TRY_TIMEOUT);
-    process_counter(&mut out, &clusters::UPSTREAM_RQ_RETRY);
+    process_metric_as_counter(&mut out, &clusters::UPSTREAM_RQ_TOTAL);
+    process_metric_as_gauge(&mut out, &clusters::UPSTREAM_RQ_ACTIVE);
+    process_metric_as_counter(&mut out, &clusters::UPSTREAM_RQ_TIMEOUT);
+    process_metric_as_counter(&mut out, &clusters::UPSTREAM_RQ_PER_TRY_TIMEOUT);
+    process_metric_as_counter(&mut out, &clusters::UPSTREAM_RQ_RETRY);
 
-    process_counter(&mut out, &clusters::UPSTREAM_CX_TOTAL);
-    process_counter(&mut out, &clusters::UPSTREAM_CX_IDLE_TIMEOUT);
-    process_counter(&mut out, &clusters::UPSTREAM_CX_CONNECT_FAIL);
-    process_counter(&mut out, &clusters::UPSTREAM_CX_CONNECT_TIMEOUT);
-    process_counter(&mut out, &clusters::UPSTREAM_CX_DESTROY);
-    process_gauge(&mut out, &clusters::UPSTREAM_CX_ACTIVE);
+    process_metric_as_counter(&mut out, &clusters::UPSTREAM_CX_TOTAL);
+    process_metric_as_counter(&mut out, &clusters::UPSTREAM_CX_IDLE_TIMEOUT);
+    process_metric_as_counter(&mut out, &clusters::UPSTREAM_CX_CONNECT_FAIL);
+    process_metric_as_counter(&mut out, &clusters::UPSTREAM_CX_CONNECT_TIMEOUT);
+    process_metric_as_counter(&mut out, &clusters::UPSTREAM_CX_DESTROY);
+    process_metric_as_gauge(&mut out, &clusters::UPSTREAM_CX_ACTIVE);
 
     // http metrics
-    process_counter(&mut out, &http::DOWNSTREAM_CX_TOTAL);
-    process_counter(&mut out, &http::DOWNSTREAM_CX_SSL_TOTAL);
-    process_gauge(&mut out, &http::DOWNSTREAM_CX_SSL_ACTIVE);
-    process_counter(&mut out, &http::DOWNSTREAM_CX_DESTROY);
-    process_gauge(&mut out, &http::DOWNSTREAM_CX_ACTIVE);
-    process_counter(&mut out, &http::DOWNSTREAM_RQ_1XX);
-    process_counter(&mut out, &http::DOWNSTREAM_RQ_2XX);
-    process_counter(&mut out, &http::DOWNSTREAM_RQ_3XX);
-    process_counter(&mut out, &http::DOWNSTREAM_RQ_4XX);
-    process_counter(&mut out, &http::DOWNSTREAM_RQ_5XX);
-    process_counter(&mut out, &http::DOWNSTREAM_RQ_TOTAL);
-    process_gauge(&mut out, &http::DOWNSTREAM_RQ_ACTIVE);
-    process_counter(&mut out, &http::DOWNSTREAM_CX_RX_BYTES_TOTAL);
-    process_counter(&mut out, &http::DOWNSTREAM_CX_TX_BYTES_TOTAL);
+    process_metric_as_counter(&mut out, &http::DOWNSTREAM_CX_TOTAL);
+    process_metric_as_counter(&mut out, &http::DOWNSTREAM_CX_SSL_TOTAL);
+    process_metric_as_gauge(&mut out, &http::DOWNSTREAM_CX_SSL_ACTIVE);
+    process_metric_as_counter(&mut out, &http::DOWNSTREAM_CX_DESTROY);
+    process_metric_as_gauge(&mut out, &http::DOWNSTREAM_CX_ACTIVE);
+    process_metric_as_counter(&mut out, &http::DOWNSTREAM_RQ_1XX);
+    process_metric_as_counter(&mut out, &http::DOWNSTREAM_RQ_2XX);
+    process_metric_as_counter(&mut out, &http::DOWNSTREAM_RQ_3XX);
+    process_metric_as_counter(&mut out, &http::DOWNSTREAM_RQ_4XX);
+    process_metric_as_counter(&mut out, &http::DOWNSTREAM_RQ_5XX);
+    process_metric_as_counter(&mut out, &http::DOWNSTREAM_RQ_TOTAL);
+    process_metric_as_gauge(&mut out, &http::DOWNSTREAM_RQ_ACTIVE);
+    process_metric_as_counter(&mut out, &http::DOWNSTREAM_CX_RX_BYTES_TOTAL);
+    process_metric_as_counter(&mut out, &http::DOWNSTREAM_CX_TX_BYTES_TOTAL);
     process_histogram(&mut out, &http::DOWNSTREAM_CX_LENGTH_MS);
 
     // server metrics
@@ -239,37 +245,37 @@ pub(crate) async fn prometheus_handler(
     process_gauge(&mut out, &server::MEMORY_ALLOCATED);
 
     // tcp metrics
-    process_counter(&mut out, &tcp::DOWNSTREAM_CX_TOTAL);
-    process_counter(&mut out, &tcp::DOWNSTREAM_CX_DESTROY);
-    process_gauge(&mut out, &tcp::DOWNSTREAM_CX_ACTIVE);
+    process_metric_as_counter(&mut out, &tcp::DOWNSTREAM_CX_TOTAL);
+    process_metric_as_counter(&mut out, &tcp::DOWNSTREAM_CX_DESTROY);
+    process_metric_as_gauge(&mut out, &tcp::DOWNSTREAM_CX_ACTIVE);
     process_histogram(&mut out, &tcp::DOWNSTREAM_CX_LENGTH_MS);
-    process_gauge(&mut out, &tcp::CX_RX_BYTES_RECEIVED);
-    process_gauge(&mut out, &tcp::CX_TX_BYTES_SENT);
+    process_metric_as_gauge(&mut out, &tcp::CX_RX_BYTES_RECEIVED);
+    process_metric_as_gauge(&mut out, &tcp::CX_TX_BYTES_SENT);
 
     // tls
-    process_counter(&mut out, &tls::HANDSHAKES);
+    process_metric_as_counter(&mut out, &tls::HANDSHAKES);
 
     // websocket
-    process_counter(&mut out, &http::DOWNSTREAM_CX_WS_UPGRADES_TOTAL);
-    process_counter(&mut out, &http::DOWNSTREAM_CX_WS_UPGRADES_ACTIVE);
-    process_counter(&mut out, &http::DOWNSTREAM_RQ_WS_ON_NON_WS_ROUTE);
+    process_metric_as_counter(&mut out, &http::DOWNSTREAM_CX_WS_UPGRADES_TOTAL);
+    process_metric_as_counter(&mut out, &http::DOWNSTREAM_CX_WS_UPGRADES_ACTIVE);
+    process_metric_as_counter(&mut out, &http::DOWNSTREAM_RQ_WS_ON_NON_WS_ROUTE);
 
     // user/agentrun
-    process_counter(&mut out, &user::INVOCATIONS);
-    process_counter(&mut out, &user::THROTTLES);
-    process_counter(&mut out, &user::SYSTEM_ERRORS);
-    process_counter(&mut out, &user::USER_ERRORS);
-    process_counter(&mut out, &user::TOTAL_ERRORS);
-    process_counter(&mut out, &user::BYTES_TX);
-    process_counter(&mut out, &user::BYTES_RX);
-    process_counter(&mut out, &user::INBOUND_STREAMING_BYTES_PROCESSED);
-    process_counter(&mut out, &user::OUTBOUND_STREAMING_BYTES_PROCESSED);
+    process_metric_as_counter(&mut out, &user::INVOCATIONS);
+    process_metric_as_counter(&mut out, &user::THROTTLES);
+    process_metric_as_counter(&mut out, &user::SYSTEM_ERRORS);
+    process_metric_as_counter(&mut out, &user::USER_ERRORS);
+    process_metric_as_counter(&mut out, &user::TOTAL_ERRORS);
+    process_metric_as_counter(&mut out, &user::BYTES_TX);
+    process_metric_as_counter(&mut out, &user::BYTES_RX);
+    process_metric_as_counter(&mut out, &user::INBOUND_STREAMING_BYTES_PROCESSED);
+    process_metric_as_counter(&mut out, &user::OUTBOUND_STREAMING_BYTES_PROCESSED);
     process_histogram(&mut out, &user::LATENCY);
 
     // filters
-    process_counter(&mut out, &filters::CONNECTION_RATE_LIMIT);
-    process_counter(&mut out, &filters::LOCAL_RATE_LIMIT);
-    process_counter(&mut out, &filters::USER_RATE_LIMIT);
+    process_metric_as_counter(&mut out, &filters::CONNECTION_RATE_LIMIT);
+    process_metric_as_counter(&mut out, &filters::LOCAL_RATE_LIMIT);
+    process_metric_as_counter(&mut out, &filters::USER_RATE_LIMIT);
 
     // dynamic metrics
     if let Some(custom_metrics) = custom::CUSTOM_METRICS.get() {

@@ -82,15 +82,6 @@ impl<S: Eq + Hash> ShardedU64<S> {
         total
     }
 
-    pub fn store(&self, value: u64, shard_id: S, key: &[KeyValue]) {
-        let mut shard = self.data.entry(shard_id).or_default();
-        if let Some(counter) = shard.get(key) {
-            counter.store(value, Ordering::Relaxed);
-        } else {
-            shard.insert(SmallVec::from(key), AtomicU64::new(value));
-        }
-    }
-
     pub fn shard_count(&self) -> usize {
         self.data.len()
     }
@@ -304,24 +295,11 @@ mod tests {
         s.add(100, shard_1, &key);
         assert_eq!(s.load(&key), Some(100));
 
-        s.store(42, shard_1, &key);
-        assert_eq!(s.load(&key), Some(42));
+        s.add(42, shard_1, &key);
+        assert_eq!(s.load(&key), Some(142));
 
-        s.store(0, shard_1, &[]);
+        s.add(0, shard_1, &[]);
         println!("{s:?}");
-    }
-
-    #[test]
-    fn test_store_overwrites_value() {
-        let s = ShardedU64::new();
-        let shard_1 = build_thread_id(1);
-        let key = vec![KeyValue::new("metric", "value")];
-
-        s.add(100, shard_1, &key);
-        assert_eq!(s.load(&key), Some(100));
-
-        s.store(42, shard_1, &key);
-        assert_eq!(s.load(&key), Some(42));
     }
 
     #[test]
