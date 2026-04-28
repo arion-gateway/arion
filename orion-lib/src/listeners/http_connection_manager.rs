@@ -1286,7 +1286,13 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
         }
 
         #[cfg(feature = "metrics")]
-        DYNAMIC_METRICS.get().map(|dyn_metrics| dyn_metrics.with_request_headers(&request.headers(), &[]));
+        if let Some(user_id) = user_id {
+            DYNAMIC_METRICS.get().map(|dyn_metrics| {
+                dyn_metrics.with_request_headers(&request.headers(), &[KeyValue::new(user::attr_key(), user_id)])
+            });
+        } else {
+            DYNAMIC_METRICS.get().map(|dyn_metrics| dyn_metrics.with_request_headers(&request.headers(), &[]));
+        }
 
         Box::pin(async move {
             // optionally apply a timeout to the body.
