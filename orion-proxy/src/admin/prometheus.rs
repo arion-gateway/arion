@@ -249,15 +249,15 @@ pub(crate) async fn prometheus_handler(
     process_metric_as_counter(&mut out, &tcp::DOWNSTREAM_CX_DESTROY);
     process_metric_as_gauge(&mut out, &tcp::DOWNSTREAM_CX_ACTIVE);
     process_histogram(&mut out, &tcp::DOWNSTREAM_CX_LENGTH_MS);
-    process_metric_as_gauge(&mut out, &tcp::CX_RX_BYTES_RECEIVED);
-    process_metric_as_gauge(&mut out, &tcp::CX_TX_BYTES_SENT);
+    process_metric_as_counter(&mut out, &tcp::CX_RX_BYTES_RECEIVED);
+    process_metric_as_counter(&mut out, &tcp::CX_TX_BYTES_SENT);
 
     // tls
     process_metric_as_counter(&mut out, &tls::HANDSHAKES);
 
     // websocket
     process_metric_as_counter(&mut out, &http::DOWNSTREAM_CX_WS_UPGRADES_TOTAL);
-    process_metric_as_counter(&mut out, &http::DOWNSTREAM_CX_WS_UPGRADES_ACTIVE);
+    process_metric_as_gauge(&mut out, &http::DOWNSTREAM_CX_WS_UPGRADES_ACTIVE);
     process_metric_as_counter(&mut out, &http::DOWNSTREAM_RQ_WS_ON_NON_WS_ROUTE);
 
     // user/agentrun

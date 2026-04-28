@@ -74,13 +74,13 @@ pub(crate) fn init_metrics(number_of_threads: usize) {
     update_server_metrics();
 
     global::meter(SERVER_PREFIX)
-        .u64_observable_counter(UPTIME.wait().name)
+        .u64_observable_gauge(UPTIME.wait().name)
         .with_description(UPTIME.wait().descr)
         .with_callback(move |observer| observer.observe(util::server_uptime(), &[]))
         .build();
 
     global::meter(SERVER_PREFIX)
-        .u64_observable_counter(CONCURRENCY.wait().name)
+        .u64_observable_gauge(CONCURRENCY.wait().name)
         .with_description(CONCURRENCY.wait().descr)
         .with_callback(move |observer| observer.observe(number_of_threads as u64, &[]))
         .build();
