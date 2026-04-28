@@ -31,6 +31,7 @@ use orion_xds::{
         client::{
             DeltaClientBackgroundWorker, DeltaDiscoveryClient, DeltaDiscoverySubscriptionManager, XdsUpdateEvent,
         },
+        extension::XdsExtensionHandler,
         model::{RejectedConfig, TypeUrl, XdsResourcePayload, XdsResourceUpdate},
     },
 };
@@ -57,6 +58,7 @@ pub struct XdsConfigurationHandler {
     listeners_senders: Vec<Sender<ListenerConfigurationChange>>,
     route_senders: Vec<Sender<RouteConfigurationChange>>,
     health_updates_receiver: Receiver<EndpointHealthUpdate>,
+    extension_handlers: Vec<Arc<dyn XdsExtensionHandler>>,
 }
 
 impl XdsConfigurationHandler {
@@ -70,7 +72,19 @@ impl XdsConfigurationHandler {
         }
         let (health_updates_sender, health_updates_receiver) = mpsc::channel(1000);
         let health_manager = HealthCheckManager::new(health_updates_sender);
-        Self { secret_manager, health_manager, listeners_senders, route_senders, health_updates_receiver }
+        Self {
+            secret_manager,
+            health_manager,
+            listeners_senders,
+            route_senders,
+            health_updates_receiver,
+            extension_handlers: Vec::new(),
+        }
+    }
+
+    pub fn with_extension_handlers(mut self, handlers: Vec<Arc<dyn XdsExtensionHandler>>) -> Self {
+        self.extension_handlers = handlers;
+        self
     }
 
     // Resolve cluster name into working endpoint(s), return working client
@@ -117,37 +131,42 @@ impl XdsConfigurationHandler {
         }
     }
 
-    pub async fn run_loop(
-        &mut self,
-        node: Node,
-        initial_clusters: Vec<ClusterType>,
+    pub async fn connect(
+        node: &Node,
         ads_cluster_names: Vec<String>,
-    ) -> Result<()> {
-        for cluster in initial_clusters {
-            self.health_manager.restart_cluster(cluster).await;
+    ) -> Result<Option<(DeltaDiscoveryClient, Arc<DeltaDiscoverySubscriptionManager>, ChildTask<()>)>> {
+        if ads_cluster_names.is_empty() {
+            info!("No xDS clusters configured");
+            return Ok(None);
         }
 
         let mut cluster_names = ads_cluster_names.into_iter().cycle();
-
-        let (mut worker, mut client, _subscription_manager) = loop {
-            let Some(cluster_name) = cluster_names.next() else {
-                info!("No xDS clusters configured");
-                return Ok(());
-            };
-
-            if let Ok(val) = Self::resolve_endpoints(&cluster_name, &node) {
+        let (mut worker, client, subscription_manager) = loop {
+            let cluster_name = cluster_names.next().expect("cycle over non-empty vec");
+            if let Ok(val) = Self::resolve_endpoints(&cluster_name, node) {
                 break val;
             }
-
             info!("Retrying XDS connection in {} seconds", RETRY_INTERVAL.as_secs());
             tokio::time::sleep(RETRY_INTERVAL).await;
         };
 
-        let _xds_worker: ChildTask<_> = tokio::spawn(async move {
+        let worker_task: ChildTask<_> = tokio::spawn(async move {
             let subscribe = worker.run().await;
             info!("Worker exited {subscribe:?}");
         })
         .into();
+
+        Ok(Some((client, Arc::new(subscription_manager), worker_task)))
+    }
+
+    pub async fn run_loop(
+        &mut self,
+        initial_clusters: Vec<ClusterType>,
+        mut client: DeltaDiscoveryClient,
+    ) -> Result<()> {
+        for cluster in initial_clusters {
+            self.health_manager.restart_cluster(cluster).await;
+        }
 
         loop {
             select! {
@@ -224,6 +243,10 @@ impl XdsConfigurationHandler {
                 let msg = "Secret removal is not supported";
                 warn!("{msg}");
                 Err(msg.into())
+            },
+            TypeUrl::Extension(ref type_url) => {
+                debug!("Got extension removal for {type_url} resource {id}");
+                self.handle_extension_remove(type_url, id).await
             },
         }
     }
@@ -315,6 +338,10 @@ impl XdsConfigurationHandler {
                     },
                 }
             },
+            XdsResourcePayload::Extension(id, type_url, payload) => {
+                debug!("Got extension update for {type_url} resource {id}");
+                self.handle_extension_update(&type_url, &id, &payload).await
+            },
         }
     }
 
@@ -348,6 +375,30 @@ impl XdsConfigurationHandler {
     async fn add_cluster(&mut self, cluster: PartialClusterType) -> Result<()> {
         let cluster_config = orion_lib::clusters::add_cluster(cluster)?;
         self.health_manager.restart_cluster(cluster_config).await;
+        Ok(())
+    }
+
+    async fn handle_extension_update(&self, type_url: &str, resource_id: &str, payload: &[u8]) -> Result<()> {
+        for handler in &self.extension_handlers {
+            if handler.type_urls().contains(&type_url) {
+                if let Err(e) = handler.handle_update(type_url, resource_id, payload).await {
+                    warn!("Extension handler error for {type_url}: {e}");
+                    return Err(e.to_string().into());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn handle_extension_remove(&self, type_url: &str, resource_id: &str) -> Result<()> {
+        for handler in &self.extension_handlers {
+            if handler.type_urls().contains(&type_url) {
+                if let Err(e) = handler.handle_remove(type_url, resource_id).await {
+                    warn!("Extension handler error for {type_url} removal: {e}");
+                    return Err(e.to_string().into());
+                }
+            }
+        }
         Ok(())
     }
 

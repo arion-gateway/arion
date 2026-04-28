@@ -25,6 +25,7 @@ orion-interner.workspace = true
 orion-tracing.workspace = true
 orion-auth.workspace = true
 orion-xds.workspace = true
+prost.workspace = true
 bounded-integer.workspace = true
 ppp.workspace = true
 regex.workspace = true
@@ -78,7 +79,7 @@ ref-cast = "1.0.25"
 smallvec = "1.15.1"
 assert_matches = "1.5.0"
 tokio-util = { version = "0.7.17", features = ["rt"] }
-jsonwebtoken = { version = "10.2.0", features = ["rust_crypto"] }
+jsonwebtoken = { version = "10.2.0", features = ["aws_lc_rs"] }
 chrono = { version = "0.4.42", features = ["serde"] }
 base64 = "0.22.1"
 schemars = { version = "1.1.0", features = ["std", "derive", "chrono04"] }

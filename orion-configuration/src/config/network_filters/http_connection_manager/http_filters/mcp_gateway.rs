@@ -14,7 +14,24 @@ pub struct McpGateway {
     pub cluster_header: Option<ClusterHeader>,
     pub server_info: McpServerInfo,
     pub tools: Vec<McpTool>,
+    pub dynamic_mcp_servers: Vec<DynamicMcpServer>,
+    pub tds: Option<TdsSpecifier>,
     pub semantic_search_tool: Option<McpSemanticSearch>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct DynamicMcpServer {
+    pub name: SmolStr,
+    pub description: String,
+    pub transport: McpBackendTransportUpstream,
+    pub url: String,
+    pub cache_duration: Option<Duration>,
+    pub rbac: Option<McpToolRbac>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct TdsSpecifier {
+    pub config_name: SmolStr,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
@@ -47,8 +64,6 @@ pub enum UpstreamBackend {
     McpServer {
         transport: McpBackendTransportUpstream,
         url: String,
-        cache_duration: Option<Duration>,
-        dynamic_backend: bool,
     },
     FunctionGraph {},
 }
@@ -102,9 +117,10 @@ mod envoy_conversions {
     use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::mcp::mcp_gateway::v3::{
         mcp_server_backend::TransportUpstream as OrionTransportUpstream, permission,
         semantic_search::EmbeddingsProvider as OrionEmbeddingsProvider, tool::UpstreamBackend as OrionUpstreamBackend,
-        tool_rbac::Action as OrionAction, JwtClaimMatcher, JwtHeaderMatcher, McpGateway as OrionMcpGateway,
-        Permission as OrionPermission, QueryParam as OrionMcpQueryParams, SemanticSearch as OrionSemanticSearch,
-        ServerInfo as OrionMcpServerInfo, Tool as OrionTool, ToolRbac as OrionToolRbac,
+        tool_rbac::Action as OrionAction, DynamicMcpServer as OrionDynamicMcpServer, JwtClaimMatcher, JwtHeaderMatcher,
+        McpGateway as OrionMcpGateway, Permission as OrionPermission, QueryParam as OrionMcpQueryParams,
+        SemanticSearch as OrionSemanticSearch, ServerInfo as OrionMcpServerInfo, TdsSpecifier as OrionTdsSpecifier,
+        Tool as OrionTool, ToolRbac as OrionToolRbac,
     };
     use tracing::warn;
 
@@ -120,18 +136,67 @@ mod envoy_conversions {
     impl TryFrom<OrionMcpGateway> for McpGateway {
         type Error = GenericError;
         fn try_from(orion: OrionMcpGateway) -> Result<Self, Self::Error> {
-            let OrionMcpGateway { cluster_header, server_info, tools, semantic_search_tool } = orion;
+            let OrionMcpGateway { cluster_header, server_info, tools, semantic_search_tool, tds, dynamic_mcp_servers } =
+                orion;
             let server_info = required!(server_info)?;
             let cluster_header: Option<http::HeaderName> = cluster_header.map(TryInto::try_into).transpose()?;
             let cluster_header = cluster_header.map(ClusterHeader);
             let tools = tools.into_iter().map(TryInto::try_into).collect::<Result<Vec<_>, _>>()?;
+            let dynamic_mcp_servers =
+                dynamic_mcp_servers.into_iter().map(TryInto::try_into).collect::<Result<Vec<_>, _>>()?;
 
             Ok(McpGateway {
                 cluster_header,
-                server_info: server_info.into(),
+                server_info: server_info.try_into()?,
                 tools,
+                dynamic_mcp_servers,
+                tds: tds.map(TryInto::try_into).transpose()?,
                 semantic_search_tool: semantic_search_tool.map(TryInto::try_into).transpose()?,
             })
+        }
+    }
+
+    impl TryFrom<OrionDynamicMcpServer> for DynamicMcpServer {
+        type Error = GenericError;
+        fn try_from(orion: OrionDynamicMcpServer) -> Result<Self, Self::Error> {
+            let transport = orion.transport().into();
+            let OrionDynamicMcpServer { name, description, url, cache_duration, rbac, transport: _ } = orion;
+            if name.is_empty() {
+                return Err(GenericError::from_msg("DynamicMcpServer.name must not be empty"));
+            }
+            if url.is_empty() {
+                return Err(GenericError::from_msg("DynamicMcpServer.url must not be empty"));
+            }
+            let cache_duration = cache_duration
+                .map(|d| -> Result<Duration, GenericError> {
+                    let dur: RustType<Duration> = d.try_into()?;
+                    Ok(dur.into_inner())
+                })
+                .transpose()?;
+
+            Ok(DynamicMcpServer {
+                name: name.into(),
+                description,
+                transport,
+                url,
+                cache_duration,
+                rbac: rbac.map(TryInto::try_into).transpose()?,
+            })
+        }
+    }
+
+    impl TryFrom<OrionTdsSpecifier> for TdsSpecifier {
+        type Error = GenericError;
+        fn try_from(orion: OrionTdsSpecifier) -> Result<Self, Self::Error> {
+            if orion.config_name.is_empty() {
+                return Err(GenericError::from_msg("TdsSpecifier.config_name specifying the resource name from the xDS Tools Discovery Service must not be empty"));
+            }
+            if orion.config_name.contains('/') {
+                return Err(GenericError::from_msg(
+                    "TdsSpecifier.config_name must not contain '/' (used as xDS resource-id separator)",
+                ));
+            }
+            Ok(TdsSpecifier { config_name: orion.config_name.into() })
         }
     }
 
@@ -216,21 +281,7 @@ mod envoy_conversions {
                     })
                 },
                 OrionUpstreamBackend::McpServerBackend(be) => {
-                    if be.cache_duration.is_some() && !be.dynamic_backend {
-                        warn!("For static MCP backends (dynamic_backend = false), the cache_duration field is ignored.")
-                    }
-                    Ok(UpstreamBackend::McpServer {
-                        transport: be.transport().into(),
-                        url: be.url,
-                        cache_duration: be
-                            .cache_duration
-                            .map(|d| -> Result<Duration, GenericError> {
-                                let dur: RustType<Duration> = d.try_into()?;
-                                Ok(dur.into_inner())
-                            })
-                            .transpose()?,
-                        dynamic_backend: be.dynamic_backend,
-                    })
+                    Ok(UpstreamBackend::McpServer { transport: be.transport().into(), url: be.url })
                 },
                 OrionUpstreamBackend::FunctionGraphBackend(_) => todo!(),
             }
@@ -243,9 +294,18 @@ mod envoy_conversions {
         }
     }
 
-    impl From<OrionMcpServerInfo> for McpServerInfo {
-        fn from(orion: OrionMcpServerInfo) -> Self {
-            McpServerInfo { name: orion.name, version: orion.version }
+    impl TryFrom<OrionMcpServerInfo> for McpServerInfo {
+        type Error = GenericError;
+        fn try_from(orion: OrionMcpServerInfo) -> Result<Self, Self::Error> {
+            if orion.name.is_empty() {
+                return Err(GenericError::from_msg("McpServerInfo.name must not be empty"));
+            }
+            if orion.name.contains('/') {
+                return Err(GenericError::from_msg(
+                    "McpServerInfo.name must not contain '/' (used as xDS resource-id separator)",
+                ));
+            }
+            Ok(McpServerInfo { name: orion.name, version: orion.version })
         }
     }
 

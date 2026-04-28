@@ -54,6 +54,7 @@ pub use clusters::{
     load_assignment::PartialClusterLoadAssignment,
     ClusterLoadAssignmentBuilder,
 };
+pub use listeners::http_connection_manager::mcp_gateway::xds_handler as mcp_xds_handler;
 pub use listeners::listener::ListenerFactory;
 pub use listeners_manager::{ListenerConfigurationChange, ListenersManager, RouteConfigurationChange};
 pub use orion_configuration::config::network_filters::http_connection_manager::RouteConfiguration;

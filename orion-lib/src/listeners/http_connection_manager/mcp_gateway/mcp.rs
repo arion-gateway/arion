@@ -40,7 +40,7 @@ use crate::{
     extensions_context::MetadataContext,
     listeners::{
         http_connection_manager::mcp_gateway::{
-            tools::{CallToolError, ToolBuilderError, ToolsRegistry},
+            tools::{CallToolError, ToolBuilderError, ToolEntry, ToolsRegistry},
             transcoder::{Transcoder, TranscoderType},
             transport::{
                 self, AcceptedMime, RequestExt, SessionId, Transport, MIME_APPLICATION_JSON, MIME_TEXT_EVENT_STREAM,
@@ -209,18 +209,34 @@ impl McpGatewayListenerContext {
 #[derive(Debug)]
 pub struct McpGatewayInner {
     config: McpGatewayConfig,
-    tools: ToolsRegistry,
+    tools: Arc<ToolsRegistry>,
+    tds_registration: Option<TdsRegistration>,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct ToolRegistryIndex(pub usize);
+// Drop-tied so listener removal/replacement releases the uniqueness claim and
+// unsubscribes from the xDS handler, avoiding zombie registrations.
+#[derive(Debug)]
+struct TdsRegistration {
+    runtime_id: usize,
+    server_name: SmolStr,
+    scope: SmolStr,
+}
+
+impl Drop for McpGatewayInner {
+    fn drop(&mut self) {
+        if let Some(reg) = self.tds_registration.take() {
+            super::xds_handler::unsubscribe_from_updates(&reg.scope, &self.tools);
+            super::uniqueness::release(reg.runtime_id, &reg.server_name);
+        }
+    }
+}
 
 pub enum MessageResult {
     Nothing,
     JsonRpcError(model::JsonRpcError),
     JsonRpcResponse(model::JsonRpcResponse<Value>),
     JsonRpcNotificationResponse(model::JsonRpcNotification<ServerNotification>, model::JsonRpcResponse<Value>),
-    UpstreamRequest((http::Request<OrionRequestBody>, bool, ToolRegistryIndex)),
+    UpstreamRequest((http::Request<OrionRequestBody>, bool, Arc<ToolEntry>)),
 }
 
 /// McpGateway filter
@@ -232,22 +248,38 @@ pub struct McpGateway {
     version: http::Version,
     initialize_request_params: Option<model::InitializeRequestParams>,
     streamable_async_sender: Option<Arc<TokioMutex<SinkSender>>>,
-    current_tool_index: ToolRegistryIndex,
+    current_tool: Option<Arc<ToolEntry>>,
 }
 
 impl TryFrom<McpGatewayConfig> for McpGateway {
     type Error = ToolBuilderError;
 
     fn try_from(config: McpGatewayConfig) -> Result<Self, Self::Error> {
-        let tools = ToolsRegistry::with_tools(config.tools.clone(), config.semantic_search_tool.clone())?;
+        let tools = Arc::new(ToolsRegistry::with_config(
+            config.tools.clone(),
+            config.dynamic_mcp_servers.clone(),
+            config.semantic_search_tool.clone(),
+        )?);
+
+        let tds_registration = if let Some(tds) = &config.tds {
+            let runtime_id = crate::runtime_context::get_runtime_id();
+            let server_name: SmolStr = config.server_info.name.as_str().into();
+            super::uniqueness::claim(runtime_id, server_name.clone()).map_err(ToolBuilderError::DuplicateServerName)?;
+            let scope: SmolStr = format!("{server_name}/{config_name}", config_name = tds.config_name).into();
+            super::xds_handler::subscribe_for_updates(scope.clone(), Arc::clone(&tools));
+            Some(TdsRegistration { runtime_id, server_name, scope })
+        } else {
+            None
+        };
+
         Ok(Self {
-            inner: Arc::new(McpGatewayInner { config, tools }),
+            inner: Arc::new(McpGatewayInner { config, tools, tds_registration }),
             current_session: None,
             request_id: model::RequestId::Number(0),
             initialize_request_params: None,
             version: http::Version::default(),
             streamable_async_sender: None,
-            current_tool_index: ToolRegistryIndex(usize::MAX),
+            current_tool: None,
         })
     }
 }
@@ -261,7 +293,7 @@ impl FilterFactory for McpGateway {
             initialize_request_params: None,
             version: http::Version::default(),
             streamable_async_sender: None,
-            current_tool_index: ToolRegistryIndex(usize::MAX),
+            current_tool: None,
         }
     }
 }
@@ -363,7 +395,7 @@ impl McpGateway {
         let upstream_status = response.status();
         let body_string = McpGateway::extract_body_string(&body_bytes, upstream_status);
 
-        let structured_content = match self.inner.tools.get_tool_by_index(self.current_tool_index) {
+        let structured_content = match self.current_tool.take().as_deref() {
             Some(tool) => {
                 let value = match &tool.transcoder {
                     TranscoderType::Rest(rest_transcoder) => {
@@ -399,10 +431,7 @@ impl McpGateway {
                 })
             },
             None => {
-                // Tool was not found with the recorded index. We really
-                // should never get here, but we try a soft failure by
-                // sending only the raw content back
-                error!(target: "mcp_gateway", "apply_response: tool index {:?} not found in registry", self.current_tool_index);
+                error!(target: "mcp_gateway", "apply_response: no current tool recorded to process upstream response");
                 None
             },
         };
@@ -1129,9 +1158,8 @@ impl McpGateway {
                     },
                 };
 
-                // Store the tool index from the UpstreamRequest for use in apply_response
-                if let MessageResult::UpstreamRequest((_, _, tool_index)) = &resp {
-                    self.current_tool_index = *tool_index;
+                if let MessageResult::UpstreamRequest((_, _, tool)) = &resp {
+                    self.current_tool = Some(Arc::clone(tool));
                 }
 
                 resp

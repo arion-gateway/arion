@@ -39,10 +39,13 @@ pub use grpc_test_backend::test_proto::EchoResponse;
 pub use grpc_test_backend::{GrpcTestBackend, GrpcTestBackendBuilder};
 pub use grpc_test_client::GrpcTestClient;
 pub use mcp_gateway::{
-    generate_jwt_token, mcp_gateway_config, mcp_gateway_with_direct_semantic_search_config,
-    mcp_gateway_with_jwt_and_semantic_search_config, mcp_gateway_with_jwt_config, mcp_server_tool_config, rbac_config,
+    build_dynamic_mcp_server_proto, build_tool_proto, dynamic_mcp_server_xds_resource, generate_jwt_token,
+    mcp_gateway_config, mcp_gateway_tds_listener, mcp_gateway_tds_listener_with_jwt,
+    mcp_gateway_with_direct_semantic_search_config, mcp_gateway_with_jwt_and_semantic_search_config,
+    mcp_gateway_with_jwt_config, mcp_resource_id, mcp_server_tool_config, mcp_tool_xds_resource, rbac_config,
     rest_tool_config, CallToolParams, CallToolResult, JwtKeyPair, ListToolsResult, McpJsonRpcError, McpJsonRpcRequest,
     McpJsonRpcResponse, McpResultExt, McpTestClient, McpTool, MockMcpServer, TestJwtClaims, ToolContent,
+    MCP_DYNAMIC_SERVER_TYPE_URL, MCP_TOOL_TYPE_URL,
 };
 pub use orion_instance::{OrionInstance, SpawnOptions};
 pub use port_allocator::PortBlock;
@@ -55,3 +58,4 @@ pub use test_client::{RequestBuilder, TestClient, TestResponse};
 pub use tls_test_backend::{TlsBackendConfig, TlsTestBackend};
 pub use tls_test_client::{TlsClientConfig, TlsTestClient, TlsTestClientBuilder};
 pub use xds_harness::{HarnessError, HarnessTimeouts, XdsEnabledHarness, XdsHarnessOptions};
+pub use xds_server::ServerEvent;
