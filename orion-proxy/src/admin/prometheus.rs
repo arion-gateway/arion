@@ -262,8 +262,8 @@ pub(crate) async fn prometheus_handler(
     process_counter(&mut out, &filters::USER_RATE_LIMIT);
 
     // dynamic metrics
-    if let Some(dynamic_metrics) = custom::CUSTOM_METRICS.get() {
-        for counter in dynamic_metrics.counters() {
+    if let Some(custom_metrics) = custom::CUSTOM_METRICS.get() {
+        for counter in custom_metrics.counters() {
             format_metric(
                 &mut out,
                 counter.metric.prefix,
@@ -273,7 +273,7 @@ pub(crate) async fn prometheus_handler(
                 &counter.metric.value,
             );
         }
-        for histogram in dynamic_metrics.histograms() {
+        for histogram in custom_metrics.histograms() {
             format_histogram(
                 &mut out,
                 histogram.metric.prefix,

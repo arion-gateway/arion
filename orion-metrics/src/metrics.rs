@@ -51,7 +51,7 @@ pub fn init_per_thread_metrics(_metrics: &[Metrics]) {
 
 // This function initializes global metrics based on the provided configuration. Must be called once at application startup.
 //
-pub fn init_global_metrics(_metrics: &[Metrics], dynamic_metrics: &[CustomMetric], number_of_threads: usize) {
+pub fn init_global_metrics(_metrics: &[Metrics], custom_metrics: &[CustomMetric], number_of_threads: usize) {
     info!("Initializing global metrics...");
     tcp::init_metrics();
     tls::init_metrics();
@@ -61,5 +61,5 @@ pub fn init_global_metrics(_metrics: &[Metrics], dynamic_metrics: &[CustomMetric
     server::init_metrics(number_of_threads);
     user::init_metrics();
     filters::init_metrics();
-    custom::init_metrics(dynamic_metrics);
+    custom::init_metrics(custom_metrics);
 }

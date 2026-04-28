@@ -208,7 +208,7 @@ fn launch_runtimes(
     #[cfg(feature = "metrics")]
     init_global_metrics(
         &metrics,
-        metrics_config.as_ref().and_then(|m| Some(m.dynamic_metrics.as_slice())).unwrap_or(&[]),
+        metrics_config.as_ref().and_then(|m| Some(m.custom_metrics.as_slice())).unwrap_or(&[]),
         num_threads_per_runtime * num_runtimes,
     );
 

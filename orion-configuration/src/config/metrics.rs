@@ -104,7 +104,7 @@ pub struct MetricsConfig {
     pub user_id_header_name: Option<HeaderName>,
     pub user_id_attr_key: Option<String>,
     #[serde(default)]
-    pub dynamic_metrics: Vec<CustomMetric>,
+    pub custom_metrics: Vec<CustomMetric>,
 }
 
 #[cfg(feature = "envoy-conversions")]
