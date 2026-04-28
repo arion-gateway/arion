@@ -4,6 +4,7 @@ use std::thread::ThreadId;
 use http::{HeaderMap, HeaderName};
 use opentelemetry::{global, KeyValue};
 use orion_configuration::config::metrics::DynamicMetric;
+use smallvec::SmallVec;
 use orion_interner::StringInterner;
 use tracing::info;
 
@@ -105,8 +106,9 @@ impl DynamicMetrics {
                     let val_static = val_str.to_static_str();
                     let kv = KeyValue::new(counter.label_name, val_static);
 
-                    let mut attributes = Vec::with_capacity(extra_attributes.len() + 1);
-                    attributes.extend_from_slice(extra_attributes);
+                    // Allocate on the stack up to 8 elements, fallback to heap if exceeded
+                    let mut attributes: SmallVec<[KeyValue; 4]> = SmallVec::with_capacity(extra_attributes.len() + 1);
+                    attributes.extend(extra_attributes.iter().cloned());
                     attributes.push(kv);
 
                     counter.metric.value.add(1, shard_id, &attributes);

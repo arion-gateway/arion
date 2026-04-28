@@ -76,7 +76,7 @@ fn populate_gauge_vec<S: Eq + Hash>(metric_source: &ShardedU64<S>, prom_metric: 
 }
 
 /// Extracts all unique, sorted label keys from a given counter's data.
-fn get_label_keys(data: &HashMap<Vec<KeyValue>, u64, RandomState>) -> SmallVec<[&str; 4]> {
+fn get_label_keys(data: &HashMap<SmallVec<[KeyValue; 4]>, u64, RandomState>) -> SmallVec<[&str; 4]> {
     let mut sorted_keys = SmallVec::new();
     for kvs in data.keys() {
         for kv in kvs {

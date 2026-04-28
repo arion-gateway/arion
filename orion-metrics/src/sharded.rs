@@ -24,10 +24,11 @@ use std::{
 use ahash::RandomState;
 use dashmap::DashMap;
 use opentelemetry::KeyValue;
+use smallvec::SmallVec;
 use std::{collections::hash_map, fmt};
 
 pub struct ShardedU64<S> {
-    data: DashMap<S, HashMap<Vec<KeyValue>, AtomicU64, RandomState>, RandomState>,
+    data: DashMap<S, HashMap<SmallVec<[KeyValue; 4]>, AtomicU64, RandomState>, RandomState>,
 }
 
 impl<S: Eq + Hash> ShardedU64<S> {
@@ -40,7 +41,7 @@ impl<S: Eq + Hash> ShardedU64<S> {
         if let Some(counter) = shard.get(key) {
             counter.fetch_add(value, Ordering::Relaxed);
         } else {
-            shard.entry(key.to_vec()).or_insert(AtomicU64::new(value));
+            shard.entry(SmallVec::from(key)).or_insert(AtomicU64::new(value));
         }
     }
 
@@ -59,7 +60,7 @@ impl<S: Eq + Hash> ShardedU64<S> {
         }
     }
 
-    pub fn load_all(&self) -> HashMap<Vec<KeyValue>, u64, RandomState> {
+    pub fn load_all(&self) -> HashMap<SmallVec<[KeyValue; 4]>, u64, RandomState> {
         let mut result = HashMap::with_capacity_and_hasher(self.data.len(), RandomState::new());
         for shard in self.data.iter() {
             for (key, counter) in shard.value().iter() {
@@ -86,7 +87,7 @@ impl<S: Eq + Hash> ShardedU64<S> {
         if let Some(counter) = shard.get(key) {
             counter.store(value, Ordering::Relaxed);
         } else {
-            shard.insert(key.to_vec(), AtomicU64::new(value));
+            shard.insert(SmallVec::from(key), AtomicU64::new(value));
         }
     }
 
@@ -104,18 +105,18 @@ impl<S: Eq + Hash> ShardedU64<S> {
 }
 
 pub struct ShardedU64IntoIter {
-    inner: hash_map::IntoIter<Vec<KeyValue>, u64>,
+    inner: hash_map::IntoIter<SmallVec<[KeyValue; 4]>, u64>,
 }
 
 impl Iterator for ShardedU64IntoIter {
-    type Item = (Vec<KeyValue>, u64);
+    type Item = (SmallVec<[KeyValue; 4]>, u64);
     fn next(&mut self) -> Option<Self::Item> {
         self.inner.next()
     }
 }
 
 impl<S: Eq + Hash> IntoIterator for &'_ ShardedU64<S> {
-    type Item = (Vec<KeyValue>, u64);
+    type Item = (SmallVec<[KeyValue; 4]>, u64);
     type IntoIter = ShardedU64IntoIter;
 
     fn into_iter(self) -> Self::IntoIter {
@@ -282,8 +283,8 @@ mod tests {
         assert_eq!(s.load(&key_b), Some(100));
 
         let all_data = s.load_all();
-        assert_eq!(all_data.get(&key_a), Some(&25));
-        assert_eq!(all_data.get(&key_b), Some(&100));
+        assert_eq!(all_data.get(key_a.as_slice()), Some(&25));
+        assert_eq!(all_data.get(key_b.as_slice()), Some(&100));
         assert_eq!(all_data.len(), 2);
     }
 
