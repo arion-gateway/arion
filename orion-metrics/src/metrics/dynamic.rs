@@ -97,9 +97,7 @@ impl DynamicMetrics {
     pub fn with_request_headers(&self, headers: &HeaderMap, extra_attributes: &[KeyValue]) {
         let shard_id = std::thread::current().id();
 
-        info!("with_request_headers: shard_id: {:?}", shard_id);
         for counter in &self.counters {
-            info!("with_request_headers: -> searching header_name: {:?}", counter.header_name);
             if let Some(header_value) = headers.get(&counter.header_name) {
                 if let Ok(val_str) = header_value.to_str() {
                     info!("with_request_headers: -> val_str: {}", val_str);
