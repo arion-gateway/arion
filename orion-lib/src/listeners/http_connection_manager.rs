@@ -69,7 +69,7 @@ use crate::with_access_log;
 use crate::with_histogram;
 
 #[cfg(feature = "metrics")]
-use orion_metrics::metrics::{dynamic::DYNAMIC_METRICS, http, user};
+use orion_metrics::metrics::{custom::CUSTOM_METRICS, http, user};
 
 #[cfg(feature = "access-log")]
 use {
@@ -1287,11 +1287,11 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
 
         #[cfg(feature = "metrics")]
         if let Some(user_id) = user_id {
-            DYNAMIC_METRICS.get().map(|dyn_metrics| {
+            CUSTOM_METRICS.get().map(|dyn_metrics| {
                 dyn_metrics.with_request_headers(&request.headers(), &[KeyValue::new(user::attr_key(), user_id)])
             });
         } else {
-            DYNAMIC_METRICS.get().map(|dyn_metrics| dyn_metrics.with_request_headers(&request.headers(), &[]));
+            CUSTOM_METRICS.get().map(|dyn_metrics| dyn_metrics.with_request_headers(&request.headers(), &[]));
         }
 
         Box::pin(async move {

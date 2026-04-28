@@ -53,18 +53,20 @@ pub struct SinkConfig {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub enum DynamicMetric {
+pub enum CustomMetric {
     Counter {
         name: String,
         description: String,
         #[serde(with = "http_serde_ext::header_name")]
         http_header_name: HeaderName,
+        attribute_name: Option<String>,
     },
     Histogram {
         name: String,
         description: String,
         #[serde(with = "http_serde_ext::header_name")]
         http_header_name: HeaderName,
+        attribute_name: Option<String>,
         #[serde(deserialize_with = "vec_max_u64")]
         buckets: Vec<u64>,
     },
@@ -102,7 +104,7 @@ pub struct MetricsConfig {
     pub user_id_header_name: Option<HeaderName>,
     pub user_id_attr_key: Option<String>,
     #[serde(default)]
-    pub dynamic_metrics: Vec<DynamicMetric>,
+    pub dynamic_metrics: Vec<CustomMetric>,
 }
 
 #[cfg(feature = "envoy-conversions")]

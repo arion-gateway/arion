@@ -15,12 +15,12 @@
 //
 //
 
-use orion_configuration::config::metrics::DynamicMetric;
+use orion_configuration::config::metrics::CustomMetric;
 use tracing::info;
 
 use crate::Metrics;
 pub mod clusters;
-pub mod dynamic;
+pub mod custom;
 pub mod filters;
 pub mod http;
 pub mod listeners;
@@ -51,7 +51,7 @@ pub fn init_per_thread_metrics(_metrics: &[Metrics]) {
 
 // This function initializes global metrics based on the provided configuration. Must be called once at application startup.
 //
-pub fn init_global_metrics(_metrics: &[Metrics], dynamic_metrics: &[DynamicMetric], number_of_threads: usize) {
+pub fn init_global_metrics(_metrics: &[Metrics], dynamic_metrics: &[CustomMetric], number_of_threads: usize) {
     info!("Initializing global metrics...");
     tcp::init_metrics();
     tls::init_metrics();
@@ -61,5 +61,5 @@ pub fn init_global_metrics(_metrics: &[Metrics], dynamic_metrics: &[DynamicMetri
     server::init_metrics(number_of_threads);
     user::init_metrics();
     filters::init_metrics();
-    dynamic::init_metrics(dynamic_metrics);
+    custom::init_metrics(dynamic_metrics);
 }

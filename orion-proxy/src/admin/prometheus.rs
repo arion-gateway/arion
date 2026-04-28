@@ -28,7 +28,7 @@ use tracing::debug;
 use crate::admin::AdminState;
 use orion_metrics::{
     metrics::{
-        clusters, dynamic, filters, http, listeners,
+        clusters, custom, filters, http, listeners,
         server::{self, update_server_metrics},
         tcp, tls, user, Metric,
     },
@@ -262,7 +262,7 @@ pub(crate) async fn prometheus_handler(
     process_counter(&mut out, &filters::USER_RATE_LIMIT);
 
     // dynamic metrics
-    if let Some(dynamic_metrics) = dynamic::DYNAMIC_METRICS.get() {
+    if let Some(dynamic_metrics) = custom::CUSTOM_METRICS.get() {
         for counter in dynamic_metrics.counters() {
             format_metric(
                 &mut out,

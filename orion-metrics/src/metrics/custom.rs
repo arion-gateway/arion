@@ -1,9 +1,10 @@
+use std::borrow::Cow;
 use std::sync::{Arc, OnceLock};
 use std::thread::ThreadId;
 
 use http::{HeaderMap, HeaderName};
 use opentelemetry::{global, KeyValue};
-use orion_configuration::config::metrics::DynamicMetric;
+use orion_configuration::config::metrics::CustomMetric;
 use smallvec::SmallVec;
 use orion_interner::StringInterner;
 use tracing::info;
@@ -13,26 +14,26 @@ use crate::{
     sharded::{ShardedHistogram, ShardedU64},
 };
 
-pub static DYNAMIC_METRICS: OnceLock<DynamicMetrics> = OnceLock::new();
+pub static CUSTOM_METRICS: OnceLock<CustomMetrics> = OnceLock::new();
 
-pub fn init_metrics(config: &[DynamicMetric]) {
+pub fn init_metrics(config: &[CustomMetric]) {
     if !config.is_empty() {
-        _ = DYNAMIC_METRICS.set(DynamicMetrics::new(config));
+        _ = CUSTOM_METRICS.set(CustomMetrics::new(config));
     }
 }
 
 pub struct HeaderMetric<T> {
     pub header_name: HeaderName,
-    pub label_name: &'static str,
+    pub attr_name: &'static str,
     pub metric: Arc<Metric<T>>,
 }
 
-pub struct DynamicMetrics {
+pub struct CustomMetrics {
     counters: Vec<HeaderMetric<ShardedU64<ThreadId>>>,
     histograms: Vec<HeaderMetric<ShardedHistogram<ThreadId>>>,
 }
 
-impl DynamicMetrics {
+impl CustomMetrics {
     pub fn counters(&self) -> &[HeaderMetric<ShardedU64<ThreadId>>] {
         &self.counters
     }
@@ -41,14 +42,14 @@ impl DynamicMetrics {
         &self.histograms
     }
 
-    pub fn new(metrics: &[DynamicMetric]) -> Self {
+    pub fn new(metrics: &[CustomMetric]) -> Self {
         let mut counters = Vec::new();
         let mut histograms = Vec::new();
 
         info!("{:#?}", metrics);
         for metric in metrics {
             match metric {
-                DynamicMetric::Counter { name, description, http_header_name } => {
+                CustomMetric::Counter { name, description, http_header_name, attribute_name } => {
                     let name = name.to_static_str();
                     let description = description.to_static_str();
 
@@ -66,13 +67,27 @@ impl DynamicMetrics {
                         })
                         .build();
 
+                    let attr_name = attribute_name
+                        .as_ref()
+                        .map(|s| Cow::Borrowed(s.as_str()))
+                        .unwrap_or_else(|| {
+                            let header_str = http_header_name.as_str();
+                            if header_str.contains('-') {
+                                Cow::Owned(header_str.replace('-', "_"))
+                            } else {
+                                Cow::Borrowed(header_str)
+                            }
+                        })
+                        .as_ref()
+                        .to_static_str();
+
                     counters.push(HeaderMetric {
                         header_name: http_header_name.clone(),
-                        label_name: http_header_name.as_str().replace('-', "_").to_static_str(),
+                        attr_name,
                         metric: metric_obj,
                     });
                 },
-                DynamicMetric::Histogram { name, description, http_header_name, buckets } => {
+                CustomMetric::Histogram { name, description, http_header_name, attribute_name, buckets } => {
                     let name = name.to_static_str();
                     let description = description.to_static_str();
 
@@ -82,9 +97,23 @@ impl DynamicMetrics {
                     let sharded = ShardedHistogram::new(buckets.clone(), Some(otel_histogram));
                     let metric_obj = Arc::new(Metric::new("http", name, description, sharded));
 
+                    let attr_name = attribute_name
+                        .as_ref()
+                        .map(|s| Cow::Borrowed(s.as_str()))
+                        .unwrap_or_else(|| {
+                            let header_str = http_header_name.as_str();
+                            if header_str.contains('-') {
+                                Cow::Owned(header_str.replace('-', "_"))
+                            } else {
+                                Cow::Borrowed(header_str)
+                            }
+                        })
+                        .as_ref()
+                        .to_static_str();
+
                     histograms.push(HeaderMetric {
                         header_name: http_header_name.clone(),
-                        label_name: http_header_name.as_str().replace('-', "_").to_static_str(),
+                        attr_name,
                         metric: metric_obj,
                     });
                 },
@@ -102,7 +131,7 @@ impl DynamicMetrics {
                 if let Ok(val_str) = header_value.to_str() {
                     info!("with_request_headers: -> val_str: {}", val_str);
                     let val_static = val_str.to_static_str();
-                    let kv = KeyValue::new(counter.label_name, val_static);
+                    let kv = KeyValue::new(counter.attr_name, val_static);
 
                     // Allocate on the stack up to 8 elements, fallback to heap if exceeded
                     let mut attributes: SmallVec<[KeyValue; 4]> = SmallVec::with_capacity(extra_attributes.len() + 1);
