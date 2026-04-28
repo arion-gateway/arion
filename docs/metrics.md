@@ -329,3 +329,49 @@ metrics:
 | `bytes_rx` | Counter | ✅ | Total number of bytes received in API calls (http) | `user_id` |
 | `inbound_streaming_bytes_processed` | Counter | ✅ | Total number of bytes processed in inbound streaming API calls (websocket) | `user_id` |
 | `outbound_streaming_bytes_processed` | Counter | ✅ | Total number of bytes processed in outbound streaming API calls (websocket) | `user_id` |
+
+### Custom Metrics
+
+Orion allows you to define custom metrics dynamically via the configuration file. This feature is useful when you want to extract specific information from HTTP request headers and expose them as OpenTelemetry metrics.
+
+#### Configuration Parameters
+
+Custom metrics are configured under the `metrics.custom_metrics` section. Each metric requires specifying its type (`!Counter` or `!Histogram`) and the following parameters:
+
+*   **`name`**: The name of the metric as it will be exported.
+*   **`description`**: A human-readable description of the metric.
+*   **`http_header_name`**: The HTTP header from which the metric extracts its data.
+*   **`attribute_name`**: (Optional) The name of the attribute (or label) to be attached to the metric. If omitted, it defaults to the `http_header_name` with hyphens (`-`) replaced by underscores (`_`).
+*   **`buckets`**: (Required for Histograms only) An array defining the bucket boundaries for the histogram. It accepts numeric values and `+inf` (or `MAX`, `max`) for the maximum limit.
+
+#### Example Configuration
+
+```yaml
+metrics:
+  user_id_header_name: "x-user-id"
+  user_id_attr_key: "user"
+  custom_metrics:
+    - !Counter
+      name: "custom_request_counter"
+      description: "Counts requests based on a custom header"
+      http_header_name: "x-custom-counter"
+      attribute_name: "counter_value"
+
+    - !Histogram
+      name: "custom_request_size"
+      description: "Records request sizes from a custom header"
+      http_header_name: "x-custom-size"
+      buckets: [10, 50, 100, 500, 1000, +inf]
+```
+
+#### Counter vs Histogram: How They Work
+
+There is a significant difference in how `Counter` and `Histogram` metrics process the HTTP header values, particularly concerning attributes:
+
+*   **Counter**: The Counter metric is used to track the frequency of occurrences. When a request arrives with the configured `http_header_name`, the Counter is incremented by `1`. The **actual string value** of the HTTP header is attached to the metric as the **value of the attribute** (defined by `attribute_name`). 
+    *   *Example*: If a request has the header `x-custom-counter: login_event`, the `custom_request_counter` metric is incremented by 1 and tagged with the attribute `counter_value="login_event"`.
+
+*   **Histogram**: The Histogram metric is used to record a distribution of numeric values. When a request arrives with the configured `http_header_name`, the **value of the HTTP header is parsed as a number (`u64`)** and recorded as the **metric value itself**. Unlike the Counter, the Histogram does not use the header's string value as an attribute.
+    *   *Example*: If a request has the header `x-custom-size: 150`, the `custom_request_size` histogram will record the numeric value `150` into the corresponding bucket (e.g., between 100 and 500).
+
+This behavior allows Counters to categorize and count events based on header strings, while Histograms are designed to measure and bucket actual numeric data passed through headers.
