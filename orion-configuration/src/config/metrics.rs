@@ -20,7 +20,7 @@ use orion_data_plane_api::envoy_data_plane_api::{
     envoy::extensions::stat_sinks::open_telemetry::v3::SinkConfig as EnvoySinkConfig, google::protobuf::Any,
     prost::Message,
 };
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum StatsSink {
@@ -65,8 +65,35 @@ pub enum DynamicMetric {
         description: String,
         #[serde(with = "http_serde_ext::header_name")]
         http_header_name: HeaderName,
+        #[serde(deserialize_with = "vec_max_u64")]
         buckets: Vec<u64>,
     },
+}
+
+fn vec_max_u64<'de, D>(deserializer: D) -> Result<Vec<u64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    // Helper enum to handle either a number or the "MAX" string
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Item {
+        Num(u64),
+        Str(String),
+    }
+
+    // Deserialize into a temporary vector of items first
+    let temp_vec: Vec<Item> = Vec::deserialize(deserializer)?;
+
+    // Convert each item to its corresponding u64 value
+    temp_vec
+        .into_iter()
+        .map(|item| match item {
+            Item::Num(n) => Ok(n),
+            Item::Str(s) if s == "MAX" || s == "max" || s == "+inf" => Ok(u64::MAX),
+            Item::Str(s) => Err(serde::de::Error::custom(format!("Invalid string: {}", s))),
+        })
+        .collect()
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
