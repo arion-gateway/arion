@@ -32,7 +32,7 @@ use orion_metrics::{
         server::{self, update_server_metrics},
         tcp, tls, user, Metric,
     },
-    sharded::{ShardedHistogram, ShardedU64},
+    sharded::{Gauge, ShardedHistogram, ShardedU64},
 };
 
 /// Escapes special characters in label values according to Prometheus specifications.
@@ -88,6 +88,23 @@ fn format_metric<S: Eq + Hash>(
     metric_type: &str,
     metric_source: &ShardedU64<S>,
 ) {
+    let data = metric_source.load_all();
+    if data.is_empty() {
+        return;
+    }
+
+    let full_name = format!("{prefix}_{name}");
+    let _ = writeln!(out, "# HELP {full_name} {desc}");
+    let _ = writeln!(out, "# TYPE {full_name} {metric_type}");
+
+    for (labels, value) in data {
+        let _ = write!(out, "{full_name}");
+        write_metric_labels(out, &labels);
+        let _ = writeln!(out, " {value}");
+    }
+}
+
+fn format_gauge(out: &mut String, prefix: &str, name: &str, desc: &str, metric_type: &str, metric_source: &Gauge) {
     let data = metric_source.load_all();
     if data.is_empty() {
         return;
@@ -273,6 +290,16 @@ pub(crate) async fn prometheus_handler(
                 histogram.metric.name,
                 histogram.metric.descr,
                 &histogram.metric.value,
+            );
+        }
+        for gauge in custom_metrics.gauges() {
+            format_gauge(
+                &mut out,
+                gauge.metric.prefix,
+                gauge.metric.name,
+                gauge.metric.descr,
+                "gauge",
+                &gauge.metric.value,
             );
         }
     }

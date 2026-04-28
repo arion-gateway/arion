@@ -60,3 +60,19 @@ macro_rules! init_observable_gauge {
             .build();
     };
 }
+
+macro_rules! init_gauge {
+    ($gauge: ident, $prefix: literal, $name: literal, $descr: literal) => {
+        _ = $gauge.set(Metric::new($prefix, $name, $descr, crate::sharded::Gauge::new()));
+        _ = global::meter(concat!("orion.", $prefix))
+            .u64_observable_gauge($name)
+            .with_description($descr)
+            .with_callback(move |observer| {
+                let values = $gauge.get().unwrap().value.load_all();
+                values.iter().for_each(|(key, value)| {
+                    observer.observe(*value, key);
+                });
+            })
+            .build();
+    };
+}

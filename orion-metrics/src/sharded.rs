@@ -137,6 +137,65 @@ impl<S: Eq + Hash> fmt::Debug for ShardedU64<S> {
     }
 }
 
+pub struct Gauge {
+    data: DashMap<SmallVec<[KeyValue; 4]>, AtomicU64, RandomState>,
+}
+
+impl Gauge {
+    pub fn new() -> Self {
+        Gauge { data: DashMap::default() }
+    }
+
+    pub fn record(&self, value: u64, key: &[KeyValue]) {
+        if let Some(gauge) = self.data.get(key) {
+            gauge.store(value, Ordering::Relaxed);
+        } else {
+            self.data.insert(SmallVec::from(key), AtomicU64::new(value));
+        }
+    }
+
+    pub fn load_all(&self) -> HashMap<SmallVec<[KeyValue; 4]>, u64, RandomState> {
+        let mut result = HashMap::with_capacity_and_hasher(self.data.len(), RandomState::new());
+        for entry in self.data.iter() {
+            result.insert(entry.key().clone(), entry.value().load(Ordering::Relaxed));
+        }
+        result
+    }
+}
+
+pub struct GaugeIntoIter {
+    inner: hash_map::IntoIter<SmallVec<[KeyValue; 4]>, u64>,
+}
+
+impl Iterator for GaugeIntoIter {
+    type Item = (SmallVec<[KeyValue; 4]>, u64);
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next()
+    }
+}
+
+impl IntoIterator for &'_ Gauge {
+    type Item = (SmallVec<[KeyValue; 4]>, u64);
+    type IntoIter = GaugeIntoIter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        let snapshot = self.load_all();
+        GaugeIntoIter { inner: snapshot.into_iter() }
+    }
+}
+
+impl Default for Gauge {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Debug for Gauge {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_map().entries(self.load_all()).finish()
+    }
+}
+
 pub struct ShardedHistogram<S> {
     buckets: Vec<u64>,
     counts: Vec<ShardedU64<S>>,
@@ -335,5 +394,19 @@ mod tests {
 
         let expected_value = (num_threads * increments_per_thread) as u64;
         assert_eq!(s.load(&key), Some(expected_value));
+    }
+
+    #[test]
+    fn test_gauge_record_and_load() {
+        let g = Gauge::new();
+        let key = vec![KeyValue::new("metric", "gauge_test")];
+
+        g.record(100, &key);
+        let all = g.load_all();
+        assert_eq!(all.get(key.as_slice()), Some(&100));
+
+        g.record(50, &key);
+        let all2 = g.load_all();
+        assert_eq!(all2.get(key.as_slice()), Some(&50));
     }
 }

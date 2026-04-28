@@ -11,7 +11,7 @@ use tracing::info;
 
 use crate::{
     metrics::Metric,
-    sharded::{ShardedHistogram, ShardedU64},
+    sharded::{Gauge, ShardedHistogram, ShardedU64},
 };
 
 pub static CUSTOM_METRICS: OnceLock<CustomMetrics> = OnceLock::new();
@@ -31,6 +31,7 @@ pub struct HeaderMetric<T> {
 pub struct CustomMetrics {
     counters: Vec<HeaderMetric<ShardedU64<ThreadId>>>,
     histograms: Vec<HeaderMetric<ShardedHistogram<ThreadId>>>,
+    gauges: Vec<HeaderMetric<Gauge>>,
 }
 
 impl CustomMetrics {
@@ -42,9 +43,14 @@ impl CustomMetrics {
         &self.histograms
     }
 
+    pub fn gauges(&self) -> &[HeaderMetric<Gauge>] {
+        &self.gauges
+    }
+
     pub fn new(metrics: &[CustomMetric]) -> Self {
         let mut counters = Vec::new();
         let mut histograms = Vec::new();
+        let mut gauges = Vec::new();
 
         info!("{:#?}", metrics);
         for metric in metrics {
@@ -117,10 +123,44 @@ impl CustomMetrics {
                         metric: metric_obj,
                     });
                 },
+                CustomMetric::Gauge { name, description, http_header_name, attribute_name } => {
+                    let name = name.to_static_str();
+                    let description = description.to_static_str();
+
+                    let metric_obj = Arc::new(Metric::new("http", name, description, Gauge::new()));
+                    let metric_clone = metric_obj.clone();
+
+                    let _ = global::meter("orion.http")
+                        .u64_observable_gauge(name)
+                        .with_description(description)
+                        .with_callback(move |observer| {
+                            let values = metric_clone.value.load_all();
+                            values.iter().for_each(|(key, value)| {
+                                observer.observe(*value, key);
+                            });
+                        })
+                        .build();
+
+                    let attr_name = attribute_name
+                        .as_ref()
+                        .map(|s| Cow::Borrowed(s.as_str()))
+                        .unwrap_or_else(|| {
+                            let header_str = http_header_name.as_str();
+                            if header_str.contains('-') {
+                                Cow::Owned(header_str.replace('-', "_"))
+                            } else {
+                                Cow::Borrowed(header_str)
+                            }
+                        })
+                        .as_ref()
+                        .to_static_str();
+
+                    gauges.push(HeaderMetric { header_name: http_header_name.clone(), attr_name, metric: metric_obj });
+                },
             }
         }
 
-        Self { counters, histograms }
+        Self { counters, histograms, gauges }
     }
 
     pub fn with_request_headers(&self, headers: &HeaderMap, extra_attributes: &[KeyValue]) {
@@ -148,6 +188,16 @@ impl CustomMetrics {
                 if let Ok(val_str) = header_value.to_str() {
                     if let Ok(num_val) = val_str.parse::<u64>() {
                         histogram.metric.value.record(num_val, shard_id, extra_attributes);
+                    }
+                }
+            }
+        }
+
+        for gauge in &self.gauges {
+            if let Some(header_value) = headers.get(&gauge.header_name) {
+                if let Ok(val_str) = header_value.to_str() {
+                    if let Ok(num_val) = val_str.parse::<u64>() {
+                        gauge.metric.value.record(num_val, extra_attributes);
                     }
                 }
             }

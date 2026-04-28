@@ -70,6 +70,13 @@ pub enum CustomMetric {
         #[serde(deserialize_with = "vec_max_u64")]
         buckets: Vec<u64>,
     },
+    Gauge {
+        name: String,
+        description: String,
+        #[serde(with = "http_serde_ext::header_name")]
+        http_header_name: HeaderName,
+        attribute_name: Option<String>,
+    },
 }
 
 fn vec_max_u64<'de, D>(deserializer: D) -> Result<Vec<u64>, D::Error>
