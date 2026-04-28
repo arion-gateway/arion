@@ -20,8 +20,8 @@ use std::fmt::Write;
 use std::hash::Hash;
 use std::sync::OnceLock;
 
-use axum::extract::State;
 use ::http::{header::HeaderMap, StatusCode};
+use axum::extract::State;
 use opentelemetry::KeyValue;
 use tracing::debug;
 
@@ -38,11 +38,7 @@ use orion_metrics::{
 /// Escapes special characters in label values according to Prometheus specifications.
 fn escape_label_value(val: &str) -> Cow<'_, str> {
     if val.contains(|c| c == '\\' || c == '"' || c == '\n') {
-        Cow::Owned(
-            val.replace('\\', "\\\\")
-                .replace('\n', "\\n")
-                .replace('"', "\\\""),
-        )
+        Cow::Owned(val.replace('\\', "\\\\").replace('\n', "\\n").replace('"', "\\\""))
     } else {
         Cow::Borrowed(val)
     }
@@ -165,10 +161,7 @@ fn process_gauge<S: Eq + Hash>(out: &mut String, source: &OnceLock<Metric<Sharde
     }
 }
 
-fn process_histogram<S: Eq + Hash + Clone + Copy>(
-    out: &mut String,
-    source: &OnceLock<Metric<ShardedHistogram<S>>>,
-) {
+fn process_histogram<S: Eq + Hash + Clone + Copy>(out: &mut String, source: &OnceLock<Metric<ShardedHistogram<S>>>) {
     if let Some(metric) = source.get() {
         format_histogram(out, metric.prefix, metric.name, metric.descr, &metric.value);
     }
@@ -285,10 +278,7 @@ pub(crate) async fn prometheus_handler(
     }
 
     let mut headers = HeaderMap::new();
-    headers.insert(
-        ::http::header::CONTENT_TYPE,
-        "text/plain; version=0.0.4".parse().unwrap(),
-    );
+    headers.insert(::http::header::CONTENT_TYPE, "text/plain; version=0.0.4".parse().unwrap());
 
     Ok((headers, out))
 }

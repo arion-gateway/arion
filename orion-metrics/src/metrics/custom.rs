@@ -5,8 +5,8 @@ use std::thread::ThreadId;
 use http::{HeaderMap, HeaderName};
 use opentelemetry::{global, KeyValue};
 use orion_configuration::config::metrics::CustomMetric;
-use smallvec::SmallVec;
 use orion_interner::StringInterner;
+use smallvec::SmallVec;
 use tracing::info;
 
 use crate::{
