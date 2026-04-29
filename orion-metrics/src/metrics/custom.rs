@@ -7,7 +7,6 @@ use opentelemetry::{global, KeyValue};
 use orion_configuration::config::metrics::CustomMetric;
 use orion_interner::StringInterner;
 use smallvec::SmallVec;
-use tracing::info;
 
 use crate::{
     metrics::Metric,
@@ -163,20 +162,23 @@ impl CustomMetrics {
     }
 
     pub fn with_request_headers(&self, headers: &HeaderMap, extra_attributes: &[KeyValue]) {
+        if self.counters.is_empty() && self.histograms.is_empty() && self.gauges.is_empty() {
+            return;
+        }
+
         let shard_id = std::thread::current().id();
+
+        let mut base_attributes: SmallVec<[KeyValue; 4]> = SmallVec::with_capacity(extra_attributes.len() + 1);
+        base_attributes.extend(extra_attributes.iter().cloned());
 
         for counter in &self.counters {
             if let Some(header_value) = headers.get(&counter.header_name) {
                 if let Ok(val_str) = header_value.to_str() {
                     let val_static = val_str.to_static_str();
                     let kv = KeyValue::new(counter.attr_name, val_static);
-
-                    // Allocate on the stack up to 8 elements, fallback to heap if exceeded
-                    let mut attributes: SmallVec<[KeyValue; 4]> = SmallVec::with_capacity(extra_attributes.len() + 1);
-                    attributes.extend(extra_attributes.iter().cloned());
-                    attributes.push(kv);
-
-                    counter.metric.value.add(1, shard_id, &attributes);
+                    base_attributes.push(kv);
+                    counter.metric.value.add(1, shard_id, &base_attributes);
+                    base_attributes.pop();
                 }
             }
         }

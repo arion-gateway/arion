@@ -38,3 +38,8 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 smallvec.workspace = true
 
+
+[[bin]]
+name = "test_thread_id"
+path = "src/bin.rs"
+
