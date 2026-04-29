@@ -96,6 +96,7 @@ ctor = "0.6.3"
 upon = "0.8"
 percent-encoding = "2.3.2"
 atomicoption = "0.2.0"
+papaya = "0.2.4"
 
 
 [dev-dependencies]

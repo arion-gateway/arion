@@ -22,32 +22,37 @@ use std::{
 };
 
 use ahash::RandomState;
-use dashmap::DashMap;
+use papaya::HashMap as ConcurrentHashMap;
 use opentelemetry::KeyValue;
 use smallvec::SmallVec;
 use std::{collections::hash_map, fmt};
 
 pub struct ShardedU64<S> {
-    data: DashMap<S, HashMap<SmallVec<[KeyValue; 4]>, AtomicU64, RandomState>, RandomState>,
+    data: ConcurrentHashMap<S, ConcurrentHashMap<SmallVec<[KeyValue; 4]>, AtomicU64, RandomState>, RandomState>,
 }
 
 impl<S: Eq + Hash> ShardedU64<S> {
     pub fn new() -> Self {
-        ShardedU64 { data: DashMap::default() }
+        ShardedU64 { data: ConcurrentHashMap::with_hasher(RandomState::new()) }
     }
 
     pub fn add(&self, value: u64, shard_id: S, key: &[KeyValue]) {
-        let mut shard = self.data.entry(shard_id).or_default();
-        if let Some(counter) = shard.get(key) {
+        let map = self.data.pin();
+        let shard = map.get_or_insert_with(shard_id, || ConcurrentHashMap::with_hasher(RandomState::new()));
+        let shard_pin = shard.pin();
+        if let Some(counter) = shard_pin.get(key) {
             counter.fetch_add(value, Ordering::Relaxed);
         } else {
-            shard.entry(SmallVec::from(key)).or_insert(AtomicU64::new(value));
+            let counter = shard_pin.get_or_insert_with(SmallVec::from(key), || AtomicU64::new(0));
+            counter.fetch_add(value, Ordering::Relaxed);
         }
     }
 
     pub fn sub(&self, value: u64, shard_id: S, key: &[KeyValue]) {
-        if let Some(shard) = self.data.get_mut(&shard_id) {
-            if let Some(counter) = shard.get(key) {
+        let map = self.data.pin();
+        if let Some(shard) = map.get(&shard_id) {
+            let shard_pin = shard.pin();
+            if let Some(counter) = shard_pin.get(key) {
                 let mut current = counter.load(Ordering::Relaxed);
                 loop {
                     let new = current.saturating_sub(value);
@@ -61,9 +66,11 @@ impl<S: Eq + Hash> ShardedU64<S> {
     }
 
     pub fn load_all(&self) -> HashMap<SmallVec<[KeyValue; 4]>, u64, RandomState> {
-        let mut result = HashMap::with_capacity_and_hasher(self.data.len(), RandomState::new());
-        for shard in self.data.iter() {
-            for (key, counter) in shard.value().iter() {
+        let map = self.data.pin();
+        let mut result = HashMap::with_capacity_and_hasher(map.len(), RandomState::new());
+        for (_, shard) in map.iter() {
+            let shard_pin = shard.pin();
+            for (key, counter) in shard_pin.iter() {
                 let value = counter.load(Ordering::Relaxed);
                 *result.entry(key.clone()).or_insert(0) += value;
             }
@@ -73,8 +80,10 @@ impl<S: Eq + Hash> ShardedU64<S> {
 
     pub fn load(&self, key: &[KeyValue]) -> Option<u64> {
         let mut total = None;
-        for shard in self.data.iter() {
-            if let Some(counter) = shard.value().get(key) {
+        let map = self.data.pin();
+        for (_, shard) in map.iter() {
+            let shard_pin = shard.pin();
+            if let Some(counter) = shard_pin.get(key) {
                 let value = counter.load(Ordering::Relaxed);
                 total = Some(total.unwrap_or(0) + value);
             }
@@ -83,15 +92,18 @@ impl<S: Eq + Hash> ShardedU64<S> {
     }
 
     pub fn shard_count(&self) -> usize {
-        self.data.len()
+        self.data.pin().len()
     }
 
     pub fn clear(&self) {
-        self.data.clear();
+        self.data.pin().clear();
     }
 
     pub fn remove(&self, shard_id: S, key: &[KeyValue]) -> Option<u64> {
-        self.data.entry(shard_id).or_default().remove(key).map(|counter| counter.into_inner())
+        let map = self.data.pin();
+        let shard = map.get(&shard_id)?;
+        let shard_pin = shard.pin();
+        shard_pin.remove(key).map(|counter| counter.load(Ordering::Relaxed))
     }
 }
 
@@ -129,26 +141,28 @@ impl<S: Eq + Hash> fmt::Debug for ShardedU64<S> {
 }
 
 pub struct Gauge {
-    data: DashMap<SmallVec<[KeyValue; 4]>, AtomicU64, RandomState>,
+    data: ConcurrentHashMap<SmallVec<[KeyValue; 4]>, AtomicU64, RandomState>,
 }
 
 impl Gauge {
     pub fn new() -> Self {
-        Gauge { data: DashMap::default() }
+        Gauge { data: ConcurrentHashMap::with_hasher(RandomState::new()) }
     }
 
     pub fn record(&self, value: u64, key: &[KeyValue]) {
-        if let Some(gauge) = self.data.get(key) {
+        let map = self.data.pin();
+        if let Some(gauge) = map.get(key) {
             gauge.store(value, Ordering::Relaxed);
         } else {
-            self.data.insert(SmallVec::from(key), AtomicU64::new(value));
+            map.insert(SmallVec::from(key), AtomicU64::new(value));
         }
     }
 
     pub fn load_all(&self) -> HashMap<SmallVec<[KeyValue; 4]>, u64, RandomState> {
-        let mut result = HashMap::with_capacity_and_hasher(self.data.len(), RandomState::new());
-        for entry in self.data.iter() {
-            result.insert(entry.key().clone(), entry.value().load(Ordering::Relaxed));
+        let map = self.data.pin();
+        let mut result = HashMap::with_capacity_and_hasher(map.len(), RandomState::new());
+        for (key, counter) in map.iter() {
+            result.insert(key.clone(), counter.load(Ordering::Relaxed));
         }
         result
     }

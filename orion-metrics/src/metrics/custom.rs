@@ -52,7 +52,6 @@ impl CustomMetrics {
         let mut histograms = Vec::new();
         let mut gauges = Vec::new();
 
-        info!("{:#?}", metrics);
         for metric in metrics {
             match metric {
                 CustomMetric::Counter { name, description, http_header_name, attribute_name } => {
@@ -169,7 +168,6 @@ impl CustomMetrics {
         for counter in &self.counters {
             if let Some(header_value) = headers.get(&counter.header_name) {
                 if let Ok(val_str) = header_value.to_str() {
-                    info!("with_request_headers: -> val_str: {}", val_str);
                     let val_static = val_str.to_static_str();
                     let kv = KeyValue::new(counter.attr_name, val_static);
 
