@@ -17,6 +17,7 @@
 
 pub mod cors;
 pub mod ext_proc;
+pub mod global_rate_limit;
 pub mod http_rbac;
 pub mod jwt;
 pub mod local_rate_limit;
@@ -25,6 +26,7 @@ pub mod router;
 pub mod user_rate_limit;
 
 pub use ext_proc::{ExtProcPerRoute, ExternalProcessor};
+use global_rate_limit::GlobalRateLimit;
 use http_rbac::HttpRbac;
 use local_rate_limit::LocalRateLimit;
 pub use mcp_gateway::McpGateway;
@@ -68,6 +70,7 @@ pub struct HttpFilter {
 pub enum HttpFilterType {
     Rbac(HttpRbac),
     RateLimit(LocalRateLimit),
+    GlobalRateLimit(GlobalRateLimit),
     ExternalProcessor(ExternalProcessor),
     JwtAuthentication(JwtAuthentication),
     Cors(CorsConfig),
@@ -106,6 +109,7 @@ mod envoy_conversions {
                     },
                     jwt_authn::v3::JwtAuthentication as EnvoyJwtAuthentication,
                     local_ratelimit::v3::LocalRateLimit as EnvoyLocalRateLimit,
+                    ratelimit::v3::RateLimit as EnvoyRateLimit,
                     rbac::v3::{Rbac as EnvoyRbac, RbacPerRoute as EnvoyRbacPerRoute},
                     router::v3::Router as EnvoyRouter,
                 },
@@ -157,6 +161,7 @@ mod envoy_conversions {
         fn try_from(value: SupportedEnvoyFilter) -> Result<Self, Self::Error> {
             match value {
                 SupportedEnvoyFilter::LocalRateLimit(lr) => lr.try_into().map(Self::RateLimit),
+                SupportedEnvoyFilter::GlobalRateLimit(rl) => rl.try_into().map(Self::GlobalRateLimit),
                 SupportedEnvoyFilter::Rbac(rbac) => rbac.try_into().map(Self::Rbac),
                 SupportedEnvoyFilter::ExternalProcessor(ext_proc) => ext_proc.try_into().map(Self::ExternalProcessor),
                 SupportedEnvoyFilter::McpGateway(mcp_gateway) => mcp_gateway.try_into().map(Self::McpGateway),
@@ -177,6 +182,7 @@ mod envoy_conversions {
     #[derive(Debug, Clone)]
     pub(crate) enum SupportedEnvoyFilter {
         LocalRateLimit(EnvoyLocalRateLimit),
+        GlobalRateLimit(EnvoyRateLimit),
         Rbac(EnvoyRbac),
         Router(EnvoyRouter),
         ExternalProcessor(EnvoyExternalProcessor),
@@ -193,6 +199,9 @@ mod envoy_conversions {
             match typed_config.type_url.as_str() {
                 "type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit" => {
                     EnvoyLocalRateLimit::decode(typed_config.value.as_slice()).map(Self::LocalRateLimit)
+                },
+                "type.googleapis.com/envoy.extensions.filters.http.ratelimit.v3.RateLimit" => {
+                    EnvoyRateLimit::decode(typed_config.value.as_slice()).map(Self::GlobalRateLimit)
                 },
                 "type.googleapis.com/envoy.extensions.filters.http.rbac.v3.RBAC" => {
                     EnvoyRbac::decode(typed_config.value.as_slice()).map(Self::Rbac)

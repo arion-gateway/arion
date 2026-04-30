@@ -177,6 +177,7 @@ impl TryFrom<HttpFilterConfig> for HttpFilter {
             HttpFilterType::UserRateLimit(user_rate_limit) => {
                 HttpFilterValue::UserRateLimit(user_rate_limit.try_into()?)
             },
+            HttpFilterType::GlobalRateLimit(global_rate_limit) => todo!(),
         };
         Ok(Self { name, disabled, filter: Some(filter), filter_config: hcm_config.map(Box::new) })
     }
