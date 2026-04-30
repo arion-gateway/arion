@@ -131,7 +131,7 @@ pub struct MetricsConfig {
     #[serde(default)]
     pub custom_key: Option<PartitionKey>, // for custom metrics (might use a different partition key)
     #[serde(default)]
-    pub custom_metrics: CustomMetrics
+    pub custom_metrics: CustomMetrics,
 }
 
 #[cfg(feature = "envoy-conversions")]

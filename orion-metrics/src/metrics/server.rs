@@ -42,23 +42,17 @@ pub fn update_server_metrics() {
         .record(uptime, &[]);
 
     MEMORY_HEAP_SIZE
-        .get_or_init(|| {
-            Metric::new("server", "memory_heap_size", "Current memory heap size in bytes", Gauge::new())
-        })
+        .get_or_init(|| Metric::new("server", "memory_heap_size", "Current memory heap size in bytes", Gauge::new()))
         .value
         .record(memory_heap_size as u64, &[]);
 
     MEMORY_PHYSICAL_SIZE
-        .get_or_init(|| {
-            Metric::new("server", "memory_physical_size", "Current memory physical size", Gauge::new())
-        })
+        .get_or_init(|| Metric::new("server", "memory_physical_size", "Current memory physical size", Gauge::new()))
         .value
         .record(physical_memory as u64, &[]);
 
     MEMORY_ALLOCATED
-        .get_or_init(|| {
-            Metric::new("server", "memory_allocated", "Current memory allocated in bytes", Gauge::new())
-        })
+        .get_or_init(|| Metric::new("server", "memory_allocated", "Current memory allocated in bytes", Gauge::new()))
         .value
         .record(memory_allocated, &[]);
 }

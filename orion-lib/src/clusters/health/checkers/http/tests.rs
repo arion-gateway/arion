@@ -34,7 +34,7 @@ use crate::{
         checkers::tests::{deref, TestFixture},
         HealthStatus,
     },
-    listeners::http_connection_manager::TransactionHandler,
+    listeners::http_connection_manager::TransactionContext,
     PolyBody, Result,
 };
 
@@ -60,7 +60,7 @@ impl MockHttpStack {
 impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &MockHttpStack {
     async fn to_response(
         self,
-        _trans_handler: &TransactionHandler,
+        _trans_handler: &TransactionContext,
         request: Request<OrionRequestBody>,
         _ctx: RequestContext<'a>,
     ) -> Result<Response<OrionResponseBody>> {

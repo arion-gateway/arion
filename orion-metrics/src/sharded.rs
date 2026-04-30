@@ -22,8 +22,8 @@ use std::{
 };
 
 use ahash::RandomState;
-use papaya::HashMap as ConcurrentHashMap;
 use opentelemetry::KeyValue;
+use papaya::HashMap as ConcurrentHashMap;
 use smallvec::SmallVec;
 use std::{collections::hash_map, fmt};
 

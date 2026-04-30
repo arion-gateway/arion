@@ -29,7 +29,7 @@ use tower::Service;
 use crate::{
     body::{instrumented_body::InstrumentedBody, response_flags::BodyKind, timeout_body::TimeoutBody},
     extensions_context::MetadataContext,
-    listeners::http_connection_manager::{RequestHandler, TransactionHandler},
+    listeners::http_connection_manager::{RequestHandler, TransactionContext},
     transport::HttpChannel,
     RequestContext,
 };
@@ -80,7 +80,7 @@ impl GrpcService {
 
         let svc_resp = self
             .inner
-            .to_response(&Arc::new(TransactionHandler::default()), http_req, RequestContext::default())
+            .to_response(&Arc::new(TransactionContext::default()), http_req, RequestContext::default())
             .await?;
         let (header, body) = svc_resp.into_parts();
         let body = GrpcBody::new(body);

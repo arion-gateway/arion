@@ -50,11 +50,8 @@ pub struct PartitionKey {
 }
 
 impl PartitionKey {
-    pub const fn new() -> PartitionKey{
-        PartitionKey {
-            header_name: AtomicOption::none(),
-            attribute_name: AtomicOption::none(),
-        }
+    pub const fn new() -> PartitionKey {
+        PartitionKey { header_name: AtomicOption::none(), attribute_name: AtomicOption::none() }
     }
 
     pub fn header_name(&self) -> Option<&HeaderName> {
@@ -74,12 +71,15 @@ impl PartitionKey {
     }
 }
 
-pub static USER_KEY : PartitionKey = PartitionKey::new();
-pub static CUSTOM_KEY : PartitionKey = PartitionKey::new();
+pub static USER_KEY: PartitionKey = PartitionKey::new();
+pub static CUSTOM_KEY: PartitionKey = PartitionKey::new();
 
 #[inline]
 /// Return the partition key from headers, if one is present and the header name is configured.
-pub fn get_partition_key_from_headers(headers: &HeaderMap, user_header_name: Option<&HeaderName>) -> Option<&'static str> {
+pub fn get_partition_key_from_headers(
+    headers: &HeaderMap,
+    user_header_name: Option<&HeaderName>,
+) -> Option<&'static str> {
     user_header_name.and_then(|header_name| {
         headers.get(header_name).map(|value| value.to_str()).transpose().ok().flatten().map(|s| s.to_static_str())
     })

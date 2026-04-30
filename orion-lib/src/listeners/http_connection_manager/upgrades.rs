@@ -15,7 +15,7 @@
 //
 //
 
-use super::{RequestHandler, TransactionHandler};
+use super::{RequestHandler, TransactionContext};
 #[cfg(feature = "metrics")]
 use crate::metrics;
 use crate::{
@@ -83,7 +83,7 @@ pub fn is_websocket_enabled_by_hcm(hcm_enabled_upgrades: &[UpgradeType]) -> bool
 }
 
 pub async fn handle_websocket_upgrade(
-    trans_handler: &TransactionHandler,
+    trans_handler: &TransactionContext,
     mut request: Request<OrionRequestBody>,
     svc_channel: &HttpChannels,
     #[cfg(feature = "metrics")] listener_name: &'static str,
@@ -178,14 +178,20 @@ pub async fn handle_websocket_upgrade(
                                         add,
                                         bytes_received_down,
                                         shard_id,
-                                        &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), partition_key)]
+                                        &[KeyValue::new(
+                                            metrics::USER_KEY.attribute_name().unwrap_or("user"),
+                                            partition_key
+                                        )]
                                     );
                                     with_metric!(
                                         user::OUTBOUND_STREAMING_BYTES_PROCESSED,
                                         add,
                                         bytes_sent_down,
                                         shard_id,
-                                        &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), partition_key)]
+                                        &[KeyValue::new(
+                                            metrics::USER_KEY.attribute_name().unwrap_or("user"),
+                                            partition_key
+                                        )]
                                     );
                                 }
                             },

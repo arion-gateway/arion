@@ -14,7 +14,7 @@
 // limitations under the License.
 //
 //
-use super::{http_modifiers, upgrades as upgrade_utils, RequestHandler, TransactionHandler};
+use super::{http_modifiers, upgrades as upgrade_utils, RequestHandler, TransactionContext};
 use crate::event_error::{EventFailure, EventKind, TryInferFrom, UpstreamError};
 use crate::{
     body::response_flags::ResponseFlags,
@@ -71,7 +71,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
     #[allow(unused_variables)]
     async fn to_response(
         self,
-        trans_handler: &TransactionHandler,
+        trans_handler: &TransactionContext,
         request: Request<OrionRequestBody>,
         (route_context, connection_manager): (RouteContext<'a>, &HttpConnectionManager),
     ) -> Result<Response<OrionResponseBody>> {
@@ -83,8 +83,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
         let RouteContext { route_name, retry_policy, remote_address, route_match, websocket_enabled_by_default } =
             route_context;
 
-        let Some(cluster_id) =
-            clusters_manager::resolve_cluster(&self.cluster_specifier, Some(request.headers()))
+        let Some(cluster_id) = clusters_manager::resolve_cluster(&self.cluster_specifier, Some(request.headers()))
         else {
             debug!("Failed to resolve cluster from specifier {:?}", self.cluster_specifier);
             return Ok(SyntheticHttpResponse::internal_server_error(

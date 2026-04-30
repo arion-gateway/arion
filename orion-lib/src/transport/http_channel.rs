@@ -25,7 +25,7 @@ use crate::{
     event_error::{EventKind, TryInferFrom, UpstreamError},
     instrument_block, instrument_function,
     listeners::{
-        http_connection_manager::{http_modifiers::strip_trailers_headers, RequestHandler, TransactionHandler},
+        http_connection_manager::{http_modifiers::strip_trailers_headers, RequestHandler, TransactionContext},
         synthetic_http_response::SyntheticHttpResponse,
     },
     secrets::{TlsConfigurator, WantsToBuildClient},
@@ -399,7 +399,7 @@ fn update_upstream_stats(event: PoolEvent, tag: &dyn Any, keys: &[&PoolKey]) {
 impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &HttpChannels {
     async fn to_response(
         self,
-        trans_handler: &TransactionHandler,
+        trans_handler: &TransactionContext,
         request: Request<OrionRequestBody>,
         ctx: RequestContext<'a>,
     ) -> Result<Response<OrionResponseBody>> {
@@ -471,7 +471,7 @@ pub struct Retries {
 impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &HttpChannel {
     async fn to_response(
         self,
-        _trans_handler: &TransactionHandler,
+        _trans_handler: &TransactionContext,
         request: Request<OrionRequestBody>,
         ctx: RequestContext<'a>,
     ) -> Result<Response<OrionResponseBody>> {
@@ -490,12 +490,11 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
 
         #[cfg(feature = "metrics")]
         if let Some(custom_metrics) = CUSTOM_METRICS.get() {
-            use orion_metrics::metrics::custom::MetricsHook;
             use crate::metrics;
+            use orion_metrics::metrics::custom::MetricsHook;
 
-            let attr =
-                metrics::get_partition_key_from_headers(request.headers(), metrics::CUSTOM_KEY.header_name())
-                    .map(|id| KeyValue::new(metrics::CUSTOM_KEY.attribute_name().unwrap_or("custom"), id));
+            let attr = metrics::get_partition_key_from_headers(request.headers(), metrics::CUSTOM_KEY.header_name())
+                .map(|id| KeyValue::new(metrics::CUSTOM_KEY.attribute_name().unwrap_or("custom"), id));
             custom_metrics.with_headers(
                 MetricsHook::UpstreamRequest,
                 request.headers(),

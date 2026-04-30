@@ -16,10 +16,11 @@ use crate::{
 pub static CUSTOM_METRICS: OnceLock<CustomMetrics> = OnceLock::new();
 
 pub fn init_metrics(config: &orion_configuration::config::metrics::CustomMetrics) {
-    if !config.incoming_request.is_empty() 
-        || !config.upstream_request.is_empty() 
-        || !config.incoming_response.is_empty() 
-        || !config.downstream_response.is_empty() {
+    if !config.incoming_request.is_empty()
+        || !config.upstream_request.is_empty()
+        || !config.incoming_response.is_empty()
+        || !config.downstream_response.is_empty()
+    {
         _ = CUSTOM_METRICS.set(CustomMetrics::new(config));
     }
 }
@@ -115,7 +116,13 @@ impl CustomMetricCounters {
                         metric: metric_obj,
                     });
                 },
-                CustomMetric::Histogram { name, description, header_name: http_header_name, attribute_name, buckets } => {
+                CustomMetric::Histogram {
+                    name,
+                    description,
+                    header_name: http_header_name,
+                    attribute_name,
+                    buckets,
+                } => {
                     let name = name.to_static_str();
                     let description = description.to_static_str();
 
@@ -247,21 +254,27 @@ impl CustomMetrics {
     }
 
     pub fn counters(&self) -> impl Iterator<Item = &HeaderMetric<ShardedU64<ThreadId>>> {
-        self.incoming_request.counters().iter()
+        self.incoming_request
+            .counters()
+            .iter()
             .chain(self.upstream_request.counters().iter())
             .chain(self.incoming_response.counters().iter())
             .chain(self.downstream_response.counters().iter())
     }
 
     pub fn histograms(&self) -> impl Iterator<Item = &HeaderMetric<ShardedHistogram<ThreadId>>> {
-        self.incoming_request.histograms().iter()
+        self.incoming_request
+            .histograms()
+            .iter()
             .chain(self.upstream_request.histograms().iter())
             .chain(self.incoming_response.histograms().iter())
             .chain(self.downstream_response.histograms().iter())
     }
 
     pub fn gauges(&self) -> impl Iterator<Item = &HeaderMetric<Gauge>> {
-        self.incoming_request.gauges().iter()
+        self.incoming_request
+            .gauges()
+            .iter()
             .chain(self.upstream_request.gauges().iter())
             .chain(self.incoming_response.gauges().iter())
             .chain(self.downstream_response.gauges().iter())
