@@ -22,7 +22,10 @@ use crate::{
     xds_configurator::XdsConfigurationHandler,
 };
 use futures::future::join_all;
-use orion_configuration::config::{bootstrap::Node, log::AccessLogConfig, runtime::Affinity, Bootstrap};
+use orion_configuration::config::{
+    bootstrap::Node, embeddings::EmbeddingsService, log::AccessLogConfig, runtime::Affinity, Bootstrap,
+    Listener as ListenerConfig,
+};
 
 #[cfg(feature = "tracing")]
 use {
@@ -37,9 +40,9 @@ use orion_lib::access_log::{start_access_loggers, update_configuration};
 
 use orion_error::Context;
 use orion_lib::{
-    clusters::cluster::ClusterType, get_listeners_and_clusters, new_configuration_channel, runtime_config,
-    ConfigurationReceivers, ConfigurationSenders, ListenerConfigurationChange, PartialClusterType, Result,
-    SecretManager,
+    build_listener_factories, clusters::cluster::ClusterType, get_secrets_and_clusters, new_configuration_channel,
+    runtime_config, ConfigurationReceivers, ConfigurationSenders, ListenerConfigurationChange, PartialClusterType,
+    Result, SecretManager,
 };
 #[cfg(feature = "metrics")]
 use orion_metrics::{metrics::init_global_metrics, wait_for_metrics_setup, Metrics, VecMetrics};
@@ -52,11 +55,15 @@ use std::{
 
 use tracing::{debug, error, info, warn};
 
-pub fn run_orion(bootstrap: Bootstrap, access_log_config: Option<AccessLogConfig>) {
+pub fn run_orion(
+    bootstrap: Bootstrap,
+    access_log_config: Option<AccessLogConfig>,
+    embeddings_services: Vec<EmbeddingsService>,
+) {
     debug!("Starting on thread {:?}", std::thread::current().name());
 
     // launch the runtimes...
-    if let Err(e) = launch_runtimes(bootstrap, access_log_config) {
+    if let Err(e) = launch_runtimes(bootstrap, access_log_config, embeddings_services) {
         error!("Failed to launch runtimes: {e:?}");
         std::process::exit(1);
     }
@@ -93,8 +100,9 @@ struct ServiceInfo {
     node: Node,
     configuration_senders: Vec<ConfigurationSenders>,
     secret_manager: Arc<RwLock<SecretManager>>,
-    listener_factories: Vec<orion_lib::ListenerFactory>,
+    listener_configs: Vec<ListenerConfig>,
     clusters: Vec<orion_lib::PartialClusterType>,
+    embeddings_services: Vec<EmbeddingsService>,
     ads_cluster_names: Vec<String>,
     #[cfg(feature = "access-log")]
     access_log_config: Option<AccessLogConfig>,
@@ -106,7 +114,11 @@ struct ServiceInfo {
 
 type SenderGuards = Vec<ConfigurationSenders>;
 
-fn launch_runtimes(bootstrap: Bootstrap, _access_log_config: Option<AccessLogConfig>) -> Result<SenderGuards> {
+fn launch_runtimes(
+    bootstrap: Bootstrap,
+    _access_log_config: Option<AccessLogConfig>,
+    embeddings_services: Vec<EmbeddingsService>,
+) -> Result<SenderGuards> {
     let rt_config = runtime_config();
     let num_runtimes = rt_config.num_runtimes();
     let num_cpus = rt_config.num_cpus();
@@ -151,11 +163,12 @@ fn launch_runtimes(bootstrap: Bootstrap, _access_log_config: Option<AccessLogCon
     let ads_cluster_names: Vec<String> = bootstrap.get_ads_configs().iter().map(ToString::to_string).collect();
     let node = bootstrap.node.clone().unwrap_or_else(|| Node { id: "".into(), cluster_id: "".into() });
 
-    let (secret_manager, listener_factories, clusters) =
-        get_listeners_and_clusters(bootstrap.clone()).with_context_msg("Failed to get listeners and clusters")?;
+    let listener_configs = bootstrap.static_resources.listeners.clone();
+    let (secret_manager, clusters) =
+        get_secrets_and_clusters(&bootstrap).with_context_msg("Failed to get secrets and clusters")?;
     let secret_manager = Arc::new(RwLock::new(secret_manager));
 
-    if listener_factories.is_empty() && ads_cluster_names.is_empty() {
+    if listener_configs.is_empty() && ads_cluster_names.is_empty() {
         return Err("No listeners and no ads clusters configured".into());
     }
 
@@ -164,9 +177,10 @@ fn launch_runtimes(bootstrap: Bootstrap, _access_log_config: Option<AccessLogCon
         node,
         configuration_senders: config_senders,
         secret_manager,
-        listener_factories,
+        listener_configs,
         bootstrap,
         clusters,
+        embeddings_services,
         ads_cluster_names,
         #[cfg(feature = "access-log")]
         access_log_config: _access_log_config,
@@ -317,8 +331,9 @@ async fn spawn_services(info: ServiceInfo) -> Result<()> {
         node,
         configuration_senders,
         secret_manager,
-        listener_factories,
+        listener_configs,
         clusters,
+        embeddings_services,
         ads_cluster_names,
         #[cfg(feature = "access-log")]
         access_log_config,
@@ -343,6 +358,11 @@ async fn spawn_services(info: ServiceInfo) -> Result<()> {
         let mcp_handler = xds_connect
             .as_ref()
             .map(|(_, sub_mgr, _)| orion_lib::mcp_xds_handler::init_mcp_xds_handler(Arc::clone(sub_mgr)));
+
+        start_embeddings_services(embeddings_services)?;
+
+        let listener_factories = build_listener_factories(listener_configs, &secret_manager_clone.read())
+            .with_context_msg("failed to build listener factories")?;
 
         push_initial_listeners(bootstrap_clone, listener_factories, configuration_senders_clone.clone()).await?;
 
@@ -413,6 +433,21 @@ async fn spawn_services(info: ServiceInfo) -> Result<()> {
 
 fn register_initial_clusters(clusters: Vec<PartialClusterType>) -> Result<Vec<ClusterType>> {
     clusters.into_iter().map(orion_lib::clusters::add_cluster).collect::<Result<_>>()
+}
+
+fn start_embeddings_services(services: Vec<EmbeddingsService>) -> Result<()> {
+    #[cfg(feature = "mcp-semantic-search")]
+    {
+        orion_lib::embeddings::start_services(services).map_err(Into::into)
+    }
+    #[cfg(not(feature = "mcp-semantic-search"))]
+    {
+        if services.is_empty() {
+            Ok(())
+        } else {
+            Err("embeddings_services configured but Orion was built without the `mcp-semantic-search` feature".into())
+        }
+    }
 }
 
 async fn push_initial_listeners(

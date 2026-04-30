@@ -48,7 +48,44 @@ pub struct McpTool {
     pub output_schema: Map<String, Value>,
     pub backend: UpstreamBackend,
     pub rbac: Option<McpToolRbac>,
+    #[serde(default, skip_serializing_if = "EmbeddingVector::is_empty")]
+    pub embedding: EmbeddingVector,
 }
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(transparent)]
+pub struct EmbeddingVector(pub Vec<f32>);
+
+impl EmbeddingVector {
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    #[inline]
+    pub fn as_slice(&self) -> &[f32] {
+        &self.0
+    }
+}
+
+impl From<Vec<f32>> for EmbeddingVector {
+    fn from(v: Vec<f32>) -> Self {
+        Self(v)
+    }
+}
+
+impl PartialEq for EmbeddingVector {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.len() == other.0.len() && self.0.iter().zip(&other.0).all(|(a, b)| a.to_bits() == b.to_bits())
+    }
+}
+
+impl Eq for EmbeddingVector {}
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub enum UpstreamBackend {
@@ -96,13 +133,27 @@ pub enum McpRbacPermission {
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct McpSemanticSearch {
     pub enable_assisted_discovery: bool,
-    pub embeddings_provider: EmbeddingsProvider,
+    pub embeddings_service: SmolStr,
+    #[serde(default)]
+    pub similarity: SimilarityConfig,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
-pub enum EmbeddingsProvider {
-    Local,
-    Remote,
+pub struct SimilarityConfig {
+    #[serde(default = "SimilarityConfig::default_top_k")]
+    pub top_k: usize,
+}
+
+impl SimilarityConfig {
+    const fn default_top_k() -> usize {
+        10
+    }
+}
+
+impl Default for SimilarityConfig {
+    fn default() -> Self {
+        Self { top_k: Self::default_top_k() }
+    }
 }
 
 #[cfg(feature = "envoy-conversions")]
@@ -116,10 +167,10 @@ mod envoy_conversions {
     use super::*;
     use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::mcp::mcp_gateway::v3::{
         mcp_server_backend::TransportUpstream as OrionTransportUpstream, permission,
-        semantic_search::EmbeddingsProvider as OrionEmbeddingsProvider, tool::UpstreamBackend as OrionUpstreamBackend,
-        tool_rbac::Action as OrionAction, DynamicMcpServer as OrionDynamicMcpServer, JwtClaimMatcher, JwtHeaderMatcher,
-        McpGateway as OrionMcpGateway, Permission as OrionPermission, QueryParam as OrionMcpQueryParams,
-        SemanticSearch as OrionSemanticSearch, ServerInfo as OrionMcpServerInfo, TdsSpecifier as OrionTdsSpecifier,
+        tool::UpstreamBackend as OrionUpstreamBackend, tool_rbac::Action as OrionAction,
+        DynamicMcpServer as OrionDynamicMcpServer, JwtClaimMatcher, JwtHeaderMatcher, McpGateway as OrionMcpGateway,
+        Permission as OrionPermission, QueryParam as OrionMcpQueryParams, SemanticSearch as OrionSemanticSearch,
+        ServerInfo as OrionMcpServerInfo, SimilarityConfig as OrionSimilarityConfig, TdsSpecifier as OrionTdsSpecifier,
         Tool as OrionTool, ToolRbac as OrionToolRbac,
     };
     use tracing::warn;
@@ -189,7 +240,9 @@ mod envoy_conversions {
         type Error = GenericError;
         fn try_from(orion: OrionTdsSpecifier) -> Result<Self, Self::Error> {
             if orion.config_name.is_empty() {
-                return Err(GenericError::from_msg("TdsSpecifier.config_name specifying the resource name from the xDS Tools Discovery Service must not be empty"));
+                return Err(GenericError::from_msg(
+                    "TdsSpecifier.config_name specifying the resource name from the xDS Tools Discovery Service must not be empty",
+                ));
             }
             if orion.config_name.contains('/') {
                 return Err(GenericError::from_msg(
@@ -204,7 +257,7 @@ mod envoy_conversions {
         type Error = GenericError;
 
         fn try_from(orion: OrionTool) -> Result<Self, Self::Error> {
-            let OrionTool { name, description, input_schema, output_schema, upstream_backend, rbac } = orion;
+            let OrionTool { name, description, input_schema, output_schema, upstream_backend, rbac, embedding } = orion;
             let backend = required!(upstream_backend)?.try_into()?;
 
             match backend {
@@ -256,7 +309,15 @@ mod envoy_conversions {
             };
 
             let rbac = rbac.map(TryInto::try_into).transpose()?;
-            Ok(McpTool { name: name.into(), description, input_schema, output_schema, backend, rbac })
+            Ok(McpTool {
+                name: name.into(),
+                description,
+                input_schema,
+                output_schema,
+                backend,
+                rbac,
+                embedding: EmbeddingVector(embedding),
+            })
         }
     }
 
@@ -359,18 +420,26 @@ mod envoy_conversions {
     impl TryFrom<OrionSemanticSearch> for McpSemanticSearch {
         type Error = GenericError;
         fn try_from(orion: OrionSemanticSearch) -> Result<Self, Self::Error> {
-            let OrionSemanticSearch { enable_assisted_discovery, embeddings_provider } = orion;
+            let OrionSemanticSearch { enable_assisted_discovery, embeddings_service, similarity } = orion;
 
-            let embeddings_provider = match OrionEmbeddingsProvider::try_from(embeddings_provider) {
-                Ok(OrionEmbeddingsProvider::Local) => EmbeddingsProvider::Local,
-                Ok(OrionEmbeddingsProvider::Remote) => {
-                    warn!("Currently only dummy local embeddings are supported, the embeddings_provider field will be ignored");
-                    EmbeddingsProvider::Remote
-                },
-                Err(_) => return Err(GenericError::from_msg("Invalid embeddings_provider value")),
-            };
+            if embeddings_service.is_empty() {
+                return Err(GenericError::from_msg("SemanticSearch.embeddings_service must not be empty"));
+            }
+            let similarity = similarity.map(TryInto::try_into).transpose()?.unwrap_or_default();
 
-            Ok(McpSemanticSearch { enable_assisted_discovery, embeddings_provider })
+            Ok(McpSemanticSearch {
+                enable_assisted_discovery,
+                embeddings_service: embeddings_service.into(),
+                similarity,
+            })
+        }
+    }
+
+    impl TryFrom<OrionSimilarityConfig> for SimilarityConfig {
+        type Error = GenericError;
+        fn try_from(orion: OrionSimilarityConfig) -> Result<Self, Self::Error> {
+            let OrionSimilarityConfig { top_k } = orion;
+            Ok(SimilarityConfig { top_k: top_k as usize })
         }
     }
 
@@ -457,6 +526,42 @@ mod envoy_conversions {
             let result: Result<McpToolRbac, _> = orion_rbac.try_into();
             assert!(result.is_err());
             assert!(result.unwrap_err().to_string().contains("at least one permission"));
+        }
+
+        #[test]
+        fn test_semantic_search_round_trip() {
+            let orion = OrionSemanticSearch {
+                enable_assisted_discovery: true,
+                similarity: Some(OrionSimilarityConfig { top_k: 5 }),
+                embeddings_service: "mcp-default".to_string(),
+            };
+            let parsed: McpSemanticSearch = orion.try_into().unwrap();
+            assert!(parsed.enable_assisted_discovery);
+            assert_eq!(parsed.similarity.top_k, 5);
+            assert_eq!(parsed.embeddings_service.as_str(), "mcp-default");
+        }
+
+        #[test]
+        fn test_semantic_search_defaults_similarity() {
+            let orion = OrionSemanticSearch {
+                enable_assisted_discovery: false,
+                similarity: None,
+                embeddings_service: "mcp-default".to_string(),
+            };
+            let parsed: McpSemanticSearch = orion.try_into().unwrap();
+            assert_eq!(parsed.similarity.top_k, 10);
+        }
+
+        #[test]
+        fn test_semantic_search_empty_service_is_rejected() {
+            let orion = OrionSemanticSearch {
+                enable_assisted_discovery: false,
+                similarity: None,
+                embeddings_service: String::new(),
+            };
+            let result: Result<McpSemanticSearch, _> = orion.try_into();
+            assert!(result.is_err());
+            assert!(result.unwrap_err().to_string().contains("embeddings_service"));
         }
     }
 }

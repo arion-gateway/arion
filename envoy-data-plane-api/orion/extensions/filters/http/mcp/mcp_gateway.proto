@@ -25,6 +25,8 @@ message McpGateway {
 
 // Server info
 message ServerInfo {
+    // identity for an MCP server (should be unique across all filter chains 
+    // in a single Orion instance)
     string name = 1 [(validate.rules).string = {min_bytes: 1}];
     string version = 2 [(validate.rules).string = {min_bytes: 1}];
 }
@@ -41,6 +43,7 @@ message Tool {
         McpServerBackend mcp_server_backend = 7;
     };
     optional ToolRbac rbac = 8;
+    repeated float embedding = 9 [packed = true];
 }
 
 message RestBackend {
@@ -139,13 +142,18 @@ message JwtClaimMatcher {
   string value = 2 [(validate.rules).string = {min_bytes: 1}];
 }
 
+// Enables searching for relevant tools within an Orion hosted MCP gateway
 message SemanticSearch {
-    enum EmbeddingsProvider {
-        LOCAL = 0;
-        REMOTE = 1;
-    }
-    // Enable assisted discovery mode for clients unaware of semantic search
-    // When true, inject semantic search tool and use notification flow to trigger re-list
     bool enable_assisted_discovery = 1;
-    EmbeddingsProvider embeddings_provider = 2;
+    // customize shape of results for relevant tools
+    SimilarityConfig similarity = 2;
+    // name of EmbeddingService used for advanced semantic tool search
+    // EmbeddingService is a configured separately within Orion native 
+    // section of bootstrap config
+    string embeddings_service = 3 [(validate.rules).string = {min_bytes: 1}];
+}
+
+message SimilarityConfig {
+    // Maximum number of results to return. 0 means unlimited.
+    uint32 top_k = 1;
 }

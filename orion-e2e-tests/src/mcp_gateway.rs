@@ -585,6 +585,19 @@ use crate::config_builder::{
     RouteConfigBuilder, VirtualHostBuilder,
 };
 
+const TEST_EMBEDDINGS_SERVICE: &str = "mcp-semantic-test";
+
+fn test_embeddings_service_config() -> String {
+    format!(
+        r#"
+name: {TEST_EMBEDDINGS_SERVICE}
+local:
+  model_id: BAAI/bge-small-en-v1.5
+  dimensions: 384
+"#
+    )
+}
+
 pub fn mcp_gateway_config(
     server_name: impl Into<String>,
     server_version: impl Into<String>,
@@ -680,6 +693,7 @@ pub fn mcp_gateway_with_jwt_and_semantic_search_config(
     ));
 
     let mut bootstrap = BootstrapBuilder::new()
+        .embeddings_service(test_embeddings_service_config())
         .listener(listener)
         .cluster(ClusterBuilder::new("dummy").endpoint(crate::config_builder::EndpointBuilder::new("127.0.0.1", 1)));
     for cluster in clusters {
@@ -715,6 +729,7 @@ pub fn mcp_gateway_with_direct_semantic_search_config(
 
     // Add a dummy cluster for the route config - MCP gateway uses cluster_header routing
     let mut bootstrap = BootstrapBuilder::new()
+        .embeddings_service(test_embeddings_service_config())
         .listener(listener)
         .cluster(ClusterBuilder::new("dummy").endpoint(crate::config_builder::EndpointBuilder::new("127.0.0.1", 1)));
     for cluster in clusters {
@@ -957,7 +972,7 @@ fn tool_value_to_proto(
         ToolRbac { action, permissions }
     });
 
-    Tool { name, description, input_schema, output_schema, upstream_backend, rbac }
+    Tool { name, description, input_schema, output_schema, upstream_backend, rbac, embedding: Vec::new() }
 }
 
 /// Create MCP Gateway filter with configurable semantic search
@@ -969,7 +984,7 @@ fn create_mcp_filter_with_semantic_search(
 ) -> Vec<orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::network::http_connection_manager::v3::HttpFilter>{
     use orion_data_plane_api::envoy_data_plane_api::google::protobuf::Any;
     use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::mcp::mcp_gateway::v3::{
-        McpGateway, SemanticSearch, ServerInfo, Tool,
+        McpGateway, SemanticSearch, ServerInfo, SimilarityConfig, Tool,
     };
     use prost::Message;
 
@@ -981,7 +996,8 @@ fn create_mcp_filter_with_semantic_search(
 
     let semantic_search_tool = Some(SemanticSearch {
         enable_assisted_discovery,
-        embeddings_provider: 0, // LOCAL
+        similarity: Some(SimilarityConfig { top_k: 0 }),
+        embeddings_service: TEST_EMBEDDINGS_SERVICE.to_string(),
     });
 
     let mcp_gateway = McpGateway {

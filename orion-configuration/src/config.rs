@@ -20,6 +20,7 @@ pub use bootstrap::Bootstrap;
 pub mod cluster;
 pub use cluster::Cluster;
 pub mod core;
+pub mod embeddings;
 pub mod listener;
 pub use listener::Listener;
 pub mod listener_filters;
@@ -37,9 +38,9 @@ pub mod secret;
 pub mod transport;
 
 pub use crate::config::common::*;
-use crate::{config::metrics::MetricsConfig, options::Options, Result};
+use crate::{config::embeddings::EmbeddingsService, config::metrics::MetricsConfig, options::Options, Result};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use std::{fs::File, path::Path};
+use std::{collections::BTreeSet, fs::File, path::Path};
 
 #[derive(Debug, Deserialize, Serialize, PartialEq)]
 pub struct Config {
@@ -51,6 +52,8 @@ pub struct Config {
     pub access_logging: Option<AccessLogConfig>,
     #[serde(skip_serializing_if = "Option::is_none", default = "Default::default")]
     pub metrics: Option<MetricsConfig>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub embeddings_services: Vec<EmbeddingsService>,
     #[serde(skip_serializing_if = "is_default", default)]
     pub bootstrap: Bootstrap,
 }
@@ -72,9 +75,19 @@ impl Config {
         Self { runtime, ..self }
     }
 
+    fn validate(self) -> Result<Self> {
+        let mut names = BTreeSet::new();
+        for service in &self.embeddings_services {
+            if !names.insert(service.name.as_str()) {
+                return Err(format!("duplicate embeddings service '{}'", service.name).into());
+            }
+        }
+        Ok(self)
+    }
+
     #[cfg(not(feature = "envoy-conversions"))]
     pub fn new(opt: &Options) -> Result<Self> {
-        deserialize_yaml(&opt.config).map(|conf| conf.apply_options(opt))
+        deserialize_yaml(&opt.config).and_then(Config::validate).map(|conf| conf.apply_options(opt))
     }
 }
 
@@ -87,7 +100,7 @@ pub fn deserialize_yaml<T: DeserializeOwned>(path: &Path) -> Result<T> {
 mod envoy_conversions {
     use std::path::Path;
 
-    use super::{deserialize_yaml, log::AccessLogConfig, Bootstrap, Config};
+    use super::{deserialize_yaml, embeddings::EmbeddingsService, log::AccessLogConfig, Bootstrap, Config};
     use crate::{
         config::{log::LogConfig, metrics::MetricsConfig, runtime::Runtime},
         options::Options,
@@ -111,6 +124,8 @@ mod envoy_conversions {
         pub access_logging: Option<AccessLogConfig>,
         #[serde(default)]
         pub metrics: Option<MetricsConfig>,
+        #[serde(default)]
+        pub embeddings_services: Vec<EmbeddingsService>,
         #[serde(default)]
         pub bootstrap: Option<Bootstrap>,
         pub envoy_bootstrap: Option<Wrapper>,
@@ -144,14 +159,22 @@ mod envoy_conversions {
                         logging: LogConfig::default(),
                         access_logging: None,
                         metrics: None,
+                        embeddings_services: Vec::new(),
                         bootstrap,
                     }
                 },
                 (Some(config), maybe_override) => {
-                    let ShimConfig { runtime, logging, access_logging, bootstrap, metrics, envoy_bootstrap } =
-                        deserialize_yaml(config).with_context_fn(|| {
-                            ErrorInfo::default().with_message(format!("failed to deserialize \"{}\"", config.display()))
-                        })?;
+                    let ShimConfig {
+                        runtime,
+                        logging,
+                        access_logging,
+                        bootstrap,
+                        metrics,
+                        embeddings_services,
+                        envoy_bootstrap,
+                    } = deserialize_yaml(config).with_context_fn(|| {
+                        ErrorInfo::default().with_message(format!("failed to deserialize \"{}\"", config.display()))
+                    })?;
                     let mut bootstrap = match (bootstrap, envoy_bootstrap) {
                         (None, None) => Bootstrap::default(),
                         (Some(b), None) => b,
@@ -164,10 +187,10 @@ mod envoy_conversions {
                     if let Some(bootstrap_override) = maybe_override {
                         bootstrap = bootstrap_from_path_to_envoy_bootstrap(bootstrap_override)?;
                     }
-                    Self { runtime, logging, access_logging, metrics, bootstrap }
+                    Self { runtime, logging, access_logging, metrics, embeddings_services, bootstrap }
                 },
             };
-            Ok(config.apply_options(opt))
+            Ok(config.validate()?.apply_options(opt))
         }
     }
     #[cfg(test)]

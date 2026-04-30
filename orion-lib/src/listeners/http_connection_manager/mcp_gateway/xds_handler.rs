@@ -174,12 +174,20 @@ impl XdsExtensionHandler for McpXdsHandler {
                 MCP_TOOL_TYPE_URL => {
                     let proto = decode_proto::<OrionTool>(&payload, "MCP Tool")?;
                     let tool: McpTool = convert(proto, "MCP Tool")?;
+                    #[cfg(feature = "mcp-semantic-search")]
+                    let tool_name: smol_str::SmolStr = tool.name.clone();
                     for registry in &registries {
                         registry.add_tool(tool.clone()).map_err(|e| {
                             XdsExtensionError::HandlerError(format!("Failed to add tool '{name}': {e}"))
                         })?;
                     }
                     debug!(target: "mcp_gateway", "xDS: added/updated tool '{name}' in scope '{scope}' ({} registries)", registries.len());
+                    #[cfg(feature = "mcp-semantic-search")]
+                    if tool.embedding.is_empty() {
+                        for registry in &registries {
+                            registry.embed_tool_if_unembedded(&tool_name).await;
+                        }
+                    }
                 },
                 MCP_DYNAMIC_SERVER_TYPE_URL => {
                     let proto = decode_proto::<OrionDynamicMcpServer>(&payload, "MCP DynamicMcpServer")?;
@@ -253,7 +261,16 @@ mod tests {
     use tokio::sync::mpsc;
 
     fn empty_registry() -> Arc<ToolsRegistry> {
-        Arc::new(ToolsRegistry::with_config(Vec::new(), Vec::new(), None).unwrap())
+        Arc::new(
+            ToolsRegistry::with_config(
+                Vec::new(),
+                Vec::new(),
+                None,
+                #[cfg(feature = "mcp-semantic-search")]
+                None,
+            )
+            .unwrap(),
+        )
     }
 
     fn test_sub_mgr() -> (Arc<DeltaDiscoverySubscriptionManager>, mpsc::Receiver<SubscriptionEvent>) {

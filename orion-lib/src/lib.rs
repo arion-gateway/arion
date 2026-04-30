@@ -21,6 +21,8 @@
 extern crate assert_matches;
 
 pub mod configuration;
+#[cfg(feature = "mcp-semantic-search")]
+pub mod embeddings;
 pub mod event_error;
 pub mod extensions_context;
 
@@ -46,7 +48,7 @@ use serde::Serialize;
 use tokio::sync::mpsc;
 
 use crate::body::{instrumented_body::InstrumentedBody, response_flags::BodyKind, timeout_body::TimeoutBody};
-pub use crate::configuration::get_listeners_and_clusters;
+pub use crate::configuration::{build_listener_factories, get_listeners_and_clusters, get_secrets_and_clusters};
 
 pub use clusters::{
     cluster::PartialClusterType,
