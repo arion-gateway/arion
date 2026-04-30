@@ -87,13 +87,15 @@ use {parking_lot::Mutex, std::time::Instant};
 use arc_swap::ArcSwap;
 use core::time::Duration;
 use futures::future::BoxFuture;
-use hyper::{body::Incoming, header::HOST, service::Service, Request, Response};
+use hyper::{Request, Response, StatusCode, body::Incoming, header::HOST, service::Service};
 use orion_configuration::config::network_filters::http_connection_manager::route::RouteMatch;
 use orion_configuration::config::network_filters::http_connection_manager::{
     route::{Action, RouteMatchResult},
     CodecType, ConfigSource, ConfigSourceSpecifier, HttpConnectionManager as HttpConnectionManagerConfig, RdsSpecifier,
     RouteSpecifier, UpgradeType,
 };
+
+use std::fmt::Write;
 
 use crate::{
     body::{
@@ -138,6 +140,16 @@ use orion_tracing::request_id::{RequestId, RequestIdManager};
 use crate::listeners::http_connection_manager::http_modifiers::HeaderMapModifier;
 #[cfg(feature = "metrics")]
 use orion_metrics::metrics::custom::MetricsHook;
+
+struct LengthCounter(usize);
+
+impl Write for LengthCounter {
+    // Accumulate the byte length of the string slices being formatted
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        self.0 += s.len();
+        Ok(())
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct HttpConnectionManagerBuilder {
@@ -1246,7 +1258,7 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
             set_attributes_from_request(span, &request);
         }
 
-        // get user_id, if ioa_gateway filter is in use...
+        // get user_id, to be used with user metrics...
         //
         #[cfg(feature = "metrics")]
         let user_id = metrics::get_partition_key_from_headers(request.headers(), metrics::USER_KEY.header_name());
@@ -1779,6 +1791,12 @@ fn instrument_early_failure_response(
     })
 }
 
+/// Maximum allowed length for an HTTP method string.
+const MAX_METHOD_LENGTH: usize = 1024;
+
+/// Maximum allowed length for an HTTP URI string.
+const MAX_URI_LENGTH: usize = 2048;
+
 fn reject_request_if_invalid(
     request: &Request<Incoming>,
     trans_handler: &Arc<TransactionContext>,
@@ -1803,6 +1821,46 @@ fn reject_request_if_invalid(
     } else {
         None
     };
+
+    // check if method is too long...
+    //
+    let response = response.or_else(|| {
+        if request.method().as_str().len() > MAX_METHOD_LENGTH {
+            debug!("Too long method: {} bytes", request.method().as_str());
+            Some(
+                SyntheticHttpResponse::custom_error(
+                    StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
+                    None,
+                    EventFailure::DirectResponse.into(),
+                    ResponseFlags::default(),
+                )
+                .into_response(request.version()),
+            )
+        } else {
+            None
+        }
+    });
+
+    //check if uri/line is too long...
+    //
+    let response = response.or_else(|| {
+        let mut counter = LengthCounter(0);
+        _ = write!(&mut counter, "{}", request.uri());
+        if counter.0 > MAX_URI_LENGTH {
+            debug!("Too long uri: {} bytes", counter.0);
+            Some(
+                SyntheticHttpResponse::custom_error(
+                    StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
+                    None,
+                    EventFailure::DirectResponse.into(),
+                    ResponseFlags::default(),
+                )
+                .into_response(request.version()),
+            )
+        } else {
+            None
+        }
+    });
 
     response.map(|r| {
         instrument_early_failure_response(r, trans_handler, stream_metrics, listener_name, user_id, filterchain_id)
