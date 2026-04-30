@@ -9,6 +9,7 @@ use crate::{
 pub struct MetadataContext {
     pub downstream: DownstreamMetadata,
     pub metrics: Arc<StreamMetrics>,
+    pub requests_counter: u64,
 }
 
 #[derive(Debug, Clone)]
