@@ -15,8 +15,11 @@ use crate::{
 
 pub static CUSTOM_METRICS: OnceLock<CustomMetrics> = OnceLock::new();
 
-pub fn init_metrics(config: &[CustomMetric]) {
-    if !config.is_empty() {
+pub fn init_metrics(config: &orion_configuration::config::metrics::CustomMetrics) {
+    if !config.incoming_request.is_empty() 
+        || !config.upstream_request.is_empty() 
+        || !config.incoming_response.is_empty() 
+        || !config.downstream_response.is_empty() {
         _ = CUSTOM_METRICS.set(CustomMetrics::new(config));
     }
 }
@@ -27,13 +30,17 @@ pub struct HeaderMetric<T> {
     pub metric: Arc<Metric<T>>,
 }
 
-pub struct CustomMetrics {
+pub struct CustomMetricCounters {
     counters: Vec<HeaderMetric<ShardedU64<ThreadId>>>,
     histograms: Vec<HeaderMetric<ShardedHistogram<ThreadId>>>,
     gauges: Vec<HeaderMetric<Gauge>>,
 }
 
-impl CustomMetrics {
+impl CustomMetricCounters {
+    pub fn empty(&self) -> bool {
+        self.counters.is_empty() && self.histograms.is_empty() && self.gauges.is_empty()
+    }
+
     pub fn counters(&self) -> &[HeaderMetric<ShardedU64<ThreadId>>] {
         &self.counters
     }
@@ -45,7 +52,24 @@ impl CustomMetrics {
     pub fn gauges(&self) -> &[HeaderMetric<Gauge>] {
         &self.gauges
     }
+}
 
+pub struct CustomMetrics {
+    incoming_request: CustomMetricCounters,
+    upstream_request: CustomMetricCounters,
+    incoming_response: CustomMetricCounters,
+    downstream_response: CustomMetricCounters,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum MetricsHook {
+    IncomingRequest,
+    UpstreamRequest,
+    IncomingResponse,
+    DownstreamResponse,
+}
+
+impl CustomMetricCounters {
     pub fn new(metrics: &[CustomMetric]) -> Self {
         let mut counters = Vec::new();
         let mut histograms = Vec::new();
@@ -53,7 +77,7 @@ impl CustomMetrics {
 
         for metric in metrics {
             match metric {
-                CustomMetric::Counter { name, description, http_header_name, attribute_name } => {
+                CustomMetric::Counter { name, description, header_name: http_header_name, attribute_name } => {
                     let name = name.to_static_str();
                     let description = description.to_static_str();
 
@@ -91,7 +115,7 @@ impl CustomMetrics {
                         metric: metric_obj,
                     });
                 },
-                CustomMetric::Histogram { name, description, http_header_name, attribute_name, buckets } => {
+                CustomMetric::Histogram { name, description, header_name: http_header_name, attribute_name, buckets } => {
                     let name = name.to_static_str();
                     let description = description.to_static_str();
 
@@ -121,7 +145,7 @@ impl CustomMetrics {
                         metric: metric_obj,
                     });
                 },
-                CustomMetric::Gauge { name, description, http_header_name, attribute_name } => {
+                CustomMetric::Gauge { name, description, header_name: http_header_name, attribute_name } => {
                     let name = name.to_static_str();
                     let description = description.to_static_str();
 
@@ -160,9 +184,27 @@ impl CustomMetrics {
 
         Self { counters, histograms, gauges }
     }
+}
 
-    pub fn with_request_headers(&self, headers: &HeaderMap, extra_attributes: &[KeyValue]) {
-        if self.counters.is_empty() && self.histograms.is_empty() && self.gauges.is_empty() {
+impl CustomMetrics {
+    pub fn new(config: &orion_configuration::config::metrics::CustomMetrics) -> Self {
+        Self {
+            incoming_request: CustomMetricCounters::new(&config.incoming_request),
+            upstream_request: CustomMetricCounters::new(&config.upstream_request),
+            incoming_response: CustomMetricCounters::new(&config.incoming_response),
+            downstream_response: CustomMetricCounters::new(&config.downstream_response),
+        }
+    }
+
+    pub fn with_headers(&self, hook: MetricsHook, headers: &HeaderMap, extra_attributes: &[KeyValue]) {
+        let counters = match hook {
+            MetricsHook::IncomingRequest => &self.incoming_request,
+            MetricsHook::UpstreamRequest => &self.upstream_request,
+            MetricsHook::IncomingResponse => &self.incoming_response,
+            MetricsHook::DownstreamResponse => &self.downstream_response,
+        };
+
+        if counters.empty() {
             return;
         }
 
@@ -171,7 +213,7 @@ impl CustomMetrics {
         let mut base_attributes: SmallVec<[KeyValue; 4]> = SmallVec::with_capacity(extra_attributes.len() + 1);
         base_attributes.extend(extra_attributes.iter().cloned());
 
-        for counter in &self.counters {
+        for counter in &counters.counters {
             if let Some(header_value) = headers.get(&counter.header_name) {
                 if let Ok(val_str) = header_value.to_str() {
                     let val_static = val_str.to_static_str();
@@ -183,7 +225,7 @@ impl CustomMetrics {
             }
         }
 
-        for histogram in &self.histograms {
+        for histogram in &counters.histograms {
             if let Some(header_value) = headers.get(&histogram.header_name) {
                 if let Ok(val_str) = header_value.to_str() {
                     if let Ok(num_val) = val_str.parse::<u64>() {
@@ -193,7 +235,7 @@ impl CustomMetrics {
             }
         }
 
-        for gauge in &self.gauges {
+        for gauge in &counters.gauges {
             if let Some(header_value) = headers.get(&gauge.header_name) {
                 if let Ok(val_str) = header_value.to_str() {
                     if let Ok(num_val) = val_str.parse::<u64>() {
@@ -202,5 +244,26 @@ impl CustomMetrics {
                 }
             }
         }
+    }
+
+    pub fn counters(&self) -> impl Iterator<Item = &HeaderMetric<ShardedU64<ThreadId>>> {
+        self.incoming_request.counters().iter()
+            .chain(self.upstream_request.counters().iter())
+            .chain(self.incoming_response.counters().iter())
+            .chain(self.downstream_response.counters().iter())
+    }
+
+    pub fn histograms(&self) -> impl Iterator<Item = &HeaderMetric<ShardedHistogram<ThreadId>>> {
+        self.incoming_request.histograms().iter()
+            .chain(self.upstream_request.histograms().iter())
+            .chain(self.incoming_response.histograms().iter())
+            .chain(self.downstream_response.histograms().iter())
+    }
+
+    pub fn gauges(&self) -> impl Iterator<Item = &HeaderMetric<Gauge>> {
+        self.incoming_request.gauges().iter()
+            .chain(self.upstream_request.gauges().iter())
+            .chain(self.incoming_response.gauges().iter())
+            .chain(self.downstream_response.gauges().iter())
     }
 }

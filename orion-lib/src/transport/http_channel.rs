@@ -49,6 +49,8 @@ use orion_configuration::config::{
     network_filters::http_connection_manager::RetryPolicy,
 };
 use orion_format::types::{ResponseFlagsLong, ResponseFlagsShort};
+#[cfg(feature = "metrics")]
+use orion_metrics::metrics::custom::CUSTOM_METRICS;
 
 use crate::with_metric;
 use hyperlocal::UnixConnector;
@@ -484,6 +486,21 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
         with_metric!(clusters::UPSTREAM_RQ_ACTIVE, add, 1, shard_id, &[KeyValue::new("cluster", self.cluster_name)]);
         defer! {
             with_metric!(clusters::UPSTREAM_RQ_ACTIVE, sub, 1, shard_id, &[KeyValue::new("cluster", self.cluster_name)]);
+        }
+
+        #[cfg(feature = "metrics")]
+        if let Some(custom_metrics) = CUSTOM_METRICS.get() {
+            use orion_metrics::metrics::custom::MetricsHook;
+            use crate::metrics;
+
+            let attr =
+                metrics::get_partition_key_from_headers(request.headers(), metrics::CUSTOM_KEY.header_name())
+                    .map(|id| KeyValue::new(metrics::CUSTOM_KEY.attribute_name().unwrap_or("custom"), id));
+            custom_metrics.with_headers(
+                MetricsHook::UpstreamRequest,
+                request.headers(),
+                attr.as_ref().map_or(&[], std::slice::from_ref),
+            );
         }
 
         let RequestContext { route_timeout, retry_policy } = ctx;

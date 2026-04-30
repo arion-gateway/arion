@@ -15,7 +15,7 @@
 //
 //
 
-use orion_configuration::config::metrics::CustomMetric;
+
 use tracing::info;
 
 use crate::Metrics;
@@ -51,7 +51,11 @@ pub fn init_per_thread_metrics(_metrics: &[Metrics]) {
 
 // This function initializes global metrics based on the provided configuration. Must be called once at application startup.
 //
-pub fn init_global_metrics(_metrics: &[Metrics], custom_metrics: &[CustomMetric], number_of_threads: usize) {
+pub fn init_global_metrics(
+    _metrics: &[Metrics],
+    custom_metrics: &orion_configuration::config::metrics::CustomMetrics,
+    number_of_threads: usize,
+) {
     info!("Initializing global metrics...");
     tcp::init_metrics();
     tls::init_metrics();

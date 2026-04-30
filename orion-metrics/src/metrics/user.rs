@@ -14,16 +14,10 @@ pub static USER_ERRORS: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new()
 pub static TOTAL_ERRORS: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 pub static BYTES_TX: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 pub static BYTES_RX: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
-
 pub static INBOUND_STREAMING_BYTES_PROCESSED: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 pub static OUTBOUND_STREAMING_BYTES_PROCESSED: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 
 pub static LATENCY: OnceLock<Metric<ShardedHistogram<ThreadId>>> = OnceLock::new();
-pub static ATTR_KEY: OnceLock<String> = OnceLock::new();
-
-pub fn attr_key() -> &'static str {
-    ATTR_KEY.get().map(|s| s.as_str()).unwrap_or("user_id")
-}
 
 pub(crate) fn init_metrics() {
     init_observable_counter!(INVOCATIONS, "user", "invocations", "Total number of API calls");

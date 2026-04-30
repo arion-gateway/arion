@@ -17,7 +17,6 @@
 
 use orion_configuration::{config::Config, options::Options};
 use orion_lib::{metrics, Result, RUNTIME_CONFIG};
-use orion_metrics::metrics::user;
 
 #[macro_use]
 mod admin;
@@ -36,18 +35,43 @@ pub fn run() -> Result<()> {
 
     // Set the header_name from which to extract the user_id
     //
-    if let Some(user_id_header_name) =
-        metrics.as_ref().and_then(|metrics| metrics.user_id_header_name.as_ref()).cloned()
+    if let Some(header_name) = metrics
+        .as_ref()
+        .and_then(|metrics| metrics.user_key.as_ref())
+        .map(|key| &key.header_name)
+        .cloned()
     {
-        metrics::set_user_header_name(user_id_header_name);
+        metrics::USER_KEY.set_header_name(header_name);
     }
 
-    // Set the attribute key value used to export user metrics. If not specified the default 'user_id' is used.
-    //
-    if let Some(user_id_attr_key) = metrics.as_ref().and_then(|metrics| metrics.user_id_attr_key.as_ref()).cloned() {
-        if let Err(e) = user::ATTR_KEY.set(user_id_attr_key) {
-            tracing::warn!("Failed to set user_id attribute key for metrics: {}", e);
-        }
+    // Set the header_name from which to extract the custom key
+    if let Some(header_name) = metrics
+        .as_ref()
+        .and_then(|metrics| metrics.custom_key.as_ref())
+        .map(|key| &key.header_name)
+        .cloned()
+    {
+        metrics::CUSTOM_KEY.set_header_name(header_name);
+    }
+
+    // Set the attribute key value used to partition user metrics.
+    if let Some(attribute_name) = metrics
+        .as_ref()
+        .and_then(|metrics| metrics.user_key.as_ref())
+        .and_then(|key| key.attribute_name.as_ref())
+        .cloned()
+    {
+        metrics::USER_KEY.set_attribute_name(attribute_name);
+    }
+
+    // Set the attribute key value used to partition custom metrics.
+    if let Some(attribute_name) = metrics
+        .as_ref()
+        .and_then(|metrics| metrics.custom_key.as_ref())
+        .and_then(|key| key.attribute_name.as_ref())
+        .cloned()
+    {
+        metrics::CUSTOM_KEY.set_attribute_name(attribute_name);
     }
 
     tracing_manager.update(logging)?;

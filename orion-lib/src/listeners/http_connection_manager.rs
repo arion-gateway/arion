@@ -34,8 +34,6 @@ mod route;
 mod upgrades;
 pub mod user_rate_limiter;
 
-#[cfg(feature = "metrics")]
-use orion_interner::StringInterner;
 use smallvec::SmallVec;
 #[cfg(any(feature = "tracing", feature = "metrics", feature = "access-log"))]
 use std::sync::atomic::AtomicUsize;
@@ -66,7 +64,7 @@ use crate::utils::http::{request_head_size, response_head_size};
 #[cfg(any(feature = "access-log"))]
 use crate::with_access_log;
 #[cfg(feature = "metrics")]
-use crate::with_histogram;
+use crate::{metrics, with_histogram};
 
 #[cfg(feature = "metrics")]
 use orion_metrics::metrics::{custom::CUSTOM_METRICS, http, user};
@@ -138,6 +136,8 @@ use orion_tracing::http_tracer::HttpTracer;
 use orion_tracing::request_id::{RequestId, RequestIdManager};
 
 use crate::listeners::http_connection_manager::http_modifiers::HeaderMapModifier;
+#[cfg(feature = "metrics")]
+use orion_metrics::metrics::custom::MetricsHook;
 
 #[derive(Debug, Clone)]
 pub struct HttpConnectionManagerBuilder {
@@ -639,14 +639,20 @@ impl TransactionHandler {
             #[cfg(feature = "metrics")]
             if let Some(user_id) = self.user_id {
                 if status_code == 429 {
-                    with_metric!(user::THROTTLES, add, 1, self.shard_id(), &[KeyValue::new(user::attr_key(), user_id)]);
+                    with_metric!(
+                        user::THROTTLES,
+                        add,
+                        1,
+                        self.shard_id(),
+                        &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_id)]
+                    );
                 } else {
                     with_metric!(
                         user::INVOCATIONS,
                         add,
                         1,
                         self.shard_id(),
-                        &[KeyValue::new(user::attr_key(), user_id)]
+                        &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_id)]
                     );
                 }
             }
@@ -695,14 +701,14 @@ impl TransactionHandler {
                             add,
                             1,
                             self.shard_id(),
-                            &[KeyValue::new(user::attr_key(), user_id)]
+                            &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_id)]
                         );
                         with_metric!(
                             user::TOTAL_ERRORS,
                             add,
                             1,
                             self.shard_id(),
-                            &[KeyValue::new(user::attr_key(), user_id)]
+                            &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_id)]
                         );
                     }
                 },
@@ -722,7 +728,7 @@ impl TransactionHandler {
                             add,
                             1,
                             self.shard_id(),
-                            &[KeyValue::new(user::attr_key(), user_id)]
+                            &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_id)]
                         );
 
                         with_metric!(
@@ -730,7 +736,7 @@ impl TransactionHandler {
                             add,
                             1,
                             self.shard_id(),
-                            &[KeyValue::new(user::attr_key(), user_id)]
+                            &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_id)]
                         );
                     }
 
@@ -1108,6 +1114,17 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
                         },
                     }?;
 
+                    #[cfg(feature = "metrics")]
+                    if let Some(custom_metrics) = CUSTOM_METRICS.get() {
+                        let attr = metrics::get_partition_key_from_headers(response.headers(), metrics::CUSTOM_KEY.header_name())
+                            .map(|id| KeyValue::new(metrics::CUSTOM_KEY.attribute_name().unwrap_or("custom"), id));
+                        custom_metrics.with_headers(
+                            MetricsHook::IncomingResponse,
+                            response.headers(),
+                            attr.as_ref().map_or(&[], std::slice::from_ref),
+                        );
+                    }
+
                     apply_mutations_on_response(
                         &mut response,
                         &self,
@@ -1225,15 +1242,7 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
         // get user_id, if ioa_gateway filter is in use...
         //
         #[cfg(feature = "metrics")]
-        let user_id = {
-            let uid = crate::metrics::get_user_header_name()
-                .and_then(|user_id_header_name| request.headers().get(user_id_header_name).map(|value| value.to_str()))
-                .transpose()
-                .ok()
-                .flatten()
-                .map(|s| s.to_static_str());
-            uid
-        };
+        let user_id = metrics::get_partition_key_from_headers(request.headers(), metrics::USER_KEY.header_name());
 
         #[cfg(not(feature = "metrics"))]
         let user_id = None;
@@ -1286,12 +1295,14 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
         }
 
         #[cfg(feature = "metrics")]
-        if let Some(user_id) = user_id {
-            CUSTOM_METRICS.get().map(|dyn_metrics| {
-                dyn_metrics.with_request_headers(&request.headers(), &[KeyValue::new(user::attr_key(), user_id)])
-            });
-        } else {
-            CUSTOM_METRICS.get().map(|dyn_metrics| dyn_metrics.with_request_headers(&request.headers(), &[]));
+        if let Some(custom_metrics) = CUSTOM_METRICS.get() {
+            let attr = metrics::get_partition_key_from_headers(request.headers(), metrics::CUSTOM_KEY.header_name())
+                .map(|id| KeyValue::new(metrics::CUSTOM_KEY.attribute_name().unwrap_or("custom"), id));
+            custom_metrics.with_headers(
+                MetricsHook::IncomingRequest,
+                request.headers(),
+                attr.as_ref().map_or(&[], std::slice::from_ref),
+            );
         }
 
         Box::pin(async move {
@@ -1423,6 +1434,20 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
 
             let response = trans_handler.clone().handle_transaction(route_conf, manager, request).await;
 
+            #[cfg(feature = "metrics")]
+            if let Ok(response) = &response {
+                if let Some(custom_metrics) = CUSTOM_METRICS.get() {
+                    let attr =
+                        metrics::get_partition_key_from_headers(response.headers(), metrics::CUSTOM_KEY.header_name())
+                            .map(|id| KeyValue::new(metrics::CUSTOM_KEY.attribute_name().unwrap_or("custom"), id));
+                    custom_metrics.with_headers(
+                        MetricsHook::DownstreamResponse,
+                        response.headers(),
+                        attr.as_ref().map_or(&[], std::slice::from_ref),
+                    );
+                }
+            }
+
             trans_handler.trace_status_code(&response, listener_name);
             if let Err(err) = response {
                 error!("Error during handling HTTP transaction: {}", err);
@@ -1523,7 +1548,7 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
             record,
             latency.as_millis() as u64,
             params.m_ctx.shard_id,
-            &[KeyValue::new(user::attr_key(), user_id)]
+            &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_id)]
         );
     }
 
@@ -1601,14 +1626,20 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
                 add,
                 wire_bytes_received,
                 shard_id,
-                &[KeyValue::new(user::attr_key(), user_id), KeyValue::new("listener", params.listener_name)]
+                &[
+                    KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_id),
+                    KeyValue::new("listener", params.listener_name)
+                ]
             );
             with_metric!(
                 user::BYTES_TX,
                 add,
                 wire_bytes_sent,
                 shard_id,
-                &[KeyValue::new(user::attr_key(), user_id), KeyValue::new("listener", params.listener_name)]
+                &[
+                    KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_id),
+                    KeyValue::new("listener", params.listener_name)
+                ]
             );
         }
 

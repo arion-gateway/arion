@@ -58,14 +58,14 @@ pub enum CustomMetric {
         name: String,
         description: String,
         #[serde(with = "http_serde_ext::header_name")]
-        http_header_name: HeaderName,
+        header_name: HeaderName,
         attribute_name: Option<String>,
     },
     Histogram {
         name: String,
         description: String,
         #[serde(with = "http_serde_ext::header_name")]
-        http_header_name: HeaderName,
+        header_name: HeaderName,
         attribute_name: Option<String>,
         #[serde(deserialize_with = "vec_max_u64")]
         buckets: Vec<u64>,
@@ -74,7 +74,7 @@ pub enum CustomMetric {
         name: String,
         description: String,
         #[serde(with = "http_serde_ext::header_name")]
-        http_header_name: HeaderName,
+        header_name: HeaderName,
         attribute_name: Option<String>,
     },
 }
@@ -106,12 +106,32 @@ where
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub struct MetricsConfig {
-    #[serde(with = "http_serde_ext::header_name::option")]
-    pub user_id_header_name: Option<HeaderName>,
-    pub user_id_attr_key: Option<String>,
+pub struct PartitionKey {
+    #[serde(with = "http_serde_ext::header_name")]
+    pub header_name: HeaderName,
+    pub attribute_name: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct CustomMetrics {
     #[serde(default)]
-    pub custom_metrics: Vec<CustomMetric>,
+    pub incoming_request: Vec<CustomMetric>,
+    #[serde(default)]
+    pub upstream_request: Vec<CustomMetric>,
+    #[serde(default)]
+    pub incoming_response: Vec<CustomMetric>,
+    #[serde(default)]
+    pub downstream_response: Vec<CustomMetric>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct MetricsConfig {
+    #[serde(default)]
+    pub user_key: Option<PartitionKey>, // for user metrics (invocations, throttles, etc.)
+    #[serde(default)]
+    pub custom_key: Option<PartitionKey>, // for custom metrics (might use a different partition key)
+    #[serde(default)]
+    pub custom_metrics: CustomMetrics
 }
 
 #[cfg(feature = "envoy-conversions")]

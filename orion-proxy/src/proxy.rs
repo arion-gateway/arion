@@ -204,11 +204,18 @@ fn launch_runtimes(
     let num_threads_per_runtime = calculate_num_threads_per_runtime(num_cpus, num_runtimes)
         .with_context_msg("failed to calculate number of threads to use per runtime")?;
 
-    // initialize global metrics...
+    #[cfg(feature = "metrics")]
+    let default_custom_metrics = orion_configuration::config::metrics::CustomMetrics {
+        incoming_request: vec![],
+        upstream_request: vec![],
+        incoming_response: vec![],
+        downstream_response: vec![],
+    };
+
     #[cfg(feature = "metrics")]
     init_global_metrics(
         &metrics,
-        metrics_config.as_ref().and_then(|m| Some(m.custom_metrics.as_slice())).unwrap_or(&[]),
+        metrics_config.as_ref().map(|m| &m.custom_metrics).unwrap_or(&default_custom_metrics),
         num_threads_per_runtime * num_runtimes,
     );
 
