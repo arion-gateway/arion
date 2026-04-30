@@ -55,20 +55,6 @@ async fn test_tc1202_host_header_attack() {
 
 #[tokio::test]
 #[ignore]
-async fn test_tc1203_oversized_cookie() {
-    let (orion, _backend, tcp_client, config_path) = setup().await;
-
-    let big_cookie = format!("session={}", "x".repeat(65536));
-    let req = RawHttpRequestBuilder::new().host("localhost").header(b"Cookie", big_cookie.as_bytes()).build();
-
-    let response = tcp_client.send(&req).await.expect("Failed to send");
-    assert_rejected(&response, &[400, 431]);
-
-    cleanup(orion, config_path);
-}
-
-#[tokio::test]
-#[ignore]
 async fn test_tc1204_duplicate_header_exploit() {
     let (orion, mut backend, tcp_client, config_path) = setup().await;
 

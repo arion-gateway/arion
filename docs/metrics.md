@@ -309,12 +309,14 @@ The counters in this section generally have an attribute to indicate the result 
 
 ### User statistics
 
-The user-based metrics have a "user" attribute extracted for HTTP requests from the request header, configurable in Orion.
+The user-based metrics have a partition key extracted for HTTP requests from the request header, configurable in Orion.
 
 Example:
 ```yaml
 metrics:
-  user_id_header_name: "x-user-id"
+  user_key:
+    header_name: "x-user-id"
+    attribute_name: "user"
 ```
 
 | Name | Type | Status | Description | Attributes |
@@ -329,3 +331,71 @@ metrics:
 | `bytes_rx` | Counter | ✅ | Total number of bytes received in API calls (http) | `user_id` |
 | `inbound_streaming_bytes_processed` | Counter | ✅ | Total number of bytes processed in inbound streaming API calls (websocket) | `user_id` |
 | `outbound_streaming_bytes_processed` | Counter | ✅ | Total number of bytes processed in outbound streaming API calls (websocket) | `user_id` |
+
+### Custom Metrics
+
+Orion allows you to define custom metrics dynamically via the configuration file. This feature is useful when you want to extract specific information from HTTP request headers and expose them as OpenTelemetry metrics.
+
+#### Configuration Parameters
+
+Custom metrics are configured under the `metrics.custom_metrics` section. You can attach these metrics to different stages (hooks) of the HTTP request lifecycle:
+*   **`incoming_request`**: Evaluated when the downstream request is received.
+*   **`upstream_request`**: Evaluated before sending the request to the upstream cluster.
+*   **`incoming_response`**: Evaluated when the response is received from the upstream cluster.
+*   **`downstream_response`**: Evaluated before sending the response back to the client.
+
+Each metric requires specifying its type (`!Counter`, `!Histogram`, or `!Gauge`) and the following parameters:
+
+*   **`name`**: The name of the metric as it will be exported.
+*   **`description`**: A human-readable description of the metric.
+*   **`header_name`**: The HTTP header from which the metric extracts its data.
+*   **`attribute_name`**: (Optional) The name of the attribute (or label) to be attached to the metric. If omitted, it defaults to the `header_name` with hyphens (`-`) replaced by underscores (`_`).
+*   **`buckets`**: (Required for Histograms only) An array defining the bucket boundaries for the histogram. It accepts numeric values and `+inf` (or `MAX`, `max`) for the maximum limit.
+
+You can also define a `custom_key` under the `metrics` configuration to partition all custom metrics by a specific header, independently from the `user_key`.
+
+#### Example Configuration
+
+```yaml
+metrics:
+  user_key:
+    header_name: "x-user-id"
+    attribute_name: "user"
+  custom_key:
+    header_name: "x-tenant-id"
+    attribute_name: "tenant"
+  custom_metrics:
+    incoming_request:
+      - !Counter
+        name: "custom_request_counter"
+        description: "Counts requests based on a custom header"
+        header_name: "x-custom-counter"
+        attribute_name: "counter_value"
+
+      - !Histogram
+        name: "custom_request_size"
+        description: "Records request sizes from a custom header"
+        header_name: "x-custom-size"
+        buckets: [10, 50, 100, 500, 1000, +inf]
+
+    upstream_request:
+      - !Gauge
+        name: "custom_active_sessions"
+        description: "Records the current number of active sessions"
+        header_name: "x-active-sessions"
+```
+
+#### Counter, Histogram, and Gauge: How They Work
+
+There is a significant difference in how `Counter`, `Histogram`, and `Gauge` metrics process the HTTP header values, particularly concerning attributes:
+
+*   **Counter**: The Counter metric is used to track the frequency of occurrences. When a request arrives with the configured `header_name`, the Counter is incremented by `1`. The **actual string value** of the HTTP header is attached to the metric as the **value of the attribute** (defined by `attribute_name`).
+    *   *Example*: If a request has the header `x-custom-counter: login_event`, the `custom_request_counter` metric is incremented by 1 and tagged with the attribute `counter_value="login_event"`.
+
+*   **Histogram**: The Histogram metric is used to record a distribution of numeric values. When a request arrives with the configured `header_name`, the **value of the HTTP header is parsed as a number (`u64`)** and recorded as the **metric value itself**. Unlike the Counter, the Histogram does not use the header's string value as an attribute.
+    *   *Example*: If a request has the header `x-custom-size: 150`, the `custom_request_size` histogram will record the numeric value `150` into the corresponding bucket (e.g., between 100 and 500).
+
+*   **Gauge**: The Gauge metric is used to record absolute values that can go up and down over time. When a request arrives with the configured `header_name`, the **value of the HTTP header is parsed as a number (`u64`)** and recorded as the **current absolute value** of the metric, overwriting any previous value. Like the Histogram, it does not use the header's string value as an attribute.
+    *   *Example*: If a request has the header `x-active-sessions: 42`, the `custom_active_sessions` gauge will be set to the absolute value `42`.
+
+This behavior allows Counters to categorize and count events based on header strings, Histograms to measure and bucket numeric data distributions, and Gauges to track the latest absolute state of a numeric value.

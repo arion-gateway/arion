@@ -139,7 +139,7 @@ pub(crate) fn init_metrics() {
         "downstream_cx_ws_upgrades_total",
         "Total successfully upgraded connections"
     );
-    init_observable_counter!(
+    init_observable_gauge!(
         DOWNSTREAM_CX_WS_UPGRADES_ACTIVE,
         "http",
         "downstream_cx_ws_upgrades_active",

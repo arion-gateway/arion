@@ -33,8 +33,39 @@ pub fn run() -> Result<()> {
 
     RUNTIME_CONFIG.set(runtime).map_err(|_| "runtime config was somehow set before we had a chance to set it")?;
 
-    if let Some(user_id_header_name) = metrics.as_ref().and_then(|uid| uid.user_id_header_name.as_ref()).cloned() {
-        metrics::set_user_header_name(user_id_header_name);
+    // Set the header_name from which to extract the user_id
+    //
+    if let Some(header_name) =
+        metrics.as_ref().and_then(|metrics| metrics.user_key.as_ref()).map(|key| &key.header_name).cloned()
+    {
+        metrics::USER_KEY.set_header_name(header_name);
+    }
+
+    // Set the header_name from which to extract the custom key
+    if let Some(header_name) =
+        metrics.as_ref().and_then(|metrics| metrics.custom_key.as_ref()).map(|key| &key.header_name).cloned()
+    {
+        metrics::CUSTOM_KEY.set_header_name(header_name);
+    }
+
+    // Set the attribute key value used to partition user metrics.
+    if let Some(attribute_name) = metrics
+        .as_ref()
+        .and_then(|metrics| metrics.user_key.as_ref())
+        .and_then(|key| key.attribute_name.as_ref())
+        .cloned()
+    {
+        metrics::USER_KEY.set_attribute_name(attribute_name);
+    }
+
+    // Set the attribute key value used to partition custom metrics.
+    if let Some(attribute_name) = metrics
+        .as_ref()
+        .and_then(|metrics| metrics.custom_key.as_ref())
+        .and_then(|key| key.attribute_name.as_ref())
+        .cloned()
+    {
+        metrics::CUSTOM_KEY.set_attribute_name(attribute_name);
     }
 
     tracing_manager.update(logging)?;
@@ -44,7 +75,7 @@ pub fn run() -> Result<()> {
         tracing::warn!("CAP_NET_RAW is NOT available, SO_BINDTODEVICE will not work");
     }
 
-    proxy::run_orion(bootstrap, access_logging);
+    proxy::run_orion(bootstrap, metrics, access_logging);
     Ok(())
 }
 

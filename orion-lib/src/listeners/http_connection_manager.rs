@@ -34,8 +34,6 @@ mod route;
 mod upgrades;
 pub mod user_rate_limiter;
 
-#[cfg(feature = "metrics")]
-use orion_interner::StringInterner;
 use smallvec::SmallVec;
 #[cfg(any(feature = "tracing", feature = "metrics", feature = "access-log"))]
 use std::sync::atomic::AtomicUsize;
@@ -66,10 +64,10 @@ use crate::utils::http::{request_head_size, response_head_size};
 #[cfg(any(feature = "access-log"))]
 use crate::with_access_log;
 #[cfg(feature = "metrics")]
-use crate::with_histogram;
+use crate::{metrics, with_histogram};
 
 #[cfg(feature = "metrics")]
-use orion_metrics::metrics::{http, user};
+use orion_metrics::metrics::{custom::CUSTOM_METRICS, http, user};
 
 #[cfg(feature = "access-log")]
 use {
@@ -89,13 +87,15 @@ use {parking_lot::Mutex, std::time::Instant};
 use arc_swap::ArcSwap;
 use core::time::Duration;
 use futures::future::BoxFuture;
-use hyper::{body::Incoming, header::HOST, service::Service, Request, Response};
+use hyper::{Request, Response, StatusCode, body::Incoming, header::HOST, service::Service};
 use orion_configuration::config::network_filters::http_connection_manager::route::RouteMatch;
 use orion_configuration::config::network_filters::http_connection_manager::{
     route::{Action, RouteMatchResult},
     CodecType, ConfigSource, ConfigSourceSpecifier, HttpConnectionManager as HttpConnectionManagerConfig, RdsSpecifier,
     RouteSpecifier, UpgradeType,
 };
+
+use std::fmt::Write;
 
 use crate::{
     body::{
@@ -138,6 +138,18 @@ use orion_tracing::http_tracer::HttpTracer;
 use orion_tracing::request_id::{RequestId, RequestIdManager};
 
 use crate::listeners::http_connection_manager::http_modifiers::HeaderMapModifier;
+#[cfg(feature = "metrics")]
+use orion_metrics::metrics::custom::MetricsHook;
+
+struct LengthCounter(usize);
+
+impl Write for LengthCounter {
+    // Accumulate the byte length of the string slices being formatted
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        self.0 += s.len();
+        Ok(())
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct HttpConnectionManagerBuilder {
@@ -372,7 +384,7 @@ pub(crate) struct HttpRequestHandler {
 
 #[cfg(any(feature = "access-log", feature = "metrics"))]
 #[derive(Debug, Default)]
-pub struct TransactionContext {
+pub struct TransactionState {
     bytes: u64, // either the request or response body size, depending which one has completed first
     flags: ResponseFlags,
     event: Option<EventKind>,
@@ -381,9 +393,9 @@ pub struct TransactionContext {
 }
 
 #[cfg(any(feature = "access-log", feature = "metrics"))]
-impl TransactionContext {
+impl TransactionState {
     pub fn new(#[cfg(feature = "access-log")] access_log: &[AccessLog]) -> Self {
-        TransactionContext {
+        TransactionState {
             bytes: 0,
             flags: ResponseFlags::default(),
             event: None,
@@ -400,7 +412,7 @@ pub type ShardId = std::thread::ThreadId;
 pub type ShardId = ();
 
 #[derive(Debug)]
-pub struct TransactionHandler {
+pub struct TransactionContext {
     #[allow(dead_code)]
     start_instant: std::time::Instant,
     request_id: Option<RequestId>,
@@ -412,7 +424,7 @@ pub struct TransactionHandler {
     #[cfg(feature = "tracing")]
     span_state: Option<Arc<SpanState>>,
     #[cfg(any(feature = "access-log", feature = "metrics"))]
-    trans_ctx: Mutex<TransactionContext>,
+    trans_ctx: Mutex<TransactionState>,
     #[cfg(any(feature = "access-log", feature = "metrics", feature = "tracing"))]
     trans_phase: TransactionPhase,
     #[cfg(feature = "instrumentation")]
@@ -421,30 +433,28 @@ pub struct TransactionHandler {
 
 #[derive(Debug)]
 #[cfg(any(feature = "access-log", feature = "metrics", feature = "tracing"))]
-struct TransactionPhase {
-    phase: AtomicUsize,
-}
+struct TransactionPhase(AtomicUsize);
 
 #[cfg(any(feature = "access-log", feature = "metrics", feature = "tracing"))]
 impl TransactionPhase {
     fn new() -> Self {
-        TransactionPhase { phase: AtomicUsize::new(0) }
+        TransactionPhase(AtomicUsize::new(0))
     }
 
     fn is_complete(&self) -> bool {
-        self.phase.fetch_add(1, std::sync::atomic::Ordering::Relaxed) > 0
+        self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed) > 0
     }
 }
 
-impl Default for TransactionHandler {
+impl Default for TransactionContext {
     fn default() -> Self {
-        TransactionHandler {
+        TransactionContext {
             start_instant: std::time::Instant::now(),
             request_id: None,
             user_id: None,
             shard_id: get_shard_id!(),
             #[cfg(any(feature = "access-log", feature = "metrics"))]
-            trans_ctx: Mutex::new(TransactionContext::default()),
+            trans_ctx: Mutex::new(TransactionState::default()),
             #[cfg(feature = "tracing")]
             trace_ctx: None,
             #[cfg(feature = "tracing")]
@@ -465,7 +475,7 @@ struct EventInfo {
     response_flags: ResponseFlags,
 }
 
-impl TransactionHandler {
+impl TransactionContext {
     pub fn new(
         request_id: Option<RequestId>,
         user_id: Option<&'static str>,
@@ -474,12 +484,12 @@ impl TransactionHandler {
         #[cfg(feature = "tracing")] trace_ctx: Option<TraceContext>,
         #[cfg(feature = "tracing")] server_span: Option<BoxedSpan>,
     ) -> Self {
-        TransactionHandler {
+        TransactionContext {
             start_instant: std::time::Instant::now(),
             request_id,
             user_id,
             #[cfg(any(feature = "access-log", feature = "metrics"))]
-            trans_ctx: Mutex::new(TransactionContext::new(
+            trans_ctx: Mutex::new(TransactionState::new(
                 #[cfg(feature = "access-log")]
                 access_log,
             )),
@@ -501,133 +511,6 @@ impl TransactionHandler {
         self.shard_id
     }
 
-    #[allow(clippy::too_many_arguments)]
-    async fn handle_transaction<RC>(
-        self: Arc<Self>,
-        route_conf: RC,
-        manager: Arc<HttpConnectionManager>,
-        mut request: Request<OrionRequestBody>,
-    ) -> Result<Response<OrionRequestBody>>
-    where
-        RC: RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> + Clone,
-    {
-        #[allow(unused_variables)]
-        let listener_name = manager.listener_name;
-        #[allow(unused_variables)]
-        let filterchain_id = manager.filterchain_id;
-        let metadata = request.extensions().get::<MetadataContext>();
-
-        let downstream_addr = metadata
-            .map(|md| md.downstream.connection.peer_address())
-            .unwrap_or_else(|| SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0));
-
-        let stream_metrics = metadata.map(|md| md.metrics.clone());
-
-        // apply the request header modifiers
-        http_modifiers::apply_prerouting_functions(&mut request, downstream_addr, manager.xff_settings);
-
-        // process request, get the response..
-        let result = route_conf.to_response(&self, request, manager.clone()).await;
-
-        // calculate the time to first byte..
-        #[cfg(any(feature = "access-log", feature = "metrics"))]
-        let first_byte_instant = Instant::now();
-
-        result.map(|mut response| {
-            // set the request id on the response...
-            manager
-                .request_id_handler
-                .apply_to(&mut response, self.request_id.as_ref().and_then(|x| x.propagate_ref()));
-
-            #[cfg(feature = "access-log")]
-            let (initial_flags, initial_event) = {
-                let ec = response.extensions().get::<EventContext>();
-                (ec.map(|ec| ec.response_flags).unwrap_or_default(), ec.and_then(|ec| ec.event_kind.clone()))
-            };
-
-            #[cfg(feature = "access-log")]
-            {
-                use crate::with_access_log;
-
-                with_access_log!(
-                    &mut self.trans_ctx.lock().loggers,
-                    DownstreamResponseContext {
-                        response: &response,
-                        response_head_size: response_head_size(&response)
-                    }
-                )
-            }
-
-            response.map(move |body| {
-                InstrumentedBody::new(
-                    BodyKind::Response,
-                    body,
-                    stream_metrics,
-                    #[allow(unused_variables)]
-                    move |body_bytes, stream_metrics, body_error, body_flags| {
-                        #[cfg(any(feature = "access-log", feature = "metrics"))]
-                        {
-                            let mut trans_ctx = self.trans_ctx.lock();
-                            #[allow(unused_variables)]
-                            let duration = first_byte_instant.saturating_duration_since(self.start_instant);
-                            #[allow(unused_variables)]
-                            let tx_duration = Instant::now().saturating_duration_since(first_byte_instant);
-
-                            #[cfg(feature = "access-log")]
-                            with_access_log!(
-                                &mut trans_ctx.loggers,
-                                HttpResponseDurationContext { duration, tx_duration }
-                            );
-
-                            if self.trans_phase.is_complete() {
-                                #[allow(unused_variables)]
-                                let ctx_bytes = trans_ctx.bytes;
-                                #[allow(unused_variables)]
-                                let ctx_flags = trans_ctx.flags;
-                                #[allow(unused_variables)]
-                                let ctx_event = trans_ctx.event.clone();
-                                eval_http_finish_context(FinishContextParams {
-                                    stream_metrics: stream_metrics,
-                                    listener_name,
-                                    user_id: self.user_id,
-                                    filterchain_id,
-                                    bytes_received: ctx_bytes,
-                                    bytes_sent: body_bytes,
-                                    trans_start_time: self.start_instant,
-                                    #[cfg(feature = "metrics")]
-                                    m_ctx: MetricsFinishContext { shard_id: self.shard_id() },
-                                    #[cfg(feature = "access-log")]
-                                    al_ctx: AccessLogFinishContext {
-                                        event: EventInfo {
-                                            body_kind: BodyKind::Response,
-                                            event_kind: ctx_event.or(initial_event).or(body_error),
-                                            response_flags: ctx_flags | initial_flags | body_flags,
-                                        },
-                                        access_loggers: trans_ctx.loggers.as_mut(),
-                                    },
-                                });
-                            } else {
-                                trans_ctx.bytes = body_bytes;
-                                #[cfg(feature = "access-log")]
-                                {
-                                    trans_ctx.flags = initial_flags | body_flags;
-                                    trans_ctx.event = initial_event.or(body_error);
-                                }
-                            }
-                        }
-
-                        #[cfg(feature = "tracing")]
-                        if self.trans_phase.is_complete() {
-                            if let Some(span) = self.span_state.as_ref() {
-                                span.end();
-                            }
-                        }
-                    },
-                )
-            })
-        })
-    }
-
     #[allow(unused_variables)]
     fn trace_status_code(self: Arc<Self>, res: &Result<Response<OrionRequestBody>>, listener_name: &'static str) {
         if let Ok(response) = &res {
@@ -639,9 +522,21 @@ impl TransactionHandler {
             #[cfg(feature = "metrics")]
             if let Some(user_id) = self.user_id {
                 if status_code == 429 {
-                    with_metric!(user::THROTTLES, add, 1, self.shard_id(), &[KeyValue::new("user_id", user_id)]);
+                    with_metric!(
+                        user::THROTTLES,
+                        add,
+                        1,
+                        self.shard_id(),
+                        &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_id)]
+                    );
                 } else {
-                    with_metric!(user::INVOCATIONS, add, 1, self.shard_id(), &[KeyValue::new("user_id", user_id)]);
+                    with_metric!(
+                        user::INVOCATIONS,
+                        add,
+                        1,
+                        self.shard_id(),
+                        &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_id)]
+                    );
                 }
             }
 
@@ -684,9 +579,20 @@ impl TransactionHandler {
 
                     #[cfg(feature = "metrics")]
                     if let Some(user_id) = self.user_id {
-                        with_metric!(user::USER_ERRORS, add, 1, self.shard_id(), &[KeyValue::new("user_id", user_id)]);
-
-                        with_metric!(user::TOTAL_ERRORS, add, 1, self.shard_id(), &[KeyValue::new("user_id", user_id)]);
+                        with_metric!(
+                            user::USER_ERRORS,
+                            add,
+                            1,
+                            self.shard_id(),
+                            &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_id)]
+                        );
+                        with_metric!(
+                            user::TOTAL_ERRORS,
+                            add,
+                            1,
+                            self.shard_id(),
+                            &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_id)]
+                        );
                     }
                 },
                 500..600 => {
@@ -705,10 +611,16 @@ impl TransactionHandler {
                             add,
                             1,
                             self.shard_id(),
-                            &[KeyValue::new("user_id", user_id)]
+                            &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_id)]
                         );
 
-                        with_metric!(user::TOTAL_ERRORS, add, 1, self.shard_id(), &[KeyValue::new("user_id", user_id)]);
+                        with_metric!(
+                            user::TOTAL_ERRORS,
+                            add,
+                            1,
+                            self.shard_id(),
+                            &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_id)]
+                        );
                     }
 
                     with_server_span!(self.span_state, |srv_span: &mut BoxedSpan| {
@@ -736,6 +648,139 @@ impl TransactionHandler {
     }
 }
 
+struct TransactionPipeline<RC> {
+    route_conf: RC,
+}
+
+impl<RC> TransactionPipeline<RC>
+where
+    RC: RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> + Clone,
+{
+    #[allow(clippy::too_many_arguments)]
+    async fn to_response(
+        self,
+        trans_handler: Arc<TransactionContext>,
+        manager: Arc<HttpConnectionManager>,
+        mut request: Request<OrionRequestBody>,
+    ) -> Result<Response<OrionRequestBody>> {
+        #[allow(unused_variables)]
+        let listener_name = manager.listener_name;
+        #[allow(unused_variables)]
+        let filterchain_id = manager.filterchain_id;
+        let metadata = request.extensions().get::<MetadataContext>();
+
+        let downstream_addr = metadata
+            .map(|md| md.downstream.connection.peer_address())
+            .unwrap_or_else(|| SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0));
+
+        let stream_metrics = metadata.map(|md| md.metrics.clone());
+
+        // apply the request header modifiers
+        http_modifiers::apply_prerouting_functions(&mut request, downstream_addr, manager.xff_settings);
+
+        // process request, get the response..
+        let result = self.route_conf.to_response(&trans_handler, request, manager.clone()).await;
+
+        // calculate the time to first byte..
+        #[cfg(any(feature = "access-log", feature = "metrics"))]
+        let first_byte_instant = Instant::now();
+
+        result.map(|mut response| {
+            // set the request id on the response...
+            manager
+                .request_id_handler
+                .apply_to(&mut response, trans_handler.request_id.as_ref().and_then(|x| x.propagate_ref()));
+
+            #[cfg(feature = "access-log")]
+            let (initial_flags, initial_event) = {
+                let ec = response.extensions().get::<EventContext>();
+                (ec.map(|ec| ec.response_flags).unwrap_or_default(), ec.and_then(|ec| ec.event_kind.clone()))
+            };
+
+            #[cfg(feature = "access-log")]
+            {
+                use crate::with_access_log;
+
+                with_access_log!(
+                    &mut trans_handler.trans_ctx.lock().loggers,
+                    DownstreamResponseContext {
+                        response: &response,
+                        response_head_size: response_head_size(&response)
+                    }
+                )
+            }
+
+            response.map(move |body| {
+                InstrumentedBody::new(
+                    BodyKind::Response,
+                    body,
+                    stream_metrics,
+                    #[allow(unused_variables)]
+                    move |body_bytes, stream_metrics, body_error, body_flags| {
+                        #[cfg(any(feature = "access-log", feature = "metrics"))]
+                        {
+                            let mut trans_ctx = trans_handler.trans_ctx.lock();
+                            #[allow(unused_variables)]
+                            let duration = first_byte_instant.saturating_duration_since(trans_handler.start_instant);
+                            #[allow(unused_variables)]
+                            let tx_duration = Instant::now().saturating_duration_since(first_byte_instant);
+
+                            #[cfg(feature = "access-log")]
+                            with_access_log!(
+                                &mut trans_ctx.loggers,
+                                HttpResponseDurationContext { duration, tx_duration }
+                            );
+
+                            if trans_handler.trans_phase.is_complete() {
+                                #[allow(unused_variables)]
+                                let ctx_bytes = trans_ctx.bytes;
+                                #[allow(unused_variables)]
+                                let ctx_flags = trans_ctx.flags;
+                                #[allow(unused_variables)]
+                                let ctx_event = trans_ctx.event.clone();
+                                eval_http_finish_context(FinishContextParams {
+                                    stream_metrics: stream_metrics,
+                                    listener_name,
+                                    user_id: trans_handler.user_id,
+                                    filterchain_id,
+                                    bytes_received: ctx_bytes,
+                                    bytes_sent: body_bytes,
+                                    trans_start_time: trans_handler.start_instant,
+                                    #[cfg(feature = "metrics")]
+                                    m_ctx: MetricsFinishContext { shard_id: trans_handler.shard_id() },
+                                    #[cfg(feature = "access-log")]
+                                    al_ctx: AccessLogFinishContext {
+                                        event: EventInfo {
+                                            body_kind: BodyKind::Response,
+                                            event_kind: ctx_event.or(initial_event).or(body_error),
+                                            response_flags: ctx_flags | initial_flags | body_flags,
+                                        },
+                                        access_loggers: trans_ctx.loggers.as_mut(),
+                                    },
+                                });
+                            } else {
+                                trans_ctx.bytes = body_bytes;
+                                #[cfg(feature = "access-log")]
+                                {
+                                    trans_ctx.flags = initial_flags | body_flags;
+                                    trans_ctx.event = initial_event.or(body_error);
+                                }
+                            }
+                        }
+
+                        #[cfg(feature = "tracing")]
+                        if trans_handler.trans_phase.is_complete() {
+                            if let Some(span) = trans_handler.span_state.as_ref() {
+                                span.end();
+                            }
+                        }
+                    },
+                )
+            })
+        })
+    }
+}
+
 fn select_virtual_host<'a, T>(request: &Request<T>, virtual_hosts: &'a [VirtualHost]) -> Option<&'a VirtualHost> {
     let mapped_vhs = virtual_hosts.iter().filter_map(|vh| {
         let maybe_score = vh.domains.iter().map(|domain| domain.eval_lpm_request(request)).max().flatten();
@@ -750,7 +795,7 @@ fn select_virtual_host<'a, T>(request: &Request<T>, virtual_hosts: &'a [VirtualH
 pub trait RequestHandler<R, A>: Sized {
     fn to_response(
         self,
-        trans_handler: &TransactionHandler,
+        trans_handler: &TransactionContext,
         request: R,
         arg: A,
     ) -> impl Future<Output = Result<Response<OrionResponseBody>>> + Send;
@@ -775,7 +820,7 @@ impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usiz
     #[allow(clippy::too_many_lines)]
     async fn to_response(
         self,
-        trans_handle: &TransactionHandler,
+        trans_handle: &TransactionContext,
         mut request: Request<OrionRequestBody>,
         (connection_manager, mut filter_idx, http_filter): (Arc<HttpConnectionManager>, usize, HttpFilterValue),
     ) -> Result<Response<OrionResponseBody>> {
@@ -934,7 +979,7 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
     #[allow(clippy::too_many_lines)]
     async fn to_response(
         self,
-        trans_handler: &TransactionHandler,
+        trans_handler: &TransactionContext,
         mut request: Request<OrionRequestBody>,
         connection_manager: Arc<HttpConnectionManager>,
     ) -> Result<Response<OrionResponseBody>> {
@@ -991,7 +1036,7 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
                             let conn_manager = connection_manager.clone();
 
                             tokio::spawn(async move {
-                                let trans_handler = TransactionHandler::default();
+                                let trans_handler = TransactionContext::default();
                                 _ = async_exec
                                     .to_response(&trans_handler, request, (conn_manager, filter_idx, filter_value))
                                     .await;
@@ -1084,6 +1129,20 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
                                 .await
                         },
                     }?;
+
+                    #[cfg(feature = "metrics")]
+                    if let Some(custom_metrics) = CUSTOM_METRICS.get() {
+                        let attr = metrics::get_partition_key_from_headers(
+                            response.headers(),
+                            metrics::CUSTOM_KEY.header_name(),
+                        )
+                        .map(|id| KeyValue::new(metrics::CUSTOM_KEY.attribute_name().unwrap_or("custom"), id));
+                        custom_metrics.with_headers(
+                            MetricsHook::IncomingResponse,
+                            response.headers(),
+                            attr.as_ref().map_or(&[], std::slice::from_ref),
+                        );
+                    }
 
                     apply_mutations_on_response(
                         &mut response,
@@ -1199,24 +1258,16 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
             set_attributes_from_request(span, &request);
         }
 
-        // get user_id, if ioa_gateway filter is in use...
+        // get user_id, to be used with user metrics...
         //
         #[cfg(feature = "metrics")]
-        let user_id = {
-            let uid = crate::metrics::get_user_header_name()
-                .and_then(|user_id_header_name| request.headers().get(user_id_header_name).map(|value| value.to_str()))
-                .transpose()
-                .ok()
-                .flatten()
-                .map(|s| s.to_static_str());
-            uid
-        };
+        let user_id = metrics::get_partition_key_from_headers(request.headers(), metrics::USER_KEY.header_name());
 
         #[cfg(not(feature = "metrics"))]
         let user_id = None;
 
         // create the transaction context
-        let trans_handler = Arc::new(TransactionHandler::new(
+        let trans_handler = Arc::new(TransactionContext::new(
             request_id,
             user_id,
             get_shard_id!(),
@@ -1256,10 +1307,21 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
             &[KeyValue::new("listener", listener_name)]
         );
 
-        #[cfg(feature = "metrics")]
-        let thread_id = trans_handler.shard_id();
+        let shard_id = get_shard_id!();
+
         defer! {
-            with_metric!(http::DOWNSTREAM_RQ_ACTIVE, sub, 1, thread_id, &[KeyValue::new("listener", listener_name)]);
+            with_metric!(http::DOWNSTREAM_RQ_ACTIVE, sub, 1, shard_id, &[KeyValue::new("listener", listener_name)]);
+        }
+
+        #[cfg(feature = "metrics")]
+        if let Some(custom_metrics) = CUSTOM_METRICS.get() {
+            let attr = metrics::get_partition_key_from_headers(request.headers(), metrics::CUSTOM_KEY.header_name())
+                .map(|id| KeyValue::new(metrics::CUSTOM_KEY.attribute_name().unwrap_or("custom"), id));
+            custom_metrics.with_headers(
+                MetricsHook::IncomingRequest,
+                request.headers(),
+                attr.as_ref().map_or(&[], std::slice::from_ref),
+            );
         }
 
         Box::pin(async move {
@@ -1389,7 +1451,22 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
             // proxy the request to the upstream...
             //
 
-            let response = trans_handler.clone().handle_transaction(route_conf, manager, request).await;
+            let pipeline = TransactionPipeline { route_conf };
+            let response = pipeline.to_response(trans_handler.clone(), manager, request).await;
+
+            #[cfg(feature = "metrics")]
+            if let Ok(response) = &response {
+                if let Some(custom_metrics) = CUSTOM_METRICS.get() {
+                    let attr =
+                        metrics::get_partition_key_from_headers(response.headers(), metrics::CUSTOM_KEY.header_name())
+                            .map(|id| KeyValue::new(metrics::CUSTOM_KEY.attribute_name().unwrap_or("custom"), id));
+                    custom_metrics.with_headers(
+                        MetricsHook::DownstreamResponse,
+                        response.headers(),
+                        attr.as_ref().map_or(&[], std::slice::from_ref),
+                    );
+                }
+            }
 
             trans_handler.trace_status_code(&response, listener_name);
             if let Err(err) = response {
@@ -1413,7 +1490,7 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
 #[allow(unused_variables)]
 fn eval_http_init_context<R>(
     request: &Request<R>,
-    trans_handler: &TransactionHandler,
+    trans_handler: &TransactionContext,
     metadata: Option<&DownstreamMetadata>,
 ) {
     #[cfg(feature = "tracing")]
@@ -1491,7 +1568,7 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
             record,
             latency.as_millis() as u64,
             params.m_ctx.shard_id,
-            &[KeyValue::new("user_id", user_id)]
+            &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_id)]
         );
     }
 
@@ -1569,14 +1646,20 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
                 add,
                 wire_bytes_received,
                 shard_id,
-                &[KeyValue::new("user_id", user_id), KeyValue::new("listener", params.listener_name)]
+                &[
+                    KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_id),
+                    KeyValue::new("listener", params.listener_name)
+                ]
             );
             with_metric!(
                 user::BYTES_TX,
                 add,
                 wire_bytes_sent,
                 shard_id,
-                &[KeyValue::new("user_id", user_id), KeyValue::new("listener", params.listener_name)]
+                &[
+                    KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_id),
+                    KeyValue::new("listener", params.listener_name)
+                ]
             );
         }
 
@@ -1598,7 +1681,7 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
 #[allow(unused_variables)]
 fn instrument_early_failure_response(
     response: Response<crate::OrionResponseBody>,
-    trans_handler: &Arc<TransactionHandler>,
+    trans_handler: &Arc<TransactionContext>,
     stream_metrics: &Option<Arc<crate::utils::instrumented_stream::StreamMetrics>>,
     listener_name: &'static str,
     user_id: Option<&'static str>,
@@ -1708,9 +1791,15 @@ fn instrument_early_failure_response(
     })
 }
 
+/// Maximum allowed length for an HTTP method string.
+const MAX_METHOD_LENGTH: usize = 1024;
+
+/// Maximum allowed length for an HTTP URI string.
+const MAX_URI_LENGTH: usize = 2048;
+
 fn reject_request_if_invalid(
     request: &Request<Incoming>,
-    trans_handler: &Arc<TransactionHandler>,
+    trans_handler: &Arc<TransactionContext>,
     stream_metrics: &Option<Arc<crate::utils::instrumented_stream::StreamMetrics>>,
     listener_name: &'static str,
     user_id: Option<&'static str>,
@@ -1733,6 +1822,46 @@ fn reject_request_if_invalid(
         None
     };
 
+    // check if method is too long...
+    //
+    let response = response.or_else(|| {
+        if request.method().as_str().len() > MAX_METHOD_LENGTH {
+            debug!("Too long method: {} bytes", request.method().as_str());
+            Some(
+                SyntheticHttpResponse::custom_error(
+                    StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
+                    None,
+                    EventFailure::DirectResponse.into(),
+                    ResponseFlags::default(),
+                )
+                .into_response(request.version()),
+            )
+        } else {
+            None
+        }
+    });
+
+    //check if uri/line is too long...
+    //
+    let response = response.or_else(|| {
+        let mut counter = LengthCounter(0);
+        _ = write!(&mut counter, "{}", request.uri());
+        if counter.0 > MAX_URI_LENGTH {
+            debug!("Too long uri: {} bytes", counter.0);
+            Some(
+                SyntheticHttpResponse::custom_error(
+                    StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
+                    None,
+                    EventFailure::DirectResponse.into(),
+                    ResponseFlags::default(),
+                )
+                .into_response(request.version()),
+            )
+        } else {
+            None
+        }
+    });
+
     response.map(|r| {
         instrument_early_failure_response(r, trans_handler, stream_metrics, listener_name, user_id, filterchain_id)
     })
@@ -1741,7 +1870,7 @@ fn reject_request_if_invalid(
 #[allow(clippy::too_many_arguments)]
 fn handle_route_conf_not_found(
     version: ::http::Version,
-    trans_handler: &Arc<TransactionHandler>,
+    trans_handler: &Arc<TransactionContext>,
     stream_metrics: &Option<Arc<crate::utils::instrumented_stream::StreamMetrics>>,
     listener_name: &'static str,
     user_id: Option<&'static str>,

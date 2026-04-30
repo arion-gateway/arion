@@ -349,7 +349,7 @@ async fn test_tc0405_oversized_request_line() {
     let (orion, _backend, tcp_client, config_path) = setup().await;
 
     // Create a request line > 8KB via a very long URI
-    let big_uri = format!("/{}", "x".repeat(1200));
+    let big_uri = format!("/{}", "x".repeat(8192));
     let req = RawHttpRequestBuilder::new().uri(big_uri.as_bytes()).host("localhost").build();
 
     let response = tcp_client.send(&req).await.expect("Failed to send");

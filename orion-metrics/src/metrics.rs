@@ -19,6 +19,7 @@ use tracing::info;
 
 use crate::Metrics;
 pub mod clusters;
+pub mod custom;
 pub mod filters;
 pub mod http;
 pub mod listeners;
@@ -49,7 +50,11 @@ pub fn init_per_thread_metrics(_metrics: &[Metrics]) {
 
 // This function initializes global metrics based on the provided configuration. Must be called once at application startup.
 //
-pub fn init_global_metrics(_metrics: &[Metrics], number_of_threads: usize) {
+pub fn init_global_metrics(
+    _metrics: &[Metrics],
+    custom_metrics: &orion_configuration::config::metrics::CustomMetrics,
+    number_of_threads: usize,
+) {
     info!("Initializing global metrics...");
     tcp::init_metrics();
     tls::init_metrics();
@@ -59,4 +64,5 @@ pub fn init_global_metrics(_metrics: &[Metrics], number_of_threads: usize) {
     server::init_metrics(number_of_threads);
     user::init_metrics();
     filters::init_metrics();
+    custom::init_metrics(custom_metrics);
 }

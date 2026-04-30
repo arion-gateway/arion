@@ -20,7 +20,7 @@ use orion_data_plane_api::envoy_data_plane_api::{
     envoy::extensions::stat_sinks::open_telemetry::v3::SinkConfig as EnvoySinkConfig, google::protobuf::Any,
     prost::Message,
 };
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum StatsSink {
@@ -52,10 +52,86 @@ pub struct SinkConfig {
     pub prefix: String,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum CustomMetric {
+    Counter {
+        name: String,
+        description: String,
+        #[serde(with = "http_serde_ext::header_name")]
+        header_name: HeaderName,
+        attribute_name: Option<String>,
+    },
+    Histogram {
+        name: String,
+        description: String,
+        #[serde(with = "http_serde_ext::header_name")]
+        header_name: HeaderName,
+        attribute_name: Option<String>,
+        #[serde(deserialize_with = "vec_max_u64")]
+        buckets: Vec<u64>,
+    },
+    Gauge {
+        name: String,
+        description: String,
+        #[serde(with = "http_serde_ext::header_name")]
+        header_name: HeaderName,
+        attribute_name: Option<String>,
+    },
+}
+
+fn vec_max_u64<'de, D>(deserializer: D) -> Result<Vec<u64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    // Helper enum to handle either a number or the "MAX" string
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Item {
+        Num(u64),
+        Str(String),
+    }
+
+    // Deserialize into a temporary vector of items first
+    let temp_vec: Vec<Item> = Vec::deserialize(deserializer)?;
+
+    // Convert each item to its corresponding u64 value
+    temp_vec
+        .into_iter()
+        .map(|item| match item {
+            Item::Num(n) => Ok(n),
+            Item::Str(s) if s == "MAX" || s == "max" || s == "+inf" => Ok(u64::MAX),
+            Item::Str(s) => Err(serde::de::Error::custom(format!("Invalid string: {}", s))),
+        })
+        .collect()
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct PartitionKey {
+    #[serde(with = "http_serde_ext::header_name")]
+    pub header_name: HeaderName,
+    pub attribute_name: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct CustomMetrics {
+    #[serde(default)]
+    pub incoming_request: Vec<CustomMetric>,
+    #[serde(default)]
+    pub upstream_request: Vec<CustomMetric>,
+    #[serde(default)]
+    pub incoming_response: Vec<CustomMetric>,
+    #[serde(default)]
+    pub downstream_response: Vec<CustomMetric>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct MetricsConfig {
-    #[serde(with = "http_serde_ext::header_name::option")]
-    pub user_id_header_name: Option<HeaderName>,
+    #[serde(default)]
+    pub user_key: Option<PartitionKey>, // for user metrics (invocations, throttles, etc.)
+    #[serde(default)]
+    pub custom_key: Option<PartitionKey>, // for custom metrics (might use a different partition key)
+    #[serde(default)]
+    pub custom_metrics: CustomMetrics,
 }
 
 #[cfg(feature = "envoy-conversions")]

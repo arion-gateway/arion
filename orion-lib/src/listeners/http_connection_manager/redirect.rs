@@ -15,7 +15,7 @@
 //
 //
 
-use super::{RequestHandler, TransactionHandler};
+use super::{RequestHandler, TransactionContext};
 
 #[cfg(feature = "access-log")]
 use orion_format::context::UpstreamContext;
@@ -40,7 +40,7 @@ use std::str::FromStr;
 impl<'a> RequestHandler<Request<OrionRequestBody>, (&'a RouteMatchResult, &'a str)> for &RedirectAction {
     async fn to_response(
         self,
-        _trans_handler: &TransactionHandler,
+        _trans_handler: &TransactionContext,
         request: Request<OrionRequestBody>,
         (route_match_result, _route_name): (&'a RouteMatchResult, &'a str),
     ) -> Result<Response<OrionResponseBody>> {

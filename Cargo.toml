@@ -46,6 +46,7 @@ orion-tracing           = { path = "orion-tracing" }
 orion-xds               = { path = "orion-xds" }
 
 dashmap             = "6.1.0"
+papaya              = "0.2.4"
 abort-on-drop       = "0.2"
 bounded-integer     = "0.6.1"
 bytes               = "1"
