@@ -100,7 +100,7 @@ where
         .map(|item| match item {
             Item::Num(n) => Ok(n),
             Item::Str(s) if s == "MAX" || s == "max" || s == "+inf" => Ok(u64::MAX),
-            Item::Str(s) => Err(serde::de::Error::custom(format!("Invalid string: {}", s))),
+            Item::Str(s) => Err(serde::de::Error::custom(format!("Invalid string: {s}"))),
         })
         .collect()
 }

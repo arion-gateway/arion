@@ -466,7 +466,7 @@ mod envoy_conversions {
                 Ok(EnvoyBodySendMode::Buffered) => Ok(Self::Buffered),
                 Ok(EnvoyBodySendMode::BufferedPartial) => Ok(Self::BufferedPartial),
                 Ok(EnvoyBodySendMode::FullDuplexStreamed) => Ok(Self::FullDuplexStreamed),
-                Ok(EnvoyBodySendMode::Grpc) => Err(GenericError::from_msg(format!("unsupported body send mode: Grpc"))),
+                Ok(EnvoyBodySendMode::Grpc) => Err(GenericError::from_msg("unsupported body send mode: Grpc")),
                 Err(_) => Err(GenericError::from_msg(format!("unknown body send mode: {value}"))),
             }
         }

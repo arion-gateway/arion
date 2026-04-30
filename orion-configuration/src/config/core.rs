@@ -436,7 +436,7 @@ pub mod envoy_conversions {
             let port =
                 value.port_u16().ok_or(GenericError::from_msg(format!("Authority doesn't have port {value}")))?;
             let host = value.host();
-            Ok(Address::Socket(host.to_string(), port))
+            Ok(Address::Socket(host.to_owned(), port))
         }
     }
 

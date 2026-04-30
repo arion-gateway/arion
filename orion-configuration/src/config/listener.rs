@@ -87,8 +87,8 @@ impl Listener {
 
         let filter_chains_logs: Vec<(AccessLogTarget, Vec<AccessLogConf>)> = self
             .filter_chains
-            .iter()
-            .map(|(_, filter_chain)| match &filter_chain.terminal_filter {
+            .values()
+            .map(|filter_chain| match &filter_chain.terminal_filter {
                 MainFilter::Http(http_connection_manager) => (
                     AccessLogTarget::ListenerFilterChain(self.name.clone(), filter_chain.id),
                     http_connection_manager.access_log.iter().map(AccessLog::get_config).cloned().collect::<Vec<_>>(),
@@ -337,6 +337,7 @@ impl FilterChainMatch {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(tag = "type")]
 #[serde(rename_all = "UPPERCASE")]
+#[allow(clippy::large_enum_variant)]
 pub enum MainFilter {
     Http(HttpConnectionManager),
     Tcp(TcpProxy),

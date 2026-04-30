@@ -41,7 +41,7 @@ fn intern_str(s: &str) -> &'static str {
         // lifetime and is never dropped. Therefore, the string slices stored within it
         // are also valid for the `'static` lifetime. This transmute is safe because
         // we are extending a lifetime that is already effectively `'static`.
-        unsafe { std::mem::transmute::<&str, &'static str>(interner.resolve(&key)) }
+        unsafe { std::mem::transmute::<&str, &'static str>(interner.resolve(key)) }
     })
 }
 

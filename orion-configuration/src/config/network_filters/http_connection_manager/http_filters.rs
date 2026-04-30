@@ -262,6 +262,7 @@ mod envoy_conversions {
     }
 
     #[derive(Debug, Clone)]
+    #[allow(clippy::large_enum_variant)]
     pub enum MaybeWrappedEnvoyFilter {
         Wrapped(EnvoyFilterConfig),
         Direct(SupportedEnvoyFilterOverride),

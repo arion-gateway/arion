@@ -233,7 +233,7 @@ mod envoy_conversions {
                 .with_node("fill_interval")
                 .with_node("token_bucket")?
                 .into_inner();
-            return Ok(Self { token_bucket: TokenBucket { max_tokens, tokens_per_fill, fill_interval }, stat_prefix });
+            Ok(Self { token_bucket: TokenBucket { max_tokens, tokens_per_fill, fill_interval }, stat_prefix })
         }
     }
 }

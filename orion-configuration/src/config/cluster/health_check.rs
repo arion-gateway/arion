@@ -562,7 +562,7 @@ mod envoy_conversions {
     // https://github.com/envoyproxy/envoy/blob/v1.32.1/source/common/common/hex.cc
     fn try_convert_text_payload(text_payload: &str) -> Result<Vec<u8>, GenericError> {
         // This check guarantees that the match below doesn't panic
-        if text_payload.len() % 2 != 0 {
+        if !text_payload.len().is_multiple_of(2) {
             return Err(GenericError::from_msg("invalid text payload with odd number of characters"));
         }
 

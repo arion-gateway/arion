@@ -148,7 +148,8 @@ fn parse_cgroup_v2_cpu_max(content: &str) -> crate::Result<usize> {
         let quota: i64 = parts[0].parse()?;
         let period: i64 = parts[1].parse()?;
         if quota > 0 && period > 0 {
-            let cpus = ((quota as f64) / (period as f64)).ceil() as usize;
+            let cpus =
+                usize::try_from((quota + period - 1) / period).map_err(|_| "Failed to convert CPU count to usize")?;
             if cpus > 0 {
                 return Ok(cpus);
             }
@@ -160,7 +161,7 @@ fn parse_cgroup_v2_cpu_max(content: &str) -> crate::Result<usize> {
 fn get_cgroup_v1_cpu_limit() -> crate::Result<usize> {
     let cgroup_path = get_cgroup_v1_cpu_path()?;
     let quota_path = format!("{cgroup_path}/cpu.cfs_quota_us");
-    let period_path = format!("{}/cpu.cfs_period_us", cgroup_path);
+    let period_path = format!("{cgroup_path}/cpu.cfs_period_us");
 
     let quota_content = std::fs::read_to_string(&quota_path)?;
     let period_content = std::fs::read_to_string(&period_path)?;
@@ -173,7 +174,8 @@ fn parse_cgroup_v1_cpu_limit(quota_content: &str, period_content: &str) -> crate
     let period: i64 = period_content.trim().parse()?;
 
     if quota > 0 && period > 0 {
-        let cpus = ((quota as f64) / (period as f64)).ceil() as usize;
+        let cpus =
+            usize::try_from((quota + period - 1) / period).map_err(|_| "Failed to convert CPU count to usize")?;
         if cpus > 0 {
             return Ok(cpus);
         }
@@ -192,7 +194,7 @@ fn parse_cgroup_v1_cpu_path(cgroup_content: &str) -> crate::Result<String> {
         let mut parts = line.split(':');
         if let (Some(_), Some(controllers), Some(path)) = (parts.next(), parts.next(), parts.next()) {
             if controllers.split(',').any(|c| c == "cpu") {
-                return Some(format!("/sys/fs/cgroup/cpu{}", path));
+                return Some(format!("/sys/fs/cgroup/cpu{path}"));
             }
         }
         None
@@ -201,7 +203,7 @@ fn parse_cgroup_v1_cpu_path(cgroup_content: &str) -> crate::Result<String> {
     }
 
     if std::path::Path::new("/sys/fs/cgroup/cpu").exists() {
-        Ok("/sys/fs/cgroup/cpu".to_string())
+        Ok("/sys/fs/cgroup/cpu".to_owned())
     } else {
         Err("CPU cgroup path not found".into())
     }
@@ -317,7 +319,7 @@ mod tests {
         let system_cpus = num_cpus::get();
         let detected_cpus = detect_available_cpus();
         assert!(detected_cpus > 0);
-        println!("System CPUs: {}, Detected CPUs: {}", system_cpus, detected_cpus);
+        println!("System CPUs: {system_cpus}, Detected CPUs: {detected_cpus}");
     }
 
     #[test]

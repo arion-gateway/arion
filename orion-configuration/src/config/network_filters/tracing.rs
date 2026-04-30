@@ -81,7 +81,7 @@ mod envoy_conversions {
 
             let parse_percentage = |v: Option<Percent>| -> Result<Option<BoundedU16<0, 100>>, GenericError> {
                 v.map(|v| -> Result<BoundedU16<0, 100>, GenericError> {
-                    #[allow(clippy::cast_possible_truncation)]
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                     BoundedU16::<0, 100>::new(v.value as u16).ok_or(GenericError::from_msg(
                         "Invalid sampling percentage: expected a value between 0 and 100 (inclusive)",
                     ))

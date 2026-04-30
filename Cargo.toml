@@ -116,7 +116,7 @@ expect_used                    = "warn"                            # FIXME this 
 panic                          = "warn"                            # FIXME this should be deny
 todo                           = "deny"
 transmute_ptr_to_ptr           = "deny"
-unchecked_duration_subtraction = "deny"
+unchecked_time_subtraction     = "deny"
 unused_async                   = "deny"
 unwrap_used                    = "deny"
 
@@ -153,5 +153,4 @@ same_functions_in_if_condition     = "warn"
 semicolon-if-nothing-returned      = "allow"
 similar_names                      = "warn"
 str_to_string                      = "warn"
-string_to_string                   = "warn"
 unicode_not_nfc                    = "warn"

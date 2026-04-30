@@ -87,7 +87,7 @@ use {parking_lot::Mutex, std::time::Instant};
 use arc_swap::ArcSwap;
 use core::time::Duration;
 use futures::future::BoxFuture;
-use hyper::{Request, Response, StatusCode, body::Incoming, header::HOST, service::Service};
+use hyper::{body::Incoming, header::HOST, service::Service, Request, Response, StatusCode};
 use orion_configuration::config::network_filters::http_connection_manager::route::RouteMatch;
 use orion_configuration::config::network_filters::http_connection_manager::{
     route::{Action, RouteMatchResult},
