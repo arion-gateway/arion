@@ -29,10 +29,15 @@ pub const MCP_DYNAMIC_SERVER_TYPE_URL: &str =
 
 const SUPPORTED_TYPE_URLS: &[&str] = &[MCP_TOOL_TYPE_URL, MCP_DYNAMIC_SERVER_TYPE_URL];
 
+type SubscriptionsByScope = DashMap<SmolStr, Vec<Weak<ToolsRegistry>>, ahash::RandomState>;
+
 static MCP_XDS_HANDLER: OnceLock<Arc<McpXdsHandler>> = OnceLock::new();
+static PENDING_MCP_XDS_SUBSCRIPTIONS: OnceLock<SubscriptionsByScope> = OnceLock::new();
 
 pub fn init_mcp_xds_handler(subscriber: Arc<DeltaDiscoverySubscriptionManager>) -> Arc<McpXdsHandler> {
-    Arc::clone(MCP_XDS_HANDLER.get_or_init(|| Arc::new(McpXdsHandler::new(subscriber))))
+    let handler = Arc::clone(MCP_XDS_HANDLER.get_or_init(|| Arc::new(McpXdsHandler::new(subscriber))));
+    drain_pending_subscriptions(pending_subscriptions(), &handler);
+    handler
 }
 
 pub fn get_mcp_xds_handler() -> Option<&'static Arc<McpXdsHandler>> {
@@ -43,7 +48,11 @@ pub fn subscribe_for_updates(scope: SmolStr, registry: Arc<ToolsRegistry>) {
     match get_mcp_xds_handler() {
         Some(handler) => handler.register(scope, registry),
         None => {
-            debug!(target: "mcp_gateway", "xDS handler not initialized; MCP filter '{scope}' will not receive TDS updates")
+            debug!(target: "mcp_gateway", "xDS handler not initialized; queuing MCP filter TDS subscription for '{scope}'");
+            queue_subscription(pending_subscriptions(), scope, &registry);
+            if let Some(handler) = get_mcp_xds_handler() {
+                drain_pending_subscriptions(pending_subscriptions(), handler);
+            }
         },
     }
 }
@@ -52,24 +61,60 @@ pub fn unsubscribe_from_updates(scope: &str, registry: &Arc<ToolsRegistry>) {
     if let Some(handler) = get_mcp_xds_handler() {
         handler.unregister(scope, registry);
     }
+    remove_subscription(pending_subscriptions(), scope, registry);
+}
+
+fn pending_subscriptions() -> &'static SubscriptionsByScope {
+    PENDING_MCP_XDS_SUBSCRIPTIONS.get_or_init(|| DashMap::with_hasher(ahash::RandomState::new()))
+}
+
+fn queue_subscription(subscriptions: &SubscriptionsByScope, scope: SmolStr, registry: &Arc<ToolsRegistry>) {
+    subscriptions.entry(scope).or_default().push(Arc::downgrade(registry));
+}
+
+fn remove_subscription(subscriptions: &SubscriptionsByScope, scope: &str, registry: &Arc<ToolsRegistry>) {
+    let Some(mut entry) = subscriptions.get_mut(scope) else { return };
+    entry.retain(|weak| match weak.upgrade() {
+        Some(arc) => !Arc::ptr_eq(&arc, registry),
+        None => false,
+    });
+    let empty = entry.is_empty();
+    drop(entry);
+    if empty {
+        subscriptions.remove(scope);
+    }
+}
+
+fn drain_pending_subscriptions(subscriptions: &SubscriptionsByScope, handler: &McpXdsHandler) {
+    let scopes: Vec<SmolStr> = subscriptions.iter().map(|entry| entry.key().clone()).collect();
+    for scope in scopes {
+        let Some((scope, registries)) = subscriptions.remove(scope.as_str()) else { continue };
+        for registry in registries.into_iter().filter_map(|weak| weak.upgrade()) {
+            handler.register(scope.clone(), registry);
+        }
+    }
 }
 
 #[derive(Debug)]
 pub struct McpXdsHandler {
     // `Weak` so dropped registries self-clean without explicit unregister.
-    registries: DashMap<SmolStr, Vec<Weak<ToolsRegistry>>, ahash::RandomState>,
+    subscriptions_by_scope: SubscriptionsByScope,
     subscriber: Arc<DeltaDiscoverySubscriptionManager>,
     subscribe_once: Once,
 }
 
 impl McpXdsHandler {
     pub fn new(subscriber: Arc<DeltaDiscoverySubscriptionManager>) -> Self {
-        Self { registries: DashMap::with_hasher(ahash::RandomState::new()), subscriber, subscribe_once: Once::new() }
+        Self {
+            subscriptions_by_scope: DashMap::with_hasher(ahash::RandomState::new()),
+            subscriber,
+            subscribe_once: Once::new(),
+        }
     }
 
     pub fn register(&self, scope: SmolStr, registry: Arc<ToolsRegistry>) {
         debug!(target: "mcp_gateway", "Registering TDS registry for scope: {scope}");
-        self.registries.entry(scope).or_default().push(Arc::downgrade(&registry));
+        self.subscriptions_by_scope.entry(scope).or_default().push(Arc::downgrade(&registry));
         self.try_subscribe();
     }
 
@@ -89,16 +134,7 @@ impl McpXdsHandler {
     }
 
     pub fn unregister(&self, scope: &str, registry: &Arc<ToolsRegistry>) {
-        let Some(mut entry) = self.registries.get_mut(scope) else { return };
-        entry.retain(|weak| match weak.upgrade() {
-            Some(arc) => !Arc::ptr_eq(&arc, registry),
-            None => false,
-        });
-        let empty = entry.is_empty();
-        drop(entry);
-        if empty {
-            self.registries.remove(scope);
-        }
+        remove_subscription(&self.subscriptions_by_scope, scope, registry);
         debug!(target: "mcp_gateway", "Unregistered TDS registry for scope: {scope}");
     }
 
@@ -124,7 +160,7 @@ impl McpXdsHandler {
 
     fn live_registries(&self, scope: &str) -> Vec<Arc<ToolsRegistry>> {
         let mut out = Vec::new();
-        if let Some(mut entry) = self.registries.get_mut(scope) {
+        if let Some(mut entry) = self.subscriptions_by_scope.get_mut(scope) {
             entry.retain(|weak| match weak.upgrade() {
                 Some(arc) => {
                     out.push(arc);
@@ -284,7 +320,11 @@ mod tests {
     }
 
     fn scope_len(handler: &McpXdsHandler, scope: &str) -> usize {
-        handler.registries.get(scope).map_or(0, |entry| entry.len())
+        handler.subscriptions_by_scope.get(scope).map_or(0, |entry| entry.len())
+    }
+
+    fn subscription_map() -> SubscriptionsByScope {
+        DashMap::with_hasher(ahash::RandomState::new())
     }
 
     #[test]
@@ -310,6 +350,41 @@ mod tests {
         assert!(McpXdsHandler::split_resource_id("srv/cfg/").is_err());
     }
 
+    #[test]
+    fn queued_subscription_can_be_removed_before_handler_init() {
+        let subscriptions = subscription_map();
+        let scope: SmolStr = "srv/cfg".into();
+        let r1 = empty_registry();
+        let r2 = empty_registry();
+
+        queue_subscription(&subscriptions, scope.clone(), &r1);
+        queue_subscription(&subscriptions, scope.clone(), &r2);
+        remove_subscription(&subscriptions, &scope, &r1);
+
+        let queued = subscriptions.get(&scope).expect("scope should remain queued");
+        assert_eq!(queued.len(), 1);
+        assert!(queued[0].upgrade().is_some_and(|arc| Arc::ptr_eq(&arc, &r2)));
+    }
+
+    #[tokio::test]
+    async fn drain_pending_subscriptions_registers_only_live_registries() {
+        let subscriptions = subscription_map();
+        let handler = stub_handler();
+        let scope: SmolStr = "srv/cfg".into();
+        let live = empty_registry();
+        let dropped = empty_registry();
+
+        queue_subscription(&subscriptions, scope.clone(), &live);
+        queue_subscription(&subscriptions, scope.clone(), &dropped);
+        drop(dropped);
+
+        drain_pending_subscriptions(&subscriptions, &handler);
+
+        assert!(subscriptions.is_empty());
+        assert_eq!(scope_len(&handler, &scope), 1);
+        assert!(handler.live_registries(&scope).iter().all(|arc| Arc::ptr_eq(arc, &live)));
+    }
+
     #[tokio::test]
     async fn register_and_unregister_specific_registry() {
         let handler = stub_handler();
@@ -325,7 +400,7 @@ mod tests {
         assert!(handler.live_registries(&scope).iter().all(|a| Arc::ptr_eq(a, &r2)));
 
         handler.unregister(&scope, &r2);
-        assert!(!handler.registries.contains_key(scope.as_str()));
+        assert!(!handler.subscriptions_by_scope.contains_key(scope.as_str()));
     }
 
     #[tokio::test]
@@ -350,7 +425,7 @@ mod tests {
         // No scope registered — handle_update must not error and must not touch storage.
         let res = handler.handle_update(MCP_TOOL_TYPE_URL, "srv/cfg/tool_x", &[]).await;
         assert!(res.is_ok());
-        assert!(handler.registries.is_empty());
+        assert!(handler.subscriptions_by_scope.is_empty());
     }
 
     async fn drain_subscribes(rx: &mut mpsc::Receiver<SubscriptionEvent>) -> Vec<String> {

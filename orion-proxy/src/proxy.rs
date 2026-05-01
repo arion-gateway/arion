@@ -24,7 +24,6 @@ use crate::{
 use futures::future::join_all;
 use orion_configuration::config::{
     bootstrap::Node, embeddings::EmbeddingsService, log::AccessLogConfig, runtime::Affinity, Bootstrap,
-    Listener as ListenerConfig,
 };
 
 #[cfg(feature = "tracing")]
@@ -100,9 +99,8 @@ struct ServiceInfo {
     node: Node,
     configuration_senders: Vec<ConfigurationSenders>,
     secret_manager: Arc<RwLock<SecretManager>>,
-    listener_configs: Vec<ListenerConfig>,
+    listener_factories: Vec<orion_lib::ListenerFactory>,
     clusters: Vec<orion_lib::PartialClusterType>,
-    embeddings_services: Vec<EmbeddingsService>,
     ads_cluster_names: Vec<String>,
     #[cfg(feature = "access-log")]
     access_log_config: Option<AccessLogConfig>,
@@ -163,12 +161,14 @@ fn launch_runtimes(
     let ads_cluster_names: Vec<String> = bootstrap.get_ads_configs().iter().map(ToString::to_string).collect();
     let node = bootstrap.node.clone().unwrap_or_else(|| Node { id: "".into(), cluster_id: "".into() });
 
-    let listener_configs = bootstrap.static_resources.listeners.clone();
     let (secret_manager, clusters) =
         get_secrets_and_clusters(&bootstrap).with_context_msg("Failed to get secrets and clusters")?;
+    start_embeddings_services(embeddings_services)?;
+    let listener_factories = build_listener_factories(bootstrap.static_resources.listeners.clone(), &secret_manager)
+        .with_context_msg("failed to build listener factories")?;
     let secret_manager = Arc::new(RwLock::new(secret_manager));
 
-    if listener_configs.is_empty() && ads_cluster_names.is_empty() {
+    if listener_factories.is_empty() && ads_cluster_names.is_empty() {
         return Err("No listeners and no ads clusters configured".into());
     }
 
@@ -177,10 +177,9 @@ fn launch_runtimes(
         node,
         configuration_senders: config_senders,
         secret_manager,
-        listener_configs,
+        listener_factories,
         bootstrap,
         clusters,
-        embeddings_services,
         ads_cluster_names,
         #[cfg(feature = "access-log")]
         access_log_config: _access_log_config,
@@ -331,9 +330,8 @@ async fn spawn_services(info: ServiceInfo) -> Result<()> {
         node,
         configuration_senders,
         secret_manager,
-        listener_configs,
+        listener_factories,
         clusters,
-        embeddings_services,
         ads_cluster_names,
         #[cfg(feature = "access-log")]
         access_log_config,
@@ -349,20 +347,15 @@ async fn spawn_services(info: ServiceInfo) -> Result<()> {
     let bootstrap_clone = bootstrap.clone();
     let secret_manager_clone = secret_manager.clone();
     set.spawn(async move {
-        // ADS cluster must be in the registry before connect() can resolve it,
-        // and the MCP handler singleton must exist before listener factories
-        // construct MCP filters that call subscribe_for_updates.
+        // ADS cluster must be in the registry before connect() can resolve it.
+        // Static MCP TDS listeners may already have queued registrations; MCP
+        // xDS handler initialization drains those registrations when ADS exists.
         let initial_clusters = register_initial_clusters(clusters)?;
 
         let xds_connect = XdsConfigurationHandler::connect(&node, ads_cluster_names).await?;
         let mcp_handler = xds_connect
             .as_ref()
             .map(|(_, sub_mgr, _)| orion_lib::mcp_xds_handler::init_mcp_xds_handler(Arc::clone(sub_mgr)));
-
-        start_embeddings_services(embeddings_services)?;
-
-        let listener_factories = build_listener_factories(listener_configs, &secret_manager_clone.read())
-            .with_context_msg("failed to build listener factories")?;
 
         push_initial_listeners(bootstrap_clone, listener_factories, configuration_senders_clone.clone()).await?;
 
