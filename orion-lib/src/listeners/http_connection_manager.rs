@@ -674,7 +674,10 @@ where
             .map(|md| md.downstream.connection.peer_address())
             .unwrap_or_else(|| SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0));
 
-        let stream_metrics = metadata.map(|md| md.metrics.clone());
+        let stream_metrics = metadata.map(|md| md.stream_metrics.clone());
+
+        #[allow(clippy::unwrap_used)]
+        let req_count = stream_metrics.as_ref().unwrap().inc_requests();
 
         // apply the request header modifiers
         http_modifiers::apply_prerouting_functions(&mut request, downstream_addr, manager.xff_settings);
@@ -740,7 +743,7 @@ where
                                 #[allow(unused_variables)]
                                 let ctx_event = trans_ctx.event.clone();
                                 eval_http_finish_context(FinishContextParams {
-                                    stream_metrics: stream_metrics,
+                                    stream_metrics,
                                     listener_name,
                                     user_id: trans_handler.user_id,
                                     filterchain_id,
@@ -1221,11 +1224,10 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
         // destructure the Request to get the request and addresses
         let incoming_request_id = RequestId::from_request(&incoming_request);
         let incoming_version = incoming_request.version();
-        let (stream_metrics, requests_counter) = incoming_request
+        let stream_metrics = incoming_request
             .extensions()
             .get::<MetadataContext>()
-            .map(|md| (md.metrics.clone(), md.requests_counter))
-            .unzip();
+            .map(|md| md.stream_metrics.clone());
 
         let access_log_enabled = {
             #[cfg(feature = "access-log")]

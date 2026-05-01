@@ -49,9 +49,7 @@ use crate::{with_histogram, with_metric};
 use rustls::{server::Acceptor, ServerConfig};
 use scopeguard::defer;
 use smol_str::SmolStr;
-use std::sync::{
-    Arc, atomic::{AtomicU64, Ordering}
-};
+use std::sync::Arc;
 use tracing::{debug, warn};
 
 #[derive(Debug, Clone)]
@@ -230,7 +228,7 @@ impl FilterchainType {
 
                 debug!("{listener_name} tried to negotiate {codec_type:?}, got {selected_codec:?}");
                 let mut hyper_server = HyperServerBuilder::new(TokioExecutor::new());
-                let metrics = stream.shared_metrics();
+                let stream_metrics = stream.shared_metrics();
                 let stream = TokioIo::new(stream);
                 //todo(hayley): we should be applying listener http settings here
                 hyper_server = match selected_codec {
@@ -238,20 +236,15 @@ impl FilterchainType {
                     CodecType::Http2 => hyper_server.http2_only(),
                     CodecType::Auto => hyper_server,
                 };
-                let requests_counter = Arc::new(AtomicU64::new(0));
                 hyper_server
                     .serve_connection_with_upgrades(
                         stream,
                         hyper::service::service_fn(move |mut req: Request<hyper::body::Incoming>| {
                             req.extensions_mut().insert(MetadataContext {
                                 downstream: metadata.clone(),
-                                metrics: metrics.clone(),
-                                requests_counter: requests_counter
-                                    .load(Ordering::Relaxed),
+                                stream_metrics: stream_metrics.clone(),
                             });
-                            let ret = req_handler.call(req).map_err(orion_error::Error::into_inner);
-                            requests_counter.fetch_add(1, Ordering::Relaxed);
-                            ret
+                            req_handler.call(req).map_err(orion_error::Error::into_inner)
                         }),
                     )
                     .await
