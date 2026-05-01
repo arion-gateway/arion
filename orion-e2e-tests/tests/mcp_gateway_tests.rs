@@ -19,16 +19,43 @@
 //! - REST backend transcoding (path, query params, body templating)
 //! - MCP backend (mock MCP server)
 //! - Tool RBAC with JWT claims and headers
-//! - Semantic search tool
 
-use orion_e2e_tests::config_builder::{ClusterBuilder, EndpointBuilder};
+use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::mcp::mcp_gateway::v3::Tool as OrionMcpTool;
+use orion_e2e_tests::config_builder::{
+    inline_string_data_source, ClusterBuilder, EndpointBuilder, McpGatewayBuilder, McpGatewayHttpConfigBuilder,
+    McpRestBackendBuilder, McpServerBackendBuilder, McpToolBuilder, McpToolRbacBuilder,
+};
 use orion_e2e_tests::{
-    generate_jwt_token, mcp_gateway_config, mcp_gateway_with_direct_semantic_search_config,
-    mcp_gateway_with_jwt_and_semantic_search_config, mcp_gateway_with_jwt_config, mcp_server_tool_config, rbac_config,
-    rest_tool_config, JwtKeyPair, McpTestClient, MockMcpServer, OrionInstance, PreConfiguredResponse, SpawnOptions,
+    generate_jwt_token, JwtKeyPair, McpTestClient, MockMcpServer, OrionInstance, PreConfiguredResponse, SpawnOptions,
     TestBackend, TestJwtClaims,
 };
 use serde_json::json;
+
+const SERVER_NAME: &str = "test-gateway";
+const SERVER_VERSION: &str = "1.0.0";
+const JWT_AUDIENCE: &str = "mcp-gateway";
+
+fn empty_schema() -> orion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::DataSource {
+    inline_string_data_source(r#"{"type":"object","properties":{}}"#)
+}
+
+fn rest_tool(name: &str, description: &str, cluster: &str, method: &str, path: &str) -> OrionMcpTool {
+    McpToolBuilder::new(name, description)
+        .input_schema(empty_schema())
+        .rest_backend(McpRestBackendBuilder::new(cluster, method, path))
+        .build()
+}
+
+fn mcp_server_tool(name: &str, description: &str, url: impl Into<String>) -> OrionMcpTool {
+    McpToolBuilder::new(name, description)
+        .input_schema(inline_string_data_source("{}"))
+        .mcp_server_backend(McpServerBackendBuilder::new(url))
+        .build()
+}
+
+fn mcp_gateway_test_config(tools: Vec<OrionMcpTool>) -> McpGatewayHttpConfigBuilder {
+    McpGatewayHttpConfigBuilder::new(McpGatewayBuilder::new(SERVER_NAME, SERVER_VERSION).tools(tools))
+}
 
 #[tokio::test]
 #[ignore]
@@ -36,27 +63,11 @@ async fn test_mcp_gateway_initialize_and_ping() {
     let backend = TestBackend::start().await.expect("Failed to start test backend");
     backend.set_default_response(PreConfiguredResponse::with_body(r#"{"status": "ok"}"#)).await;
 
-    let tool = rest_tool_config(
-        "test_tool",
-        "A simple test tool",
-        "test_cluster",
-        "GET",
-        "/api/test",
-        json!({
-            "type": "object",
-            "properties": {}
-        }),
-        vec![],
-        None,
-        None,
-    );
+    let tool = rest_tool("test_tool", "A simple test tool", "test_cluster", "GET", "/api/test");
 
-    let bootstrap = mcp_gateway_config(
-        "test-gateway",
-        "1.0.0",
-        vec![tool],
-        vec![ClusterBuilder::new("test_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr()))],
-    );
+    let bootstrap = mcp_gateway_test_config(vec![tool]).build_bootstrap(vec![
+        ClusterBuilder::new("test_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr()))
+    ]);
 
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
 
@@ -86,45 +97,13 @@ async fn test_mcp_gateway_tools_list() {
         .await;
     user_backend.set_default_response(PreConfiguredResponse::with_body(r#"{"name": "John", "id": "123"}"#)).await;
 
-    let weather_tool = rest_tool_config(
-        "get_weather",
-        "Get weather forecast",
-        "weather_cluster",
-        "GET",
-        "/weather",
-        json!({
-            "type": "object",
-            "properties": {}
-        }),
-        vec![],
-        None,
-        None,
-    );
+    let weather_tool = rest_tool("get_weather", "Get weather forecast", "weather_cluster", "GET", "/weather");
+    let user_tool = rest_tool("get_user", "Get user profile", "user_cluster", "GET", "/user");
 
-    let user_tool = rest_tool_config(
-        "get_user",
-        "Get user profile",
-        "user_cluster",
-        "GET",
-        "/user",
-        json!({
-            "type": "object",
-            "properties": {}
-        }),
-        vec![],
-        None,
-        None,
-    );
-
-    let bootstrap = mcp_gateway_config(
-        "test-gateway",
-        "1.0.0",
-        vec![weather_tool, user_tool],
-        vec![
-            ClusterBuilder::new("weather_cluster").endpoint(EndpointBuilder::from_socket_addr(weather_backend.addr())),
-            ClusterBuilder::new("user_cluster").endpoint(EndpointBuilder::from_socket_addr(user_backend.addr())),
-        ],
-    );
+    let bootstrap = mcp_gateway_test_config(vec![weather_tool, user_tool]).build_bootstrap(vec![
+        ClusterBuilder::new("weather_cluster").endpoint(EndpointBuilder::from_socket_addr(weather_backend.addr())),
+        ClusterBuilder::new("user_cluster").endpoint(EndpointBuilder::from_socket_addr(user_backend.addr())),
+    ]);
 
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
 
@@ -152,30 +131,16 @@ async fn test_mcp_gateway_rest_path_templating() {
     let mut backend = TestBackend::start().await.expect("Failed to start test backend");
     backend.set_default_response(PreConfiguredResponse::with_body(r#"{"result": "success"}"#)).await;
 
-    let tool = rest_tool_config(
-        "fetch_item",
-        "Fetch an item by ID",
-        "backend_cluster",
-        "GET",
-        "/api/items/{{item_id}}",
-        json!({
-            "type": "object",
-            "properties": {
-                "item_id": {"type": "string"}
-            },
-            "required": ["item_id"]
-        }),
-        vec![],
-        None,
-        None,
-    );
+    let tool = McpToolBuilder::new("fetch_item", "Fetch an item by ID")
+        .input_schema(inline_string_data_source(
+            r#"{"type":"object","properties":{"item_id":{"type":"string"}},"required":["item_id"]}"#,
+        ))
+        .rest_backend(McpRestBackendBuilder::new("backend_cluster", "GET", "/api/items/{{item_id}}"))
+        .build();
 
-    let bootstrap = mcp_gateway_config(
-        "test-gateway",
-        "1.0.0",
-        vec![tool],
-        vec![ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr()))],
-    );
+    let bootstrap = mcp_gateway_test_config(vec![tool]).build_bootstrap(vec![
+        ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr()))
+    ]);
 
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
 
@@ -212,37 +177,21 @@ async fn test_mcp_gateway_rest_query_params() {
     let mut backend = TestBackend::start().await.expect("Failed to start test backend");
     backend.set_default_response(PreConfiguredResponse::with_body(r#"{"users": []}"#)).await;
 
-    let tool = json!({
-        "name": "search_users",
-        "description": "Search users with filters",
-        "rest_backend": {
-            "cluster": "backend_cluster",
-            "method": "GET",
-            "path": "/api/users",
-            "query_params": [
-                { "name": "name", "source": "name" },
-                { "name": "age", "source": "age" },
-                { "name": "active", "source": "is_active" }
-            ]
-        },
-        "input_schema": {
-            "inline_string": r#"{
-                "type": "object",
-                "properties": {
-                    "name": { "type": "string" },
-                    "age": { "type": "integer" },
-                    "is_active": { "type": "boolean" }
-                }
-            }"#
-        }
-    });
+    let tool = McpToolBuilder::new("search_users", "Search users with filters")
+        .input_schema(inline_string_data_source(
+            r#"{"type":"object","properties":{"name":{"type":"string"},"age":{"type":"integer"},"is_active":{"type":"boolean"}}}"#,
+        ))
+        .rest_backend(
+            McpRestBackendBuilder::new("backend_cluster", "GET", "/api/users")
+                .query_param("name", "name")
+                .query_param("age", "age")
+                .query_param("active", "is_active"),
+        )
+        .build();
 
-    let bootstrap = mcp_gateway_config(
-        "test-gateway",
-        "1.0.0",
-        vec![tool],
-        vec![ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr()))],
-    );
+    let bootstrap = mcp_gateway_test_config(vec![tool]).build_bootstrap(vec![
+        ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr()))
+    ]);
 
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
 
@@ -286,36 +235,21 @@ async fn test_mcp_gateway_rest_body_templating() {
     let mut backend = TestBackend::start().await.expect("Failed to start test backend");
     backend.set_default_response(PreConfiguredResponse::with_body(r#"{"id": "123"}"#)).await;
 
-    let tool = json!({
-        "name": "create_user",
-        "description": "Create a new user",
-        "rest_backend": {
-            "cluster": "backend_cluster",
-            "method": "POST",
-            "path": "/api/users",
-            "body_template": {
-                "inline_string": r#"{"username": "{{username}}", "email": "{{email}}", "age": {{age}}}"#
-            }
-        },
-        "input_schema": {
-            "inline_string": r#"{
-                "type": "object",
-                "properties": {
-                    "username": { "type": "string" },
-                    "email": { "type": "string" },
-                    "age": { "type": "integer" }
-                },
-                "required": ["username", "email"]
-            }"#
-        }
-    });
+    let tool = McpToolBuilder::new("create_user", "Create a new user")
+        .input_schema(inline_string_data_source(
+            r#"{"type":"object","properties":{"username":{"type":"string"},"email":{"type":"string"},"age":{"type":"integer"}},"required":["username","email"]}"#,
+        ))
+        .rest_backend(
+            McpRestBackendBuilder::new("backend_cluster", "POST", "/api/users")
+                .body_template(inline_string_data_source(
+                    r#"{"username": "{{username}}", "email": "{{email}}", "age": {{age}}}"#,
+                )),
+        )
+        .build();
 
-    let bootstrap = mcp_gateway_config(
-        "test-gateway",
-        "1.0.0",
-        vec![tool],
-        vec![ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr()))],
-    );
+    let bootstrap = mcp_gateway_test_config(vec![tool]).build_bootstrap(vec![
+        ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr()))
+    ]);
 
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
 
@@ -358,45 +292,27 @@ async fn test_mcp_gateway_rest_full_transcoding() {
     let mut backend = TestBackend::start().await.expect("Failed to start test backend");
     backend.set_default_response(PreConfiguredResponse::with_body(r#"{"updated": true}"#)).await;
 
-    let tool = json!({
-        "name": "update_resource",
-        "description": "Update a resource",
-        "rest_backend": {
-            "cluster": "backend_cluster",
-            "method": "PUT",
-            "path": "/api/resources/{{resource_id}}",
-            "query_params": [
-                { "name": "force", "source": "force_update" }
-            ],
-            "body_template": {
-                "inline_string": r#"{
+    let tool = McpToolBuilder::new("update_resource", "Update a resource")
+        .input_schema(inline_string_data_source(
+            r#"{"type":"object","properties":{"resource_id":{"type":"string"},"force_update":{"type":"boolean"},"content":{"type":"string"},"version":{"type":"integer"}},"required":["resource_id","content"]}"#,
+        ))
+        .rest_backend(
+            McpRestBackendBuilder::new("backend_cluster", "PUT", "/api/resources/{{resource_id}}")
+                .query_param("force", "force_update")
+                .body_template(inline_string_data_source(
+                    r#"{
                     "data": "{{content}}",
                     "metadata": {
                         "version": {{ version }}
                     }
-                }"#
-            }
-        },
-        "input_schema": {
-            "inline_string": r#"{
-                "type": "object",
-                "properties": {
-                    "resource_id": { "type": "string" },
-                    "force_update": { "type": "boolean" },
-                    "content": { "type": "string" },
-                    "version": { "type": "integer" }
-                },
-                "required": ["resource_id", "content"]
-            }"#
-        }
-    });
+                }"#,
+                )),
+        )
+        .build();
 
-    let bootstrap = mcp_gateway_config(
-        "test-gateway",
-        "1.0.0",
-        vec![tool],
-        vec![ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr()))],
-    );
+    let bootstrap = mcp_gateway_test_config(vec![tool]).build_bootstrap(vec![
+        ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr()))
+    ]);
 
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
 
@@ -442,20 +358,12 @@ async fn test_mcp_gateway_rest_full_transcoding() {
 async fn test_mcp_gateway_mcp_backend() {
     let mut mock_mcp = MockMcpServer::start().await.expect("Failed to start mock MCP server");
 
-    let tool = mcp_server_tool_config(
-        "mock_echo",
-        "Call remote echo tool",
-        format!("http://{}/mcp", mock_mcp.addr()),
-        "streamable_http",
-        Some("10s".to_string()),
-    );
+    let tool = mcp_server_tool("mock_echo", "Call remote echo tool", format!("http://{}/mcp", mock_mcp.addr()));
 
-    let bootstrap = mcp_gateway_config(
-        "test-gateway",
-        "1.0.0",
-        vec![tool],
-        vec![ClusterBuilder::new("mcp_backend_cluster").endpoint(EndpointBuilder::from_socket_addr(mock_mcp.addr()))],
-    );
+    let bootstrap = mcp_gateway_test_config(vec![tool])
+        .build_bootstrap(vec![
+            ClusterBuilder::new("mcp_backend_cluster").endpoint(EndpointBuilder::from_socket_addr(mock_mcp.addr()))
+        ]);
 
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
 
@@ -493,29 +401,16 @@ async fn test_mcp_gateway_rbac_jwt_claim_allow() {
 
     let jwt_keys = JwtKeyPair::generate();
 
-    let rbac = rbac_config("allow", vec![("jwt_claim".to_string(), "role".to_string(), "admin".to_string())]);
+    let tool = McpToolBuilder::new("admin_only_tool", "Tool for admins only")
+        .input_schema(empty_schema())
+        .rest_backend(McpRestBackendBuilder::new("backend_cluster", "GET", "/admin/secret"))
+        .rbac(McpToolRbacBuilder::allow().jwt_claim("role", "admin"))
+        .build();
 
-    let tool = json!({
-        "name": "admin_only_tool",
-        "description": "Tool for admins only",
-        "rbac": rbac,
-        "rest_backend": {
-            "cluster": "backend_cluster",
-            "method": "GET",
-            "path": "/admin/secret"
-        },
-        "input_schema": {
-            "inline_string": r#"{"type": "object", "properties": {}}"#
-        }
-    });
-
-    let bootstrap = mcp_gateway_with_jwt_config(
-        "test-gateway",
-        "1.0.0",
-        vec![tool],
-        vec![ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr()))],
-        &jwt_keys.get_jwks_inline(),
-    );
+    let bootstrap =
+        mcp_gateway_test_config(vec![tool]).jwt_auth(jwt_keys.get_jwks_inline(), [JWT_AUDIENCE]).build_bootstrap(vec![
+            ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr())),
+        ]);
 
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
 
@@ -557,29 +452,16 @@ async fn test_mcp_gateway_rbac_jwt_claim_deny() {
 
     let jwt_keys = JwtKeyPair::generate();
 
-    let rbac = rbac_config("deny", vec![("jwt_claim".to_string(), "role".to_string(), "guest".to_string())]);
+    let tool = McpToolBuilder::new("premium_tool", "Tool for non-guests")
+        .input_schema(empty_schema())
+        .rest_backend(McpRestBackendBuilder::new("backend_cluster", "GET", "/api/premium"))
+        .rbac(McpToolRbacBuilder::deny().jwt_claim("role", "guest"))
+        .build();
 
-    let tool = json!({
-        "name": "premium_tool",
-        "description": "Tool for non-guests",
-        "rbac": rbac,
-        "rest_backend": {
-            "cluster": "backend_cluster",
-            "method": "GET",
-            "path": "/api/premium"
-        },
-        "input_schema": {
-            "inline_string": r#"{"type": "object", "properties": {}}"#
-        }
-    });
-
-    let bootstrap = mcp_gateway_with_jwt_config(
-        "test-gateway",
-        "1.0.0",
-        vec![tool],
-        vec![ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr()))],
-        &jwt_keys.get_jwks_inline(),
-    );
+    let bootstrap =
+        mcp_gateway_test_config(vec![tool]).jwt_auth(jwt_keys.get_jwks_inline(), [JWT_AUDIENCE]).build_bootstrap(vec![
+            ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr())),
+        ]);
 
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
 
@@ -622,36 +504,21 @@ async fn test_mcp_gateway_rbac_multiple_permissions() {
 
     let jwt_keys = JwtKeyPair::generate();
 
-    let rbac = rbac_config(
-        "allow",
-        vec![
-            ("jwt_claim".to_string(), "role".to_string(), "admin".to_string()),
-            ("jwt_claim".to_string(), "role".to_string(), "moderator".to_string()),
-            ("jwt_claim".to_string(), "department".to_string(), "security".to_string()),
-        ],
-    );
+    let tool = McpToolBuilder::new("multi_perm_tool", "Tool with multiple permission options")
+        .input_schema(empty_schema())
+        .rest_backend(McpRestBackendBuilder::new("backend_cluster", "GET", "/api/multi"))
+        .rbac(
+            McpToolRbacBuilder::allow()
+                .jwt_claim("role", "admin")
+                .jwt_claim("role", "moderator")
+                .jwt_claim("department", "security"),
+        )
+        .build();
 
-    let tool = json!({
-        "name": "multi_perm_tool",
-        "description": "Tool with multiple permission options",
-        "rbac": rbac,
-        "rest_backend": {
-            "cluster": "backend_cluster",
-            "method": "GET",
-            "path": "/api/multi"
-        },
-        "input_schema": {
-            "inline_string": r#"{"type": "object", "properties": {}}"#
-        }
-    });
-
-    let bootstrap = mcp_gateway_with_jwt_config(
-        "test-gateway",
-        "1.0.0",
-        vec![tool],
-        vec![ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr()))],
-        &jwt_keys.get_jwks_inline(),
-    );
+    let bootstrap =
+        mcp_gateway_test_config(vec![tool]).jwt_auth(jwt_keys.get_jwks_inline(), [JWT_AUDIENCE]).build_bootstrap(vec![
+            ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr())),
+        ]);
 
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
 
@@ -705,29 +572,16 @@ async fn test_mcp_gateway_rbac_jwt_header() {
 
     let jwt_keys = JwtKeyPair::generate();
 
-    let rbac = rbac_config("allow", vec![("jwt_header".to_string(), "kid".to_string(), jwt_keys.kid.clone())]);
+    let tool = McpToolBuilder::new("header_protected_tool", "Tool protected by JWT header")
+        .input_schema(empty_schema())
+        .rest_backend(McpRestBackendBuilder::new("backend_cluster", "GET", "/api/protected"))
+        .rbac(McpToolRbacBuilder::allow().jwt_header("kid", jwt_keys.kid.clone()))
+        .build();
 
-    let tool = json!({
-        "name": "header_protected_tool",
-        "description": "Tool protected by JWT header",
-        "rbac": rbac,
-        "rest_backend": {
-            "cluster": "backend_cluster",
-            "method": "GET",
-            "path": "/api/protected"
-        },
-        "input_schema": {
-            "inline_string": r#"{"type": "object", "properties": {}}"#
-        }
-    });
-
-    let bootstrap = mcp_gateway_with_jwt_config(
-        "test-gateway",
-        "1.0.0",
-        vec![tool],
-        vec![ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr()))],
-        &jwt_keys.get_jwks_inline(),
-    );
+    let bootstrap =
+        mcp_gateway_test_config(vec![tool]).jwt_auth(jwt_keys.get_jwks_inline(), [JWT_AUDIENCE]).build_bootstrap(vec![
+            ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr())),
+        ]);
 
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
 
@@ -751,74 +605,19 @@ async fn test_mcp_gateway_rbac_jwt_header() {
 
 #[tokio::test]
 #[ignore]
-async fn test_mcp_gateway_semantic_search_tool() {
-    let backend = TestBackend::start().await.expect("Failed to start test backend");
-    backend
-        .set_default_response(PreConfiguredResponse::with_body(
-            r#"{"tools": [{"name": "dynamic_tool", "description": "A dynamic tool"}]}"#,
-        ))
-        .await;
-
-    let jwt_keys = JwtKeyPair::generate();
-
-    let bootstrap = mcp_gateway_with_jwt_and_semantic_search_config(
-        "test-gateway",
-        "1.0.0",
-        vec![],
-        vec![ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr()))],
-        &jwt_keys.get_jwks_inline(),
-    );
-
-    let config_path = bootstrap.build_to_temp().expect("Failed to build config");
-
-    let orion = OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default())
-        .await
-        .expect("Failed to spawn Orion");
-
-    let claims = TestJwtClaims::new("user1", "user");
-    let token = generate_jwt_token(&claims, &jwt_keys.private_key).expect("Failed to generate token");
-
-    let mut client = McpTestClient::new(orion.listener_addr().unwrap()).with_jwt(&token);
-    client.initialize().await.expect("Failed to initialize");
-
-    // List tools - should include semantic_search tool
-    let tools = client.list_tools().await.expect("Failed to list tools");
-    let has_semantic_search = tools.tools.iter().any(|t| t.name == "semantic_search");
-    assert!(has_semantic_search, "semantic_search tool should be present when enabled");
-
-    orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
-}
-
-#[tokio::test]
-#[ignore]
 async fn test_mcp_gateway_tool_without_rbac() {
     let backend = TestBackend::start().await.expect("Failed to start test backend");
     backend.set_default_response(PreConfiguredResponse::with_body(r#"{"result": "ok"}"#)).await;
 
     let jwt_keys = JwtKeyPair::generate();
 
-    // Create tool WITHOUT RBAC - should be accessible to all authenticated users
-    let tool = json!({
-        "name": "public_tool",
-        "description": "Tool accessible to all authenticated users",
-        "rest_backend": {
-            "cluster": "backend_cluster",
-            "method": "GET",
-            "path": "/api/public"
-        },
-        "input_schema": {
-            "inline_string": r#"{"type": "object", "properties": {}}"#
-        }
-    });
+    let tool =
+        rest_tool("public_tool", "Tool accessible to all authenticated users", "backend_cluster", "GET", "/api/public");
 
-    let bootstrap = mcp_gateway_with_jwt_config(
-        "test-gateway",
-        "1.0.0",
-        vec![tool],
-        vec![ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr()))],
-        &jwt_keys.get_jwks_inline(),
-    );
+    let bootstrap =
+        mcp_gateway_test_config(vec![tool]).jwt_auth(jwt_keys.get_jwks_inline(), [JWT_AUDIENCE]).build_bootstrap(vec![
+            ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr())),
+        ]);
 
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
 
@@ -846,24 +645,11 @@ async fn test_mcp_gateway_tool_not_found() {
     let backend = TestBackend::start().await.expect("Failed to start test backend");
     backend.set_default_response(PreConfiguredResponse::with_body(r#"{"result": "ok"}"#)).await;
 
-    let tool = rest_tool_config(
-        "existing_tool",
-        "An existing tool",
-        "backend_cluster",
-        "GET",
-        "/api/existing",
-        json!({"type": "object", "properties": {}}),
-        vec![],
-        None,
-        None,
-    );
+    let tool = rest_tool("existing_tool", "An existing tool", "backend_cluster", "GET", "/api/existing");
 
-    let bootstrap = mcp_gateway_config(
-        "test-gateway",
-        "1.0.0",
-        vec![tool],
-        vec![ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr()))],
-    );
+    let bootstrap = mcp_gateway_test_config(vec![tool]).build_bootstrap(vec![
+        ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr()))
+    ]);
 
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
 
@@ -888,31 +674,22 @@ async fn test_mcp_gateway_invalid_arguments() {
     let backend = TestBackend::start().await.expect("Failed to start test backend");
     backend.set_default_response(PreConfiguredResponse::with_body(r#"{"result": "ok"}"#)).await;
 
-    let tool = json!({
-        "name": "param_tool",
-        "description": "Tool requiring parameters",
-        "rest_backend": {
-            "cluster": "backend_cluster",
-            "method": "GET",
-            "path": "/api/param"
-        },
-        "input_schema": {
-            "inline_string": r#"{
+    let tool = McpToolBuilder::new("param_tool", "Tool requiring parameters")
+        .input_schema(inline_string_data_source(
+            r#"{
                 "type": "object",
                 "properties": {
                     "required_param": { "type": "string" }
                 },
                 "required": ["required_param"]
-            }"#
-        }
-    });
+            }"#,
+        ))
+        .rest_backend(McpRestBackendBuilder::new("backend_cluster", "GET", "/api/param"))
+        .build();
 
-    let bootstrap = mcp_gateway_config(
-        "test-gateway",
-        "1.0.0",
-        vec![tool],
-        vec![ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr()))],
-    );
+    let bootstrap = mcp_gateway_test_config(vec![tool]).build_bootstrap(vec![
+        ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr()))
+    ]);
 
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
 
@@ -940,35 +717,14 @@ async fn test_mcp_gateway_mixed_backends() {
 
     rest_backend.set_default_response(PreConfiguredResponse::with_body(r#"{"source": "rest"}"#)).await;
 
-    let rest_tool = rest_tool_config(
-        "rest_tool",
-        "REST backend tool",
-        "rest_cluster",
-        "GET",
-        "/api/rest",
-        json!({"type": "object", "properties": {}}),
-        vec![],
-        None,
-        None,
-    );
+    let rest_tool = rest_tool("rest_tool", "REST backend tool", "rest_cluster", "GET", "/api/rest");
 
-    let mcp_tool = mcp_server_tool_config(
-        "mock_echo",
-        "MCP backend tool",
-        format!("http://{}/mcp", mock_mcp.addr()),
-        "streamable_http",
-        Some("10s".to_string()),
-    );
+    let mcp_tool = mcp_server_tool("mock_echo", "MCP backend tool", format!("http://{}/mcp", mock_mcp.addr()));
 
-    let bootstrap = mcp_gateway_config(
-        "test-gateway",
-        "1.0.0",
-        vec![rest_tool, mcp_tool],
-        vec![
-            ClusterBuilder::new("rest_cluster").endpoint(EndpointBuilder::from_socket_addr(rest_backend.addr())),
-            ClusterBuilder::new("mcp_cluster").endpoint(EndpointBuilder::from_socket_addr(mock_mcp.addr())),
-        ],
-    );
+    let bootstrap = mcp_gateway_test_config(vec![rest_tool, mcp_tool]).build_bootstrap(vec![
+        ClusterBuilder::new("rest_cluster").endpoint(EndpointBuilder::from_socket_addr(rest_backend.addr())),
+        ClusterBuilder::new("mcp_cluster").endpoint(EndpointBuilder::from_socket_addr(mock_mcp.addr())),
+    ]);
 
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
 
@@ -1002,199 +758,6 @@ async fn test_mcp_gateway_mixed_backends() {
     assert!(mcp_content.contains("test"), "MCP response should echo the message");
 
     mock_mcp.shutdown();
-    orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
-}
-
-#[tokio::test]
-#[ignore]
-async fn test_mcp_gateway_semantic_search_direct_mode() {
-    // This test verifies semantic search in direct call mode
-    // The semantic_search tool should return filtered tools directly
-    let backend = TestBackend::start().await.expect("Failed to start test backend");
-    backend.set_default_response(PreConfiguredResponse::with_body(r#"{"result": "ok"}"#)).await;
-
-    let weather_tool = rest_tool_config(
-        "get_weather",
-        "Get current weather forecast and temperature information",
-        "backend_cluster",
-        "GET",
-        "/api/weather",
-        json!({"type": "object", "properties": {}}),
-        vec![],
-        None,
-        None,
-    );
-
-    let user_tool = rest_tool_config(
-        "get_user",
-        "Retrieve user profile and account information",
-        "backend_cluster",
-        "GET",
-        "/api/user",
-        json!({"type": "object", "properties": {}}),
-        vec![],
-        None,
-        None,
-    );
-
-    let payment_tool = rest_tool_config(
-        "process_payment",
-        "Process payment transaction and billing",
-        "backend_cluster",
-        "POST",
-        "/api/payment",
-        json!({"type": "object", "properties": {}}),
-        vec![],
-        None,
-        None,
-    );
-
-    let bootstrap = mcp_gateway_with_direct_semantic_search_config(
-        "test-gateway",
-        "1.0.0",
-        vec![weather_tool, user_tool, payment_tool],
-        vec![ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr()))],
-    );
-
-    let config_path = bootstrap.build_to_temp().expect("Failed to build config");
-
-    let orion = OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default())
-        .await
-        .expect("Failed to spawn Orion");
-
-    let mut client = McpTestClient::new(orion.listener_addr().unwrap());
-    client.initialize().await.expect("Failed to initialize");
-
-    let initial_tools = client.list_tools().await.expect("Failed to list initial tools");
-    let has_semantic_search = initial_tools.tools.iter().any(|t| t.name == "semantic_search");
-    assert!(has_semantic_search, "semantic_search tool should be present");
-
-    let result = client
-        .call_tool(
-            "semantic_search",
-            json!({
-                "user_query": "I need to check the weather forecast"
-            }),
-        )
-        .await
-        .expect("Failed to call semantic_search");
-    assert!(!result.is_error.unwrap_or(false), "semantic_search call should succeed");
-
-    let content_text = result.content.first().map(|c| c.text.clone()).unwrap_or_default();
-    let returned_tools: serde_json::Value =
-        serde_json::from_str(&content_text).expect("semantic_search should return valid JSON tool list");
-    assert!(returned_tools.is_array(), "semantic_search should return an array of tools");
-
-    let tools_array = returned_tools.as_array().unwrap();
-    let has_weather = tools_array.iter().any(|tool| tool.get("name").and_then(|n| n.as_str()) == Some("get_weather"));
-    assert!(has_weather, "Filtered tools should include get_weather (matches 'weather' keyword)");
-
-    let call_result = client.call_tool("get_weather", json!({})).await.expect("Failed to call get_weather");
-    assert!(!call_result.is_error.unwrap_or(false), "get_weather tool should be callable");
-
-    orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
-}
-
-#[tokio::test]
-#[ignore]
-async fn test_mcp_gateway_semantic_search_assisted_discovery() {
-    let backend = TestBackend::start().await.expect("Failed to start test backend");
-    backend.set_default_response(PreConfiguredResponse::with_body(r#"{"result": "ok"}"#)).await;
-
-    let jwt_keys = JwtKeyPair::generate();
-
-    let database_tool = rest_tool_config(
-        "query_database",
-        "Execute SQL queries and retrieve database records",
-        "backend_cluster",
-        "GET",
-        "/api/database",
-        json!({"type": "object", "properties": {}}),
-        vec![],
-        None,
-        None,
-    );
-
-    let analytics_tool = rest_tool_config(
-        "get_analytics",
-        "Fetch analytics data and statistics reports",
-        "backend_cluster",
-        "GET",
-        "/api/analytics",
-        json!({"type": "object", "properties": {}}),
-        vec![],
-        None,
-        None,
-    );
-
-    let email_tool = rest_tool_config(
-        "send_email",
-        "Send email notifications and messages",
-        "backend_cluster",
-        "POST",
-        "/api/email",
-        json!({"type": "object", "properties": {}}),
-        vec![],
-        None,
-        None,
-    );
-
-    let bootstrap = mcp_gateway_with_jwt_and_semantic_search_config(
-        "test-gateway",
-        "1.0.0",
-        vec![database_tool, analytics_tool, email_tool],
-        vec![ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr()))],
-        &jwt_keys.get_jwks_inline(),
-    );
-
-    let config_path = bootstrap.build_to_temp().expect("Failed to build config");
-
-    let orion = OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default())
-        .await
-        .expect("Failed to spawn Orion");
-
-    let claims = TestJwtClaims::new("user1", "user");
-    let token = generate_jwt_token(&claims, &jwt_keys.private_key).expect("Failed to generate token");
-
-    let mut client = McpTestClient::new(orion.listener_addr().unwrap()).with_jwt(&token);
-    client.initialize().await.expect("Failed to initialize");
-
-    let initial_tools = client.list_tools().await.expect("Failed to list initial tools");
-    let has_semantic_search = initial_tools.tools.iter().any(|t| t.name == "semantic_search");
-    assert!(has_semantic_search, "semantic_search tool should be present");
-
-    // Call semantic_search with a query matching "database"
-    let result = client
-        .call_tool(
-            "semantic_search",
-            json!({
-                "user_query": "I need to query the database for records"
-            }),
-        )
-        .await;
-
-    match result {
-        Ok(call_result) => {
-            assert!(!call_result.is_error.unwrap_or(false), "semantic_search should indicate success");
-            let content_text = call_result.content.first().map(|c| c.text.clone()).unwrap_or_default();
-            eprintln!("Semantic search response: {}", content_text);
-        },
-        Err(e) => {
-            eprintln!("Semantic search call had parsing issue (expected in some cases): {:?}", e);
-        },
-    }
-
-    let filtered_tools = client.list_tools().await.expect("Failed to list filtered tools");
-    eprintln!("Filtered tools count (after semantic search): {}", filtered_tools.tools.len());
-
-    let has_database = filtered_tools.tools.iter().any(|t| t.name == "query_database");
-    assert!(has_database, "After semantic_search, filtered tools should include query_database");
-
-    let call_result = client.call_tool("query_database", json!({})).await.expect("Failed to call query_database");
-    assert!(!call_result.is_error.unwrap_or(false), "query_database tool should be callable");
-
     orion.shutdown();
     let _ = std::fs::remove_file(&config_path);
 }

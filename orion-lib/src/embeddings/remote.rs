@@ -60,6 +60,10 @@ impl RemoteEmbeddingsProvider {
         let payload = EmbeddingsRequest { model: &self.model_id, input: &inputs };
         let body_bytes = serde_json::to_vec(&payload).map_err(|e| EmbeddingError::Provider(format!("encode: {e}")))?;
 
+        let channels = clusters_manager::get_http_connection(self.cluster_id, RoutingContext::None)
+            .map_err(|e| EmbeddingError::Provider(format!("cluster '{}' lookup failed: {e}", self.cluster_label)))?;
+        let upstream_authority = channels.upstream_authority().as_str();
+
         let body: OrionRequestBody = InstrumentedBody::new(
             BodyKind::Request,
             TimeoutBody::new(self.timeout, PolyBody::from(Full::new(Bytes::from(body_bytes)))),
@@ -72,12 +76,10 @@ impl RemoteEmbeddingsProvider {
             .uri(self.path.as_str())
             .header(header::CONTENT_TYPE, "application/json")
             .header(header::ACCEPT, "application/json")
+            .header(header::HOST, upstream_authority)
             .header(header::USER_AGENT, "orion/embeddings")
             .body(body)
             .map_err(|e| EmbeddingError::Provider(format!("request: {e}")))?;
-
-        let channels = clusters_manager::get_http_connection(self.cluster_id, RoutingContext::None)
-            .map_err(|e| EmbeddingError::Provider(format!("cluster '{}' lookup failed: {e}", self.cluster_label)))?;
 
         let request_context = RequestContext { route_timeout: self.timeout, retry_policy: None };
         let response = (&channels)

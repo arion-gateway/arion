@@ -13,6 +13,7 @@
 // limitations under the License.
 
 pub mod config_builder;
+mod embeddings_service;
 mod error;
 pub mod ext_proc_test_server;
 mod grpc_test_backend;
@@ -31,6 +32,7 @@ mod tls_test_client;
 mod xds_harness;
 pub mod xds_server;
 
+pub use embeddings_service::{CapturedEmbeddingsTestRequest, EmbeddingsTestService};
 pub use error::{Error, Result};
 pub use ext_proc_test_server::{
     ext_proc_responses, CapturedProcessingRequest, ExtProcTestServer, ExtProcTestServerBuilder,
@@ -39,13 +41,9 @@ pub use grpc_test_backend::test_proto::EchoResponse;
 pub use grpc_test_backend::{GrpcTestBackend, GrpcTestBackendBuilder};
 pub use grpc_test_client::GrpcTestClient;
 pub use mcp_gateway::{
-    build_dynamic_mcp_server_proto, build_tool_proto, dynamic_mcp_server_xds_resource, generate_jwt_token,
-    mcp_gateway_config, mcp_gateway_tds_listener, mcp_gateway_tds_listener_with_jwt,
-    mcp_gateway_with_direct_semantic_search_config, mcp_gateway_with_jwt_and_semantic_search_config,
-    mcp_gateway_with_jwt_config, mcp_resource_id, mcp_server_tool_config, mcp_tool_xds_resource, rbac_config,
-    rest_tool_config, CallToolParams, CallToolResult, JwtKeyPair, ListToolsResult, McpJsonRpcError, McpJsonRpcRequest,
-    McpJsonRpcResponse, McpResultExt, McpTestClient, McpTool, MockMcpServer, TestJwtClaims, ToolContent,
-    MCP_DYNAMIC_SERVER_TYPE_URL, MCP_TOOL_TYPE_URL,
+    generate_jwt_token, CallToolParams, CallToolResult, JwtKeyPair, ListToolsResult, McpJsonRpcError,
+    McpJsonRpcRequest, McpJsonRpcResponse, McpResultExt, McpTestClient, McpTool, MockMcpServer, TestJwtClaims,
+    ToolContent,
 };
 pub use orion_instance::{OrionInstance, SpawnOptions};
 pub use port_allocator::PortBlock;

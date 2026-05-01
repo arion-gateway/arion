@@ -20,11 +20,14 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use orion_e2e_tests::config_builder::{ClusterBuilder, EndpointBuilder};
+use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::mcp::mcp_gateway::v3::Tool as OrionMcpTool;
+use orion_e2e_tests::config_builder::{
+    inline_string_data_source, mcp_resource_id, ClusterBuilder, DynamicMcpServerBuilder, EndpointBuilder,
+    McpGatewayBuilder, McpGatewayHttpConfigBuilder, McpRestBackendBuilder, McpToolBuilder, McpToolRbacBuilder,
+};
 use orion_e2e_tests::{
-    build_dynamic_mcp_server_proto, build_tool_proto, generate_jwt_token, mcp_gateway_tds_listener,
-    mcp_gateway_tds_listener_with_jwt, mcp_resource_id, rbac_config, rest_tool_config, HarnessError, JwtKeyPair,
-    McpTestClient, McpTool, MockMcpServer, PreConfiguredResponse, TestBackend, TestJwtClaims, XdsEnabledHarness,
+    generate_jwt_token, HarnessError, JwtKeyPair, McpTestClient, McpTool, MockMcpServer, PreConfiguredResponse,
+    TestBackend, TestJwtClaims, XdsEnabledHarness,
 };
 use serde_json::json;
 
@@ -32,6 +35,7 @@ const SERVER_NAME: &str = "mcp-xds-gw";
 const SERVER_VERSION: &str = "1.0.0";
 const TDS_CONFIG: &str = "main";
 const LISTENER_WAIT: Duration = Duration::from_secs(10);
+const JWT_AUDIENCE: &str = "mcp-gateway";
 
 async fn start_harness_with_mcp_listener() -> (XdsEnabledHarness, SocketAddr) {
     let mut harness = XdsEnabledHarness::start().await.expect("Failed to start harness");
@@ -42,31 +46,33 @@ async fn start_harness_with_mcp_listener() -> (XdsEnabledHarness, SocketAddr) {
     let dummy_cluster = ClusterBuilder::new("dummy").endpoint(EndpointBuilder::new("127.0.0.1", 1)).build();
     harness.push_cluster(&dummy_cluster).await.expect("Failed to push dummy cluster");
 
-    let listener = mcp_gateway_tds_listener("http", listener_port, SERVER_NAME, SERVER_VERSION, TDS_CONFIG, Vec::new());
+    let listener = mcp_gateway_http_config_using_xds(SERVER_NAME, TDS_CONFIG, Vec::new())
+        .listener("http", listener_port)
+        .build_listener()
+        .build();
     harness.push_listener(&listener).await.expect("Failed to push MCP listener");
     harness.orion_mut().wait_for_listener_at(listener_addr, LISTENER_WAIT).await.expect("Listener not ready");
 
     (harness, listener_addr)
 }
 
-fn rest_tool_proto(
-    name: &str,
-    description: &str,
-    cluster: &str,
-    path: &str,
-) -> orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::mcp::mcp_gateway::v3::Tool {
-    let value = rest_tool_config(
-        name,
-        description,
-        cluster,
-        "GET",
-        path,
-        json!({"type": "object", "properties": {}}),
-        vec![],
-        None,
-        None,
-    );
-    build_tool_proto(&value)
+fn rest_tool_proto(name: &str, description: &str, cluster: &str, path: &str) -> OrionMcpTool {
+    McpToolBuilder::new(name, description)
+        .input_schema(inline_string_data_source(r#"{"type":"object","properties":{}}"#))
+        .rest_backend(McpRestBackendBuilder::new(cluster, "GET", path))
+        .build()
+}
+
+fn mcp_gateway_using_xds(server_name: &str, tds_config: &str, static_tools: Vec<OrionMcpTool>) -> McpGatewayBuilder {
+    McpGatewayBuilder::new(server_name, SERVER_VERSION).tds(tds_config).tools(static_tools)
+}
+
+fn mcp_gateway_http_config_using_xds(
+    server_name: &str,
+    tds_config: &str,
+    static_tools: Vec<OrionMcpTool>,
+) -> McpGatewayHttpConfigBuilder {
+    McpGatewayHttpConfigBuilder::new(mcp_gateway_using_xds(server_name, tds_config, static_tools))
 }
 
 async fn new_initialized_client(addr: SocketAddr) -> McpTestClient {
@@ -187,31 +193,19 @@ async fn test_mcp_gateway_xds_rbac_on_xds_pushed_tool() {
         ClusterBuilder::new("secure_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr())).build();
     harness.push_cluster(&backend_cluster).await.expect("Failed to push backend cluster");
 
-    let listener = mcp_gateway_tds_listener_with_jwt(
-        "http",
-        listener_port,
-        SERVER_NAME,
-        SERVER_VERSION,
-        TDS_CONFIG,
-        Vec::new(),
-        &jwt_keys.get_jwks_inline(),
-    );
+    let listener = mcp_gateway_http_config_using_xds(SERVER_NAME, TDS_CONFIG, Vec::new())
+        .listener("http", listener_port)
+        .jwt_auth(jwt_keys.get_jwks_inline(), [JWT_AUDIENCE])
+        .build_listener()
+        .build();
     harness.push_listener(&listener).await.expect("Failed to push MCP listener");
     harness.orion_mut().wait_for_listener_at(listener_addr, LISTENER_WAIT).await.expect("Listener not ready");
 
-    let rbac = rbac_config("allow", vec![("jwt_claim".into(), "role".into(), "admin".into())]);
-    let tool_value = rest_tool_config(
-        "secure_tool",
-        "Admin-only tool",
-        "secure_cluster",
-        "GET",
-        "/secure",
-        json!({"type": "object", "properties": {}}),
-        vec![],
-        None,
-        Some(rbac),
-    );
-    let tool = build_tool_proto(&tool_value);
+    let tool = McpToolBuilder::new("secure_tool", "Admin-only tool")
+        .input_schema(inline_string_data_source(r#"{"type":"object","properties":{}}"#))
+        .rest_backend(McpRestBackendBuilder::new("secure_cluster", "GET", "/secure"))
+        .rbac(McpToolRbacBuilder::allow().jwt_claim("role", "admin"))
+        .build();
     let resource_id = mcp_resource_id(SERVER_NAME, TDS_CONFIG, "secure_tool");
     harness.push_mcp_tool(&resource_id, &tool).await.expect("Failed to push RBAC tool");
 
@@ -270,7 +264,10 @@ async fn push_mcp_listener(
 ) -> SocketAddr {
     let port = harness.allocate_listener_port().expect("Failed to allocate port");
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
-    let listener = mcp_gateway_tds_listener(name, port, server_name, SERVER_VERSION, tds_config, Vec::new());
+    let listener = mcp_gateway_http_config_using_xds(server_name, tds_config, Vec::new())
+        .listener(name, port)
+        .build_listener()
+        .build();
     harness.push_listener(&listener).await.expect("Failed to push listener");
     harness.orion_mut().wait_for_listener_at(addr, LISTENER_WAIT).await.expect("Listener not ready");
     addr
@@ -351,13 +348,19 @@ async fn test_mcp_gateway_xds_duplicate_server_name_rejected() {
 
     let port_a = harness.allocate_listener_port().expect("port a");
     let addr_a = SocketAddr::from(([127, 0, 0, 1], port_a));
-    let listener_a = mcp_gateway_tds_listener("listener_a", port_a, "same_server", SERVER_VERSION, "cfg_a", Vec::new());
+    let listener_a = mcp_gateway_http_config_using_xds("same_server", "cfg_a", Vec::new())
+        .listener("listener_a", port_a)
+        .build_listener()
+        .build();
     harness.push_listener(&listener_a).await.expect("push listener A");
     harness.orion_mut().wait_for_listener_at(addr_a, LISTENER_WAIT).await.expect("listener A not ready");
 
     let port_b = harness.allocate_listener_port().expect("port b");
     let addr_b = SocketAddr::from(([127, 0, 0, 1], port_b));
-    let listener_b = mcp_gateway_tds_listener("listener_b", port_b, "same_server", SERVER_VERSION, "cfg_b", Vec::new());
+    let listener_b = mcp_gateway_http_config_using_xds("same_server", "cfg_b", Vec::new())
+        .listener("listener_b", port_b)
+        .build_listener()
+        .build();
     let push_result = harness.push_listener(&listener_b).await;
 
     match push_result {
@@ -384,19 +387,11 @@ async fn test_mcp_gateway_xds_static_and_xds_coexist() {
     let port = harness.allocate_listener_port().expect("port");
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
 
-    let static_tool_value = rest_tool_config(
-        "static_a",
-        "statically-configured tool",
-        "static_cluster",
-        "GET",
-        "/a",
-        json!({"type": "object", "properties": {}}),
-        vec![],
-        None,
-        None,
-    );
-    let listener =
-        mcp_gateway_tds_listener("http", port, SERVER_NAME, SERVER_VERSION, TDS_CONFIG, vec![static_tool_value]);
+    let static_tool = rest_tool_proto("static_a", "statically-configured tool", "static_cluster", "/a");
+    let listener = mcp_gateway_http_config_using_xds(SERVER_NAME, TDS_CONFIG, vec![static_tool])
+        .listener("http", port)
+        .build_listener()
+        .build();
     harness.push_listener(&listener).await.expect("push listener");
     harness.orion_mut().wait_for_listener_at(addr, LISTENER_WAIT).await.expect("listener not ready");
 
@@ -434,8 +429,7 @@ async fn test_mcp_gateway_xds_dynamic_server_add_materializes_tools() {
     let (harness, listener_addr) = start_harness_with_mcp_listener().await;
     let client = new_initialized_client(listener_addr).await;
 
-    let server_proto =
-        build_dynamic_mcp_server_proto("dyn_srv", "dynamic mock", &mock_url, "streamable_http", None, None);
+    let server_proto = DynamicMcpServerBuilder::new("dyn_srv", "dynamic mock", &mock_url).build();
     let resource_id = mcp_resource_id(SERVER_NAME, TDS_CONFIG, "dyn_srv");
     harness.push_dynamic_mcp_server(&resource_id, &server_proto).await.expect("push dyn server");
 
@@ -456,8 +450,7 @@ async fn test_mcp_gateway_xds_dynamic_server_remove_evicts_tools() {
     let (harness, listener_addr) = start_harness_with_mcp_listener().await;
     let client = new_initialized_client(listener_addr).await;
 
-    let server_proto =
-        build_dynamic_mcp_server_proto("dyn_srv", "dynamic mock", &mock_url, "streamable_http", None, None);
+    let server_proto = DynamicMcpServerBuilder::new("dyn_srv", "dynamic mock", &mock_url).build();
     let resource_id = mcp_resource_id(SERVER_NAME, TDS_CONFIG, "dyn_srv");
     harness.push_dynamic_mcp_server(&resource_id, &server_proto).await.expect("push dyn server");
 
@@ -487,8 +480,7 @@ async fn test_mcp_gateway_xds_dynamic_server_replaces_tools_on_update() {
     let (harness, listener_addr) = start_harness_with_mcp_listener().await;
     let client = new_initialized_client(listener_addr).await;
 
-    let server_proto =
-        build_dynamic_mcp_server_proto("dyn_srv", "dynamic mock", &mock_url, "streamable_http", None, None);
+    let server_proto = DynamicMcpServerBuilder::new("dyn_srv", "dynamic mock", &mock_url).build();
     let resource_id = mcp_resource_id(SERVER_NAME, TDS_CONFIG, "dyn_srv");
     harness.push_dynamic_mcp_server(&resource_id, &server_proto).await.expect("initial push");
 

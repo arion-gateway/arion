@@ -183,18 +183,13 @@ impl HcmBuilder {
     }
 
     #[must_use]
-    pub fn with_mcp_gateway(self, mcp_config: impl Into<Any>) -> Self {
-        let mcp_any = mcp_config.into();
-        let mcp_filter = HttpFilter {
-            name: "orion.filters.http.mcp".into(),
-            config_type: Some(
-                orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::network::http_connection_manager::v3::http_filter::ConfigType::TypedConfig(
-                    mcp_any,
-                ),
-            ),
-            ..Default::default()
-        };
-        self.with_http_filters(vec![mcp_filter])
+    pub fn mcp_gateway(
+        self,
+        gateway: impl Into<
+            orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::mcp::mcp_gateway::v3::McpGateway,
+        >,
+    ) -> Self {
+        self.with_http_filters(vec![super::mcp_gateway::mcp_gateway_http_filter(gateway)])
     }
 
     #[must_use]

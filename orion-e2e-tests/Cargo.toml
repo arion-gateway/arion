@@ -44,6 +44,12 @@ tracing-test.workspace = true
 [features]
 default = []
 mcp-tests = []
+mcp-semantic-search = []
+
+[[test]]
+name = "mcp_gateway_semantic_search"
+path = "tests/mcp_gateway_semantic_search.rs"
+required-features = ["mcp-semantic-search"]
 
 [build-dependencies]
 tonic-prost-build.workspace = true
