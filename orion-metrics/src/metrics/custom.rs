@@ -4,6 +4,7 @@ use std::thread::ThreadId;
 
 use http::{HeaderMap, HeaderName};
 use opentelemetry::{global, KeyValue};
+use crate::key_value::KeyValueMap;
 use orion_configuration::config::metrics::CustomMetric;
 use orion_interner::StringInterner;
 use smallvec::SmallVec;
@@ -203,7 +204,28 @@ impl CustomMetrics {
         }
     }
 
+    #[inline]
+    pub fn with_key_value<'a>(&self, hook: MetricsHook, kv: &KeyValueMap<'a>, extra_attributes: &[KeyValue]) {
+        self.process_metrics(hook, extra_attributes, |name| {
+            kv.get(name.as_str()).copied()
+        });
+    }
+
+    #[inline]
     pub fn with_headers(&self, hook: MetricsHook, headers: &HeaderMap, extra_attributes: &[KeyValue]) {
+        self.process_metrics(hook, extra_attributes, |name| {
+            headers.get(name).and_then(|val| val.to_str().ok())
+        });
+    }
+
+    fn process_metrics<'a, F>(
+        &self,
+        hook: MetricsHook,
+        extra_attributes: &[KeyValue],
+        get_value: F,
+    ) where
+        F: Fn(&HeaderName) -> Option<&'a str>,
+    {
         let counters = match hook {
             MetricsHook::IncomingRequest => &self.incoming_request,
             MetricsHook::UpstreamRequest => &self.upstream_request,
@@ -221,33 +243,27 @@ impl CustomMetrics {
         base_attributes.extend(extra_attributes.iter().cloned());
 
         for counter in &counters.counters {
-            if let Some(header_value) = headers.get(&counter.header_name) {
-                if let Ok(val_str) = header_value.to_str() {
-                    let val_static = val_str.to_static_str();
-                    let kv = KeyValue::new(counter.attr_name, val_static);
-                    base_attributes.push(kv);
-                    counter.metric.value.add(1, shard_id, &base_attributes);
-                    base_attributes.pop();
-                }
+            if let Some(val_str) = get_value(&counter.header_name) {
+                let val_static = val_str.to_static_str();
+                let kv = KeyValue::new(counter.attr_name, val_static);
+                base_attributes.push(kv);
+                counter.metric.value.add(1, shard_id, &base_attributes);
+                base_attributes.pop();
             }
         }
 
         for histogram in &counters.histograms {
-            if let Some(header_value) = headers.get(&histogram.header_name) {
-                if let Ok(val_str) = header_value.to_str() {
-                    if let Ok(num_val) = val_str.parse::<u64>() {
-                        histogram.metric.value.record(num_val, shard_id, extra_attributes);
-                    }
+            if let Some(val_str) = get_value(&histogram.header_name) {
+                if let Ok(num_val) = val_str.parse::<u64>() {
+                    histogram.metric.value.record(num_val, shard_id, extra_attributes);
                 }
             }
         }
 
         for gauge in &counters.gauges {
-            if let Some(header_value) = headers.get(&gauge.header_name) {
-                if let Ok(val_str) = header_value.to_str() {
-                    if let Ok(num_val) = val_str.parse::<u64>() {
-                        gauge.metric.value.record(num_val, extra_attributes);
-                    }
+            if let Some(val_str) = get_value(&gauge.header_name) {
+                if let Ok(num_val) = val_str.parse::<u64>() {
+                    gauge.metric.value.record(num_val, extra_attributes);
                 }
             }
         }
