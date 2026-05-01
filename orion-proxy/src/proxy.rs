@@ -103,7 +103,7 @@ struct ServiceInfo {
     #[cfg(feature = "tracing")]
     tracing: HashMap<TracingKey, TracingConfig>,
     #[cfg(feature = "metrics")]
-    metrics: Vec<Metrics>,
+    otel_metrics: Vec<Metrics>,
 }
 
 type SenderGuards = Vec<ConfigurationSenders>;
@@ -132,9 +132,10 @@ fn launch_runtimes(
     //
 
     #[cfg(feature = "metrics")]
-    let metrics = VecMetrics::from(&bootstrap).0;
+    let otel_metrics = VecMetrics::from(&bootstrap).0;
+
     #[cfg(feature = "metrics")]
-    let are_metrics_empty = metrics.is_empty();
+    let metrics_are_empty = otel_metrics.is_empty();
 
     #[cfg(feature = "tracing")]
     let tracing = bootstrap
@@ -179,7 +180,7 @@ fn launch_runtimes(
         #[cfg(feature = "tracing")]
         tracing,
         #[cfg(feature = "metrics")]
-        metrics: metrics.clone(),
+        otel_metrics: otel_metrics.clone(),
     };
 
     info!("Launching Service runtime with {} threads", rt_config.num_service_threads.get());
@@ -192,7 +193,7 @@ fn launch_runtimes(
     )?;
 
     #[cfg(feature = "metrics")]
-    if !are_metrics_empty {
+    if !metrics_are_empty {
         info!("Waiting for metrics setup to complete...");
         wait_for_metrics_setup();
     }
@@ -214,7 +215,7 @@ fn launch_runtimes(
 
     #[cfg(feature = "metrics")]
     init_global_metrics(
-        &metrics,
+        &otel_metrics,
         metrics_config.as_ref().map(|m| &m.custom_metrics).unwrap_or(&default_custom_metrics),
         num_threads_per_runtime * num_runtimes,
     );
@@ -231,7 +232,7 @@ fn launch_runtimes(
                     rt_config.affinity_strategy.clone().map(|affinity| (RuntimeId(id), affinity)),
                     config_receivers,
                     #[cfg(feature = "metrics")]
-                    metrics.clone(),
+                    otel_metrics.clone(),
                 )
             })
             .collect::<Result<Vec<_>>>()?
@@ -260,13 +261,13 @@ fn spawn_proxy_runtime_from_thread(
     num_threads: usize,
     affinity_info: Option<(RuntimeId, Affinity)>,
     configuration_receivers: ConfigurationReceivers,
-    #[cfg(feature = "metrics")] metrics: Vec<Metrics>,
+    #[cfg(feature = "metrics")] otel_metrics: Vec<Metrics>,
 ) -> Result<RuntimeHandle> {
     let thread_name = build_thread_name(thread_name, affinity_info.as_ref());
 
     let handle: JoinHandle<Result<()>> = thread::Builder::new().name(thread_name.clone()).spawn(move || {
         #[cfg(feature = "metrics")]
-        let rt = runtime::build_tokio_runtime(&thread_name, num_threads, affinity_info, metrics);
+        let rt = runtime::build_tokio_runtime(&thread_name, num_threads, affinity_info, otel_metrics);
         #[cfg(not(feature = "metrics"))]
         let rt = runtime::build_tokio_runtime(&thread_name, num_threads, affinity_info);
 
@@ -342,7 +343,7 @@ async fn spawn_services(info: ServiceInfo) -> Result<()> {
         #[cfg(feature = "tracing")]
         tracing,
         #[cfg(feature = "metrics")]
-        metrics,
+        otel_metrics: metrics,
     } = info;
     let mut set: JoinSet<Result<()>> = JoinSet::new();
 
