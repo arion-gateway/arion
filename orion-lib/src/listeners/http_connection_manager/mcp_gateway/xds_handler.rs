@@ -221,7 +221,9 @@ impl XdsExtensionHandler for McpXdsHandler {
                     #[cfg(feature = "mcp-semantic-search")]
                     if tool.embedding.is_empty() {
                         for registry in &registries {
-                            registry.embed_tool_if_unembedded(&tool_name).await;
+                            registry.embed_tool_if_unembedded(&tool_name).await.map_err(|e| {
+                                XdsExtensionError::HandlerError(format!("Failed to embed tool '{name}': {e}"))
+                            })?;
                         }
                     }
                 },

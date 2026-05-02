@@ -1063,7 +1063,15 @@ impl McpGateway {
             },
             ListToolsRequestMethod::VALUE => {
                 debug!(target: "mcp_gateway", "handle_rpc_json_request: 'tools/list'");
-                let tools = self.inner.tools.build_list_tools(&req_ext, session).await;
+                let tools = match self.inner.tools.build_list_tools(&req_ext, session).await {
+                    Ok(tools) => tools,
+                    Err(err) => {
+                        debug!(target: "mcp_gateway", "handle_rpc_json_request: 'tools/list' failed: {err:#}");
+                        return MessageResult::JsonRpcError(
+                            self.build_json_rpc_error(model::ErrorData::internal_error(err.to_string(), None)),
+                        );
+                    },
+                };
                 let response = model::JsonRpcResponse {
                     jsonrpc: model::JsonRpcVersion2_0,
                     id: self.request_id.clone(),
@@ -1166,6 +1174,10 @@ impl McpGateway {
                             },
                             CallToolError::ValidationError(e) => {
                                 model::ErrorData::internal_error(format!("Json schema validation error: {e}"), None)
+                            },
+                            #[cfg(feature = "mcp-semantic-search")]
+                            CallToolError::EmbeddingFailure(ref e) => {
+                                model::ErrorData::internal_error(format!("Embedding failure: {e}"), None)
                             },
                         };
 
