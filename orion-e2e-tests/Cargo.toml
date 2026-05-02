@@ -37,6 +37,7 @@ rustls-pemfile = "2"
 test-log = { version = "0.2.19", features = ["trace"] }
 futures-util = "0.3.32"
 jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
+clap = { version = "4.5.51", features = ["derive"] }
 
 [dev-dependencies]
 tracing-test.workspace = true

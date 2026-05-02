@@ -32,6 +32,47 @@ pub struct XdsConfig {
     pub port: u16,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct LocalEmbeddingsServiceConfig {
+    name: String,
+    local: LocalEmbeddingsProviderConfig,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct LocalEmbeddingsProviderConfig {
+    model_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model_dir: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dimensions: Option<usize>,
+}
+
+impl LocalEmbeddingsServiceConfig {
+    #[must_use]
+    pub fn new(name: impl Into<String>, model_id: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            local: LocalEmbeddingsProviderConfig { model_id: model_id.into(), model_dir: None, dimensions: None },
+        }
+    }
+
+    #[must_use]
+    pub fn model_dir(mut self, model_dir: impl Into<String>) -> Self {
+        self.local.model_dir = Some(model_dir.into());
+        self
+    }
+
+    #[must_use]
+    pub fn dimensions(mut self, dimensions: usize) -> Self {
+        self.local.dimensions = Some(dimensions);
+        self
+    }
+
+    pub fn build_yaml(&self) -> Result<String> {
+        serde_yaml::to_string(self).map_err(Error::from)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct BootstrapBuilder {
     listeners: Vec<Listener>,

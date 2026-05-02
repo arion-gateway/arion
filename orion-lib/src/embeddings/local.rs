@@ -129,9 +129,8 @@ fn read_model_file(model_dir: &Path, relative_path: &str) -> Result<Vec<u8>, Str
 fn resolve_model(id: &str) -> Result<EmbeddingModel, String> {
     match id {
         "BAAI/bge-small-en-v1.5" | "bge-small-en-v1.5" => Ok(EmbeddingModel::BGESmallENV15),
-        "BAAI/bge-base-en-v1.5" | "bge-base-en-v1.5" => Ok(EmbeddingModel::BGEBaseENV15),
-        "BAAI/bge-large-en-v1.5" | "bge-large-en-v1.5" => Ok(EmbeddingModel::BGELargeENV15),
         "sentence-transformers/all-MiniLM-L6-v2" | "all-MiniLM-L6-v2" => Ok(EmbeddingModel::AllMiniLML6V2),
+        "BAAI/bge-small-zh-v1.5" | "bge-small-zh-v1.5" => Ok(EmbeddingModel::BGESmallZHV15),
         other => Err(format!("unknown local embeddings model: '{other}'")),
     }
 }

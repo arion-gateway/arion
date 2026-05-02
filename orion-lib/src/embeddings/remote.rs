@@ -173,9 +173,8 @@ struct EmbeddingDatum {
 fn default_dimensions_for_model(model_id: &str) -> usize {
     match model_id {
         "BAAI/bge-small-en-v1.5" | "bge-small-en-v1.5" => 384,
-        "BAAI/bge-base-en-v1.5" | "bge-base-en-v1.5" => 768,
-        "BAAI/bge-large-en-v1.5" | "bge-large-en-v1.5" => 1024,
         "sentence-transformers/all-MiniLM-L6-v2" | "all-MiniLM-L6-v2" => 384,
+        "BAAI/bge-small-zh-v1.5" | "bge-small-zh-v1.5" => 512,
         _ => 384,
     }
 }
