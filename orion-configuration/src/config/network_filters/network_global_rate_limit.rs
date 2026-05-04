@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use orion_interner::InternedStr;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
@@ -11,14 +9,8 @@ pub struct NetworkGlobalRateLimit {
     pub stat_prefix: InternedStr,
     pub domain: SmolStr,
     pub grpc_service: GrpcService,
-    #[serde(with = "humantime_serde", default = "default_grpc_timeout")]
-    pub timeout: Duration,
     #[serde(default)]
     pub failure_mode_deny: bool,
-}
-
-fn default_grpc_timeout() -> Duration {
-    Duration::from_millis(20)
 }
 
 #[cfg(feature = "envoy-conversions")]
@@ -44,10 +36,10 @@ mod envoy_conversions {
             unsupported_field!(
                 //stat_prefix,
                 //domain,
-                //timeout,
+                timeout, // timeout is already part of the grpc service configuration
                 //failure_mode_deny,
                 //rate_limit_service,
-                descriptors
+                descriptors // descriptors are not supported on network global rate limiter for now
             )?;
 
             if domain.is_empty() {
@@ -56,21 +48,10 @@ mod envoy_conversions {
 
             let stat_prefix = if stat_prefix.is_empty() { domain.clone() } else { stat_prefix };
 
-            let timeout = timeout
-                .map(|d| RustType::<Duration>::try_from(d).with_node("timeout").map(RustType::into_inner))
-                .transpose()?
-                .unwrap_or_else(|| Duration::from_millis(20));
-
             let rls_config = required!(rate_limit_service).with_node("rate_limit_service")?;
             let grpc_service = rls_config.try_into()?;
 
-            Ok(Self {
-                stat_prefix: stat_prefix.into(),
-                domain: domain.into(),
-                grpc_service,
-                timeout,
-                failure_mode_deny,
-            })
+            Ok(Self { stat_prefix: stat_prefix.into(), domain: domain.into(), grpc_service, failure_mode_deny })
         }
     }
 

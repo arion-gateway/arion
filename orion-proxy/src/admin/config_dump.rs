@@ -259,6 +259,7 @@ mod config_dump_tests {
                         id: 0,
                         tls_config: None,
                         rbac: vec![],
+                        network_global_rate_limit: None,
                         terminal_filter: MainFilter::Http(HttpConnectionManager {
                             codec_type: CodecType::Http1,
                             request_timeout: Some(Duration::from_secs(10)),

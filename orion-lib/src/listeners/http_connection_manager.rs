@@ -111,6 +111,7 @@ use crate::{
         http_connection_manager::http_modifiers::ModifiersExtractor,
         http_filters::{per_route_http_filters, FilterDecision, FilterFactory, HttpFilter, HttpFilterValue},
         metadata::DownstreamMetadata,
+        rate_limiter::global_rate_limiter::NetworkGlobalRateLimit,
         synthetic_http_response::SyntheticHttpResponse,
     },
     with_client_span, with_metric, with_server_span, ConversionContext, OrionRequestBody, OrionResponseBody, PolyBody,
@@ -120,8 +121,11 @@ use crate::{
 #[cfg(any(feature = "access-log", feature = "metrics"))]
 use crate::utils::instrumented_stream::StreamMetrics;
 
-use orion_configuration::config::network_filters::http_connection_manager::{Route, VirtualHost, XffSettings};
-use orion_configuration::config::network_filters::tracing::{TracingConfig, TracingKey};
+use orion_configuration::config::network_filters::{
+    http_connection_manager::{Route, VirtualHost, XffSettings},
+    tracing::{TracingConfig, TracingKey},
+    NetworkGlobalRateLimit as NetworkGlobalRateLimitConfig,
+};
 use orion_format::types::ResponseFlags as FmtResponseFlags;
 use route::RouteContext;
 use scopeguard::defer;
@@ -174,6 +178,9 @@ impl HttpConnectionManagerBuilder {
         let partial = self.connection_manager;
         let router_sender = watch::Sender::new(partial.router.map(Arc::new));
 
+        let network_global_rate_limit =
+            partial.network_global_rate_limit_config.map(NetworkGlobalRateLimit::try_from).transpose()?;
+
         Ok(HttpConnectionManager {
             listener_name,
             filterchain_id,
@@ -194,6 +201,7 @@ impl HttpConnectionManagerBuilder {
                 Some(tracing) => HttpTracer::new().with_config(tracing),
                 None => HttpTracer::new(),
             },
+            network_global_rate_limit,
             #[cfg(feature = "access-log")]
             access_log: partial.access_log,
         })
@@ -207,6 +215,12 @@ impl HttpConnectionManagerBuilder {
     #[inline]
     pub fn with_filterchain_id(self, value: u64) -> Self {
         HttpConnectionManagerBuilder { filterchain_id: Some(value), ..self }
+    }
+
+    #[inline]
+    pub fn with_network_global_rate_limit(mut self, rate_limit: Option<NetworkGlobalRateLimitConfig>) -> Self {
+        self.connection_manager.network_global_rate_limit_config = rate_limit;
+        self
     }
 }
 
@@ -224,6 +238,7 @@ pub struct PartialHttpConnectionManager {
     preserve_external_request_id: bool,
     always_set_request_id_in_response: bool,
     tracing: Option<TracingConfig>,
+    network_global_rate_limit_config: Option<NetworkGlobalRateLimitConfig>,
     #[cfg(feature = "access-log")]
     access_log: Vec<AccessLog>,
 }
@@ -272,6 +287,7 @@ impl TryFrom<ConversionContext<'_, HttpConnectionManagerConfig>> for PartialHttp
             preserve_external_request_id,
             always_set_request_id_in_response,
             tracing: configuration.tracing,
+            network_global_rate_limit_config: None,
             #[cfg(feature = "access-log")]
             access_log: configuration.access_log,
         })
@@ -317,6 +333,7 @@ pub struct HttpConnectionManager {
     xff_settings: XffSettings,
     request_id_handler: RequestIdManager,
     pub http_tracer: HttpTracer,
+    network_global_rate_limit: Option<NetworkGlobalRateLimit>,
     #[cfg(feature = "access-log")]
     access_log: Vec<AccessLog>,
 }
@@ -653,6 +670,31 @@ struct TransactionPipeline<RC> {
     route_conf: RC,
 }
 
+pub fn extract_target_domain(request: &Request<OrionRequestBody>) -> Option<SmolStr> {
+    // 1. Try SNI from connection metadata (HTTPS)
+    if let Some(metadata) = request.extensions().get::<MetadataContext>() {
+        if let Some(ref sni) = metadata.downstream.sni {
+            return Some(sni.clone());
+        }
+    }
+
+    // 2. Try Authority from URI (HTTP/2)
+    if let Some(authority) = request.uri().authority() {
+        let host = authority.host();
+        return Some(host.into());
+    }
+
+    // 3. Try Host header (HTTP/1.1)
+    if let Some(host_header) = request.headers().get(::http::header::HOST) {
+        if let Ok(host_str) = host_header.to_str() {
+            let host = host_str.split(':').next().unwrap_or(host_str);
+            return Some(host.into());
+        }
+    }
+
+    None
+}
+
 impl<RC> TransactionPipeline<RC>
 where
     RC: RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> + Clone,
@@ -678,6 +720,14 @@ where
 
         #[allow(clippy::unwrap_used)]
         let req_count = stream_metrics.as_ref().unwrap().inc_requests();
+        if req_count == 1 {
+            if let Some(network_global_rate_limit) = &manager.network_global_rate_limit {
+                let target_domain = extract_target_domain(&request).ok_or_else(|| {
+                    crate::Error::from("no domain found in request for rate limiting (missing SNI/Host/Authority)")
+                })?;
+                network_global_rate_limit.check(target_domain).await?;
+            }
+        }
 
         // apply the request header modifiers
         http_modifiers::apply_prerouting_functions(&mut request, downstream_addr, manager.xff_settings);

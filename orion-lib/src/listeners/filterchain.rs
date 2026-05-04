@@ -35,6 +35,7 @@ use orion_configuration::config::{
     network_filters::{
         http_connection_manager::CodecType,
         network_rbac::{NetworkContext, NetworkRbac},
+        NetworkGlobalRateLimit as NetworkGlobalRateLimitConfig,
     },
 };
 
@@ -97,6 +98,7 @@ pub struct FilterchainBuilder {
     listener_name: Option<&'static str>,
     main_filter: MainFilterBuilder,
     rbac_filters: Vec<NetworkRbac>,
+    network_global_rate_limit: Option<NetworkGlobalRateLimitConfig>,
     tls_configurator: Option<TlsConfigurator<ServerConfig, WantsToBuildServer>>,
 }
 
@@ -118,6 +120,7 @@ impl FilterchainBuilder {
                 http_connection_manager
                     .with_listener_name(listener_name)
                     .with_filterchain_id(self.filterchain_id)
+                    .with_network_global_rate_limit(self.network_global_rate_limit)
                     .build()?,
             )),
             MainFilterBuilder::Tcp(tcp_proxy) => ConnectionHandler::Tcp(
@@ -135,6 +138,7 @@ impl TryFrom<ConversionContext<'_, FilterChainConfig>> for FilterchainBuilder {
         let main_filter = ConversionContext::new((filter_chain.terminal_filter, secret_manager)).try_into()?;
         let tls_config = filter_chain.tls_config;
         let rbac_filters = filter_chain.rbac;
+        let network_global_rate_limit = filter_chain.network_global_rate_limit;
         let tls_configurator =
             tls_config.map(|tls_config| TlsConfigurator::try_from((tls_config, secret_manager))).transpose()?;
         Ok(FilterchainBuilder {
@@ -143,6 +147,7 @@ impl TryFrom<ConversionContext<'_, FilterChainConfig>> for FilterchainBuilder {
             listener_name: None,
             main_filter,
             rbac_filters,
+            network_global_rate_limit,
             tls_configurator,
         })
     }
