@@ -9,7 +9,7 @@ use orion_configuration::config::{
 use smol_str::SmolStr;
 use tracing::debug;
 
-use crate::listeners::rate_limiter::TokenBucket;
+use crate::listeners::rate_limiter::token_bucket::TokenBucket;
 use crate::{listeners::http_filters::FilterDecision, OrionRequestBody};
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::user_rate_limit::Limit;
 

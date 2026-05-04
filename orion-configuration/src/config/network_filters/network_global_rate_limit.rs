@@ -11,13 +11,13 @@ pub struct NetworkGlobalRateLimit {
     pub stat_prefix: InternedStr,
     pub domain: SmolStr,
     pub grpc_service: GrpcService,
-    #[serde(with = "humantime_serde", default = "default_request_timeout")]
-    pub request_timeout: Duration,
+    #[serde(with = "humantime_serde", default = "default_grpc_timeout")]
+    pub timeout: Duration,
     #[serde(default)]
     pub failure_mode_deny: bool,
 }
 
-fn default_request_timeout() -> Duration {
+fn default_grpc_timeout() -> Duration {
     Duration::from_millis(20)
 }
 
@@ -56,7 +56,7 @@ mod envoy_conversions {
 
             let stat_prefix = if stat_prefix.is_empty() { domain.clone() } else { stat_prefix };
 
-            let request_timeout = timeout
+            let timeout = timeout
                 .map(|d| RustType::<Duration>::try_from(d).with_node("timeout").map(RustType::into_inner))
                 .transpose()?
                 .unwrap_or_else(|| Duration::from_millis(20));
@@ -68,7 +68,7 @@ mod envoy_conversions {
                 stat_prefix: stat_prefix.into(),
                 domain: domain.into(),
                 grpc_service,
-                request_timeout,
+                timeout,
                 failure_mode_deny,
             })
         }

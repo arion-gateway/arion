@@ -11,7 +11,7 @@ use crate::{
             mcp_gateway::mcp::McpGateway,
             user_rate_limiter::UserRateLimiter,
         },
-        rate_limiter::LocalRateLimit,
+        rate_limiter::local_rate_limiter::LocalRateLimit,
         rbac::HttpRbac,
         synthetic_http_response::SyntheticHttpResponse,
     },
