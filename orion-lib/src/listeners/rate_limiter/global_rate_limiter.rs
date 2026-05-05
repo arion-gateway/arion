@@ -76,6 +76,10 @@ impl TryFrom<NetworkGlobalRateLimitConfig> for NetworkGlobalRateLimit {
 }
 
 impl NetworkGlobalRateLimit {
+    pub fn domain(&self) -> &SmolStr {
+        &self.domain
+    }
+
     /// Returns `Ok(())` to allow the connection, `Err` to drop the TCP connection.
     pub async fn check(&self, target_domain: SmolStr) -> crate::Result<()> {
         let now = now_ms();
@@ -123,7 +127,7 @@ impl NetworkGlobalRateLimit {
 
                 let code = rate_limit_response::Code::try_from(response.overall_code)
                     .unwrap_or(rate_limit_response::Code::Unknown);
-                if code == rate_limit_response::Code::OverLimit && self.failure_mode_deny {
+                if code == rate_limit_response::Code::OverLimit {
                     return Err("rate limited by global rate limiter".into());
                 }
                 Ok(())

@@ -21,7 +21,10 @@ use super::{
 };
 use crate::{
     extensions_context::MetadataContext,
-    listeners::metadata::{DownstreamConnectionMetadata, DownstreamMetadata},
+    listeners::{
+        metadata::{DownstreamConnectionMetadata, DownstreamMetadata},
+        rate_limiter::global_rate_limiter::NetworkGlobalRateLimit,
+    },
     secrets::{TlsConfigurator, WantsToBuildServer},
     transport::AsyncReadWriteInstrumented,
     AsyncInstrumentedStream, ConversionContext, Error, Result,
@@ -70,6 +73,7 @@ pub struct Filterchain {
     pub name: SmolStr,
     pub rbac_filters: Vec<NetworkRbac>,
     pub tls_configurator: Option<TlsConfigurator<ServerConfig, WantsToBuildServer>>,
+    pub network_global_rate_limit: Option<NetworkGlobalRateLimit>,
 }
 
 #[derive(Debug, Clone)]
@@ -110,17 +114,19 @@ impl FilterchainBuilder {
     pub fn build(self) -> Result<FilterchainType> {
         let listener_name = self.listener_name.ok_or("listener name is not set")?;
         let filterchain_name = self.name;
+        let network_global_rate_limit =
+            self.network_global_rate_limit.map(NetworkGlobalRateLimit::try_from).transpose()?;
         let config = Filterchain {
             name: filterchain_name,
             tls_configurator: self.tls_configurator,
             rbac_filters: self.rbac_filters,
+            network_global_rate_limit,
         };
         let handler = match self.main_filter {
             MainFilterBuilder::Http(http_connection_manager) => ConnectionHandler::Http(Arc::new(
                 http_connection_manager
                     .with_listener_name(listener_name)
                     .with_filterchain_id(self.filterchain_id)
-                    .with_network_global_rate_limit(self.network_global_rate_limit)
                     .build()?,
             )),
             MainFilterBuilder::Tcp(tcp_proxy) => ConnectionHandler::Tcp(
@@ -174,6 +180,19 @@ impl FilterchainType {
             }
         }
         Some(stream)
+    }
+
+    pub async fn apply_network_rate_limit(&self, sni: Option<&str>) -> Result<()> {
+        let Some(rate_limit) = &self.config.network_global_rate_limit else {
+            return Ok(());
+        };
+        let domain = match sni {
+            Some(s) => SmolStr::from(s),
+            None => {
+                return Err("network rate limit: TLS connection missing SNI".into());
+            },
+        };
+        rate_limit.check(domain).await
     }
 
     #[allow(clippy::used_underscore_binding)]
