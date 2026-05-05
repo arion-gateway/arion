@@ -1,7 +1,7 @@
 use std::{
     sync::{
         atomic::{AtomicI64, AtomicU64, Ordering},
-        LazyLock,
+        Arc, LazyLock,
     },
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -26,13 +26,18 @@ use smol_str::SmolStr;
 use tonic::transport::Channel;
 
 use crate::clusters::clusters_manager::{self, RoutingContext};
+use tokio::sync::Mutex as AsyncMutex;
 
 struct QuotaBucket {
     remaining: AtomicI64,
     valid_until_ms: AtomicU64,
+    update_lock: AsyncMutex<()>,
 }
 
-static GLOBAL_QUOTAS: LazyLock<PapayaMap<SmolStr, QuotaBucket>> = LazyLock::new(PapayaMap::new);
+const INITIAL_CAPACITY: usize = 10_000;
+
+static GLOBAL_QUOTAS: LazyLock<PapayaMap<SmolStr, Arc<QuotaBucket>, ahash::RandomState>> =
+    LazyLock::new(|| PapayaMap::with_capacity_and_hasher(INITIAL_CAPACITY, ahash::RandomState::new()));
 
 #[derive(Debug, Clone)]
 enum RlsClient {
@@ -73,35 +78,45 @@ impl TryFrom<NetworkGlobalRateLimitConfig> for NetworkGlobalRateLimit {
 impl NetworkGlobalRateLimit {
     /// Returns `Ok(())` to allow the connection, `Err` to drop the TCP connection.
     pub async fn check(&self, target_domain: SmolStr) -> crate::Result<()> {
-        // todo(francesco): check atomic orderings with Nicola
-        // Fast path: consume from the process-global quota cache, fully lock-free.
-        {
+        let now = now_ms();
+
+        // 1. Fast path: fully lock-free check while holding the pin guard
+        let bucket = {
             let map = GLOBAL_QUOTAS.pin();
-            if let Some(bucket) = map.get(&target_domain) {
-                if bucket.valid_until_ms.load(Ordering::Acquire) > now_ms() {
-                    if bucket.remaining.fetch_sub(1, Ordering::AcqRel) > 0 {
-                        return Ok(());
-                    }
+            let bucket_ref = map.get_or_insert_with(target_domain.clone(), || {
+                Arc::new(QuotaBucket {
+                    remaining: AtomicI64::new(0),
+                    valid_until_ms: AtomicU64::new(0),
+                    update_lock: AsyncMutex::new(()),
+                })
+            });
+
+            if bucket_ref.valid_until_ms.load(Ordering::Acquire) > now {
+                if bucket_ref.remaining.fetch_sub(1, Ordering::AcqRel) > 0 {
+                    return Ok(());
                 }
+            }
+
+            // If we reach here, we need the slow path. Clone the Arc so we can drop the map guard.
+            bucket_ref.clone()
+        };
+
+        // 3. Slow path: acquire the async lock to prevent thundering herd
+        let _guard = bucket.update_lock.lock().await;
+
+        // 4. Double-check: another thread might have successfully called RLS and
+        // replenished the quota while this thread was waiting for the lock
+        if bucket.valid_until_ms.load(Ordering::Acquire) > now {
+            if bucket.remaining.fetch_sub(1, Ordering::AcqRel) > 0 {
+                return Ok(());
             }
         }
 
-        // Slow path: call the Rate Limit Service.
+        // 5. Actually call the RLS (only one thread per domain enters here at a time)
         match self.call_rls(&target_domain).await {
             Ok(response) => {
                 if let Some((requests, valid_until_ms)) = extract_quota(&response) {
-                    let map = GLOBAL_QUOTAS.pin();
-                    let bucket = map.get_or_insert_with(target_domain, || QuotaBucket {
-                        remaining: AtomicI64::new(0),
-                        valid_until_ms: AtomicU64::new(0),
-                    });
-                    // Write expiry before count: a concurrent reader seeing new
-                    // expiry + old count (0) simply falls through to RLS —
-                    // harmless.
-
-                    // todo(francesco): this is not exactly true, we
-                    // should avoid multiple RLS calls for the same expired
-                    // quota - we probably need a critical section here
+                    // Update expiry first, then remaining tokens
                     bucket.valid_until_ms.store(valid_until_ms, Ordering::Release);
                     bucket.remaining.store(requests as i64, Ordering::Release);
                 }
