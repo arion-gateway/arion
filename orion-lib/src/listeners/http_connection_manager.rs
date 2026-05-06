@@ -671,12 +671,14 @@ where
         #[allow(unused_variables)]
         let filterchain_id = manager.filterchain_id;
         let metadata = request.extensions().get::<MetadataContext>();
-
         let downstream_addr = metadata
             .map(|md| md.downstream.connection.peer_address())
             .unwrap_or_else(|| SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0));
 
         let stream_metrics = metadata.map(|md| md.stream_metrics.clone());
+
+        #[allow(clippy::unwrap_used)]
+        stream_metrics.as_ref().unwrap().inc_requests();
 
         // apply the request header modifiers
         http_modifiers::apply_prerouting_functions(&mut request, downstream_addr, manager.xff_settings);
