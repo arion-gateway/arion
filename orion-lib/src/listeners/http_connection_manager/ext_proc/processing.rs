@@ -72,8 +72,13 @@ pub enum Phase {
     Trailers,
 }
 
+pub enum BufferedData {
+    Single(Bytes),
+    Merged(BytesMut),
+}
+
 pub struct FramesBuffer {
-    data_buffer: Option<BytesMut>,
+    data_buffer: Option<BufferedData>,
     trailers_buffer: Option<Frame<Bytes>>,
     last_merge: Option<Instant>,
     count: u32,
@@ -95,17 +100,32 @@ impl FramesBuffer {
 
     // merge can either return a DATA frame or None
     pub fn push(&mut self, frame: Frame<Bytes>, now: tokio::time::Instant) -> Option<Frame<Bytes>> {
-        if let Some(new_data) = frame.data_ref() {
+        let is_data = frame.is_data();
+        
+        if is_data {
             // DATA
+            let new_data = frame.into_data().unwrap_or_else(|_| unreachable!());
+            
             if self.trailers_buffer.is_some() {
                 // This case should never occur, as no frames are expected after the final TRAILERS.
                 warn!(target: "ext_proc", "FramesBuffer::merge_frame: unexpected frame after TRAILERS!");
-            } else if let Some(buf) = self.data_buffer.as_mut() {
+            } else if let Some(buf) = self.data_buffer.take() {
                 self.count += 1;
-                buf.extend_from_slice(new_data.as_ref());
+                match buf {
+                    BufferedData::Single(old_data) => {
+                        let mut new_buf = BytesMut::with_capacity(old_data.len() + new_data.len());
+                        new_buf.extend_from_slice(&old_data);
+                        new_buf.extend_from_slice(new_data.as_ref());
+                        self.data_buffer = Some(BufferedData::Merged(new_buf));
+                    }
+                    BufferedData::Merged(mut m) => {
+                        m.extend_from_slice(new_data.as_ref());
+                        self.data_buffer = Some(BufferedData::Merged(m));
+                    }
+                }
             } else {
                 self.count = 1;
-                self.data_buffer = Some(BytesMut::from(new_data.as_ref()));
+                self.data_buffer = Some(BufferedData::Single(new_data));
             }
 
             let emit = self.count >= self.frame_merge_limit
@@ -115,13 +135,19 @@ impl FramesBuffer {
 
             if emit {
                 self.count = 0;
-                self.data_buffer.take().map(|buf| Frame::data(buf.freeze()))
+                self.data_buffer.take().map(|buf| match buf {
+                    BufferedData::Single(b) => Frame::data(b),
+                    BufferedData::Merged(b) => Frame::data(b.freeze()),
+                })
             } else {
                 None
             }
         } else {
             // TRAILERS
-            let data = self.data_buffer.take().map(|buf| Frame::data(buf.freeze()));
+            let data = self.data_buffer.take().map(|buf| match buf {
+                BufferedData::Single(b) => Frame::data(b),
+                BufferedData::Merged(b) => Frame::data(b.freeze()),
+            });
             self.count = 0;
             self.last_merge = Some(now);
             self.trailers_buffer = Some(frame);
@@ -134,7 +160,10 @@ impl FramesBuffer {
         self.count = 0;
         self.last_merge = None;
         if let Some(buf) = self.data_buffer.take() {
-            Some(Frame::data(buf.freeze()))
+            Some(match buf {
+                BufferedData::Single(b) => Frame::data(b),
+                BufferedData::Merged(b) => Frame::data(b.freeze()),
+            })
         } else {
             self.trailers_buffer.take()
         }
