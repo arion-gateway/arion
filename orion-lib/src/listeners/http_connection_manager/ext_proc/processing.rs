@@ -2,12 +2,12 @@ use crate::body::channel_body::FrameBridge;
 use crate::event_error::EventFailure;
 use crate::listeners::http_connection_manager::ext_proc::kind;
 use crate::listeners::http_connection_manager::ext_proc::mutation::apply_trailer_mutations;
-use crate::listeners::http_connection_manager::ext_proc::EnvoyHeaderMap;
 use crate::listeners::http_connection_manager::ext_proc::r#override::{
     OverridableBodyMode, OverridableGlobalModes, OverridableModeSelector,
 };
 use crate::listeners::http_connection_manager::ext_proc::status::{ProcessingStatus, ReadyStatus};
 use crate::listeners::http_connection_manager::ext_proc::worker_config::ExternalProcessingWorkerConfig;
+use crate::listeners::http_connection_manager::ext_proc::EnvoyHeaderMap;
 use crate::utils::truncated_debug::TruncatedDebug;
 use crate::{body::response_flags::ResponseFlags, listeners::synthetic_http_response::SyntheticHttpResponse};
 use bytes::{Bytes, BytesMut};
@@ -15,9 +15,9 @@ use http_body::Frame;
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::ext_proc::{
     BodyProcessingMode, HeaderProcessingMode, ProcessingMode, RouteCacheAction, TrailerProcessingMode,
 };
-use orion_data_plane_api::envoy_data_plane_api::envoy::service::ext_proc::v3::common_response::ResponseStatus;
 use orion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::HeaderMap as ProstHeaderMap;
 use orion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::HeaderValue as ProstHeaderValue;
+use orion_data_plane_api::envoy_data_plane_api::envoy::service::ext_proc::v3::common_response::ResponseStatus;
 use orion_data_plane_api::envoy_data_plane_api::envoy::service::ext_proc::v3::{HeaderMutation, HttpTrailers};
 use orion_data_plane_api::envoy_data_plane_api::envoy::{
     extensions::filters::http::ext_proc::v3::ProcessingMode as EnvoyProcessingMode,
@@ -118,11 +118,11 @@ impl FramesBuffer {
                         new_buf.extend_from_slice(&old_data);
                         new_buf.extend_from_slice(new_data.as_ref());
                         self.data_buffer = Some(BufferedData::Merged(new_buf));
-                    }
+                    },
                     BufferedData::Merged(mut m) => {
                         m.extend_from_slice(new_data.as_ref());
                         self.data_buffer = Some(BufferedData::Merged(m));
-                    }
+                    },
                 }
             } else {
                 self.count = 1;
@@ -707,7 +707,7 @@ impl<Msg: kind::MessageKind + OverridableModeSelector> Processing<kind::Processi
                 l.set_headers.append(&mut r.set_headers);
                 l.remove_headers.append(&mut r.remove_headers);
                 Some(l)
-            }
+            },
         }
     }
 
@@ -804,10 +804,8 @@ impl<M: kind::Mode + Default, Msg: kind::MessageKind + OverridableModeSelector> 
     async fn process_headers(&mut self, override_mode: &OverridableGlobalModes) -> Option<ProcessingRequest> {
         debug!(target: "ext_proc", "process_request headers {:?}", self.http_headers);
         let Some(envmap) = self.http_headers.take() else {
-            let status_error = self.status_error(
-                "process_request: Unexpected missing headers!",
-                self.failure_mode_allow,
-            );
+            let status_error =
+                self.status_error("process_request: Unexpected missing headers!", self.failure_mode_allow);
 
             let proof = self.return_status(status_error, "Unexpected missing headers!");
             self.frame_bridge.drain_and_inject(proof).await;
@@ -926,21 +924,21 @@ impl<M: kind::Mode + Default, Msg: kind::MessageKind + OverridableModeSelector> 
             // TRAILERS
             let data = std::mem::take(trailers);
 
-        let mut headers_vec = Vec::with_capacity(data.len());
-        for (name, value) in &data {
-            let header_name = name.as_str();
-            let header_value = if let Ok(value_str) = value.to_str() {
-                ProstHeaderValue { key: header_name.to_owned(), value: value_str.to_owned(), raw_value: Vec::new() }
-            } else {
-                ProstHeaderValue {
-                    key: header_name.to_owned(),
-                    value: String::default(),
-                    raw_value: value.as_bytes().into(),
-                }
-            };
-            headers_vec.push(header_value);
-        }
-        let envoy_trailers = EnvoyHeaderMap(ProstHeaderMap { headers: headers_vec });
+            let mut headers_vec = Vec::with_capacity(data.len());
+            for (name, value) in &data {
+                let header_name = name.as_str();
+                let header_value = if let Ok(value_str) = value.to_str() {
+                    ProstHeaderValue { key: header_name.to_owned(), value: value_str.to_owned(), raw_value: Vec::new() }
+                } else {
+                    ProstHeaderValue {
+                        key: header_name.to_owned(),
+                        value: String::default(),
+                        raw_value: value.as_bytes().into(),
+                    }
+                };
+                headers_vec.push(header_value);
+            }
+            let envoy_trailers = EnvoyHeaderMap(ProstHeaderMap { headers: headers_vec });
 
             // store trailers for potential update later WITHOUT CLONING
             self.trailers = Some(data);

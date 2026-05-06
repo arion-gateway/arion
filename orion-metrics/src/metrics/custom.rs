@@ -2,9 +2,9 @@ use std::borrow::Cow;
 use std::sync::{Arc, OnceLock};
 use std::thread::ThreadId;
 
+use crate::key_value::KeyValueMap;
 use http::{HeaderMap, HeaderName};
 use opentelemetry::{global, KeyValue};
-use crate::key_value::KeyValueMap;
 use orion_configuration::config::metrics::CustomMetric;
 use orion_interner::StringInterner;
 use smallvec::SmallVec;
@@ -206,24 +206,16 @@ impl CustomMetrics {
 
     #[inline]
     pub fn with_key_value<'a>(&self, hook: MetricsHook, kv: &KeyValueMap<'a>, extra_attributes: &[KeyValue]) {
-        self.process_metrics(hook, extra_attributes, |name| {
-            kv.get(name.as_str()).copied()
-        });
+        self.process_metrics(hook, extra_attributes, |name| kv.get(name.as_str()).copied());
     }
 
     #[inline]
     pub fn with_headers(&self, hook: MetricsHook, headers: &HeaderMap, extra_attributes: &[KeyValue]) {
-        self.process_metrics(hook, extra_attributes, |name| {
-            headers.get(name).and_then(|val| val.to_str().ok())
-        });
+        self.process_metrics(hook, extra_attributes, |name| headers.get(name).and_then(|val| val.to_str().ok()));
     }
 
-    fn process_metrics<'a, F>(
-        &self,
-        hook: MetricsHook,
-        extra_attributes: &[KeyValue],
-        get_value: F,
-    ) where
+    fn process_metrics<'a, F>(&self, hook: MetricsHook, extra_attributes: &[KeyValue], get_value: F)
+    where
         F: Fn(&HeaderName) -> Option<&'a str>,
     {
         let counters = match hook {

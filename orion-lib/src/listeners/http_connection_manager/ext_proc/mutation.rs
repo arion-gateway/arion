@@ -40,7 +40,11 @@ impl PseudoHeaders {
     }
 
     fn is_empty(&self) -> bool {
-        self.method.is_none() && self.scheme.is_none() && self.authority.is_none() && self.path.is_none() && self.status.is_none()
+        self.method.is_none()
+            && self.scheme.is_none()
+            && self.authority.is_none()
+            && self.path.is_none()
+            && self.status.is_none()
     }
 }
 
