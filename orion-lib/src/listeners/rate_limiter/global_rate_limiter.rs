@@ -9,9 +9,7 @@ use std::{
 use orion_configuration::config::{
     cluster::ClusterSpecifier,
     network_filters::{
-        http_connection_manager::http_filters::{
-            ext_proc::GrpcServiceSpecifier, global_rate_limit::GlobalRateLimit as GlobalRateLimitConfig,
-        },
+        http_connection_manager::http_filters::ext_proc::GrpcServiceSpecifier,
         network_global_rate_limit::NetworkGlobalRateLimit as NetworkGlobalRateLimitConfig,
     },
 };
@@ -36,7 +34,10 @@ struct QuotaBucket {
 
 const INITIAL_CAPACITY: usize = 10_000;
 
-static GLOBAL_QUOTAS: LazyLock<PapayaMap<SmolStr, Arc<QuotaBucket>, ahash::RandomState>> =
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct Domain(SmolStr);
+
+static GLOBAL_QUOTAS: LazyLock<PapayaMap<Domain, Arc<QuotaBucket>, ahash::RandomState>> =
     LazyLock::new(|| PapayaMap::with_capacity_and_hasher(INITIAL_CAPACITY, ahash::RandomState::new()));
 
 #[derive(Debug, Clone)]
@@ -47,14 +48,9 @@ enum RlsClient {
 
 #[derive(Debug, Clone)]
 pub struct NetworkGlobalRateLimit {
-    domain: SmolStr,
+    domain: Domain,
     failure_mode_deny: bool,
     rls_client: RlsClient,
-}
-
-// Not implemented yet, this will be a hybrid with UserRateLimiter
-pub struct GlobalRateLimit {
-    config: GlobalRateLimitConfig,
 }
 
 impl TryFrom<NetworkGlobalRateLimitConfig> for NetworkGlobalRateLimit {
@@ -71,12 +67,12 @@ impl TryFrom<NetworkGlobalRateLimitConfig> for NetworkGlobalRateLimit {
             GrpcServiceSpecifier::Cluster(c) => RlsClient::Cluster(c.cluster_name),
         };
 
-        Ok(Self { domain: config.domain, failure_mode_deny: config.failure_mode_deny, rls_client })
+        Ok(Self { domain: Domain(config.domain), failure_mode_deny: config.failure_mode_deny, rls_client })
     }
 }
 
 impl NetworkGlobalRateLimit {
-    pub fn domain(&self) -> &SmolStr {
+    pub fn domain(&self) -> &Domain {
         &self.domain
     }
 
@@ -87,7 +83,7 @@ impl NetworkGlobalRateLimit {
         // 1. Fast path: fully lock-free check while holding the pin guard
         let bucket = {
             let map = GLOBAL_QUOTAS.pin();
-            let bucket_ref = map.get_or_insert_with(target_domain.clone(), || {
+            let bucket_ref = map.get_or_insert_with(Domain(target_domain.clone()), || {
                 Arc::new(QuotaBucket {
                     remaining: AtomicI64::new(0),
                     valid_until_ms: AtomicU64::new(0),
@@ -144,7 +140,7 @@ impl NetworkGlobalRateLimit {
 
     async fn call_rls(&self, target_domain: &str) -> crate::Result<RateLimitResponse> {
         let rls_request = RateLimitRequest {
-            domain: self.domain.to_string(),
+            domain: self.domain.0.to_string(),
             descriptors: vec![RateLimitDescriptor {
                 entries: vec![DescriptorEntry { key: "domain".into(), value: target_domain.to_string() }],
                 ..Default::default()

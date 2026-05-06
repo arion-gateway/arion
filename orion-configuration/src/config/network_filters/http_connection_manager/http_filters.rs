@@ -17,7 +17,6 @@
 
 pub mod cors;
 pub mod ext_proc;
-pub mod global_rate_limit;
 pub mod http_rbac;
 pub mod jwt;
 pub mod local_rate_limit;
