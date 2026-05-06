@@ -718,6 +718,7 @@ impl Listener {
                 connection_metadata.peer_address(),
                 filterchain.filter_chain().name
             );
+            let _cx_guard = filterchain.apply_connection_limit().await?;
             filterchain.apply_network_rate_limit(sni.as_ref()).await?;
             if let Some(stream) = filterchain.apply_rbac(stream, &connection_metadata, sni.as_deref()) {
                 return filterchain
