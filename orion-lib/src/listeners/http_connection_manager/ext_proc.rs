@@ -363,7 +363,7 @@ impl ExternalProcessor {
                     debug!(target: "ext_proc", "applying headers mutation: {headers_modifications:?}");
                     if let Err(e) = apply_request_header_mutations(
                         request,
-                        &headers_modifications,
+                        headers_modifications,
                         self.inner.worker_config.mutation_rules.as_ref(),
                     ) {
                         return self.on_filter_error(
@@ -562,7 +562,7 @@ impl ExternalProcessor {
                     debug!(target: "ext_proc", "applying headers mutation: {headers_modifications:?}");
                     if let Err(e) = apply_response_header_mutations(
                         response,
-                        &headers_modifications,
+                        headers_modifications,
                         self.inner.worker_config.mutation_rules.as_ref(),
                     ) {
                         return self.on_filter_error(
@@ -781,6 +781,8 @@ struct ExternalProcessingWorker<S: kind::Mode> {
     overridable_modes: Arc<OverridableGlobalModes>,
 }
 
+
+
 #[inline]
 fn clone_frame(frame: &Frame<Bytes>) -> Frame<Bytes> {
     if let Some(data) = frame.data_ref() {
@@ -937,7 +939,7 @@ impl ExternalProcessingWorker<kind::Processing> {
                                 break 'transaction_loop;
                             }
                         },
-                        Ok(Some(ProcessingResponse { response: Some(ProcessingResponseType::ImmediateResponse(response_attempt)), ..})) => {
+                        Ok(Some(ProcessingResponse { response: Some(ProcessingResponseType::ImmediateResponse(mut response_attempt)), ..})) => {
                             debug!(target: "ext_proc", "<- ImmediateResponse received");
 
                             if self.inner.worker_config.disable_immediate_response { // disabled
@@ -978,7 +980,7 @@ impl ExternalProcessingWorker<kind::Processing> {
                             } else { // enabled
                                 match self.can_handle_immediate_response() {
                                     Some(MessageType::Request) => {
-                                        let direct_response = self.build_direct_response(&response_attempt);
+                                        let direct_response = self.build_direct_response(&mut response_attempt);
                                         let proof = self.request_processing.make_proof().unwrap_or_else(|| {
                                             let status = ProcessingStatus::EndWithDirectResponse(direct_response);
                                             self.request_processing.return_status(status, "immediate_response on request")
@@ -990,7 +992,7 @@ impl ExternalProcessingWorker<kind::Processing> {
                                         self.request_processing.set_streaming_body(false);
                                     }
                                     Some(MessageType::Response) => {
-                                        let direct_response = self.build_direct_response(&response_attempt);
+                                        let direct_response = self.build_direct_response(&mut response_attempt);
                                         let proof = self.response_processing.make_proof().unwrap_or_else(|| {
                                             let status = ProcessingStatus::EndWithDirectResponse(direct_response);
                                             self.response_processing.return_status(status, "immediate_response on response")
@@ -1700,17 +1702,17 @@ impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
     }
 
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    fn build_direct_response(&mut self, response_attempt: &ImmediateResponse) -> Response<OrionResponseBody> {
+    fn build_direct_response(&mut self, response_attempt: &mut ImmediateResponse) -> Response<OrionResponseBody> {
         let status = response_attempt
             .status
             .as_ref()
             .and_then(|s| http::StatusCode::from_u16(s.code as u16).ok())
             .unwrap_or(http::StatusCode::OK);
-        let body_bytes = Bytes::copy_from_slice(&response_attempt.body);
+        let body_bytes = Bytes::from(std::mem::take(&mut response_attempt.body));
         let body = Full::new(body_bytes);
         let mut response = Response::new(TimeoutBody::new(None, PolyBody::from(body)));
         *response.status_mut() = status;
-        if let Some(header_mutation) = &response_attempt.headers {
+        if let Some(header_mutation) = response_attempt.headers.take() {
             let _ = apply_response_header_mutations(
                 &mut response,
                 header_mutation,

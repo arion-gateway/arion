@@ -703,10 +703,11 @@ impl<Msg: kind::MessageKind + OverridableModeSelector> Processing<kind::Processi
             (None, None) => None,
             (None, r @ Some(_)) => r,
             (l @ Some(_), None) => l,
-            (Some(l), Some(r)) => Some(HeaderMutation {
-                set_headers: [l.set_headers, r.set_headers].concat(),
-                remove_headers: [l.remove_headers, r.remove_headers].concat(),
-            }),
+            (Some(mut l), Some(mut r)) => {
+                l.set_headers.append(&mut r.set_headers);
+                l.remove_headers.append(&mut r.remove_headers);
+                Some(l)
+            }
         }
     }
 
@@ -725,7 +726,7 @@ impl<Msg: kind::MessageKind + OverridableModeSelector> Processing<kind::Processi
             // update the local version of trailers, if required if let Some(trailers) = self.body_context.trailers.as_mut() {
             debug!(target: "ext_proc", "handle_trailers_response: mutating trailers...");
             if let Some(trailers_updates) = trailers_response.header_mutation.take() {
-                let _ = apply_trailer_mutations(&mut trailers, &trailers_updates, None);
+                let _ = apply_trailer_mutations(&mut trailers, trailers_updates, None);
             }
 
             _ = self.frame_bridge.inject_frame(Ok(Frame::trailers(trailers)), proof).await;
@@ -895,7 +896,6 @@ impl<M: kind::Mode + Default, Msg: kind::MessageKind + OverridableModeSelector> 
         let processing_request = if let Some(bytes) = chunk.data_mut() {
             // DATA
             let data = std::mem::take(bytes);
-
             let http_body = HttpBody {
                 body: data.into(),
                 end_of_stream,
@@ -922,16 +922,12 @@ impl<M: kind::Mode + Default, Msg: kind::MessageKind + OverridableModeSelector> 
                     protocol_config: None,
                 }
             }
-        } else if let Some(traiers) = chunk.trailers_mut() {
+        } else if let Some(trailers) = chunk.trailers_mut() {
             // TRAILERS
-            let data = std::mem::take(traiers);
-
-            // store trailers for potential update later
-            self.trailers = Some(data.clone());
+            let data = std::mem::take(trailers);
 
         let mut headers_vec = Vec::with_capacity(data.len());
-        for (name, value) in data {
-            let Some(name) = name else { continue };
+        for (name, value) in &data {
             let header_name = name.as_str();
             let header_value = if let Ok(value_str) = value.to_str() {
                 ProstHeaderValue { key: header_name.to_owned(), value: value_str.to_owned(), raw_value: Vec::new() }
@@ -945,6 +941,9 @@ impl<M: kind::Mode + Default, Msg: kind::MessageKind + OverridableModeSelector> 
             headers_vec.push(header_value);
         }
         let envoy_trailers = EnvoyHeaderMap(ProstHeaderMap { headers: headers_vec });
+
+            // store trailers for potential update later WITHOUT CLONING
+            self.trailers = Some(data);
 
             if Msg::IS_REQUEST {
                 ProcessingRequest {
