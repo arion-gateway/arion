@@ -524,8 +524,8 @@ fn create_trailer_mutation(trailers: Vec<(&str, &str)>) -> Option<HeaderMutation
 }
 
 #[inline]
-fn convert_trailers_to_envoy_header_map(trailers: Vec<(&str, &str)>) -> HeaderMap {
-    HeaderMap {
+fn convert_trailers_to_envoy_header_map(trailers: Vec<(&str, &str)>) -> ProstHeaderMap {
+    ProstHeaderMap {
         headers: trailers
             .into_iter()
             .map(|(key, value)| EnvoyHeaderValue { key: key.to_owned(), value: value.to_owned(), raw_value: vec![] })

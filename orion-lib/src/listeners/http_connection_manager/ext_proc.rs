@@ -12,10 +12,8 @@ use crate::body::channel_body::{BodyType, ChannelBody, FrameBridge};
 use crate::body::timeout_body::TimeoutBody;
 use crate::event_error::EventFailure;
 use crate::listeners::http_connection_manager::ext_proc::kind::{MessageType, RequestMsg, ResponseMsg};
-use crate::listeners::http_connection_manager::ext_proc::pseudo_header::CombinedHeaderMap;
 use crate::{OrionRequestBody, OrionResponseBody};
 use http_body_util::{BodyExt, Collected, LengthLimitError, Limited};
-use smol_str::ToSmolStr;
 
 use crate::listeners::http_connection_manager::ext_proc::mutation::{
     apply_request_header_mutations, apply_response_header_mutations,
@@ -50,7 +48,7 @@ use orion_configuration::config::{
 };
 use orion_data_plane_api::envoy_data_plane_api::{
     envoy::{
-        config::core::v3::{HeaderMap, HeaderValue},
+        config::core::v3::{HeaderMap as ProstHeaderMap, HeaderValue},
         service::ext_proc::v3::{
             external_processor_client::ExternalProcessorClient,
             processing_response::Response as ProcessingResponseType, ImmediateResponse, ProcessingRequest,
@@ -240,21 +238,39 @@ impl ExternalProcessor {
         if process_headers {
             debug!(target: "ext_proc", "request processing headers");
             let uri = request.uri();
-            let pseudo: Vec<_> = {
-                let mut v = Vec::with_capacity(4);
-                v.extend(
-                    [
-                        Some((pseudo_header::METHOD, request.method().as_str().into())),
-                        uri.scheme().map(|s| (pseudo_header::SCHEME, s.as_str().into())),
-                        uri.authority().map(|a| (pseudo_header::AUTHORITY, a.as_str().into())),
-                        Some((pseudo_header::PATH, uri.path_and_query().map_or(uri.path(), |f| f.as_str()).into())),
-                    ]
-                    .into_iter()
-                    .flatten(),
-                );
-                v
-            };
-            ext_proc_headers = Some(CombinedHeaderMap { regular: self.filter_header_map(request.headers()), pseudo });
+
+            let mut headers_vec = Vec::with_capacity(request.headers().len() + 4);
+
+            headers_vec.push(HeaderValue { key: pseudo_header::METHOD.to_owned(), value: request.method().as_str().to_owned(), raw_value: vec![] });
+            if let Some(scheme) = uri.scheme() {
+                headers_vec.push(HeaderValue { key: pseudo_header::SCHEME.to_owned(), value: scheme.as_str().to_owned(), raw_value: vec![] });
+            }
+            if let Some(authority) = uri.authority() {
+                headers_vec.push(HeaderValue { key: pseudo_header::AUTHORITY.to_owned(), value: authority.as_str().to_owned(), raw_value: vec![] });
+            }
+            headers_vec.push(HeaderValue {
+                key: pseudo_header::PATH.to_owned(),
+                value: uri.path_and_query().map_or(uri.path(), |f| f.as_str()).to_owned(),
+                raw_value: vec![]
+            });
+
+            for (name, value) in request.headers() {
+                if self.should_forward_header(name.as_str()) {
+                    let header_name = name.as_str();
+                    let header_value = if let Ok(value_str) = value.to_str() {
+                        HeaderValue { key: header_name.to_owned(), value: value_str.to_owned(), raw_value: Vec::new() }
+                    } else {
+                        HeaderValue {
+                            key: header_name.to_owned(),
+                            value: String::default(),
+                            raw_value: value.as_bytes().into(),
+                        }
+                    };
+                    headers_vec.push(header_value);
+                }
+            }
+
+            ext_proc_headers = Some(EnvoyHeaderMap(ProstHeaderMap { headers: headers_vec }));
         }
 
         let body: PolyBody = std::mem::take(&mut request.body_mut().inner.inner);
@@ -433,10 +449,27 @@ impl ExternalProcessor {
 
         if process_headers {
             debug!(target: "ext_proc", "response processing headers");
-            ext_proc_headers = Some(CombinedHeaderMap {
-                regular: self.filter_header_map(response.headers()),
-                pseudo: vec![(pseudo_header::STATUS, response.status().as_u16().to_smolstr())],
-            });
+
+            let mut headers_vec = Vec::with_capacity(response.headers().len() + 1);
+            headers_vec.push(HeaderValue { key: pseudo_header::STATUS.to_owned(), value: response.status().as_u16().to_string(), raw_value: vec![] });
+
+            for (name, value) in response.headers() {
+                if self.should_forward_header(name.as_str()) {
+                    let header_name = name.as_str();
+                    let header_value = if let Ok(value_str) = value.to_str() {
+                        HeaderValue { key: header_name.to_owned(), value: value_str.to_owned(), raw_value: Vec::new() }
+                    } else {
+                        HeaderValue {
+                            key: header_name.to_owned(),
+                            value: String::default(),
+                            raw_value: value.as_bytes().into(),
+                        }
+                    };
+                    headers_vec.push(header_value);
+                }
+            }
+
+            ext_proc_headers = Some(EnvoyHeaderMap(ProstHeaderMap { headers: headers_vec }));
         }
 
         let body: PolyBody = std::mem::take(&mut response.body_mut().inner);
@@ -678,58 +711,13 @@ impl ExternalProcessor {
         }
         true
     }
-
-    fn filter_header_map(&self, headers: &http::HeaderMap) -> http::HeaderMap {
-        let Some(rules) = &self.inner.forward_rules else {
-            return headers.clone();
-        };
-
-        if rules.allowed_headers.is_empty() && rules.disallowed_headers.is_empty() {
-            return headers.clone();
-        }
-
-        let mut filtered_headers = http::HeaderMap::with_capacity(headers.len());
-        for (name, value) in headers {
-            if self.should_forward_header(name.as_str()) {
-                filtered_headers.append(name.clone(), value.clone());
-            }
-        }
-        filtered_headers
-    }
 }
 
-struct EnvoyHeaderMap(HeaderMap);
-impl From<&http::HeaderMap> for EnvoyHeaderMap {
-    fn from(headers: &http::HeaderMap) -> Self {
-        let mut headers_vec = Vec::with_capacity(headers.len());
-        for (name, value) in headers {
-            let header_name = name.as_str();
-            let header_value = if let Ok(value_str) = value.to_str() {
-                HeaderValue { key: header_name.to_owned(), value: value_str.to_owned(), raw_value: Vec::new() }
-            } else {
-                HeaderValue {
-                    key: header_name.to_owned(),
-                    value: String::default(),
-                    raw_value: value.as_bytes().into(),
-                }
-            };
-            headers_vec.push(header_value);
-        }
-        EnvoyHeaderMap(HeaderMap { headers: headers_vec })
-    }
-}
+pub struct EnvoyHeaderMap(pub ProstHeaderMap);
 
-impl From<&CombinedHeaderMap> for EnvoyHeaderMap {
-    fn from(headers: &CombinedHeaderMap) -> Self {
-        let regular = EnvoyHeaderMap::from(&headers.regular);
-        let mut headers_pseudo = Vec::with_capacity(headers.pseudo.len());
-        for (name, value) in &headers.pseudo {
-            headers_pseudo.push(HeaderValue { key: (*name).into(), value: (*value).to_string(), raw_value: vec![] });
-        }
-
-        let mut headers = regular.0.headers;
-        headers.extend(headers_pseudo);
-        EnvoyHeaderMap(HeaderMap { headers })
+impl std::fmt::Debug for EnvoyHeaderMap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EnvoyHeaderMap").field("headers", &self.0.headers).finish()
     }
 }
 
@@ -768,8 +756,8 @@ pub struct ProcessingTask {
 
 #[derive(Debug)]
 pub enum ProcessingData {
-    Request(Option<CombinedHeaderMap>, FrameBridge),
-    Response(Option<CombinedHeaderMap>, FrameBridge),
+    Request(Option<EnvoyHeaderMap>, FrameBridge),
+    Response(Option<EnvoyHeaderMap>, FrameBridge),
 }
 
 struct BidiStream {
