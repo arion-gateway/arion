@@ -25,6 +25,7 @@ use std::{
 
 use orion_configuration::config::network_filters::ConnectionLimit as ConnectionLimitConfig;
 use papaya::HashMap as PapayaMap;
+use tracing::debug;
 
 static GLOBAL_CONNECTION_COUNTS: LazyLock<PapayaMap<(&'static str, u64), Arc<AtomicU64>, ahash::RandomState>> =
     LazyLock::new(|| PapayaMap::with_hasher(ahash::RandomState::new()));
@@ -40,7 +41,8 @@ pub struct ConnectionGuard(Arc<AtomicU64>);
 
 impl Drop for ConnectionGuard {
     fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::Relaxed);
+        let active = self.0.fetch_sub(1, Ordering::Relaxed) - 1;
+        debug!(target: "connection_limit", active, "connection closed");
     }
 }
 
@@ -56,13 +58,22 @@ impl From<(&'static str, u64, ConnectionLimitConfig)> for NetworkConnectionLimit
 
 impl NetworkConnectionLimit {
     pub async fn check(&self) -> crate::Result<ConnectionGuard> {
-        if self.active.load(Ordering::Acquire) >= self.max_connections {
+        let current = self.active.load(Ordering::Acquire);
+        if current >= self.max_connections {
+            debug!(
+                target: "connection_limit",
+                active = current,
+                max = self.max_connections,
+                delay = ?self.delay,
+                "connection rejected: limit reached"
+            );
             if let Some(delay) = self.delay {
                 tokio::time::sleep(delay).await;
             }
             return Err("connection limit exceeded".into());
         }
-        self.active.fetch_add(1, Ordering::AcqRel);
+        let active = self.active.fetch_add(1, Ordering::AcqRel) + 1;
+        debug!(target: "connection_limit", active, max = self.max_connections, "connection accepted");
         Ok(ConnectionGuard(Arc::clone(&self.active)))
     }
 }
