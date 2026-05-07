@@ -32,6 +32,7 @@ use crate::{
     Error, PolyBody,
 };
 use bytes::Bytes;
+use const_str::parse;
 use futures::{future::Either, StreamExt};
 use http::header::CONTENT_LENGTH;
 use http::{Request, Response, StatusCode};
@@ -67,13 +68,52 @@ use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::{sync::Arc, time::Duration};
 use tokio::sync::mpsc::error::SendError;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, Semaphore};
 use tracing::{debug, info, warn};
 
-const CHANNEL_BODY_PREFETCH_FRAMES: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(4) };
-const EXT_PROC_FRAME_MERGE_LIMIT: u32 = 4; // max number of frames to merge in streaming mode
-const EXT_PROC_MERGE_WINDOW: Duration = tokio::time::Duration::from_micros(100); // time window to wait for more frames to merge
-const EXT_PROC_BUFFERED_BODY_LIMIT: usize = 100 * 1024 * 1024; // extend the default gRPC payload limit from 4MB to 100MB
+const CHANNEL_BODY_PREFETCH_FRAMES: NonZeroUsize = unsafe {
+    NonZeroUsize::new_unchecked(parse!(
+        match option_env!("CHANNEL_BODY_PREFETCH_FRAMES") {
+            Some(s) => s,
+            None => "4",
+        },
+        usize
+    ))
+};
+
+const EXT_PROC_BUFFERED_BODY_LIMIT: usize = parse!(
+    match option_env!("EXT_PROC_BUFFERED_BODY_LIMIT") {
+        Some(s) => s,
+        None => "104857600", // 100 * 1024 * 1024
+    },
+    usize
+);
+
+const EXT_PROC_MERGE_WINDOW: Duration = Duration::from_micros(parse!(
+    match option_env!("EXT_PROC_MERGE_WINDOW") {
+        Some(s) => s,
+        None => "100",
+    },
+    u64
+));
+
+const EXT_PROC_FRAME_MERGE_LIMIT: u32 = parse!(
+    match option_env!("EXT_PROC_FRAME_MERGE_LIMIT") {
+        Some(v) => v,
+        None => "4",
+    },
+    u32
+);
+
+const EXT_PROC_MAX_CONCURRENT_REQUESTS: Option<usize> = match option_env!("EXT_PROC_MAX_CONCURRENT_REQUESTS") {
+    Some(s) => Some(parse!(s, usize)),
+    None => None,
+};
+
+thread_local! {
+    static EXT_PROC_CONCURRENT_PERMIT: Option<Arc<Semaphore>> =
+        EXT_PROC_MAX_CONCURRENT_REQUESTS.map(|limit| Arc::new(Semaphore::new(limit)));
+}
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum ExtProcError {
@@ -125,6 +165,12 @@ impl From<(ExternalProcessorConfig, Option<ExtProcPerRoute>, Option<ExternalProc
         ),
     ) -> Self {
         debug!(target: "ext_proc", "From<ExternalProcessorConfig, Option<ExtProcPerRoute>, Option<ExternalProcessorConfigExt>> for ExternalProcessor");
+        // dump the value of all variables configured via environment variables
+        info!(target: "ext_proc", "const CHANNEL_BODY_PREFETCH_FRAMES: {CHANNEL_BODY_PREFETCH_FRAMES}");
+        info!(target: "ext_proc", "const EXT_PROC_BUFFERED_BODY_LIMIT: {EXT_PROC_BUFFERED_BODY_LIMIT}");
+        info!(target: "ext_proc", "const EXT_PROC_MERGE_WINDOW: {EXT_PROC_MERGE_WINDOW:?}");
+        info!(target: "ext_proc", "const EXT_PROC_FRAME_MERGE_LIMIT: {EXT_PROC_FRAME_MERGE_LIMIT}");
+        info!(target: "ext_proc", "const EXT_PROC_MAX_CONCURRENT_REQUESTS: {EXT_PROC_MAX_CONCURRENT_REQUESTS:?}");
         let forward_rules = initial_config.forward_rules.clone();
         let worker_config = ExternalProcessingWorkerConfig::from((initial_config, per_route_config, ext_config));
         let overridable_modes = Arc::new(OverridableGlobalModes::from(&worker_config));
@@ -241,17 +287,29 @@ impl ExternalProcessor {
 
             let mut headers_vec = Vec::with_capacity(request.headers().len() + 4);
 
-            headers_vec.push(HeaderValue { key: pseudo_header::METHOD.to_owned(), value: request.method().as_str().to_owned(), raw_value: vec![] });
+            headers_vec.push(HeaderValue {
+                key: pseudo_header::METHOD.to_owned(),
+                value: request.method().as_str().to_owned(),
+                raw_value: vec![],
+            });
             if let Some(scheme) = uri.scheme() {
-                headers_vec.push(HeaderValue { key: pseudo_header::SCHEME.to_owned(), value: scheme.as_str().to_owned(), raw_value: vec![] });
+                headers_vec.push(HeaderValue {
+                    key: pseudo_header::SCHEME.to_owned(),
+                    value: scheme.as_str().to_owned(),
+                    raw_value: vec![],
+                });
             }
             if let Some(authority) = uri.authority() {
-                headers_vec.push(HeaderValue { key: pseudo_header::AUTHORITY.to_owned(), value: authority.as_str().to_owned(), raw_value: vec![] });
+                headers_vec.push(HeaderValue {
+                    key: pseudo_header::AUTHORITY.to_owned(),
+                    value: authority.as_str().to_owned(),
+                    raw_value: vec![],
+                });
             }
             headers_vec.push(HeaderValue {
                 key: pseudo_header::PATH.to_owned(),
                 value: uri.path_and_query().map_or(uri.path(), |f| f.as_str()).to_owned(),
-                raw_value: vec![]
+                raw_value: vec![],
             });
 
             for (name, value) in request.headers() {
@@ -398,6 +456,14 @@ impl ExternalProcessor {
     }
 
     pub async fn apply_request(&mut self, request: &mut Request<OrionRequestBody>) -> FilterDecision {
+        // Acquire permit before proceeding. Note: It's safe the call unwrap here, since the semaphore is never closed explicitly.
+        #[allow(clippy::unwrap_used)]
+        let _permit = if let Some(semaphore) = EXT_PROC_CONCURRENT_PERMIT.with(|s| s.clone()) {
+            Some(semaphore.acquire_owned().await.unwrap())
+        } else {
+            None
+        };
+
         let processing_data = match self.apply_request_prepare_processing_data(request).await {
             Ok(data) => data,
             Err(decision) => return decision,
@@ -451,7 +517,11 @@ impl ExternalProcessor {
             debug!(target: "ext_proc", "response processing headers");
 
             let mut headers_vec = Vec::with_capacity(response.headers().len() + 1);
-            headers_vec.push(HeaderValue { key: pseudo_header::STATUS.to_owned(), value: response.status().as_u16().to_string(), raw_value: vec![] });
+            headers_vec.push(HeaderValue {
+                key: pseudo_header::STATUS.to_owned(),
+                value: response.status().as_u16().to_string(),
+                raw_value: vec![],
+            });
 
             for (name, value) in response.headers() {
                 if self.should_forward_header(name.as_str()) {
@@ -780,8 +850,6 @@ struct ExternalProcessingWorker<S: kind::Mode> {
     timeout_state: TimeoutState,
     overridable_modes: Arc<OverridableGlobalModes>,
 }
-
-
 
 #[inline]
 fn clone_frame(frame: &Frame<Bytes>) -> Frame<Bytes> {
