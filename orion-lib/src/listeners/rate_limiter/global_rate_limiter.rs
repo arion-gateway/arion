@@ -34,6 +34,15 @@ struct QuotaBucket {
     update_lock: AsyncMutex<()>,
 }
 
+impl QuotaBucket {
+    /// Attempts to consume one ticket from the bucket.
+    /// Returns `true` (ticket granted) only if the quota is still valid AND there was a
+    /// positive count before decrement. Going negative is benign — the next quota refresh resets it.
+    fn try_consume(&self, now: u64) -> bool {
+        self.valid_until_ms.load(Ordering::Acquire) > now && self.remaining.fetch_sub(1, Ordering::AcqRel) > 0
+    }
+}
+
 const INITIAL_CAPACITY: usize = 10_000;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -99,62 +108,60 @@ impl NetworkGlobalRateLimit {
     pub async fn check(&self) -> crate::Result<()> {
         let now = now_ms();
 
-        // 1. Fast path: fully lock-free check while holding the pin guard
-        let bucket = {
-            let map = GLOBAL_QUOTAS.pin();
-            let bucket_ref = map.get_or_insert_with(self.domain.clone(), || {
-                Arc::new(QuotaBucket {
-                    remaining: AtomicI64::new(0),
-                    valid_until_ms: AtomicU64::new(0),
-                    update_lock: AsyncMutex::new(()),
-                })
-            });
-
-            if bucket_ref.valid_until_ms.load(Ordering::Acquire) > now {
-                if bucket_ref.remaining.fetch_sub(1, Ordering::AcqRel) > 0 {
-                    return Ok(());
-                }
-            }
-
-            // If we reach here, we need the slow path. Clone the Arc so we can drop the map guard.
-            bucket_ref.clone()
-        };
-
-        // 3. Slow path: acquire the async lock to prevent thundering herd
-        let _guard = bucket.update_lock.lock().await;
-
-        // 4. Double-check: another thread might have successfully called RLS and
-        // replenished the quota while this thread was waiting for the lock
-        if bucket.valid_until_ms.load(Ordering::Acquire) > now {
-            if bucket.remaining.fetch_sub(1, Ordering::AcqRel) > 0 {
+        // Fast path: consume from an existing quota bucket without any locking.
+        let maybe_bucket = GLOBAL_QUOTAS.pin().get(&self.domain).cloned();
+        if let Some(bucket) = maybe_bucket {
+            if bucket.try_consume(now) {
                 return Ok(());
             }
+            // Quota exhausted or expired: serialize RLS refreshes under the bucket lock so
+            // only one task calls the RLS while others wait and re-check.
+            let _guard = bucket.update_lock.lock().await;
+            if bucket.try_consume(now) {
+                return Ok(());
+            }
+            return match self.call_rls().await {
+                Ok(response) => {
+                    if let Some((requests, valid_until_ms)) = extract_quota(&response) {
+                        bucket.valid_until_ms.store(valid_until_ms, Ordering::Release);
+                        bucket.remaining.store(requests as i64, Ordering::Release);
+                    }
+                    Self::eval_rls_response(response)
+                },
+                Err(e) => if self.failure_mode_deny { Err(e) } else { Ok(()) },
+            };
         }
 
-        // 5. Actually call the RLS (only one thread per domain enters here at a time)
+        // No bucket yet: call the RLS directly. Multiple concurrent connections may reach
+        // here before the first quota is established; that is acceptable — once the first
+        // quota response arrives and the bucket is inserted, they all hit the fast path.
         match self.call_rls().await {
             Ok(response) => {
                 if let Some((requests, valid_until_ms)) = extract_quota(&response) {
-                    // Update expiry first, then remaining tokens
+                    let map = GLOBAL_QUOTAS.pin();
+                    let bucket = map.get_or_insert_with(self.domain.clone(), || {
+                        Arc::new(QuotaBucket {
+                            remaining: AtomicI64::new(0),
+                            valid_until_ms: AtomicU64::new(0),
+                            update_lock: AsyncMutex::new(()),
+                        })
+                    });
                     bucket.valid_until_ms.store(valid_until_ms, Ordering::Release);
                     bucket.remaining.store(requests as i64, Ordering::Release);
                 }
-
-                let code = rate_limit_response::Code::try_from(response.overall_code)
-                    .unwrap_or(rate_limit_response::Code::Unknown);
-                if code == rate_limit_response::Code::OverLimit {
-                    return Err("rate limited by global rate limiter".into());
-                }
-                Ok(())
+                Self::eval_rls_response(response)
             },
-            Err(e) => {
-                if self.failure_mode_deny {
-                    Err(e)
-                } else {
-                    Ok(())
-                }
-            },
+            Err(e) => if self.failure_mode_deny { Err(e) } else { Ok(()) },
         }
+    }
+
+    fn eval_rls_response(response: RateLimitResponse) -> crate::Result<()> {
+        let code = rate_limit_response::Code::try_from(response.overall_code)
+            .unwrap_or(rate_limit_response::Code::Unknown);
+        if code == rate_limit_response::Code::OverLimit {
+            return Err("rate limited by global rate limiter".into());
+        }
+        Ok(())
     }
 
     async fn call_rls(&self) -> crate::Result<RateLimitResponse> {
