@@ -5,19 +5,32 @@ use smol_str::SmolStr;
 use crate::config::network_filters::http_connection_manager::http_filters::ext_proc::GrpcService;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DescriptorEntry {
+    pub key: SmolStr,
+    pub value: SmolStr,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Descriptor {
+    pub entries: Vec<DescriptorEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NetworkGlobalRateLimit {
     pub stat_prefix: InternedStr,
     pub domain: SmolStr,
     pub grpc_service: GrpcService,
     #[serde(default)]
     pub failure_mode_deny: bool,
+    #[serde(default)]
+    pub descriptors: Vec<Descriptor>,
 }
 
 #[cfg(feature = "envoy-conversions")]
 mod envoy_conversions {
     use std::time::Duration;
 
-    use super::NetworkGlobalRateLimit;
+    use super::{Descriptor, DescriptorEntry, NetworkGlobalRateLimit};
     use crate::config::network_filters::http_connection_manager::http_filters::ext_proc::{
         ClusterGrpc, GoogleGrpc, GrpcService, GrpcServiceSpecifier,
     };
@@ -36,10 +49,10 @@ mod envoy_conversions {
             unsupported_field!(
                 //stat_prefix,
                 //domain,
-                timeout, // timeout is already part of the grpc service configuration
+                timeout // timeout is already part of the grpc service configuration
                 //failure_mode_deny,
                 //rate_limit_service,
-                descriptors // descriptors are not supported on network global rate limiter for now
+                //descriptors,
             )?;
 
             if domain.is_empty() {
@@ -48,10 +61,27 @@ mod envoy_conversions {
 
             let stat_prefix = if stat_prefix.is_empty() { domain.clone() } else { stat_prefix };
 
+            let descriptors = descriptors
+                .into_iter()
+                .map(|d| Descriptor {
+                    entries: d
+                        .entries
+                        .into_iter()
+                        .map(|e| DescriptorEntry { key: e.key.into(), value: e.value.into() })
+                        .collect(),
+                })
+                .collect();
+
             let rls_config = required!(rate_limit_service).with_node("rate_limit_service")?;
             let grpc_service = rls_config.try_into()?;
 
-            Ok(Self { stat_prefix: stat_prefix.into(), domain: domain.into(), grpc_service, failure_mode_deny })
+            Ok(Self {
+                stat_prefix: stat_prefix.into(),
+                domain: domain.into(),
+                grpc_service,
+                failure_mode_deny,
+                descriptors,
+            })
         }
     }
 
