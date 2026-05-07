@@ -182,17 +182,11 @@ impl FilterchainType {
         Some(stream)
     }
 
-    pub async fn apply_network_rate_limit(&self, sni: Option<&str>) -> Result<()> {
+    pub async fn apply_network_rate_limit(&self) -> Result<()> {
         let Some(rate_limit) = &self.config.network_global_rate_limit else {
             return Ok(());
         };
-        let domain = match sni {
-            Some(s) => SmolStr::from(s),
-            None => {
-                return Err("network rate limit: TLS connection missing SNI".into());
-            },
-        };
-        rate_limit.check(domain).await
+        rate_limit.check().await
     }
 
     #[allow(clippy::used_underscore_binding)]

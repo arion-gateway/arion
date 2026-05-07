@@ -10,7 +10,9 @@ use orion_configuration::config::{
     cluster::ClusterSpecifier,
     network_filters::{
         http_connection_manager::http_filters::ext_proc::GrpcServiceSpecifier,
-        network_global_rate_limit::NetworkGlobalRateLimit as NetworkGlobalRateLimitConfig,
+        network_global_rate_limit::{
+            DescriptorEntry as ConfigDescriptorEntry, NetworkGlobalRateLimit as NetworkGlobalRateLimitConfig,
+        },
     },
 };
 use orion_data_plane_api::envoy_data_plane_api::envoy::{
@@ -51,6 +53,7 @@ pub struct NetworkGlobalRateLimit {
     domain: Domain,
     failure_mode_deny: bool,
     rls_client: RlsClient,
+    descriptors: Vec<RateLimitDescriptor>,
 }
 
 impl TryFrom<NetworkGlobalRateLimitConfig> for NetworkGlobalRateLimit {
@@ -67,7 +70,23 @@ impl TryFrom<NetworkGlobalRateLimitConfig> for NetworkGlobalRateLimit {
             GrpcServiceSpecifier::Cluster(c) => RlsClient::Cluster(c.cluster_name),
         };
 
-        Ok(Self { domain: Domain(config.domain), failure_mode_deny: config.failure_mode_deny, rls_client })
+        let descriptors = config
+            .descriptors
+            .into_iter()
+            .map(|d| RateLimitDescriptor {
+                entries: d
+                    .entries
+                    .into_iter()
+                    .map(|ConfigDescriptorEntry { key, value }| DescriptorEntry {
+                        key: key.to_string(),
+                        value: value.to_string(),
+                    })
+                    .collect(),
+                ..Default::default()
+            })
+            .collect();
+
+        Ok(Self { domain: Domain(config.domain), failure_mode_deny: config.failure_mode_deny, rls_client, descriptors })
     }
 }
 
@@ -77,13 +96,13 @@ impl NetworkGlobalRateLimit {
     }
 
     /// Returns `Ok(())` to allow the connection, `Err` to drop the TCP connection.
-    pub async fn check(&self, target_domain: SmolStr) -> crate::Result<()> {
+    pub async fn check(&self) -> crate::Result<()> {
         let now = now_ms();
 
         // 1. Fast path: fully lock-free check while holding the pin guard
         let bucket = {
             let map = GLOBAL_QUOTAS.pin();
-            let bucket_ref = map.get_or_insert_with(Domain(target_domain.clone()), || {
+            let bucket_ref = map.get_or_insert_with(self.domain.clone(), || {
                 Arc::new(QuotaBucket {
                     remaining: AtomicI64::new(0),
                     valid_until_ms: AtomicU64::new(0),
@@ -113,7 +132,7 @@ impl NetworkGlobalRateLimit {
         }
 
         // 5. Actually call the RLS (only one thread per domain enters here at a time)
-        match self.call_rls(&target_domain).await {
+        match self.call_rls().await {
             Ok(response) => {
                 if let Some((requests, valid_until_ms)) = extract_quota(&response) {
                     // Update expiry first, then remaining tokens
@@ -138,13 +157,10 @@ impl NetworkGlobalRateLimit {
         }
     }
 
-    async fn call_rls(&self, target_domain: &str) -> crate::Result<RateLimitResponse> {
+    async fn call_rls(&self) -> crate::Result<RateLimitResponse> {
         let rls_request = RateLimitRequest {
             domain: self.domain.0.to_string(),
-            descriptors: vec![RateLimitDescriptor {
-                entries: vec![DescriptorEntry { key: "domain".into(), value: target_domain.to_string() }],
-                ..Default::default()
-            }],
+            descriptors: self.descriptors.clone(),
             hits_addend: 1,
         };
 
