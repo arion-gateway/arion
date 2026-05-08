@@ -120,7 +120,7 @@ pub struct HttpFilter {
     pub name: SmolStr,
     pub disabled: bool,
     pub filter: Option<HttpFilterValue>,
-    pub base_config: Option<HttpFilterConfig>,
+    pub filter_config: Option<Box<HttpFilterConfig>>,
 }
 
 #[derive(Debug, Clone)]
@@ -178,7 +178,7 @@ impl TryFrom<HttpFilterConfig> for HttpFilter {
                 HttpFilterValue::UserRateLimit(user_rate_limit.try_into()?)
             },
         };
-        Ok(Self { name, disabled, filter: Some(filter), base_config: hcm_config })
+        Ok(Self { name, disabled, filter: Some(filter), filter_config: hcm_config.map(Box::new) })
     }
 }
 
@@ -205,18 +205,18 @@ impl HttpFilterValue {
             HttpFilterValue::UserRateLimit(_) => FilterDecision::Continue,
         }
     }
-    pub(crate) fn from_filter_override(value: &FilterOverride, base_config: Option<&HttpFilterConfig>) -> Option<Self> {
+    pub(crate) fn from_filter_override(value: &FilterOverride, filter_config: Option<&HttpFilterConfig>) -> Option<Self> {
         match &value.filter_settings {
             Some(filter_settings) => match filter_settings {
                 FilterConfigOverride::LocalRateLimit(rl) => Some(HttpFilterValue::RateLimit(rl.clone().into())),
                 FilterConfigOverride::Rbac(Some(rbac)) => Some(HttpFilterValue::Rbac(HttpRbac::new(&rbac))),
                 FilterConfigOverride::Rbac(None) => None,
                 FilterConfigOverride::ExternalProcessor(ext_proc_per_route) => {
-                    if let Some(HttpFilterConfig { filter: HttpFilterType::ExternalProcessor(base_config), .. }) =
-                        base_config
+                    if let Some(HttpFilterConfig { filter: HttpFilterType::ExternalProcessor(filter_config), .. }) =
+                        filter_config
                     {
                         let filter_value = HttpFilterValue::ExternalProcessor(
-                            (base_config.clone(), Some(ext_proc_per_route.clone()), None).into(),
+                            (filter_config.clone(), Some(ext_proc_per_route.clone()), None).into(),
                         );
                         Some(filter_value)
                     } else {
@@ -257,8 +257,8 @@ pub(crate) fn per_route_http_filters(
                     Some(override_config) => Arc::new(HttpFilter {
                         name: hcm_filter.name.clone(),
                         disabled: override_config.disabled,
-                        filter: HttpFilterValue::from_filter_override(override_config, hcm_filter.base_config.as_ref()),
-                        base_config: hcm_filter.base_config.clone(),
+                        filter: HttpFilterValue::from_filter_override(override_config, hcm_filter.filter_config.as_deref()),
+                        filter_config: hcm_filter.filter_config.clone(),
                     }),
                     None => Arc::clone(hcm_filter),
                 };
