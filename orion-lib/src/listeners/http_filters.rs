@@ -130,7 +130,7 @@ pub enum HttpFilterValue {
     ExternalProcessor(ExternalProcessor),
     JwtAuthentication(JwtAuthentication),
     Cors(Cors),
-    McpGateway(McpGateway),
+    McpGateway(Box<McpGateway>),
     UserRateLimit(UserRateLimiter),
 }
 
@@ -145,7 +145,7 @@ impl FilterFactory for HttpFilterValue {
             HttpFilterValue::Rbac(conf) => HttpFilterValue::Rbac(conf.clone()),
             HttpFilterValue::ExternalProcessor(conf) => HttpFilterValue::ExternalProcessor(conf.clone()),
             HttpFilterValue::JwtAuthentication(conf) => HttpFilterValue::JwtAuthentication(conf.new_from()),
-            HttpFilterValue::McpGateway(conf) => HttpFilterValue::McpGateway(conf.new_from()),
+            HttpFilterValue::McpGateway(conf) => HttpFilterValue::McpGateway(Box::new(conf.new_from())),
             HttpFilterValue::Cors(conf) => HttpFilterValue::Cors(conf.clone()),
             HttpFilterValue::UserRateLimit(conf) => HttpFilterValue::UserRateLimit(conf.clone()),
         }
@@ -173,7 +173,7 @@ impl TryFrom<HttpFilterConfig> for HttpFilter {
             },
             HttpFilterType::Cors(conf) => HttpFilterValue::Cors(conf.into()),
             HttpFilterType::CorsPolicy(conf) => HttpFilterValue::Cors(conf.into()),
-            HttpFilterType::McpGateway(mcp) => HttpFilterValue::McpGateway(mcp.try_into()?),
+            HttpFilterType::McpGateway(mcp) => HttpFilterValue::McpGateway(Box::new(mcp.try_into()?)),
             HttpFilterType::UserRateLimit(user_rate_limit) => {
                 HttpFilterValue::UserRateLimit(user_rate_limit.try_into()?)
             },
