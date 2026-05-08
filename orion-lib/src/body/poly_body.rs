@@ -28,7 +28,6 @@ use orion_xds::grpc_deps::{GrpcBody, Status as GrpcError};
 use pin_project::pin_project;
 use std::convert::Infallible;
 use std::future::Ready;
-use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
 pub type TrailersType = Option<Result<http::HeaderMap, Infallible>>;
@@ -380,14 +379,5 @@ impl TryFrom<PolyBody> for WithTrailers<Collected<Bytes>, Ready<TrailersType>> {
             PolyBody::CollectedWithTrailers(w) => Ok(*w),
             _ => Err(PolyBodyError::BadVariant),
         }
-    }
-}
-
-impl PolyBody {
-    pub fn new_stream_body(buffer_size: usize) -> (Self, mpsc::Sender<Result<Frame<Bytes>, Error>>) {
-        let (tx, rx) = mpsc::channel(buffer_size);
-        let stream = ReceiverStream::new(rx);
-        let body = StreamBody::new(stream);
-        (PolyBody::Stream(body), tx)
     }
 }
