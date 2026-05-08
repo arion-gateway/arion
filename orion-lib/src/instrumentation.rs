@@ -12,6 +12,7 @@ pub mod metrics {
     pub static SEND_REQUEST_WAIT_RESPONSE: Average = Average::new();
     pub static SEND_REQUEST: Average = Average::new();
     pub static SEND_REQUEST_WITH_RETRY: Average = Average::new();
+    pub static SEND_RLS_REQUEST: Average = Average::new();
 }
 
 #[macro_export]
@@ -39,6 +40,7 @@ macro_rules! instrument_function {
         let start_clock = $clock.raw();
 
         #[cfg(feature = "instrumentation")]
+        use scopeguard::defer;
         defer! {
             let nanos = $clock.delta_as_nanos(start_clock, $clock.raw());
             ($callback)(nanos);
@@ -60,4 +62,6 @@ pub fn dump_instrumentation_counters() {
     println!("   send-request-wait-response time (ns): {}", metrics::SEND_REQUEST_WAIT_RESPONSE.value());
     println!("   send-request time (ns): {}", metrics::SEND_REQUEST.value());
     println!("   send-request with retry time (ns): {}", metrics::SEND_REQUEST_WITH_RETRY.value());
+    println!("rate limiting service:");
+    println!("   send-request to rate limiting service (ns): {}", metrics::SEND_RLS_REQUEST.value());
 }

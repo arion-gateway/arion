@@ -25,7 +25,10 @@ use papaya::HashMap as PapayaMap;
 use smol_str::SmolStr;
 use tonic::transport::Channel;
 
-use crate::clusters::clusters_manager::{self, RoutingContext};
+use crate::{
+    clusters::clusters_manager::{self, RoutingContext},
+    instrument_function,
+};
 use tokio::sync::Mutex as AsyncMutex;
 
 struct QuotaBucket {
@@ -128,7 +131,13 @@ impl NetworkGlobalRateLimit {
                     }
                     Self::eval_rls_response(response)
                 },
-                Err(e) => if self.failure_mode_deny { Err(e) } else { Ok(()) },
+                Err(e) => {
+                    if self.failure_mode_deny {
+                        Err(e)
+                    } else {
+                        Ok(())
+                    }
+                },
             };
         }
 
@@ -151,13 +160,19 @@ impl NetworkGlobalRateLimit {
                 }
                 Self::eval_rls_response(response)
             },
-            Err(e) => if self.failure_mode_deny { Err(e) } else { Ok(()) },
+            Err(e) => {
+                if self.failure_mode_deny {
+                    Err(e)
+                } else {
+                    Ok(())
+                }
+            },
         }
     }
 
     fn eval_rls_response(response: RateLimitResponse) -> crate::Result<()> {
-        let code = rate_limit_response::Code::try_from(response.overall_code)
-            .unwrap_or(rate_limit_response::Code::Unknown);
+        let code =
+            rate_limit_response::Code::try_from(response.overall_code).unwrap_or(rate_limit_response::Code::Unknown);
         if code == rate_limit_response::Code::OverLimit {
             return Err("rate limited by global rate limiter".into());
         }
@@ -165,6 +180,10 @@ impl NetworkGlobalRateLimit {
     }
 
     async fn call_rls(&self) -> crate::Result<RateLimitResponse> {
+        let clock = quanta::Clock::new();
+        instrument_function!(clock, |nanos| {
+            crate::instrumentation::metrics::SEND_RLS_REQUEST.observe(nanos as usize)
+        });
         let rls_request = RateLimitRequest {
             domain: self.domain.0.to_string(),
             descriptors: self.descriptors.clone(),
