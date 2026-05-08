@@ -724,10 +724,9 @@ impl ExternalProcessor {
     ) -> Result<oneshot::Receiver<ProcessingStatus>, SendError<ProcessingTask>> {
         let (response_tx, response_rx) = oneshot::channel();
         let processing_message = ProcessingTask { data, reply_channel: response_tx, http_version: ver };
-
         let worker_channel = self.get_worker_channel();
-
-        worker_channel.send(processing_message).await.map(|()| response_rx)
+        worker_channel.send(processing_message).await?;
+        Ok(response_rx)
     }
 
     pub fn on_filter_error(
@@ -759,26 +758,26 @@ impl ExternalProcessor {
 
     fn get_worker_channel(&mut self) -> &mpsc::Sender<ProcessingTask> {
         if let Some(ref sender) = self.ext_proc_worker {
-            sender
-        } else {
-            let (sender, receiver) = mpsc::channel::<ProcessingTask>(12);
-
-            // replace the internal overridable modes blueprint with a new spawned instance for the worker
-            //
-            let overridable_modes = Arc::new(self.overridable_modes.spawn());
-            self.overridable_modes = Arc::clone(&overridable_modes);
-
-            if self.inner.worker_config.observability_mode {
-                let worker =
-                    ExternalProcessingWorker::<kind::Observability>::new(Arc::clone(&self.inner), overridable_modes);
-                tokio::spawn(worker.observability_loop(receiver));
-            } else {
-                let worker =
-                    ExternalProcessingWorker::<kind::Processing>::new(Arc::clone(&self.inner), overridable_modes);
-                tokio::spawn(worker.processing_loop(receiver));
-            }
-            self.ext_proc_worker.insert(sender)
+            return sender;
         }
+
+        let (sender, receiver) = mpsc::channel::<ProcessingTask>(4);
+
+        // replace the internal overridable modes blueprint with a new spawned instance for the worker
+        //
+        let overridable_modes = Arc::new(self.overridable_modes.spawn());
+        self.overridable_modes = Arc::clone(&overridable_modes);
+
+        if self.inner.worker_config.observability_mode {
+            let worker =
+                ExternalProcessingWorker::<kind::Observability>::new(Arc::clone(&self.inner), overridable_modes);
+            tokio::spawn(worker.observability_loop(receiver));
+        } else {
+            let worker =
+                ExternalProcessingWorker::<kind::Processing>::new(Arc::clone(&self.inner), overridable_modes);
+            tokio::spawn(worker.processing_loop(receiver));
+        }
+        self.ext_proc_worker.insert(sender)
     }
 
     #[inline]
