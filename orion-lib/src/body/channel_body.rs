@@ -68,7 +68,6 @@ impl ChannelBody {
             return;
         }
 
-        self.prefetch.reserve(needed);
         for _ in 0..needed {
             let r = Pin::new(&mut self.stream).next().await;
             self.is_end_stream = r.is_none();
