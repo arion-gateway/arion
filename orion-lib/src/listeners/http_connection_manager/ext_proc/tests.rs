@@ -347,14 +347,14 @@ impl<M: MessageKind> MockMessage<M> {
             header_map.insert(http::HeaderName::from_static(key), http::HeaderValue::from_static(value));
         }
         if let Some(mutation) = header_mutation.as_ref() {
-            apply_header_mutations(&mut header_map, mutation, None).unwrap();
+            apply_header_mutations(&mut header_map, (*mutation).clone(), None).unwrap();
         }
         header_map
     }
 
     fn apply_header_mutation_from_header_map(header_mutation: Option<&HeaderMutation>, headers: &mut http::HeaderMap) {
         if let Some(mutation) = header_mutation.as_ref() {
-            apply_header_mutations(headers, mutation, None).unwrap();
+            apply_header_mutations(headers, (*mutation).clone(), None).unwrap();
         }
     }
 
@@ -380,7 +380,7 @@ impl<M: MessageKind> MockMessage<M> {
             trailer_map.insert(http::HeaderName::from_static(key), http::HeaderValue::from_static(value));
         }
         if let Some(mutation) = trailer_mutation.as_ref() {
-            apply_header_mutations(&mut trailer_map, mutation, None).unwrap();
+            apply_header_mutations(&mut trailer_map, (*mutation).clone(), None).unwrap();
         }
         trailer_map
     }
@@ -524,8 +524,8 @@ fn create_trailer_mutation(trailers: Vec<(&str, &str)>) -> Option<HeaderMutation
 }
 
 #[inline]
-fn convert_trailers_to_envoy_header_map(trailers: Vec<(&str, &str)>) -> HeaderMap {
-    HeaderMap {
+fn convert_trailers_to_envoy_header_map(trailers: Vec<(&str, &str)>) -> ProstHeaderMap {
+    ProstHeaderMap {
         headers: trailers
             .into_iter()
             .map(|(key, value)| EnvoyHeaderValue { key: key.to_owned(), value: value.to_owned(), raw_value: vec![] })

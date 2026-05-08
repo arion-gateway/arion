@@ -26,53 +26,70 @@ fn try_extract_header_value_as_str(opt: &HeaderValueOption) -> Option<Result<&st
 
 /// Holds the pseudo-headers that need to be applied to a request
 #[derive(Debug)]
-struct PseudoHeaders<'a> {
-    method: Option<&'a HeaderValueOption>,
-    scheme: Option<&'a HeaderValueOption>,
-    authority: Option<&'a HeaderValueOption>,
-    path: Option<&'a HeaderValueOption>,
-    status: Option<&'a HeaderValueOption>,
+struct PseudoHeaders {
+    method: Option<HeaderValueOption>,
+    scheme: Option<HeaderValueOption>,
+    authority: Option<HeaderValueOption>,
+    path: Option<HeaderValueOption>,
+    status: Option<HeaderValueOption>,
 }
 
-impl PseudoHeaders<'_> {
+impl PseudoHeaders {
     fn new() -> Self {
         PseudoHeaders { method: None, scheme: None, authority: None, path: None, status: None }
     }
 
     fn is_empty(&self) -> bool {
-        self.method.is_none() && self.scheme.is_none() && self.authority.is_none() && self.path.is_none()
+        self.method.is_none()
+            && self.scheme.is_none()
+            && self.authority.is_none()
+            && self.path.is_none()
+            && self.status.is_none()
     }
 }
 
-impl<'a> From<&'a HeaderMutation> for PseudoHeaders<'a> {
-    fn from(mutation: &'a HeaderMutation) -> Self {
-        let mut pseudo_headers: PseudoHeaders<'a> = PseudoHeaders::new();
+fn extract_pseudo_headers(mutation: &mut HeaderMutation) -> PseudoHeaders {
+    let mut pseudo_headers = PseudoHeaders::new();
+    let mut i = 0;
 
-        for header_to_set in &mutation.set_headers {
-            let Some(header) = &header_to_set.header else { continue };
+    while i < mutation.set_headers.len() {
+        let is_pseudo = mutation.set_headers[i]
+            .header
+            .as_ref()
+            .map(|h| h.key.starts_with(':'))
+            .unwrap_or(false);
 
-            match header.key.as_str() {
-                super::pseudo_header::METHOD => pseudo_headers.method = Some(header_to_set),
-                super::pseudo_header::SCHEME => pseudo_headers.scheme = Some(header_to_set),
-                super::pseudo_header::AUTHORITY => pseudo_headers.authority = Some(header_to_set),
-                super::pseudo_header::PATH => pseudo_headers.path = Some(header_to_set),
-                super::pseudo_header::STATUS => pseudo_headers.status = Some(header_to_set),
-                _ => {},
+        if is_pseudo {
+            let header_to_set = mutation.set_headers.remove(i);
+            let key = header_to_set.header.as_ref().map(|h| h.key.as_str()).unwrap_or("");
+
+            if key == super::pseudo_header::METHOD {
+                pseudo_headers.method = Some(header_to_set);
+            } else if key == super::pseudo_header::SCHEME {
+                pseudo_headers.scheme = Some(header_to_set);
+            } else if key == super::pseudo_header::AUTHORITY {
+                pseudo_headers.authority = Some(header_to_set);
+            } else if key == super::pseudo_header::PATH {
+                pseudo_headers.path = Some(header_to_set);
+            } else if key == super::pseudo_header::STATUS {
+                pseudo_headers.status = Some(header_to_set);
             }
+        } else {
+            i += 1;
         }
-
-        pseudo_headers
     }
+
+    pseudo_headers
 }
 
 #[allow(clippy::str_to_string)]
 #[allow(clippy::unnecessary_to_owned)]
 pub fn apply_request_header_mutations<B>(
     req: &mut Request<B>,
-    mutation: &HeaderMutation,
+    mut mutation: HeaderMutation,
     mutation_rules: Option<&HeaderMutationRules>,
 ) -> Result<(), Error> {
-    let pseudo_headers = PseudoHeaders::from(mutation);
+    let pseudo_headers = extract_pseudo_headers(&mut mutation);
 
     // Apply pseudo-headers
     if !pseudo_headers.is_empty() {
@@ -81,7 +98,7 @@ pub fn apply_request_header_mutations<B>(
             // NOTE: if mutation rules is not specified, we allow any modification. This is not the
             // same behavior as envoy, but is more permissive for users who don't set mutation rules.
             if mutation_rules.map(|r| r.is_modification_permitted(super::pseudo_header::METHOD)).unwrap_or(true) {
-                match try_extract_header_value_as_str(method_opt) {
+                match try_extract_header_value_as_str(&method_opt) {
                     Some(Ok(method)) => {
                         if let Ok(new_method) = http::Method::from_bytes(method.as_bytes()) {
                             *req.method_mut() = new_method;
@@ -103,7 +120,7 @@ pub fn apply_request_header_mutations<B>(
 
             if let Some(scheme_opt) = pseudo_headers.scheme {
                 if mutation_rules.map(|r| r.is_modification_permitted(super::pseudo_header::SCHEME)).unwrap_or(true) {
-                    match try_extract_header_value_as_str(scheme_opt) {
+                    match try_extract_header_value_as_str(&scheme_opt) {
                         Some(Ok(scheme)) => {
                             if let Ok(scheme) = Scheme::try_from(scheme) {
                                 parts.scheme = Some(scheme);
@@ -122,7 +139,7 @@ pub fn apply_request_header_mutations<B>(
             if let Some(authority_opt) = pseudo_headers.authority {
                 if mutation_rules.map(|r| r.is_modification_permitted(super::pseudo_header::AUTHORITY)).unwrap_or(true)
                 {
-                    match try_extract_header_value_as_str(authority_opt) {
+                    match try_extract_header_value_as_str(&authority_opt) {
                         Some(Ok(authority)) => {
                             if let Ok(authority) = Authority::try_from(authority) {
                                 parts.authority = Some(authority);
@@ -140,7 +157,7 @@ pub fn apply_request_header_mutations<B>(
 
             if let Some(path_opt) = pseudo_headers.path {
                 if mutation_rules.map(|r| r.is_modification_permitted(super::pseudo_header::PATH)).unwrap_or(true) {
-                    match try_extract_header_value_as_str(path_opt) {
+                    match try_extract_header_value_as_str(&path_opt) {
                         Some(Ok(path)) => {
                             if let Ok(path_and_query) = PathAndQuery::try_from(path) {
                                 parts.path_and_query = Some(path_and_query);
@@ -168,15 +185,15 @@ pub fn apply_request_header_mutations<B>(
 
 pub fn apply_response_header_mutations<B>(
     resp: &mut Response<B>,
-    mutation: &HeaderMutation,
+    mut mutation: HeaderMutation,
     mutation_rules: Option<&HeaderMutationRules>,
 ) -> Result<(), Error> {
-    let pseudo_headers = PseudoHeaders::from(mutation);
+    let pseudo_headers = extract_pseudo_headers(&mut mutation);
 
     // Handle :status pseudo-header
     if let Some(status_opt) = pseudo_headers.status {
         if mutation_rules.map(|r| r.is_modification_permitted(super::pseudo_header::STATUS)).unwrap_or(true) {
-            match try_extract_header_value_as_str(status_opt) {
+            match try_extract_header_value_as_str(&status_opt) {
                 Some(Ok(status_str)) => {
                     if let Ok(status_code) = status_str.parse::<u16>() {
                         if let Ok(new_code) = http::StatusCode::from_u16(status_code) {
@@ -203,7 +220,7 @@ pub fn apply_response_header_mutations<B>(
 #[inline]
 pub fn apply_trailer_mutations(
     trailers: &mut http::HeaderMap,
-    mutation: &HeaderMutation,
+    mutation: HeaderMutation,
     mutation_rules: Option<&HeaderMutationRules>,
 ) -> Result<(), Error> {
     apply_header_mutations(trailers, mutation, mutation_rules)
@@ -211,12 +228,12 @@ pub fn apply_trailer_mutations(
 
 pub fn apply_header_mutations(
     headers: &mut http::HeaderMap,
-    mutation: &HeaderMutation,
+    mutation: HeaderMutation,
     mutation_rules: Option<&HeaderMutationRules>,
 ) -> Result<(), Error> {
-    for header_to_remove in &mutation.remove_headers {
+    for header_to_remove in mutation.remove_headers {
         if let Some(rules) = mutation_rules {
-            if !rules.is_modification_permitted(header_to_remove) {
+            if !rules.is_modification_permitted(&header_to_remove) {
                 if rules.disallow_is_error {
                     return Err(Error::from(format!(
                         "Header removal not permitted by configuration: {header_to_remove}"
@@ -229,8 +246,8 @@ pub fn apply_header_mutations(
             headers.remove(&header_name);
         }
     }
-    for header_to_set in &mutation.set_headers {
-        let Some(header) = &header_to_set.header else { continue };
+    for mut header_to_set in mutation.set_headers {
+        let Some(header) = header_to_set.header.take() else { continue };
         if let Some(rules) = mutation_rules {
             if !rules.is_modification_permitted(&header.key) {
                 if rules.disallow_is_error {
@@ -244,9 +261,9 @@ pub fn apply_header_mutations(
         }
         let Ok(header_name) = http::HeaderName::from_bytes(header.key.as_bytes()) else { continue };
         let header_value = if header.raw_value.is_empty() {
-            http::HeaderValue::from_str(&header.value)
+            http::HeaderValue::from_maybe_shared(bytes::Bytes::from(header.value))
         } else {
-            http::HeaderValue::from_bytes(&header.raw_value)
+            http::HeaderValue::from_maybe_shared(bytes::Bytes::from(header.raw_value))
         };
         let Ok(header_value) = header_value else { continue };
         match header_to_set.append_action() {

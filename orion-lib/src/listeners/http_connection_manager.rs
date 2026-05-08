@@ -1224,10 +1224,7 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
         // destructure the Request to get the request and addresses
         let incoming_request_id = RequestId::from_request(&incoming_request);
         let incoming_version = incoming_request.version();
-        let stream_metrics = incoming_request
-            .extensions()
-            .get::<MetadataContext>()
-            .map(|md| md.stream_metrics.clone());
+        let stream_metrics = incoming_request.extensions().get::<MetadataContext>().map(|md| md.stream_metrics.clone());
 
         let access_log_enabled = {
             #[cfg(feature = "access-log")]

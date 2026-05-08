@@ -343,7 +343,7 @@ async fn spawn_services(info: ServiceInfo) -> Result<()> {
         #[cfg(feature = "tracing")]
         tracing,
         #[cfg(feature = "metrics")]
-        otel_metrics: metrics,
+            otel_metrics: metrics,
     } = info;
     let mut set: JoinSet<Result<()>> = JoinSet::new();
 
