@@ -50,27 +50,35 @@ impl PseudoHeaders {
 
 fn extract_pseudo_headers(mutation: &mut HeaderMutation) -> PseudoHeaders {
     let mut pseudo_headers = PseudoHeaders::new();
-    let mut regular_set_headers = Vec::with_capacity(mutation.set_headers.len());
+    let mut i = 0;
 
-    for header_to_set in mutation.set_headers.drain(..) {
-        let key = header_to_set.header.as_ref().map(|h| h.key.as_str()).unwrap_or("");
+    while i < mutation.set_headers.len() {
+        let is_pseudo = mutation.set_headers[i]
+            .header
+            .as_ref()
+            .map(|h| h.key.starts_with(':'))
+            .unwrap_or(false);
 
-        if key == super::pseudo_header::METHOD {
-            pseudo_headers.method = Some(header_to_set);
-        } else if key == super::pseudo_header::SCHEME {
-            pseudo_headers.scheme = Some(header_to_set);
-        } else if key == super::pseudo_header::AUTHORITY {
-            pseudo_headers.authority = Some(header_to_set);
-        } else if key == super::pseudo_header::PATH {
-            pseudo_headers.path = Some(header_to_set);
-        } else if key == super::pseudo_header::STATUS {
-            pseudo_headers.status = Some(header_to_set);
+        if is_pseudo {
+            let header_to_set = mutation.set_headers.remove(i);
+            let key = header_to_set.header.as_ref().map(|h| h.key.as_str()).unwrap_or("");
+
+            if key == super::pseudo_header::METHOD {
+                pseudo_headers.method = Some(header_to_set);
+            } else if key == super::pseudo_header::SCHEME {
+                pseudo_headers.scheme = Some(header_to_set);
+            } else if key == super::pseudo_header::AUTHORITY {
+                pseudo_headers.authority = Some(header_to_set);
+            } else if key == super::pseudo_header::PATH {
+                pseudo_headers.path = Some(header_to_set);
+            } else if key == super::pseudo_header::STATUS {
+                pseudo_headers.status = Some(header_to_set);
+            }
         } else {
-            regular_set_headers.push(header_to_set);
+            i += 1;
         }
     }
 
-    mutation.set_headers = regular_set_headers;
     pseudo_headers
 }
 
