@@ -93,6 +93,10 @@ envoy_bootstrap:
                   stat_prefix: global_ratelimit_cnpp1
                   domain: cnpp1.example
                   failure_mode_deny: true   # drop connection when RLS is unreachable, defaults to false
+                  descriptors:
+                    - entries:
+                        - key: destination_cluster
+                          value: cnpp1
                   rate_limit_service:
                     grpc_service:
                       envoy_grpc:

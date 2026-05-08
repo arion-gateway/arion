@@ -49,17 +49,15 @@ mod envoy_conversions {
             unsupported_field!(
                 //stat_prefix,
                 //domain,
-                timeout // timeout is already part of the grpc service configuration
                 //failure_mode_deny,
                 //rate_limit_service,
                 //descriptors,
+                timeout // timeout is already part of the grpc service configuration
             )?;
 
-            if domain.is_empty() {
-                return Err(GenericError::from_msg("domain must not be empty"));
-            }
-
-            let stat_prefix = if stat_prefix.is_empty() { domain.clone() } else { stat_prefix };
+            let domain = required!(domain)?;
+            let descriptors = required!(descriptors)?;
+            let stat_prefix = required!(stat_prefix)?;
 
             let descriptors = descriptors
                 .into_iter()
