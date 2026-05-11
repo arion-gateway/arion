@@ -230,3 +230,297 @@ fn proto_timestamp_to_ms(ts: &orion_data_plane_api::envoy_data_plane_api::google
     let nanos: u32 = ts.nanos.try_into().ok()?;
     secs.checked_mul(1_000)?.checked_add(u64::from(nanos / 1_000_000))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use orion_data_plane_api::envoy_data_plane_api::{
+        envoy::service::ratelimit::v3::rate_limit_service_server::{RateLimitService, RateLimitServiceServer},
+        google::protobuf::Timestamp,
+    };
+    use std::{collections::VecDeque, sync::atomic::AtomicUsize};
+    use tokio_stream::wrappers::TcpListenerStream;
+    use tonic::transport::Server;
+
+    static DOMAIN_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn unique_domain() -> SmolStr {
+        let n = DOMAIN_COUNTER.fetch_add(1, Ordering::Relaxed);
+        SmolStr::new(format!("test-{n}.rls.test"))
+    }
+
+    // Mock RLS server that returns pre-queued responses in order.
+    #[derive(Clone)]
+    struct MockRls {
+        responses: Arc<AsyncMutex<VecDeque<RateLimitResponse>>>,
+        call_count: Arc<AtomicUsize>,
+        captured_domains: Arc<AsyncMutex<Vec<String>>>,
+        fail_with_error: bool,
+    }
+
+    impl MockRls {
+        fn with_responses(responses: Vec<RateLimitResponse>) -> Self {
+            Self {
+                responses: Arc::new(AsyncMutex::new(responses.into())),
+                call_count: Arc::new(AtomicUsize::new(0)),
+                captured_domains: Arc::new(AsyncMutex::new(Vec::new())),
+                fail_with_error: false,
+            }
+        }
+
+        fn always_failing() -> Self {
+            Self {
+                responses: Arc::new(AsyncMutex::new(VecDeque::new())),
+                call_count: Arc::new(AtomicUsize::new(0)),
+                captured_domains: Arc::new(AsyncMutex::new(Vec::new())),
+                fail_with_error: true,
+            }
+        }
+
+        fn call_count(&self) -> usize {
+            self.call_count.load(Ordering::SeqCst)
+        }
+
+        async fn domains_seen(&self) -> Vec<String> {
+            self.captured_domains.lock().await.clone()
+        }
+    }
+
+    #[tonic::async_trait]
+    impl RateLimitService for MockRls {
+        async fn should_rate_limit(
+            &self,
+            req: tonic::Request<RateLimitRequest>,
+        ) -> Result<tonic::Response<RateLimitResponse>, tonic::Status> {
+            self.call_count.fetch_add(1, Ordering::SeqCst);
+            self.captured_domains.lock().await.push(req.get_ref().domain.clone());
+            if self.fail_with_error {
+                return Err(tonic::Status::unavailable("simulated RLS failure"));
+            }
+            let resp = self.responses.lock().await.pop_front().unwrap_or_default();
+            Ok(tonic::Response::new(resp))
+        }
+    }
+
+    async fn start_mock_rls(mock: MockRls) -> (String, MockRls) {
+        let server_mock = mock.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            Server::builder()
+                .add_service(RateLimitServiceServer::new(server_mock))
+                .serve_with_incoming(TcpListenerStream::new(listener))
+                .await
+                .ok();
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        (format!("http://{addr}"), mock)
+    }
+
+    fn make_filter(uri: impl Into<String>, domain: Option<&str>, failure_mode_deny: bool) -> NetworkGlobalRateLimit {
+        let channel = Channel::from_shared(uri.into()).unwrap().connect_lazy();
+        NetworkGlobalRateLimit {
+            domain: domain.map(SmolStr::new),
+            failure_mode_deny,
+            rls_client: RlsClient::GoogleGrpc(RateLimitServiceClient::new(channel)),
+            descriptors: vec![],
+        }
+    }
+
+    fn ok_response() -> RateLimitResponse {
+        RateLimitResponse { overall_code: rate_limit_response::Code::Ok as i32, ..Default::default() }
+    }
+
+    fn over_limit_response() -> RateLimitResponse {
+        RateLimitResponse { overall_code: rate_limit_response::Code::OverLimit as i32, ..Default::default() }
+    }
+
+    fn ok_response_with_quota(requests: u32) -> RateLimitResponse {
+        let valid_secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64 + 3600;
+        RateLimitResponse {
+            overall_code: rate_limit_response::Code::Ok as i32,
+            quota: Some(rate_limit_response::Quota {
+                requests,
+                expiration_specifier: Some(rate_limit_response::quota::ExpirationSpecifier::ValidUntil(Timestamp {
+                    seconds: valid_secs,
+                    nanos: 0,
+                })),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    // --- QuotaBucket unit tests ---
+
+    #[test]
+    fn quota_bucket_expired_returns_false() {
+        let bucket = QuotaBucket {
+            remaining: AtomicI64::new(10),
+            valid_until_ms: AtomicU64::new(0),
+            update_lock: AsyncMutex::new(()),
+        };
+        assert!(!bucket.try_consume(now_ms()));
+    }
+
+    #[test]
+    fn quota_bucket_depleted_returns_false() {
+        let bucket = QuotaBucket {
+            remaining: AtomicI64::new(0),
+            valid_until_ms: AtomicU64::new(u64::MAX),
+            update_lock: AsyncMutex::new(()),
+        };
+        assert!(!bucket.try_consume(now_ms()));
+    }
+
+    #[test]
+    fn quota_bucket_valid_consumes_until_depleted() {
+        let bucket = QuotaBucket {
+            remaining: AtomicI64::new(3),
+            valid_until_ms: AtomicU64::new(u64::MAX),
+            update_lock: AsyncMutex::new(()),
+        };
+        let now = now_ms();
+        assert!(bucket.try_consume(now));
+        assert!(bucket.try_consume(now));
+        assert!(bucket.try_consume(now));
+        assert!(!bucket.try_consume(now));
+    }
+
+    // --- extract_quota unit tests ---
+
+    #[test]
+    fn extract_quota_without_quota_field_returns_none() {
+        assert!(extract_quota(&ok_response()).is_none());
+    }
+
+    #[test]
+    fn extract_quota_with_zero_requests_returns_none() {
+        let resp = RateLimitResponse {
+            overall_code: rate_limit_response::Code::Ok as i32,
+            quota: Some(rate_limit_response::Quota {
+                requests: 0,
+                expiration_specifier: Some(rate_limit_response::quota::ExpirationSpecifier::ValidUntil(Timestamp {
+                    seconds: 9_999_999_999,
+                    nanos: 0,
+                })),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(extract_quota(&resp).is_none());
+    }
+
+    #[test]
+    fn extract_quota_returns_decremented_requests_and_milliseconds() {
+        let resp = RateLimitResponse {
+            overall_code: rate_limit_response::Code::Ok as i32,
+            quota: Some(rate_limit_response::Quota {
+                requests: 5,
+                expiration_specifier: Some(rate_limit_response::quota::ExpirationSpecifier::ValidUntil(Timestamp {
+                    seconds: 1_000_000,
+                    nanos: 500_000_000,
+                })),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let (remaining, valid_until_ms) = extract_quota(&resp).unwrap();
+        assert_eq!(remaining, 4);
+        assert_eq!(valid_until_ms, 1_000_000_500); // 1_000_000 * 1000 + 500ms
+    }
+
+    // --- check() integration tests with mock RLS ---
+
+    #[tokio::test]
+    async fn check_ok_allows_connection() {
+        let domain = unique_domain();
+        let (uri, mock) = start_mock_rls(MockRls::with_responses(vec![ok_response()])).await;
+        let filter = make_filter(uri, Some(domain.as_str()), false);
+        assert!(filter.check(None).await.is_ok());
+        assert_eq!(mock.call_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn check_over_limit_denies_connection() {
+        let domain = unique_domain();
+        let (uri, mock) = start_mock_rls(MockRls::with_responses(vec![over_limit_response()])).await;
+        let filter = make_filter(uri, Some(domain.as_str()), false);
+        let err = filter.check(None).await.unwrap_err();
+        assert!(err.to_string().contains("rate limited"));
+        assert_eq!(mock.call_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn check_failure_mode_allow_passes_on_rls_error() {
+        let domain = unique_domain();
+        let (uri, mock) = start_mock_rls(MockRls::always_failing()).await;
+        let filter = make_filter(uri, Some(domain.as_str()), false);
+        assert!(filter.check(None).await.is_ok());
+        assert_eq!(mock.call_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn check_failure_mode_deny_blocks_on_rls_error() {
+        let domain = unique_domain();
+        let (uri, mock) = start_mock_rls(MockRls::always_failing()).await;
+        let filter = make_filter(uri, Some(domain.as_str()), true);
+        assert!(filter.check(None).await.is_err());
+        assert_eq!(mock.call_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn check_no_domain_no_sni_errors_without_rls_call() {
+        // Fails before any network call; the URI is never contacted.
+        let filter = make_filter("http://127.0.0.1:1", None, false);
+        let err = filter.check(None).await.unwrap_err();
+        assert!(err.to_string().contains("no SNI and no domain configured"));
+    }
+
+    #[tokio::test]
+    async fn check_uses_sni_as_domain_when_unconfigured() {
+        let sni = unique_domain();
+        let (uri, mock) = start_mock_rls(MockRls::with_responses(vec![ok_response()])).await;
+        let filter = make_filter(uri, None, false);
+        assert!(filter.check(Some(&sni)).await.is_ok());
+        assert_eq!(mock.domains_seen().await, [sni.as_str()]);
+    }
+
+    #[tokio::test]
+    async fn check_configured_domain_takes_priority_over_sni() {
+        let static_domain = unique_domain();
+        let sni = unique_domain();
+        let (uri, mock) = start_mock_rls(MockRls::with_responses(vec![ok_response()])).await;
+        let filter = make_filter(uri, Some(static_domain.as_str()), false);
+        assert!(filter.check(Some(&sni)).await.is_ok());
+        assert_eq!(mock.domains_seen().await, [static_domain.as_str()]);
+    }
+
+    #[tokio::test]
+    async fn check_quota_caching_skips_rls_within_window() {
+        let domain = unique_domain();
+        // quota.requests=3: the initiating call itself is counted as 1, so remaining is stored
+        // as 2.  Calls 2 and 3 consume from the bucket; call 4 exhausts it and hits the RLS.
+        let (uri, mock) =
+            start_mock_rls(MockRls::with_responses(vec![ok_response_with_quota(3), ok_response_with_quota(3)])).await;
+        let filter = make_filter(uri, Some(domain.as_str()), false);
+        for _ in 0..4 {
+            assert!(filter.check(None).await.is_ok());
+        }
+        assert_eq!(mock.call_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn check_over_limit_after_quota_exhausted() {
+        let domain = unique_domain();
+        // quota.requests=2: stored as remaining=1.  Call 2 consumes it; call 3 exhausts
+        // the bucket and re-calls the RLS, which now returns OVER_LIMIT.
+        let (uri, mock) =
+            start_mock_rls(MockRls::with_responses(vec![ok_response_with_quota(2), over_limit_response()])).await;
+        let filter = make_filter(uri, Some(domain.as_str()), false);
+        assert!(filter.check(None).await.is_ok()); // call 1: RLS hit, remaining stored as 1
+        assert!(filter.check(None).await.is_ok()); // call 2: bucket, remaining 1→0
+        assert!(filter.check(None).await.is_err()); // call 3: exhausted, RLS hit → OVER_LIMIT
+        assert_eq!(mock.call_count(), 2);
+    }
+}
