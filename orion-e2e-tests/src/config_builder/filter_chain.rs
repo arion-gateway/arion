@@ -19,7 +19,8 @@ use orion_data_plane_api::envoy_data_plane_api::{
             listener::v3::{filter::ConfigType, Filter, FilterChain as EnvoyFilterChain, FilterChainMatch},
         },
         extensions::filters::network::{
-            http_connection_manager::v3::HttpConnectionManager, rbac::v3::Rbac as NetworkRbac, tcp_proxy::v3::TcpProxy,
+            http_connection_manager::v3::HttpConnectionManager, ratelimit::v3::RateLimit as NetworkRateLimit,
+            rbac::v3::Rbac as NetworkRbac, tcp_proxy::v3::TcpProxy,
         },
     },
     google::protobuf::{Any, UInt32Value},
@@ -68,6 +69,21 @@ impl FilterChainBuilder {
         self.proto.filters.push(Filter {
             name: "envoy.filters.network.tcp_proxy".into(),
             config_type: Some(ConfigType::TypedConfig(tcp_proxy_any)),
+            ..Default::default()
+        });
+        self
+    }
+
+    #[must_use]
+    pub fn network_global_rate_limit(mut self, rl: impl Into<NetworkRateLimit>) -> Self {
+        let proto: NetworkRateLimit = rl.into();
+        let any = Any {
+            type_url: "type.googleapis.com/envoy.extensions.filters.network.ratelimit.v3.RateLimit".into(),
+            value: proto.encode_to_vec(),
+        };
+        self.proto.filters.push(Filter {
+            name: "envoy.filters.network.ratelimit".into(),
+            config_type: Some(ConfigType::TypedConfig(any)),
             ..Default::default()
         });
         self
