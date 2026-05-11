@@ -68,7 +68,73 @@ envoy_bootstrap:
               ZYX5EX3JAqBsyEf88iU=
               -----END PRIVATE KEY-----
 
+      - name: cnpp2_tls_server
+        tls_certificate:
+          certificate_chain:
+            inline_string: |
+              -----BEGIN CERTIFICATE-----
+              MIID3TCCAsWgAwIBAgIUe0IH7OSr+q7ZxsexqXFeZCmxijYwDQYJKoZIhvcNAQEL
+              BQAwWDEWMBQGA1UEAwwNY25wcDIuZXhhbXBsZTEfMB0GA1UECgwWT3Jpb24gVGVz
+              dCBDZXJ0aWZpY2F0ZTEQMA4GA1UECwwHVGVzdGluZzELMAkGA1UEBhMCVVMwHhcN
+              MjYwNTExMTAxNTU2WhcNMjcwNTExMTAxNTU2WjBYMRYwFAYDVQQDDA1jbnBwMi5l
+              eGFtcGxlMR8wHQYDVQQKDBZPcmlvbiBUZXN0IENlcnRpZmljYXRlMRAwDgYDVQQL
+              DAdUZXN0aW5nMQswCQYDVQQGEwJVUzCCASIwDQYJKoZIhvcNAQEBBQADggEPADCC
+              AQoCggEBAKYkhgoT3i/B/XFfELyRApLmd3EZRnC7waw9h9yZr5t+y/IKbYINZbwP
+              zUTIH/1Mimi5lrFF+JF+gIJFDfIVY9wHdpENdX/xc6HSkA7CWY2OorCSXyjYbda2
+              cL938DhPzrchKNsHXN60uyhOVgQBFGdteo0nRYdzqdEhhhDsnSTWty36IUsyr3lE
+              dw7ZsZwZ6inVaVbqvmcB9ew04BAItA4YHw0JLB09/1WrwmSBjaDKP3TZLw1src6E
+              QWO1gYtMJeBXQUcpNBhbikCL7aizC+JU4j1E6L8Cb/aZkuuPwKKjPk61fGyFq7Su
+              MxOf5JAxSXNY9G6chY4SzaAbGuDHUwMCAwEAAaOBnjCBmzAdBgNVHQ4EFgQU68t8
+              TecrdTe4nHP7H7q5V+3EJfYwHwYDVR0jBBgwFoAU68t8TecrdTe4nHP7H7q5V+3E
+              JfYwKQYDVR0RBCIwIIINY25wcDIuZXhhbXBsZYIPKi5jbnBwMi5leGFtcGxlMAwG
+              A1UdEwQFMAMBAf8wCwYDVR0PBAQDAgWgMBMGA1UdJQQMMAoGCCsGAQUFBwMBMA0G
+              CSqGSIb3DQEBCwUAA4IBAQBhUwGJks7d97YmMsb5DR+H5TIsPEOxdu5Hzomypgf8
+              CAShPGshTn+lXSV2+ek3Funy/ygx09i22UpAxaUB0hkF8Ww09p7h5tMVWjpYz90q
+              GaJXRe2fE361foBTfDAOXe7cIMYkb+ooXsk7506MQUBY1h8bFvIEroO7DuAIAczW
+              /bDVgEtn5nM8AH78BgFQJMCvfOTKGtZC2wQmSy59HAEOPMooT+a+dM5eBxGyuee6
+              /1aYxoWlnpg7GV5o/Xetyv1gjOjMZG1DKWyAbqBP2d/keUJu/Y+BMuzNI6EyW0G0
+              mX1/Z02IUTov3LHMrH9iltmJcWdJLyhLpfrQ19DUeEV5
+              -----END CERTIFICATE-----
+          private_key:
+            inline_string: |
+              -----BEGIN PRIVATE KEY-----
+              MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQCmJIYKE94vwf1x
+              XxC8kQKS5ndxGUZwu8GsPYfcma+bfsvyCm2CDWW8D81EyB/9TIpouZaxRfiRfoCC
+              RQ3yFWPcB3aRDXV/8XOh0pAOwlmNjqKwkl8o2G3WtnC/d/A4T863ISjbB1zetLso
+              TlYEARRnbXqNJ0WHc6nRIYYQ7J0k1rct+iFLMq95RHcO2bGcGeop1WlW6r5nAfXs
+              NOAQCLQOGB8NCSwdPf9Vq8JkgY2gyj902S8NbK3OhEFjtYGLTCXgV0FHKTQYW4pA
+              i+2oswviVOI9ROi/Am/2mZLrj8Cioz5OtXxshau0rjMTn+SQMUlzWPRunIWOEs2g
+              Gxrgx1MDAgMBAAECggEAFJySXnyxg2ZDLYX4OxSYZ6Yc6lSS5xh8AgTOLqGIZjeY
+              UKpXhJtp5CdntWFIirGsuCpSFiMSn+Y8Ri0P+lkJ/vmUDZHIYnuPd2N6iMI2vveT
+              mmlGUfhrxAf1O+PC0xGfmRuNiILE1EJCt9DkHfIOWHh+DDXzi8bfKflJOx9HrZKc
+              h2Ouww1BLEQdn2Uq6luy6BuK3ppdtiims4Mx1x4OZdq5SCIp8uhzPK45thIwjbb7
+              xqJ4Rq098ZtZ8IMVoMAa3KHlE3mAu9xlBXXtpEDNGhRVPYtLzsnrWF+JIAlyalt1
+              qTfSeFt95txhraD/mwGOhuliZfqp1naMLPn7WBYGQQKBgQDWzEmnd0sRXWRGNN12
+              aGKFj95Xb7iW8VdT50NKFteTbvVQsEIvJoiVQ8jUBHMFDFm7U+GbtuEsR5OnLRT+
+              vpSOuZ4liyjWdc7Orw6Edri/rnWhQB6bpPYpFVwiqBv5Rf4H5o5jren+Wo16zIZW
+              okmb7qIQWInCZeLwacewPbd3QwKBgQDGAwDPAbuPo+dPbKfKbsf+YxH5y7NtY92E
+              772rX9Mz/RJdrVpHYSbKzsI4X+cHqXCUUyYNX+lc8dex+WKeu7kRFy0tInyy64v/
+              GG0lHa/CG2zKck8s115Pd2b8H6psxBkI2zBQ9TTpx3CJXNnxzdC1G41+Cw0VtdUB
+              e9fCazmZQQKBgBoihRuxMhsMx/Sa3g9YKBSkKqNs3oLPHpcA3nkXSmeP6p1EtOjT
+              wW6X7smNOQl2NTzLufmeSMuAcgC3RYSxX5X2E73xrqhZcS5IsnV/lH8OFRXnnVHG
+              woTBKpK07aJo173SWaTbNktSbUBxvi6wVFB6upFOlIRorTIfTMKu37HNAoGAUid2
+              02xdnGgdlXd4WmYCNkp2b9STOkSf6QLrB8p3P2+1igZdmZX2WVjVfjxUB3rGidPB
+              yvTLRtPUcTQONdufGjcqeDqB0F4oNIu25RpfDMMCLTCmJu2oZIIeyWZ9+CiYVnNS
+              pZRHAuPLjkJm7os9F5c56ly9bg+GM9plF3YTbMECgYAlneGpiAfAJ+RYr5nN/XwJ
+              a50wS2N/lAd5GMo+50kuWTECMt4Lo5B3Y+icEENeux1FayPt/Ld7eTeoNvqRMReM
+              k0AgkVpCVX1ttSt3BGA4lU9Rk6CGdiLBDI9LfM7k59kPJ3OnSte7JUffYa7s6Vic
+              SRqAXfg1W53rEPqBP+Um4w==
+              -----END PRIVATE KEY-----
+
     listeners:
+      # TLS listener — two rate-limiting modes are shown across the two filter chains:
+      #   filter_chain_cnpp1  : static domain configured → RLS domain is always "cnpp1.example"
+      #                         regardless of the connection SNI.
+      #   filter_chain_cnpp2  : no domain configured → RLS domain is taken from the TLS SNI
+      #                         at connection time, so each subdomain is a separate RLS namespace.
+      # In both cases the filter calls the RLS on each new TCP connection; responses that
+      # include a quota are cached process-wide for the duration of the quota window,
+      # minimising RLS round-trips under load.
       - name: listener_https
         address:
           socket_address: { address: 0.0.0.0, port_value: 8443 }
@@ -82,11 +148,9 @@ envoy_bootstrap:
             filter_chain_match:
               server_names: [cnpp1.example, "*.cnpp1.example"]
             filters:
-              # Network-level global rate limit: enforced per-SNI before the HTTP stack is
-              # started.  The filter calls the RLS on each new TCP connection; responses that
-              # include a quota are cached process-wide for the duration of the quota window,
-              # minimising RLS round-trips under load.  Connections without a TLS SNI are
-              # dropped when this filter is present.
+              # Static domain mode: the configured domain is always sent to the RLS.
+              # All connections through this filter chain share one quota bucket keyed
+              # by "cnpp1.example", regardless of the specific subdomain in the SNI.
               - name: envoy.filters.network.ratelimit
                 typedConfig:
                   "@type": type.googleapis.com/envoy.extensions.filters.network.ratelimit.v3.RateLimit
@@ -128,6 +192,97 @@ envoy_bootstrap:
                 common_tls_context:
                   tls_certificate_sds_secret_configs:
                     - name: cnpp1_tls_server
+
+          - name: filter_chain_cnpp2
+            filter_chain_match:
+              server_names: [cnpp2.example, "*.cnpp2.example"]
+            filters:
+              # SNI-driven domain mode: no domain is configured, so the TLS SNI read at
+              # connection time is used as the RLS domain. Each distinct SNI value is
+              # sent as a separate RLS namespace and maintains its own quota bucket.
+              - name: envoy.filters.network.ratelimit
+                typedConfig:
+                  "@type": type.googleapis.com/envoy.extensions.filters.network.ratelimit.v3.RateLimit
+                  stat_prefix: global_ratelimit_cnpp2
+                  failure_mode_deny: false
+                  descriptors:
+                    - entries:
+                        - key: destination_cluster
+                          value: cnpp2
+                  rate_limit_service:
+                    grpc_service:
+                      envoy_grpc:
+                        cluster_name: rls_cluster
+              - name: https_gateway
+                typedConfig:
+                  "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                  statPrefix: ingress_https
+                  codecType: HTTP1
+                  httpFilters:
+                    - name: envoy.filters.http.router
+                      typedConfig:
+                        "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                        start_child_span: false
+                  route_config:
+                    name: https_route
+                    virtual_hosts:
+                      - name: backend_https
+                        domains: ["*"]
+                        routes:
+                          - match:
+                              prefix: "/"
+                            route:
+                              cluster: upstream_cluster
+            transport_socket:
+              name: envoy.transport_sockets.tls
+              typedConfig:
+                '@type': type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
+                common_tls_context:
+                  tls_certificate_sds_secret_configs:
+                    - name: cnpp2_tls_server
+
+      # Plain TCP/HTTP listener — no TLS inspector, so the domain field is required in
+      # the rate limit filter. The RLS domain is always the statically configured value.
+      - name: listener_http
+        address:
+          socket_address: { address: 0.0.0.0, port_value: 8000 }
+        filter_chains:
+          - name: filter_chain_http
+            filters:
+              - name: envoy.filters.network.ratelimit
+                typedConfig:
+                  "@type": type.googleapis.com/envoy.extensions.filters.network.ratelimit.v3.RateLimit
+                  stat_prefix: global_ratelimit_http
+                  domain: http.example      # required: no TLS inspector, so no SNI is available
+                  failure_mode_deny: true
+                  descriptors:
+                    - entries:
+                        - key: destination_cluster
+                          value: http_backend
+                  rate_limit_service:
+                    grpc_service:
+                      envoy_grpc:
+                        cluster_name: rls_cluster
+              - name: http_gateway
+                typedConfig:
+                  "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                  statPrefix: ingress_http
+                  codecType: HTTP1
+                  httpFilters:
+                    - name: envoy.filters.http.router
+                      typedConfig:
+                        "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                        start_child_span: false
+                  route_config:
+                    name: http_route
+                    virtual_hosts:
+                      - name: backend_http
+                        domains: ["*"]
+                        routes:
+                          - match:
+                              prefix: "/"
+                            route:
+                              cluster: upstream_cluster
 
     clusters:
       - name: upstream_cluster

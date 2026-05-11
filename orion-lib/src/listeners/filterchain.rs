@@ -182,11 +182,11 @@ impl FilterchainType {
         Some(stream)
     }
 
-    pub async fn apply_network_rate_limit(&self) -> Result<()> {
+    pub async fn apply_network_rate_limit(&self, sni: Option<&SmolStr>) -> Result<()> {
         let Some(rate_limit) = &self.config.network_global_rate_limit else {
             return Ok(());
         };
-        rate_limit.check().await
+        rate_limit.check(sni).await
     }
 
     #[allow(clippy::used_underscore_binding)]

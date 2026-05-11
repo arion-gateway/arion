@@ -25,10 +25,7 @@ use papaya::HashMap as PapayaMap;
 use smol_str::SmolStr;
 use tonic::transport::Channel;
 
-use crate::{
-    clusters::clusters_manager::{self, RoutingContext},
-    instrument_function,
-};
+use crate::clusters::clusters_manager::{self, RoutingContext};
 use tokio::sync::Mutex as AsyncMutex;
 
 struct QuotaBucket {
@@ -38,9 +35,6 @@ struct QuotaBucket {
 }
 
 impl QuotaBucket {
-    /// Attempts to consume one ticket from the bucket.
-    /// Returns `true` (ticket granted) only if the quota is still valid AND there was a
-    /// positive count before decrement. Going negative is benign — the next quota refresh resets it.
     fn try_consume(&self, now: u64) -> bool {
         self.valid_until_ms.load(Ordering::Acquire) > now && self.remaining.fetch_sub(1, Ordering::AcqRel) > 0
     }
@@ -48,10 +42,7 @@ impl QuotaBucket {
 
 const INITIAL_CAPACITY: usize = 10_000;
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub struct Domain(SmolStr);
-
-static GLOBAL_QUOTAS: LazyLock<PapayaMap<Domain, Arc<QuotaBucket>, ahash::RandomState>> =
+static GLOBAL_QUOTAS: LazyLock<PapayaMap<SmolStr, Arc<QuotaBucket>, ahash::RandomState>> =
     LazyLock::new(|| PapayaMap::with_capacity_and_hasher(INITIAL_CAPACITY, ahash::RandomState::new()));
 
 #[derive(Debug, Clone)]
@@ -62,7 +53,7 @@ enum RlsClient {
 
 #[derive(Debug, Clone)]
 pub struct NetworkGlobalRateLimit {
-    domain: Domain,
+    domain: Option<SmolStr>,
     failure_mode_deny: bool,
     rls_client: RlsClient,
     descriptors: Vec<RateLimitDescriptor>,
@@ -98,21 +89,22 @@ impl TryFrom<NetworkGlobalRateLimitConfig> for NetworkGlobalRateLimit {
             })
             .collect();
 
-        Ok(Self { domain: Domain(config.domain), failure_mode_deny: config.failure_mode_deny, rls_client, descriptors })
+        Ok(Self { domain: config.domain, failure_mode_deny: config.failure_mode_deny, rls_client, descriptors })
     }
 }
 
 impl NetworkGlobalRateLimit {
-    pub fn domain(&self) -> &Domain {
-        &self.domain
-    }
-
-    /// Returns `Ok(())` to allow the connection, `Err` to drop the TCP connection.
-    pub async fn check(&self) -> crate::Result<()> {
+    pub async fn check(&self, sni: Option<&SmolStr>) -> crate::Result<()> {
         let now = now_ms();
 
+        let domain: &SmolStr = self
+            .domain
+            .as_ref()
+            .or(sni)
+            .ok_or_else(|| crate::Error::from("rate limit: no SNI and no domain configured"))?;
+
         // Fast path: consume from an existing quota bucket without any locking.
-        let maybe_bucket = GLOBAL_QUOTAS.pin().get(&self.domain).cloned();
+        let maybe_bucket = GLOBAL_QUOTAS.pin().get(domain).cloned();
         if let Some(bucket) = maybe_bucket {
             if bucket.try_consume(now) {
                 return Ok(());
@@ -123,7 +115,7 @@ impl NetworkGlobalRateLimit {
             if bucket.try_consume(now) {
                 return Ok(());
             }
-            return match self.call_rls().await {
+            return match self.call_rls(domain).await {
                 Ok(response) => {
                     if let Some((requests, valid_until_ms)) = extract_quota(&response) {
                         bucket.valid_until_ms.store(valid_until_ms, Ordering::Release);
@@ -142,13 +134,18 @@ impl NetworkGlobalRateLimit {
         }
 
         // No bucket yet: call the RLS directly. Multiple concurrent connections may reach
-        // here before the first quota is established; that is acceptable — once the first
-        // quota response arrives and the bucket is inserted, they all hit the fast path.
-        match self.call_rls().await {
+        // here before the first quota is established, aka we will have a thundering herd
+        // if quota is configured on a given response from the RLS. This is acceptable
+        // since once the first quota response arrives and the bucket is inserted,
+        // they all hit the fast path where we have a lock to call_rls when quota is
+        // exhausted. This is an optimization for the general path where no quota is
+        // emitted and we call the RLS on each request: we avoid taking the lock in this
+        // case because we do not really need to.
+        match self.call_rls(domain).await {
             Ok(response) => {
                 if let Some((requests, valid_until_ms)) = extract_quota(&response) {
                     let map = GLOBAL_QUOTAS.pin();
-                    let bucket = map.get_or_insert_with(self.domain.clone(), || {
+                    let bucket = map.get_or_insert_with(domain.clone(), || {
                         Arc::new(QuotaBucket {
                             remaining: AtomicI64::new(0),
                             valid_until_ms: AtomicU64::new(0),
@@ -179,16 +176,14 @@ impl NetworkGlobalRateLimit {
         Ok(())
     }
 
-    async fn call_rls(&self) -> crate::Result<RateLimitResponse> {
+    async fn call_rls(&self, domain: &SmolStr) -> crate::Result<RateLimitResponse> {
+        #[cfg(feature = "instrumentation")]
         let clock = quanta::Clock::new();
-        instrument_function!(clock, |nanos| {
-            crate::instrumentation::metrics::SEND_RLS_REQUEST.observe(nanos as usize)
-        });
-        let rls_request = RateLimitRequest {
-            domain: self.domain.0.to_string(),
-            descriptors: self.descriptors.clone(),
-            hits_addend: 1,
-        };
+        #[cfg(feature = "instrumentation")]
+        let start_clock = clock.raw();
+
+        let rls_request =
+            RateLimitRequest { domain: domain.to_string(), descriptors: self.descriptors.clone(), hits_addend: 1 };
 
         let resp = match &self.rls_client {
             RlsClient::Cluster(cluster_name) => {
@@ -207,6 +202,11 @@ impl NetworkGlobalRateLimit {
                 .await
                 .map_err(|e| crate::Error::from(format!("RLS call failed: {e}")))?,
         };
+
+        #[cfg(feature = "instrumentation")]
+        crate::instrumentation::metrics::SEND_RLS_REQUEST
+            .observe(clock.delta_as_nanos(start_clock, clock.raw()) as usize);
+
         Ok(resp.into_inner())
     }
 }
