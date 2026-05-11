@@ -106,9 +106,15 @@ where
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub struct PartitionKey {
+pub enum PartitionKeySource {
     #[serde(with = "http_serde_ext::header_name")]
-    pub header_name: HeaderName,
+    HeaderName(HeaderName),
+    Sni,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct PartitionKey {
+    pub source: PartitionKeySource,
     pub attribute_name: Option<String>,
 }
 
@@ -132,6 +138,29 @@ pub struct MetricsConfig {
     pub custom_key: Option<PartitionKey>, // for custom metrics (might use a different partition key)
     #[serde(default)]
     pub custom_metrics: CustomMetrics,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_partition_key_header_name_deserialization() {
+        let yaml = "source: !HeaderName x-user-id\nattribute_name: user\n";
+        let key: PartitionKey = serde_yaml::from_str(yaml).expect("failed to parse HeaderName");
+        assert_eq!(key.attribute_name, Some("user".to_string()));
+        assert!(matches!(key.source, PartitionKeySource::HeaderName(_)));
+        println!("HeaderName YAML roundtrip:\n{}", serde_yaml::to_string(&key).unwrap());
+    }
+
+    #[test]
+    fn test_partition_key_sni_deserialization() {
+        let yaml = "source: Sni\nattribute_name: user\n";
+        let key: PartitionKey = serde_yaml::from_str(yaml).expect("failed to parse Sni");
+        assert_eq!(key.attribute_name, Some("user".to_string()));
+        assert!(matches!(key.source, PartitionKeySource::Sni));
+        println!("Sni YAML roundtrip:\n{}", serde_yaml::to_string(&key).unwrap());
+    }
 }
 
 #[cfg(feature = "envoy-conversions")]

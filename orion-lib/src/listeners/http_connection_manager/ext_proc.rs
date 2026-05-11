@@ -773,8 +773,7 @@ impl ExternalProcessor {
                 ExternalProcessingWorker::<kind::Observability>::new(Arc::clone(&self.inner), overridable_modes);
             tokio::spawn(worker.observability_loop(receiver));
         } else {
-            let worker =
-                ExternalProcessingWorker::<kind::Processing>::new(Arc::clone(&self.inner), overridable_modes);
+            let worker = ExternalProcessingWorker::<kind::Processing>::new(Arc::clone(&self.inner), overridable_modes);
             tokio::spawn(worker.processing_loop(receiver));
         }
         self.ext_proc_worker.insert(sender)

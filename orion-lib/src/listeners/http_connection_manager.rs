@@ -418,7 +418,7 @@ pub struct TransactionContext {
     start_instant: std::time::Instant,
     request_id: Option<RequestId>,
     #[allow(dead_code)]
-    user_id: Option<&'static str>,
+    pub user_partition_key: Option<&'static str>,
     shard_id: ShardId,
     #[cfg(feature = "tracing")]
     trace_ctx: Option<TraceContext>,
@@ -452,7 +452,7 @@ impl Default for TransactionContext {
         TransactionContext {
             start_instant: std::time::Instant::now(),
             request_id: None,
-            user_id: None,
+            user_partition_key: None,
             shard_id: get_shard_id!(),
             #[cfg(any(feature = "access-log", feature = "metrics"))]
             trans_ctx: Mutex::new(TransactionState::default()),
@@ -479,7 +479,7 @@ struct EventInfo {
 impl TransactionContext {
     pub fn new(
         request_id: Option<RequestId>,
-        user_id: Option<&'static str>,
+        user_partition_key: Option<&'static str>,
         thread_id: ShardId,
         #[cfg(feature = "access-log")] access_log: &[AccessLog],
         #[cfg(feature = "tracing")] trace_ctx: Option<TraceContext>,
@@ -488,7 +488,7 @@ impl TransactionContext {
         TransactionContext {
             start_instant: std::time::Instant::now(),
             request_id,
-            user_id,
+            user_partition_key,
             #[cfg(any(feature = "access-log", feature = "metrics"))]
             trans_ctx: Mutex::new(TransactionState::new(
                 #[cfg(feature = "access-log")]
@@ -521,14 +521,14 @@ impl TransactionContext {
                 .set_attribute(KeyValue::new(HTTP_RESPONSE_STATUS_CODE, i64::from(status_code))));
 
             #[cfg(feature = "metrics")]
-            if let Some(user_id) = self.user_id {
+            if let Some(user_partition_key) = self.user_partition_key {
                 if status_code == 429 {
                     with_metric!(
                         user::THROTTLES,
                         add,
                         1,
                         self.shard_id(),
-                        &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_id)]
+                        &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
                     );
                 } else {
                     with_metric!(
@@ -536,7 +536,7 @@ impl TransactionContext {
                         add,
                         1,
                         self.shard_id(),
-                        &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_id)]
+                        &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
                     );
                 }
             }
@@ -579,20 +579,20 @@ impl TransactionContext {
                     );
 
                     #[cfg(feature = "metrics")]
-                    if let Some(user_id) = self.user_id {
+                    if let Some(user_partition_key) = self.user_partition_key {
                         with_metric!(
                             user::USER_ERRORS,
                             add,
                             1,
                             self.shard_id(),
-                            &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_id)]
+                            &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
                         );
                         with_metric!(
                             user::TOTAL_ERRORS,
                             add,
                             1,
                             self.shard_id(),
-                            &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_id)]
+                            &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
                         );
                     }
                 },
@@ -606,13 +606,13 @@ impl TransactionContext {
                     );
 
                     #[cfg(feature = "metrics")]
-                    if let Some(user_id) = self.user_id {
+                    if let Some(user_partition_key) = self.user_partition_key {
                         with_metric!(
                             user::SYSTEM_ERRORS,
                             add,
                             1,
                             self.shard_id(),
-                            &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_id)]
+                            &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
                         );
 
                         with_metric!(
@@ -620,7 +620,7 @@ impl TransactionContext {
                             add,
                             1,
                             self.shard_id(),
-                            &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_id)]
+                            &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
                         );
                     }
 
@@ -745,7 +745,7 @@ where
                                 eval_http_finish_context(FinishContextParams {
                                     stream_metrics,
                                     listener_name,
-                                    user_id: trans_handler.user_id,
+                                    user_partition_key: trans_handler.user_partition_key,
                                     filterchain_id,
                                     bytes_received: ctx_bytes,
                                     bytes_sent: body_bytes,
@@ -1136,11 +1136,9 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
 
                     #[cfg(feature = "metrics")]
                     if let Some(custom_metrics) = CUSTOM_METRICS.get() {
-                        let attr = metrics::get_partition_key_from_headers(
-                            response.headers(),
-                            metrics::CUSTOM_KEY.header_name(),
-                        )
-                        .map(|id| KeyValue::new(metrics::CUSTOM_KEY.attribute_name().unwrap_or("custom"), id));
+                        let attr =
+                            metrics::get_user_partition_key(response.headers(), None, metrics::CUSTOM_KEY.source())
+                                .map(|id| KeyValue::new(metrics::CUSTOM_KEY.attribute_name().unwrap_or("custom"), id));
                         custom_metrics.with_headers(
                             MetricsHook::IncomingResponse,
                             response.headers(),
@@ -1224,7 +1222,9 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
         // destructure the Request to get the request and addresses
         let incoming_request_id = RequestId::from_request(&incoming_request);
         let incoming_version = incoming_request.version();
-        let stream_metrics = incoming_request.extensions().get::<MetadataContext>().map(|md| md.stream_metrics.clone());
+        let metadata_context = incoming_request.extensions().get::<MetadataContext>();
+        let stream_metrics = metadata_context.map(|md| md.stream_metrics.clone());
+        let sni = metadata_context.and_then(|md| md.downstream.sni.clone());
 
         let access_log_enabled = {
             #[cfg(feature = "access-log")]
@@ -1262,18 +1262,19 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
             set_attributes_from_request(span, &request);
         }
 
-        // get user_id, to be used with user metrics...
+        // get user_partition_key, to be used with user metrics...
         //
         #[cfg(feature = "metrics")]
-        let user_id = metrics::get_partition_key_from_headers(request.headers(), metrics::USER_KEY.header_name());
+        let user_partition_key =
+            metrics::get_user_partition_key(request.headers(), sni.as_ref(), metrics::USER_KEY.source());
 
         #[cfg(not(feature = "metrics"))]
-        let user_id = None;
+        let user_partition_key = None;
 
         // create the transaction context
         let trans_handler = Arc::new(TransactionContext::new(
             request_id,
-            user_id,
+            user_partition_key,
             get_shard_id!(),
             #[cfg(feature = "access-log")]
             &self.manager.access_log,
@@ -1319,7 +1320,7 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
 
         #[cfg(feature = "metrics")]
         if let Some(custom_metrics) = CUSTOM_METRICS.get() {
-            let attr = metrics::get_partition_key_from_headers(request.headers(), metrics::CUSTOM_KEY.header_name())
+            let attr = metrics::get_user_partition_key(request.headers(), sni.as_ref(), metrics::CUSTOM_KEY.source())
                 .map(|id| KeyValue::new(metrics::CUSTOM_KEY.attribute_name().unwrap_or("custom"), id));
             custom_metrics.with_headers(
                 MetricsHook::IncomingRequest,
@@ -1361,7 +1362,7 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
                     &trans_handler,
                     &stream_metrics,
                     listener_name,
-                    user_id,
+                    user_partition_key,
                     filterchain_id,
                 );
             };
@@ -1374,7 +1375,7 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
                 &trans_handler,
                 &stream_metrics,
                 listener_name,
-                user_id,
+                user_partition_key,
                 filterchain_id,
             ) {
                 return Ok(response_error);
@@ -1415,7 +1416,7 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
                                 eval_http_finish_context(FinishContextParams {
                                     stream_metrics: stream_metrics,
                                     listener_name,
-                                    user_id,
+                                    user_partition_key,
                                     filterchain_id,
                                     bytes_received: body_bytes,
                                     bytes_sent: ctx_bytes,
@@ -1461,9 +1462,8 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
             #[cfg(feature = "metrics")]
             if let Ok(response) = &response {
                 if let Some(custom_metrics) = CUSTOM_METRICS.get() {
-                    let attr =
-                        metrics::get_partition_key_from_headers(response.headers(), metrics::CUSTOM_KEY.header_name())
-                            .map(|id| KeyValue::new(metrics::CUSTOM_KEY.attribute_name().unwrap_or("custom"), id));
+                    let attr = metrics::get_user_partition_key(response.headers(), None, metrics::CUSTOM_KEY.source())
+                        .map(|id| KeyValue::new(metrics::CUSTOM_KEY.attribute_name().unwrap_or("custom"), id));
                     custom_metrics.with_headers(
                         MetricsHook::DownstreamResponse,
                         response.headers(),
@@ -1546,7 +1546,7 @@ struct FinishContextParams<'a> {
     stream_metrics: &'a StreamMetrics,
     listener_name: &'static str,
     #[allow(dead_code)]
-    user_id: Option<&'static str>,
+    user_partition_key: Option<&'static str>,
     #[allow(dead_code)]
     filterchain_id: u64,
     #[allow(dead_code)]
@@ -1566,13 +1566,13 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
     let latency = params.trans_start_time.elapsed();
 
     #[cfg(feature = "metrics")]
-    if let Some(user_id) = params.user_id {
+    if let Some(user_partition_key) = params.user_partition_key {
         with_histogram!(
             user::LATENCY,
             record,
             latency.as_millis() as u64,
             params.m_ctx.shard_id,
-            &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_id)]
+            &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
         );
     }
 
@@ -1614,7 +1614,7 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
     let mut loggers: Vec<LogFormatter> = std::mem::take(params.al_ctx.access_loggers);
 
     #[cfg(feature = "metrics")]
-    let user_id = params.user_id;
+    let user_partition_key = params.user_partition_key;
 
     let log_fn: Box<dyn FnOnce(u64, u64) + Send> = Box::new(move |wire_bytes_received, wire_bytes_sent| {
         #[cfg(feature = "access-log")]
@@ -1644,14 +1644,14 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
         );
 
         #[cfg(feature = "metrics")]
-        if let Some(user_id) = user_id {
+        if let Some(user_partition_key) = user_partition_key {
             with_metric!(
                 user::BYTES_RX,
                 add,
                 wire_bytes_received,
                 shard_id,
                 &[
-                    KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_id),
+                    KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key),
                     KeyValue::new("listener", params.listener_name)
                 ]
             );
@@ -1661,7 +1661,7 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
                 wire_bytes_sent,
                 shard_id,
                 &[
-                    KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_id),
+                    KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key),
                     KeyValue::new("listener", params.listener_name)
                 ]
             );
@@ -1688,7 +1688,7 @@ fn instrument_early_failure_response(
     trans_handler: &Arc<TransactionContext>,
     stream_metrics: &Option<Arc<crate::utils::instrumented_stream::StreamMetrics>>,
     listener_name: &'static str,
-    user_id: Option<&'static str>,
+    user_partition_key: Option<&'static str>,
     filterchain_id: u64,
 ) -> Response<OrionRequestBody> {
     #[cfg(feature = "access-log")]
@@ -1757,7 +1757,7 @@ fn instrument_early_failure_response(
                         eval_http_finish_context(FinishContextParams {
                             stream_metrics: stream_metrics,
                             listener_name,
-                            user_id,
+                            user_partition_key,
                             filterchain_id,
                             bytes_received: ctx_bytes,
                             bytes_sent: body_bytes,
@@ -1806,7 +1806,7 @@ fn reject_request_if_invalid(
     trans_handler: &Arc<TransactionContext>,
     stream_metrics: &Option<Arc<crate::utils::instrumented_stream::StreamMetrics>>,
     listener_name: &'static str,
-    user_id: Option<&'static str>,
+    user_partition_key: Option<&'static str>,
     filterchain_id: u64,
 ) -> Option<Response<crate::OrionRequestBody>> {
     // check if request has no host header, or if it has multiple ones (invalid for http1.1)
@@ -1867,7 +1867,14 @@ fn reject_request_if_invalid(
     });
 
     response.map(|r| {
-        instrument_early_failure_response(r, trans_handler, stream_metrics, listener_name, user_id, filterchain_id)
+        instrument_early_failure_response(
+            r,
+            trans_handler,
+            stream_metrics,
+            listener_name,
+            user_partition_key,
+            filterchain_id,
+        )
     })
 }
 
@@ -1877,7 +1884,7 @@ fn handle_route_conf_not_found(
     trans_handler: &Arc<TransactionContext>,
     stream_metrics: &Option<Arc<crate::utils::instrumented_stream::StreamMetrics>>,
     listener_name: &'static str,
-    user_id: Option<&'static str>,
+    user_partition_key: Option<&'static str>,
     filterchain_id: u64,
 ) -> StdResult<Response<crate::OrionRequestBody>, crate::Error> {
     // immediately return a SyntheticHttpResponse, and calculate the first byte instant
@@ -1892,7 +1899,7 @@ fn handle_route_conf_not_found(
         trans_handler,
         stream_metrics,
         listener_name,
-        user_id,
+        user_partition_key,
         filterchain_id,
     ))
 }

@@ -35,17 +35,16 @@ pub fn run() -> Result<()> {
 
     // Set the header_name from which to extract the user_id
     //
-    if let Some(header_name) =
-        metrics.as_ref().and_then(|metrics| metrics.user_key.as_ref()).map(|key| &key.header_name).cloned()
+    if let Some(source) = metrics.as_ref().and_then(|metrics| metrics.user_key.as_ref()).map(|key| &key.source).cloned()
     {
-        metrics::USER_KEY.set_header_name(header_name);
+        metrics::USER_KEY.set_source(source);
     }
 
     // Set the header_name from which to extract the custom key
-    if let Some(header_name) =
-        metrics.as_ref().and_then(|metrics| metrics.custom_key.as_ref()).map(|key| &key.header_name).cloned()
+    if let Some(source) =
+        metrics.as_ref().and_then(|metrics| metrics.custom_key.as_ref()).map(|key| &key.source).cloned()
     {
-        metrics::CUSTOM_KEY.set_header_name(header_name);
+        metrics::CUSTOM_KEY.set_source(source);
     }
 
     // Set the attribute key value used to partition user metrics.

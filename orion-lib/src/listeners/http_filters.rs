@@ -205,7 +205,10 @@ impl HttpFilterValue {
             HttpFilterValue::UserRateLimit(_) => FilterDecision::Continue,
         }
     }
-    pub(crate) fn from_filter_override(value: &FilterOverride, filter_config: Option<&HttpFilterConfig>) -> Option<Self> {
+    pub(crate) fn from_filter_override(
+        value: &FilterOverride,
+        filter_config: Option<&HttpFilterConfig>,
+    ) -> Option<Self> {
         match &value.filter_settings {
             Some(filter_settings) => match filter_settings {
                 FilterConfigOverride::LocalRateLimit(rl) => Some(HttpFilterValue::RateLimit(rl.clone().into())),
@@ -257,7 +260,10 @@ pub(crate) fn per_route_http_filters(
                     Some(override_config) => Arc::new(HttpFilter {
                         name: hcm_filter.name.clone(),
                         disabled: override_config.disabled,
-                        filter: HttpFilterValue::from_filter_override(override_config, hcm_filter.filter_config.as_deref()),
+                        filter: HttpFilterValue::from_filter_override(
+                            override_config,
+                            hcm_filter.filter_config.as_deref(),
+                        ),
                         filter_config: hcm_filter.filter_config.clone(),
                     }),
                     None => Arc::clone(hcm_filter),

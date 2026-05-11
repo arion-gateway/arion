@@ -53,11 +53,7 @@ fn extract_pseudo_headers(mutation: &mut HeaderMutation) -> PseudoHeaders {
     let mut i = 0;
 
     while i < mutation.set_headers.len() {
-        let is_pseudo = mutation.set_headers[i]
-            .header
-            .as_ref()
-            .map(|h| h.key.starts_with(':'))
-            .unwrap_or(false);
+        let is_pseudo = mutation.set_headers[i].header.as_ref().map(|h| h.key.starts_with(':')).unwrap_or(false);
 
         if is_pseudo {
             let header_to_set = mutation.set_headers.remove(i);

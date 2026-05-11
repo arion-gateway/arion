@@ -309,28 +309,38 @@ The counters in this section generally have an attribute to indicate the result 
 
 ### User statistics
 
-The user-based metrics have a partition key extracted for HTTP requests from the request header, configurable in Orion.
+User-based metrics are partitioned by a `user_partition_key`, extracted **once** at the start of the transaction and stored in the `TransactionContext` for reuse throughout the entire request lifecycle (routing, upstream forwarding, response handling). This avoids repeated header parsing and guarantees a single consistent identity per transaction.
 
-Example:
+The partition key source is configurable via the `source` field of `user_key`: it can be read from a request header (`HeaderName`) or derived from the TLS SNI value (`Sni`).
+
+Example (source: request header):
 ```yaml
 metrics:
   user_key:
-    header_name: "x-user-id"
+    source: !HeaderName x-user-id
+    attribute_name: "user"
+```
+
+Example (source: TLS SNI):
+```yaml
+metrics:
+  user_key:
+    source: Sni
     attribute_name: "user"
 ```
 
 | Name | Type | Status | Description | Attributes |
 | :--- | :--- | :--- | :--- | :--- |
-| `invocations` | Counter | ✅ | Total number of API calls | `user_id` |
-| `throttles` | Counter | ✅ | Total number of API calls that were throttled | `user_id` |
-| `system_errors` | Counter | ✅ | Total number of API calls that resulted in a system error | `user_id` |
-| `user_errors` | Counter | ✅ | Total number of API calls that resulted in a user error | `user_id` |
-| `total_errors` | Counter | ✅ | Total number of API calls that resulted in any error | `user_id` |
-| `latency` | Histogram | ✅ | Latency of API calls in milliseconds | `user_id` |
-| `bytes_tx` | Counter | ✅ | Total number of bytes transmitted in API calls (http) | `user_id` |
-| `bytes_rx` | Counter | ✅ | Total number of bytes received in API calls (http) | `user_id` |
-| `inbound_streaming_bytes_processed` | Counter | ✅ | Total number of bytes processed in inbound streaming API calls (websocket) | `user_id` |
-| `outbound_streaming_bytes_processed` | Counter | ✅ | Total number of bytes processed in outbound streaming API calls (websocket) | `user_id` |
+| `invocations` | Counter | ✅ | Total number of API calls | `<attribute_name>` |
+| `throttles` | Counter | ✅ | Total number of API calls that were throttled | `<attribute_name>` |
+| `system_errors` | Counter | ✅ | Total number of API calls that resulted in a system error | `<attribute_name>` |
+| `user_errors` | Counter | ✅ | Total number of API calls that resulted in a user error | `<attribute_name>` |
+| `total_errors` | Counter | ✅ | Total number of API calls that resulted in any error | `<attribute_name>` |
+| `latency` | Histogram | ✅ | Latency of API calls in milliseconds | `<attribute_name>` |
+| `bytes_tx` | Counter | ✅ | Total number of bytes transmitted in API calls (http) | `<attribute_name>` |
+| `bytes_rx` | Counter | ✅ | Total number of bytes received in API calls (http) | `<attribute_name>` |
+| `inbound_streaming_bytes_processed` | Counter | ✅ | Total number of bytes processed in inbound streaming API calls (websocket) | `<attribute_name>` |
+| `outbound_streaming_bytes_processed` | Counter | ✅ | Total number of bytes processed in outbound streaming API calls (websocket) | `<attribute_name>` |
 
 ### Custom Metrics
 
@@ -352,7 +362,13 @@ Each metric requires specifying its type (`!Counter`, `!Histogram`, or `!Gauge`)
 *   **`attribute_name`**: (Optional) The name of the attribute (or label) to be attached to the metric. If omitted, it defaults to the `header_name` with hyphens (`-`) replaced by underscores (`_`).
 *   **`buckets`**: (Required for Histograms only) An array defining the bucket boundaries for the histogram. It accepts numeric values and `+inf` (or `MAX`, `max`) for the maximum limit.
 
-You can also define a `custom_key` under the `metrics` configuration to partition all custom metrics by a specific header, independently from the `user_key`.
+You can also define a `custom_key` under the `metrics` configuration to partition all custom metrics by a specific request header, independently from the `user_key`.
+
+> **Design note — `user_key` vs `custom_key` extraction strategy**
+>
+> The `user_partition_key` (configured via `user_key`) is extracted **once** at request ingress and stored in the `TransactionContext`. It represents the stable identity of the transaction and is reused at every subsequent stage without re-parsing headers.
+>
+> The `custom_partition_key` (configured via `custom_key`) is instead evaluated **at each hook point** (`incoming_request`, `upstream_request`, `incoming_response`, `downstream_response`). This is intentional: custom metrics hooks are designed to observe the exact state of headers at each specific stage of the pipeline, so the partition key is read fresh each time, allowing it to reflect any header mutation introduced by filters or the upstream.
 
 #### Example Configuration
 

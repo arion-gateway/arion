@@ -92,7 +92,7 @@ pub async fn handle_websocket_upgrade(
     match version {
         Version::HTTP_11 => {
             #[cfg(feature = "metrics")]
-            let user_key = metrics::get_partition_key_from_headers(request.headers(), metrics::USER_KEY.header_name());
+            let user_partition_key = trans_handler.user_partition_key;
 
             let request_upgrade = hyper::upgrade::on(&mut request);
             match svc_channel.to_response(trans_handler, request, RequestContext::default()).await {
@@ -172,7 +172,7 @@ pub async fn handle_websocket_upgrade(
                                 );
 
                                 #[cfg(feature = "metrics")]
-                                if let Some(partition_key) = user_key {
+                                if let Some(partition_key) = user_partition_key {
                                     with_metric!(
                                         user::INBOUND_STREAMING_BYTES_PROCESSED,
                                         add,
