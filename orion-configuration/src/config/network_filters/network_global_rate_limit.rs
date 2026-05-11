@@ -18,7 +18,7 @@ pub struct Descriptor {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NetworkGlobalRateLimit {
     pub stat_prefix: InternedStr,
-    pub domain: SmolStr,
+    pub domain: Option<SmolStr>,
     pub grpc_service: GrpcService,
     #[serde(default)]
     pub failure_mode_deny: bool,
@@ -55,7 +55,7 @@ mod envoy_conversions {
                 timeout // timeout is already part of the grpc service configuration
             )?;
 
-            let domain = required!(domain)?;
+            let domain = (!domain.is_empty()).then(|| domain.into());
             let descriptors = required!(descriptors)?;
             let stat_prefix = required!(stat_prefix)?;
 
@@ -73,13 +73,7 @@ mod envoy_conversions {
             let rls_config = required!(rate_limit_service).with_node("rate_limit_service")?;
             let grpc_service = rls_config.try_into()?;
 
-            Ok(Self {
-                stat_prefix: stat_prefix.into(),
-                domain: domain.into(),
-                grpc_service,
-                failure_mode_deny,
-                descriptors,
-            })
+            Ok(Self { stat_prefix: stat_prefix.into(), domain, grpc_service, failure_mode_deny, descriptors })
         }
     }
 

@@ -526,6 +526,17 @@ mod envoy_conversions {
                         },
                     }
                 }
+                if !with_tls_inspector {
+                    for chain in filter_chains.values() {
+                        if let Some(rl) = &chain.network_global_rate_limit {
+                            if rl.domain.is_none() {
+                                return Err(GenericError::from_msg(
+                                    "network global rate limit: domain is required for listeners without a TLS inspector",
+                                ));
+                            }
+                        }
+                    }
+                }
                 let tcp_backlog_size = tcp_backlog_size.unwrap_or(DEFAULT_TCP_BACKLOG_SIZE).value;
                 Ok(Self {
                     name: name.into(),
