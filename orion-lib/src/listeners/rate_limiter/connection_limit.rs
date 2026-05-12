@@ -77,3 +77,81 @@ impl NetworkConnectionLimit {
         Ok(ConnectionGuard(Arc::clone(&self.active)))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_limiter(listener: &'static str, max: u64) -> NetworkConnectionLimit {
+        NetworkConnectionLimit::from((
+            listener,
+            0u64,
+            ConnectionLimitConfig { stat_prefix: "test".into(), max_connections: max, delay: None },
+        ))
+    }
+
+    #[tokio::test]
+    async fn guard_decrement() {
+        let limiter = make_limiter("test_guard_decrement", 3);
+
+        assert_eq!(limiter.active.load(Ordering::Acquire), 0);
+
+        let guard = limiter.check().await.unwrap();
+        assert_eq!(limiter.active.load(Ordering::Acquire), 1);
+
+        drop(guard);
+        assert_eq!(limiter.active.load(Ordering::Acquire), 0);
+
+        let guard2 = limiter.check().await.unwrap();
+        assert_eq!(limiter.active.load(Ordering::Acquire), 1);
+        drop(guard2);
+        assert_eq!(limiter.active.load(Ordering::Acquire), 0);
+    }
+
+    #[tokio::test]
+    async fn limit_enforcement() {
+        let limiter = make_limiter("test_limit_enforcement", 2);
+
+        let g1 = limiter.check().await.unwrap();
+        let g2 = limiter.check().await.unwrap();
+        assert_eq!(limiter.active.load(Ordering::Acquire), 2);
+
+        assert!(limiter.check().await.is_err());
+
+        drop(g1);
+        assert_eq!(limiter.active.load(Ordering::Acquire), 1);
+
+        let g3 = limiter.check().await.unwrap();
+        assert_eq!(limiter.active.load(Ordering::Acquire), 2);
+
+        drop(g2);
+        drop(g3);
+        assert_eq!(limiter.active.load(Ordering::Acquire), 0);
+    }
+
+    // 20 tasks race against a limit of 5 across 4 threads; the key assertion is
+    // `active == 0` after all tasks finish, which proves no leaked increments
+    // or double decrements regardless of the accept overshoot
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_accepts() {
+        let max = 5u64;
+        let limiter = Arc::new(make_limiter("test_concurrent_accepts", max));
+        let mut handles = Vec::new();
+
+        for _ in 0..20 {
+            let limiter = Arc::clone(&limiter);
+            handles.push(tokio::spawn(async move {
+                if let Ok(_guard) = limiter.check().await {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    // guard drops here
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.await.unwrap();
+        }
+
+        assert_eq!(limiter.active.load(Ordering::Acquire), 0);
+    }
+}
