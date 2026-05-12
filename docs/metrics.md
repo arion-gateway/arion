@@ -313,12 +313,18 @@ User-based metrics are partitioned by a `user_partition_key`, extracted **once**
 
 The partition key source is configurable via the `source` field of `user_key`: it can be read from a request header (`HeaderName`) or derived from the TLS SNI value (`Sni`).
 
-Example (source: request header):
+In addition, the actual names of the user metrics exported can be customized via the `user_metrics` configuration block. If you wish to rename any metric (for instance, changing `invocations` to `api_invocations_total`), you can specify the new name. Any metric name not specified will default to its standard name.
+
+Example (customizing metric names and using request header as source):
 ```yaml
 metrics:
   user_key:
     source: !HeaderName x-user-id
     attribute_name: "user"
+  user_metrics:
+    invocations: "api_invocations_total"
+    throttles: "api_throttles_total"
+    latency: "api_latency_ms"
 ```
 
 Example (source: TLS SNI):
@@ -329,7 +335,7 @@ metrics:
     attribute_name: "user"
 ```
 
-| Name | Type | Status | Description | Attributes |
+| Default Name | Type | Status | Description | Attributes |
 | :--- | :--- | :--- | :--- | :--- |
 | `invocations` | Counter | ✅ | Total number of API calls | `<attribute_name>` |
 | `throttles` | Counter | ✅ | Total number of API calls that were throttled | `<attribute_name>` |
