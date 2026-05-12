@@ -44,7 +44,7 @@ use orion_configuration::config::{
 use {
     crate::get_shard_id,
     opentelemetry::KeyValue,
-    orion_metrics::metrics::{clusters, tcp},
+    orion_metrics::metrics::{clusters, tcp, user},
 };
 
 use std::{fmt, net::SocketAddr};
@@ -212,6 +212,38 @@ impl TcpProxy {
                             shard_id,
                             &[KeyValue::new("cluster", channel.cluster_name)]
                         );
+
+                        #[cfg(feature = "metrics")]
+                        {
+                            let user_partition_key = crate::metrics::get_user_partition_key(
+                                &http::HeaderMap::new(),
+                                metadata.sni.as_ref(),
+                                crate::metrics::USER_KEY.source(),
+                            );
+
+                            if let Some(user_partition_key) = user_partition_key {
+                                with_metric!(
+                                    user::BYTES_RX,
+                                    add,
+                                    bytes_received_down,
+                                    shard_id,
+                                    &[
+                                        KeyValue::new(crate::metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key),
+                                        KeyValue::new("listener", metadata.listener_name)
+                                    ]
+                                );
+                                with_metric!(
+                                    user::BYTES_TX,
+                                    add,
+                                    bytes_sent_down,
+                                    shard_id,
+                                    &[
+                                        KeyValue::new(crate::metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key),
+                                        KeyValue::new("listener", metadata.listener_name)
+                                    ]
+                                );
+                            }
+                        }
 
                         #[cfg(feature = "access-log")]
                         with_access_log!(

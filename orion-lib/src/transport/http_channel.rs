@@ -471,11 +471,11 @@ pub struct Retries {
 impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &HttpChannel {
     async fn to_response(
         self,
-        _trans_handler: &TransactionContext,
+        trans_handler: &TransactionContext,
         request: Request<OrionRequestBody>,
         ctx: RequestContext<'a>,
     ) -> Result<Response<OrionResponseBody>> {
-        instrument_function!(_trans_handler.clock, |nanos| {
+        instrument_function!(trans_handler.clock, |nanos| {
             crate::instrumentation::metrics::REQUEST_TO_RESPONSE_TIME.observe(nanos as usize)
         });
 
@@ -493,7 +493,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
             use crate::metrics;
             use orion_metrics::metrics::custom::MetricsHook;
 
-            let attr = metrics::get_partition_key_from_headers(request.headers(), metrics::CUSTOM_KEY.header_name())
+            let attr = metrics::get_user_partition_key(request.headers(), None, metrics::CUSTOM_KEY.source())
                 .map(|id| KeyValue::new(metrics::CUSTOM_KEY.attribute_name().unwrap_or("custom"), id));
             custom_metrics.with_headers(
                 MetricsHook::UpstreamRequest,
@@ -507,7 +507,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
         let mut retries = Retries::default();
         let start_time = std::time::Instant::now();
         let result = instrument_block!(
-            _trans_handler.clock,
+            trans_handler.clock,
             |nanos| {
                 crate::instrumentation::metrics::SEND_REQUEST_WAIT_RESPONSE.observe(nanos as usize);
             },
@@ -518,7 +518,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
                     retry_policy,
                     Some(&mut retries),
                     #[cfg(feature = "instrumentation")]
-                    &_trans_handler.clock,
+                    &trans_handler.clock,
                 )
                 .await
             }
@@ -701,11 +701,8 @@ impl HttpChannel {
             };
 
             // avoid to clone parts on the last attempt
-            let current_parts = if index == max_retries {
-                parts_opt.take().unwrap()
-            } else {
-                parts_opt.as_ref().unwrap().clone()
-            };
+            let current_parts =
+                if index == max_retries { parts_opt.take().unwrap() } else { parts_opt.as_ref().unwrap().clone() };
 
             let cloned_req: Request<OrionRequestBody> = Request::from_parts(current_parts, cloned_body);
 

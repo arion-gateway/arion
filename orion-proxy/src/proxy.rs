@@ -44,7 +44,7 @@ use orion_lib::{
     SecretManager,
 };
 #[cfg(feature = "metrics")]
-use orion_metrics::{metrics::init_global_metrics, wait_for_metrics_setup, Metrics, VecMetrics};
+use orion_metrics::{metrics::init_global_metrics, wait_for_metrics_setup, OtelExporterConfig};
 
 use parking_lot::RwLock;
 use std::{
@@ -103,7 +103,7 @@ struct ServiceInfo {
     #[cfg(feature = "tracing")]
     tracing: HashMap<TracingKey, TracingConfig>,
     #[cfg(feature = "metrics")]
-    otel_metrics: Vec<Metrics>,
+    otel_exporters: Vec<OtelExporterConfig>,
 }
 
 type SenderGuards = Vec<ConfigurationSenders>;
@@ -132,10 +132,7 @@ fn launch_runtimes(
     //
 
     #[cfg(feature = "metrics")]
-    let otel_metrics = VecMetrics::from(&bootstrap).0;
-
-    #[cfg(feature = "metrics")]
-    let metrics_are_empty = otel_metrics.is_empty();
+    let otel_exporters = OtelExporterConfig::extract_from_bootstrap(&bootstrap);
 
     #[cfg(feature = "tracing")]
     let tracing = bootstrap
@@ -180,7 +177,7 @@ fn launch_runtimes(
         #[cfg(feature = "tracing")]
         tracing,
         #[cfg(feature = "metrics")]
-        otel_metrics: otel_metrics.clone(),
+        otel_exporters: otel_exporters.clone(),
     };
 
     info!("Launching Service runtime with {} threads", rt_config.num_service_threads.get());
@@ -193,7 +190,7 @@ fn launch_runtimes(
     )?;
 
     #[cfg(feature = "metrics")]
-    if !metrics_are_empty {
+    if !otel_exporters.is_empty() {
         info!("Waiting for metrics setup to complete...");
         wait_for_metrics_setup();
     }
@@ -206,17 +203,9 @@ fn launch_runtimes(
         .with_context_msg("failed to calculate number of threads to use per runtime")?;
 
     #[cfg(feature = "metrics")]
-    let default_custom_metrics = orion_configuration::config::metrics::CustomMetrics {
-        incoming_request: vec![],
-        upstream_request: vec![],
-        incoming_response: vec![],
-        downstream_response: vec![],
-    };
-
-    #[cfg(feature = "metrics")]
     init_global_metrics(
-        &otel_metrics,
-        metrics_config.as_ref().map(|m| &m.custom_metrics).unwrap_or(&default_custom_metrics),
+        &otel_exporters,
+        metrics_config.as_ref().unwrap_or(&MetricsConfig::default()),
         num_threads_per_runtime * num_runtimes,
     );
 
@@ -232,7 +221,7 @@ fn launch_runtimes(
                     rt_config.affinity_strategy.clone().map(|affinity| (RuntimeId(id), affinity)),
                     config_receivers,
                     #[cfg(feature = "metrics")]
-                    otel_metrics.clone(),
+                    otel_exporters.clone(),
                 )
             })
             .collect::<Result<Vec<_>>>()?
@@ -261,13 +250,13 @@ fn spawn_proxy_runtime_from_thread(
     num_threads: usize,
     affinity_info: Option<(RuntimeId, Affinity)>,
     configuration_receivers: ConfigurationReceivers,
-    #[cfg(feature = "metrics")] otel_metrics: Vec<Metrics>,
+    #[cfg(feature = "metrics")] otel_exporters: Vec<OtelExporterConfig>,
 ) -> Result<RuntimeHandle> {
     let thread_name = build_thread_name(thread_name, affinity_info.as_ref());
 
     let handle: JoinHandle<Result<()>> = thread::Builder::new().name(thread_name.clone()).spawn(move || {
         #[cfg(feature = "metrics")]
-        let rt = runtime::build_tokio_runtime(&thread_name, num_threads, affinity_info, otel_metrics);
+        let rt = runtime::build_tokio_runtime(&thread_name, num_threads, affinity_info, otel_exporters);
         #[cfg(not(feature = "metrics"))]
         let rt = runtime::build_tokio_runtime(&thread_name, num_threads, affinity_info);
 
@@ -343,7 +332,7 @@ async fn spawn_services(info: ServiceInfo) -> Result<()> {
         #[cfg(feature = "tracing")]
         tracing,
         #[cfg(feature = "metrics")]
-            otel_metrics: metrics,
+            otel_exporters: exporters,
     } = info;
     let mut set: JoinSet<Result<()>> = JoinSet::new();
 
@@ -403,10 +392,10 @@ async fn spawn_services(info: ServiceInfo) -> Result<()> {
 
     // spawn metrics exporter...
     #[cfg(feature = "metrics")]
-    if metrics.is_empty() {
+    if exporters.is_empty() {
         info!("OTEL metrics: stats_sink not configured (skipped)");
     } else {
-        orion_metrics::otel_launch_exporter(&metrics).await?;
+        orion_metrics::otel_launch_exporter(&exporters).await?;
     }
 
     // spawn tracing exporters...

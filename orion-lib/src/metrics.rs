@@ -1,6 +1,8 @@
 use atomicoption::AtomicOption;
-use http::{HeaderMap, HeaderName};
+use http::HeaderMap;
+use orion_configuration::config::metrics::PartitionKeySource;
 use orion_interner::StringInterner;
+use smol_str::SmolStr;
 use std::sync::atomic::Ordering;
 
 #[macro_export]
@@ -45,27 +47,32 @@ macro_rules! get_shard_id {
 }
 
 pub struct PartitionKey {
-    header_name: AtomicOption<HeaderName>,
+    source: AtomicOption<PartitionKeySource>,
     attribute_name: AtomicOption<String>,
 }
 
 impl PartitionKey {
+    #[inline]
     pub const fn new() -> PartitionKey {
-        PartitionKey { header_name: AtomicOption::none(), attribute_name: AtomicOption::none() }
+        PartitionKey { source: AtomicOption::none(), attribute_name: AtomicOption::none() }
     }
 
-    pub fn header_name(&self) -> Option<&HeaderName> {
-        self.header_name.as_ref(Ordering::Acquire)
+    #[inline]
+    pub fn source(&self) -> Option<&PartitionKeySource> {
+        self.source.as_ref(Ordering::Acquire)
     }
 
+    #[inline]
+    pub fn set_source(&self, value: PartitionKeySource) {
+        self.source.store(Ordering::Release, value);
+    }
+
+    #[inline]
     pub fn attribute_name(&self) -> Option<&str> {
         self.attribute_name.as_ref(Ordering::Acquire).map(|s| s.as_str())
     }
 
-    pub fn set_header_name(&self, value: HeaderName) {
-        self.header_name.store(Ordering::Release, value);
-    }
-
+    #[inline]
     pub fn set_attribute_name(&self, value: String) {
         self.attribute_name.store(Ordering::Release, value);
     }
@@ -76,11 +83,15 @@ pub static CUSTOM_KEY: PartitionKey = PartitionKey::new();
 
 #[inline]
 /// Return the partition key from headers, if one is present and the header name is configured.
-pub fn get_partition_key_from_headers(
+pub fn get_user_partition_key(
     headers: &HeaderMap,
-    user_header_name: Option<&HeaderName>,
+    sni: Option<&SmolStr>,
+    source: Option<&PartitionKeySource>,
 ) -> Option<&'static str> {
-    user_header_name.and_then(|header_name| {
-        headers.get(header_name).map(|value| value.to_str()).transpose().ok().flatten().map(|s| s.to_static_str())
+    source.and_then(|key| match key {
+        PartitionKeySource::HeaderName(keym) => {
+            headers.get(keym).map(|value| value.to_str()).transpose().ok().flatten().map(|s| s.to_static_str())
+        },
+        PartitionKeySource::Sni => sni.map(|s| s.to_static_str()),
     })
 }

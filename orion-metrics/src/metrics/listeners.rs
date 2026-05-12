@@ -32,24 +32,24 @@ pub static DOWNSTREAM_CX_LENGTH_MS: OnceLock<Metric<ShardedHistogram<ThreadId>>>
 pub(crate) fn init_metrics() {
     init_observable_histogram!(
         DOWNSTREAM_CX_LENGTH_MS,
-        "listeners",
+        crate::metrics::PREFIX_LISTENERS,
         "downstream_cx_length_ms",
         "Connection length milliseconds",
         vec![5, 10, 50, 100, 500, 1000, 5000, 10000, u64::MAX]
     );
 
-    init_observable_counter!(DOWNSTREAM_CX_TOTAL, "listeners", "downstream_cx_total", "Total downstream connections");
+    init_observable_counter!(DOWNSTREAM_CX_TOTAL, crate::metrics::PREFIX_LISTENERS, "downstream_cx_total", "Total downstream connections");
     init_observable_counter!(
         DOWNSTREAM_CX_DESTROY,
-        "listeners",
+        crate::metrics::PREFIX_LISTENERS,
         "downstream_cx_destroy",
         "Total destroyed downstream connections"
     );
     init_observable_counter!(
         NO_FILTER_CHAIN_MATCH,
-        "listeners",
+        crate::metrics::PREFIX_LISTENERS,
         "no_filter_chain_match",
         "Total connections with no filter chain match"
     );
-    init_observable_gauge!(DOWNSTREAM_CX_ACTIVE, "listeners", "downstream_cx_active", "Total active connections");
+    init_observable_gauge!(DOWNSTREAM_CX_ACTIVE, crate::metrics::PREFIX_LISTENERS, "downstream_cx_active", "Total active connections");
 }

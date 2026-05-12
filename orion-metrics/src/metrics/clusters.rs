@@ -41,40 +41,40 @@ pub static UPSTREAM_CX_RX_BYTES_TOTAL: OnceLock<Metric<ShardedU64<ThreadId>>> = 
 pub static UPSTREAM_CX_TX_BYTES_TOTAL: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 
 pub(crate) fn init_metrics() {
-    init_observable_counter!(UPSTREAM_RQ_TOTAL, "cluster", "upstream_rq_total", "Total number of upstream requests");
-    init_observable_gauge!(UPSTREAM_RQ_ACTIVE, "cluster", "upstream_rq_active", "Number of active upstream requests");
-    init_observable_counter!(UPSTREAM_RQ_TIMEOUT, "cluster", "upstream_rq_timeout", "Total upstream request timeouts");
+    init_observable_counter!(UPSTREAM_RQ_TOTAL, crate::metrics::PREFIX_CLUSTER, "upstream_rq_total", "Total number of upstream requests");
+    init_observable_gauge!(UPSTREAM_RQ_ACTIVE, crate::metrics::PREFIX_CLUSTER, "upstream_rq_active", "Number of active upstream requests");
+    init_observable_counter!(UPSTREAM_RQ_TIMEOUT, crate::metrics::PREFIX_CLUSTER, "upstream_rq_timeout", "Total upstream request timeouts");
     init_observable_counter!(
         UPSTREAM_RQ_PER_TRY_TIMEOUT,
-        "cluster",
+        crate::metrics::PREFIX_CLUSTER,
         "upstream_rq_per_try_timeout",
         "Total upstream request timeouts per try"
     );
-    init_observable_counter!(UPSTREAM_RQ_RETRY, "cluster", "upstream_rq_retry", "Total upstream request retries");
-    init_observable_counter!(UPSTREAM_CX_TOTAL, "cluster", "upstream_cx_total", "Total upstream connections");
+    init_observable_counter!(UPSTREAM_RQ_RETRY, crate::metrics::PREFIX_CLUSTER, "upstream_rq_retry", "Total upstream request retries");
+    init_observable_counter!(UPSTREAM_CX_TOTAL, crate::metrics::PREFIX_CLUSTER, "upstream_cx_total", "Total upstream connections");
     init_observable_counter!(
         UPSTREAM_CX_CONNECT_FAIL,
-        "cluster",
+        crate::metrics::PREFIX_CLUSTER,
         "upstream_cx_connect_fail",
         "Total upstream connection failures"
     );
     init_observable_counter!(
         UPSTREAM_CX_CONNECT_TIMEOUT,
-        "cluster",
+        crate::metrics::PREFIX_CLUSTER,
         "upstream_cx_connect_timeout",
         "Total upstream connection timeouts"
     );
     init_observable_counter!(
         UPSTREAM_CX_IDLE_TIMEOUT,
-        "cluster",
+        crate::metrics::PREFIX_CLUSTER,
         "upstream_cx_idle_timeout",
         "Total upstream connections idle timeout"
     );
     init_observable_counter!(
         UPSTREAM_CX_DESTROY,
-        "cluster",
+        crate::metrics::PREFIX_CLUSTER,
         "upstream_cx_destroy",
         "Total upstream connections destroyed"
     );
-    init_observable_gauge!(UPSTREAM_CX_ACTIVE, "cluster", "upstream_cx_active", "Number of active connections");
+    init_observable_gauge!(UPSTREAM_CX_ACTIVE, crate::metrics::PREFIX_CLUSTER, "upstream_cx_active", "Number of active connections");
 }
