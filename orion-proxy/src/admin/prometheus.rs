@@ -15,7 +15,7 @@
 //
 //
 
-use std::borrow::Cow;
+use std::{borrow::Cow, collections::HashMap};
 use std::fmt::Write;
 use std::hash::Hash;
 use std::sync::OnceLock;
@@ -194,7 +194,7 @@ pub(crate) async fn prometheus_handler(
     State(_): State<AdminState>,
 ) -> Result<(HeaderMap, String), (StatusCode, String)> {
     debug!(target: "prometheus", "prometheus_handler: running");
-    update_server_metrics();
+    update_server_metrics(&HashMap::new());
 
     // Pre-allocate a reasonable sized string buffer to avoid reallocations
     let mut out = String::with_capacity(16384);

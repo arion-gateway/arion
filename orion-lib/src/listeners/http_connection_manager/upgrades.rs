@@ -199,7 +199,10 @@ pub async fn handle_websocket_upgrade(
                                         bytes_received_down,
                                         shard_id,
                                         &[
-                                            KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), partition_key),
+                                            KeyValue::new(
+                                                metrics::USER_KEY.attribute_name().unwrap_or("user"),
+                                                partition_key
+                                            ),
                                             KeyValue::new("listener", listener_name)
                                         ]
                                     );
@@ -209,7 +212,10 @@ pub async fn handle_websocket_upgrade(
                                         bytes_sent_down,
                                         shard_id,
                                         &[
-                                            KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), partition_key),
+                                            KeyValue::new(
+                                                metrics::USER_KEY.attribute_name().unwrap_or("user"),
+                                                partition_key
+                                            ),
                                             KeyValue::new("listener", listener_name)
                                         ]
                                     );

@@ -313,18 +313,12 @@ User-based metrics are partitioned by a `user_partition_key`, extracted **once**
 
 The partition key source is configurable via the `source` field of `user_key`: it can be read from a request header (`HeaderName`) or derived from the TLS SNI value (`Sni`).
 
-In addition, the actual names of the user metrics exported can be customized via the `user_metrics` configuration block. If you wish to rename any metric (for instance, changing `invocations` to `api_invocations_total`), you can specify the new name. Any metric name not specified will default to its standard name.
-
-Example (customizing metric names and using request header as source):
+Example (using request header as source):
 ```yaml
 metrics:
   user_key:
     source: !HeaderName x-user-id
     attribute_name: "user"
-  user_metrics:
-    invocations: "api_invocations_total"
-    throttles: "api_throttles_total"
-    latency: "api_latency_ms"
 ```
 
 Example (source: TLS SNI):
@@ -347,6 +341,20 @@ metrics:
 | `bytes_rx` | Counter | ✅ | Total number of bytes received in API calls (tcp,http,websockets) | `<attribute_name>` |
 | `inbound_streaming_bytes_processed` | Counter | ✅ | Total number of bytes processed in inbound streaming API calls (websocket only) | `<attribute_name>` |
 | `outbound_streaming_bytes_processed` | Counter | ✅ | Total number of bytes processed in outbound streaming API calls (websocket only) | `<attribute_name>` |
+
+### Renaming Built-in Metrics
+
+All built-in metrics (Listener, TLS, HTTP, TCP, Cluster, Server, Filter, and User) can be renamed using the `rename` configuration block under `metrics`. If you wish to rename any metric, you can specify the original default name as the key and the new desired name as the value. Any metric name not specified will retain its standard default name. Custom metrics are configured separately and do not use this block.
+
+Example:
+```yaml
+metrics:
+  rename:
+    invocations: "api_invocations_total"
+    throttles: "api_throttles_total"
+    uptime: "server_uptime_seconds"
+    downstream_cx_active: "active_connections"
+```
 
 ### Custom Metrics
 

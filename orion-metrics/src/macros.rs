@@ -33,8 +33,10 @@ macro_rules! init_observable_counter {
 
 macro_rules! init_observable_histogram {
     ($histogram: ident, $prefix: expr, $name: expr, $descr: literal, $buckets: expr) => {
-        let otel_histogram =
-            global::meter(const_format::concatcp!("orion.", $prefix)).u64_histogram($name).with_description($descr).build();
+        let otel_histogram = global::meter(const_format::concatcp!("orion.", $prefix))
+            .u64_histogram($name)
+            .with_description($descr)
+            .build();
 
         _ = $histogram.set(Metric::new(
             $prefix,

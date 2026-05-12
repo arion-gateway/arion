@@ -38,8 +38,6 @@ use orion_configuration::config::network_filters::http_connection_manager::{
     RetryPolicy,
 };
 use orion_error::Context;
-#[cfg(feature = "instrumentation")]
-use scopeguard::defer;
 
 #[cfg(feature = "access-log")]
 use orion_format::context::{UpstreamContext, UpstreamRequestContext};

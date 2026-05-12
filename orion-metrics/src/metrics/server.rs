@@ -28,43 +28,77 @@ pub static MEMORY_HEAP_SIZE: OnceLock<Metric<Gauge>> = OnceLock::new();
 pub static MEMORY_PHYSICAL_SIZE: OnceLock<Metric<Gauge>> = OnceLock::new();
 pub static MEMORY_ALLOCATED: OnceLock<Metric<Gauge>> = OnceLock::new();
 
-
-pub fn update_server_metrics() {
+pub fn update_server_metrics(rename: &std::collections::HashMap<String, String>) {
     let uptime = util::server_uptime();
     let physical_memory = util::get_memory_physical_size().unwrap_or(0);
     let memory_heap_size = util::get_memory_heap_size().unwrap_or(physical_memory) as u64;
     let memory_allocated = util::get_memory_allocated().unwrap_or(physical_memory) as u64;
 
     UPTIME
-        .get_or_init(|| Metric::new(crate::metrics::PREFIX_SERVER, "uptime", "Current server uptime in seconds", Gauge::new()))
+        .get_or_init(|| {
+            Metric::new(
+                crate::metrics::PREFIX_SERVER,
+                crate::metrics::resolve_metric_name(rename, "uptime"),
+                "Current server uptime in seconds",
+                Gauge::new(),
+            )
+        })
         .value
         .record(uptime, &[]);
 
     MEMORY_HEAP_SIZE
-        .get_or_init(|| Metric::new(crate::metrics::PREFIX_SERVER, "memory_heap_size", "Current memory heap size in bytes", Gauge::new()))
+        .get_or_init(|| {
+            Metric::new(
+                crate::metrics::PREFIX_SERVER,
+                crate::metrics::resolve_metric_name(rename, "memory_heap_size"),
+                "Current memory heap size in bytes",
+                Gauge::new(),
+            )
+        })
         .value
         .record(memory_heap_size as u64, &[]);
 
     MEMORY_PHYSICAL_SIZE
-        .get_or_init(|| Metric::new(crate::metrics::PREFIX_SERVER, "memory_physical_size", "Current memory physical size", Gauge::new()))
+        .get_or_init(|| {
+            Metric::new(
+                crate::metrics::PREFIX_SERVER,
+                crate::metrics::resolve_metric_name(rename, "memory_physical_size"),
+                "Current memory physical size",
+                Gauge::new(),
+            )
+        })
         .value
         .record(physical_memory as u64, &[]);
 
     MEMORY_ALLOCATED
-        .get_or_init(|| Metric::new(crate::metrics::PREFIX_SERVER, "memory_allocated", "Current memory allocated in bytes", Gauge::new()))
+        .get_or_init(|| {
+            Metric::new(
+                crate::metrics::PREFIX_SERVER,
+                crate::metrics::resolve_metric_name(rename, "memory_allocated"),
+                "Current memory allocated in bytes",
+                Gauge::new(),
+            )
+        })
         .value
         .record(memory_allocated, &[]);
 }
 
-pub(crate) fn init_metrics(number_of_threads: usize) {
+pub(crate) fn init_metrics(number_of_threads: usize, rename: &std::collections::HashMap<String, String>) {
     _ = STARTUP_TIME.set(Instant::now());
 
     CONCURRENCY
-        .get_or_init(|| Metric::new(crate::metrics::PREFIX_SERVER, "concurrency", "Number of worker threads", Gauge::new()))
+        .get_or_init(|| {
+            Metric::new(
+                crate::metrics::PREFIX_SERVER,
+                crate::metrics::resolve_metric_name(rename, "concurrency"),
+                "Number of worker threads",
+                Gauge::new(),
+            )
+        })
         .value
         .record(number_of_threads as u64, &[]);
 
-    update_server_metrics();
+    update_server_metrics(rename);
 
     global::meter(const_format::concatcp!("orion.", crate::metrics::PREFIX_SERVER))
         .u64_observable_gauge(UPTIME.wait().name)

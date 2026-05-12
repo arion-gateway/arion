@@ -61,7 +61,6 @@ use {crate::get_shard_id, opentelemetry::KeyValue, orion_metrics::metrics::clust
 use pingora_timeout::fast_timeout::fast_timeout;
 use pretty_duration::pretty_duration;
 use rustls::ClientConfig;
-use scopeguard::defer;
 use smol_str::ToSmolStr;
 use std::{io::ErrorKind, mem, result::Result as StdResult, sync::Arc, time::Duration};
 use tracing::debug;
@@ -72,6 +71,7 @@ use {
     hyper_util::client::legacy::pool::{EventHandler, PoolEvent},
     hyper_util::client::legacy::PoolKey,
     std::any::Any,
+    scopeguard::defer,
 };
 const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -484,6 +484,8 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
         let shard_id = get_shard_id!();
 
         with_metric!(clusters::UPSTREAM_RQ_ACTIVE, add, 1, shard_id, &[KeyValue::new("cluster", self.cluster_name)]);
+
+        #[cfg(feature = "metrics")]
         defer! {
             with_metric!(clusters::UPSTREAM_RQ_ACTIVE, sub, 1, shard_id, &[KeyValue::new("cluster", self.cluster_name)]);
         }

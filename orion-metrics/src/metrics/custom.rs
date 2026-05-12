@@ -83,7 +83,8 @@ impl CustomMetricCounters {
                     let name = name.to_static_str();
                     let description = description.to_static_str();
 
-                    let metric_obj = Arc::new(Metric::new(crate::metrics::PREFIX_CUSTOM, name, description, ShardedU64::new()));
+                    let metric_obj =
+                        Arc::new(Metric::new(crate::metrics::PREFIX_CUSTOM, name, description, ShardedU64::new()));
                     let metric_clone = metric_obj.clone();
 
                     let _ = global::meter(const_format::concatcp!("orion.", crate::metrics::PREFIX_CUSTOM))
@@ -128,7 +129,10 @@ impl CustomMetricCounters {
                     let description = description.to_static_str();
 
                     let otel_histogram =
-                        global::meter(const_format::concatcp!("orion.", crate::metrics::PREFIX_CUSTOM)).u64_histogram(name).with_description(description).build();
+                        global::meter(const_format::concatcp!("orion.", crate::metrics::PREFIX_CUSTOM))
+                            .u64_histogram(name)
+                            .with_description(description)
+                            .build();
 
                     let sharded = ShardedHistogram::new(buckets.clone(), Some(otel_histogram));
                     let metric_obj = Arc::new(Metric::new(crate::metrics::PREFIX_CUSTOM, name, description, sharded));
@@ -157,7 +161,8 @@ impl CustomMetricCounters {
                     let name = name.to_static_str();
                     let description = description.to_static_str();
 
-                    let metric_obj = Arc::new(Metric::new(crate::metrics::PREFIX_CUSTOM, name, description, Gauge::new()));
+                    let metric_obj =
+                        Arc::new(Metric::new(crate::metrics::PREFIX_CUSTOM, name, description, Gauge::new()));
                     let metric_clone = metric_obj.clone();
 
                     let _ = global::meter(const_format::concatcp!("orion.", crate::metrics::PREFIX_CUSTOM))

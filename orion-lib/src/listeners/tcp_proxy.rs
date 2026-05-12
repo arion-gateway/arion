@@ -228,7 +228,10 @@ impl TcpProxy {
                                     bytes_received_down,
                                     shard_id,
                                     &[
-                                        KeyValue::new(crate::metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key),
+                                        KeyValue::new(
+                                            crate::metrics::USER_KEY.attribute_name().unwrap_or("user"),
+                                            user_partition_key
+                                        ),
                                         KeyValue::new("listener", metadata.listener_name)
                                     ]
                                 );
@@ -238,7 +241,10 @@ impl TcpProxy {
                                     bytes_sent_down,
                                     shard_id,
                                     &[
-                                        KeyValue::new(crate::metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key),
+                                        KeyValue::new(
+                                            crate::metrics::USER_KEY.attribute_name().unwrap_or("user"),
+                                            user_partition_key
+                                        ),
                                         KeyValue::new("listener", metadata.listener_name)
                                     ]
                                 );

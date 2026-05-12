@@ -22,6 +22,11 @@ use opentelemetry::global;
 
 pub static HANDSHAKES: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 
-pub(crate) fn init_metrics() {
-    init_observable_counter!(HANDSHAKES, crate::metrics::PREFIX_TLS, "handshake", "Number of TLS handshakes");
+pub(crate) fn init_metrics(rename: &std::collections::HashMap<String, String>) {
+    init_observable_counter!(
+        HANDSHAKES,
+        crate::metrics::PREFIX_TLS,
+        crate::metrics::resolve_metric_name(rename, "handshake"),
+        "Number of TLS handshakes"
+    );
 }
