@@ -20,6 +20,7 @@ use orion_data_plane_api::envoy_data_plane_api::{
     envoy::extensions::stat_sinks::open_telemetry::v3::SinkConfig as EnvoySinkConfig, google::protobuf::Any,
     prost::Message,
 };
+use orion_interner::StringInterner;
 use serde::{Deserialize, Deserializer, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -130,12 +131,71 @@ pub struct CustomMetrics {
     pub downstream_response: Vec<CustomMetric>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct UserMetrics {
+    pub invocations: Option<String>,
+    pub throttles: Option<String>,
+    pub system_errors: Option<String>,
+    pub user_errors: Option<String>,
+    pub total_errors: Option<String>,
+    pub bytes_tx: Option<String>,
+    pub bytes_rx: Option<String>,
+    pub inbound_streaming_bytes_processed: Option<String>,
+    pub outbound_streaming_bytes_processed: Option<String>,
+    pub latency: Option<String>,
+}
+
+impl UserMetrics {
+    pub fn invocations(&self) -> &'static str {
+        self.invocations.as_ref().map(StringInterner::to_static_str).unwrap_or("invocations")
+    }
+
+    pub fn throttles(&self) -> &'static str {
+        self.throttles.as_ref().map(StringInterner::to_static_str).unwrap_or("throttles")
+    }
+
+    pub fn system_errors(&self) -> &'static str {
+        self.system_errors.as_ref().map(StringInterner::to_static_str).unwrap_or("system_errors")
+    }
+
+    pub fn user_errors(&self) -> &'static str {
+        self.user_errors.as_ref().map(StringInterner::to_static_str).unwrap_or("user_errors")
+    }
+
+    pub fn total_errors(&self) -> &'static str {
+        self.total_errors.as_ref().map(StringInterner::to_static_str).unwrap_or("total_errors")
+    }
+
+    pub fn bytes_tx(&self) -> &'static str {
+        self.bytes_tx.as_ref().map(StringInterner::to_static_str).unwrap_or("bytes_tx")
+    }
+
+    pub fn bytes_rx(&self) -> &'static str {
+        self.bytes_rx.as_ref().map(StringInterner::to_static_str).unwrap_or("bytes_rx")
+    }
+
+    pub fn inbound_streaming_bytes_processed(&self) -> &'static str {
+        self.inbound_streaming_bytes_processed.as_ref().map(StringInterner::to_static_str).unwrap_or("inbound_streaming_bytes_processed")
+    }
+
+    pub fn outbound_streaming_bytes_processed(&self) -> &'static str {
+        self.outbound_streaming_bytes_processed.as_ref().map(StringInterner::to_static_str).unwrap_or("outbound_streaming_bytes_processed")
+    }
+
+    pub fn latency(&self) -> &'static str {
+        self.latency.as_ref().map(StringInterner::to_static_str).unwrap_or("latency")
+    }
+}
+
+
+#[derive(Clone, Debug, Deserialize, Default, Serialize, PartialEq, Eq)]
 pub struct MetricsConfig {
     #[serde(default)]
     pub user_key: Option<PartitionKey>, // for user metrics (invocations, throttles, etc.)
     #[serde(default)]
     pub custom_key: Option<PartitionKey>, // for custom metrics (might use a different partition key)
+    #[serde(default)]
+    pub user_metrics: UserMetrics,
     #[serde(default)]
     pub custom_metrics: CustomMetrics,
 }

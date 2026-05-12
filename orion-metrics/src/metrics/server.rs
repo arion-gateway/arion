@@ -28,7 +28,6 @@ pub static MEMORY_HEAP_SIZE: OnceLock<Metric<Gauge>> = OnceLock::new();
 pub static MEMORY_PHYSICAL_SIZE: OnceLock<Metric<Gauge>> = OnceLock::new();
 pub static MEMORY_ALLOCATED: OnceLock<Metric<Gauge>> = OnceLock::new();
 
-const SERVER_PREFIX: &str = "orion.server";
 
 pub fn update_server_metrics() {
     let uptime = util::server_uptime();
@@ -37,22 +36,22 @@ pub fn update_server_metrics() {
     let memory_allocated = util::get_memory_allocated().unwrap_or(physical_memory) as u64;
 
     UPTIME
-        .get_or_init(|| Metric::new("server", "uptime", "Current server uptime in seconds", Gauge::new()))
+        .get_or_init(|| Metric::new(crate::metrics::PREFIX_SERVER, "uptime", "Current server uptime in seconds", Gauge::new()))
         .value
         .record(uptime, &[]);
 
     MEMORY_HEAP_SIZE
-        .get_or_init(|| Metric::new("server", "memory_heap_size", "Current memory heap size in bytes", Gauge::new()))
+        .get_or_init(|| Metric::new(crate::metrics::PREFIX_SERVER, "memory_heap_size", "Current memory heap size in bytes", Gauge::new()))
         .value
         .record(memory_heap_size as u64, &[]);
 
     MEMORY_PHYSICAL_SIZE
-        .get_or_init(|| Metric::new("server", "memory_physical_size", "Current memory physical size", Gauge::new()))
+        .get_or_init(|| Metric::new(crate::metrics::PREFIX_SERVER, "memory_physical_size", "Current memory physical size", Gauge::new()))
         .value
         .record(physical_memory as u64, &[]);
 
     MEMORY_ALLOCATED
-        .get_or_init(|| Metric::new("server", "memory_allocated", "Current memory allocated in bytes", Gauge::new()))
+        .get_or_init(|| Metric::new(crate::metrics::PREFIX_SERVER, "memory_allocated", "Current memory allocated in bytes", Gauge::new()))
         .value
         .record(memory_allocated, &[]);
 }
@@ -61,19 +60,19 @@ pub(crate) fn init_metrics(number_of_threads: usize) {
     _ = STARTUP_TIME.set(Instant::now());
 
     CONCURRENCY
-        .get_or_init(|| Metric::new("server", "concurrency", "Number of worker threads", Gauge::new()))
+        .get_or_init(|| Metric::new(crate::metrics::PREFIX_SERVER, "concurrency", "Number of worker threads", Gauge::new()))
         .value
         .record(number_of_threads as u64, &[]);
 
     update_server_metrics();
 
-    global::meter(SERVER_PREFIX)
+    global::meter(const_format::concatcp!("orion.", crate::metrics::PREFIX_SERVER))
         .u64_observable_gauge(UPTIME.wait().name)
         .with_description(UPTIME.wait().descr)
         .with_callback(move |observer| observer.observe(util::server_uptime(), &[]))
         .build();
 
-    global::meter(SERVER_PREFIX)
+    global::meter(const_format::concatcp!("orion.", crate::metrics::PREFIX_SERVER))
         .u64_observable_gauge(CONCURRENCY.wait().name)
         .with_description(CONCURRENCY.wait().descr)
         .with_callback(move |observer| observer.observe(number_of_threads as u64, &[]))
@@ -81,7 +80,7 @@ pub(crate) fn init_metrics(number_of_threads: usize) {
 
     let physical_memory = util::get_memory_physical_size().unwrap_or(0);
 
-    global::meter(SERVER_PREFIX)
+    global::meter(const_format::concatcp!("orion.", crate::metrics::PREFIX_SERVER))
         .u64_observable_gauge(MEMORY_HEAP_SIZE.wait().name)
         .with_description(MEMORY_HEAP_SIZE.wait().descr)
         .with_callback(move |observer| {
@@ -89,13 +88,13 @@ pub(crate) fn init_metrics(number_of_threads: usize) {
         })
         .build();
 
-    global::meter(SERVER_PREFIX)
+    global::meter(const_format::concatcp!("orion.", crate::metrics::PREFIX_SERVER))
         .u64_observable_gauge(MEMORY_PHYSICAL_SIZE.wait().name)
         .with_description(MEMORY_PHYSICAL_SIZE.wait().descr)
         .with_callback(move |observer| observer.observe(physical_memory as u64, &[]))
         .build();
 
-    global::meter(SERVER_PREFIX)
+    global::meter(const_format::concatcp!("orion.", crate::metrics::PREFIX_SERVER))
         .u64_observable_gauge(MEMORY_ALLOCATED.wait().name)
         .with_description(MEMORY_ALLOCATED.wait().descr)
         .with_callback(move |observer| {
