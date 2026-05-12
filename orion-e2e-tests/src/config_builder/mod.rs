@@ -20,6 +20,7 @@ mod filter_chain;
 mod hcm;
 mod health_check;
 mod listener;
+mod network_global_rate_limit;
 pub mod presets;
 mod rate_limit;
 mod rbac;
@@ -41,6 +42,7 @@ pub use filter_chain::{FilterChain, FilterChainBuilder};
 pub use hcm::{CodecType, Hcm, HcmBuilder};
 pub use health_check::{GrpcHealthCheckBuilder, HealthCheckMethod, HttpHealthCheckBuilder, TcpHealthCheckBuilder};
 pub use listener::{Listener, ListenerBuilder};
+pub use network_global_rate_limit::{NetworkGlobalRateLimit, NetworkGlobalRateLimitBuilder};
 pub use rate_limit::{
     LocalRateLimit, LocalRateLimitBuilder, TokenBucket, TokenBucketBuilder, UserRateLimiter, UserRateLimiterBuilder,
 };

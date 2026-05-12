@@ -40,7 +40,7 @@ use crate::{
     listeners::{
         http_connection_manager::mcp_gateway::mcp::McpGatewayListenerContext,
         metadata::{DownstreamConnectionMetadata, DownstreamMetadata},
-        rate_limiter::ListenerLocalRateLimit,
+        rate_limiter::local_rate_limiter::ListenerLocalRateLimit,
     },
     secrets::{TlsConfigurator, WantsToBuildServer},
     transport::{bind_device::BindDevice, tls_inspector, ProxyProtocolReader},
@@ -718,6 +718,7 @@ impl Listener {
                 connection_metadata.peer_address(),
                 filterchain.filter_chain().name
             );
+            filterchain.apply_network_rate_limit(sni.as_ref()).await?;
             if let Some(stream) = filterchain.apply_rbac(stream, &connection_metadata, sni.as_deref()) {
                 return filterchain
                     .start_filterchain(

@@ -120,8 +120,10 @@ use crate::{
 #[cfg(any(feature = "access-log", feature = "metrics"))]
 use crate::utils::instrumented_stream::StreamMetrics;
 
-use orion_configuration::config::network_filters::http_connection_manager::{Route, VirtualHost, XffSettings};
-use orion_configuration::config::network_filters::tracing::{TracingConfig, TracingKey};
+use orion_configuration::config::network_filters::{
+    http_connection_manager::{Route, VirtualHost, XffSettings},
+    tracing::{TracingConfig, TracingKey},
+};
 use orion_format::types::ResponseFlags as FmtResponseFlags;
 use route::RouteContext;
 use scopeguard::defer;
@@ -669,7 +671,6 @@ where
         #[allow(unused_variables)]
         let filterchain_id = manager.filterchain_id;
         let metadata = request.extensions().get::<MetadataContext>();
-
         let downstream_addr = metadata
             .map(|md| md.downstream.connection.peer_address())
             .unwrap_or_else(|| SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0));
@@ -677,7 +678,7 @@ where
         let stream_metrics = metadata.map(|md| md.stream_metrics.clone());
 
         #[allow(clippy::unwrap_used)]
-        let req_count = stream_metrics.as_ref().unwrap().inc_requests();
+        stream_metrics.as_ref().unwrap().inc_requests();
 
         // apply the request header modifiers
         http_modifiers::apply_prerouting_functions(&mut request, downstream_addr, manager.xff_settings);

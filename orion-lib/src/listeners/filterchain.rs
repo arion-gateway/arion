@@ -21,7 +21,10 @@ use super::{
 };
 use crate::{
     extensions_context::MetadataContext,
-    listeners::metadata::{DownstreamConnectionMetadata, DownstreamMetadata},
+    listeners::{
+        metadata::{DownstreamConnectionMetadata, DownstreamMetadata},
+        rate_limiter::global_rate_limiter::NetworkGlobalRateLimit,
+    },
     secrets::{TlsConfigurator, WantsToBuildServer},
     transport::AsyncReadWriteInstrumented,
     AsyncInstrumentedStream, ConversionContext, Error, Result,
@@ -35,6 +38,7 @@ use orion_configuration::config::{
     network_filters::{
         http_connection_manager::CodecType,
         network_rbac::{NetworkContext, NetworkRbac},
+        NetworkGlobalRateLimit as NetworkGlobalRateLimitConfig,
     },
 };
 
@@ -69,6 +73,7 @@ pub struct Filterchain {
     pub name: SmolStr,
     pub rbac_filters: Vec<NetworkRbac>,
     pub tls_configurator: Option<TlsConfigurator<ServerConfig, WantsToBuildServer>>,
+    pub network_global_rate_limit: Option<NetworkGlobalRateLimit>,
 }
 
 #[derive(Debug, Clone)]
@@ -97,6 +102,7 @@ pub struct FilterchainBuilder {
     listener_name: Option<&'static str>,
     main_filter: MainFilterBuilder,
     rbac_filters: Vec<NetworkRbac>,
+    network_global_rate_limit: Option<NetworkGlobalRateLimitConfig>,
     tls_configurator: Option<TlsConfigurator<ServerConfig, WantsToBuildServer>>,
 }
 
@@ -108,10 +114,13 @@ impl FilterchainBuilder {
     pub fn build(self) -> Result<FilterchainType> {
         let listener_name = self.listener_name.ok_or("listener name is not set")?;
         let filterchain_name = self.name;
+        let network_global_rate_limit =
+            self.network_global_rate_limit.map(NetworkGlobalRateLimit::try_from).transpose()?;
         let config = Filterchain {
             name: filterchain_name,
             tls_configurator: self.tls_configurator,
             rbac_filters: self.rbac_filters,
+            network_global_rate_limit,
         };
         let handler = match self.main_filter {
             MainFilterBuilder::Http(http_connection_manager) => ConnectionHandler::Http(Arc::new(
@@ -135,6 +144,7 @@ impl TryFrom<ConversionContext<'_, FilterChainConfig>> for FilterchainBuilder {
         let main_filter = ConversionContext::new((filter_chain.terminal_filter, secret_manager)).try_into()?;
         let tls_config = filter_chain.tls_config;
         let rbac_filters = filter_chain.rbac;
+        let network_global_rate_limit = filter_chain.network_global_rate_limit;
         let tls_configurator =
             tls_config.map(|tls_config| TlsConfigurator::try_from((tls_config, secret_manager))).transpose()?;
         Ok(FilterchainBuilder {
@@ -143,6 +153,7 @@ impl TryFrom<ConversionContext<'_, FilterChainConfig>> for FilterchainBuilder {
             listener_name: None,
             main_filter,
             rbac_filters,
+            network_global_rate_limit,
             tls_configurator,
         })
     }
@@ -169,6 +180,13 @@ impl FilterchainType {
             }
         }
         Some(stream)
+    }
+
+    pub async fn apply_network_rate_limit(&self, sni: Option<&SmolStr>) -> Result<()> {
+        let Some(rate_limit) = &self.config.network_global_rate_limit else {
+            return Ok(());
+        };
+        rate_limit.check(sni).await
     }
 
     #[allow(clippy::used_underscore_binding)]
