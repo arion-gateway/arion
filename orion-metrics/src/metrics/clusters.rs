@@ -77,4 +77,16 @@ pub(crate) fn init_metrics() {
         "Total upstream connections destroyed"
     );
     init_observable_gauge!(UPSTREAM_CX_ACTIVE, crate::metrics::PREFIX_CLUSTER, "upstream_cx_active", "Number of active connections");
+    init_observable_counter!(
+        UPSTREAM_CX_RX_BYTES_TOTAL,
+        crate::metrics::PREFIX_CLUSTER,
+        "upstream_cx_rx_bytes_total",
+        "Total upstream bytes received"
+    );
+    init_observable_counter!(
+        UPSTREAM_CX_TX_BYTES_TOTAL,
+        crate::metrics::PREFIX_CLUSTER,
+        "upstream_cx_tx_bytes_total",
+        "Total upstream bytes sent"
+    );
 }
