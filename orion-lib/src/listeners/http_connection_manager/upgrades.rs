@@ -193,6 +193,26 @@ pub async fn handle_websocket_upgrade(
                                             partition_key
                                         )]
                                     );
+                                    with_metric!(
+                                        user::BYTES_RX,
+                                        add,
+                                        bytes_received_down,
+                                        shard_id,
+                                        &[
+                                            KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), partition_key),
+                                            KeyValue::new("listener", listener_name)
+                                        ]
+                                    );
+                                    with_metric!(
+                                        user::BYTES_TX,
+                                        add,
+                                        bytes_sent_down,
+                                        shard_id,
+                                        &[
+                                            KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), partition_key),
+                                            KeyValue::new("listener", listener_name)
+                                        ]
+                                    );
                                 }
                             },
                             (req_state, resp_state) => {

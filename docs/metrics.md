@@ -343,10 +343,10 @@ metrics:
 | `user_errors` | Counter | ✅ | Total number of API calls that resulted in a user error | `<attribute_name>` |
 | `total_errors` | Counter | ✅ | Total number of API calls that resulted in any error | `<attribute_name>` |
 | `latency` | Histogram | ✅ | Latency of API calls in milliseconds | `<attribute_name>` |
-| `bytes_tx` | Counter | ✅ | Total number of bytes transmitted in API calls (http) | `<attribute_name>` |
-| `bytes_rx` | Counter | ✅ | Total number of bytes received in API calls (http) | `<attribute_name>` |
-| `inbound_streaming_bytes_processed` | Counter | ✅ | Total number of bytes processed in inbound streaming API calls (websocket) | `<attribute_name>` |
-| `outbound_streaming_bytes_processed` | Counter | ✅ | Total number of bytes processed in outbound streaming API calls (websocket) | `<attribute_name>` |
+| `bytes_tx` | Counter | ✅ | Total number of bytes transmitted in API calls (tcp,http,websockets) | `<attribute_name>` |
+| `bytes_rx` | Counter | ✅ | Total number of bytes received in API calls (tcp,http,websockets) | `<attribute_name>` |
+| `inbound_streaming_bytes_processed` | Counter | ✅ | Total number of bytes processed in inbound streaming API calls (websocket only) | `<attribute_name>` |
+| `outbound_streaming_bytes_processed` | Counter | ✅ | Total number of bytes processed in outbound streaming API calls (websocket only) | `<attribute_name>` |
 
 ### Custom Metrics
 
