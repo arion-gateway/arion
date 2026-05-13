@@ -259,6 +259,7 @@ mod config_dump_tests {
                         id: 0,
                         tls_config: None,
                         rbac: vec![],
+                        network_global_rate_limit: None,
                         terminal_filter: MainFilter::Http(HttpConnectionManager {
                             codec_type: CodecType::Http1,
                             request_timeout: Some(Duration::from_secs(10)),
@@ -307,8 +308,9 @@ mod config_dump_tests {
                 );
                 map
             },
-            proxy_protocol_config: None,
             with_tls_inspector: false,
+            proxy_protocol_config: None,
+            listener_local_rate_limit_config: None,
             tcp_backlog_size: 128,
             access_log: vec![],
         };

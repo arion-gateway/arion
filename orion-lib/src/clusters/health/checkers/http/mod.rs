@@ -43,7 +43,7 @@ use crate::{
         checkers::checker::HealthCheckerLoop, counter::HealthStatusCounter, EndpointHealthUpdate, EndpointId,
         HealthStatus,
     },
-    listeners::http_connection_manager::{RequestHandler, TransactionHandler},
+    listeners::http_connection_manager::{RequestHandler, TransactionContext},
     transport::HttpChannel,
     Error,
 };
@@ -135,7 +135,7 @@ where
 
     async fn check(&mut self) -> Result<Self::Response, Error> {
         let request = create_request(self.http_version, &self.method, &self.host, &self.uri)?;
-        self.client.to_response(&TransactionHandler::default(), request, RequestContext::default()).await
+        self.client.to_response(&TransactionContext::default(), request, RequestContext::default()).await
     }
 
     fn process_response(

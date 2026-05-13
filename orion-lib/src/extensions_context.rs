@@ -8,7 +8,7 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct MetadataContext {
     pub downstream: DownstreamMetadata,
-    pub metrics: Arc<StreamMetrics>,
+    pub stream_metrics: Arc<StreamMetrics>,
 }
 
 #[derive(Debug, Clone)]

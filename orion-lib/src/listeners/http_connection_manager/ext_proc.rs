@@ -12,10 +12,8 @@ use crate::body::channel_body::{BodyType, ChannelBody, FrameBridge};
 use crate::body::timeout_body::TimeoutBody;
 use crate::event_error::EventFailure;
 use crate::listeners::http_connection_manager::ext_proc::kind::{MessageType, RequestMsg, ResponseMsg};
-use crate::listeners::http_connection_manager::ext_proc::pseudo_header::CombinedHeaderMap;
 use crate::{OrionRequestBody, OrionResponseBody};
 use http_body_util::{BodyExt, Collected, LengthLimitError, Limited};
-use smol_str::ToSmolStr;
 
 use crate::listeners::http_connection_manager::ext_proc::mutation::{
     apply_request_header_mutations, apply_response_header_mutations,
@@ -34,6 +32,7 @@ use crate::{
     Error, PolyBody,
 };
 use bytes::Bytes;
+use const_str::parse;
 use futures::{future::Either, StreamExt};
 use http::header::CONTENT_LENGTH;
 use http::{Request, Response, StatusCode};
@@ -50,7 +49,7 @@ use orion_configuration::config::{
 };
 use orion_data_plane_api::envoy_data_plane_api::{
     envoy::{
-        config::core::v3::{HeaderMap, HeaderValue},
+        config::core::v3::{HeaderMap as ProstHeaderMap, HeaderValue},
         service::ext_proc::v3::{
             external_processor_client::ExternalProcessorClient,
             processing_response::Response as ProcessingResponseType, ImmediateResponse, ProcessingRequest,
@@ -69,17 +68,59 @@ use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::{sync::Arc, time::Duration};
 use tokio::sync::mpsc::error::SendError;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, Semaphore};
 use tracing::{debug, info, warn};
 
-const CHANNEL_BODY_PREFETCH_FRAMES: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(4) };
-const EXT_PROC_FRAME_MERGE_LIMIT: u32 = 4; // max number of frames to merge in streaming mode
-const EXT_PROC_MERGE_WINDOW: Duration = tokio::time::Duration::from_micros(100); // time window to wait for more frames to merge
-const EXT_PROC_BUFFERED_BODY_LIMIT: usize = 100 * 1024 * 1024; // extend the default gRPC payload limit from 4MB to 100MB
+/// The total number of frames to prefetch before sending the request to the upstream service.
+const CHANNEL_BODY_PREFETCH_FRAMES: NonZeroUsize = unsafe {
+    NonZeroUsize::new_unchecked(parse!(
+        match option_env!("CHANNEL_BODY_PREFETCH_FRAMES") {
+            Some(s) => s,
+            None => "4",
+        },
+        usize
+    ))
+};
 
-pub struct ExtProcHeaderValue<'a> {
-    pub key: &'a str,
-    pub value: &'a str,
+/// The maximum number of bytes to buffer in memory for the request body in buffered mode.
+const EXT_PROC_BUFFERED_BODY_LIMIT: usize = parse!(
+    match option_env!("EXT_PROC_BUFFERED_BODY_LIMIT") {
+        Some(s) => s,
+        None => "104857600", // 100 * 1024 * 1024
+    },
+    usize
+);
+
+/// The merge window for merging frames in buffered mode in microseconds.
+const EXT_PROC_MERGE_WINDOW: Duration = Duration::from_micros(parse!(
+    match option_env!("EXT_PROC_MERGE_WINDOW") {
+        Some(s) => s,
+        None => "100",
+    },
+    u64
+));
+
+/// The maximum number of frames to merge.
+const EXT_PROC_FRAME_MERGE_LIMIT: u32 = parse!(
+    match option_env!("EXT_PROC_FRAME_MERGE_LIMIT") {
+        Some(v) => v,
+        None => "4",
+    },
+    u32
+);
+
+/// The number of max concurrent ext_proc requests per core. This limits the number of concurrent requests to avoid
+/// overloading the external processor and spawning too many tasks.
+const EXT_PROC_MAX_CONCURRENT_REQUESTS: usize = parse!(
+    match option_env!("EXT_PROC_MAX_CONCURRENT_REQUESTS") {
+        Some(s) => s,
+        None => "24",
+    },
+    usize
+);
+
+thread_local! {
+    static EXT_PROC_CONCURRENT_PERMIT: Arc<Semaphore> = Arc::new(Semaphore::new(EXT_PROC_MAX_CONCURRENT_REQUESTS));
 }
 
 #[derive(Debug, Clone, thiserror::Error)]
@@ -132,6 +173,12 @@ impl From<(ExternalProcessorConfig, Option<ExtProcPerRoute>, Option<ExternalProc
         ),
     ) -> Self {
         debug!(target: "ext_proc", "From<ExternalProcessorConfig, Option<ExtProcPerRoute>, Option<ExternalProcessorConfigExt>> for ExternalProcessor");
+        // dump the value of all variables configured via environment variables
+        info!(target: "ext_proc", "const CHANNEL_BODY_PREFETCH_FRAMES: {CHANNEL_BODY_PREFETCH_FRAMES}");
+        info!(target: "ext_proc", "const EXT_PROC_BUFFERED_BODY_LIMIT: {EXT_PROC_BUFFERED_BODY_LIMIT}");
+        info!(target: "ext_proc", "const EXT_PROC_MERGE_WINDOW: {EXT_PROC_MERGE_WINDOW:?}");
+        info!(target: "ext_proc", "const EXT_PROC_FRAME_MERGE_LIMIT: {EXT_PROC_FRAME_MERGE_LIMIT}");
+        info!(target: "ext_proc", "const EXT_PROC_MAX_CONCURRENT_REQUESTS: {EXT_PROC_MAX_CONCURRENT_REQUESTS}");
         let forward_rules = initial_config.forward_rules.clone();
         let worker_config = ExternalProcessingWorkerConfig::from((initial_config, per_route_config, ext_config));
         let overridable_modes = Arc::new(OverridableGlobalModes::from(&worker_config));
@@ -245,21 +292,51 @@ impl ExternalProcessor {
         if process_headers {
             debug!(target: "ext_proc", "request processing headers");
             let uri = request.uri();
-            let pseudo: Vec<_> = {
-                let mut v = Vec::with_capacity(4);
-                v.extend(
-                    [
-                        Some((pseudo_header::METHOD, request.method().as_str().into())),
-                        uri.scheme().map(|s| (pseudo_header::SCHEME, s.as_str().into())),
-                        uri.authority().map(|a| (pseudo_header::AUTHORITY, a.as_str().into())),
-                        Some((pseudo_header::PATH, uri.path_and_query().map_or(uri.path(), |f| f.as_str()).into())),
-                    ]
-                    .into_iter()
-                    .flatten(),
-                );
-                v
-            };
-            ext_proc_headers = Some(CombinedHeaderMap { regular: self.filter_header_map(request.headers()), pseudo });
+
+            let mut headers_vec = Vec::with_capacity(request.headers().len() + 4);
+
+            headers_vec.push(HeaderValue {
+                key: pseudo_header::METHOD.to_owned(),
+                value: request.method().as_str().to_owned(),
+                raw_value: vec![],
+            });
+            if let Some(scheme) = uri.scheme() {
+                headers_vec.push(HeaderValue {
+                    key: pseudo_header::SCHEME.to_owned(),
+                    value: scheme.as_str().to_owned(),
+                    raw_value: vec![],
+                });
+            }
+            if let Some(authority) = uri.authority() {
+                headers_vec.push(HeaderValue {
+                    key: pseudo_header::AUTHORITY.to_owned(),
+                    value: authority.as_str().to_owned(),
+                    raw_value: vec![],
+                });
+            }
+            headers_vec.push(HeaderValue {
+                key: pseudo_header::PATH.to_owned(),
+                value: uri.path_and_query().map_or(uri.path(), |f| f.as_str()).to_owned(),
+                raw_value: vec![],
+            });
+
+            for (name, value) in request.headers() {
+                if self.should_forward_header(name.as_str()) {
+                    let header_name = name.as_str();
+                    let header_value = if let Ok(value_str) = value.to_str() {
+                        HeaderValue { key: header_name.to_owned(), value: value_str.to_owned(), raw_value: Vec::new() }
+                    } else {
+                        HeaderValue {
+                            key: header_name.to_owned(),
+                            value: String::default(),
+                            raw_value: value.as_bytes().into(),
+                        }
+                    };
+                    headers_vec.push(header_value);
+                }
+            }
+
+            ext_proc_headers = Some(EnvoyHeaderMap(ProstHeaderMap { headers: headers_vec }));
         }
 
         let body: PolyBody = std::mem::take(&mut request.body_mut().inner.inner);
@@ -352,7 +429,7 @@ impl ExternalProcessor {
                     debug!(target: "ext_proc", "applying headers mutation: {headers_modifications:?}");
                     if let Err(e) = apply_request_header_mutations(
                         request,
-                        &headers_modifications,
+                        headers_modifications,
                         self.inner.worker_config.mutation_rules.as_ref(),
                     ) {
                         return self.on_filter_error(
@@ -393,6 +470,12 @@ impl ExternalProcessor {
         };
 
         let ver = request.version();
+
+        // Acquire permit before proceeding. This reduces the pressure on Tokio, reducing the number of tasks spawned.
+        // Note: It's safe the call unwrap here, since the semaphore is never closed explicitly.
+        #[allow(clippy::unwrap_used)]
+        let _permit = EXT_PROC_CONCURRENT_PERMIT.with(|sem| sem.clone()).acquire_owned().await.unwrap();
+
         let Ok(response_rx) = self.send_processing_data(processing_data, ver).await else {
             if self.inner.worker_config.failure_mode_allow {
                 return FilterDecision::Continue;
@@ -438,10 +521,31 @@ impl ExternalProcessor {
 
         if process_headers {
             debug!(target: "ext_proc", "response processing headers");
-            ext_proc_headers = Some(CombinedHeaderMap {
-                regular: self.filter_header_map(response.headers()),
-                pseudo: vec![(pseudo_header::STATUS, response.status().as_u16().to_smolstr())],
+
+            let mut headers_vec = Vec::with_capacity(response.headers().len() + 1);
+            headers_vec.push(HeaderValue {
+                key: pseudo_header::STATUS.to_owned(),
+                value: response.status().as_u16().to_string(),
+                raw_value: vec![],
             });
+
+            for (name, value) in response.headers() {
+                if self.should_forward_header(name.as_str()) {
+                    let header_name = name.as_str();
+                    let header_value = if let Ok(value_str) = value.to_str() {
+                        HeaderValue { key: header_name.to_owned(), value: value_str.to_owned(), raw_value: Vec::new() }
+                    } else {
+                        HeaderValue {
+                            key: header_name.to_owned(),
+                            value: String::default(),
+                            raw_value: value.as_bytes().into(),
+                        }
+                    };
+                    headers_vec.push(header_value);
+                }
+            }
+
+            ext_proc_headers = Some(EnvoyHeaderMap(ProstHeaderMap { headers: headers_vec }));
         }
 
         let body: PolyBody = std::mem::take(&mut response.body_mut().inner);
@@ -534,7 +638,7 @@ impl ExternalProcessor {
                     debug!(target: "ext_proc", "applying headers mutation: {headers_modifications:?}");
                     if let Err(e) = apply_response_header_mutations(
                         response,
-                        &headers_modifications,
+                        headers_modifications,
                         self.inner.worker_config.mutation_rules.as_ref(),
                     ) {
                         return self.on_filter_error(
@@ -572,6 +676,12 @@ impl ExternalProcessor {
         };
 
         let ver = response.version();
+
+        // Acquire permit before proceeding. This reduces the pressure on Tokio, reducing the number of tasks spawned.
+        // Note: It's safe the call unwrap here, since the semaphore is never closed explicitly.
+        #[allow(clippy::unwrap_used)]
+        let _permit = EXT_PROC_CONCURRENT_PERMIT.with(|sem| sem.clone()).acquire_owned().await.unwrap();
+
         let Ok(response_rx) = self.send_processing_data(processing_data, ver).await else {
             if self.inner.worker_config.failure_mode_allow {
                 return FilterDecision::Continue;
@@ -614,10 +724,9 @@ impl ExternalProcessor {
     ) -> Result<oneshot::Receiver<ProcessingStatus>, SendError<ProcessingTask>> {
         let (response_tx, response_rx) = oneshot::channel();
         let processing_message = ProcessingTask { data, reply_channel: response_tx, http_version: ver };
-
         let worker_channel = self.get_worker_channel();
-
-        worker_channel.send(processing_message).await.map(|()| response_rx)
+        worker_channel.send(processing_message).await?;
+        Ok(response_rx)
     }
 
     pub fn on_filter_error(
@@ -649,26 +758,25 @@ impl ExternalProcessor {
 
     fn get_worker_channel(&mut self) -> &mpsc::Sender<ProcessingTask> {
         if let Some(ref sender) = self.ext_proc_worker {
-            sender
-        } else {
-            let (sender, receiver) = mpsc::channel::<ProcessingTask>(12);
-
-            // replace the internal overridable modes blueprint with a new spawned instance for the worker
-            //
-            let overridable_modes = Arc::new(self.overridable_modes.spawn());
-            self.overridable_modes = Arc::clone(&overridable_modes);
-
-            if self.inner.worker_config.observability_mode {
-                let worker =
-                    ExternalProcessingWorker::<kind::Observability>::new(Arc::clone(&self.inner), overridable_modes);
-                tokio::spawn(worker.observability_loop(receiver));
-            } else {
-                let worker =
-                    ExternalProcessingWorker::<kind::Processing>::new(Arc::clone(&self.inner), overridable_modes);
-                tokio::spawn(worker.processing_loop(receiver));
-            }
-            self.ext_proc_worker.insert(sender)
+            return sender;
         }
+
+        let (sender, receiver) = mpsc::channel::<ProcessingTask>(4);
+
+        // replace the internal overridable modes blueprint with a new spawned instance for the worker
+        //
+        let overridable_modes = Arc::new(self.overridable_modes.spawn());
+        self.overridable_modes = Arc::clone(&overridable_modes);
+
+        if self.inner.worker_config.observability_mode {
+            let worker =
+                ExternalProcessingWorker::<kind::Observability>::new(Arc::clone(&self.inner), overridable_modes);
+            tokio::spawn(worker.observability_loop(receiver));
+        } else {
+            let worker = ExternalProcessingWorker::<kind::Processing>::new(Arc::clone(&self.inner), overridable_modes);
+            tokio::spawn(worker.processing_loop(receiver));
+        }
+        self.ext_proc_worker.insert(sender)
     }
 
     #[inline]
@@ -683,58 +791,13 @@ impl ExternalProcessor {
         }
         true
     }
-
-    fn filter_header_map(&self, headers: &http::HeaderMap) -> http::HeaderMap {
-        let Some(rules) = &self.inner.forward_rules else {
-            return headers.clone();
-        };
-
-        if rules.allowed_headers.is_empty() && rules.disallowed_headers.is_empty() {
-            return headers.clone();
-        }
-
-        let mut filtered_headers = http::HeaderMap::with_capacity(headers.len());
-        for (name, value) in headers {
-            if self.should_forward_header(name.as_str()) {
-                filtered_headers.append(name.clone(), value.clone());
-            }
-        }
-        filtered_headers
-    }
 }
 
-struct EnvoyHeaderMap(HeaderMap);
-impl From<&http::HeaderMap> for EnvoyHeaderMap {
-    fn from(headers: &http::HeaderMap) -> Self {
-        let mut headers_vec = Vec::with_capacity(headers.len());
-        for (name, value) in headers {
-            let header_name = name.as_str();
-            let header_value = if let Ok(value_str) = value.to_str() {
-                HeaderValue { key: header_name.to_owned(), value: value_str.to_owned(), raw_value: Vec::new() }
-            } else {
-                HeaderValue {
-                    key: header_name.to_owned(),
-                    value: String::default(),
-                    raw_value: value.as_bytes().into(),
-                }
-            };
-            headers_vec.push(header_value);
-        }
-        EnvoyHeaderMap(HeaderMap { headers: headers_vec })
-    }
-}
+pub struct EnvoyHeaderMap(pub ProstHeaderMap);
 
-impl From<&CombinedHeaderMap> for EnvoyHeaderMap {
-    fn from(headers: &CombinedHeaderMap) -> Self {
-        let regular = EnvoyHeaderMap::from(&headers.regular);
-        let mut headers_pseudo = Vec::with_capacity(headers.pseudo.len());
-        for (name, value) in &headers.pseudo {
-            headers_pseudo.push(HeaderValue { key: (*name).into(), value: (*value).to_string(), raw_value: vec![] });
-        }
-
-        let mut headers = regular.0.headers;
-        headers.extend(headers_pseudo);
-        EnvoyHeaderMap(HeaderMap { headers })
+impl std::fmt::Debug for EnvoyHeaderMap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EnvoyHeaderMap").field("headers", &self.0.headers).finish()
     }
 }
 
@@ -773,8 +836,8 @@ pub struct ProcessingTask {
 
 #[derive(Debug)]
 pub enum ProcessingData {
-    Request(Option<CombinedHeaderMap>, FrameBridge),
-    Response(Option<CombinedHeaderMap>, FrameBridge),
+    Request(Option<EnvoyHeaderMap>, FrameBridge),
+    Response(Option<EnvoyHeaderMap>, FrameBridge),
 }
 
 struct BidiStream {
@@ -954,7 +1017,7 @@ impl ExternalProcessingWorker<kind::Processing> {
                                 break 'transaction_loop;
                             }
                         },
-                        Ok(Some(ProcessingResponse { response: Some(ProcessingResponseType::ImmediateResponse(response_attempt)), ..})) => {
+                        Ok(Some(ProcessingResponse { response: Some(ProcessingResponseType::ImmediateResponse(mut response_attempt)), ..})) => {
                             debug!(target: "ext_proc", "<- ImmediateResponse received");
 
                             if self.inner.worker_config.disable_immediate_response { // disabled
@@ -995,7 +1058,7 @@ impl ExternalProcessingWorker<kind::Processing> {
                             } else { // enabled
                                 match self.can_handle_immediate_response() {
                                     Some(MessageType::Request) => {
-                                        let direct_response = self.build_direct_response(&response_attempt);
+                                        let direct_response = self.build_direct_response(&mut response_attempt);
                                         let proof = self.request_processing.make_proof().unwrap_or_else(|| {
                                             let status = ProcessingStatus::EndWithDirectResponse(direct_response);
                                             self.request_processing.return_status(status, "immediate_response on request")
@@ -1007,7 +1070,7 @@ impl ExternalProcessingWorker<kind::Processing> {
                                         self.request_processing.set_streaming_body(false);
                                     }
                                     Some(MessageType::Response) => {
-                                        let direct_response = self.build_direct_response(&response_attempt);
+                                        let direct_response = self.build_direct_response(&mut response_attempt);
                                         let proof = self.response_processing.make_proof().unwrap_or_else(|| {
                                             let status = ProcessingStatus::EndWithDirectResponse(direct_response);
                                             self.response_processing.return_status(status, "immediate_response on response")
@@ -1717,17 +1780,17 @@ impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
     }
 
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    fn build_direct_response(&mut self, response_attempt: &ImmediateResponse) -> Response<OrionResponseBody> {
+    fn build_direct_response(&mut self, response_attempt: &mut ImmediateResponse) -> Response<OrionResponseBody> {
         let status = response_attempt
             .status
             .as_ref()
             .and_then(|s| http::StatusCode::from_u16(s.code as u16).ok())
             .unwrap_or(http::StatusCode::OK);
-        let body_bytes = Bytes::copy_from_slice(&response_attempt.body);
+        let body_bytes = Bytes::from(std::mem::take(&mut response_attempt.body));
         let body = Full::new(body_bytes);
         let mut response = Response::new(TimeoutBody::new(None, PolyBody::from(body)));
         *response.status_mut() = status;
-        if let Some(header_mutation) = &response_attempt.headers {
+        if let Some(header_mutation) = response_attempt.headers.take() {
             let _ = apply_response_header_mutations(
                 &mut response,
                 header_mutation,

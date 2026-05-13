@@ -26,6 +26,7 @@ pub struct StreamMetrics {
     total_bytes_written: AtomicU64,
     txn_bytes_read_start: AtomicU64,
     txn_bytes_written_start: AtomicU64,
+    requests_counter: AtomicU64,
     error: AtomicOption<ErrorSource>,
     drop_fn: AtomicOption<Box<dyn FnOnce(&StreamMetrics) + Send>>,
     txn_fn: AtomicOption<Box<dyn FnOnce(u64, u64) + Send>>,
@@ -69,6 +70,7 @@ impl StreamMetrics {
             total_bytes_written: AtomicU64::new(0),
             txn_bytes_read_start: AtomicU64::new(0),
             txn_bytes_written_start: AtomicU64::new(0),
+            requests_counter: AtomicU64::new(0),
             error: AtomicOption::none(),
             drop_fn: AtomicOption::none(),
             txn_fn: AtomicOption::none(),
@@ -103,6 +105,16 @@ impl StreamMetrics {
     #[inline]
     pub fn bytes_written(&self) -> u64 {
         self.total_bytes_written.load(Ordering::Relaxed)
+    }
+
+    #[inline]
+    pub fn requests_counter(&self) -> u64 {
+        self.requests_counter.load(Ordering::Relaxed)
+    }
+
+    #[inline]
+    pub fn inc_requests(&self) -> u64 {
+        self.requests_counter.fetch_add(1, Ordering::Relaxed)
     }
 
     pub fn error(&self) -> Option<&io::Error> {

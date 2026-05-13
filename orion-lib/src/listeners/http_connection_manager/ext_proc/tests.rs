@@ -163,6 +163,7 @@ impl MockExternalProcessorState {
         self.responses.pop_front()
     }
 
+    #[allow(dead_code)]
     pub fn responses_len(&self) -> usize {
         self.responses.len()
     }
@@ -346,14 +347,14 @@ impl<M: MessageKind> MockMessage<M> {
             header_map.insert(http::HeaderName::from_static(key), http::HeaderValue::from_static(value));
         }
         if let Some(mutation) = header_mutation.as_ref() {
-            apply_header_mutations(&mut header_map, mutation, None).unwrap();
+            apply_header_mutations(&mut header_map, (*mutation).clone(), None).unwrap();
         }
         header_map
     }
 
     fn apply_header_mutation_from_header_map(header_mutation: Option<&HeaderMutation>, headers: &mut http::HeaderMap) {
         if let Some(mutation) = header_mutation.as_ref() {
-            apply_header_mutations(headers, mutation, None).unwrap();
+            apply_header_mutations(headers, (*mutation).clone(), None).unwrap();
         }
     }
 
@@ -379,7 +380,7 @@ impl<M: MessageKind> MockMessage<M> {
             trailer_map.insert(http::HeaderName::from_static(key), http::HeaderValue::from_static(value));
         }
         if let Some(mutation) = trailer_mutation.as_ref() {
-            apply_header_mutations(&mut trailer_map, mutation, None).unwrap();
+            apply_header_mutations(&mut trailer_map, (*mutation).clone(), None).unwrap();
         }
         trailer_map
     }
@@ -523,8 +524,8 @@ fn create_trailer_mutation(trailers: Vec<(&str, &str)>) -> Option<HeaderMutation
 }
 
 #[inline]
-fn convert_trailers_to_envoy_header_map(trailers: Vec<(&str, &str)>) -> HeaderMap {
-    HeaderMap {
+fn convert_trailers_to_envoy_header_map(trailers: Vec<(&str, &str)>) -> ProstHeaderMap {
+    ProstHeaderMap {
         headers: trailers
             .into_iter()
             .map(|(key, value)| EnvoyHeaderValue { key: key.to_owned(), value: value.to_owned(), raw_value: vec![] })
@@ -6484,9 +6485,7 @@ async fn test_request_and_response_mutation_with_streamed_10m_body_4k_chunks() {
 }
 
 use orion_configuration::config::core::{StringMatcher, StringMatcherPattern};
-use orion_configuration::config::network_filters::http_connection_manager::http_filters::ext_proc::{
-    HeaderForwardingRules, HeaderMutationRules, MutationPolicy,
-};
+use orion_configuration::config::network_filters::http_connection_manager::http_filters::ext_proc::HeaderForwardingRules;
 use smol_str::SmolStr;
 
 #[tokio::test]
@@ -6560,18 +6559,16 @@ async fn test_header_append_action_append_if_exists_or_add() {
                 trailers: None,
                 clear_route_cache: false,
             }),
-        }
+        },
     );
 
-    let mock_state = MockExternalProcessorState::new().add_response(MockProcessingResponse::new(
-        ProcessingResponse {
-            response: Some(response),
-            mode_override: None,
-            dynamic_metadata: None,
-            override_message_timeout: None,
-            request_drain: false,
-        },
-    ));
+    let mock_state = MockExternalProcessorState::new().add_response(MockProcessingResponse::new(ProcessingResponse {
+        response: Some(response),
+        mode_override: None,
+        dynamic_metadata: None,
+        override_message_timeout: None,
+        request_drain: false,
+    }));
 
     let (server_addr, _) = start_mock_server(mock_state).await;
     let processing_mode = ProcessingMode {
@@ -6607,27 +6604,23 @@ async fn test_header_append_action_append_if_exists_or_add() {
 
 #[tokio::test]
 async fn test_clear_route_cache() {
-    let response = ProcessingResponseType::RequestHeaders(
-        HeadersResponse {
-            response: Some(CommonResponse {
-                status: ResponseStatus::Continue as i32,
-                header_mutation: None,
-                body_mutation: None,
-                trailers: None,
-                clear_route_cache: true,
-            }),
-        }
-    );
+    let response = ProcessingResponseType::RequestHeaders(HeadersResponse {
+        response: Some(CommonResponse {
+            status: ResponseStatus::Continue as i32,
+            header_mutation: None,
+            body_mutation: None,
+            trailers: None,
+            clear_route_cache: true,
+        }),
+    });
 
-    let mock_state = MockExternalProcessorState::new().add_response(MockProcessingResponse::new(
-        ProcessingResponse {
-            response: Some(response),
-            mode_override: None,
-            dynamic_metadata: None,
-            override_message_timeout: None,
-            request_drain: false,
-        },
-    ));
+    let mock_state = MockExternalProcessorState::new().add_response(MockProcessingResponse::new(ProcessingResponse {
+        response: Some(response),
+        mode_override: None,
+        dynamic_metadata: None,
+        override_message_timeout: None,
+        request_drain: false,
+    }));
 
     let (server_addr, _) = start_mock_server(mock_state).await;
     let processing_mode = ProcessingMode {
@@ -6657,16 +6650,15 @@ async fn test_clear_route_cache() {
 
 #[tokio::test]
 async fn test_immediate_response_with_grpc_status() {
-    let immediate_response =
-        ImmediateResponse {
-            status: Some(EnvoyHttpStatus { code: 503 }),
-            headers: None,
-            body: "grpc error body".as_bytes().to_vec(),
-            grpc_status: Some(orion_data_plane_api::envoy_data_plane_api::envoy::service::ext_proc::v3::GrpcStatus {
-                status: 14, // UNAVAILABLE
-            }),
-            details: "grpc_error_details".to_string(),
-        };
+    let immediate_response = ImmediateResponse {
+        status: Some(EnvoyHttpStatus { code: 503 }),
+        headers: None,
+        body: "grpc error body".as_bytes().to_vec(),
+        grpc_status: Some(orion_data_plane_api::envoy_data_plane_api::envoy::service::ext_proc::v3::GrpcStatus {
+            status: 14, // UNAVAILABLE
+        }),
+        details: "grpc_error_details".to_string(),
+    };
 
     let mock_state = MockExternalProcessorState::new().add_response(MockProcessingResponse::new(ProcessingResponse {
         response: Some(ProcessingResponseType::ImmediateResponse(immediate_response)),
@@ -6699,9 +6691,9 @@ async fn test_immediate_response_with_grpc_status() {
     let result = ext_proc.apply_request(&mut request).await;
 
     // An ImmediateResponse triggers a DirectResponse
-    assert_matches!(result, FilterDecision::DirectResponse(mut response) => {
+    assert_matches!(result, FilterDecision::DirectResponse(response) => {
         assert_eq!(response.status(), 503);
-        let (_, body) = response.into_parts();
+        let (_, _body) = response.into_parts();
         // Since we are not running this in a context that eagerly resolves, we might not unwrap it directly,
         // but typically in testing it works or we just check status.
     });

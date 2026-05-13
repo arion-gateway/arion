@@ -145,6 +145,22 @@ async fn test_ext_proc_immediate_response_with_custom_headers() {
 #[ignore]
 async fn test_ext_proc_request_body_passthrough() {
     let (mut backend, _ext_proc, _orion, client, _cfg) = setup(
+        ExtProcBuilder::new("ext-proc-cluster").request_only().request_body_mode(BodySendMode::None),
+        ExtProcTestServerBuilder::new().with_response(ext_proc_responses::continue_request_headers()),
+    )
+    .await;
+
+    let response = client.post("/test", "original body").await.expect("request");
+    response.assert_status(StatusCode::OK);
+
+    let captured = backend.await_request().await.expect("backend request");
+    assert_eq!(captured.body_str(), Some("original body"));
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_ext_proc_request_body_buffered() {
+    let (mut backend, _ext_proc, _orion, client, _cfg) = setup(
         ExtProcBuilder::new("ext-proc-cluster").request_only().request_body_mode(BodySendMode::Buffered),
         ExtProcTestServerBuilder::new()
             .with_response(ext_proc_responses::continue_request_headers())
@@ -161,7 +177,25 @@ async fn test_ext_proc_request_body_passthrough() {
 
 #[tokio::test]
 #[ignore]
-async fn test_ext_proc_request_body_replace() {
+async fn test_ext_proc_request_body_streamed() {
+    let (mut backend, _ext_proc, _orion, client, _cfg) = setup(
+        ExtProcBuilder::new("ext-proc-cluster").request_only().request_body_mode(BodySendMode::Streamed),
+        ExtProcTestServerBuilder::new()
+            .with_response(ext_proc_responses::continue_request_headers())
+            .with_response(ext_proc_responses::continue_request_body(None)),
+    )
+    .await;
+
+    let response = client.post("/test", "streamed body").await.expect("request");
+    response.assert_status(StatusCode::OK);
+
+    let captured = backend.await_request().await.expect("backend request");
+    assert_eq!(captured.body_str(), Some("streamed body"));
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_ext_proc_request_body_buffered_replace() {
     let (mut backend, _ext_proc, _orion, client, _cfg) = setup(
         ExtProcBuilder::new("ext-proc-cluster").request_only().request_body_mode(BodySendMode::Buffered),
         ExtProcTestServerBuilder::new()
@@ -179,7 +213,205 @@ async fn test_ext_proc_request_body_replace() {
 
 #[tokio::test]
 #[ignore]
+async fn test_ext_proc_request_body_streamed_replace() {
+    let (mut backend, _ext_proc, _orion, client, _cfg) = setup(
+        ExtProcBuilder::new("ext-proc-cluster").request_only().request_body_mode(BodySendMode::Streamed),
+        ExtProcTestServerBuilder::new()
+            .with_response(ext_proc_responses::continue_request_headers())
+            .with_response(ext_proc_responses::continue_request_body(Some("replaced streamed"))),
+    )
+    .await;
+
+    let response = client.post("/test", "original body").await.expect("request");
+    response.assert_status(StatusCode::OK);
+
+    let captured = backend.await_request().await.expect("backend request");
+    assert_eq!(captured.body_str(), Some("replaced streamed"));
+}
+
+#[tokio::test]
+#[ignore]
 async fn test_ext_proc_response_body_passthrough() {
+    let (_backend, _ext_proc, _orion, client, _cfg) = setup(
+        ExtProcBuilder::new("ext-proc-cluster").response_only().response_body_mode(BodySendMode::None),
+        ExtProcTestServerBuilder::new().with_response(ext_proc_responses::continue_response_headers()),
+    )
+    .await;
+
+    let response = client.get("/test").await.expect("request");
+    response.assert_status(StatusCode::OK);
+    response.assert_body("backend response");
+}
+
+#[tokio::test]
+#[test_log::test]
+#[ignore]
+async fn test_ext_proc_request_body_passthrough_multi_chunk() {
+    let (mut backend, _ext_proc, _orion, client, _cfg) = setup(
+        ExtProcBuilder::new("ext-proc-cluster").request_only().request_body_mode(BodySendMode::None),
+        ExtProcTestServerBuilder::new().with_response(ext_proc_responses::continue_request_headers()),
+    )
+    .await;
+
+    let response = client
+        .post_multichunk(
+            "/test",
+            vec![
+                "o".into(),
+                "r".into(),
+                "i".into(),
+                "g".into(),
+                "i".into(),
+                "n".into(),
+                "a".into(),
+                "l".into(),
+                " ".into(),
+                "b".into(),
+                "o".into(),
+                "d".into(),
+                "y".into(),
+            ],
+        )
+        .await
+        .expect("request");
+    response.assert_status(StatusCode::OK);
+
+    let captured = backend.await_request().await.expect("backend request");
+    assert_eq!(captured.body_str(), Some("original body"));
+}
+
+#[tokio::test]
+#[test_log::test]
+#[ignore]
+async fn test_ext_proc_request_body_buffered_multi_chunk() {
+    let (mut backend, _ext_proc, _orion, client, _cfg) = setup(
+        ExtProcBuilder::new("ext-proc-cluster").request_only().request_body_mode(BodySendMode::Buffered),
+        ExtProcTestServerBuilder::new()
+            .with_response(ext_proc_responses::continue_request_headers())
+            .with_response(ext_proc_responses::continue_request_body(None)),
+    )
+    .await;
+
+    let response = client
+        .post_multichunk(
+            "/test",
+            vec![
+                "o".into(),
+                "r".into(),
+                "i".into(),
+                "g".into(),
+                "i".into(),
+                "n".into(),
+                "a".into(),
+                "l".into(),
+                " ".into(),
+                "b".into(),
+                "o".into(),
+                "d".into(),
+                "y".into(),
+            ],
+        )
+        .await
+        .expect("request");
+    response.assert_status(StatusCode::OK);
+
+    let captured = backend.await_request().await.expect("backend request");
+    assert_eq!(captured.body_str(), Some("original body"));
+}
+
+#[tokio::test]
+#[test_log::test]
+#[ignore]
+async fn test_ext_proc_request_body_streamed_multi_chunk() {
+    let (mut backend, _ext_proc, _orion, client, _cfg) = setup(
+        ExtProcBuilder::new("ext-proc-cluster").request_only().request_body_mode(BodySendMode::Streamed),
+        ExtProcTestServerBuilder::new()
+            .with_response(ext_proc_responses::continue_request_headers())
+            .with_response(ext_proc_responses::continue_request_body(None))
+            .with_response(ext_proc_responses::continue_request_body(None))
+            .with_response(ext_proc_responses::continue_request_body(None))
+            .with_response(ext_proc_responses::continue_request_body(None))
+            .with_response(ext_proc_responses::continue_request_body(None))
+            .with_response(ext_proc_responses::continue_request_body(None))
+            .with_response(ext_proc_responses::continue_request_body(None))
+            .with_response(ext_proc_responses::continue_request_body(None))
+            .with_response(ext_proc_responses::continue_request_body(None))
+            .with_response(ext_proc_responses::continue_request_body(None))
+            .with_response(ext_proc_responses::continue_request_body(None))
+            .with_response(ext_proc_responses::continue_request_body(None))
+            .with_response(ext_proc_responses::continue_request_body(None)),
+    )
+    .await;
+
+    let response = client
+        .post_multichunk(
+            "/test",
+            vec![
+                "s".into(),
+                "t".into(),
+                "r".into(),
+                "e".into(),
+                "a".into(),
+                "m".into(),
+                "e".into(),
+                "d".into(),
+                " ".into(),
+                "b".into(),
+                "o".into(),
+                "d".into(),
+                "y".into(),
+            ],
+        )
+        .await
+        .expect("request");
+    response.assert_status(StatusCode::OK);
+
+    let captured = backend.await_request().await.expect("backend request");
+    assert_eq!(captured.body_str(), Some("streamed body"));
+}
+
+#[tokio::test]
+#[test_log::test]
+#[ignore]
+async fn test_ext_proc_request_body_buffered_replace_multi_chunk() {
+    let (mut backend, _ext_proc, _orion, client, _cfg) = setup(
+        ExtProcBuilder::new("ext-proc-cluster").request_only().request_body_mode(BodySendMode::Buffered),
+        ExtProcTestServerBuilder::new()
+            .with_response(ext_proc_responses::continue_request_headers())
+            .with_response(ext_proc_responses::continue_request_body(Some("replaced body"))),
+    )
+    .await;
+
+    let response = client
+        .post_multichunk(
+            "/test",
+            vec![
+                "o".into(),
+                "r".into(),
+                "i".into(),
+                "g".into(),
+                "i".into(),
+                "n".into(),
+                "a".into(),
+                "l".into(),
+                " ".into(),
+                "b".into(),
+                "o".into(),
+                "d".into(),
+                "y".into(),
+            ],
+        )
+        .await
+        .expect("request");
+    response.assert_status(StatusCode::OK);
+
+    let captured = backend.await_request().await.expect("backend request");
+    assert_eq!(captured.body_str(), Some("replaced body"));
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_ext_proc_response_body_buffered() {
     let (_backend, _ext_proc, _orion, client, _cfg) = setup(
         ExtProcBuilder::new("ext-proc-cluster").response_only().response_body_mode(BodySendMode::Buffered),
         ExtProcTestServerBuilder::new()
@@ -195,7 +427,23 @@ async fn test_ext_proc_response_body_passthrough() {
 
 #[tokio::test]
 #[ignore]
-async fn test_ext_proc_response_body_replace() {
+async fn test_ext_proc_response_body_streamed() {
+    let (_backend, _ext_proc, _orion, client, _cfg) = setup(
+        ExtProcBuilder::new("ext-proc-cluster").response_only().response_body_mode(BodySendMode::Streamed),
+        ExtProcTestServerBuilder::new()
+            .with_response(ext_proc_responses::continue_response_headers())
+            .with_response(ext_proc_responses::continue_response_body(None)),
+    )
+    .await;
+
+    let response = client.get("/test").await.expect("request");
+    response.assert_status(StatusCode::OK);
+    response.assert_body("backend response");
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_ext_proc_response_body_buffered_replace() {
     let (_backend, _ext_proc, _orion, client, _cfg) = setup(
         ExtProcBuilder::new("ext-proc-cluster").response_only().response_body_mode(BodySendMode::Buffered),
         ExtProcTestServerBuilder::new()
@@ -207,6 +455,22 @@ async fn test_ext_proc_response_body_replace() {
     let response = client.get("/test").await.expect("request");
     response.assert_status(StatusCode::OK);
     response.assert_body("replaced response");
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_ext_proc_response_body_streamed_replace() {
+    let (_backend, _ext_proc, _orion, client, _cfg) = setup(
+        ExtProcBuilder::new("ext-proc-cluster").response_only().response_body_mode(BodySendMode::Streamed),
+        ExtProcTestServerBuilder::new()
+            .with_response(ext_proc_responses::continue_response_headers())
+            .with_response(ext_proc_responses::continue_response_body(Some("replaced streamed response"))),
+    )
+    .await;
+
+    let response = client.get("/test").await.expect("request");
+    response.assert_status(StatusCode::OK);
+    response.assert_body("replaced streamed response");
 }
 
 #[tokio::test]
@@ -376,72 +640,4 @@ async fn test_ext_proc_observability_mode() {
 
     let captured = backend.await_request().await.expect("backend request");
     assert_eq!(captured.header("x-original"), Some("keep"));
-}
-
-#[tokio::test]
-#[ignore]
-async fn test_ext_proc_request_body_streamed_passthrough() {
-    let (mut backend, _ext_proc, _orion, client, _cfg) = setup(
-        ExtProcBuilder::new("ext-proc-cluster").request_only().request_body_mode(BodySendMode::Streamed),
-        ExtProcTestServerBuilder::new()
-            .with_response(ext_proc_responses::continue_request_headers())
-            .with_response(ext_proc_responses::continue_request_body(None)),
-    )
-    .await;
-
-    let response = client.post("/test", "streamed body").await.expect("request");
-    response.assert_status(StatusCode::OK);
-
-    let captured = backend.await_request().await.expect("backend request");
-    assert_eq!(captured.body_str(), Some("streamed body"));
-}
-
-#[tokio::test]
-#[ignore]
-async fn test_ext_proc_request_body_streamed_replace() {
-    let (mut backend, _ext_proc, _orion, client, _cfg) = setup(
-        ExtProcBuilder::new("ext-proc-cluster").request_only().request_body_mode(BodySendMode::Streamed),
-        ExtProcTestServerBuilder::new()
-            .with_response(ext_proc_responses::continue_request_headers())
-            .with_response(ext_proc_responses::continue_request_body(Some("replaced streamed"))),
-    )
-    .await;
-
-    let response = client.post("/test", "original body").await.expect("request");
-    response.assert_status(StatusCode::OK);
-
-    let captured = backend.await_request().await.expect("backend request");
-    assert_eq!(captured.body_str(), Some("replaced streamed"));
-}
-
-#[tokio::test]
-#[ignore]
-async fn test_ext_proc_response_body_streamed_passthrough() {
-    let (_backend, _ext_proc, _orion, client, _cfg) = setup(
-        ExtProcBuilder::new("ext-proc-cluster").response_only().response_body_mode(BodySendMode::Streamed),
-        ExtProcTestServerBuilder::new()
-            .with_response(ext_proc_responses::continue_response_headers())
-            .with_response(ext_proc_responses::continue_response_body(None)),
-    )
-    .await;
-
-    let response = client.get("/test").await.expect("request");
-    response.assert_status(StatusCode::OK);
-    response.assert_body("backend response");
-}
-
-#[tokio::test]
-#[ignore]
-async fn test_ext_proc_response_body_streamed_replace() {
-    let (_backend, _ext_proc, _orion, client, _cfg) = setup(
-        ExtProcBuilder::new("ext-proc-cluster").response_only().response_body_mode(BodySendMode::Streamed),
-        ExtProcTestServerBuilder::new()
-            .with_response(ext_proc_responses::continue_response_headers())
-            .with_response(ext_proc_responses::continue_response_body(Some("replaced streamed response"))),
-    )
-    .await;
-
-    let response = client.get("/test").await.expect("request");
-    response.assert_status(StatusCode::OK);
-    response.assert_body("replaced streamed response");
 }

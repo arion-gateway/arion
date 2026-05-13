@@ -88,6 +88,10 @@ impl OrionInstance {
             cmd.arg("--num-cpus").arg(cpus.to_string());
         }
 
+        if let Some(runtimes) = options.num_runtimes {
+            cmd.arg("--num-runtimes").arg(runtimes.to_string());
+        }
+
         let log_level = options.log_level.as_deref().unwrap_or("info");
         cmd.env("RUST_LOG", log_level);
 
@@ -187,6 +191,152 @@ impl OrionInstance {
             .map_err(|output| Error::StartupFailed { exit_code: None, output })?;
 
         info!(?listener_addr, "Discovered Orion listener address");
+
+        Ok(Self {
+            process: Some(process),
+            config_path,
+            cleanup_config: options.cleanup_config,
+            listener_addr: Some(listener_addr),
+            shutdown_requested,
+            _output_reader: output_reader,
+        })
+    }
+
+    pub async fn spawn_with_fixed_port(
+        config_path: impl AsRef<Path>,
+        listener_name: impl Into<String>,
+        port: u16,
+        options: SpawnOptions,
+    ) -> Result<Self> {
+        let listener_name = listener_name.into();
+        let config_path = config_path.as_ref().to_path_buf();
+        let shutdown_requested = Arc::new(AtomicBool::new(false));
+
+        info!(?config_path, ?listener_name, port, "Spawning Orion instance with fixed port");
+
+        let orion_bin = find_orion_binary()?;
+        debug!(?orion_bin, "Found Orion binary");
+
+        let mut cmd = Command::new(&orion_bin);
+        cmd.arg("--config").arg(&config_path);
+
+        if let Some(cpus) = options.num_cpus {
+            cmd.arg("--num-cpus").arg(cpus.to_string());
+        }
+
+        if let Some(runtimes) = options.num_runtimes {
+            cmd.arg("--num-runtimes").arg(runtimes.to_string());
+        }
+
+        let log_level = options.log_level.as_deref().unwrap_or("info");
+        cmd.env("RUST_LOG", log_level);
+
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+
+        let mut process = cmd
+            .spawn()
+            .map_err(|e| Error::ProcessStartFailed(format!("Failed to spawn orion binary at {orion_bin:?}: {e}")))?;
+
+        let stdout = process.stdout.take();
+        let stderr = process.stderr.take();
+
+        let (result_tx, result_rx) = oneshot::channel::<std::result::Result<(), String>>();
+        let verbose = options.verbose_output;
+        let name_for_parser = listener_name.clone();
+        let expected_port = port;
+
+        const MAX_CAPTURED_LINES: usize = 75;
+        let captured_lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::with_capacity(MAX_CAPTURED_LINES)));
+
+        let stderr_lines = Arc::clone(&captured_lines);
+        let stderr_shutdown = Arc::clone(&shutdown_requested);
+        let _stderr_reader = stderr.map(|stderr| {
+            std::thread::spawn(move || {
+                let reader = BufReader::new(stderr);
+                for line in reader.lines() {
+                    if stderr_shutdown.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    if let Ok(line) = line {
+                        if let Ok(mut lines) = stderr_lines.lock() {
+                            if lines.len() >= MAX_CAPTURED_LINES {
+                                lines.remove(0);
+                            }
+                            lines.push(line.clone());
+                        }
+                        if verbose {
+                            eprintln!("[ORION-ERR] {}", line);
+                        }
+                        debug!(target: "orion_stderr", "{}", line);
+                    }
+                }
+            })
+        });
+
+        let stdout_lines = Arc::clone(&captured_lines);
+        let stdout_shutdown = Arc::clone(&shutdown_requested);
+        let output_reader = stdout.map(|stdout| {
+            std::thread::spawn(move || {
+                let reader = BufReader::new(stdout);
+                let mut result_tx = Some(result_tx);
+
+                for line in reader.lines() {
+                    if stdout_shutdown.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    match line {
+                        Ok(line) => {
+                            if let Ok(mut lines) = stdout_lines.lock() {
+                                if lines.len() >= MAX_CAPTURED_LINES {
+                                    lines.remove(0);
+                                }
+                                lines.push(line.clone());
+                            }
+
+                            if let Some(tx) = result_tx.take() {
+                                if let Some(addr) = parse_listener_started(&line, &name_for_parser) {
+                                    if addr.port() == expected_port {
+                                        let _ = tx.send(Ok(()));
+                                    } else {
+                                        let _ = tx.send(Err(format!(
+                                            "Listener started on wrong port. Expected: {}, Got: {}",
+                                            expected_port,
+                                            addr.port()
+                                        )));
+                                    }
+                                } else {
+                                    result_tx = Some(tx);
+                                }
+                            }
+                            if verbose {
+                                eprintln!("[ORION] {}", line);
+                            }
+                            debug!(target: "orion_output", "{}", line);
+                        },
+                        Err(e) => {
+                            warn!("Error reading orion output: {}", e);
+                            break;
+                        },
+                    }
+                }
+
+                if let Some(tx) = result_tx.take() {
+                    std::thread::sleep(Duration::from_millis(100));
+                    let output = stdout_lines.lock().map(|lines| lines.join("\n")).unwrap_or_default();
+                    let _ = tx.send(Err(output));
+                }
+            })
+        });
+
+        tokio::time::timeout(options.ready_timeout, result_rx)
+            .await
+            .map_err(|_| Error::ReadyTimeout(options.ready_timeout))?
+            .map_err(|_| Error::Config("Channel closed unexpectedly".into()))?
+            .map_err(|output| Error::StartupFailed { exit_code: None, output })?;
+
+        let listener_addr = SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), port);
+        info!(?listener_addr, "Orion listener ready on fixed port");
 
         Ok(Self {
             process: Some(process),
@@ -352,6 +502,7 @@ pub struct SpawnOptions {
     pub ready_timeout: Duration,
     pub cleanup_config: bool,
     pub num_cpus: Option<usize>,
+    pub num_runtimes: Option<usize>,
     pub log_level: Option<String>,
     pub verbose_output: bool,
 }
@@ -362,6 +513,7 @@ impl Default for SpawnOptions {
             ready_timeout: DEFAULT_READY_TIMEOUT,
             cleanup_config: false,
             num_cpus: Some(1),
+            num_runtimes: None,
             log_level: None,
             verbose_output: false,
         }
@@ -384,6 +536,12 @@ impl SpawnOptions {
     #[must_use]
     pub fn with_num_cpus(mut self, cpus: usize) -> Self {
         self.num_cpus = Some(cpus);
+        self
+    }
+
+    #[must_use]
+    pub fn with_num_runtimes(mut self, runtimes: usize) -> Self {
+        self.num_runtimes = Some(runtimes);
         self
     }
 

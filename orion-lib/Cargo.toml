@@ -80,6 +80,7 @@ ref-cast = "1.0.25"
 smallvec = "1.15.1"
 assert_matches = "1.5.0"
 tokio-util = { version = "0.7.17", features = ["rt"] }
+tonic.workspace = true
 jsonwebtoken = { version = "10.2.0", features = ["rust_crypto"] }
 chrono = { version = "0.4.42", features = ["serde"] }
 base64 = "0.22.1"
@@ -96,6 +97,8 @@ ctor = "0.6.3"
 upon = "0.8"
 percent-encoding = "2.3.2"
 atomicoption = "0.2.0"
+papaya = "0.2.4"
+const-str = "1.1.0"
 
 
 [dev-dependencies]

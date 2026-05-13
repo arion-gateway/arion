@@ -22,31 +22,37 @@ use std::{
 };
 
 use ahash::RandomState;
-use dashmap::DashMap;
 use opentelemetry::KeyValue;
+use papaya::HashMap as ConcurrentHashMap;
+use smallvec::SmallVec;
 use std::{collections::hash_map, fmt};
 
 pub struct ShardedU64<S> {
-    data: DashMap<S, HashMap<Vec<KeyValue>, AtomicU64, RandomState>, RandomState>,
+    data: ConcurrentHashMap<S, ConcurrentHashMap<SmallVec<[KeyValue; 4]>, AtomicU64, RandomState>, RandomState>,
 }
 
 impl<S: Eq + Hash> ShardedU64<S> {
     pub fn new() -> Self {
-        ShardedU64 { data: DashMap::default() }
+        ShardedU64 { data: ConcurrentHashMap::with_hasher(RandomState::new()) }
     }
 
     pub fn add(&self, value: u64, shard_id: S, key: &[KeyValue]) {
-        let mut shard = self.data.entry(shard_id).or_default();
-        if let Some(counter) = shard.get(key) {
+        let map = self.data.pin();
+        let shard = map.get_or_insert_with(shard_id, || ConcurrentHashMap::with_hasher(RandomState::new()));
+        let shard_pin = shard.pin();
+        if let Some(counter) = shard_pin.get(key) {
             counter.fetch_add(value, Ordering::Relaxed);
         } else {
-            shard.entry(key.to_vec()).or_insert(AtomicU64::new(value));
+            let counter = shard_pin.get_or_insert_with(SmallVec::from(key), || AtomicU64::new(0));
+            counter.fetch_add(value, Ordering::Relaxed);
         }
     }
 
     pub fn sub(&self, value: u64, shard_id: S, key: &[KeyValue]) {
-        if let Some(shard) = self.data.get_mut(&shard_id) {
-            if let Some(counter) = shard.get(key) {
+        let map = self.data.pin();
+        if let Some(shard) = map.get(&shard_id) {
+            let shard_pin = shard.pin();
+            if let Some(counter) = shard_pin.get(key) {
                 let mut current = counter.load(Ordering::Relaxed);
                 loop {
                     let new = current.saturating_sub(value);
@@ -59,10 +65,12 @@ impl<S: Eq + Hash> ShardedU64<S> {
         }
     }
 
-    pub fn load_all(&self) -> HashMap<Vec<KeyValue>, u64, RandomState> {
-        let mut result = HashMap::with_capacity_and_hasher(self.data.len(), RandomState::new());
-        for shard in self.data.iter() {
-            for (key, counter) in shard.value().iter() {
+    pub fn load_all(&self) -> HashMap<SmallVec<[KeyValue; 4]>, u64, RandomState> {
+        let map = self.data.pin();
+        let mut result = HashMap::with_capacity_and_hasher(map.len(), RandomState::new());
+        for (_, shard) in map.iter() {
+            let shard_pin = shard.pin();
+            for (key, counter) in shard_pin.iter() {
                 let value = counter.load(Ordering::Relaxed);
                 *result.entry(key.clone()).or_insert(0) += value;
             }
@@ -72,8 +80,10 @@ impl<S: Eq + Hash> ShardedU64<S> {
 
     pub fn load(&self, key: &[KeyValue]) -> Option<u64> {
         let mut total = None;
-        for shard in self.data.iter() {
-            if let Some(counter) = shard.value().get(key) {
+        let map = self.data.pin();
+        for (_, shard) in map.iter() {
+            let shard_pin = shard.pin();
+            if let Some(counter) = shard_pin.get(key) {
                 let value = counter.load(Ordering::Relaxed);
                 total = Some(total.unwrap_or(0) + value);
             }
@@ -81,41 +91,35 @@ impl<S: Eq + Hash> ShardedU64<S> {
         total
     }
 
-    pub fn store(&self, value: u64, shard_id: S, key: &[KeyValue]) {
-        let mut shard = self.data.entry(shard_id).or_default();
-        if let Some(counter) = shard.get(key) {
-            counter.store(value, Ordering::Relaxed);
-        } else {
-            shard.insert(key.to_vec(), AtomicU64::new(value));
-        }
-    }
-
     pub fn shard_count(&self) -> usize {
-        self.data.len()
+        self.data.pin().len()
     }
 
     pub fn clear(&self) {
-        self.data.clear();
+        self.data.pin().clear();
     }
 
     pub fn remove(&self, shard_id: S, key: &[KeyValue]) -> Option<u64> {
-        self.data.entry(shard_id).or_default().remove(key).map(|counter| counter.into_inner())
+        let map = self.data.pin();
+        let shard = map.get(&shard_id)?;
+        let shard_pin = shard.pin();
+        shard_pin.remove(key).map(|counter| counter.load(Ordering::Relaxed))
     }
 }
 
 pub struct ShardedU64IntoIter {
-    inner: hash_map::IntoIter<Vec<KeyValue>, u64>,
+    inner: hash_map::IntoIter<SmallVec<[KeyValue; 4]>, u64>,
 }
 
 impl Iterator for ShardedU64IntoIter {
-    type Item = (Vec<KeyValue>, u64);
+    type Item = (SmallVec<[KeyValue; 4]>, u64);
     fn next(&mut self) -> Option<Self::Item> {
         self.inner.next()
     }
 }
 
 impl<S: Eq + Hash> IntoIterator for &'_ ShardedU64<S> {
-    type Item = (Vec<KeyValue>, u64);
+    type Item = (SmallVec<[KeyValue; 4]>, u64);
     type IntoIter = ShardedU64IntoIter;
 
     fn into_iter(self) -> Self::IntoIter {
@@ -131,6 +135,67 @@ impl<S: Eq + Hash> Default for ShardedU64<S> {
 }
 
 impl<S: Eq + Hash> fmt::Debug for ShardedU64<S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_map().entries(self.load_all()).finish()
+    }
+}
+
+pub struct Gauge {
+    data: ConcurrentHashMap<SmallVec<[KeyValue; 4]>, AtomicU64, RandomState>,
+}
+
+impl Gauge {
+    pub fn new() -> Self {
+        Gauge { data: ConcurrentHashMap::with_hasher(RandomState::new()) }
+    }
+
+    pub fn record(&self, value: u64, key: &[KeyValue]) {
+        let map = self.data.pin();
+        if let Some(gauge) = map.get(key) {
+            gauge.store(value, Ordering::Relaxed);
+        } else {
+            map.insert(SmallVec::from(key), AtomicU64::new(value));
+        }
+    }
+
+    pub fn load_all(&self) -> HashMap<SmallVec<[KeyValue; 4]>, u64, RandomState> {
+        let map = self.data.pin();
+        let mut result = HashMap::with_capacity_and_hasher(map.len(), RandomState::new());
+        for (key, counter) in map.iter() {
+            result.insert(key.clone(), counter.load(Ordering::Relaxed));
+        }
+        result
+    }
+}
+
+pub struct GaugeIntoIter {
+    inner: hash_map::IntoIter<SmallVec<[KeyValue; 4]>, u64>,
+}
+
+impl Iterator for GaugeIntoIter {
+    type Item = (SmallVec<[KeyValue; 4]>, u64);
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next()
+    }
+}
+
+impl IntoIterator for &'_ Gauge {
+    type Item = (SmallVec<[KeyValue; 4]>, u64);
+    type IntoIter = GaugeIntoIter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        let snapshot = self.load_all();
+        GaugeIntoIter { inner: snapshot.into_iter() }
+    }
+}
+
+impl Default for Gauge {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Debug for Gauge {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_map().entries(self.load_all()).finish()
     }
@@ -244,24 +309,11 @@ mod tests {
         s.add(100, shard_1, &key);
         assert_eq!(s.load(&key), Some(100));
 
-        s.store(42, shard_1, &key);
-        assert_eq!(s.load(&key), Some(42));
+        s.add(42, shard_1, &key);
+        assert_eq!(s.load(&key), Some(142));
 
-        s.store(0, shard_1, &[]);
+        s.add(0, shard_1, &[]);
         println!("{s:?}");
-    }
-
-    #[test]
-    fn test_store_overwrites_value() {
-        let s = ShardedU64::new();
-        let shard_1 = build_thread_id(1);
-        let key = vec![KeyValue::new("metric", "value")];
-
-        s.add(100, shard_1, &key);
-        assert_eq!(s.load(&key), Some(100));
-
-        s.store(42, shard_1, &key);
-        assert_eq!(s.load(&key), Some(42));
     }
 
     #[test]
@@ -282,8 +334,8 @@ mod tests {
         assert_eq!(s.load(&key_b), Some(100));
 
         let all_data = s.load_all();
-        assert_eq!(all_data.get(&key_a), Some(&25));
-        assert_eq!(all_data.get(&key_b), Some(&100));
+        assert_eq!(all_data.get(key_a.as_slice()), Some(&25));
+        assert_eq!(all_data.get(key_b.as_slice()), Some(&100));
         assert_eq!(all_data.len(), 2);
     }
 
@@ -334,5 +386,19 @@ mod tests {
 
         let expected_value = (num_threads * increments_per_thread) as u64;
         assert_eq!(s.load(&key), Some(expected_value));
+    }
+
+    #[test]
+    fn test_gauge_record_and_load() {
+        let g = Gauge::new();
+        let key = vec![KeyValue::new("metric", "gauge_test")];
+
+        g.record(100, &key);
+        let all = g.load_all();
+        assert_eq!(all.get(key.as_slice()), Some(&100));
+
+        g.record(50, &key);
+        let all2 = g.load_all();
+        assert_eq!(all2.get(key.as_slice()), Some(&50));
     }
 }

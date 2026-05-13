@@ -19,15 +19,16 @@ pub mod cors;
 pub mod ext_proc;
 pub mod http_rbac;
 pub mod jwt;
+pub mod local_rate_limit;
 pub mod mcp_gateway;
 pub mod router;
+pub mod user_rate_limit;
 
-use http_rbac::HttpRbac;
-use smol_str::SmolStr;
-pub mod local_rate_limit;
 pub use ext_proc::{ExtProcPerRoute, ExternalProcessor};
+use http_rbac::HttpRbac;
 use local_rate_limit::LocalRateLimit;
 pub use mcp_gateway::McpGateway;
+use smol_str::SmolStr;
 
 use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -63,6 +64,7 @@ pub struct HttpFilter {
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case", tag = "filter_type", content = "filter_settings")]
+#[serde(bound(deserialize = ""))]
 pub enum HttpFilterType {
     Rbac(HttpRbac),
     RateLimit(LocalRateLimit),
@@ -71,12 +73,15 @@ pub enum HttpFilterType {
     Cors(CorsConfig),
     CorsPolicy(CorsConfig),
     McpGateway(McpGateway),
+    UserRateLimit(UserRateLimiter),
 }
 
 #[cfg(feature = "envoy-conversions")]
 pub(crate) use envoy_conversions::*;
 
-use crate::config::network_filters::http_connection_manager::http_filters::{cors::CorsConfig, jwt::JwtAuthentication};
+use crate::config::network_filters::http_connection_manager::http_filters::{
+    cors::CorsConfig, jwt::JwtAuthentication, user_rate_limit::UserRateLimiter,
+};
 
 use super::is_default;
 
@@ -90,6 +95,7 @@ mod envoy_conversions {
     use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::cors::v3::Cors;
     use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::cors::v3::CorsPolicy;
     use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::mcp::mcp_gateway::v3::McpGateway as OrionMcpGateway;
+    use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::user_rate_limit::v3::UserRateLimiter as OrionUserRateLimiter;
     use orion_data_plane_api::envoy_data_plane_api::{
         envoy::{
             config::route::v3::FilterConfig as EnvoyFilterConfig,
@@ -160,6 +166,9 @@ mod envoy_conversions {
                 SupportedEnvoyFilter::JwtAuthentication(jwt) => jwt.try_into().map(Self::JwtAuthentication),
                 SupportedEnvoyFilter::Cors(c) => c.try_into().map(Self::Cors),
                 SupportedEnvoyFilter::CorsPolicy(c) => c.try_into().map(Self::CorsPolicy),
+                SupportedEnvoyFilter::UserRateLimiter(user_rate_limit) => {
+                    user_rate_limit.try_into().map(Self::UserRateLimit)
+                },
             }
         }
     }
@@ -175,6 +184,7 @@ mod envoy_conversions {
         Cors(Cors),
         CorsPolicy(CorsPolicy),
         McpGateway(OrionMcpGateway),
+        UserRateLimiter(OrionUserRateLimiter),
     }
 
     impl TryFrom<Any> for SupportedEnvoyFilter {
@@ -204,6 +214,9 @@ mod envoy_conversions {
                 },
                 "type.googleapis.com/orion.extensions.filters.http.mcp.mcp_gateway.v3.McpGateway" => {
                     OrionMcpGateway::decode(typed_config.value.as_slice()).map(Self::McpGateway)
+                },
+                "type.googleapis.com/orion.extensions.filters.http.user_rate_limit.v3.UserRateLimiter" => {
+                    OrionUserRateLimiter::decode(typed_config.value.as_slice()).map(Self::UserRateLimiter)
                 },
                 _ => return Err(GenericError::unsupported_variant(typed_config.type_url)),
             }
@@ -249,6 +262,7 @@ mod envoy_conversions {
     }
 
     #[derive(Debug, Clone)]
+    #[allow(clippy::large_enum_variant)]
     pub enum MaybeWrappedEnvoyFilter {
         Wrapped(EnvoyFilterConfig),
         Direct(SupportedEnvoyFilterOverride),

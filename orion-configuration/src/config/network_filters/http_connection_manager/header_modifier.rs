@@ -50,10 +50,10 @@ impl TryFrom<(String, Vec<u8>)> for HeaderKeyValue {
             GenericError::from_msg_with_cause(format!("failed to parse \"{}\" as a HeaderName", value.0), e)
         })?;
         let value_str = String::from_utf8(value.1)
-            .map_err(|e| GenericError::from_msg_with_cause(format!("failed to parse bytes as a utf"), e))?;
+            .map_err(|e| GenericError::from_msg_with_cause("failed to parse bytes as a utf".to_owned(), e))?;
 
         let value = HeaderFormatter::try_new(&value_str).map_err(|e| {
-            GenericError::from_msg_with_cause(format!("failed to parse \"{}\" as a HeaderFormatter", value_str), e)
+            GenericError::from_msg_with_cause(format!("failed to parse \"{value_str}\" as a HeaderFormatter"), e)
         })?;
 
         Ok(Self { key, value })

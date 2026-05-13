@@ -28,6 +28,7 @@ serde_yaml.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 url.workspace = true
+ahash.workspace = true
 clap = { version = "4.5.51", features = ["derive"] }
 http-serde-ext = "1.0.2"
 humantime-serde = "1.1.1"

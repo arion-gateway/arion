@@ -17,6 +17,7 @@
 
 #[macro_use]
 pub mod macros;
+pub mod key_value;
 pub mod metrics;
 pub mod sharded;
 
@@ -36,19 +37,17 @@ use {
 const DEFAULT_EXPORT_PERIOD: std::time::Duration = std::time::Duration::from_secs(5);
 static SETUP_BARRIER: LazyLock<(Mutex<bool>, Condvar)> = LazyLock::new(|| (Mutex::new(false), Condvar::new()));
 
-pub struct VecMetrics(pub Vec<Metrics>);
-
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
-pub struct Metrics {
+pub struct OtelExporterConfig {
     pub prefix: String,
     pub endpoint: String,
     pub stat_prefix: Option<String>,
     pub export_period: Option<std::time::Duration>,
 }
 
-impl From<&Bootstrap> for VecMetrics {
-    fn from(bootstrap: &Bootstrap) -> Self {
-        let metrics: Vec<_> = bootstrap
+impl OtelExporterConfig {
+    pub fn extract_from_bootstrap(bootstrap: &Bootstrap) -> Vec<Self> {
+        bootstrap
             .stats_sinks
             .iter()
             .filter_map(|sink| match sink {
@@ -57,12 +56,10 @@ impl From<&Bootstrap> for VecMetrics {
                     let stat_prefix = config.grpc_service.google_grpc.as_ref().map(|g| g.stat_prefix.clone());
                     let prefix = config.prefix.clone();
                     let export_period = bootstrap.stats_flush_interval;
-                    endpoint.map(|endpoint| Metrics { prefix, endpoint, stat_prefix, export_period })
+                    endpoint.map(|endpoint| OtelExporterConfig { prefix, endpoint, stat_prefix, export_period })
                 },
             })
-            .collect();
-
-        Self(metrics)
+            .collect()
     }
 }
 
@@ -70,7 +67,7 @@ impl From<&Bootstrap> for VecMetrics {
 // It's designed to be called during the application startup to initialize the OpenTelemetry metrics exporter.
 //
 pub async fn otel_launch_exporter(
-    multi_metrics: &[Metrics],
+    multi_metrics: &[OtelExporterConfig],
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
     info!("OTEL metrics: initializing exporter...");
     let mut provider_builder = opentelemetry_sdk::metrics::SdkMeterProvider::builder();

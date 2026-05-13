@@ -40,6 +40,7 @@ use crate::{
     listeners::{
         http_connection_manager::mcp_gateway::mcp::McpGatewayListenerContext,
         metadata::{DownstreamConnectionMetadata, DownstreamMetadata},
+        rate_limiter::local_rate_limiter::ListenerLocalRateLimit,
     },
     secrets::{TlsConfigurator, WantsToBuildServer},
     transport::{bind_device::BindDevice, tls_inspector, ProxyProtocolReader},
@@ -50,9 +51,11 @@ use crate::{
 use orion_configuration::config::{
     access_log::AccessLog,
     listener::{FilterChainMatch, Listener as ListenerConfig, ListenerType, MatchResult},
-    listener_filters::DownstreamProxyProtocolConfig,
+    listener_filters::{DownstreamProxyProtocolConfig, ListenerLocalRateLimitConfig},
 };
 use orion_interner::StringInterner;
+#[cfg(feature = "metrics")]
+use orion_metrics::metrics::filters;
 use tokio::sync::mpsc;
 
 #[cfg(feature = "access-log")]
@@ -109,6 +112,7 @@ struct PartialListener {
     filter_chains: HashMap<FilterChainMatch, FilterchainBuilder>,
     with_tls_inspector: bool,
     proxy_protocol_config: Option<DownstreamProxyProtocolConfig>,
+    listener_local_rate_limit_config: Option<ListenerLocalRateLimitConfig>,
     access_log: Vec<AccessLog>,
 }
 
@@ -124,6 +128,7 @@ impl TryFrom<ConversionContext<'_, ListenerConfig>> for PartialListener {
         let name = listener.name.to_static_str();
         let with_tls_inspector = listener.with_tls_inspector;
         let proxy_protocol_config = listener.proxy_protocol_config;
+        let listener_local_rate_limit_config = listener.listener_local_rate_limit_config;
         let access_log = listener.access_log;
         debug!("Listener {name} :TLS Inspector is {with_tls_inspector}");
 
@@ -149,7 +154,15 @@ impl TryFrom<ConversionContext<'_, ListenerConfig>> for PartialListener {
             }
         }
 
-        Ok(PartialListener { name, binding, filter_chains, with_tls_inspector, proxy_protocol_config, access_log })
+        Ok(PartialListener {
+            name,
+            binding,
+            filter_chains,
+            with_tls_inspector,
+            proxy_protocol_config,
+            listener_local_rate_limit_config,
+            access_log,
+        })
     }
 }
 
@@ -159,13 +172,22 @@ impl ListenerFactory {
         route_updates_receiver: broadcast::Receiver<RouteConfigurationChange>,
         secret_updates_receiver: broadcast::Receiver<TlsContextChange>,
     ) -> Result<Listener> {
-        let PartialListener { name, binding, filter_chains, with_tls_inspector, proxy_protocol_config, access_log } =
-            self.listener;
+        let PartialListener {
+            name,
+            binding,
+            filter_chains,
+            with_tls_inspector,
+            proxy_protocol_config,
+            listener_local_rate_limit_config,
+            access_log,
+        } = self.listener;
 
         let filter_chains = filter_chains
             .into_iter()
             .map(|fc| fc.1.with_listener_name(name).build().map(|x| (fc.0, x)))
             .collect::<Result<HashMap<_, _>>>()?;
+
+        let listener_local_rate_limit = listener_local_rate_limit_config.map(Into::into);
 
         Ok(Listener {
             name,
@@ -173,6 +195,7 @@ impl ListenerFactory {
             filter_chains,
             with_tls_inspector,
             proxy_protocol_config,
+            listener_local_rate_limit,
             route_updates_receiver,
             secret_updates_receiver,
             access_log,
@@ -220,6 +243,7 @@ pub struct Listener {
     pub filter_chains: HashMap<FilterChainMatch, FilterchainType>,
     with_tls_inspector: bool,
     proxy_protocol_config: Option<DownstreamProxyProtocolConfig>,
+    listener_local_rate_limit: Option<ListenerLocalRateLimit>,
     route_updates_receiver: broadcast::Receiver<RouteConfigurationChange>,
     secret_updates_receiver: broadcast::Receiver<TlsContextChange>,
     access_log: Vec<AccessLog>,
@@ -243,6 +267,7 @@ impl Listener {
             filter_chains: HashMap::new(),
             with_tls_inspector: false,
             proxy_protocol_config: None,
+            listener_local_rate_limit: None,
             route_updates_receiver: route_rx,
             secret_updates_receiver: secret_rx,
             access_log: vec![],
@@ -267,6 +292,7 @@ impl Listener {
             filter_chains,
             with_tls_inspector,
             proxy_protocol_config,
+            listener_local_rate_limit,
             mut route_updates_receiver,
             mut secret_updates_receiver,
             access_log: _access_log,
@@ -296,6 +322,37 @@ impl Listener {
                         maybe_stream = listener.accept() => {
                             match maybe_stream {
                                 Ok((stream, peer_addr)) => {
+
+                                    if let Some(rate_limiter) = &listener_local_rate_limit {
+                                        if !rate_limiter.allow() {
+                                            debug!("Connection from {} rate-limited", peer_addr);
+                                            #[cfg(feature = "metrics")]
+                                            with_metric!(
+                                                filters::CONNECTION_RATE_LIMIT,
+                                                add,
+                                                1,
+                                                get_shard_id!(),
+                                                &[
+                                                    KeyValue::new("listener", listener_name),
+                                                    KeyValue::new("filter", rate_limiter.stat_prefix.0),
+                                                    KeyValue::new("result", filters::EVENT_RATE_LIMITED),
+                                                ]
+                                            );
+                                            continue;
+                                        }
+                                        #[cfg(feature = "metrics")]
+                                        with_metric!(
+                                            filters::CONNECTION_RATE_LIMIT,
+                                            add,
+                                            1,
+                                            get_shard_id!(),
+                                            &[
+                                                KeyValue::new("listener", listener_name),
+                                                KeyValue::new("filter", rate_limiter.stat_prefix.0),
+                                                KeyValue::new("result", filters::EVENT_OK)
+                                            ]
+                                        );
+                                    }
                                     let local_address = stream.local_addr().ok();
 
                                     #[cfg(feature = "instrumentation")]
@@ -661,6 +718,7 @@ impl Listener {
                 connection_metadata.peer_address(),
                 filterchain.filter_chain().name
             );
+            filterchain.apply_network_rate_limit(sni.as_ref()).await?;
             if let Some(stream) = filterchain.apply_rbac(stream, &connection_metadata, sni.as_deref()) {
                 return filterchain
                     .start_filterchain(

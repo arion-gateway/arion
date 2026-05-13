@@ -14,7 +14,7 @@
 // limitations under the License.
 //
 //
-use super::{http_modifiers, upgrades as upgrade_utils, RequestHandler, TransactionHandler};
+use super::{http_modifiers, upgrades as upgrade_utils, RequestHandler, TransactionContext};
 use crate::event_error::{EventFailure, EventKind, TryInferFrom, UpstreamError};
 use crate::{
     body::response_flags::ResponseFlags,
@@ -33,11 +33,10 @@ use crate::with_access_log;
 #[cfg(feature = "metrics")]
 use crate::{clusters::CircuitBreakerDenial, get_shard_id, with_metric};
 use crate::{instrument_block, instrument_function, OrionRequestBody, OrionResponseBody, RequestContext};
-#[cfg(feature = "metrics")]
+#[cfg(any(feature = "metrics", feature = "tracing"))]
 use opentelemetry::KeyValue;
 #[cfg(feature = "metrics")]
 use orion_metrics::metrics::clusters;
-
 use http::{uri::Parts as UriParts, Uri};
 use hyper::{Request, Response};
 use orion_configuration::config::network_filters::http_connection_manager::{
@@ -56,7 +55,6 @@ use {
     crate::tracing_attributes::set_attributes_from_request,
     crate::tracing_attributes::{UPSTREAM_ADDRESS, UPSTREAM_CLUSTER_NAME},
     opentelemetry::trace::Span,
-    opentelemetry::KeyValue,
     orion_tracing::http_tracer::{SpanKind, SpanName},
 };
 
@@ -77,8 +75,8 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
     #[allow(unused_variables)]
     async fn to_response(
         self,
-        trans_handler: &TransactionHandler,
-        downstream_request: Request<OrionRequestBody>,
+        trans_handler: &TransactionContext,
+        request: Request<OrionRequestBody>,
         (route_context, connection_manager): (RouteContext<'a>, &HttpConnectionManager),
     ) -> Result<Response<OrionResponseBody>> {
         instrument_function!(trans_handler.clock, |nanos| {
@@ -89,8 +87,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
         let RouteContext { route_name, retry_policy, remote_address, route_match, websocket_enabled_by_default } =
             route_context;
 
-        let Some(cluster_id) =
-            clusters_manager::resolve_cluster(&self.cluster_specifier, Some(downstream_request.headers()))
+        let Some(cluster_id) = clusters_manager::resolve_cluster(&self.cluster_specifier, Some(request.headers()))
         else {
             debug!("Failed to resolve cluster from specifier {:?}", self.cluster_specifier);
             return Ok(SyntheticHttpResponse::internal_server_error(
@@ -98,7 +95,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
                 ResponseFlags(FmtResponseFlags::NO_CLUSTER_FOUND),
                 "Failed to resolve cluster",
             )
-            .into_response(downstream_request.version()));
+            .into_response(request.version()));
         };
 
         let priority = self.priority;
@@ -123,7 +120,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
                 EventKind::Failure(EventFailure::UpstreamOverflow),
                 ResponseFlags(FmtResponseFlags::UPSTREAM_OVERFLOW),
             )
-            .into_circuit_breaker_response(downstream_request.version()));
+            .into_circuit_breaker_response(request.version()));
         }
 
         defer! {
@@ -131,8 +128,8 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
         }
 
         let routing_requirement = clusters_manager::get_cluster_routing_requirements(cluster_id);
-        let hash_state = HashState::new(self.hash_policy.as_slice(), &downstream_request, remote_address);
-        let routing_context = RoutingContext::try_from((&routing_requirement, &downstream_request, hash_state))?;
+        let hash_state = HashState::new(self.hash_policy.as_slice(), &request, remote_address);
+        let routing_context = RoutingContext::try_from((&routing_requirement, &request, hash_state))?;
 
         let maybe_channel = instrument_block!(
             trans_handler.clock,
@@ -154,10 +151,10 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
                     }
                 );
 
-                let ver = downstream_request.version();
+                let ver = request.version();
 
                 let mut upstream_request: Request<OrionRequestBody> = {
-                    let (mut parts, body) = downstream_request.into_parts();
+                    let (mut parts, body) = request.into_parts();
                     let path_and_query_replacement = if let Some(rewrite) = &self.rewrite {
                         rewrite
                             .apply(parts.uri.path_and_query(), &route_match)
@@ -287,7 +284,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
                     flags,
                     "Failed to connect to upstream cluster",
                 )
-                .into_response(downstream_request.version()))
+                .into_response(request.version()))
             },
         }
     }

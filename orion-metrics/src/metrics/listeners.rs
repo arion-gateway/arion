@@ -29,27 +29,37 @@ pub static DOWNSTREAM_CX_ACTIVE: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLo
 pub static NO_FILTER_CHAIN_MATCH: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 pub static DOWNSTREAM_CX_LENGTH_MS: OnceLock<Metric<ShardedHistogram<ThreadId>>> = OnceLock::new();
 
-pub(crate) fn init_metrics() {
+pub(crate) fn init_metrics(rename: &std::collections::HashMap<String, String>) {
     init_observable_histogram!(
         DOWNSTREAM_CX_LENGTH_MS,
-        "listeners",
-        "downstream_cx_length_ms",
+        crate::metrics::PREFIX_LISTENERS,
+        crate::metrics::resolve_metric_name(rename, "downstream_cx_length_ms"),
         "Connection length milliseconds",
         vec![5, 10, 50, 100, 500, 1000, 5000, 10000, u64::MAX]
     );
 
-    init_observable_counter!(DOWNSTREAM_CX_TOTAL, "listeners", "downstream_cx_total", "Total downstream connections");
+    init_observable_counter!(
+        DOWNSTREAM_CX_TOTAL,
+        crate::metrics::PREFIX_LISTENERS,
+        crate::metrics::resolve_metric_name(rename, "downstream_cx_total"),
+        "Total downstream connections"
+    );
     init_observable_counter!(
         DOWNSTREAM_CX_DESTROY,
-        "listeners",
-        "downstream_cx_destroy",
+        crate::metrics::PREFIX_LISTENERS,
+        crate::metrics::resolve_metric_name(rename, "downstream_cx_destroy"),
         "Total destroyed downstream connections"
     );
     init_observable_counter!(
         NO_FILTER_CHAIN_MATCH,
-        "listeners",
-        "no_filter_chain_match",
+        crate::metrics::PREFIX_LISTENERS,
+        crate::metrics::resolve_metric_name(rename, "no_filter_chain_match"),
         "Total connections with no filter chain match"
     );
-    init_observable_gauge!(DOWNSTREAM_CX_ACTIVE, "listeners", "downstream_cx_active", "Total active connections");
+    init_observable_gauge!(
+        DOWNSTREAM_CX_ACTIVE,
+        crate::metrics::PREFIX_LISTENERS,
+        crate::metrics::resolve_metric_name(rename, "downstream_cx_active"),
+        "Total active connections"
+    );
 }

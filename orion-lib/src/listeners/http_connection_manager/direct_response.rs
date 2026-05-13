@@ -18,7 +18,7 @@
 #[cfg(feature = "access-log")]
 use crate::with_access_log;
 
-use super::{RequestHandler, TransactionHandler};
+use super::{RequestHandler, TransactionContext};
 use crate::{body::timeout_body::TimeoutBody, OrionRequestBody, OrionResponseBody, Result};
 use http_body_util::Full;
 use hyper::{Request, Response};
@@ -30,7 +30,7 @@ use orion_format::context::UpstreamContext;
 impl<'a> RequestHandler<Request<OrionRequestBody>, &'a str> for &DirectResponseAction {
     async fn to_response(
         self,
-        _trans_handler: &TransactionHandler,
+        _trans_handler: &TransactionContext,
         request: Request<OrionRequestBody>,
         _route_name: &'a str,
     ) -> Result<Response<OrionResponseBody>> {

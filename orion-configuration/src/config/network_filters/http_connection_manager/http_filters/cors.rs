@@ -8,7 +8,7 @@ use crate::config::core::StringMatcher;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CorsConfig {
-    /// List of allowed origins. Examples: "https://foo.com", "*".
+    /// List of allowed origins. Examples: `<https://foo.com>`, "*".
     pub allow_origins: Vec<StringMatcher>,
     /// List of allowed methods. Examples: "GET", "POST".
     #[serde(with = "http_serde_ext::method::vec", default)]
@@ -84,15 +84,15 @@ mod envoy_conversions {
             Ok(CorsConfig {
                 allow_origins: allow_origin_string_match
                     .into_iter()
-                    .map(|matcher| matcher.try_into())
+                    .map(TryInto::try_into)
                     .collect::<Result<Vec<_>, _>>()?,
                 allow_methods: allow_methods
-                    .split(",")
+                    .split(',')
                     .map(str::trim)
-                    .map(|method| http::Method::from_str(method))
+                    .map(http::Method::from_str)
                     .collect::<Result<Vec<_>, _>>()?,
-                allow_headers: allow_headers.split(",").map(str::trim).map(|header| header.into()).collect(),
-                expose_headers: expose_headers.split(",").map(str::trim).map(|header| header.into()).collect(),
+                allow_headers: allow_headers.split(',').map(str::trim).map(Into::into).collect(),
+                expose_headers: expose_headers.split(',').map(str::trim).map(Into::into).collect(),
                 allow_credentials: allow_credentials.unwrap_or_default().value,
                 max_age: (!max_age.is_empty()).then(|| max_age.parse::<u64>()).transpose()?,
             })

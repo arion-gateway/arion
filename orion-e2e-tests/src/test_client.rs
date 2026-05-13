@@ -12,12 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::net::SocketAddr;
 use std::time::Duration;
+use std::{convert::Infallible, net::SocketAddr};
 
 use bytes::Bytes;
 use http::{Method, Request, StatusCode, Uri};
-use http_body_util::{BodyExt, Full};
+use http_body::Frame;
+use http_body_util::{BodyExt, Full, StreamBody};
 use hyper::body::Incoming;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
@@ -80,9 +81,15 @@ impl TestResponse {
     }
 }
 
+type ChunkStream = futures_util::stream::Iter<
+    std::iter::Map<std::vec::IntoIter<Bytes>, fn(Bytes) -> std::result::Result<Frame<Bytes>, Infallible>>,
+>;
+
+type TestBody = http_body_util::Either<StreamBody<ChunkStream>, Full<Bytes>>;
+
 pub struct TestClient {
     addr: SocketAddr,
-    client: Client<HttpConnector, Full<Bytes>>,
+    client: Client<HttpConnector, TestBody>,
     timeout: Duration,
     default_headers: Vec<(String, String)>,
 }
@@ -107,23 +114,31 @@ impl TestClient {
     }
 
     pub async fn get(&self, path: &str) -> Result<TestResponse> {
-        self.request(Method::GET, path, None).await
+        self.request(Method::GET, path, vec![]).await
     }
 
     pub async fn post(&self, path: &str, body: impl Into<Bytes>) -> Result<TestResponse> {
-        self.request(Method::POST, path, Some(body.into())).await
+        self.request(Method::POST, path, vec![body.into()]).await
+    }
+
+    pub async fn post_multichunk(&self, path: &str, body: Vec<Bytes>) -> Result<TestResponse> {
+        self.request(Method::POST, path, body).await
     }
 
     pub async fn put(&self, path: &str, body: impl Into<Bytes>) -> Result<TestResponse> {
-        self.request(Method::PUT, path, Some(body.into())).await
+        self.request(Method::PUT, path, vec![body.into()]).await
+    }
+
+    pub async fn put_multichunk(&self, path: &str, body: Vec<Bytes>) -> Result<TestResponse> {
+        self.request(Method::PUT, path, body).await
     }
 
     pub async fn delete(&self, path: &str) -> Result<TestResponse> {
-        self.request(Method::DELETE, path, None).await
+        self.request(Method::DELETE, path, vec![]).await
     }
 
     #[allow(clippy::disallowed_methods)]
-    pub async fn request(&self, method: Method, path: &str, body: Option<Bytes>) -> Result<TestResponse> {
+    pub async fn request(&self, method: Method, path: &str, body: Vec<Bytes>) -> Result<TestResponse> {
         let uri: Uri =
             format!("http://{}{}", self.addr, path).parse().map_err(|e| Error::Http(format!("Invalid URI: {e}")))?;
 
@@ -135,12 +150,24 @@ impl TestClient {
             builder = builder.header(name.as_str(), value.as_str());
         }
 
-        let request = match body {
-            Some(b) => builder.body(Full::new(b)).map_err(|e| Error::Http(format!("Failed to build request: {e}")))?,
-            None => builder
-                .body(Full::new(Bytes::new()))
-                .map_err(|e| Error::Http(format!("Failed to build request: {e}")))?,
+        // change body to vec<Bytes> and use StreamBody (http_body_utils) to send multi-chunk in case vec.len>1
+        let body = if !body.is_empty() {
+            if body.len() > 1 {
+                fn frame_mapper(chunk: Bytes) -> std::result::Result<Frame<Bytes>, Infallible> {
+                    Ok(Frame::data(chunk))
+                }
+                let stream = futures_util::stream::iter(
+                    body.into_iter().map(frame_mapper as fn(Bytes) -> std::result::Result<Frame<Bytes>, Infallible>),
+                );
+                http_body_util::Either::Left(StreamBody::new(stream))
+            } else {
+                http_body_util::Either::Right(Full::new(body[0].clone()))
+            }
+        } else {
+            http_body_util::Either::Right(Full::new(Bytes::new()))
         };
+
+        let request = builder.body(body).map_err(|e| Error::Http(format!("Failed to build request: {e}")))?;
 
         let response = tokio::time::timeout(self.timeout, self.client.request(request))
             .await
@@ -166,8 +193,9 @@ impl TestClient {
             builder = builder.header(name.as_str(), value.as_str());
         }
 
-        let http_request =
-            builder.body(Full::new(request.body)).map_err(|e| Error::Http(format!("Failed to build request: {e}")))?;
+        let http_request = builder
+            .body(http_body_util::Either::Right(Full::new(request.body)))
+            .map_err(|e| Error::Http(format!("Failed to build request: {e}")))?;
 
         let response = tokio::time::timeout(self.timeout, self.client.request(http_request))
             .await

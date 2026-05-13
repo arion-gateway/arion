@@ -23,6 +23,7 @@ use super::{
     GenericError,
 };
 use crate::config::network_filters::tracing::{TracingConfig, TracingKey};
+use crate::config::network_filters::NetworkGlobalRateLimit;
 use crate::config::{access_log::AccessLogTarget, listener};
 use ipnet::IpNet;
 use orion_data_plane_api::envoy_data_plane_api::google::protobuf::UInt32Value;
@@ -67,6 +68,8 @@ pub struct Listener {
     pub with_tls_inspector: bool,
     #[serde(skip_serializing_if = "Option::is_none", default = "Default::default")]
     pub proxy_protocol_config: Option<super::listener_filters::DownstreamProxyProtocolConfig>,
+    #[serde(skip_serializing_if = "Option::is_none", default = "Default::default")]
+    pub listener_local_rate_limit_config: Option<super::listener_filters::ListenerLocalRateLimitConfig>,
     #[serde(default = "Default::default")]
     pub tcp_backlog_size: u32,
     #[serde(skip_serializing_if = "Vec::is_empty", default = "Default::default")]
@@ -85,8 +88,8 @@ impl Listener {
 
         let filter_chains_logs: Vec<(AccessLogTarget, Vec<AccessLogConf>)> = self
             .filter_chains
-            .iter()
-            .map(|(_, filter_chain)| match &filter_chain.terminal_filter {
+            .values()
+            .map(|filter_chain| match &filter_chain.terminal_filter {
                 MainFilter::Http(http_connection_manager) => (
                     AccessLogTarget::ListenerFilterChain(self.name.clone(), filter_chain.id),
                     http_connection_manager.access_log.iter().map(AccessLog::get_config).cloned().collect::<Vec<_>>(),
@@ -173,6 +176,8 @@ pub struct FilterChain {
     pub tls_config: Option<listener::TlsConfig>,
     #[serde(skip_serializing_if = "Vec::is_empty", default = "Default::default")]
     pub rbac: Vec<NetworkRbac>,
+    #[serde(skip_serializing_if = "Option::is_none", default = "Default::default")]
+    pub network_global_rate_limit: Option<NetworkGlobalRateLimit>,
     pub terminal_filter: MainFilter,
 }
 
@@ -335,6 +340,7 @@ impl FilterChainMatch {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(tag = "type")]
 #[serde(rename_all = "UPPERCASE")]
+#[allow(clippy::large_enum_variant)]
 pub enum MainFilter {
     Http(HttpConnectionManager),
     Tcp(TcpProxy),
@@ -381,7 +387,8 @@ mod envoy_conversions {
             extensions::{
                 filters::network::{
                     http_connection_manager::v3::HttpConnectionManager as EnvoyHttpConnectionManager,
-                    rbac::v3::Rbac as EnvoyNetworkRbac, tcp_proxy::v3::TcpProxy as EnvoyTcpProxy,
+                    ratelimit::v3::RateLimit as EnvoyNetworkGlobalRateLimit, rbac::v3::Rbac as EnvoyNetworkRbac,
+                    tcp_proxy::v3::TcpProxy as EnvoyTcpProxy,
                 },
                 transport_sockets::tls::v3::DownstreamTlsContext as EnvoyDownstreamTlsContext,
             },
@@ -504,23 +511,30 @@ mod envoy_conversions {
                 let listener_filters: Vec<ListenerFilter> = convert_vec!(listener_filters)?;
                 let mut with_tls_inspector = false;
                 let mut proxy_protocol_config = None;
+                let mut listener_local_rate_limit_config = None;
 
                 for filter in listener_filters {
                     match filter.config {
                         ListenerFilterConfig::TlsInspector => {
-                            if with_tls_inspector {
-                                return Err(GenericError::from_msg("duplicate TLS inspector listener filter"))
-                                    .with_node("listener_filters");
-                            }
                             with_tls_inspector = true;
                         },
                         ListenerFilterConfig::ProxyProtocol(config) => {
-                            if proxy_protocol_config.is_some() {
-                                return Err(GenericError::from_msg("duplicate proxy protocol listener filter"))
-                                    .with_node("listener_filters");
-                            }
                             proxy_protocol_config = Some(config);
                         },
+                        ListenerFilterConfig::LocalRateLimit(config) => {
+                            listener_local_rate_limit_config = Some(config);
+                        },
+                    }
+                }
+                if !with_tls_inspector {
+                    for chain in filter_chains.values() {
+                        if let Some(rl) = &chain.network_global_rate_limit {
+                            if rl.domain.is_none() {
+                                return Err(GenericError::from_msg(
+                                    "network global rate limit: domain is required for listeners without a TLS inspector",
+                                ));
+                            }
+                        }
                     }
                 }
                 let tcp_backlog_size = tcp_backlog_size.unwrap_or(DEFAULT_TCP_BACKLOG_SIZE).value;
@@ -530,6 +544,7 @@ mod envoy_conversions {
                     filter_chains,
                     with_tls_inspector,
                     proxy_protocol_config,
+                    listener_local_rate_limit_config,
                     tcp_backlog_size,
                     access_log,
                 })
@@ -570,6 +585,7 @@ mod envoy_conversions {
                     .unwrap_or_default();
                 let filters = required!(filters)?;
                 let mut rbac = Vec::new();
+                let mut network_global_rate_limit = None;
                 let mut main_filter = None;
                 for (idx, filter) in filters.into_iter().enumerate() {
                     let filter_name = filter.name.clone().is_used().then_some(filter.name.clone());
@@ -578,8 +594,8 @@ mod envoy_conversions {
                             SupportedEnvoyFilter::NetworkRbac(rbac_filter) => {
                                 if main_filter.is_some() {
                                     Err(GenericError::from_msg(
-                            "rbac filter found after a http connection manager or tcp proxy in the same filterchain",
-                        ))
+                                        "rbac filter found after a http connection manager or tcp proxy in the same filterchain",
+                                    ))
                                 } else {
                                     match rbac_filter.try_into() {
                                         Ok(rbac_filter) => {
@@ -590,7 +606,25 @@ mod envoy_conversions {
                                     }
                                 }
                             },
-
+                            SupportedEnvoyFilter::NetworkGlobalRateLimit(rate_limit_filter) => {
+                                if main_filter.is_some() {
+                                    Err(GenericError::from_msg(
+                                        "network global rate limit cannot be the last filter in filterchain",
+                                    ))
+                                } else if network_global_rate_limit.is_some() {
+                                    Err(GenericError::from_msg(
+                                        "multiple network global rate limit filters defined in filterchain",
+                                    ))
+                                } else {
+                                    match rate_limit_filter.try_into() {
+                                        Ok(rate_limit) => {
+                                            network_global_rate_limit = Some(rate_limit);
+                                            Ok(())
+                                        },
+                                        Result::<_, GenericError>::Err(e) => Err(e),
+                                    }
+                                }
+                            },
                             SupportedEnvoyFilter::HttpConnectionManager(http) => {
                                 if main_filter.is_some() {
                                     Err(GenericError::from_msg(
@@ -643,7 +677,14 @@ mod envoy_conversions {
                 filter_chain_match.hash(&mut s);
                 Ok(FilterChainWrapper((
                     filter_chain_match,
-                    FilterChain { id: s.finish(), name: SmolStr::new(&name), rbac, terminal_filter, tls_config },
+                    FilterChain {
+                        id: s.finish(),
+                        name: SmolStr::new(&name),
+                        rbac,
+                        network_global_rate_limit,
+                        terminal_filter,
+                        tls_config,
+                    },
                 )))
             }())
             .with_name(name)
@@ -748,6 +789,7 @@ mod envoy_conversions {
     enum SupportedEnvoyFilter {
         HttpConnectionManager(EnvoyHttpConnectionManager),
         NetworkRbac(EnvoyNetworkRbac),
+        NetworkGlobalRateLimit(EnvoyNetworkGlobalRateLimit),
         TcpProxy(EnvoyTcpProxy),
     }
 
@@ -760,6 +802,9 @@ mod envoy_conversions {
             },
             "type.googleapis.com/envoy.extensions.filters.network.rbac.v3.RBAC" => {
                 EnvoyNetworkRbac::decode(typed_config.value.as_slice()).map(Self::NetworkRbac)
+            },
+            "type.googleapis.com/envoy.extensions.filters.network.ratelimit.v3.RateLimit" => {
+                EnvoyNetworkGlobalRateLimit::decode(typed_config.value.as_slice()).map(Self::NetworkGlobalRateLimit)
             },
             "type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy" => {
                 EnvoyTcpProxy::decode(typed_config.value.as_slice()).map(Self::TcpProxy)

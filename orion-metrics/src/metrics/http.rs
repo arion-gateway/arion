@@ -46,109 +46,119 @@ pub static DOWNSTREAM_RQ_ACTIVE: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLo
 pub static DOWNSTREAM_CX_RX_BYTES_TOTAL: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 pub static DOWNSTREAM_CX_TX_BYTES_TOTAL: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 
-pub(crate) fn init_metrics() {
+pub(crate) fn init_metrics(rename: &std::collections::HashMap<String, String>) {
     init_observable_histogram!(
         DOWNSTREAM_CX_LENGTH_MS,
-        "http",
-        "downstream_cx_length_ms",
+        crate::metrics::PREFIX_HTTP,
+        crate::metrics::resolve_metric_name(rename, "downstream_cx_length_ms"),
         "Connection length milliseconds",
         vec![5, 10, 50, 100, 500, 1000, 5000, 10000, u64::MAX]
     );
 
     init_observable_counter!(
         DOWNSTREAM_RQ_1XX,
-        "http",
-        "downstream_rq_1xx",
+        crate::metrics::PREFIX_HTTP,
+        crate::metrics::resolve_metric_name(rename, "downstream_rq_1xx"),
         "1xx responses to downstream HTTP requests"
     );
     init_observable_counter!(
         DOWNSTREAM_RQ_2XX,
-        "http",
-        "downstream_rq_2xx",
+        crate::metrics::PREFIX_HTTP,
+        crate::metrics::resolve_metric_name(rename, "downstream_rq_2xx"),
         "2xx responses to downstream HTTP requests"
     );
     init_observable_counter!(
         DOWNSTREAM_RQ_3XX,
-        "http",
-        "downstream_rq_3xx",
+        crate::metrics::PREFIX_HTTP,
+        crate::metrics::resolve_metric_name(rename, "downstream_rq_3xx"),
         "3xx responses to downstream HTTP requests"
     );
     init_observable_counter!(
         DOWNSTREAM_RQ_4XX,
-        "http",
-        "downstream_rq_4xx",
+        crate::metrics::PREFIX_HTTP,
+        crate::metrics::resolve_metric_name(rename, "downstream_rq_4xx"),
         "4xx responses to downstream HTTP requests"
     );
     init_observable_counter!(
         DOWNSTREAM_RQ_5XX,
-        "http",
-        "downstream_rq_5xx",
+        crate::metrics::PREFIX_HTTP,
+        crate::metrics::resolve_metric_name(rename, "downstream_rq_5xx"),
         "5xx responses to downstream HTTP requests"
     );
     init_observable_counter!(
         DOWNSTREAM_CX_TOTAL,
-        "http",
-        "downstream_cx_total",
+        crate::metrics::PREFIX_HTTP,
+        crate::metrics::resolve_metric_name(rename, "downstream_cx_total"),
         "Total number of downstream HTTP connections"
     );
     init_observable_counter!(
         DOWNSTREAM_CX_SSL_TOTAL,
-        "http",
-        "downstream_cx_ssl_total",
+        crate::metrics::PREFIX_HTTP,
+        crate::metrics::resolve_metric_name(rename, "downstream_cx_ssl_total"),
         "Total number of downstream HTTP connections with TLS"
     );
     init_observable_gauge!(
         DOWNSTREAM_CX_SSL_ACTIVE,
-        "http",
-        "downstream_cx_ssl_active",
+        crate::metrics::PREFIX_HTTP,
+        crate::metrics::resolve_metric_name(rename, "downstream_cx_ssl_active"),
         "Active downstream HTTP connections with TLS"
     );
 
     init_observable_counter!(
         DOWNSTREAM_RQ_TOTAL,
-        "http",
-        "downstream_rq_total",
+        crate::metrics::PREFIX_HTTP,
+        crate::metrics::resolve_metric_name(rename, "downstream_rq_total"),
         "Total number of downstream HTTP requests"
     );
-    init_observable_gauge!(DOWNSTREAM_RQ_ACTIVE, "http", "downstream_rq_active", "Active downstream HTTP requests");
+    init_observable_gauge!(
+        DOWNSTREAM_RQ_ACTIVE,
+        crate::metrics::PREFIX_HTTP,
+        crate::metrics::resolve_metric_name(rename, "downstream_rq_active"),
+        "Active downstream HTTP requests"
+    );
 
     init_observable_counter!(
         DOWNSTREAM_CX_DESTROY,
-        "http",
-        "downstream_cx_destroy",
+        crate::metrics::PREFIX_HTTP,
+        crate::metrics::resolve_metric_name(rename, "downstream_cx_destroy"),
         "Number of destroyed downstream HTTP connections"
     );
-    init_observable_gauge!(DOWNSTREAM_CX_ACTIVE, "http", "downstream_cx_active", "Active downstream HTTP connections");
+    init_observable_gauge!(
+        DOWNSTREAM_CX_ACTIVE,
+        crate::metrics::PREFIX_HTTP,
+        crate::metrics::resolve_metric_name(rename, "downstream_cx_active"),
+        "Active downstream HTTP connections"
+    );
 
     init_observable_counter!(
         DOWNSTREAM_CX_RX_BYTES_TOTAL,
-        "http",
-        "downstream_cx_rx_bytes_total",
+        crate::metrics::PREFIX_HTTP,
+        crate::metrics::resolve_metric_name(rename, "downstream_cx_rx_bytes_total"),
         "Total number of bytes received on downstream HTTP connections"
     );
     init_observable_counter!(
         DOWNSTREAM_CX_TX_BYTES_TOTAL,
-        "http",
-        "downstream_cx_tx_bytes_total",
+        crate::metrics::PREFIX_HTTP,
+        crate::metrics::resolve_metric_name(rename, "downstream_cx_tx_bytes_total"),
         "Total number of bytes sent on downstream HTTP connections"
     );
 
     init_observable_counter!(
         DOWNSTREAM_CX_WS_UPGRADES_TOTAL,
-        "http",
-        "downstream_cx_ws_upgrades_total",
+        crate::metrics::PREFIX_HTTP,
+        crate::metrics::resolve_metric_name(rename, "downstream_cx_ws_upgrades_total"),
         "Total successfully upgraded connections"
     );
-    init_observable_counter!(
+    init_observable_gauge!(
         DOWNSTREAM_CX_WS_UPGRADES_ACTIVE,
-        "http",
-        "downstream_cx_ws_upgrades_active",
+        crate::metrics::PREFIX_HTTP,
+        crate::metrics::resolve_metric_name(rename, "downstream_cx_ws_upgrades_active"),
         "Total active upgraded connections"
     );
     init_observable_counter!(
         DOWNSTREAM_RQ_WS_ON_NON_WS_ROUTE,
-        "http",
-        "downstream_rq_ws_on_non_ws_route",
+        crate::metrics::PREFIX_HTTP,
+        crate::metrics::resolve_metric_name(rename, "downstream_rq_ws_on_non_ws_route"),
         "Total upgrade requests rejected by non upgrade routes"
     );
 }
