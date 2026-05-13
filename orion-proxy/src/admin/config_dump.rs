@@ -364,6 +364,7 @@ mod config_dump_tests {
             health_check: None,
             connect_timeout: Some(Duration::from_secs(5)),
             cleanup_interval: None,
+            circuit_breakers: None,
         };
         let secret_manager = orion_lib::SecretManager::default();
         let partial_cluster =
@@ -418,6 +419,7 @@ mod config_dump_tests {
             health_check: None,
             connect_timeout: Some(Duration::from_secs(5)),
             cleanup_interval: None,
+            circuit_breakers: None,
         };
         let secret_manager = orion_lib::SecretManager::default();
         let partial_cluster =
