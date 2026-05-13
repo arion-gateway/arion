@@ -14,7 +14,7 @@
 
 use orion_e2e_tests::config_builder::presets;
 use orion_e2e_tests::{
-    assert_rejected, OrionInstance, PreConfiguredResponse, RawHttpRequestBuilder, RawHttpResponse, SpawnOptions,
+    OrionInstance, PreConfiguredResponse, RawHttpRequestBuilder, RawHttpResponse, SpawnOptions,
     TcpTestClient, TestBackend,
 };
 

@@ -650,6 +650,24 @@ async fn test_header_manipulation_route_level_when_configured_over_xds() {
     harness.orion_mut().wait_for_listener_at(listener_addr, Duration::from_secs(10)).await.unwrap();
 
     let client = TestClient::new(listener_addr);
+
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Ok(response) = client.get("/test").await {
+                if response.status == StatusCode::OK {
+                    if response.header("x-version") == Some("v1") {
+                        break;
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("Timeout waiting for initial RDS route");
+
+    while backend.try_recv_request().is_some() {}
+
     let response = client.get("/test").await.unwrap();
     response.assert_status(StatusCode::OK);
     response.assert_header("x-version", "v1");
@@ -670,11 +688,28 @@ async fn test_header_manipulation_route_level_when_configured_over_xds() {
     harness.push_route_config(&updated_route_config).await.unwrap();
 
     let client = TestClient::new(listener_addr);
+
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Ok(response) = client.get("/test").await {
+                if response.status == StatusCode::OK {
+                    if response.header("x-version") == Some("v2") && response.header("x-source") == Some("orion-proxy") {
+                        break;
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("Timeout waiting for updated RDS route");
+
+    while backend.try_recv_request().is_some() {}
+
     let response = client.get("/test").await.unwrap();
     response.assert_status(StatusCode::OK);
     response.assert_header("x-version", "v2");
     response.assert_header("x-source", "orion-proxy");
-    backend.await_request().await.unwrap();
 
     harness.shutdown();
 }

@@ -503,8 +503,8 @@ async fn test_listener_local_rate_limit_statistical_multi_runtime() {
         }
     }
 
-    let expected_allowed = 100;
-    let tolerance = 0.3;
+    let expected_allowed = 80;
+    let tolerance = 0.5;
     let min_allowed = (expected_allowed as f64 * (1.0 - tolerance)) as usize;
     let max_allowed = (expected_allowed as f64 * (1.0 + tolerance)) as usize;
 

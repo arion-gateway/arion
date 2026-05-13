@@ -353,6 +353,27 @@ async fn test_path_matchers_when_configured_over_xds() {
     harness.push_route_config(&updated_route_config).await.unwrap();
 
     let client = TestClient::new(listener_addr);
+
+    // Wait for the updated route config to propagate: with the new config, /api/users no
+    // longer matches /api -> backend-api, so it falls through to / -> backend-other ("other").
+    // With the old config it still returns "api", making this our propagation sentinel.
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Ok(response) = client.get("/api/users").await {
+                if response.body_str() == Some("other") {
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("Timeout waiting for updated XDS path route config to propagate");
+
+    // Drain backend queues accumulated during the polling loop.
+    while backend_other.try_recv_request().is_some() {}
+    while backend_api.try_recv_request().is_some() {}
+
     let response = client.get("/api/users").await.unwrap();
     response.assert_status(StatusCode::OK);
     response.assert_body("other");
