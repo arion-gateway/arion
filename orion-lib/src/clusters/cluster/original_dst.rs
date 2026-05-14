@@ -39,6 +39,7 @@ use webpki::types::ServerName;
 
 use crate::{
     clusters::{
+        circuit_breaker::ClusterCircuitBreaker,
         clusters_manager::{MetadataKey, RoutingContext, RoutingRequirement},
         health::HealthStatus,
     },
@@ -72,12 +73,20 @@ pub struct OriginalDstClusterBuilder {
     pub connect_timeout: Option<Duration>,
     pub server_name: Option<ServerName<'static>>,
     pub config: orion_configuration::config::cluster::Cluster,
+    pub circuit_breaker: ClusterCircuitBreaker,
 }
 
 impl OriginalDstClusterBuilder {
     pub fn build(self) -> ClusterType {
-        let OriginalDstClusterBuilder { name, bind_device, transport_socket, connect_timeout, server_name, config } =
-            self;
+        let OriginalDstClusterBuilder {
+            name,
+            bind_device,
+            transport_socket,
+            connect_timeout,
+            server_name,
+            config,
+            circuit_breaker,
+        } = self;
         let (routing_requirements, upstream_port_override) =
             if let ClusterDiscoveryType::OriginalDst(ref original_dst_config) = config.discovery_settings {
                 let routing_req = match &original_dst_config.routing_method {
@@ -114,6 +123,7 @@ impl OriginalDstClusterBuilder {
             routing_requirements,
             upstream_port_override,
             config,
+            circuit_breaker,
         })
     }
 }
@@ -139,6 +149,7 @@ pub struct OriginalDstCluster {
     routing_requirements: RoutingRequirement,
     upstream_port_override: Option<u16>,
     pub config: orion_configuration::config::cluster::Cluster,
+    pub circuit_breaker: ClusterCircuitBreaker,
 }
 
 impl ClusterOps for OriginalDstCluster {
@@ -211,6 +222,10 @@ impl ClusterOps for OriginalDstCluster {
 
     fn get_routing_requirements(&self) -> RoutingRequirement {
         self.routing_requirements.clone()
+    }
+
+    fn circuit_breaker(&self) -> &ClusterCircuitBreaker {
+        &self.circuit_breaker
     }
 }
 
@@ -519,6 +534,7 @@ mod tests {
             http_protocol_options: HttpProtocolOptions::default(),
             health_check: None,
             connect_timeout: None,
+            circuit_breakers: None,
         }
     }
 

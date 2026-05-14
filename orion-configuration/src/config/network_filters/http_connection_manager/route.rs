@@ -17,7 +17,7 @@
 
 use super::{header_matcher::HeaderMatcher, RetryPolicy};
 use crate::config::{
-    cluster::ClusterSpecifier,
+    cluster::{ClusterSpecifier, RoutingPriority},
     common::*,
     core::{CaseSensitive, DataSource, StringMatcher},
 };
@@ -237,6 +237,8 @@ pub struct RouteAction {
     pub upgrade_config: Option<UpgradeConfig>,
     #[serde(skip_serializing_if = "Vec::is_empty", default = "Default::default")]
     pub hash_policy: Vec<HashPolicy>,
+    #[serde(skip_serializing_if = "is_default_priority", default)]
+    pub priority: RoutingPriority,
 }
 
 const DEFAULT_CLUSTER_NOT_FOUND_STATUSCODE: StatusCode = StatusCode::SERVICE_UNAVAILABLE;
@@ -257,6 +259,10 @@ const fn default_timeout_deser() -> Option<Duration> {
 #[allow(clippy::ref_option)]
 fn is_default_timeout(timeout: &Option<Duration>) -> bool {
     *timeout == default_timeout_deser()
+}
+
+fn is_default_priority(priority: &RoutingPriority) -> bool {
+    *priority == RoutingPriority::Default
 }
 
 #[derive(Clone, Debug, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -647,8 +653,8 @@ mod envoy_conversions {
     use super::{
         Action, AuthorityRedirect, Connect, DirectResponseAction, DirectResponseBody, HashPolicy, PathMatcher,
         PathRewriteSpecifier, PathSpecifier, PolicySpecifier, QueryParameterMatchSpecifier, QueryParameterMatcher,
-        RedirectAction, RedirectResponseCode, RegexMatchAndSubstitute, RouteAction, RouteMatch, UpgradeConfig,
-        Websocket, DEFAULT_TIMEOUT,
+        RedirectAction, RedirectResponseCode, RegexMatchAndSubstitute, RouteAction, RouteMatch, RoutingPriority,
+        UpgradeConfig, Websocket, DEFAULT_TIMEOUT,
     };
     use crate::config::{
         common::*,
@@ -903,7 +909,7 @@ mod envoy_conversions {
                 // retry_policy,
                 retry_policy_typed_config,
                 request_mirror_policies,
-                priority,
+                // priority,
                 rate_limits,
                 include_vh_rate_limits,
                 // hash_policy,
@@ -951,6 +957,11 @@ mod envoy_conversions {
             let retry_policy = retry_policy.map(RetryPolicy::try_from).transpose().with_node("retry_policy")?;
             let upgrade_config = upgrade_configs.try_into().with_node("upgrade_configs").ok();
             let hash_policy = convert_vec!(hash_policy)?;
+            let priority = match priority {
+                0 => RoutingPriority::Default,
+                1 => RoutingPriority::High,
+                _ => return Err(GenericError::from_msg(format!("invalid priority value: {priority}"))),
+            };
             Ok(Self {
                 cluster_not_found_response_code,
                 timeout,
@@ -959,6 +970,7 @@ mod envoy_conversions {
                 retry_policy,
                 upgrade_config,
                 hash_policy,
+                priority,
             })
         }
     }

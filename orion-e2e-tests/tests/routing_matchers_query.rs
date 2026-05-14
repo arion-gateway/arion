@@ -423,6 +423,27 @@ async fn test_query_matchers_when_configured_over_xds() {
     harness.push_route_config(&updated_route_config).await.unwrap();
 
     let client = TestClient::new(listener_addr);
+
+    // Wait for the updated route config to propagate: with the new config, a plain request
+    // (no query params) falls through to backend-v1 ("v1") instead of backend-v2 ("v2").
+    // This distinguishes new config from old and serves as our propagation sentinel.
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Ok(response) = client.get("/test").await {
+                if response.body_str() == Some("v1") {
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("Timeout waiting for updated XDS query route config to propagate");
+
+    // Drain backend queues accumulated during the polling loop.
+    while backend_v1.try_recv_request().is_some() {}
+    while backend_v2.try_recv_request().is_some() {}
+
     let response = client.get("/test?version=1").await.unwrap();
     response.assert_status(StatusCode::OK);
     response.assert_body("v1");

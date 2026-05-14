@@ -115,8 +115,13 @@ impl ListenersManager {
                 Some(route_configuration_change) = self.route_configuration_channel.recv() => {
                     // routes could be CachedWatch instead, as they are evaluated lazily
                     let res = tx_route_updates.send(route_configuration_change);
-                    if let Err(e) = res{
-                        warn!("Internal problem when updating a route: {e}");
+                    if let Err(tokio::sync::broadcast::error::SendError(change)) = res {
+                        warn!("No listeners subscribed to route updates, dropping update");
+                        match change {
+                            RouteConfigurationChange::Added(_, Some(notify)) => notify.notify_one(),
+                            RouteConfigurationChange::Removed(_, Some(notify)) => notify.notify_one(),
+                            _ => {}
+                        }
                     }
                 },
                 else => {

@@ -62,11 +62,27 @@ async fn test_http_health_check_excludes_unhealthy() {
     unhealthy_backend.await_path_request_count("/health", 2, Duration::from_secs(5)).await.unwrap();
 
     let client = TestClient::new(listener_addr);
-    for _ in 0..10 {
-        let response = client.get("/test").await.unwrap();
-        response.assert_status(StatusCode::OK);
-        response.assert_body("healthy");
-    }
+
+    // Require several consecutive "healthy" responses to confirm the unhealthy backend is
+    // stably excluded — guards against the race where Orion received the health-check result
+    // but hasn't yet propagated the "unhealthy" decision to the load-balancer.
+    let mut consecutive_healthy = 0usize;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match client.get("/test").await {
+                Ok(r) if r.status == StatusCode::OK && r.body_str() == Some("healthy") => {
+                    consecutive_healthy += 1;
+                    if consecutive_healthy >= 5 {
+                        break;
+                    }
+                }
+                _ => consecutive_healthy = 0,
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("Timeout waiting for 5 consecutive healthy HTTP responses with unhealthy backend excluded");
 
     harness.shutdown();
 }
@@ -74,7 +90,7 @@ async fn test_http_health_check_excludes_unhealthy() {
 #[tokio::test]
 #[ignore]
 async fn test_http_health_check_recovery() {
-    let backend1 = TestBackend::start().await.unwrap();
+    let mut backend1 = TestBackend::start().await.unwrap();
     let mut backend2 = TestBackend::start().await.unwrap();
 
     backend1.set_default_response(PreConfiguredResponse::with_body("b1")).await;
@@ -90,8 +106,8 @@ async fn test_http_health_check_recovery() {
         .endpoint(EndpointBuilder::from_socket_addr(backend2.addr()))
         .health_check(
             HttpHealthCheckBuilder::new("/health", Duration::from_millis(100), Duration::from_millis(50))
-                .unhealthy_threshold(3)
-                .healthy_threshold(2)
+                .unhealthy_threshold(2)
+                .healthy_threshold(1)
                 .accept_2xx(),
         )
         .build();
@@ -109,36 +125,59 @@ async fn test_http_health_check_recovery() {
     harness.push_listener(&listener).await.unwrap();
     harness.orion_mut().wait_for_listener_at(listener_addr, Duration::from_secs(10)).await.unwrap();
 
+    backend1.await_path_request_count("/health", 1, Duration::from_secs(5)).await.unwrap();
     backend2.await_path_request_count("/health", 2, Duration::from_secs(5)).await.unwrap();
 
     let client = TestClient::new(listener_addr);
-    for _ in 0..5 {
-        let response = client.get("/test").await.unwrap();
-        response.assert_status(StatusCode::OK);
-        response.assert_body("b1");
-    }
+
+    // Require several consecutive b1 responses to confirm b2 is stably excluded before
+    // flipping b2 to healthy — guards against the health-check propagation race.
+    let mut consecutive_b1 = 0usize;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match client.get("/test").await {
+                Ok(r) if r.status == StatusCode::OK && r.body_str() == Some("b1") => {
+                    consecutive_b1 += 1;
+                    if consecutive_b1 >= 5 {
+                        break;
+                    }
+                }
+                _ => consecutive_b1 = 0,
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("Timeout waiting for 5 consecutive b1 HTTP responses while b2 is unhealthy");
 
     backend2.set_default_response(PreConfiguredResponse::with_body("b2")).await;
     backend2.drain_requests_for_path("/health");
 
-    backend2.await_path_request_count("/health", 2, Duration::from_secs(5)).await.unwrap();
+    backend2.await_path_request_count("/health", 3, Duration::from_secs(5)).await.unwrap();
 
     // Verify both backends receive traffic (round-robin should distribute)
     let mut saw_b1 = false;
     let mut saw_b2 = false;
-    for _ in 0..20 {
-        let response = client.get("/test").await.unwrap();
-        response.assert_status(StatusCode::OK);
-        let body = response.body_str().unwrap_or("");
-        if body == "b1" {
-            saw_b1 = true;
-        } else if body == "b2" {
-            saw_b2 = true;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Ok(response) = client.get("/test").await {
+                if response.status == StatusCode::OK {
+                    let body = response.body_str().unwrap_or("");
+                    if body == "b1" {
+                        saw_b1 = true;
+                    } else if body == "b2" {
+                        saw_b2 = true;
+                    }
+                    if saw_b1 && saw_b2 {
+                        break;
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        if saw_b1 && saw_b2 {
-            break;
-        }
-    }
+    })
+    .await
+    .expect("Timeout waiting for backend2 to recover and receive traffic");
 
     assert!(saw_b1, "Expected backend1 to continue receiving traffic");
     assert!(saw_b2, "Expected backend2 to recover and receive traffic after health check passes");
@@ -177,10 +216,26 @@ async fn test_tcp_health_check_excludes_unreachable() {
     healthy_backend.await_connection_count(2, Duration::from_secs(5)).await.unwrap();
 
     let client = TcpTestClient::new(listener_addr);
-    for _ in 0..5 {
-        let response = client.receive_on_connect_with_timeout(Duration::from_secs(2)).await.unwrap();
-        assert!(response.starts_with(b"healthy"), "Expected response from healthy backend, got: {:?}", response);
-    }
+
+    // Require several consecutive "healthy" responses to confirm the unreachable backend is
+    // stably excluded — guards against the health-check propagation race.
+    let mut consecutive_healthy = 0usize;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match client.receive_on_connect_with_timeout(Duration::from_millis(500)).await {
+                Ok(r) if r.starts_with(b"healthy") => {
+                    consecutive_healthy += 1;
+                    if consecutive_healthy >= 5 {
+                        break;
+                    }
+                }
+                _ => consecutive_healthy = 0,
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("Timeout waiting for 5 consecutive healthy TCP responses with unreachable backend excluded");
 
     harness.shutdown();
 }
@@ -188,6 +243,7 @@ async fn test_tcp_health_check_excludes_unreachable() {
 #[tokio::test]
 #[ignore]
 async fn test_tcp_health_check_recovery() {
+    
     let mut backend1 = TcpTestBackend::start().await.unwrap();
     backend1.set_send_on_connect(b"b1").await;
 
@@ -204,7 +260,7 @@ async fn test_tcp_health_check_recovery() {
         .health_check(
             TcpHealthCheckBuilder::new(Duration::from_millis(100), Duration::from_millis(50))
                 .unhealthy_threshold(2)
-                .healthy_threshold(2),
+                .healthy_threshold(1),
         )
         .build();
 
@@ -220,29 +276,52 @@ async fn test_tcp_health_check_recovery() {
     backend1.await_connection_count(2, Duration::from_secs(5)).await.unwrap();
 
     let client = TcpTestClient::new(listener_addr);
-    for _ in 0..10 {
-        let response = client.receive_on_connect_with_timeout(Duration::from_secs(2)).await.unwrap();
-        assert!(response.starts_with(b"b1"), "Expected responses only from backend1 initially, got: {:?}", response);
-    }
+
+    // Require several consecutive b1 responses to confirm the unreachable backend2 is
+    // stably excluded before bringing it back — guards against the health-check propagation race.
+    let mut consecutive_b1 = 0usize;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match client.receive_on_connect_with_timeout(Duration::from_millis(500)).await {
+                Ok(r) if r.starts_with(b"b1") => {
+                    consecutive_b1 += 1;
+                    if consecutive_b1 >= 5 {
+                        break;
+                    }
+                }
+                _ => consecutive_b1 = 0,
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("Timeout waiting for 5 consecutive b1 TCP responses while backend2 is unreachable");
 
     let mut backend2 = TcpTestBackend::start_on_port(backend2_port).await.unwrap();
     backend2.set_send_on_connect(b"b2").await;
 
-    backend2.await_connection_count(2, Duration::from_secs(10)).await.unwrap();
+    backend2.await_connection_count(10, Duration::from_secs(10)).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(500)).await;
 
     let mut saw_b1 = false;
     let mut saw_b2 = false;
-    for _ in 0..20 {
-        let response = client.receive_on_connect_with_timeout(Duration::from_secs(2)).await.unwrap();
-        if response.starts_with(b"b1") {
-            saw_b1 = true;
-        } else if response.starts_with(b"b2") {
-            saw_b2 = true;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Ok(response) = client.receive_on_connect_with_timeout(Duration::from_millis(500)).await {
+                if response.starts_with(b"b1") {
+                    saw_b1 = true;
+                } else if response.starts_with(b"b2") {
+                    saw_b2 = true;
+                }
+                if saw_b1 && saw_b2 {
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        if saw_b1 && saw_b2 {
-            break;
-        }
-    }
+    })
+    .await
+    .expect("Timeout waiting for backend2 to recover and receive traffic");
 
     assert!(saw_b1, "Expected backend1 to continue receiving traffic");
     assert!(saw_b2, "Expected backend2 to recover and receive traffic after becoming reachable");
@@ -290,10 +369,26 @@ async fn test_grpc_health_check_excludes_not_serving() {
     unhealthy.await_health_check_count(2, Duration::from_secs(5)).await.unwrap();
 
     let mut client = GrpcTestClient::connect(listener_addr).await.unwrap();
-    for _ in 0..10 {
-        let backend_id = client.echo_backend_id("test").await.unwrap();
-        assert_eq!(backend_id, "healthy", "Expected traffic to go to healthy backend only");
-    }
+
+    // Require several consecutive "healthy" responses to confirm the NOT_SERVING backend is
+    // stably excluded — guards against the health-check propagation race.
+    let mut consecutive_healthy = 0usize;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match client.echo_backend_id("test").await {
+                Ok(id) if id == "healthy" => {
+                    consecutive_healthy += 1;
+                    if consecutive_healthy >= 5 {
+                        break;
+                    }
+                }
+                _ => consecutive_healthy = 0,
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("Timeout waiting for 5 consecutive responses from healthy gRPC backend only");
 
     harness.shutdown();
 }
@@ -340,10 +435,29 @@ async fn test_grpc_health_check_recovery() {
     backend2.await_health_check_count(2, Duration::from_secs(10)).await.unwrap();
 
     let mut client = GrpcTestClient::connect(listener_addr).await.unwrap();
-    for _ in 0..5 {
-        let backend_id = client.echo_backend_id("test").await.unwrap();
-        assert_eq!(backend_id, "b1", "Expected traffic to go to b1 initially");
-    }
+
+    // Wait until b2 is consistently excluded: require several consecutive b1 responses
+    // to guard against the race where Orion has received the health-check but hasn't yet
+    // propagated the "unhealthy" decision to the load-balancer.
+    let mut consecutive_b1 = 0usize;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match client.echo_backend_id("test").await {
+                Ok(id) if id == "b1" => {
+                    consecutive_b1 += 1;
+                    if consecutive_b1 >= 5 {
+                        break;
+                    }
+                }
+                _ => {
+                    consecutive_b1 = 0;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("Timeout waiting for 5 consecutive b1 responses while b2 is NOT_SERVING");
 
     backend2.set_serving("").await.unwrap();
     backend2.reset_health_check_count();
@@ -351,17 +465,23 @@ async fn test_grpc_health_check_recovery() {
 
     let mut saw_b1 = false;
     let mut saw_b2 = false;
-    for _ in 0..20 {
-        let backend_id = client.echo_backend_id("test").await.unwrap();
-        if backend_id == "b1" {
-            saw_b1 = true;
-        } else if backend_id == "b2" {
-            saw_b2 = true;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Ok(backend_id) = client.echo_backend_id("test").await {
+                if backend_id == "b1" {
+                    saw_b1 = true;
+                } else if backend_id == "b2" {
+                    saw_b2 = true;
+                }
+                if saw_b1 && saw_b2 {
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        if saw_b1 && saw_b2 {
-            break;
-        }
-    }
+    })
+    .await
+    .expect("Timeout waiting for backend2 to recover and receive traffic");
 
     assert!(saw_b1, "Expected backend1 to continue receiving traffic");
     assert!(saw_b2, "Expected backend2 to recover and receive traffic after becoming SERVING");

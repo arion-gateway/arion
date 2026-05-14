@@ -90,6 +90,22 @@ impl SyntheticHttpResponse {
         }
     }
 
+    pub fn circuit_breaker_overflow(event_kind: EventKind, response_flags: ResponseFlags) -> Self {
+        Self {
+            http_status: StatusCode::SERVICE_UNAVAILABLE,
+            event_kind,
+            response_flags,
+            body: Bytes::default(),
+            close_connection: false,
+        }
+    }
+
+    pub fn into_circuit_breaker_response(self, version: http::Version) -> Response<OrionResponseBody> {
+        let mut rsp = self.into_response(version);
+        rsp.headers_mut().insert("x-envoy-overloaded", HeaderValue::from_static("true"));
+        rsp
+    }
+
     pub fn gateway_timeout(event_kind: EventKind, response_flags: ResponseFlags) -> Self {
         Self {
             http_status: StatusCode::GATEWAY_TIMEOUT,

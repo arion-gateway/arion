@@ -1225,6 +1225,7 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
         let incoming_version = incoming_request.version();
         let metadata_context = incoming_request.extensions().get::<MetadataContext>();
         let stream_metrics = metadata_context.map(|md| md.stream_metrics.clone());
+        #[cfg(feature = "metrics")]
         let sni = metadata_context.and_then(|md| md.downstream.sni.clone());
 
         let access_log_enabled = {
@@ -1313,6 +1314,7 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
             &[KeyValue::new("listener", listener_name)]
         );
 
+        #[cfg(feature = "metrics")]
         let shard_id = get_shard_id!();
 
         defer! {

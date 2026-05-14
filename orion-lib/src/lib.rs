@@ -120,6 +120,7 @@ macro_rules! unwrap_or_run {
 pub struct RequestContext<'a> {
     pub route_timeout: Option<Duration>,
     pub retry_policy: Option<&'a RetryPolicy>,
+    pub priority: clusters::RoutingPriority,
 }
 
 pub static RUNTIME_CONFIG: OnceLock<Runtime> = OnceLock::new();

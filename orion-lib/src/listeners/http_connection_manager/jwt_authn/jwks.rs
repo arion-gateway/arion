@@ -12,7 +12,7 @@ use tracing::error;
 
 use crate::{
     body::timeout_body::TimeoutBody,
-    clusters::{clusters_manager, RoutingContext},
+    clusters::{clusters_manager, RoutingContext, RoutingPriority},
     listeners::http_connection_manager::jwt_authn::{error::JwkError, Kid, ValidationKey},
     OrionRequestBody,
 };
@@ -70,6 +70,7 @@ pub async fn fetch_remote_jwks(
             request,
             Some(remote.http_uri.timeout),
             remote.retry_policy.as_ref(),
+            RoutingPriority::Default,
             None,
             #[cfg(feature = "instrumentation")]
             &clock,

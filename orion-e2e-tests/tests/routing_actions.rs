@@ -558,8 +558,8 @@ async fn test_routing_actions_when_configured_over_xds() {
 
     harness.push_cluster(&cluster).await.unwrap();
     harness.push_listener(&listener).await.unwrap();
-    harness.push_route_config(&route_config).await.unwrap();
     harness.orion_mut().wait_for_listener_at(listener_addr, Duration::from_secs(10)).await.unwrap();
+    harness.push_route_config(&route_config).await.unwrap();
 
     let client = TestClient::new(listener_addr);
     let response = client.get("/test").await.unwrap();
@@ -577,6 +577,25 @@ async fn test_routing_actions_when_configured_over_xds() {
     harness.push_route_config(&updated_route_config).await.unwrap();
 
     let client = TestClient::new(listener_addr);
+    
+    // Wait until Orion applies the updated route config (RDS propagation)
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Ok(response) = client.get("/test").await {
+                if response.status == StatusCode::OK {
+                    if let Some(body) = response.body_str() {
+                        if body == "Direct from Orion" {
+                            break;
+                        }
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("Timeout waiting for updated RDS route");
+
     let response = client.get("/test").await.unwrap();
     response.assert_status(StatusCode::OK);
     response.assert_body("Direct from Orion");

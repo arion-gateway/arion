@@ -21,7 +21,7 @@ use crate::{
         instrumented_body::InstrumentedBody, poly_body::PolyBody, response_flags::ResponseFlags,
         timeout_body::TimeoutBody,
     },
-    clusters::retry_policy::RetryCondition,
+    clusters::{decrement_retries, retry_policy::RetryCondition, try_increment_retries, RoutingPriority},
     event_error::{EventKind, TryInferFrom, UpstreamError},
     instrument_block, instrument_function,
     listeners::{
@@ -62,7 +62,7 @@ use pingora_timeout::fast_timeout::fast_timeout;
 use pretty_duration::pretty_duration;
 use rustls::ClientConfig;
 use smol_str::ToSmolStr;
-use std::{io::ErrorKind, mem, result::Result as StdResult, sync::Arc, time::Duration};
+use std::{io, mem, sync::Arc, time::Duration};
 use tracing::debug;
 use webpki::types::ServerName;
 
@@ -406,7 +406,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
         match self {
             HttpChannels::Single(channel) => channel.to_response(trans_handler, request, ctx).await,
             HttpChannels::MultiWithFailover { channel, failover_channels } => {
-                let RequestContext { route_timeout, .. } = ctx;
+                let RequestContext { route_timeout, priority, .. } = ctx;
                 let (parts, mut body) = request.into_parts();
                 let free_body = std::mem::replace(&mut body.inner, TimeoutBody::<PolyBody>::default());
                 let InstrumentedBody { body_kind, body_bytes, ref stream_metrics, ref on_complete, .. } = body;
@@ -427,7 +427,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
                         on_complete: on_complete.clone(),
                     };
                     let rebuilt_req = Request::from_parts(parts.clone(), cloned_body);
-                    let attempt_ctx = RequestContext { route_timeout, retry_policy: None };
+                    let attempt_ctx = RequestContext { route_timeout, retry_policy: None, priority };
 
                     match channel.to_response(trans_handler, rebuilt_req, attempt_ctx).await {
                         Ok(response) => {
@@ -504,7 +504,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
             );
         }
 
-        let RequestContext { route_timeout, retry_policy } = ctx;
+        let RequestContext { route_timeout, retry_policy, priority } = ctx;
 
         let mut retries = Retries::default();
         let start_time = std::time::Instant::now();
@@ -518,6 +518,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
                     request,
                     route_timeout,
                     retry_policy,
+                    priority,
                     Some(&mut retries),
                     #[cfg(feature = "instrumentation")]
                     &trans_handler.clock,
@@ -556,6 +557,7 @@ impl HttpChannel {
         mut request: Request<OrionRequestBody>,
         timeout: Option<Duration>,
         retry_policy: Option<&RetryPolicy>,
+        priority: RoutingPriority,
         output: Option<&mut Retries>,
         #[cfg(feature = "instrumentation")] clock: &quanta::Clock,
     ) -> Result<Response<Incoming>> {
@@ -567,6 +569,7 @@ impl HttpChannel {
                     req,
                     timeout,
                     retry_policy,
+                    priority,
                     client,
                     output,
                     #[cfg(feature = "instrumentation")]
@@ -581,10 +584,12 @@ impl HttpChannel {
                 let req = maybe_normalize_uri(request, true)?;
                 //FIXME(hayley): apply http protocol translation for plaintext too
                 let req = maybe_change_http_protocol_version(req, configured_version)?;
+
                 self.send_with_policy(
                     req,
                     timeout,
                     retry_policy,
+                    priority,
                     client,
                     output,
                     #[cfg(feature = "instrumentation")]
@@ -599,6 +604,7 @@ impl HttpChannel {
                     request,
                     timeout,
                     retry_policy,
+                    priority,
                     client,
                     output,
                     #[cfg(feature = "instrumentation")]
@@ -617,6 +623,7 @@ impl HttpChannel {
         mut req: Request<OrionRequestBody>,
         timeout: Option<Duration>,
         retry_policy: Option<&RetryPolicy>,
+        priority: RoutingPriority,
         sender: &Client<C, OrionRequestBody>,
         output: Option<&mut Retries>,
         #[cfg(feature = "instrumentation")] clock: &quanta::Clock,
@@ -634,6 +641,7 @@ impl HttpChannel {
                     self.send_with_retry(
                         req,
                         policy,
+                        priority,
                         sender,
                         output,
                         #[cfg(feature = "instrumentation")]
@@ -664,6 +672,7 @@ impl HttpChannel {
         &self,
         req: Request<OrionRequestBody>,
         retry_policy: &RetryPolicy,
+        priority: RoutingPriority,
         sender: &Client<C, OrionRequestBody>,
         mut output: Option<&mut Retries>,
         #[cfg(feature = "instrumentation")] clock: &quanta::Clock,
@@ -686,10 +695,11 @@ impl HttpChannel {
         };
 
         let body = http_body_util::Full::new(collected_bytes);
-        let mut last_error: Option<Error> = None;
 
         let max_retries = retry_policy.num_retries() as usize;
         let mut parts_opt = Some(parts);
+        let mut retry_acquired = false;
+        let mut last_result: Option<Result<Response<Incoming>>> = None;
 
         for (index, back_off) in retry_policy.exponential_back_off().iter().enumerate() {
             let back_off = back_off.unwrap_or(Duration::from_secs(1));
@@ -709,7 +719,7 @@ impl HttpChannel {
             let cloned_req: Request<OrionRequestBody> = Request::from_parts(current_parts, cloned_body);
 
             // actually send the request and wait for the response...
-            let result: StdResult<Response<Incoming>, Error> = if let Some(t) = retry_policy.per_try_timeout() {
+            let result: Result<Response<Incoming>> = if let Some(t) = retry_policy.per_try_timeout() {
                 match fast_timeout(t, sender.request(cloned_req)).await.map_err(|_| UpstreamError::PerTryTimeout) {
                     Ok(result) => result.map_err(Into::into),
                     Err(err) => Err(err.into()),
@@ -736,6 +746,28 @@ impl HttpChannel {
 
             // take an exponential back off break and retry...
             if index < retry_policy.num_retries() as usize {
+                if !retry_acquired && try_increment_retries(self.cluster_name, priority).is_err() {
+                    debug!(
+                        "retry_policy: circuit breaker denied retry #{}/{} for cluster {}",
+                        index + 1,
+                        retry_policy.num_retries(),
+                        self.cluster_name
+                    );
+                    #[cfg(feature = "metrics")]
+                    {
+                        let shard_id = get_shard_id!();
+                        with_metric!(
+                            clusters::UPSTREAM_RQ_RETRY_OVERFLOW,
+                            add,
+                            1,
+                            shard_id,
+                            &[KeyValue::new("cluster", self.cluster_name)]
+                        );
+                    }
+                    return result;
+                }
+                retry_acquired = true;
+
                 debug!(
                     "retry_policy: retrying request #{}/{} in {}...",
                     index + 1,
@@ -746,21 +778,28 @@ impl HttpChannel {
                 pingora_timeout::sleep(back_off).await;
             }
 
-            last_error = result.err();
+            last_result = Some(result);
         }
 
-        match last_error {
-            Some(err) => Err(err),
-            None => Err(std::io::Error::new(ErrorKind::InvalidData, "invalid retry_policy configuration").into()),
+        if retry_acquired {
+            decrement_retries(self.cluster_name, priority);
+        }
+
+        match last_result {
+            Some(result) => result,
+            None => {
+                Err(io::Error::new(io::ErrorKind::InvalidData, "retry loop completed without producing a result")
+                    .into())
+            },
         }
     }
 
     fn map_upstream_result(
-        result: std::result::Result<Response<Incoming>, Error>,
+        result: Result<Response<Incoming>>,
         elapsed: Duration,
         route_timeout: Option<Duration>,
         version: http::Version,
-    ) -> StdResult<hyper::Response<OrionResponseBody>, Error> {
+    ) -> Result<hyper::Response<OrionResponseBody>> {
         match (result, elapsed) {
             (Ok(response), elapsed) => {
                 // calculate the remaining timeout (relative to the route timeout) for receiving

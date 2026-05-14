@@ -17,6 +17,7 @@
 
 pub(crate) mod balancers;
 pub(crate) mod cached_watch;
+pub mod circuit_breaker;
 pub mod cluster;
 pub mod clusters_manager;
 pub(crate) mod health;
@@ -26,8 +27,9 @@ pub use crate::transport::{GrpcService, SimpleRoundRobinGrpcServiceLB};
 pub use load_assignment::{ClusterLoadAssignmentBuilder, PartialClusterLoadAssignment};
 
 pub use clusters_manager::{
-    add_cluster, all_grpc_connections, change_cluster_load_assignment, get_all_clusters,
-    get_cluster_routing_requirements, get_grpc_connection, get_http_connection, get_tcp_connection, remove_cluster,
-    remove_cluster_load_assignment, resolve_cluster, update_endpoint_health, update_tls_context, RoutingContext,
+    add_cluster, all_grpc_connections, change_cluster_load_assignment, decrement_requests, decrement_retries,
+    get_all_clusters, get_cluster_routing_requirements, get_grpc_connection, get_http_connection, get_tcp_connection,
+    remove_cluster, remove_cluster_load_assignment, resolve_cluster, try_increment_requests, try_increment_retries,
+    update_endpoint_health, update_tls_context, CircuitBreakerDenial, RoutingContext, RoutingPriority,
     RoutingRequirement,
 };

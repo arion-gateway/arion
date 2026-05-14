@@ -22,7 +22,10 @@ pub(crate) mod r#static;
 use enum_dispatch::enum_dispatch;
 use http::uri::Authority;
 
-use crate::clusters::clusters_manager::{RoutingContext, RoutingRequirement};
+use crate::clusters::{
+    circuit_breaker::ClusterCircuitBreaker,
+    clusters_manager::{RoutingContext, RoutingRequirement},
+};
 use orion_configuration::config::cluster::{
     Cluster as ClusterConfig, ClusterDiscoveryType, ClusterLoadAssignment as ClusterLoadAssignmentConfig, HealthCheck,
 };
@@ -54,6 +57,8 @@ impl TryFrom<(ClusterConfig, &SecretManager)> for PartialClusterType {
 
         let transport_socket = UpstreamTransportSocketConfigurator::try_from((transport_socket_config, secrets))?;
 
+        let circuit_breaker = cluster.circuit_breakers.as_ref().map(ClusterCircuitBreaker::from).unwrap_or_default();
+
         let health_check = cluster.health_check;
         debug!("Cluster {} type {:?} ", cluster.name, cluster.discovery_settings);
         match cluster.discovery_settings {
@@ -84,6 +89,7 @@ impl TryFrom<(ClusterConfig, &SecretManager)> for PartialClusterType {
                     transport_socket,
                     health_check,
                     config,
+                    circuit_breaker: circuit_breaker.clone(),
                 }))
             },
 
@@ -111,6 +117,7 @@ impl TryFrom<(ClusterConfig, &SecretManager)> for PartialClusterType {
                     transport_socket,
                     health_check,
                     config,
+                    circuit_breaker,
                 }))
             },
 
@@ -121,6 +128,7 @@ impl TryFrom<(ClusterConfig, &SecretManager)> for PartialClusterType {
                 health_check,
                 load_balancing_policy,
                 config,
+                circuit_breaker,
             })),
             ClusterDiscoveryType::Eds(Some(_)) => {
                 Err("EDS clusters can't have a static cluster load assignment configured".into())
@@ -139,6 +147,7 @@ impl TryFrom<(ClusterConfig, &SecretManager)> for PartialClusterType {
                     connect_timeout: cluster.connect_timeout,
                     server_name,
                     config,
+                    circuit_breaker,
                 }))
             },
         }
@@ -158,6 +167,7 @@ pub trait ClusterOps {
     fn get_tcp_connection(&mut self, context: RoutingContext) -> Result<TcpChannelConnector>;
     fn get_grpc_connection(&mut self, context: RoutingContext) -> Result<GrpcService>;
     fn get_routing_requirements(&self) -> RoutingRequirement;
+    fn circuit_breaker(&self) -> &ClusterCircuitBreaker;
 }
 
 #[derive(Clone)]
