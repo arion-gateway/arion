@@ -471,7 +471,7 @@ pub struct Retries {
 impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &HttpChannel {
     async fn to_response(
         self,
-        trans_handler: &TransactionContext,
+        #[allow(unused_variables)] trans_handler: &TransactionContext,
         request: Request<OrionRequestBody>,
         ctx: RequestContext<'a>,
     ) -> Result<Response<OrionResponseBody>> {

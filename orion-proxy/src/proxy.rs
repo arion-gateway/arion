@@ -110,7 +110,7 @@ type SenderGuards = Vec<ConfigurationSenders>;
 
 fn launch_runtimes(
     bootstrap: Bootstrap,
-    metrics_config: Option<MetricsConfig>,
+    #[allow(unused_variables)] metrics_config: Option<MetricsConfig>,
     _access_log_config: Option<AccessLogConfig>,
 ) -> Result<SenderGuards> {
     let rt_config = runtime_config();

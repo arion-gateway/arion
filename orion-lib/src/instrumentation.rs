@@ -40,9 +40,7 @@ macro_rules! instrument_function {
         let start_clock = $clock.raw();
 
         #[cfg(feature = "instrumentation")]
-        use scopeguard::defer;
-        #[cfg(feature = "instrumentation")]
-        defer! {
+        ::scopeguard::defer! {
             let nanos = $clock.delta_as_nanos(start_clock, $clock.raw());
             ($callback)(nanos);
         }

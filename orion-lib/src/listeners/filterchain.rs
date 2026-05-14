@@ -213,7 +213,7 @@ impl FilterchainType {
         stream: AsyncInstrumentedStream,
         metadata: DownstreamMetadata,
         listener_name: &'static str,
-        start_instant: std::time::Instant,
+        #[allow(unused_variables)] start_instant: std::time::Instant,
     ) -> Result<()> {
         #[cfg(feature = "metrics")]
         let shard_id = get_shard_id!();
@@ -225,8 +225,9 @@ impl FilterchainType {
                 defer! {
                     with_metric!(http::DOWNSTREAM_CX_DESTROY, add, 1, shard_id, &[KeyValue::new("listener", listener_name)]);
                     with_metric!(http::DOWNSTREAM_CX_ACTIVE, sub, 1, shard_id, &[KeyValue::new("listener", listener_name)]);
-                    let _ms = u64::try_from(start_instant.elapsed().as_millis()).unwrap_or(u64::MAX);
-                    with_histogram!(http::DOWNSTREAM_CX_LENGTH_MS, record, _ms, shard_id, &[KeyValue::new("listener", listener_name)]);
+                    with_histogram!(http::DOWNSTREAM_CX_LENGTH_MS, record,
+                        u64::try_from(start_instant.elapsed().as_millis()).unwrap_or(u64::MAX),
+                        shard_id, &[KeyValue::new("listener", listener_name)]);
                 }
 
                 let req_handler = http_connection_manager.request_handler();
@@ -293,8 +294,9 @@ impl FilterchainType {
                 defer! {
                     with_metric!(tcp::DOWNSTREAM_CX_DESTROY, add, 1, shard_id, &[KeyValue::new("listener", listener_name)]);
                     with_metric!(tcp::DOWNSTREAM_CX_ACTIVE, sub, 1, shard_id, &[KeyValue::new("listener", listener_name)]);
-                    let _ms = u64::try_from(start_instant.elapsed().as_millis()).unwrap_or(u64::MAX);
-                    with_histogram!(tcp::DOWNSTREAM_CX_LENGTH_MS, record, _ms, shard_id, &[KeyValue::new("listener", listener_name)]);
+                    with_histogram!(tcp::DOWNSTREAM_CX_LENGTH_MS, record,
+                        u64::try_from(start_instant.elapsed().as_millis()).unwrap_or(u64::MAX),
+                        shard_id, &[KeyValue::new("listener", listener_name)]);
                 }
 
                 let listener_name = tcp_proxy.listener_name;

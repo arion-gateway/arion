@@ -30,13 +30,13 @@ use orion_format::context::UpstreamContext;
 impl<'a> RequestHandler<Request<OrionRequestBody>, &'a str> for &DirectResponseAction {
     async fn to_response(
         self,
-        _trans_handler: &TransactionContext,
+        #[allow(unused_variables)] trans_context: &TransactionContext,
         request: Request<OrionRequestBody>,
         _route_name: &'a str,
     ) -> Result<Response<OrionResponseBody>> {
         #[cfg(feature = "access-log")]
         with_access_log!(
-            &mut _trans_handler.trans_ctx.lock().loggers,
+            &mut trans_context.trans_ctx.lock().loggers,
             UpstreamContext { authority: None, cluster_name: None, route_name: _route_name }
         );
 

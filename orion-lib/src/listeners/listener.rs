@@ -641,8 +641,9 @@ impl Listener {
             if ssl.load(Ordering::Relaxed) {
                 with_metric!(http::DOWNSTREAM_CX_SSL_ACTIVE, add, 1, shard_id, &[KeyValue::new("listener", listener_name)]);
             }
-            let _ms = u64::try_from(start_instant.elapsed().as_millis()).unwrap_or(u64::MAX);
-            with_histogram!(listeners::DOWNSTREAM_CX_LENGTH_MS, record, _ms, shard_id, &[KeyValue::new("listener", listener_name)]);
+            with_histogram!(listeners::DOWNSTREAM_CX_LENGTH_MS, record,
+                u64::try_from(start_instant.elapsed().as_millis()).unwrap_or(u64::MAX),
+                shard_id, &[KeyValue::new("listener", listener_name)]);
         }
 
         let sni = if with_tls_inspector {

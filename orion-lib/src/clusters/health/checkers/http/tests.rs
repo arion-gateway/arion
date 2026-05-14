@@ -60,7 +60,7 @@ impl MockHttpStack {
 impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &MockHttpStack {
     async fn to_response(
         self,
-        _trans_handler: &TransactionContext,
+        _trans_context: &TransactionContext,
         request: Request<OrionRequestBody>,
         _ctx: RequestContext<'a>,
     ) -> Result<Response<OrionResponseBody>> {

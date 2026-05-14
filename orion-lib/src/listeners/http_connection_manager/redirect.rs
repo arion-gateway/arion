@@ -40,13 +40,13 @@ use std::str::FromStr;
 impl<'a> RequestHandler<Request<OrionRequestBody>, (&'a RouteMatchResult, &'a str)> for &RedirectAction {
     async fn to_response(
         self,
-        _trans_handler: &TransactionContext,
+        #[allow(unused_variables)] trans_context: &TransactionContext,
         request: Request<OrionRequestBody>,
         (route_match_result, _route_name): (&'a RouteMatchResult, &'a str),
     ) -> Result<Response<OrionResponseBody>> {
         #[cfg(feature = "access-log")]
         with_access_log!(
-            &mut _trans_handler.trans_ctx.lock().loggers,
+            &mut trans_context.trans_ctx.lock().loggers,
             UpstreamContext { authority: None, cluster_name: None, route_name: _route_name }
         );
 
