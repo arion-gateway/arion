@@ -1223,21 +1223,23 @@ mod envoy_conversions {
             } = value;
             unsupported_field!(
                 // priority,
-                // max_connections,
                 max_pending_requests,
                 // max_requests,
                 // max_retries,
                 retry_budget,
                 // track_remaining,
-                max_connection_pools
+                max_connection_pools,
+                max_connections
             )?;
+
             let priority = EnvoyRoutingPriority::try_from(priority)
                 .map_err(|_| GenericError::from_msg(format!("unknown routing priority: {priority}")))?
                 .try_into()
                 .with_node("priority")?;
             Ok(Self {
                 priority,
-                max_connections: max_connections.map(|v| v.value).unwrap_or(DEFAULT_MAX_CONNECTIONS),
+                // max_connections: max_connections.map(|v| v.value).unwrap_or(DEFAULT_MAX_CONNECTIONS) (not yet supported).
+                max_connections: DEFAULT_MAX_CONNECTIONS,
                 max_requests: max_requests.map(|v| v.value).unwrap_or(DEFAULT_MAX_REQUESTS),
                 max_retries: max_retries.map(|v| v.value).unwrap_or(DEFAULT_MAX_RETRIES),
                 track_remaining,
