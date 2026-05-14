@@ -55,7 +55,7 @@ impl Cors {
                 // Origin not allowed: ignore. Browser will block response due to missing headers.
                 return FilterDecision::Continue;
             },
-        };
+        }
 
         // 3. Preflight Handling (OPTIONS + Access-Control-Request-Method)
         let is_preflight = req.method() == Method::OPTIONS && req.headers().contains_key(ACCESS_CONTROL_REQUEST_METHOD);
@@ -67,12 +67,9 @@ impl Cors {
                 None => return FilterDecision::Continue, // Should not happen given is_preflight check
             };
 
-            let req_method = match Method::from_bytes(req_method_hdr.as_bytes()) {
-                Ok(m) => m,
-                Err(_) => {
-                    debug!(target: "cors", "Preflight failed: Invalid method in Access-Control-Request-Method");
-                    return FilterDecision::Continue;
-                },
+            let req_method = if let Ok(m) = Method::from_bytes(req_method_hdr.as_bytes()) { m } else {
+                debug!(target: "cors", "Preflight failed: Invalid method in Access-Control-Request-Method");
+                return FilterDecision::Continue;
             };
 
             if !self.inner.allow_methods.contains(&req_method) {
@@ -175,7 +172,7 @@ impl Cors {
         }
 
         // C. Methods
-        let methods_str = conf.allow_methods.iter().map(|m| m.as_str()).collect::<Vec<_>>().join(", ");
+        let methods_str = conf.allow_methods.iter().map(http::Method::as_str).collect::<Vec<_>>().join(", ");
         if let Ok(val) = HeaderValue::from_str(&methods_str) {
             headers.insert(ACCESS_CONTROL_ALLOW_METHODS, val);
         }

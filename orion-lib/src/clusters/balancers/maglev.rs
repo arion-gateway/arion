@@ -278,13 +278,13 @@ const fn is_prime(n: usize) -> bool {
     // so jumps by 2. jumps by 4 alternating, which is incr xor 6
     let mut incr = 2;
 
-    if n % 2 == 0 || n % 3 == 0 {
+    if n.is_multiple_of(2) || n.is_multiple_of(3) {
         return false;
     }
 
     let mut current = 5;
     while current <= upper_bound {
-        if n % current == 0 {
+        if n.is_multiple_of(current) {
             return false;
         }
         current += incr;

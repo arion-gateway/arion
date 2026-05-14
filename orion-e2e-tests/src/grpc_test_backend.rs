@@ -51,7 +51,7 @@ impl TrackingHealthState {
     }
 
     async fn set_status(&self, service: &str, status: ServingStatus) {
-        self.status_map.lock().await.insert(service.to_string(), status);
+        self.status_map.lock().await.insert(service.to_owned(), status);
     }
 
     async fn get_status(&self, service: &str) -> ServingStatus {
@@ -185,13 +185,9 @@ impl GrpcTestBackendBuilder {
 
         let test_service_enabled = self.enable_test_service;
 
-        let health_state = if self.enable_health { Some(TrackingHealthState::new()) } else { None };
+        let health_state = self.enable_health.then(TrackingHealthState::new);
 
-        let test_service = if self.enable_test_service {
-            Some(TestServiceImpl { backend_id: self.backend_id.clone(), request_count: Arc::clone(&request_count) })
-        } else {
-            None
-        };
+        let test_service = self.enable_test_service.then(|| TestServiceImpl { backend_id: self.backend_id.clone(), request_count: Arc::clone(&request_count) });
 
         let shutdown_clone = Arc::clone(&shutdown);
         let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);

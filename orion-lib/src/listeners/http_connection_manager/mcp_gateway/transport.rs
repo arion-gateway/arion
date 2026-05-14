@@ -82,7 +82,7 @@ impl<B> RequestExt for http::Request<B> {
                         return Some(Transport::Sse);
                     }
                 }
-                return Some(Transport::StreamableHttp);
+                Some(Transport::StreamableHttp)
             },
             Method::GET => {
                 if let Some(accept_value) = self.headers().get(http::header::ACCEPT) {
@@ -139,7 +139,7 @@ impl std::fmt::Display for Transport {
 pub mod sse {
     use bytes::{BufMut, BytesMut};
 
-    use super::*;
+    use super::{info, Serialize};
 
     #[derive(Debug)]
     pub enum Event<'a, T: Serialize = ()> {
@@ -147,7 +147,7 @@ pub mod sse {
         Message(&'a T),
     }
 
-    impl<'a, T: Serialize> Event<'a, T> {
+    impl<T: Serialize> Event<'_, T> {
         // Write directly to a pre-allocated BytesMut
         pub fn write_to(&self, buf: &mut BytesMut) {
             match self {
@@ -200,7 +200,7 @@ pub mod streamable_http {
         Priming,
     }
 
-    impl<'a, T: Serialize> Event<'a, T> {
+    impl<T: Serialize> Event<'_, T> {
         pub fn write_to(&self, buf: &mut BytesMut) {
             let prefix = INSTANCE_PREFIX.get_or_init(|| {
                 let start = SystemTime::now();
@@ -215,7 +215,7 @@ pub mod streamable_http {
             match self {
                 Event::Message(value) => {
                     // 1. Write the SSE header using the io::Write trait
-                    let _ = write!(writer, "event: message\nid: {:x}_{}\ndata: ", prefix, count);
+                    let _ = write!(writer, "event: message\nid: {prefix:x}_{count}\ndata: ");
 
                     // 2. Serialize JSON directly into the writer
                     let _ = serde_json::to_writer(&mut writer, value);
@@ -224,7 +224,7 @@ pub mod streamable_http {
                     let _ = writer.write_all(b"\n\n");
                 },
                 Event::Priming => {
-                    let _ = write!(writer, "event: message\nid: {:x}_{}\ndata:\n\n", prefix, count);
+                    let _ = write!(writer, "event: message\nid: {prefix:x}_{count}\ndata:\n\n");
                 },
             }
         }

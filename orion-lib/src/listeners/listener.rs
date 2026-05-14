@@ -232,7 +232,7 @@ impl FilterListenerContext for McpGatewayListenerContext {
 
 #[inline]
 fn get_listener_context(listener_name: &'static str) -> Arc<ListenerContext> {
-    let dmap = LISTENERS_CONTEXT.get_or_init(|| DashMap::new());
+    let dmap = LISTENERS_CONTEXT.get_or_init(DashMap::new);
     dmap.entry(listener_name).or_insert_with(|| Arc::new(ListenerContext::default())).value().clone()
 }
 

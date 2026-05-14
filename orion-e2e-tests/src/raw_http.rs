@@ -135,19 +135,16 @@ impl RawHttpRequestBuilder {
     pub fn build(self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(256);
 
-        match self.raw_request_line {
-            Some(line) => {
-                buf.extend_from_slice(&line);
-                buf.extend_from_slice(&self.line_ending);
-            },
-            None => {
-                buf.extend_from_slice(&self.method);
-                buf.push(b' ');
-                buf.extend_from_slice(&self.uri);
-                buf.push(b' ');
-                buf.extend_from_slice(&self.version);
-                buf.extend_from_slice(&self.line_ending);
-            },
+        if let Some(line) = self.raw_request_line {
+            buf.extend_from_slice(&line);
+            buf.extend_from_slice(&self.line_ending);
+        } else {
+            buf.extend_from_slice(&self.method);
+            buf.push(b' ');
+            buf.extend_from_slice(&self.uri);
+            buf.push(b' ');
+            buf.extend_from_slice(&self.version);
+            buf.extend_from_slice(&self.line_ending);
         }
 
         for entry in &self.headers {
@@ -203,7 +200,7 @@ impl RawHttpResponse {
         let status_line = lines.next()?;
 
         let mut parts = status_line.splitn(3, ' ');
-        let version = parts.next()?.to_string();
+        let version = parts.next()?.to_owned();
         // Reject input that isn't a real HTTP status line — otherwise garbage like
         // a TLS alert record gets misread as an HTTP/0 response.
         if !version.starts_with("HTTP/") {
@@ -213,12 +210,12 @@ impl RawHttpResponse {
         if !(100..=599).contains(&status_code) {
             return None;
         }
-        let reason = parts.next().unwrap_or("").to_string();
+        let reason = parts.next().unwrap_or("").to_owned();
 
         let mut headers = Vec::new();
         for line in lines {
             if let Some((name, value)) = line.split_once(':') {
-                headers.push((name.trim().to_string(), value.trim().to_string()));
+                headers.push((name.trim().to_owned(), value.trim().to_owned()));
             }
         }
 
@@ -262,17 +259,14 @@ pub fn assert_rejected(data: &[u8], acceptable_statuses: &[u16]) {
     if data.is_empty() {
         return;
     }
-    match RawHttpResponse::parse(data) {
-        Some(resp) => {
-            assert!(
-                acceptable_statuses.contains(&resp.status_code),
-                "Expected status in {acceptable_statuses:?} or connection close, got {}",
-                resp.status_code
-            );
-        },
-        None => {
-            // Unparseable response — treat as rejection
-        },
+    if let Some(resp) = RawHttpResponse::parse(data) {
+        assert!(
+            acceptable_statuses.contains(&resp.status_code),
+            "Expected status in {acceptable_statuses:?} or connection close, got {}",
+            resp.status_code
+        );
+    } else {
+        // Unparseable response — treat as rejection
     }
 }
 

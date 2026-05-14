@@ -522,7 +522,7 @@ impl RelaxedResolvesServerCertUsingSni {
             cert_id, ck.key, ck.ocsp
         );
         if is_wildcard {
-            self.by_wildcard.insert(base_domain.to_string(), ck);
+            self.by_wildcard.insert(base_domain.to_owned(), ck);
         } else {
             self.by_name.insert(name.clone(), ck);
         }

@@ -130,7 +130,7 @@ impl OrionInstance {
                             lines.push(line.clone());
                         }
                         if verbose {
-                            eprintln!("[ORION-ERR] {}", line);
+                            eprintln!("[ORION-ERR] {line}");
                         }
                         debug!(target: "orion_stderr", "{}", line);
                     }
@@ -166,7 +166,7 @@ impl OrionInstance {
                                 }
                             }
                             if verbose {
-                                eprintln!("[ORION] {}", line);
+                                eprintln!("[ORION] {line}");
                             }
                             debug!(target: "orion_output", "{}", line);
                         },
@@ -267,7 +267,7 @@ impl OrionInstance {
                             lines.push(line.clone());
                         }
                         if verbose {
-                            eprintln!("[ORION-ERR] {}", line);
+                            eprintln!("[ORION-ERR] {line}");
                         }
                         debug!(target: "orion_stderr", "{}", line);
                     }
@@ -311,7 +311,7 @@ impl OrionInstance {
                                 }
                             }
                             if verbose {
-                                eprintln!("[ORION] {}", line);
+                                eprintln!("[ORION] {line}");
                             }
                             debug!(target: "orion_output", "{}", line);
                         },
@@ -390,7 +390,7 @@ impl OrionInstance {
                     match line {
                         Ok(line) => {
                             if verbose {
-                                eprintln!("[ORION] {}", line);
+                                eprintln!("[ORION] {line}");
                             }
                             debug!(target: "orion_output", "{}", line);
                         },
@@ -571,7 +571,7 @@ fn find_orion_binary() -> Result<PathBuf> {
             }
         }
         if !current.pop() {
-            return Err(Error::ProcessStartFailed("Could not find workspace root".to_string()));
+            return Err(Error::ProcessStartFailed("Could not find workspace root".to_owned()));
         }
     };
 
@@ -585,11 +585,11 @@ fn find_orion_binary() -> Result<PathBuf> {
         return Ok(release_path);
     }
 
-    Err(Error::ProcessStartFailed("Could not find orion binary. Run `cargo build -p orion-proxy` first.".to_string()))
+    Err(Error::ProcessStartFailed("Could not find orion binary. Run `cargo build -p orion-proxy` first.".to_owned()))
 }
 
 fn parse_listener_started(line: &str, name: &str) -> Option<SocketAddr> {
-    let pattern = format!("listener '{}' started: ", name);
+    let pattern = format!("listener '{name}' started: ");
     line.find(&pattern).and_then(|idx| {
         let addr_start = idx + pattern.len();
         let addr_end = line[addr_start..].find(' ').map(|i| addr_start + i).unwrap_or(line.len());

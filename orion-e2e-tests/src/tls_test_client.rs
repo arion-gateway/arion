@@ -33,6 +33,7 @@ use crate::{Error, RequestBuilder, Result, TestResponse};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 
+#[derive(Default)]
 pub struct TlsClientConfig {
     pub root_ca: Option<RootCertStore>,
     pub client_cert: Option<Vec<CertificateDer<'static>>>,
@@ -42,18 +43,6 @@ pub struct TlsClientConfig {
     pub tls_max_version: Option<&'static rustls::SupportedProtocolVersion>,
 }
 
-impl Default for TlsClientConfig {
-    fn default() -> Self {
-        Self {
-            root_ca: None,
-            client_cert: None,
-            client_key: None,
-            skip_verification: false,
-            tls_min_version: None,
-            tls_max_version: None,
-        }
-    }
-}
 
 impl TlsClientConfig {
     pub fn with_root_ca(ca_path: impl AsRef<Path>) -> Result<Self> {

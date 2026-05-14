@@ -157,7 +157,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
                     let (mut parts, body) = request.into_parts();
                     let path_and_query_replacement = if let Some(rewrite) = &self.rewrite {
                         rewrite
-                            .apply(parts.uri.path_and_query(), &route_match)
+                            .apply(parts.uri.path_and_query(), route_match)
                             .with_context_msg("invalid path after rewrite")?
                     } else {
                         None
@@ -255,7 +255,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
                         let event_error = UpstreamError::try_infer_from(&err);
                         let flags = event_error.clone().map(ResponseFlags::from).unwrap_or_default();
                         let event_kind =
-                            event_error.map_or(EventFailure::ViaUpstream.into(), |e| EventKind::Upstream(e));
+                            event_error.map_or(EventFailure::ViaUpstream.into(), EventKind::Upstream);
                         debug!(
                             "HttpConnectionManager Error processing response {:?}: {}({})",
                             err,
@@ -272,7 +272,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
                 let err = err.into_inner();
                 let event_error = UpstreamError::try_infer_from(&err);
                 let flags = event_error.clone().map(ResponseFlags::from).unwrap_or_default();
-                let event_kind = event_error.map_or(EventFailure::ViaUpstream.into(), |e| EventKind::Upstream(e));
+                let event_kind = event_error.map_or(EventFailure::ViaUpstream.into(), EventKind::Upstream);
                 debug!(
                     "Failed to get an HTTP connection: {:?}: {}({})",
                     err,

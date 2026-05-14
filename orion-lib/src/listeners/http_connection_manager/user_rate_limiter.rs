@@ -21,7 +21,7 @@ use {
     orion_metrics::metrics::filters,
 };
 
-static USER_RATE_LIMITERS: LazyLock<DashMap<SmolStr, TokenBucket>> = LazyLock::new(|| DashMap::new());
+static USER_RATE_LIMITERS: LazyLock<DashMap<SmolStr, TokenBucket>> = LazyLock::new(DashMap::new);
 static CLEANER_ONCE: Once = Once::new();
 static CLEANER_PERIOD: Duration = Duration::from_secs(10);
 static CLEANER_TOKEN_BUCKET_IDLE: Duration = Duration::from_secs(60);
@@ -108,23 +108,22 @@ impl UserRateLimiter {
                     ]
                 );
                 return FilterDecision::Continue;
-            } else {
-                debug!(target: "user_rate_limiter", "rate limited for user: {user}");
-                #[cfg(feature = "metrics")]
-                with_metric!(
-                    filters::USER_RATE_LIMIT,
-                    add,
-                    1,
-                    get_shard_id!(),
-                    &[
-                        KeyValue::new("filter", self.inner.stat_prefix.0),
-                        KeyValue::new("user", user.to_static_str()),
-                        KeyValue::new("result", filters::EVENT_RATE_LIMITED)
-                    ]
-                );
-
-                return FilterDecision::rate_limited(Some(self.inner.status), request.version());
             }
+            debug!(target: "user_rate_limiter", "rate limited for user: {user}");
+            #[cfg(feature = "metrics")]
+            with_metric!(
+                filters::USER_RATE_LIMIT,
+                add,
+                1,
+                get_shard_id!(),
+                &[
+                    KeyValue::new("filter", self.inner.stat_prefix.0),
+                    KeyValue::new("user", user.to_static_str()),
+                    KeyValue::new("result", filters::EVENT_RATE_LIMITED)
+                ]
+            );
+
+            return FilterDecision::rate_limited(Some(self.inner.status), request.version());
         }
 
         // If the entry for the user does not exist in the global map, let's try to insert a new one.
@@ -180,7 +179,7 @@ impl UserRateLimiter {
         });
 
         match token_bucket {
-            Err(decision) => return decision,
+            Err(decision) => decision,
             Ok(tb) => {
                 if tb.consume(1) {
                     debug!(target: "user_rate_limiter", "consumed token for user: {user}");

@@ -222,7 +222,7 @@ pub enum MessageResult {
     UpstreamRequest((http::Request<OrionRequestBody>, bool, ToolRegistryIndex)),
 }
 
-/// McpGateway filter
+/// `McpGateway` filter
 #[derive(Debug, Clone)]
 pub struct McpGateway {
     inner: Arc<McpGatewayInner>,
@@ -361,48 +361,45 @@ impl McpGateway {
         let upstream_status = response.status();
         let body_string = McpGateway::extract_body_string(&body_bytes, upstream_status);
 
-        let structured_content = match self.inner.tools.get_tool_by_index(self.current_tool_index) {
-            Some(tool) => {
-                let value = match &tool.transcoder {
-                    TranscoderType::Rest(rest_transcoder) => {
-                        // For REST transcoder, decode upstream message only if
-                        // we have to validate it against an output_schema
-                        if tool.output_schema_validator.is_some() {
-                            match rest_transcoder.decode(body_bytes, upstream_status) {
-                                Ok(value) => Some(value),
-                                Err(e) => {
-                                    debug!(target: "mcp_gateway", "apply_response: transcoder decode error: {e}");
-                                    Some(json!({
-                                        "error": format!("Failed to decode upstream response: {e}"),
-                                            "status": upstream_status.as_u16()
-                                    }))
-                                },
-                            }
-                        } else {
-                            None
+        let structured_content = if let Some(tool) = self.inner.tools.get_tool_by_index(self.current_tool_index) {
+            let value = match &tool.transcoder {
+                TranscoderType::Rest(rest_transcoder) => {
+                    // For REST transcoder, decode upstream message only if
+                    // we have to validate it against an output_schema
+                    if tool.output_schema_validator.is_some() {
+                        match rest_transcoder.decode(body_bytes, upstream_status) {
+                            Ok(value) => Some(value),
+                            Err(e) => {
+                                debug!(target: "mcp_gateway", "apply_response: transcoder decode error: {e}");
+                                Some(json!({
+                                    "error": format!("Failed to decode upstream response: {e}"),
+                                        "status": upstream_status.as_u16()
+                                }))
+                            },
                         }
-                    },
-                    TranscoderType::FunctionGraph(_) => unimplemented!(),
-                    TranscoderType::NoTranscoder => None,
-                };
-                value.map(|value| match tool.validate_against_output_schema(&value) {
-                    Ok(()) => value,
-                    Err(e) => {
-                        debug!(target: "mcp_gateway", "apply_response: output schema validation error: {e}");
-                        json!({
-                            "error": format!("Failed to validate upstream response against output schema: {e}"),
-                                "status": upstream_status.as_u16()
-                        })
-                    },
-                })
-            },
-            None => {
-                // Tool was not found with the recorded index. We really
-                // should never get here, but we try a soft failure by
-                // sending only the raw content back
-                error!(target: "mcp_gateway", "apply_response: tool index {:?} not found in registry", self.current_tool_index);
-                None
-            },
+                    } else {
+                        None
+                    }
+                },
+                TranscoderType::FunctionGraph(_) => unimplemented!(),
+                TranscoderType::NoTranscoder => None,
+            };
+            value.map(|value| match tool.validate_against_output_schema(&value) {
+                Ok(()) => value,
+                Err(e) => {
+                    debug!(target: "mcp_gateway", "apply_response: output schema validation error: {e}");
+                    json!({
+                        "error": format!("Failed to validate upstream response against output schema: {e}"),
+                            "status": upstream_status.as_u16()
+                    })
+                },
+            })
+        } else {
+            // Tool was not found with the recorded index. We really
+            // should never get here, but we try a soft failure by
+            // sending only the raw content back
+            error!(target: "mcp_gateway", "apply_response: tool index {:?} not found in registry", self.current_tool_index);
+            None
         };
 
         // Build the CallToolResult with the raw response as content. If we are
@@ -439,39 +436,33 @@ impl McpGateway {
                 }
                 FilterDecision::Continue
             },
-            Transport::StreamableHttp => match self.streamable_async_sender.as_mut() {
-                Some(sender) => {
-                    debug!(target: "mcp_gateway", "apply_response: streamable HTTP (async)...");
-                    let mut sender_guard = sender.lock().await;
-                    let sender = &mut *sender_guard;
-                    let event = transport::streamable_http::Event::Message(&json_rpc_response);
-                    let mut buf = BytesMut::with_capacity(1024);
-                    event.write_to(&mut buf);
-                    if let Err(e) = sender.send(buf.freeze()).await {
-                        debug!(target: "mcp_gateway", "apply_response: failed to send message for session {}, error {e}", session.session_id);
-                    }
-                    sender.close();
+            Transport::StreamableHttp => if let Some(sender) = self.streamable_async_sender.as_mut() {
+                debug!(target: "mcp_gateway", "apply_response: streamable HTTP (async)...");
+                let mut sender_guard = sender.lock().await;
+                let sender = &mut *sender_guard;
+                let event = transport::streamable_http::Event::Message(&json_rpc_response);
+                let mut buf = BytesMut::with_capacity(1024);
+                event.write_to(&mut buf);
+                if let Err(e) = sender.send(buf.freeze()).await {
+                    debug!(target: "mcp_gateway", "apply_response: failed to send message for session {}, error {e}", session.session_id);
+                }
+                sender.close();
+                FilterDecision::Continue
+            } else {
+                debug!(target: "mcp_gateway", "apply_response: streamable HTTP (sync)...");
+                let body = serde_json::to_vec(&json_rpc_response).unwrap_or_default();
+                let headers = self.build_headers_with_session(MIME_APPLICATION_JSON);
+                if let Ok(resp) = self.build_mcp_http_response(
+                    StatusCode::OK,
+                    Self::build_mcp_response_body(Some(body.into())),
+                    &headers,
+                ) {
+                    *response = resp;
                     FilterDecision::Continue
-                },
-                None => {
-                    debug!(target: "mcp_gateway", "apply_response: streamable HTTP (sync)...");
-                    let body = serde_json::to_vec(&json_rpc_response).unwrap_or_default();
-                    let headers = self.build_headers_with_session(MIME_APPLICATION_JSON);
-                    match self.build_mcp_http_response(
-                        StatusCode::OK,
-                        Self::build_mcp_response_body(Some(body.into())),
-                        &headers,
-                    ) {
-                        Ok(resp) => {
-                            *response = resp;
-                            FilterDecision::Continue
-                        },
-                        Err(_) => {
-                            debug!(target: "mcp_gateway", "apply_response: Failed to build MCP response");
-                            FilterDecision::Continue
-                        },
-                    }
-                },
+                } else {
+                    debug!(target: "mcp_gateway", "apply_response: Failed to build MCP response");
+                    FilterDecision::Continue
+                }
             },
         }
     }
@@ -489,7 +480,7 @@ impl McpGateway {
         if !ctx.delete_session(&session_id) {
             debug!(target: "mcp_gateway", "handle_mcp_delete_endpoint: StreamableHttp session {} not found in session map", session_id);
             return FilterDecision::not_found(request.version());
-        };
+        }
 
         let builder = Response::builder()
             .header(http::header::CONNECTION, "keep-alive")
@@ -582,9 +573,9 @@ impl McpGateway {
                             Self::build_mcp_response_body(None),
                             &[],
                         ) {
-                            Ok(accepted) => return FilterDecision::DirectResponse(accepted),
-                            Err(e) => return e,
-                        };
+                            Ok(accepted) => FilterDecision::DirectResponse(accepted),
+                            Err(e) => e,
+                        }
                     },
                     Transport::StreamableHttp => {
                         let body = serde_json::to_string(&json_rpc_error).unwrap_or_default();
@@ -594,8 +585,8 @@ impl McpGateway {
                             Self::build_mcp_response_body(Some(body.into())),
                             &headers,
                         ) {
-                            Ok(resp) => return FilterDecision::DirectResponse(resp),
-                            Err(e) => return e,
+                            Ok(resp) => FilterDecision::DirectResponse(resp),
+                            Err(e) => e,
                         }
                     },
                 }
@@ -621,9 +612,9 @@ impl McpGateway {
                             Self::build_mcp_response_body(None),
                             &[],
                         ) {
-                            Ok(accepted) => return FilterDecision::DirectResponse(accepted),
-                            Err(e) => return e,
-                        };
+                            Ok(accepted) => FilterDecision::DirectResponse(accepted),
+                            Err(e) => e,
+                        }
                     },
                     Transport::StreamableHttp => {
                         let body = serde_json::to_vec(&json_rpc_response).unwrap_or_default();
@@ -633,8 +624,8 @@ impl McpGateway {
                             Self::build_mcp_response_body(Some(body.into())),
                             &headers,
                         ) {
-                            Ok(resp) => return FilterDecision::DirectResponse(resp),
-                            Err(e) => return e,
+                            Ok(resp) => FilterDecision::DirectResponse(resp),
+                            Err(e) => e,
                         }
                     },
                 }
@@ -668,9 +659,9 @@ impl McpGateway {
                             Self::build_mcp_response_body(None),
                             &[],
                         ) {
-                            Ok(accepted) => return FilterDecision::DirectResponse(accepted),
-                            Err(e) => return e,
-                        };
+                            Ok(accepted) => FilterDecision::DirectResponse(accepted),
+                            Err(e) => e,
+                        }
                     },
                     Transport::StreamableHttp => {
                         let notif = transport::streamable_http::Event::Message(&json_rpc_notif);
@@ -687,8 +678,8 @@ impl McpGateway {
                             Self::build_mcp_response_body(Some(body)),
                             &headers,
                         ) {
-                            Ok(resp) => return FilterDecision::DirectResponse(resp),
-                            Err(e) => return e,
+                            Ok(resp) => FilterDecision::DirectResponse(resp),
+                            Err(e) => e,
                         }
                     },
                 }
@@ -701,7 +692,7 @@ impl McpGateway {
                 else {
                     return FilterDecision::internal_server_error("Failed to build response", self.version);
                 };
-                return FilterDecision::DirectResponse(accepted);
+                FilterDecision::DirectResponse(accepted)
             },
             MessageResult::UpstreamRequest((upstream_request, async_call, _)) => {
                 debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: handling Upstream...");
@@ -720,7 +711,7 @@ impl McpGateway {
                         ) else {
                             return FilterDecision::internal_server_error("Failed to build response", self.version);
                         };
-                        return FilterDecision::AsyncRequest(accepted, Some(upstream_request));
+                        FilterDecision::AsyncRequest(accepted, Some(upstream_request))
                     },
                     Transport::StreamableHttp if async_call => {
                         debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: streamable http...");
@@ -738,7 +729,7 @@ impl McpGateway {
                         if let Err(e) = sender.send(buf.freeze()).await {
                             debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: failed to send priming event: {e}");
                             return FilterDecision::internal_server_error("Failed to send priming event", self.version);
-                        };
+                        }
 
                         // save the sender for use on response
                         self.streamable_async_sender = Some(Arc::new(TokioMutex::new(sender)));
@@ -760,11 +751,11 @@ impl McpGateway {
                         }
 
                         debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: returning async request...");
-                        return FilterDecision::AsyncRequest(okay, Some(upstream_request));
+                        FilterDecision::AsyncRequest(okay, Some(upstream_request))
                     },
                     Transport::StreamableHttp => {
                         *request = upstream_request;
-                        return FilterDecision::Continue;
+                        FilterDecision::Continue
                     },
                 }
             },
@@ -815,7 +806,7 @@ impl McpGateway {
 
         let body = TimeoutBody::new(None, PolyBody::from(body));
 
-        let Ok(_) = sender.send(buf.freeze()).await else {
+        let Ok(()) = sender.send(buf.freeze()).await else {
             debug!(target: "mcp_gateway", "handle_sse_handshake: failed to send SSE payload");
             ctx.delete_session(&session.session_id);
             return FilterDecision::internal_server_error("Failed to send SSE payload", request.version());
@@ -861,7 +852,7 @@ impl McpGateway {
 
                 if value.get("params").is_none() {
                     if let Some(obj) = value.as_object_mut() {
-                        obj.insert("params".to_string(), serde_json::json!({}));
+                        obj.insert("params".to_owned(), serde_json::json!({}));
                     }
                 }
 
@@ -941,8 +932,8 @@ impl McpGateway {
                 let server_info = {
                     let info = &self.inner.config.server_info;
                     Implementation {
-                        name: info.name.to_string(),
-                        version: info.version.to_string(),
+                        name: info.name.clone(),
+                        version: info.version.clone(),
                         ..Default::default()
                     }
                 };
@@ -994,7 +985,7 @@ impl McpGateway {
             },
             ListToolsRequestMethod::VALUE => {
                 debug!(target: "mcp_gateway", "handle_rpc_json_request: tools/list received");
-                let tools = self.inner.tools.build_list_tools(&req_ext, session).await;
+                let tools = self.inner.tools.build_list_tools(req_ext, session).await;
                 let response = model::JsonRpcResponse {
                     jsonrpc: model::JsonRpcVersion2_0,
                     id: self.request_id.clone(),
@@ -1017,7 +1008,7 @@ impl McpGateway {
                 let resp = match self
                     .inner
                     .tools
-                    .call(&req_ext, &req_headers, &rpc, &self.inner.config.cluster_header, &session)
+                    .call(req_ext, req_headers, &rpc, &self.inner.config.cluster_header, session)
                     .await
                 {
                     Ok(result) => result,

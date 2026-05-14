@@ -67,8 +67,8 @@ pub enum Target {
 impl From<AccessLogTarget> for Target {
     fn from(value: AccessLogTarget) -> Self {
         match value {
-            AccessLogTarget::Listener(name) => Target::Listener(name.into()),
-            AccessLogTarget::ListenerFilterChain(name, hash) => Target::ListenerFilterChain(name.into(), hash),
+            AccessLogTarget::Listener(name) => Target::Listener(name),
+            AccessLogTarget::ListenerFilterChain(name, hash) => Target::ListenerFilterChain(name, hash),
             AccessLogTarget::Admin => Target::Admin,
         }
     }
@@ -128,10 +128,8 @@ pub async fn log_access(target: Target, vec: Vec<FormattedMessage>) {
             if let Err(e) = sender.send(AccessLogMessage::Message(target, vec)).await {
                 error!("Failed to send access log message: {e}");
             }
-        } else {
-            if let Err(e) = sender.try_send(AccessLogMessage::Message(target, vec)) {
-                error!("Failed to send access log message: {e}");
-            }
+        } else if let Err(e) = sender.try_send(AccessLogMessage::Message(target, vec)) {
+            error!("Failed to send access log message: {e}");
         }
     } else {
         error!("Failed to send access log message: no available sender.");
@@ -176,23 +174,20 @@ pub fn try_log_access(target: Target, vec: Vec<FormattedMessage>) -> Result<(), 
 #[inline]
 pub fn log_access_blocking(target: Target, vec: Vec<FormattedMessage>) {
     let target_clone = target.clone();
-    match try_log_access(target, vec) {
-        Err(err) => match err {
-            TrySendError::Full(vec) => {
-                if is_blocking() {
-                    tokio::task::block_in_place(move || {
-                        if let Some(sender) = get_sender() {
-                            let _ = sender.blocking_send(AccessLogMessage::Message(target_clone, vec));
-                        }
-                    });
-                }
-            },
-            TrySendError::Closed(_) => {
-                error!("Failed to send access log message: no available sender (channel closed)");
-            },
+    if let Err(err) = try_log_access(target, vec) { match err {
+        TrySendError::Full(vec) => {
+            if is_blocking() {
+                tokio::task::block_in_place(move || {
+                    if let Some(sender) = get_sender() {
+                        let _ = sender.blocking_send(AccessLogMessage::Message(target_clone, vec));
+                    }
+                });
+            }
         },
-        Ok(_) => (),
-    }
+        TrySendError::Closed(_) => {
+            error!("Failed to send access log message: no available sender (channel closed)");
+        },
+    } }
 }
 
 /// Initializes the global sender pool and spawns background logger tasks.
@@ -246,7 +241,7 @@ pub fn start_access_loggers(
 
     let mut join_set = JoinSet::new();
     for (i, recv) in receivers.into_iter().enumerate() {
-        let frequency = frequency.clone();
+        let frequency = frequency;
         let max_size = max_file_size;
         join_set.spawn(async move {
             let mut logger = AccessLogger::new(i, frequency, max_size, max_log_files);
@@ -281,7 +276,7 @@ fn get_sender_at(index: usize) -> Option<&'static Sender<AccessLogMessage>> {
 /// dropping messages when the buffer is full.
 #[inline]
 fn is_blocking() -> bool {
-    SENDER_POOL.get().and_then(|pool| Some(pool.blocking)).unwrap_or(false)
+    SENDER_POOL.get().map(|pool| pool.blocking).unwrap_or(false)
 }
 
 /// Broadcasts a configuration update for `target` to every logger instance.

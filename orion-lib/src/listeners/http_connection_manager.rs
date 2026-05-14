@@ -1832,20 +1832,13 @@ fn reject_request_if_invalid(
     // check if method is too long...
     //
     let response = response.or_else(|| {
-        if request.method().as_str().len() > MAX_METHOD_LENGTH {
-            debug!("Too long method: {} bytes", request.method().as_str());
-            Some(
-                SyntheticHttpResponse::custom_error(
+        (request.method().as_str().len() > MAX_METHOD_LENGTH).then(||  { debug!("Too long method: {} bytes", request.method().as_str()); SyntheticHttpResponse::custom_error(
                     StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
                     None,
                     EventFailure::DirectResponse.into(),
                     ResponseFlags::default(),
                 )
-                .into_response(request.version()),
-            )
-        } else {
-            None
-        }
+                .into_response(request.version()) })
     });
 
     //check if uri/line is too long...
@@ -1853,20 +1846,13 @@ fn reject_request_if_invalid(
     let response = response.or_else(|| {
         let mut counter = LengthCounter(0);
         _ = write!(&mut counter, "{}", request.uri());
-        if counter.0 > MAX_URI_LENGTH {
-            debug!("Too long uri: {} bytes", counter.0);
-            Some(
-                SyntheticHttpResponse::custom_error(
+        (counter.0 > MAX_URI_LENGTH).then(||  { debug!("Too long uri: {} bytes", counter.0); SyntheticHttpResponse::custom_error(
                     StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
                     None,
                     EventFailure::DirectResponse.into(),
                     ResponseFlags::default(),
                 )
-                .into_response(request.version()),
-            )
-        } else {
-            None
-        }
+                .into_response(request.version()) })
     });
 
     response.map(|r| {

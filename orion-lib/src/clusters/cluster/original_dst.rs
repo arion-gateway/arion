@@ -91,13 +91,13 @@ impl OriginalDstClusterBuilder {
             if let ClusterDiscoveryType::OriginalDst(ref original_dst_config) = config.discovery_settings {
                 let routing_req = match &original_dst_config.routing_method {
                     OriginalDstRoutingMethod::HttpHeader { http_header_name } => {
-                        let header_name = http_header_name.to_owned().unwrap_or_else(|| X_ENVOY_ORIGINAL_DST_HOST);
+                        let header_name = http_header_name.to_owned().unwrap_or(X_ENVOY_ORIGINAL_DST_HOST);
                         debug!("ORIGINAL_DST cluster {name} routing by header {header_name}");
                         RoutingRequirement::Header(header_name)
                     },
                     OriginalDstRoutingMethod::MetadataKey(meta) => {
                         debug!("ORIGINAL_DST cluster {name} routing by metadata {}", meta.key);
-                        RoutingRequirement::MetadataKey(MetadataKey(meta.key.to_owned()))
+                        RoutingRequirement::MetadataKey(MetadataKey(meta.key.clone()))
                     },
                     OriginalDstRoutingMethod::Default => RoutingRequirement::Authority,
                 };

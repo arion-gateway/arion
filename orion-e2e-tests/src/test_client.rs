@@ -152,20 +152,18 @@ impl TestClient {
         }
 
         // change body to vec<Bytes> and use StreamBody (http_body_utils) to send multi-chunk in case vec.len>1
-        let body = if !body.is_empty() {
-            if body.len() > 1 {
-                fn frame_mapper(chunk: Bytes) -> std::result::Result<Frame<Bytes>, Infallible> {
-                    Ok(Frame::data(chunk))
-                }
-                let stream = futures_util::stream::iter(
-                    body.into_iter().map(frame_mapper as fn(Bytes) -> std::result::Result<Frame<Bytes>, Infallible>),
-                );
-                http_body_util::Either::Left(StreamBody::new(stream))
-            } else {
-                http_body_util::Either::Right(Full::new(body[0].clone()))
-            }
-        } else {
+        let body = if body.is_empty() {
             http_body_util::Either::Right(Full::new(Bytes::new()))
+        } else if body.len() > 1 {
+            fn frame_mapper(chunk: Bytes) -> std::result::Result<Frame<Bytes>, Infallible> {
+                Ok(Frame::data(chunk))
+            }
+            let stream = futures_util::stream::iter(
+                body.into_iter().map(frame_mapper as fn(Bytes) -> std::result::Result<Frame<Bytes>, Infallible>),
+            );
+            http_body_util::Either::Left(StreamBody::new(stream))
+        } else {
+            http_body_util::Either::Right(Full::new(body[0].clone()))
         };
 
         let request = builder.body(body).map_err(|e| Error::Http(format!("Failed to build request: {e}")))?;

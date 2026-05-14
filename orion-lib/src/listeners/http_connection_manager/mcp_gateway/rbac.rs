@@ -55,13 +55,13 @@ impl JwtHeaderMatcher {
         if let Some(header) = header {
             match &self.field {
                 JwtHeaderField::Algorithm => {
-                    jsonwebtoken::Algorithm::from_str(self.value.as_str()).map_or(false, |alg| alg == header.alg)
+                    jsonwebtoken::Algorithm::from_str(self.value.as_str()) == Ok(header.alg)
                 },
-                JwtHeaderField::Type => header.typ.as_ref().map_or(false, |t| t.as_str() == self.value.as_str()),
-                JwtHeaderField::ContentType => header.cty.as_ref().map_or(false, |c| c.as_str() == self.value.as_str()),
-                JwtHeaderField::KeyID => header.kid.as_ref().map_or(false, |k| k.as_str() == self.value.as_str()),
-                JwtHeaderField::JsonKeyURL => header.jku.as_ref().map_or(false, |j| j.as_str() == self.value.as_str()),
-                JwtHeaderField::X509URL => header.x5u.as_ref().map_or(false, |x| x.as_str() == self.value.as_str()),
+                JwtHeaderField::Type => header.typ.as_ref().is_some_and(|t| t.as_str() == self.value.as_str()),
+                JwtHeaderField::ContentType => header.cty.as_ref().is_some_and(|c| c.as_str() == self.value.as_str()),
+                JwtHeaderField::KeyID => header.kid.as_ref().is_some_and(|k| k.as_str() == self.value.as_str()),
+                JwtHeaderField::JsonKeyURL => header.jku.as_ref().is_some_and(|j| j.as_str() == self.value.as_str()),
+                JwtHeaderField::X509URL => header.x5u.as_ref().is_some_and(|x| x.as_str() == self.value.as_str()),
                 _ => {
                     // Other fields not commonly used or available in jsonwebtoken::Header
                     debug!(target: "mcp_rbac", "JWT header field {:?} not supported for matching", self.field);
@@ -87,18 +87,18 @@ impl JwtPayloadMatcher {
 
         if let Some(claims) = claims {
             match &self.field {
-                JwtClaimField::Issuer => claims.iss.as_ref().map_or(false, |iss| iss.as_str() == self.value.as_str()),
-                JwtClaimField::Subject => claims.sub.as_ref().map_or(false, |sub| sub.as_str() == self.value.as_str()),
+                JwtClaimField::Issuer => claims.iss.as_ref().is_some_and(|iss| iss.as_str() == self.value.as_str()),
+                JwtClaimField::Subject => claims.sub.as_ref().is_some_and(|sub| sub.as_str() == self.value.as_str()),
                 JwtClaimField::Audience => {
-                    claims.aud.as_ref().map_or(false, |aud| aud.iter().any(|a| a.as_str() == self.value.as_str()))
+                    claims.aud.as_ref().is_some_and(|aud| aud.iter().any(|a| a.as_str() == self.value.as_str()))
                 },
-                JwtClaimField::JWTID => claims.jti.as_ref().map_or(false, |jti| jti.as_str() == self.value.as_str()),
-                JwtClaimField::Expiration => claims.exp.map_or(false, |exp| exp.to_string() == self.value.as_str()),
-                JwtClaimField::IssuedAt => claims.iat.map_or(false, |iat| iat.to_string() == self.value.as_str()),
-                JwtClaimField::NotBefore => claims.nbf.map_or(false, |nbf| nbf.to_string() == self.value.as_str()),
+                JwtClaimField::JWTID => claims.jti.as_ref().is_some_and(|jti| jti.as_str() == self.value.as_str()),
+                JwtClaimField::Expiration => claims.exp.is_some_and(|exp| exp.to_string() == self.value.as_str()),
+                JwtClaimField::IssuedAt => claims.iat.is_some_and(|iat| iat.to_string() == self.value.as_str()),
+                JwtClaimField::NotBefore => claims.nbf.is_some_and(|nbf| nbf.to_string() == self.value.as_str()),
                 JwtClaimField::Extra(claim_name) => {
                     // Check custom claims
-                    claims.extra.get(claim_name.as_str()).map_or(false, |v| match v {
+                    claims.extra.get(claim_name.as_str()).is_some_and(|v| match v {
                         Value::String(s) => s.as_str() == self.value.as_str(),
                         Value::Number(n) => n.to_string() == self.value.as_str(),
                         Value::Bool(b) => b.to_string() == self.value.as_str(),

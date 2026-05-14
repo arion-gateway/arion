@@ -79,7 +79,7 @@ fn calculate_num_threads_per_runtime(num_cpus: usize, num_runtimes: usize) -> Re
         );
     }
 
-    if num_cpus % num_runtimes != 0 {
+    if !num_cpus.is_multiple_of(num_runtimes) {
         return Err(format!(
             "The number of CPUs ({num_cpus}) is not a multiple of the number of runtimes ({num_runtimes})",
         )

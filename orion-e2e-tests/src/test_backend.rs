@@ -76,7 +76,7 @@ impl Default for PreConfiguredResponse {
     fn default() -> Self {
         Self {
             status: StatusCode::OK,
-            headers: vec![("content-type".to_string(), "text/plain".to_string())],
+            headers: vec![("content-type".to_owned(), "text/plain".to_owned())],
             body: Bytes::from_static(b"OK"),
             delay: None,
         }
@@ -330,7 +330,7 @@ impl TestBackend {
 
     pub fn drain_requests_for_path(&mut self, path: &str) -> usize {
         let mut count = 0;
-        while let Some(req) = self.request_rx.try_recv().ok() {
+        while let Ok(req) = self.request_rx.try_recv() {
             if req.path() == path {
                 count += 1;
             }

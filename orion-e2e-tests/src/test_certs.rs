@@ -38,9 +38,7 @@ impl TestCerts {
             if dir.join("test_certs").exists() {
                 return dir;
             }
-            if !dir.pop() {
-                panic!("Could not find workspace root (directory containing test_certs/)");
-            }
+            assert!(dir.pop(), "Could not find workspace root (directory containing test_certs/)")
         }
     }
 
@@ -141,6 +139,6 @@ impl TestCerts {
 
     #[must_use]
     pub fn path_to_string(path: &PathBuf) -> String {
-        path.to_str().expect("Path is not valid UTF-8").to_string()
+        path.to_str().expect("Path is not valid UTF-8").to_owned()
     }
 }

@@ -91,10 +91,10 @@ impl Default for OrionRequestBody {
 pub type OrionResponseBody = TimeoutBody<PolyBody>;
 
 /// Example with Result:
-/// Captures the error in 'e' and returns early from the function main()
-///    let _v1 = unwrap_or_run!(result_val, |e| {
+/// Captures the error in 'e' and returns early from the function `main()`
+///    let _v1 = `unwrap_or_run!(result_val`, |e| {
 ///        println!("Error handled: {}", e);
-///        return; // This returns from main(), unlike a closure!
+///        return; // This returns from `main()`, unlike a closure!
 ///    });
 #[macro_export]
 macro_rules! unwrap_or_run {

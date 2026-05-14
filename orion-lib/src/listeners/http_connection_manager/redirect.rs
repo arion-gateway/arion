@@ -101,7 +101,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (&'a RouteMatchResult, &'a st
         // if this replacement yields a query, it will always overwrite the existing query
         let path_and_query = if let Some(prs) = self.path_rewrite_specifier.as_ref() {
             if let Some(replacement) = prs
-                .apply(orig_path_and_query.as_ref(), &route_match_result)
+                .apply(orig_path_and_query.as_ref(), route_match_result)
                 .with_context_msg("invalid path or query following replacement")?
             {
                 Some(replacement)

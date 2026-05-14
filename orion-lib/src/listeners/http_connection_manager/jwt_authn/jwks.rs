@@ -85,7 +85,7 @@ pub async fn fetch_remote_jwks(
     let timeout_body = TimeoutBody::new(Some(remote.http_uri.timeout.saturating_sub(start_time.elapsed())), body);
     let bytes = timeout_body.collect().await?.to_bytes();
 
-    parse_jwks(&bytes, &provider_config).inspect_err(|err| {
+    parse_jwks(&bytes, provider_config).inspect_err(|err| {
         error!(target: "jwt", "{provider_name}: failed to parse JWKS. Reason: {}", err);
     })
 }

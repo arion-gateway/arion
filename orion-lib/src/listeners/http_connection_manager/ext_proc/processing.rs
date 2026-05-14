@@ -218,15 +218,12 @@ pub(crate) mod protected {
         listeners::http_connection_manager::ext_proc::{kind, processing::Processing, status::ProcessingStatus},
     };
 
+    #[derive(Default)]
     pub struct FrameBridge {
         inner: PubFrameBridge,
     }
 
-    impl Default for FrameBridge {
-        fn default() -> Self {
-            Self { inner: Default::default() }
-        }
-    }
+    
 
     impl Stream for FrameBridge {
         type Item = Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>;
@@ -258,11 +255,7 @@ pub(crate) mod protected {
         #[inline]
         #[must_use = "ProofReturn must be used to ensure correct usage of the API"]
         pub fn make_proof(&self) -> Option<ReturnStatusProof> {
-            if self.reply_channel.is_none() {
-                Some(ReturnStatusProof(()))
-            } else {
-                None
-            }
+            self.reply_channel.is_none().then_some(ReturnStatusProof(()))
         }
     }
 
@@ -284,7 +277,7 @@ pub(crate) mod protected {
 
         #[inline]
         pub async fn drain_and_inject(&mut self, _proof: ReturnStatusProof) {
-            let _ = self.inner.drain_and_inject().await;
+            let () = self.inner.drain_and_inject().await;
         }
 
         /// Returns the number of frames injected into the `ChannelBody` so far.
@@ -315,7 +308,7 @@ pub(crate) mod protected {
             }
 
             // 2. remaining frames if not yet processed...
-            _ = self.drain_and_inject(proof).await;
+            () = self.drain_and_inject(proof).await;
 
             // 3. frame bridge could be already drained, but we might have parked trailers to inject...
             if let Some(trailers) = trailers {
@@ -640,7 +633,7 @@ impl<Msg: kind::MessageKind + OverridableModeSelector> Processing<kind::Processi
                         req_ready.clear_route_cache = should_clear_route_cache
                             || ready_status.as_ref().map(|status| status.clear_route_cache).unwrap_or(false);
                         req_ready.headers_modifications = Self::concat_header_mutations(
-                            ready_status.map(|status| status.headers_modifications).flatten(),
+                            ready_status.and_then(|status| status.headers_modifications),
                             response_data.header_mutation.take(),
                         );
                     });
@@ -651,7 +644,7 @@ impl<Msg: kind::MessageKind + OverridableModeSelector> Processing<kind::Processi
                         resp_ready.clear_route_cache = should_clear_route_cache
                             || ready_status.as_ref().map(|status| status.clear_route_cache).unwrap_or(false);
                         resp_ready.headers_modifications = Self::concat_header_mutations(
-                            ready_status.map(|status| status.headers_modifications).flatten(),
+                            ready_status.and_then(|status| status.headers_modifications),
                             response_data.header_mutation.take(),
                         );
                     });
@@ -867,16 +860,14 @@ impl<M: kind::Mode + Default, Msg: kind::MessageKind + OverridableModeSelector> 
         if matches!(
             override_mode.body_mode::<Msg>(),
             OverridableBodyMode::Buffered | OverridableBodyMode::BufferedPartial
-        ) {
-            if self.frame_bridge.source_has_non_empty_body() == Some(true) && override_mode.should_process_body::<Msg>()
+        )
+            && self.frame_bridge.source_has_non_empty_body() == Some(true) && override_mode.should_process_body::<Msg>()
             {
                 if streaming_enabled {
                     return None;
-                } else {
-                    debug!(target: "ext_proc", "process_body_and_trailers: no body/trailers to stream (internal error)");
                 }
+                debug!(target: "ext_proc", "process_body_and_trailers: no body/trailers to stream (internal error)");
             }
-        }
 
         _ = self.return_status(ProcessingStatus::ready::<Msg>(), "process_body_and_trailers (ready status)!");
         None
@@ -1077,7 +1068,7 @@ impl<M: kind::Mode + Default, Msg: kind::MessageKind + OverridableModeSelector> 
     pub fn set_streaming_body(&mut self, value: bool) {
         debug!(target: "ext_proc", "set streaming to {value}.");
         self.streaming_body_enabled = value;
-        if value == false {
+        if !value {
             self.end_of_stream = true;
         }
     }

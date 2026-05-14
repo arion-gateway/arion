@@ -89,10 +89,9 @@ impl ListenerBuilder {
     pub fn with_tls_inspector(mut self) -> Self {
         let tls_inspector = TlsInspector::default();
         let listener_filter = ListenerFilter {
-            name: "envoy.filters.listener.tls_inspector".to_string(),
+            name: "envoy.filters.listener.tls_inspector".to_owned(),
             config_type: Some(ConfigType::TypedConfig(Any {
-                type_url: "type.googleapis.com/envoy.extensions.filters.listener.tls_inspector.v3.TlsInspector"
-                    .to_string(),
+                type_url: "type.googleapis.com/envoy.extensions.filters.listener.tls_inspector.v3.TlsInspector".to_owned(),
                 value: tls_inspector.encode_to_vec(),
             })),
             ..Default::default()
@@ -120,10 +119,9 @@ impl ListenerBuilder {
             runtime_enabled: None,
         };
         let listener_filter = ListenerFilter {
-            name: "envoy.filters.listener.local_ratelimit".to_string(),
+            name: "envoy.filters.listener.local_ratelimit".to_owned(),
             config_type: Some(ConfigType::TypedConfig(Any {
-                type_url: "type.googleapis.com/envoy.extensions.filters.listener.local_ratelimit.v3.LocalRateLimit"
-                    .to_string(),
+                type_url: "type.googleapis.com/envoy.extensions.filters.listener.local_ratelimit.v3.LocalRateLimit".to_owned(),
                 value: local_ratelimit.encode_to_vec(),
             })),
             ..Default::default()

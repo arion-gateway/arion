@@ -314,7 +314,7 @@ impl RouteBuilder {
         let cluster_weights: Vec<ClusterWeight> = clusters
             .iter()
             .map(|(name, weight)| ClusterWeight {
-                name: (*name).to_string(),
+                name: (*name).to_owned(),
                 weight: Some(UInt32Value { value: *weight }),
                 ..Default::default()
             })

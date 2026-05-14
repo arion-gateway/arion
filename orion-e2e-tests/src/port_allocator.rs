@@ -50,10 +50,10 @@ impl PortBlock {
     pub fn reserve() -> Result<Self> {
         let lock_dir = std::env::temp_dir().join("orion-port-locks");
         fs::create_dir_all(&lock_dir)
-            .map_err(|e| Error::PortAllocationFailed(format!("Failed to create lock directory: {}", e)))?;
+            .map_err(|e| Error::PortAllocationFailed(format!("Failed to create lock directory: {e}")))?;
 
         for block_id in 0..NUM_BLOCKS {
-            let lock_path = lock_dir.join(format!("block_{}.lock", block_id));
+            let lock_path = lock_dir.join(format!("block_{block_id}.lock"));
 
             match OpenOptions::new().write(true).create_new(true).open(&lock_path) {
                 Ok(_file) => {
@@ -65,7 +65,7 @@ impl PortBlock {
                     continue;
                 },
                 Err(e) => {
-                    return Err(Error::PortAllocationFailed(format!("Lock file error: {}", e)));
+                    return Err(Error::PortAllocationFailed(format!("Lock file error: {e}")));
                 },
             }
         }

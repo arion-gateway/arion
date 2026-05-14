@@ -408,7 +408,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
             HttpChannels::MultiWithFailover { channel, failover_channels } => {
                 let RequestContext { route_timeout, priority, .. } = ctx;
                 let (parts, mut body) = request.into_parts();
-                let free_body = std::mem::replace(&mut body.inner, TimeoutBody::<PolyBody>::default());
+                let free_body = std::mem::take(&mut body.inner);
                 let InstrumentedBody { body_kind, body_bytes, ref stream_metrics, ref on_complete, .. } = body;
 
                 let body_timeout = free_body.timeout;
@@ -685,7 +685,7 @@ impl HttpChannel {
         });
 
         let (parts, mut body) = req.into_parts();
-        let free_body = std::mem::replace(&mut body.inner, TimeoutBody::<PolyBody>::default());
+        let free_body = std::mem::take(&mut body.inner);
         let InstrumentedBody { body_kind, body_bytes, ref stream_metrics, ref on_complete, .. } = body;
 
         let collected_bytes = if http_body::Body::size_hint(&free_body).exact() == Some(0) {

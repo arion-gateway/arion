@@ -217,7 +217,7 @@ impl CapturedProcessingRequest {
 }
 
 pub mod ext_proc_responses {
-    use super::*;
+    use super::{HeaderValueOption, EnvoyHeaderValue, HeaderAppendAction, ProcessingResponse, ProcessingResponseType, HeadersResponse, CommonResponse, ResponseStatus, HeaderMutation, ImmediateResponse, EnvoyHttpStatus, BodyResponse, BodyMutation, Mutation};
 
     fn header_value_option(key: &str, value: &str) -> HeaderValueOption {
         HeaderValueOption {
@@ -252,7 +252,7 @@ pub mod ext_proc_responses {
                     status: ResponseStatus::Continue.into(),
                     header_mutation: Some(HeaderMutation {
                         set_headers: set.iter().map(|(k, v)| header_value_option(k, v)).collect(),
-                        remove_headers: remove.iter().map(|s| s.to_string()).collect(),
+                        remove_headers: remove.iter().map(ToString::to_string).collect(),
                     }),
                     ..Default::default()
                 }),
@@ -268,7 +268,7 @@ pub mod ext_proc_responses {
                     status: ResponseStatus::Continue.into(),
                     header_mutation: Some(HeaderMutation {
                         set_headers: set.iter().map(|(k, v)| header_value_option(k, v)).collect(),
-                        remove_headers: remove.iter().map(|s| s.to_string()).collect(),
+                        remove_headers: remove.iter().map(ToString::to_string).collect(),
                     }),
                     ..Default::default()
                 }),

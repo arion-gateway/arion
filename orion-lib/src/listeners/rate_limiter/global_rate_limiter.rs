@@ -119,7 +119,7 @@ impl NetworkGlobalRateLimit {
                 Ok(response) => {
                     if let Some((requests, valid_until_ms)) = extract_quota(&response) {
                         bucket.valid_until_ms.store(valid_until_ms, Ordering::Release);
-                        bucket.remaining.store(requests as i64, Ordering::Release);
+                        bucket.remaining.store(i64::from(requests), Ordering::Release);
                     }
                     Self::eval_rls_response(response)
                 },
@@ -153,7 +153,7 @@ impl NetworkGlobalRateLimit {
                         })
                     });
                     bucket.valid_until_ms.store(valid_until_ms, Ordering::Release);
-                    bucket.remaining.store(requests as i64, Ordering::Release);
+                    bucket.remaining.store(i64::from(requests), Ordering::Release);
                 }
                 Self::eval_rls_response(response)
             },

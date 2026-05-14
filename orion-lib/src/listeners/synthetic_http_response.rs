@@ -168,7 +168,7 @@ impl SyntheticHttpResponse {
             http_status,
             event_kind,
             response_flags,
-            body: body.unwrap_or(Bytes::default()),
+            body: body.unwrap_or_default(),
             close_connection: false,
         }
     }

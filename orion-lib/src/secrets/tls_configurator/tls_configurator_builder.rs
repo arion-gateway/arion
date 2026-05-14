@@ -322,7 +322,7 @@ impl TlsContextBuilder<WantsToBuildServer> {
                     Ok(())
                 }
             })
-            .filter(|res| res.is_err())
+            .filter(std::result::Result::is_err)
             .count();
         if errors > 0 {
             Err(format!("Found {errors} errors in Tls context").into())
@@ -339,7 +339,7 @@ impl TlsContextBuilder<WantsToBuildServer> {
         if let Ok((_, cert)) = X509Certificate::from_der(der) {
             // Look for the SAN extension
             if let Ok(Some(san_ext)) = cert.subject_alternative_name() {
-                for name in san_ext.value.general_names.iter() {
+                for name in &san_ext.value.general_names {
                     // We only care about DNS names for SNI matching
                     if let GeneralName::DNSName(dns) = name {
                         sans.push(dns.to_string());

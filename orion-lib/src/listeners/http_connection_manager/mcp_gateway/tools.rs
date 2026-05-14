@@ -144,21 +144,21 @@ impl ToolsRegistry {
             .into_iter()
             .map(|tool_conf| -> Result<ToolEntry, ToolBuilderError> {
                 let rbac = tool_conf.rbac.as_ref().map(convert_config_rbac_to_runtime);
-                let input_schema_validator = if !tool_conf.input_schema.is_empty() {
+                let input_schema_validator = if tool_conf.input_schema.is_empty() {
+                    None
+                } else {
                     Some(
                         Validator::new(&Value::Object(tool_conf.input_schema.clone()))
                             .map_err(|e| ToolBuilderError::InvalidInputSchema(e.to_string()))?,
                     )
-                } else {
-                    None
                 };
-                let output_schema_validator = if !tool_conf.output_schema.is_empty() {
+                let output_schema_validator = if tool_conf.output_schema.is_empty() {
+                    None
+                } else {
                     Some(
                         Validator::new(&Value::Object(tool_conf.output_schema.clone()))
                             .map_err(|e| ToolBuilderError::InvalidOutputSchema(e.to_string()))?,
                     )
-                } else {
-                    None
                 };
                 let transcoder = match &tool_conf.backend {
                     UpstreamBackend::Rest { method, path, query_params, body_template, .. } => {
@@ -245,14 +245,14 @@ impl ToolsRegistry {
 
         let prompt_words: Option<Vec<String>> = {
             let prompt_guard = session.prompt.lock();
-            prompt_guard.as_ref().map(|p| p.split_whitespace().map(|w| w.to_lowercase()).collect())
+            prompt_guard.as_ref().map(|p| p.split_whitespace().map(str::to_lowercase).collect())
         };
 
         // populate the list of active tools as well as the list of tools to return...
         for entry in self
             .registry
             .iter()
-            .filter(|entry| entry.rbac.as_ref().map_or(true, |rbac| rbac.is_permitted(req_ext)))
+            .filter(|entry| entry.rbac.as_ref().is_none_or(|rbac| rbac.is_permitted(req_ext)))
             .filter(|entry| Self::filter_tool_by_vector_similarity(entry, prompt_words.as_deref()))
         {
             match &entry.conf.backend {
@@ -281,10 +281,10 @@ impl ToolsRegistry {
                         }
                     }
 
-                    match self.get_list_tools_from_upstream(&transport, &url, &entry.conf.name).await {
+                    match self.get_list_tools_from_upstream(transport, url, &entry.conf.name).await {
                         Ok(up_tools) => {
                             if let Some(expiration) =
-                                cache_duration.as_ref().and_then(|d| std::time::Instant::now().checked_add(d.clone()))
+                                cache_duration.as_ref().and_then(|d| std::time::Instant::now().checked_add(*d))
                             {
                                 self.cache.insert(
                                     entry.conf.name.to_smolstr(),
@@ -351,7 +351,7 @@ impl ToolsRegistry {
             client_info: Implementation {
                 name: DEFAULT_USER_AGENT.into(),
                 title: None,
-                version: "0.0.1".to_string(),
+                version: "0.0.1".to_owned(),
                 website_url: None,
                 icons: None,
                 description: None,
@@ -368,7 +368,7 @@ impl ToolsRegistry {
         session: &Session,
     ) -> Result<MessageResult, CallToolError> {
         let arguments = match &rpc.request.params.get("arguments") {
-            Some(&serde_json::Value::Object(ref o)) => o.clone(),
+            Some(serde_json::Value::Object(o)) => o.clone(),
             _ => {
                 return Err(CallToolError::ValidationError("call_dynamic_tool_discovery: missing arguments".into()));
             },
@@ -394,7 +394,7 @@ impl ToolsRegistry {
         drop(session_prompt);
 
         let text_content = RawTextContent {
-            text: "Context acquired. Relevant APIs loaded. The tool list has been updated, please proceed with the new tools.".to_string(),
+            text: "Context acquired. Relevant APIs loaded. The tool list has been updated, please proceed with the new tools.".to_owned(),
             meta: None
         };
 
@@ -445,11 +445,11 @@ impl ToolsRegistry {
             .enumerate()
             .find(|(_, e)| e.conf.name == tool_name)
             .filter(|(_, e)| !self.dynamic_tool_discovery || session.active_tools.contains(&e.conf.name))
-            .ok_or_else(|| CallToolError::ToolNotFound(tool_name.to_string()))?;
+            .ok_or_else(|| CallToolError::ToolNotFound(tool_name.to_owned()))?;
 
         if let Some(rbac) = &entry.rbac {
             if !rbac.is_permitted(req_ext) {
-                return Err(CallToolError::RbacDenied(tool_name.to_string()));
+                return Err(CallToolError::RbacDenied(tool_name.to_owned()));
             }
         }
 
@@ -473,7 +473,7 @@ impl ToolsRegistry {
                 })?;
                 if let Some(cluster_header) = cluster_header {
                     let headers = upstream_request.headers_mut();
-                    headers.append(cluster_header.0.clone(), HeaderValue::from_str(&cluster)?);
+                    headers.append(cluster_header.0.clone(), HeaderValue::from_str(cluster)?);
                 }
                 Ok(MessageResult::UpstreamRequest((upstream_request, *r#async, ToolRegistryIndex(index))))
             },
@@ -487,7 +487,7 @@ impl ToolsRegistry {
                 };
 
                 let arguments = match &rpc.request.params.get("arguments") {
-                    Some(&serde_json::Value::Object(ref o)) => Some(o.clone()),
+                    Some(serde_json::Value::Object(o)) => Some(o.clone()),
                     _ => None,
                 };
 
@@ -511,7 +511,7 @@ impl ToolsRegistry {
                                 session.mcp_upstreams.remove(url);
                             },
                             _ => (),
-                        };
+                        }
                         return Err(err.into());
                     },
                 };
@@ -529,7 +529,7 @@ impl ToolsRegistry {
                 Ok(MessageResult::JsonRpcResponse(json_rcp_response))
             },
             (UpstreamBackend::FunctionGraph {}, TranscoderType::FunctionGraph(_)) => {
-                return Err(CallToolError::FunctionGraphNotImplemented);
+                Err(CallToolError::FunctionGraphNotImplemented)
             },
             _ => unreachable!(),
         }

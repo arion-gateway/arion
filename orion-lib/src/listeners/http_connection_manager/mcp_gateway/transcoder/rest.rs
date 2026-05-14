@@ -25,7 +25,7 @@ const QUERY_SET: &AsciiSet = &NON_ALPHANUMERIC.remove(b'-').remove(b'_').remove(
 
 impl RestTranscoder {
     /// Renders a template by substituting variables with values from the arguments map.
-    /// Variables are in the format {{variable_name}}.
+    /// Variables are in the format {{`variable_name`}}.
     ///
     /// Note: Missing variables in templates should be caught by input schema validation.
     /// Null values are properly rendered as "null" for JSON compatibility.

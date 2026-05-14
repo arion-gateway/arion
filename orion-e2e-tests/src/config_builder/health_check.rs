@@ -212,12 +212,12 @@ impl TcpHealthCheckBuilder {
 
     #[must_use]
     pub fn build(self) -> ProtoHealthCheck {
-        let send = self.send.map(|data| ProtoPayload { payload: Some(ProtoPayloadInner::Binary(data.into())) });
+        let send = self.send.map(|data| ProtoPayload { payload: Some(ProtoPayloadInner::Binary(data)) });
 
         let receive: Vec<ProtoPayload> = self
             .receive
             .into_iter()
-            .map(|data| ProtoPayload { payload: Some(ProtoPayloadInner::Binary(data.into())) })
+            .map(|data| ProtoPayload { payload: Some(ProtoPayloadInner::Binary(data)) })
             .collect();
 
         let tcp_health_check = ProtoTcpHealthCheck { send, receive, ..Default::default() };

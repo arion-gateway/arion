@@ -47,7 +47,7 @@ impl fmt::Display for TokenBucketError {
 }
 
 impl TokenBucket {
-    /// Construct a `TokenBucket` only using max_token and events per second information.
+    /// Construct a `TokenBucket` only using `max_token` and events per second information.
     ///
     /// * `max_tokens`: The maximum number of tokens that the bucket can hold.
     /// * `events_per_second`: Expected number of events per second.

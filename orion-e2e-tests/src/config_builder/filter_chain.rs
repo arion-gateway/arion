@@ -130,10 +130,9 @@ impl FilterChainBuilder {
     pub fn downstream_tls(mut self, tls: impl Into<DownstreamTls>) -> Self {
         let tls_proto = tls.into();
         let transport_socket = TransportSocket {
-            name: "envoy.transport_sockets.tls".to_string(),
+            name: "envoy.transport_sockets.tls".to_owned(),
             config_type: Some(TransportSocketConfigType::TypedConfig(Any {
-                type_url: "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext"
-                    .to_string(),
+                type_url: "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext".to_owned(),
                 value: tls_proto.encode_to_vec(),
             })),
         };
@@ -145,7 +144,7 @@ impl FilterChainBuilder {
     pub fn server_names(mut self, names: &[&str]) -> Self {
         self.ensure_filter_chain_match();
         if let Some(ref mut m) = self.proto.filter_chain_match {
-            m.server_names = names.iter().map(|s| (*s).to_string()).collect();
+            m.server_names = names.iter().map(|s| (*s).to_owned()).collect();
         }
         self
     }

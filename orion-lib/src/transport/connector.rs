@@ -288,8 +288,8 @@ impl InternalConnector {
         let (client_stream, server_stream) = tokio::io::duplex(64 * 1024);
         let downstream_metadata = downstream_metadata.unwrap_or_else(|| {
             Arc::new(DownstreamConnectionMetadata::FromSocket {
-                peer_address: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 0),
-                local_address: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 0),
+                peer_address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+                local_address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
             })
         });
         let internal_conn = InternalConnection {
