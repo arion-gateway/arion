@@ -57,16 +57,16 @@ pub struct TcpTestBackend {
 impl TcpTestBackend {
     pub async fn start() -> Result<Self> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
-        Self::start_with_listener(listener).await
+        Self::start_with_listener(listener)
     }
 
     pub async fn start_on_port(port: u16) -> Result<Self> {
         let addr = SocketAddr::from(([127, 0, 0, 1], port));
         let listener = TcpListener::bind(addr).await?;
-        Self::start_with_listener(listener).await
+        Self::start_with_listener(listener)
     }
 
-    async fn start_with_listener(listener: TcpListener) -> Result<Self> {
+    fn start_with_listener(listener: TcpListener) -> Result<Self> {
         let addr = listener.local_addr()?;
 
         info!(?addr, "Starting TCP test backend");

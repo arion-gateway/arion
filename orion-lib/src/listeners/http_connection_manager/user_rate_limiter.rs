@@ -44,7 +44,7 @@ impl UserRateLimiter {
         Self { inner: Arc::new(conf) }
     }
 
-    pub async fn apply_request(&mut self, request: &mut http::Request<OrionRequestBody>) -> FilterDecision {
+    pub fn apply_request(&mut self, request: &mut http::Request<OrionRequestBody>) -> FilterDecision {
         debug!(target: "user_rate_limiter", "apply_request: processing request: {:?}", request);
         debug!(target: "user_rate_limiter", "{:#?}", self.inner);
 

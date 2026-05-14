@@ -362,7 +362,7 @@ impl ToolsRegistry {
         })
     }
 
-    pub async fn call_dynamic_tool_discovery(
+    pub fn call_dynamic_tool_discovery(
         &self,
         rpc: &model::JsonRpcRequest,
         session: &Session,
@@ -436,7 +436,7 @@ impl ToolsRegistry {
         debug!(target: "mcp_gateway", "call: method:{} tool {tool_sub_name}@{tool_name}", rpc.request.method);
 
         if self.dynamic_tool_discovery && tool_name == DYNAMIC_TOOL_DISCOVERY {
-            return self.call_dynamic_tool_discovery(rpc, session).await;
+            return self.call_dynamic_tool_discovery(rpc, session);
         }
 
         let (index, entry) = self

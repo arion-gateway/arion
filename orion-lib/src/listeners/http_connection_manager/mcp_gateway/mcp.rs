@@ -293,7 +293,7 @@ impl McpGateway {
             (&Method::POST, MCP_MESSAGE_ENDPOINT) => {
                 self.handle_mcp_post_endpoint(&ctx, request, metadata.downstream.listener_name).await
             },
-            (&Method::DELETE, MCP_MESSAGE_ENDPOINT) => self.handle_mcp_delete_endpoint(&ctx, request).await,
+            (&Method::DELETE, MCP_MESSAGE_ENDPOINT) => self.handle_mcp_delete_endpoint(&ctx, request),
             _ => {
                 debug!(target: "mcp_gateway", "apply_request: no route found");
                 FilterDecision::no_route_found(self.version)
@@ -476,7 +476,7 @@ impl McpGateway {
         }
     }
 
-    async fn handle_mcp_delete_endpoint(
+    fn handle_mcp_delete_endpoint(
         &mut self,
         ctx: &McpGatewayListenerContext,
         request: &mut http::Request<OrionRequestBody>,

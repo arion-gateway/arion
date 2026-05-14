@@ -49,8 +49,11 @@ async fn setup(backend: &TcpTestBackend) -> (OrionInstance, TcpTestClient) {
         )
         .cluster(ClusterBuilder::new("backend").endpoint(EndpointBuilder::from_socket_addr(backend.addr())));
 
+    #[allow(clippy::unwrap_used)]
     let config_path = bootstrap.build_to_temp().unwrap();
+    #[allow(clippy::unwrap_used)]
     let orion = OrionInstance::spawn_auto_port(&config_path, "tcp", SpawnOptions::default()).await.unwrap();
+    #[allow(clippy::unwrap_used)]
     let client = TcpTestClient::new(orion.listener_addr().unwrap());
     (orion, client)
 }

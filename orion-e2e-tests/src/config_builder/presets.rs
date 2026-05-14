@@ -138,6 +138,7 @@ pub fn routed_proxy_no_clusters<R>(routes: impl IntoIterator<Item = R>) -> Boots
 where
     R: Into<super::route::Route>,
 {
+    #[allow(clippy::unwrap_used)]
     let dummy =
         ClusterBuilder::new("_unused").endpoint(EndpointBuilder::from_socket_addr("127.0.0.1:1".parse().unwrap()));
     routed_proxy(routes, [dummy])

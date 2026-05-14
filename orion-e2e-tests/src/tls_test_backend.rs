@@ -134,7 +134,7 @@ pub struct TlsTestBackend {
 impl TlsTestBackend {
     pub async fn start(config: TlsBackendConfig) -> Result<Self> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
-        Self::start_with_listener(listener, config).await
+        Self::start_with_listener(listener, config)
     }
 
     pub async fn start_with_files(cert_path: impl AsRef<Path>, key_path: impl AsRef<Path>) -> Result<Self> {
@@ -155,10 +155,10 @@ impl TlsTestBackend {
     pub async fn start_on_port(port: u16, config: TlsBackendConfig) -> Result<Self> {
         let addr = SocketAddr::from(([127, 0, 0, 1], port));
         let listener = TcpListener::bind(addr).await?;
-        Self::start_with_listener(listener, config).await
+        Self::start_with_listener(listener, config)
     }
 
-    async fn start_with_listener(listener: TcpListener, config: TlsBackendConfig) -> Result<Self> {
+    fn start_with_listener(listener: TcpListener, config: TlsBackendConfig) -> Result<Self> {
         let addr = listener.local_addr()?;
         let server_config = config.build_server_config()?;
         let tls_acceptor = TlsAcceptor::from(Arc::new(server_config));

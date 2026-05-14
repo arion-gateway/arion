@@ -311,6 +311,7 @@ pub(crate) async fn prometheus_handler(
     }
 
     let mut headers = HeaderMap::new();
+    #[allow(clippy::unwrap_used)]
     headers.insert(::http::header::CONTENT_TYPE, "text/plain; version=0.0.4".parse().unwrap());
 
     Ok((headers, out))

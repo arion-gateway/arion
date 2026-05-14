@@ -503,7 +503,7 @@ impl<Msg: kind::MessageKind + OverridableModeSelector> Processing<kind::Processi
                     clear_route_cache: should_clear_route_cache,
                 });
 
-                let stream_body_enabled = self.try_enable_streaming_body().await;
+                let stream_body_enabled = self.try_enable_streaming_body();
                 debug!(target: "ext_proc", "handle_headers_response: trying to enable streaming body: {stream_body_enabled}");
             } else {
                 let headers_modifications = response_data.header_mutation.take();
@@ -585,7 +585,7 @@ impl<Msg: kind::MessageKind + OverridableModeSelector> Processing<kind::Processi
                         self.frame_bridge.close(Some(timeout_active));
                         self.set_streaming_body(false);
                     } else {
-                        let stream_body_enabled = self.try_enable_streaming_body().await;
+                        let stream_body_enabled = self.try_enable_streaming_body();
                         debug!(target: "ext_proc", "handle_headers_response: enable streaming body: {stream_body_enabled}");
                     }
                 }
@@ -785,7 +785,7 @@ impl<M: kind::Mode + Default, Msg: kind::MessageKind + OverridableModeSelector> 
             && (override_mode.should_process_body::<Msg>() || override_mode.should_process_trailers::<Msg>())
         {
             debug!(target: "ext_proc", "process: processing body and trailers...");
-            return self.process_body_and_trailers(override_mode).await;
+            return self.process_body_and_trailers(override_mode);
         }
 
         debug!(target: "ext_proc", "process: nothing to do!");
@@ -854,10 +854,10 @@ impl<M: kind::Mode + Default, Msg: kind::MessageKind + OverridableModeSelector> 
     }
 
     #[must_use = "must handle the returned Action"]
-    async fn process_body_and_trailers(&mut self, override_mode: &OverridableGlobalModes) -> Option<ProcessingRequest> {
+    fn process_body_and_trailers(&mut self, override_mode: &OverridableGlobalModes) -> Option<ProcessingRequest> {
         debug!(target: "ext_proc", "process: body and trailers (headers are skipped)...");
 
-        let streaming_enabled = self.try_enable_streaming_body().await;
+        let streaming_enabled = self.try_enable_streaming_body();
 
         if M::OBSERVABILITY {
             _ = self.return_status(ProcessingStatus::ready::<Msg>(), "observability!");
@@ -1060,7 +1060,7 @@ impl<M: kind::Mode + Default, Msg: kind::MessageKind + OverridableModeSelector> 
 
     #[inline]
     #[must_use]
-    pub async fn try_enable_streaming_body(&mut self) -> bool {
+    pub fn try_enable_streaming_body(&mut self) -> bool {
         // enable streaming only if we have a body to stream
         if self.frame_bridge.source_has_non_empty_body_or_trailers() {
             debug!(target: "ext_proc", "enabling body streaming...");

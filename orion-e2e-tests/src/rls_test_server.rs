@@ -150,6 +150,7 @@ pub mod rls_responses {
     }
 
     pub fn ok_with_quota(requests: u32) -> RateLimitResponse {
+        #[allow(clippy::unwrap_used)]
         let valid_secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64 + 3600;
         RateLimitResponse {
             overall_code: rate_limit_response::Code::Ok as i32,

@@ -371,10 +371,12 @@ impl ClusterBuilder {
 
     fn ensure_default_circuit_breaker_threshold(&mut self) -> &mut EnvoyThresholds {
         let cb = self.proto.circuit_breakers.get_or_insert_with(EnvoyCircuitBreakers::default);
-        if !cb.thresholds.iter().any(|t| t.priority == 0) {
-            cb.thresholds.push(EnvoyThresholds { priority: 0, ..Default::default() });
+        if let Some(idx) = cb.thresholds.iter().position(|t| t.priority == 0) {
+            return &mut cb.thresholds[idx];
         }
-        cb.thresholds.iter_mut().find(|t| t.priority == 0).unwrap()
+        cb.thresholds.push(EnvoyThresholds { priority: 0, ..Default::default() });
+        let len = cb.thresholds.len();
+        &mut cb.thresholds[len - 1]
     }
 
     #[must_use]

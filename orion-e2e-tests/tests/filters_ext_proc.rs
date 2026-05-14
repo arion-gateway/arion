@@ -38,6 +38,7 @@ async fn setup(
     let config_path = bootstrap.build_to_temp().expect("build config");
     let orion =
         OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default()).await.expect("spawn orion");
+    #[allow(clippy::unwrap_used)]
     let client = TestClient::new(orion.listener_addr().unwrap());
 
     (backend, ext_proc_server, orion, client, config_path)

@@ -713,6 +713,7 @@ impl HttpChannel {
             };
 
             // avoid to clone parts on the last attempt
+            #[allow(clippy::unwrap_used)]
             let current_parts =
                 if index == max_retries { parts_opt.take().unwrap() } else { parts_opt.as_ref().unwrap().clone() };
 

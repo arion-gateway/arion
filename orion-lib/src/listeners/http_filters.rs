@@ -191,7 +191,7 @@ impl HttpFilterValue {
             HttpFilterValue::JwtAuthentication(jwt) => jwt.apply_request(request).await,
             HttpFilterValue::Cors(cors) => cors.apply_request(request),
             HttpFilterValue::McpGateway(mcp) => mcp.apply_request(request).await,
-            HttpFilterValue::UserRateLimit(user_rate_limiter) => user_rate_limiter.apply_request(request).await,
+            HttpFilterValue::UserRateLimit(user_rate_limiter) => user_rate_limiter.apply_request(request),
         }
     }
     pub async fn apply_response(&mut self, response: &mut Response<OrionResponseBody>) -> FilterDecision {
