@@ -33,17 +33,17 @@ use crate::with_access_log;
 #[cfg(feature = "metrics")]
 use crate::{clusters::CircuitBreakerDenial, get_shard_id, with_metric};
 use crate::{instrument_block, instrument_function, OrionRequestBody, OrionResponseBody, RequestContext};
-#[cfg(any(feature = "metrics", feature = "tracing"))]
-use opentelemetry::KeyValue;
-#[cfg(feature = "metrics")]
-use orion_metrics::metrics::clusters;
 use http::{uri::Parts as UriParts, Uri};
 use hyper::{Request, Response};
+#[cfg(any(feature = "metrics", feature = "tracing"))]
+use opentelemetry::KeyValue;
 use orion_configuration::config::network_filters::http_connection_manager::{
     route::{RouteAction, RouteMatchResult},
     RetryPolicy,
 };
 use orion_error::Context;
+#[cfg(feature = "metrics")]
+use orion_metrics::metrics::clusters;
 use scopeguard::defer;
 
 #[cfg(feature = "access-log")]

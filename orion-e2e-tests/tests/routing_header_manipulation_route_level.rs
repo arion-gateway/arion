@@ -693,7 +693,8 @@ async fn test_header_manipulation_route_level_when_configured_over_xds() {
         loop {
             if let Ok(response) = client.get("/test").await {
                 if response.status == StatusCode::OK {
-                    if response.header("x-version") == Some("v2") && response.header("x-source") == Some("orion-proxy") {
+                    if response.header("x-version") == Some("v2") && response.header("x-source") == Some("orion-proxy")
+                    {
                         break;
                     }
                 }

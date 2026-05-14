@@ -15,10 +15,10 @@
 //
 //
 
-use std::{borrow::Cow, collections::HashMap};
 use std::fmt::Write;
 use std::hash::Hash;
 use std::sync::OnceLock;
+use std::{borrow::Cow, collections::HashMap};
 
 use ::http::{header::HeaderMap, StatusCode};
 use axum::extract::State;

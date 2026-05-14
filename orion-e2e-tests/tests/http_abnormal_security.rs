@@ -14,8 +14,8 @@
 
 use orion_e2e_tests::config_builder::presets;
 use orion_e2e_tests::{
-    OrionInstance, PreConfiguredResponse, RawHttpRequestBuilder, RawHttpResponse, SpawnOptions,
-    TcpTestClient, TestBackend,
+    OrionInstance, PreConfiguredResponse, RawHttpRequestBuilder, RawHttpResponse, SpawnOptions, TcpTestClient,
+    TestBackend,
 };
 
 async fn setup() -> (OrionInstance, TestBackend, TcpTestClient, std::path::PathBuf) {

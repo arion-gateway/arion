@@ -577,7 +577,7 @@ async fn test_routing_actions_when_configured_over_xds() {
     harness.push_route_config(&updated_route_config).await.unwrap();
 
     let client = TestClient::new(listener_addr);
-    
+
     // Wait until Orion applies the updated route config (RDS propagation)
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {

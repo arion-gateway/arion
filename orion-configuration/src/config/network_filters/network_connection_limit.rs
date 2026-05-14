@@ -12,10 +12,10 @@ pub struct ConnectionLimit {
 
 #[cfg(feature = "envoy-conversions")]
 mod envoy_conversions {
-    use std::time::Duration;
     use super::ConnectionLimit;
     use crate::config::{common::*, core::RustType};
     use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::network::connection_limit::v3::ConnectionLimit as EnvoyConnectionLimit;
+    use std::time::Duration;
 
     impl TryFrom<EnvoyConnectionLimit> for ConnectionLimit {
         type Error = GenericError;

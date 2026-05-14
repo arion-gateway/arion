@@ -70,8 +70,8 @@ use webpki::types::ServerName;
 use {
     hyper_util::client::legacy::pool::{EventHandler, PoolEvent},
     hyper_util::client::legacy::PoolKey,
-    std::any::Any,
     scopeguard::defer,
+    std::any::Any,
 };
 const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 

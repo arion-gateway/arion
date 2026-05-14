@@ -75,7 +75,7 @@ async fn test_http_health_check_excludes_unhealthy() {
                     if consecutive_healthy >= 5 {
                         break;
                     }
-                }
+                },
                 _ => consecutive_healthy = 0,
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -141,7 +141,7 @@ async fn test_http_health_check_recovery() {
                     if consecutive_b1 >= 5 {
                         break;
                     }
-                }
+                },
                 _ => consecutive_b1 = 0,
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -228,7 +228,7 @@ async fn test_tcp_health_check_excludes_unreachable() {
                     if consecutive_healthy >= 5 {
                         break;
                     }
-                }
+                },
                 _ => consecutive_healthy = 0,
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -243,7 +243,6 @@ async fn test_tcp_health_check_excludes_unreachable() {
 #[tokio::test]
 #[ignore]
 async fn test_tcp_health_check_recovery() {
-    
     let mut backend1 = TcpTestBackend::start().await.unwrap();
     backend1.set_send_on_connect(b"b1").await;
 
@@ -288,7 +287,7 @@ async fn test_tcp_health_check_recovery() {
                     if consecutive_b1 >= 5 {
                         break;
                     }
-                }
+                },
                 _ => consecutive_b1 = 0,
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -381,7 +380,7 @@ async fn test_grpc_health_check_excludes_not_serving() {
                     if consecutive_healthy >= 5 {
                         break;
                     }
-                }
+                },
                 _ => consecutive_healthy = 0,
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -448,10 +447,10 @@ async fn test_grpc_health_check_recovery() {
                     if consecutive_b1 >= 5 {
                         break;
                     }
-                }
+                },
                 _ => {
                     consecutive_b1 = 0;
-                }
+                },
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }

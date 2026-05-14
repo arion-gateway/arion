@@ -352,7 +352,12 @@ impl XdsConfigurationHandler {
     }
     fn process_health_event(health_update: &EndpointHealthUpdate) {
         if health_update.changed {
-            tracing::info!("Health state changed for endpoint {:?} in cluster {:?} to {:?}", health_update.endpoint.endpoint, health_update.endpoint.cluster, health_update.health);
+            tracing::info!(
+                "Health state changed for endpoint {:?} in cluster {:?} to {:?}",
+                health_update.endpoint.endpoint,
+                health_update.endpoint.cluster,
+                health_update.health
+            );
             orion_lib::clusters::update_endpoint_health(
                 &health_update.endpoint.cluster,
                 &health_update.endpoint.endpoint,
