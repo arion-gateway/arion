@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use pingora::prelude::fast_timeout::fast_timeout;
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -285,7 +286,7 @@ impl TestBackend {
 
     #[allow(clippy::disallowed_methods)]
     pub async fn await_request_with_timeout(&mut self, timeout: Duration) -> Result<CapturedRequest> {
-        match tokio::time::timeout(timeout, self.request_rx.recv()).await {
+        match fast_timeout(timeout, self.request_rx.recv()).await {
             Ok(Some(req)) => Ok(req),
             Ok(None) | Err(_) => Err(Error::NoRequestReceived(timeout)),
         }
@@ -302,7 +303,7 @@ impl TestBackend {
             if remaining.is_zero() {
                 return Err(Error::NoRequestReceived(timeout));
             }
-            match tokio::time::timeout(remaining, self.request_rx.recv()).await {
+            match fast_timeout(remaining, self.request_rx.recv()).await {
                 Ok(Some(req)) if req.path() == path => return Ok(req),
                 Ok(Some(_)) => continue, // Discard non-matching request
                 Ok(None) | Err(_) => return Err(Error::NoRequestReceived(timeout)),
@@ -318,7 +319,7 @@ impl TestBackend {
             if remaining.is_zero() {
                 return Err(Error::NoRequestReceived(timeout));
             }
-            match tokio::time::timeout(remaining, self.request_rx.recv()).await {
+            match fast_timeout(remaining, self.request_rx.recv()).await {
                 Ok(Some(req)) if req.path() == path => received += 1,
                 Ok(Some(_)) => continue,
                 Ok(None) | Err(_) => return Err(Error::NoRequestReceived(timeout)),

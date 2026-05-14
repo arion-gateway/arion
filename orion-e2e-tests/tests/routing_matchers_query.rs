@@ -427,7 +427,7 @@ async fn test_query_matchers_when_configured_over_xds() {
     // Wait for the updated route config to propagate: with the new config, a plain request
     // (no query params) falls through to backend-v1 ("v1") instead of backend-v2 ("v2").
     // This distinguishes new config from old and serves as our propagation sentinel.
-    tokio::time::timeout(Duration::from_secs(10), async {
+    pingora::time::timeout(Duration::from_secs(10), async {
         loop {
             if let Ok(response) = client.get("/test").await {
                 if response.body_str() == Some("v1") {

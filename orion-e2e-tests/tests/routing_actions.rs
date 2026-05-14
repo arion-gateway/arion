@@ -579,7 +579,7 @@ async fn test_routing_actions_when_configured_over_xds() {
     let client = TestClient::new(listener_addr);
 
     // Wait until Orion applies the updated route config (RDS propagation)
-    tokio::time::timeout(Duration::from_secs(10), async {
+    pingora::time::timeout(Duration::from_secs(10), async {
         loop {
             if let Ok(response) = client.get("/test").await {
                 if response.status == StatusCode::OK {

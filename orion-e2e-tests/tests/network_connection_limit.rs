@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use pingora::prelude::fast_timeout::fast_timeout;
 use std::time::Duration;
 
 use orion_e2e_tests::config_builder::{
@@ -29,7 +30,7 @@ const ALIVE_CHECK_TIMEOUT: Duration = Duration::from_millis(200);
 // false if Orion closed it (EOF or error).
 async fn connection_is_alive(stream: &mut TcpStream) -> bool {
     let mut buf = [0u8; 1];
-    match tokio::time::timeout(ALIVE_CHECK_TIMEOUT, stream.read(&mut buf)).await {
+    match fast_timeout(ALIVE_CHECK_TIMEOUT, stream.read(&mut buf)).await {
         Err(_timeout) => true,
         Ok(Ok(0)) => false,
         Ok(Ok(_)) => true,

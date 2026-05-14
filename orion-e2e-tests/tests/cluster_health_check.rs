@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use pingora::prelude::fast_timeout::fast_timeout;
 use std::net::SocketAddr;
 use std::time::Duration;
 
@@ -67,7 +68,7 @@ async fn test_http_health_check_excludes_unhealthy() {
     // stably excluded — guards against the race where Orion received the health-check result
     // but hasn't yet propagated the "unhealthy" decision to the load-balancer.
     let mut consecutive_healthy = 0usize;
-    tokio::time::timeout(Duration::from_secs(10), async {
+    fast_timeout(Duration::from_secs(10), async {
         loop {
             match client.get("/test").await {
                 Ok(r) if r.status == StatusCode::OK && r.body_str() == Some("healthy") => {
@@ -133,7 +134,7 @@ async fn test_http_health_check_recovery() {
     // Require several consecutive b1 responses to confirm b2 is stably excluded before
     // flipping b2 to healthy — guards against the health-check propagation race.
     let mut consecutive_b1 = 0usize;
-    tokio::time::timeout(Duration::from_secs(10), async {
+    fast_timeout(Duration::from_secs(10), async {
         loop {
             match client.get("/test").await {
                 Ok(r) if r.status == StatusCode::OK && r.body_str() == Some("b1") => {
@@ -158,7 +159,7 @@ async fn test_http_health_check_recovery() {
     // Verify both backends receive traffic (round-robin should distribute)
     let mut saw_b1 = false;
     let mut saw_b2 = false;
-    tokio::time::timeout(Duration::from_secs(10), async {
+    fast_timeout(Duration::from_secs(10), async {
         loop {
             if let Ok(response) = client.get("/test").await {
                 if response.status == StatusCode::OK {
@@ -220,7 +221,7 @@ async fn test_tcp_health_check_excludes_unreachable() {
     // Require several consecutive "healthy" responses to confirm the unreachable backend is
     // stably excluded — guards against the health-check propagation race.
     let mut consecutive_healthy = 0usize;
-    tokio::time::timeout(Duration::from_secs(10), async {
+    fast_timeout(Duration::from_secs(10), async {
         loop {
             match client.receive_on_connect_with_timeout(Duration::from_millis(500)).await {
                 Ok(r) if r.starts_with(b"healthy") => {
@@ -279,7 +280,7 @@ async fn test_tcp_health_check_recovery() {
     // Require several consecutive b1 responses to confirm the unreachable backend2 is
     // stably excluded before bringing it back — guards against the health-check propagation race.
     let mut consecutive_b1 = 0usize;
-    tokio::time::timeout(Duration::from_secs(10), async {
+    fast_timeout(Duration::from_secs(10), async {
         loop {
             match client.receive_on_connect_with_timeout(Duration::from_millis(500)).await {
                 Ok(r) if r.starts_with(b"b1") => {
@@ -304,7 +305,7 @@ async fn test_tcp_health_check_recovery() {
 
     let mut saw_b1 = false;
     let mut saw_b2 = false;
-    tokio::time::timeout(Duration::from_secs(10), async {
+    fast_timeout(Duration::from_secs(10), async {
         loop {
             if let Ok(response) = client.receive_on_connect_with_timeout(Duration::from_millis(500)).await {
                 if response.starts_with(b"b1") {
@@ -372,7 +373,7 @@ async fn test_grpc_health_check_excludes_not_serving() {
     // Require several consecutive "healthy" responses to confirm the NOT_SERVING backend is
     // stably excluded — guards against the health-check propagation race.
     let mut consecutive_healthy = 0usize;
-    tokio::time::timeout(Duration::from_secs(10), async {
+    fast_timeout(Duration::from_secs(10), async {
         loop {
             match client.echo_backend_id("test").await {
                 Ok(id) if id == "healthy" => {
@@ -439,7 +440,7 @@ async fn test_grpc_health_check_recovery() {
     // to guard against the race where Orion has received the health-check but hasn't yet
     // propagated the "unhealthy" decision to the load-balancer.
     let mut consecutive_b1 = 0usize;
-    tokio::time::timeout(Duration::from_secs(10), async {
+    fast_timeout(Duration::from_secs(10), async {
         loop {
             match client.echo_backend_id("test").await {
                 Ok(id) if id == "b1" => {
@@ -464,7 +465,7 @@ async fn test_grpc_health_check_recovery() {
 
     let mut saw_b1 = false;
     let mut saw_b2 = false;
-    tokio::time::timeout(Duration::from_secs(10), async {
+    fast_timeout(Duration::from_secs(10), async {
         loop {
             if let Ok(backend_id) = client.echo_backend_id("test").await {
                 if backend_id == "b1" {

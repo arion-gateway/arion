@@ -1,3 +1,4 @@
+use pingora::prelude::fast_timeout::fast_timeout;
 use super::*;
 use crate::{
     body::{
@@ -999,7 +1000,7 @@ async fn test_request_combinatorial_processing() {
                 config.failure_mode_allow = false;
                 let mut ext_proc = ExternalProcessor::from(config);
                 let mut request = build_request_from_mock(mock_request).await;
-                let result = tokio::time::timeout(Duration::from_secs(2), ext_proc.apply_request(&mut request)).await;
+                let result = fast_timeout(Duration::from_secs(2), ext_proc.apply_request(&mut request)).await;
                 let result = match result {
                     Ok(res) => res,
                     Err(_) => {
@@ -1066,7 +1067,7 @@ async fn test_response_combinatorial_processing() {
                 config.failure_mode_allow = false;
                 let mut ext_proc = ExternalProcessor::from(config);
                 let mut response = build_response_from_mock(mock_response).await;
-                let result = tokio::time::timeout(Duration::from_secs(2), ext_proc.apply_response(&mut response)).await;
+                let result = fast_timeout(Duration::from_secs(2), ext_proc.apply_response(&mut response)).await;
                 let result = match result {
                     Ok(res) => res,
                     Err(_) => {
@@ -1133,7 +1134,7 @@ async fn test_request_combinatorial_observability() {
                 config.failure_mode_allow = false;
                 let mut ext_proc = ExternalProcessor::from(config);
                 let mut request = build_request_from_mock(mock_request).await;
-                let result = tokio::time::timeout(Duration::from_secs(2), ext_proc.apply_request(&mut request)).await;
+                let result = fast_timeout(Duration::from_secs(2), ext_proc.apply_request(&mut request)).await;
                 let result = match result {
                     Ok(res) => res,
                     Err(_) => {
@@ -1200,7 +1201,7 @@ async fn test_response_combinatorial_observability() {
                 config.failure_mode_allow = false;
                 let mut ext_proc = ExternalProcessor::from(config);
                 let mut response = build_response_from_mock(mock_response).await;
-                let result = tokio::time::timeout(Duration::from_secs(2), ext_proc.apply_response(&mut response)).await;
+                let result = fast_timeout(Duration::from_secs(2), ext_proc.apply_response(&mut response)).await;
                 let result = match result {
                     Ok(res) => res,
                     Err(_) => {

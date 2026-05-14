@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use pingora::prelude::fast_timeout::fast_timeout;
 use std::io::BufReader;
 use std::net::SocketAddr;
 use std::path::Path;
@@ -252,7 +253,7 @@ impl TlsTestClient {
                 .map_err(|e| Error::Http(format!("Failed to build request: {e}")))?,
         };
 
-        tokio::time::timeout(self.timeout, self.send_tls_request(request))
+        fast_timeout(self.timeout, self.send_tls_request(request))
             .await
             .map_err(|_| Error::RequestTimeout(self.timeout))?
     }
@@ -279,7 +280,7 @@ impl TlsTestClient {
             .body(Full::new(request.body_bytes().clone()))
             .map_err(|e| Error::Http(format!("Failed to build request: {e}")))?;
 
-        tokio::time::timeout(self.timeout, self.send_tls_request(http_request))
+        fast_timeout(self.timeout, self.send_tls_request(http_request))
             .await
             .map_err(|_| Error::RequestTimeout(self.timeout))?
     }

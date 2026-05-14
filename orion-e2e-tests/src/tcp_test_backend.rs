@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use pingora::prelude::fast_timeout::fast_timeout;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -117,7 +118,7 @@ impl TcpTestBackend {
                                     debug!(?peer_addr, "Closing connection after send");
                                 } else {
                                     let mut buf = [0u8; READ_BUFFER_SIZE];
-                                    match tokio::time::timeout(
+                                    match fast_timeout(
                                         current_behavior.read_timeout,
                                         stream.read(&mut buf),
                                     )
@@ -190,7 +191,7 @@ impl TcpTestBackend {
 
     #[allow(clippy::disallowed_methods)]
     pub async fn await_connection_with_timeout(&mut self, timeout: Duration) -> Result<CapturedTcpConnection> {
-        match tokio::time::timeout(timeout, self.connection_rx.recv()).await {
+        match fast_timeout(timeout, self.connection_rx.recv()).await {
             Ok(Some(conn)) => Ok(conn),
             Ok(None) | Err(_) => Err(Error::NoConnectionReceived(timeout)),
         }
@@ -208,7 +209,7 @@ impl TcpTestBackend {
             if remaining.is_zero() {
                 return Err(Error::NoConnectionReceived(timeout));
             }
-            match tokio::time::timeout(remaining, self.connection_rx.recv()).await {
+            match fast_timeout(remaining, self.connection_rx.recv()).await {
                 Ok(Some(_)) => received += 1,
                 Ok(None) | Err(_) => return Err(Error::NoConnectionReceived(timeout)),
             }

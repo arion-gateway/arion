@@ -37,6 +37,7 @@ rustls-pemfile = "2"
 ctor = "0.2"
 test-log = { version = "0.2.19", features = ["trace"] }
 futures-util = "0.3.32"
+pingora = { version = "0.8.0", features = ["time"] }
 
 [dev-dependencies]
 tracing-test.workspace = true

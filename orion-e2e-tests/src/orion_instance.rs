@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use pingora::prelude::fast_timeout::fast_timeout;
 use std::io::{BufRead, BufReader};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
@@ -184,7 +185,7 @@ impl OrionInstance {
             })
         });
 
-        let listener_addr = tokio::time::timeout(options.ready_timeout, result_rx)
+        let listener_addr = fast_timeout(options.ready_timeout, result_rx)
             .await
             .map_err(|_| Error::ReadyTimeout(options.ready_timeout))?
             .map_err(|_| Error::Config("Channel closed unexpectedly".into()))?
@@ -329,7 +330,7 @@ impl OrionInstance {
             })
         });
 
-        tokio::time::timeout(options.ready_timeout, result_rx)
+        fast_timeout(options.ready_timeout, result_rx)
             .await
             .map_err(|_| Error::ReadyTimeout(options.ready_timeout))?
             .map_err(|_| Error::Config("Channel closed unexpectedly".into()))?

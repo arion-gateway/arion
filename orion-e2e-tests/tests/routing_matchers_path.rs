@@ -357,7 +357,7 @@ async fn test_path_matchers_when_configured_over_xds() {
     // Wait for the updated route config to propagate: with the new config, /api/users no
     // longer matches /api -> backend-api, so it falls through to / -> backend-other ("other").
     // With the old config it still returns "api", making this our propagation sentinel.
-    tokio::time::timeout(Duration::from_secs(10), async {
+    pingora::time::timeout(Duration::from_secs(10), async {
         loop {
             if let Ok(response) = client.get("/api/users").await {
                 if response.body_str() == Some("other") {

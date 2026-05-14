@@ -99,6 +99,7 @@ percent-encoding = "2.3.2"
 atomicoption = "0.2.0"
 papaya = "0.2.4"
 const-str = "1.1.0"
+pingora = { version = "0.8.0", features = ["time"] }
 
 
 [dev-dependencies]

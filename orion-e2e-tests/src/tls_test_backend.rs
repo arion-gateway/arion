@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use pingora::prelude::fast_timeout::fast_timeout;
 use std::collections::VecDeque;
 use std::io::BufReader;
 use std::net::SocketAddr;
@@ -313,7 +314,7 @@ impl TlsTestBackend {
 
     #[allow(clippy::disallowed_methods)]
     pub async fn await_request_with_timeout(&mut self, timeout: Duration) -> Result<CapturedRequest> {
-        match tokio::time::timeout(timeout, self.request_rx.recv()).await {
+        match fast_timeout(timeout, self.request_rx.recv()).await {
             Ok(Some(req)) => Ok(req),
             Ok(None) | Err(_) => Err(Error::NoRequestReceived(timeout)),
         }

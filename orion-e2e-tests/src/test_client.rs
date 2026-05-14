@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use pingora::prelude::fast_timeout::fast_timeout;
 use std::time::Duration;
 use std::{convert::Infallible, net::SocketAddr};
 
@@ -169,7 +170,7 @@ impl TestClient {
 
         let request = builder.body(body).map_err(|e| Error::Http(format!("Failed to build request: {e}")))?;
 
-        let response = tokio::time::timeout(self.timeout, self.client.request(request))
+        let response = fast_timeout(self.timeout, self.client.request(request))
             .await
             .map_err(|_| Error::RequestTimeout(self.timeout))?
             .map_err(Error::Hyper)?;
@@ -197,7 +198,7 @@ impl TestClient {
             .body(http_body_util::Either::Right(Full::new(request.body)))
             .map_err(|e| Error::Http(format!("Failed to build request: {e}")))?;
 
-        let response = tokio::time::timeout(self.timeout, self.client.request(http_request))
+        let response = fast_timeout(self.timeout, self.client.request(http_request))
             .await
             .map_err(|_| Error::RequestTimeout(self.timeout))?
             .map_err(Error::Hyper)?;

@@ -1,4 +1,5 @@
 [workspace]
+exclude = ["hyper-util"]
 members = [
   "envoy-data-plane-api",
   "orion-configuration",

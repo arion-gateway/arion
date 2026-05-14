@@ -651,7 +651,7 @@ async fn test_header_manipulation_route_level_when_configured_over_xds() {
 
     let client = TestClient::new(listener_addr);
 
-    tokio::time::timeout(Duration::from_secs(10), async {
+    pingora::time::timeout(Duration::from_secs(10), async {
         loop {
             if let Ok(response) = client.get("/test").await {
                 if response.status == StatusCode::OK {
@@ -689,7 +689,7 @@ async fn test_header_manipulation_route_level_when_configured_over_xds() {
 
     let client = TestClient::new(listener_addr);
 
-    tokio::time::timeout(Duration::from_secs(10), async {
+    pingora::time::timeout(Duration::from_secs(10), async {
         loop {
             if let Ok(response) = client.get("/test").await {
                 if response.status == StatusCode::OK {
