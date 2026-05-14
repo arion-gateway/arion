@@ -313,12 +313,15 @@ const fn default_max_requests() -> u32 {
 const fn default_max_retries() -> u32 {
     DEFAULT_MAX_RETRIES
 }
+#[allow(clippy::trivially_copy_pass_by_ref)]
 fn is_default_max_connections(v: &u32) -> bool {
     *v == DEFAULT_MAX_CONNECTIONS
 }
+#[allow(clippy::trivially_copy_pass_by_ref)]
 fn is_default_max_requests(v: &u32) -> bool {
     *v == DEFAULT_MAX_REQUESTS
 }
+#[allow(clippy::trivially_copy_pass_by_ref)]
 fn is_default_max_retries(v: &u32) -> bool {
     *v == DEFAULT_MAX_RETRIES
 }

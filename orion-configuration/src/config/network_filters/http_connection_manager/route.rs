@@ -261,6 +261,7 @@ fn is_default_timeout(timeout: &Option<Duration>) -> bool {
     *timeout == default_timeout_deser()
 }
 
+#[allow(clippy::trivially_copy_pass_by_ref)]
 fn is_default_priority(priority: &RoutingPriority) -> bool {
     *priority == RoutingPriority::Default
 }

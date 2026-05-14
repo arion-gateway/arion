@@ -150,7 +150,7 @@ mod tests {
     fn test_partition_key_header_name_deserialization() {
         let yaml = "source: !HeaderName x-user-id\nattribute_name: user\n";
         let key: PartitionKey = serde_yaml::from_str(yaml).expect("failed to parse HeaderName");
-        assert_eq!(key.attribute_name, Some("user".to_string()));
+        assert_eq!(key.attribute_name, Some("user".to_owned()));
         assert!(matches!(key.source, PartitionKeySource::HeaderName(_)));
         println!("HeaderName YAML roundtrip:\n{}", serde_yaml::to_string(&key).unwrap());
     }
@@ -159,7 +159,7 @@ mod tests {
     fn test_partition_key_sni_deserialization() {
         let yaml = "source: Sni\nattribute_name: user\n";
         let key: PartitionKey = serde_yaml::from_str(yaml).expect("failed to parse Sni");
-        assert_eq!(key.attribute_name, Some("user".to_string()));
+        assert_eq!(key.attribute_name, Some("user".to_owned()));
         assert!(matches!(key.source, PartitionKeySource::Sni));
         println!("Sni YAML roundtrip:\n{}", serde_yaml::to_string(&key).unwrap());
     }
