@@ -68,7 +68,7 @@ impl NetworkConnectionLimit {
                 "connection rejected: limit reached"
             );
             if let Some(delay) = self.delay {
-                tokio::time::sleep(delay).await;
+                pingora_timeout::sleep(delay).await;
             }
             return Err("connection limit exceeded".into());
         }
