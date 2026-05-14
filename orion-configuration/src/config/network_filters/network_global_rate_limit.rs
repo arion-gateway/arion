@@ -28,8 +28,6 @@ pub struct NetworkGlobalRateLimit {
 
 #[cfg(feature = "envoy-conversions")]
 mod envoy_conversions {
-    use std::time::Duration;
-
     use super::{Descriptor, DescriptorEntry, NetworkGlobalRateLimit};
     use crate::config::network_filters::http_connection_manager::http_filters::ext_proc::{
         ClusterGrpc, GoogleGrpc, GrpcService, GrpcServiceSpecifier,
@@ -39,6 +37,7 @@ mod envoy_conversions {
         config::ratelimit::v3::RateLimitServiceConfig,
         extensions::filters::network::ratelimit::v3::RateLimit as EnvoyRateLimit,
     };
+    use std::time::Duration;
 
     impl TryFrom<EnvoyRateLimit> for NetworkGlobalRateLimit {
         type Error = GenericError;

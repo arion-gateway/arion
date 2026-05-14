@@ -23,7 +23,7 @@ use super::{
     GenericError,
 };
 use crate::config::network_filters::tracing::{TracingConfig, TracingKey};
-use crate::config::network_filters::NetworkGlobalRateLimit;
+use crate::config::network_filters::{ConnectionLimit as ConnectionLimitConfig, NetworkGlobalRateLimit};
 use crate::config::{access_log::AccessLogTarget, listener};
 use ipnet::IpNet;
 use orion_data_plane_api::envoy_data_plane_api::google::protobuf::UInt32Value;
@@ -178,6 +178,8 @@ pub struct FilterChain {
     pub rbac: Vec<NetworkRbac>,
     #[serde(skip_serializing_if = "Option::is_none", default = "Default::default")]
     pub network_global_rate_limit: Option<NetworkGlobalRateLimit>,
+    #[serde(skip_serializing_if = "Option::is_none", default = "Default::default")]
+    pub network_connection_limit: Option<ConnectionLimitConfig>,
     pub terminal_filter: MainFilter,
 }
 
@@ -386,6 +388,7 @@ mod envoy_conversions {
             },
             extensions::{
                 filters::network::{
+                    connection_limit::v3::ConnectionLimit as EnvoyConnectionLimit,
                     http_connection_manager::v3::HttpConnectionManager as EnvoyHttpConnectionManager,
                     ratelimit::v3::RateLimit as EnvoyNetworkGlobalRateLimit, rbac::v3::Rbac as EnvoyNetworkRbac,
                     tcp_proxy::v3::TcpProxy as EnvoyTcpProxy,
@@ -586,6 +589,7 @@ mod envoy_conversions {
                 let filters = required!(filters)?;
                 let mut rbac = Vec::new();
                 let mut network_global_rate_limit = None;
+                let mut network_connection_limit = None;
                 let mut main_filter = None;
                 for (idx, filter) in filters.into_iter().enumerate() {
                     let filter_name = filter.name.clone().is_used().then_some(filter.name.clone());
@@ -619,6 +623,25 @@ mod envoy_conversions {
                                     match rate_limit_filter.try_into() {
                                         Ok(rate_limit) => {
                                             network_global_rate_limit = Some(rate_limit);
+                                            Ok(())
+                                        },
+                                        Result::<_, GenericError>::Err(e) => Err(e),
+                                    }
+                                }
+                            },
+                            SupportedEnvoyFilter::NetworkConnectionLimit(cl_filter) => {
+                                if main_filter.is_some() {
+                                    Err(GenericError::from_msg(
+                                        "connection limit cannot be the last filter in filterchain",
+                                    ))
+                                } else if network_connection_limit.is_some() {
+                                    Err(GenericError::from_msg(
+                                        "multiple connection limit filters defined in filterchain",
+                                    ))
+                                } else {
+                                    match cl_filter.try_into() {
+                                        Ok(cl) => {
+                                            network_connection_limit = Some(cl);
                                             Ok(())
                                         },
                                         Result::<_, GenericError>::Err(e) => Err(e),
@@ -682,6 +705,7 @@ mod envoy_conversions {
                         name: SmolStr::new(&name),
                         rbac,
                         network_global_rate_limit,
+                        network_connection_limit,
                         terminal_filter,
                         tls_config,
                     },
@@ -790,6 +814,7 @@ mod envoy_conversions {
         HttpConnectionManager(EnvoyHttpConnectionManager),
         NetworkRbac(EnvoyNetworkRbac),
         NetworkGlobalRateLimit(EnvoyNetworkGlobalRateLimit),
+        NetworkConnectionLimit(EnvoyConnectionLimit),
         TcpProxy(EnvoyTcpProxy),
     }
 
@@ -805,6 +830,9 @@ mod envoy_conversions {
             },
             "type.googleapis.com/envoy.extensions.filters.network.ratelimit.v3.RateLimit" => {
                 EnvoyNetworkGlobalRateLimit::decode(typed_config.value.as_slice()).map(Self::NetworkGlobalRateLimit)
+            },
+            "type.googleapis.com/envoy.extensions.filters.network.connection_limit.v3.ConnectionLimit" => {
+                EnvoyConnectionLimit::decode(typed_config.value.as_slice()).map(Self::NetworkConnectionLimit)
             },
             "type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy" => {
                 EnvoyTcpProxy::decode(typed_config.value.as_slice()).map(Self::TcpProxy)

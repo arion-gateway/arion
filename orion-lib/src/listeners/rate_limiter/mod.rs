@@ -15,6 +15,7 @@
 //
 //
 
+pub mod connection_limit;
 pub mod global_rate_limiter;
 pub mod local_rate_limiter;
 pub(crate) mod token_bucket;

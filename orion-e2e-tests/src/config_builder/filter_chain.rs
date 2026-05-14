@@ -19,11 +19,12 @@ use orion_data_plane_api::envoy_data_plane_api::{
             listener::v3::{filter::ConfigType, Filter, FilterChain as EnvoyFilterChain, FilterChainMatch},
         },
         extensions::filters::network::{
+            connection_limit::v3::ConnectionLimit as EnvoyConnectionLimit,
             http_connection_manager::v3::HttpConnectionManager, ratelimit::v3::RateLimit as NetworkRateLimit,
             rbac::v3::Rbac as NetworkRbac, tcp_proxy::v3::TcpProxy,
         },
     },
-    google::protobuf::{Any, UInt32Value},
+    google::protobuf::{Any, Duration as ProtoDuration, UInt32Value, UInt64Value},
     prost::Message,
 };
 
@@ -69,6 +70,26 @@ impl FilterChainBuilder {
         self.proto.filters.push(Filter {
             name: "envoy.filters.network.tcp_proxy".into(),
             config_type: Some(ConfigType::TypedConfig(tcp_proxy_any)),
+            ..Default::default()
+        });
+        self
+    }
+
+    #[must_use]
+    pub fn connection_limit(mut self, max_connections: u64, delay: Option<std::time::Duration>) -> Self {
+        let proto = EnvoyConnectionLimit {
+            stat_prefix: "cx_limit".into(),
+            max_connections: Some(UInt64Value { value: max_connections }),
+            delay: delay.map(|d| ProtoDuration { seconds: d.as_secs() as i64, nanos: d.subsec_nanos() as i32 }),
+            runtime_enabled: None,
+        };
+        let any = Any {
+            type_url: "type.googleapis.com/envoy.extensions.filters.network.connection_limit.v3.ConnectionLimit".into(),
+            value: proto.encode_to_vec(),
+        };
+        self.proto.filters.push(Filter {
+            name: "envoy.filters.network.connection_limit".into(),
+            config_type: Some(ConfigType::TypedConfig(any)),
             ..Default::default()
         });
         self
