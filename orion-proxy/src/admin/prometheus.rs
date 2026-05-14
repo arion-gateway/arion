@@ -141,7 +141,7 @@ fn format_histogram<S: Eq + Hash + Clone + Copy>(
 
     // Write buckets
     for (i, &bound) in metric_source.buckets().iter().enumerate() {
-        let bound_str = if bound == u64::MAX { "+Inf".to_string() } else { bound.to_string() };
+        let bound_str = if bound == u64::MAX { "+Inf".to_owned() } else { bound.to_string() };
         let bucket_data = metric_source.counts()[i].load_all();
         for (labels, value) in bucket_data {
             let _ = write!(out, "{full_name}_bucket");

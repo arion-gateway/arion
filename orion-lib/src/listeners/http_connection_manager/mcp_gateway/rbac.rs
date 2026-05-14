@@ -174,7 +174,7 @@ mod tool_rbac_tests {
     fn create_test_claims(subject: &str, role: Option<&str>) -> JwtClaims {
         let mut extra = HashMap::default();
         if let Some(r) = role {
-            extra.insert("role".to_string(), json!(r));
+            extra.insert("role".to_owned(), json!(r));
         }
 
         JwtClaims {

@@ -547,7 +547,7 @@ fn create_immediate_response(
         headers: response_headers,
         body: response_body,
         grpc_status: None,
-        details: "immediate_response".to_string(),
+        details: "immediate_response".to_owned(),
     };
 
     ProcessingResponse {
@@ -3424,18 +3424,18 @@ where
                                 }
                             } else {
                                 // Received more DATA than expected (malformed)
-                                return Err("Error: More DATA chunks than expected.".to_string());
+                                return Err("Error: More DATA chunks than expected.".to_owned());
                             }
 
                             data_index += 1;
                         } else if frame.is_trailers() {
                             // Control 2: TRAILERS Frame
                             if trailers_seen.is_some() {
-                                return Err("Error: Received a second Frame::trailers.".to_string());
+                                return Err("Error: Received a second Frame::trailers.".to_owned());
                             }
                             if data_index < expected_data.len() {
                                 // Trailer frame received before all expected data chunks were seen
-                                return Err("Error: TRAILERS received prematurely before all DATA.".to_string());
+                                return Err("Error: TRAILERS received prematurely before all DATA.".to_owned());
                             }
 
                             trailers_seen = Some(frame.into_trailers().unwrap());
@@ -3471,7 +3471,7 @@ where
     if data_index == expected_data.len() {
         Ok(())
     } else {
-        Err("Body was not consumed completely.".to_string())
+        Err("Body was not consumed completely.".to_owned())
     }
 }
 
@@ -6541,8 +6541,8 @@ async fn test_header_append_action_append_if_exists_or_add() {
     let mut header_mutation = HeaderMutation::default();
     header_mutation.set_headers.push(HeaderValueOption {
         header: Some(EnvoyHeaderValue {
-            key: "x-appended-header".to_string(),
-            value: "new-value".to_string(),
+            key: "x-appended-header".to_owned(),
+            value: "new-value".to_owned(),
             raw_value: vec![],
         }),
         append_action: HeaderAppendAction::AppendIfExistsOrAdd as i32,
@@ -6658,7 +6658,7 @@ async fn test_immediate_response_with_grpc_status() {
         grpc_status: Some(orion_data_plane_api::envoy_data_plane_api::envoy::service::ext_proc::v3::GrpcStatus {
             status: 14, // UNAVAILABLE
         }),
-        details: "grpc_error_details".to_string(),
+        details: "grpc_error_details".to_owned(),
     };
 
     let mock_state = MockExternalProcessorState::new().add_response(MockProcessingResponse::new(ProcessingResponse {
