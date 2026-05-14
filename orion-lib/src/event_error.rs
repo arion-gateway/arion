@@ -288,6 +288,7 @@ impl From<UpstreamError> for ResponseFlags {
 }
 
 pub fn elapsed() -> Elapsed {
+    // SAFETY: a way to construct the Elapsed tokio time error
     unsafe { std::mem::transmute(()) }
 }
 

@@ -514,14 +514,19 @@ pub fn format_system_time(time: SystemTime) -> SmolStr {
 
     builder.push_str(buffer.format(datetime.year()));
     builder.push('-');
+    // SAFETY: datetime.month() is guaranteed to return a valid index within the bounds of the TWO_DIGITS array.
     builder.push_str(unsafe { TWO_DIGITS.get_unchecked(datetime.month() as usize) });
     builder.push('-');
+    // SAFETY: datetime.month() is guaranteed to return a valid index within the bounds of the TWO_DIGITS array.
     builder.push_str(unsafe { TWO_DIGITS.get_unchecked(datetime.day() as usize) });
     builder.push('T');
+    // SAFETY: datetime.month() is guaranteed to return a valid index within the bounds of the TWO_DIGITS array.
     builder.push_str(unsafe { TWO_DIGITS.get_unchecked(datetime.hour() as usize) });
     builder.push(':');
+    // SAFETY: datetime.month() is guaranteed to return a valid index within the bounds of the TWO_DIGITS array.
     builder.push_str(unsafe { TWO_DIGITS.get_unchecked(datetime.minute() as usize) });
     builder.push(':');
+    // SAFETY: datetime.month() is guaranteed to return a valid index within the bounds of the TWO_DIGITS array.
     builder.push_str(unsafe { TWO_DIGITS.get_unchecked(datetime.second() as usize) });
     builder.push(':');
     builder.push_str(buffer.format(datetime.nanosecond() / 1_000_000));
@@ -537,14 +542,19 @@ pub fn format_system_time_heapless(time: SystemTime) -> heapless::String<24> {
     let mut buffer = itoa::Buffer::new();
     _ = rfc3999.push_str(buffer.format(datetime.year()));
     _ = rfc3999.push('-');
+    // SAFETY: datetime.month() is guaranteed to return a valid index within the bounds of the TWO_DIGITS array.
     _ = rfc3999.push_str(unsafe { TWO_DIGITS.get_unchecked(datetime.month() as usize) });
     _ = rfc3999.push('-');
+    // SAFETY: datetime.month() is guaranteed to return a valid index within the bounds of the TWO_DIGITS array.
     _ = rfc3999.push_str(unsafe { TWO_DIGITS.get_unchecked(datetime.day() as usize) });
     _ = rfc3999.push('T');
+    // SAFETY: datetime.month() is guaranteed to return a valid index within the bounds of the TWO_DIGITS array.
     _ = rfc3999.push_str(unsafe { TWO_DIGITS.get_unchecked(datetime.hour() as usize) });
     _ = rfc3999.push(':');
+    // SAFETY: datetime.month() is guaranteed to return a valid index within the bounds of the TWO_DIGITS array.
     _ = rfc3999.push_str(unsafe { TWO_DIGITS.get_unchecked(datetime.minute() as usize) });
     _ = rfc3999.push(':');
+    // SAFETY: datetime.month() is guaranteed to return a valid index within the bounds of the TWO_DIGITS array.
     _ = rfc3999.push_str(unsafe { TWO_DIGITS.get_unchecked(datetime.second() as usize) });
     _ = rfc3999.push(':');
     _ = rfc3999.push_str(buffer.format(datetime.nanosecond() / 1_000_000));
@@ -560,14 +570,19 @@ pub fn format_system_time_compact(time: SystemTime) -> SmolStr {
 
     _ = rfc3999.push_str(buffer.format(datetime.year()));
     _ = rfc3999.push('-');
+    // SAFETY: datetime.month() is guaranteed to return a valid index within the bounds of the TWO_DIGITS array.
     _ = rfc3999.push_str(unsafe { TWO_DIGITS.get_unchecked(datetime.month() as usize) });
     _ = rfc3999.push('-');
+    // SAFETY: datetime.month() is guaranteed to return a valid index within the bounds of the TWO_DIGITS array.
     _ = rfc3999.push_str(unsafe { TWO_DIGITS.get_unchecked(datetime.day() as usize) });
     _ = rfc3999.push('T');
+    // SAFETY: datetime.month() is guaranteed to return a valid index within the bounds of the TWO_DIGITS array.
     _ = rfc3999.push_str(unsafe { TWO_DIGITS.get_unchecked(datetime.hour() as usize) });
     _ = rfc3999.push(':');
+    // SAFETY: datetime.month() is guaranteed to return a valid index within the bounds of the TWO_DIGITS array.
     _ = rfc3999.push_str(unsafe { TWO_DIGITS.get_unchecked(datetime.minute() as usize) });
     _ = rfc3999.push(':');
+    // SAFETY: datetime.month() is guaranteed to return a valid index within the bounds of the TWO_DIGITS array.
     _ = rfc3999.push_str(unsafe { TWO_DIGITS.get_unchecked(datetime.second() as usize) });
     _ = rfc3999.push(':');
     _ = rfc3999.push_str(buffer.format(datetime.nanosecond() / 1_000_000));

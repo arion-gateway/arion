@@ -358,9 +358,9 @@ mod tests {
     #[test]
     fn http_tracer_and_req_with_traceparent_with_sampling_100_percent() {
         let config = TracingConfig {
-            client_sampling: Some(unsafe { BoundedU16::<0, 100>::new_unchecked(100) }),
-            random_sampling: Some(unsafe { BoundedU16::<0, 100>::new_unchecked(100) }),
-            overall_sampling: Some(unsafe { BoundedU16::<0, 100>::new_unchecked(100) }),
+            client_sampling: BoundedU16::<0, 100>::new(100),
+            random_sampling: BoundedU16::<0, 100>::new(100),
+            overall_sampling: BoundedU16::<0, 100>::new(100),
             verbose: false,
             max_path_tag_length: None,
             spawn_upstream_span: false,
@@ -398,9 +398,9 @@ mod tests {
     #[test]
     fn http_tracer_and_req_with_traceparent_and_sampling_0_percent() {
         let config = TracingConfig {
-            client_sampling: Some(unsafe { BoundedU16::<0, 100>::new_unchecked(0) }),
-            random_sampling: Some(unsafe { BoundedU16::<0, 100>::new_unchecked(0) }),
-            overall_sampling: Some(unsafe { BoundedU16::<0, 100>::new_unchecked(0) }),
+            client_sampling: BoundedU16::<0, 100>::new(0),
+            random_sampling: BoundedU16::<0, 100>::new(0),
+            overall_sampling: BoundedU16::<0, 100>::new(0),
             verbose: false,
             max_path_tag_length: None,
             spawn_upstream_span: false,
@@ -437,9 +437,9 @@ mod tests {
     #[test]
     fn http_tracer_and_req_with_traceparent_with_sampled_false() {
         let config = TracingConfig {
-            client_sampling: Some(unsafe { BoundedU16::<0, 100>::new_unchecked(100) }),
-            random_sampling: Some(unsafe { BoundedU16::<0, 100>::new_unchecked(100) }),
-            overall_sampling: Some(unsafe { BoundedU16::<0, 100>::new_unchecked(100) }),
+            client_sampling:  BoundedU16::<0, 100>::new(100),
+            random_sampling:  BoundedU16::<0, 100>::new(100),
+            overall_sampling: BoundedU16::<0, 100>::new(100),
             verbose: false,
             max_path_tag_length: None,
             spawn_upstream_span: false,
@@ -491,9 +491,9 @@ mod tests {
     #[test]
     fn build_tracer_no_sample_create_none_span() {
         let config = TracingConfig {
-            client_sampling: Some(unsafe { BoundedU16::<0, 100>::new_unchecked(100) }),
-            random_sampling: Some(unsafe { BoundedU16::<0, 100>::new_unchecked(100) }),
-            overall_sampling: Some(unsafe { BoundedU16::<0, 100>::new_unchecked(100) }),
+            client_sampling:  BoundedU16::<0, 100>::new(100),
+            random_sampling:  BoundedU16::<0, 100>::new(100),
+            overall_sampling: BoundedU16::<0, 100>::new(100),
             verbose: false,
             max_path_tag_length: None,
             spawn_upstream_span: false,

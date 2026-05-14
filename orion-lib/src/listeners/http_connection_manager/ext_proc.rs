@@ -72,14 +72,17 @@ use tokio::sync::{mpsc, oneshot, Semaphore};
 use tracing::{debug, info, warn};
 
 /// The total number of frames to prefetch before sending the request to the upstream service.
-const CHANNEL_BODY_PREFETCH_FRAMES: NonZeroUsize = unsafe {
-    NonZeroUsize::new_unchecked(parse!(
+const CHANNEL_BODY_PREFETCH_FRAMES: NonZeroUsize = {
+    let val = parse!(
         match option_env!("CHANNEL_BODY_PREFETCH_FRAMES") {
             Some(s) => s,
             None => "4",
         },
         usize
-    ))
+    );
+
+    // Evaluates safely at compile time, panicking during the build if val is 0
+    NonZeroUsize::new(val).expect("CHANNEL_BODY_PREFETCH_FRAMES must be greater than 0")
 };
 
 /// The maximum number of bytes to buffer in memory for the request body in buffered mode.

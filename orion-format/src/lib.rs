@@ -169,6 +169,7 @@ impl LogFormatter {
         for (idx, template) in self.conf.templates.iter().enumerate() {
             unsafe {
                 if let Template::Placeholder(op, _) = template {
+                    // SAFETY: `idx` is guaranteed to be valid for `format` vector by construction.
                     if matches!(self.format.get_unchecked(idx), StringType::None) {
                         let result = ctx.eval_part(op);
                         if !matches!(result, StringType::None) {
