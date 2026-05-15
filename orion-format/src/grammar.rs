@@ -209,8 +209,8 @@ impl AccessLogGrammar {
         if let Some((t, _, _, _)) = ENVOY_REQ_ARGS.find_longest_prefix(arg.bytes()) {
             Ok(t.clone())
         } else {
-            let valid_name =
-                http::HeaderName::from_bytes(arg.as_bytes()).map_err(|_e| FormatError::InvalidRequestArg(arg.into()))?;
+            let valid_name = http::HeaderName::from_bytes(arg.as_bytes())
+                .map_err(|_e| FormatError::InvalidRequestArg(arg.into()))?;
             Ok(ReqArgument::Header(HeaderName(valid_name.as_str().into())))
         }
     }

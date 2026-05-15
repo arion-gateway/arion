@@ -46,19 +46,15 @@ async fn test_original_dst_routes_to_header_destination() {
     let client = TestClient::new(orion.listener_addr().unwrap());
 
     for _ in 0..10 {
-        let response = client
-            .send(RequestBuilder::get("/test").header(DEFAULT_DST_HEADER, dest_header(&backend1)))
-            .await
-            .unwrap();
+        let response =
+            client.send(RequestBuilder::get("/test").header(DEFAULT_DST_HEADER, dest_header(&backend1))).await.unwrap();
         response.assert_status(StatusCode::OK);
         response.assert_body("b1");
     }
 
     for _ in 0..10 {
-        let response = client
-            .send(RequestBuilder::get("/test").header(DEFAULT_DST_HEADER, dest_header(&backend2)))
-            .await
-            .unwrap();
+        let response =
+            client.send(RequestBuilder::get("/test").header(DEFAULT_DST_HEADER, dest_header(&backend2))).await.unwrap();
         response.assert_status(StatusCode::OK);
         response.assert_body("b2");
     }

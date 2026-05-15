@@ -132,7 +132,8 @@ impl FilterChainBuilder {
         let transport_socket = TransportSocket {
             name: "envoy.transport_sockets.tls".to_owned(),
             config_type: Some(TransportSocketConfigType::TypedConfig(Any {
-                type_url: "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext".to_owned(),
+                type_url: "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext"
+                    .to_owned(),
                 value: tls_proto.encode_to_vec(),
             })),
         };

@@ -187,7 +187,10 @@ impl GrpcTestBackendBuilder {
 
         let health_state = self.enable_health.then(TrackingHealthState::new);
 
-        let test_service = self.enable_test_service.then(|| TestServiceImpl { backend_id: self.backend_id.clone(), request_count: Arc::clone(&request_count) });
+        let test_service = self.enable_test_service.then(|| TestServiceImpl {
+            backend_id: self.backend_id.clone(),
+            request_count: Arc::clone(&request_count),
+        });
 
         let shutdown_clone = Arc::clone(&shutdown);
         let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);

@@ -164,13 +164,7 @@ impl SyntheticHttpResponse {
         event_kind: EventKind,
         response_flags: ResponseFlags,
     ) -> Self {
-        Self {
-            http_status,
-            event_kind,
-            response_flags,
-            body: body.unwrap_or_default(),
-            close_connection: false,
-        }
+        Self { http_status, event_kind, response_flags, body: body.unwrap_or_default(), close_connection: false }
     }
 
     #[inline]

@@ -22,8 +22,8 @@
  * connections are done. It's a bit more code, but worth in the long run.
  */
 
-use std::{collections::VecDeque, task::Poll, time::Duration};
 use parking_lot::Mutex;
+use std::{collections::VecDeque, task::Poll, time::Duration};
 
 use crate::clusters::health::{
     checkers::tests::{deref, TestFixture},

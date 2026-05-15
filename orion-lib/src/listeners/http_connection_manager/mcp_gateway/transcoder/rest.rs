@@ -528,13 +528,8 @@ mod tests {
 
         let query_params =
             vec![super::super::McpRestQueryParams { name: "status".into(), source: "filters.status".into() }];
-        let transcoder = create_transcoder(
-            http::Method::GET,
-            "/api/users/{{user_id}}/orders".to_owned(),
-            query_params,
-            false,
-            None,
-        );
+        let transcoder =
+            create_transcoder(http::Method::GET, "/api/users/{{user_id}}/orders".to_owned(), query_params, false, None);
 
         let result = transcoder.encode(http_request.headers(), &mcp_request);
         assert!(result.is_ok(), "Expected successful encoding but got: {result:?}");

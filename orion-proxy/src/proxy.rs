@@ -421,9 +421,7 @@ async fn configure_initial_resources(
 
     let listeners_tx: Vec<_> = configuration_senders
         .into_iter()
-        .map(|ConfigurationSenders { listener_configuration_sender, .. }| {
-            listener_configuration_sender
-        })
+        .map(|ConfigurationSenders { listener_configuration_sender, .. }| listener_configuration_sender)
         .collect();
 
     for (listener, listener_conf) in listeners.iter().zip(bootstrap.static_resources.listeners) {

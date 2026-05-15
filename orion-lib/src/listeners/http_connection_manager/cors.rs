@@ -67,7 +67,9 @@ impl Cors {
                 None => return FilterDecision::Continue, // Should not happen given is_preflight check
             };
 
-            let req_method = if let Ok(m) = Method::from_bytes(req_method_hdr.as_bytes()) { m } else {
+            let req_method = if let Ok(m) = Method::from_bytes(req_method_hdr.as_bytes()) {
+                m
+            } else {
                 debug!(target: "cors", "Preflight failed: Invalid method in Access-Control-Request-Method");
                 return FilterDecision::Continue;
             };

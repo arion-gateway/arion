@@ -188,7 +188,8 @@ impl ClusterBuilder {
         };
 
         let override_host_typed_config = Any {
-            type_url: "type.googleapis.com/envoy.extensions.load_balancing_policies.override_host.v3.OverrideHost".to_owned(),
+            type_url: "type.googleapis.com/envoy.extensions.load_balancing_policies.override_host.v3.OverrideHost"
+                .to_owned(),
             value: override_host.encode_to_vec(),
         };
 
@@ -207,7 +208,8 @@ impl ClusterBuilder {
     fn build_lb_policy_typed_config(policy: LbPolicy) -> Any {
         match policy {
             LbPolicy::RoundRobin => Any {
-                type_url: "type.googleapis.com/envoy.extensions.load_balancing_policies.round_robin.v3.RoundRobin".to_owned(),
+                type_url: "type.googleapis.com/envoy.extensions.load_balancing_policies.round_robin.v3.RoundRobin"
+                    .to_owned(),
                 value: EnvoyRoundRobin::default().encode_to_vec(),
             },
             LbPolicy::Random => Any {
@@ -218,21 +220,24 @@ impl ClusterBuilder {
                 use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::load_balancing_policies::least_request::v3::LeastRequest;
                 Any {
                     type_url:
-                        "type.googleapis.com/envoy.extensions.load_balancing_policies.least_request.v3.LeastRequest".to_owned(),
+                        "type.googleapis.com/envoy.extensions.load_balancing_policies.least_request.v3.LeastRequest"
+                            .to_owned(),
                     value: LeastRequest::default().encode_to_vec(),
                 }
             },
             LbPolicy::RingHash => {
                 use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::load_balancing_policies::ring_hash::v3::RingHash;
                 Any {
-                    type_url: "type.googleapis.com/envoy.extensions.load_balancing_policies.ring_hash.v3.RingHash".to_owned(),
+                    type_url: "type.googleapis.com/envoy.extensions.load_balancing_policies.ring_hash.v3.RingHash"
+                        .to_owned(),
                     value: RingHash::default().encode_to_vec(),
                 }
             },
             LbPolicy::Maglev => {
                 use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::load_balancing_policies::maglev::v3::Maglev;
                 Any {
-                    type_url: "type.googleapis.com/envoy.extensions.load_balancing_policies.maglev.v3.Maglev".to_owned(),
+                    type_url: "type.googleapis.com/envoy.extensions.load_balancing_policies.maglev.v3.Maglev"
+                        .to_owned(),
                     value: Maglev::default().encode_to_vec(),
                 }
             },

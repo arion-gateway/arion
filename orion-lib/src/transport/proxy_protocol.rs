@@ -402,7 +402,7 @@ impl TryFrom<(UpstreamProxyProtocolConfig, &SecretManager)> for ProxyProtocolCon
 mod tests {
     use super::*;
     use crate::utils::instrumented_stream::InstrumentedStream;
-    use std::net::{Ipv4Addr};
+    use std::net::Ipv4Addr;
 
     #[tokio::test]
     #[allow(clippy::ref_option)]

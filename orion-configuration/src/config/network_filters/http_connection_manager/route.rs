@@ -524,7 +524,7 @@ impl Hash for PathSpecifier {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::core::{StringMatcherPattern};
+    use crate::config::core::StringMatcherPattern;
 
     #[test]
     fn test_rewrite_uri_by_path_match_range() {

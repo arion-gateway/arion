@@ -909,21 +909,25 @@ impl ExternalProcessingWorker<kind::Processing> {
     }
 
     async fn recover_or_failure(&mut self, err: ExtProcError, log_msg: &str) {
-        let proof_request = self.request_processing.make_proof().unwrap_or_else(|| if let ExtProcError::Timeout(_) = err {
-            let status = self.request_processing.status_timeout(self.inner.worker_config.failure_mode_allow);
-            self.request_processing.return_status(status, "recover_or_failure: timeout")
-        } else {
-            let status = self.request_processing.status_error(log_msg, self.inner.worker_config.failure_mode_allow);
-            self.request_processing.return_status(status, "recover_or_failure: error")
+        let proof_request = self.request_processing.make_proof().unwrap_or_else(|| {
+            if let ExtProcError::Timeout(_) = err {
+                let status = self.request_processing.status_timeout(self.inner.worker_config.failure_mode_allow);
+                self.request_processing.return_status(status, "recover_or_failure: timeout")
+            } else {
+                let status = self.request_processing.status_error(log_msg, self.inner.worker_config.failure_mode_allow);
+                self.request_processing.return_status(status, "recover_or_failure: error")
+            }
         });
 
-        let proof_response = self.response_processing.make_proof().unwrap_or_else(|| if let ExtProcError::Timeout(_) = err {
-            let status = self.response_processing.status_timeout(self.inner.worker_config.failure_mode_allow);
-            self.response_processing.return_status(status, "recover_or_failure: timeout")
-        } else {
-            let status =
-                self.response_processing.status_error(log_msg, self.inner.worker_config.failure_mode_allow);
-            self.response_processing.return_status(status, "recover_or_failure: error")
+        let proof_response = self.response_processing.make_proof().unwrap_or_else(|| {
+            if let ExtProcError::Timeout(_) = err {
+                let status = self.response_processing.status_timeout(self.inner.worker_config.failure_mode_allow);
+                self.response_processing.return_status(status, "recover_or_failure: timeout")
+            } else {
+                let status =
+                    self.response_processing.status_error(log_msg, self.inner.worker_config.failure_mode_allow);
+                self.response_processing.return_status(status, "recover_or_failure: error")
+            }
         });
 
         if self.inner.worker_config.failure_mode_allow {
@@ -1715,17 +1719,21 @@ impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
             Some(Err(err)) => {
                 info!(target: "ext_proc", "External processor is unavailable: {err}");
                 if let Some(reply_channel) = self.response_processing.reply_channel.take() {
-                    let _ = reply_channel.send(self.response_processing.status_error(
-                        "Lost connection to external processor",
-                        self.inner.worker_config.failure_mode_allow,
-                    )).ok();
+                    let _ = reply_channel
+                        .send(self.response_processing.status_error(
+                            "Lost connection to external processor",
+                            self.inner.worker_config.failure_mode_allow,
+                        ))
+                        .ok();
                 }
 
                 if let Some(reply_channel) = self.request_processing.reply_channel.take() {
-                    let _ = reply_channel.send(self.request_processing.status_error(
-                        "Lost connection to external processor",
-                        self.inner.worker_config.failure_mode_allow,
-                    )).ok();
+                    let _ = reply_channel
+                        .send(self.request_processing.status_error(
+                            "Lost connection to external processor",
+                            self.inner.worker_config.failure_mode_allow,
+                        ))
+                        .ok();
                 }
 
                 self.timeout_state.active = false;
@@ -1743,12 +1751,14 @@ impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
             let msg = "External processor attempted multiple timeout extensions";
             if let Some(reply_channel) = self.response_processing.reply_channel.take() {
                 let _ = reply_channel
-                    .send(self.response_processing.status_error(msg, self.inner.worker_config.failure_mode_allow)).ok();
+                    .send(self.response_processing.status_error(msg, self.inner.worker_config.failure_mode_allow))
+                    .ok();
             }
 
             if let Some(reply_channel) = self.request_processing.reply_channel.take() {
                 let _ = reply_channel
-                    .send(self.request_processing.status_error(msg, self.inner.worker_config.failure_mode_allow)).ok();
+                    .send(self.request_processing.status_error(msg, self.inner.worker_config.failure_mode_allow))
+                    .ok();
             }
 
             return false;

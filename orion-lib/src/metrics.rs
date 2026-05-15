@@ -14,7 +14,7 @@ macro_rules! with_metric {
         }
         #[cfg(not(feature = "metrics"))]
         {
-            
+
         }
     };
 }
@@ -28,7 +28,7 @@ macro_rules! with_histogram {
         }
         #[cfg(not(feature = "metrics"))]
         {
-            
+
         }
     };
 }

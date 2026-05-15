@@ -127,7 +127,8 @@ where
                     health: health_status.status().unwrap_or_default(),
                     changed: health_status_change.is_some(),
                 })
-                .await.ok();
+                .await
+                .ok();
 
             if self
                 .interval_waiter

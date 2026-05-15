@@ -115,7 +115,7 @@ impl BufRead for DataSourceReader<'_> {
 
     fn consume(&mut self, amt: usize) {
         match self {
-            Self::OwnedBytes { read, ..} => *read += amt,
+            Self::OwnedBytes { read, .. } => *read += amt,
             Self::InlineBytes(b) => b.consume(amt),
             Self::Path(reader) => reader.consume(amt),
         }
@@ -341,8 +341,9 @@ pub mod envoy_conversions {
     impl TryFrom<u32> for RustType<StatusCode> {
         type Error = GenericError;
         fn try_from(value: u32) -> Result<Self, Self::Error> {
-            let code: u16 =
-                value.try_into().map_err(|_e| GenericError::from_msg(format!("invalid envoy status code {value:?}")))?;
+            let code: u16 = value
+                .try_into()
+                .map_err(|_e| GenericError::from_msg(format!("invalid envoy status code {value:?}")))?;
             StatusCode::from_u16(code)
                 .map(RustType)
                 .map_err(|e| GenericError::from_msg(format!("Failed to convert {code} into a StatusCode: {e}")))

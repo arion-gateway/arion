@@ -507,8 +507,7 @@ mod tests {
 
     use crate::secrets::SecretManager;
     use orion_configuration::config::cluster::{
-        http_protocol_options::Codec, Cluster as ClusterConfig, LbPolicy, OriginalDstConfig,
-        StandardLbPolicy,
+        http_protocol_options::Codec, Cluster as ClusterConfig, LbPolicy, OriginalDstConfig, StandardLbPolicy,
     };
     use std::str::FromStr;
 

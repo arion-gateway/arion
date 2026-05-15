@@ -464,10 +464,7 @@ impl ToolsRegistry {
         }
 
         match (&entry.conf.backend, &entry.transcoder) {
-            (
-                UpstreamBackend::Rest { cluster, r#async, .. },
-                TranscoderType::Rest(transcoder),
-            ) => {
+            (UpstreamBackend::Rest { cluster, r#async, .. }, TranscoderType::Rest(transcoder)) => {
                 let mut upstream_request = transcoder.encode(req_headers, &rpc.request).map_err(|e| {
                     CallToolError::TranscoderError { tool: tool_name.to_owned(), reason: e.to_string() }
                 })?;

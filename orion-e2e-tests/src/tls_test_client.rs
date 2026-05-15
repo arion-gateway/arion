@@ -43,7 +43,6 @@ pub struct TlsClientConfig {
     pub tls_max_version: Option<&'static rustls::SupportedProtocolVersion>,
 }
 
-
 impl TlsClientConfig {
     pub fn with_root_ca(ca_path: impl AsRef<Path>) -> Result<Self> {
         let root_ca = Self::load_root_store(ca_path)?;

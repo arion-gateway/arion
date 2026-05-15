@@ -95,7 +95,7 @@ pub struct ClientCert {
 
 impl From<CertificateSecret> for ClientCert {
     fn from(secret: CertificateSecret) -> Self {
-        let CertificateSecret { key, certs, ..} = secret;
+        let CertificateSecret { key, certs, .. } = secret;
         ClientCert { key, certs }
     }
 }

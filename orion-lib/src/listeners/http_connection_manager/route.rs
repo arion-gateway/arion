@@ -254,8 +254,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
                         let err = err.into_inner();
                         let event_error = UpstreamError::try_infer_from(&err);
                         let flags = event_error.clone().map(ResponseFlags::from).unwrap_or_default();
-                        let event_kind =
-                            event_error.map_or(EventFailure::ViaUpstream.into(), EventKind::Upstream);
+                        let event_kind = event_error.map_or(EventFailure::ViaUpstream.into(), EventKind::Upstream);
                         debug!(
                             "HttpConnectionManager Error processing response {:?}: {}({})",
                             err,

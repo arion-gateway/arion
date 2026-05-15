@@ -54,9 +54,7 @@ impl JwtHeaderMatcher {
 
         if let Some(header) = header {
             match &self.field {
-                JwtHeaderField::Algorithm => {
-                    jsonwebtoken::Algorithm::from_str(self.value.as_str()) == Ok(header.alg)
-                },
+                JwtHeaderField::Algorithm => jsonwebtoken::Algorithm::from_str(self.value.as_str()) == Ok(header.alg),
                 JwtHeaderField::Type => header.typ.as_ref().is_some_and(|t| t.as_str() == self.value.as_str()),
                 JwtHeaderField::ContentType => header.cty.as_ref().is_some_and(|c| c.as_str() == self.value.as_str()),
                 JwtHeaderField::KeyID => header.kid.as_ref().is_some_and(|k| k.as_str() == self.value.as_str()),

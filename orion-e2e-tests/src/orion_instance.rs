@@ -310,7 +310,8 @@ impl OrionInstance {
                                             "Listener started on wrong port. Expected: {}, Got: {}",
                                             expected_port,
                                             addr.port()
-                                        ))).unwrap_or_else(|e| {
+                                        )))
+                                        .unwrap_or_else(|e| {
                                             error!("Failed to send listener ready signal: {e:?}");
                                         });
                                     }

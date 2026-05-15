@@ -28,9 +28,7 @@ use std::time::Duration;
 
 use super::*;
 use crate::{
-    clusters::health::{
-        checkers::tests::{deref, TestFixture},
-    },
+    clusters::health::checkers::tests::{deref, TestFixture},
     PolyBody, Result,
 };
 

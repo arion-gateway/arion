@@ -47,7 +47,12 @@ async fn test_circuit_breaker_max_requests_overflow() {
         })
         .collect();
 
-    let results: Vec<_> = join_all(handles).await.into_iter().filter_map(std::result::Result::ok).filter_map(std::result::Result::ok).collect();
+    let results: Vec<_> = join_all(handles)
+        .await
+        .into_iter()
+        .filter_map(std::result::Result::ok)
+        .filter_map(std::result::Result::ok)
+        .collect();
 
     let ok_count = results.iter().filter(|r| r.status == StatusCode::OK).count();
     let overflow_count = results.iter().filter(|r| r.status == StatusCode::SERVICE_UNAVAILABLE).count();
@@ -170,7 +175,12 @@ async fn test_circuit_breaker_exact_boundary() {
         })
         .collect();
 
-    let results: Vec<_> = join_all(handles).await.into_iter().filter_map(std::result::Result::ok).filter_map(std::result::Result::ok).collect();
+    let results: Vec<_> = join_all(handles)
+        .await
+        .into_iter()
+        .filter_map(std::result::Result::ok)
+        .filter_map(std::result::Result::ok)
+        .collect();
 
     let ok_count = results.iter().filter(|r| r.status == StatusCode::OK).count();
     let overflow_count = results.iter().filter(|r| r.status == StatusCode::SERVICE_UNAVAILABLE).count();
@@ -293,10 +303,18 @@ async fn test_circuit_breaker_high_priority_independent() {
         })
         .collect();
 
-    let default_results: Vec<_> =
-        join_all(default_handles).await.into_iter().filter_map(std::result::Result::ok).filter_map(std::result::Result::ok).collect();
-    let high_results: Vec<_> =
-        join_all(high_handles).await.into_iter().filter_map(std::result::Result::ok).filter_map(std::result::Result::ok).collect();
+    let default_results: Vec<_> = join_all(default_handles)
+        .await
+        .into_iter()
+        .filter_map(std::result::Result::ok)
+        .filter_map(std::result::Result::ok)
+        .collect();
+    let high_results: Vec<_> = join_all(high_handles)
+        .await
+        .into_iter()
+        .filter_map(std::result::Result::ok)
+        .filter_map(std::result::Result::ok)
+        .collect();
 
     let default_ok = default_results.iter().filter(|r| r.status == StatusCode::OK).count();
     let default_denied = default_results.iter().filter(|r| r.status == StatusCode::SERVICE_UNAVAILABLE).count();
@@ -346,7 +364,12 @@ async fn test_circuit_breaker_xds_config() {
         })
         .collect();
 
-    let results: Vec<_> = join_all(handles).await.into_iter().filter_map(std::result::Result::ok).filter_map(std::result::Result::ok).collect();
+    let results: Vec<_> = join_all(handles)
+        .await
+        .into_iter()
+        .filter_map(std::result::Result::ok)
+        .filter_map(std::result::Result::ok)
+        .collect();
 
     let ok_count = results.iter().filter(|r| r.status == StatusCode::OK).count();
     let overflow_count = results.iter().filter(|r| r.status == StatusCode::SERVICE_UNAVAILABLE).count();

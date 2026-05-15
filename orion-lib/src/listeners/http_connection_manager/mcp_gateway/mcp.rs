@@ -436,32 +436,34 @@ impl McpGateway {
                 }
                 FilterDecision::Continue
             },
-            Transport::StreamableHttp => if let Some(sender) = self.streamable_async_sender.as_mut() {
-                debug!(target: "mcp_gateway", "apply_response: streamable HTTP (async)...");
-                let mut sender_guard = sender.lock().await;
-                let sender = &mut *sender_guard;
-                let event = transport::streamable_http::Event::Message(&json_rpc_response);
-                let mut buf = BytesMut::with_capacity(1024);
-                event.write_to(&mut buf);
-                if let Err(e) = sender.send(buf.freeze()).await {
-                    debug!(target: "mcp_gateway", "apply_response: failed to send message for session {}, error {e}", session.session_id);
-                }
-                sender.close();
-                FilterDecision::Continue
-            } else {
-                debug!(target: "mcp_gateway", "apply_response: streamable HTTP (sync)...");
-                let body = serde_json::to_vec(&json_rpc_response).unwrap_or_default();
-                let headers = self.build_headers_with_session(MIME_APPLICATION_JSON);
-                if let Ok(resp) = self.build_mcp_http_response(
-                    StatusCode::OK,
-                    Self::build_mcp_response_body(Some(body.into())),
-                    &headers,
-                ) {
-                    *response = resp;
+            Transport::StreamableHttp => {
+                if let Some(sender) = self.streamable_async_sender.as_mut() {
+                    debug!(target: "mcp_gateway", "apply_response: streamable HTTP (async)...");
+                    let mut sender_guard = sender.lock().await;
+                    let sender = &mut *sender_guard;
+                    let event = transport::streamable_http::Event::Message(&json_rpc_response);
+                    let mut buf = BytesMut::with_capacity(1024);
+                    event.write_to(&mut buf);
+                    if let Err(e) = sender.send(buf.freeze()).await {
+                        debug!(target: "mcp_gateway", "apply_response: failed to send message for session {}, error {e}", session.session_id);
+                    }
+                    sender.close();
                     FilterDecision::Continue
                 } else {
-                    debug!(target: "mcp_gateway", "apply_response: Failed to build MCP response");
-                    FilterDecision::Continue
+                    debug!(target: "mcp_gateway", "apply_response: streamable HTTP (sync)...");
+                    let body = serde_json::to_vec(&json_rpc_response).unwrap_or_default();
+                    let headers = self.build_headers_with_session(MIME_APPLICATION_JSON);
+                    if let Ok(resp) = self.build_mcp_http_response(
+                        StatusCode::OK,
+                        Self::build_mcp_response_body(Some(body.into())),
+                        &headers,
+                    ) {
+                        *response = resp;
+                        FilterDecision::Continue
+                    } else {
+                        debug!(target: "mcp_gateway", "apply_response: Failed to build MCP response");
+                        FilterDecision::Continue
+                    }
                 }
             },
         }
@@ -931,11 +933,7 @@ impl McpGateway {
 
                 let server_info = {
                     let info = &self.inner.config.server_info;
-                    Implementation {
-                        name: info.name.clone(),
-                        version: info.version.clone(),
-                        ..Default::default()
-                    }
+                    Implementation { name: info.name.clone(), version: info.version.clone(), ..Default::default() }
                 };
 
                 let result = InitializeResult {

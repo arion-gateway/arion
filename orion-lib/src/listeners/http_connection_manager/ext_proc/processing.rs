@@ -223,8 +223,6 @@ pub(crate) mod protected {
         inner: PubFrameBridge,
     }
 
-
-
     impl Stream for FrameBridge {
         type Item = Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -860,14 +858,14 @@ impl<M: kind::Mode + Default, Msg: kind::MessageKind + OverridableModeSelector> 
         if matches!(
             override_mode.body_mode::<Msg>(),
             OverridableBodyMode::Buffered | OverridableBodyMode::BufferedPartial
-        )
-            && self.frame_bridge.source_has_non_empty_body() == Some(true) && override_mode.should_process_body::<Msg>()
-            {
-                if streaming_enabled {
-                    return None;
-                }
-                debug!(target: "ext_proc", "process_body_and_trailers: no body/trailers to stream (internal error)");
+        ) && self.frame_bridge.source_has_non_empty_body() == Some(true)
+            && override_mode.should_process_body::<Msg>()
+        {
+            if streaming_enabled {
+                return None;
             }
+            debug!(target: "ext_proc", "process_body_and_trailers: no body/trailers to stream (internal error)");
+        }
 
         _ = self.return_status(ProcessingStatus::ready::<Msg>(), "process_body_and_trailers (ready status)!");
         None

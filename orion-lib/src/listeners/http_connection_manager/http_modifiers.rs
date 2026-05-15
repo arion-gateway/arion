@@ -439,7 +439,7 @@ mod tests {
     use super::*;
     use orion_configuration::config::network_filters::http_connection_manager::header_modifier::HeaderKeyValue;
     use orion_format::header_formatter::HeaderFormatter;
-    use std::net::{Ipv4Addr};
+    use std::net::Ipv4Addr;
 
     use http::header::{COOKIE, LOCATION, USER_AGENT};
 

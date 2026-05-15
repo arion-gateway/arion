@@ -30,7 +30,7 @@ use smol_str::{SmolStr, ToSmolStr};
 use std::sync::Arc;
 use tracing::{debug, warn};
 use webpki::types::ServerName;
-use x509_parser::{extensions::GeneralName};
+use x509_parser::extensions::GeneralName;
 
 #[derive(Clone, Debug)]
 pub struct CertStore {

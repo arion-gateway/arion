@@ -217,7 +217,11 @@ impl CapturedProcessingRequest {
 }
 
 pub mod ext_proc_responses {
-    use super::{HeaderValueOption, EnvoyHeaderValue, HeaderAppendAction, ProcessingResponse, ProcessingResponseType, HeadersResponse, CommonResponse, ResponseStatus, HeaderMutation, ImmediateResponse, EnvoyHttpStatus, BodyResponse, BodyMutation, Mutation};
+    use super::{
+        BodyMutation, BodyResponse, CommonResponse, EnvoyHeaderValue, EnvoyHttpStatus, HeaderAppendAction,
+        HeaderMutation, HeaderValueOption, HeadersResponse, ImmediateResponse, Mutation, ProcessingResponse,
+        ProcessingResponseType, ResponseStatus,
+    };
 
     fn header_value_option(key: &str, value: &str) -> HeaderValueOption {
         HeaderValueOption {

@@ -22,9 +22,9 @@
  * connections are done. It's a bit more code, but worth in the long run.
  */
 
-use std::time::Duration;
 use orion_xds::grpc_deps::Response;
 use parking_lot::Mutex;
+use std::time::Duration;
 
 use crate::clusters::health::{
     checkers::tests::{deref, TestFixture},

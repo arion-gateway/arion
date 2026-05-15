@@ -60,9 +60,7 @@ mod envoy_conversions {
 
     use super::{DownstreamProxyProtocolConfig, ListenerFilter, ListenerFilterConfig};
     use crate::config::{
-        common::*,
-        core::RustType,
-        listener_filters::ListenerLocalRateLimitConfig,
+        common::*, core::RustType, listener_filters::ListenerLocalRateLimitConfig,
         network_filters::http_connection_manager::http_filters::local_rate_limit::TokenBucket,
         transport::ProxyProtocolPassThroughTlvs,
     };

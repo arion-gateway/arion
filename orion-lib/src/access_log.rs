@@ -174,20 +174,22 @@ pub fn try_log_access(target: Target, vec: Vec<FormattedMessage>) -> Result<(), 
 #[inline]
 pub fn log_access_blocking(target: Target, vec: Vec<FormattedMessage>) {
     let target_clone = target.clone();
-    if let Err(err) = try_log_access(target, vec) { match err {
-        TrySendError::Full(vec) => {
-            if is_blocking() {
-                tokio::task::block_in_place(move || {
-                    if let Some(sender) = get_sender() {
-                        sender.blocking_send(AccessLogMessage::Message(target_clone, vec)).ok();
-                    }
-                });
-            }
-        },
-        TrySendError::Closed(_) => {
-            error!("Failed to send access log message: no available sender (channel closed)");
-        },
-    } }
+    if let Err(err) = try_log_access(target, vec) {
+        match err {
+            TrySendError::Full(vec) => {
+                if is_blocking() {
+                    tokio::task::block_in_place(move || {
+                        if let Some(sender) = get_sender() {
+                            sender.blocking_send(AccessLogMessage::Message(target_clone, vec)).ok();
+                        }
+                    });
+                }
+            },
+            TrySendError::Closed(_) => {
+                error!("Failed to send access log message: no available sender (channel closed)");
+            },
+        }
+    }
 }
 
 /// Initializes the global sender pool and spawns background logger tasks.
