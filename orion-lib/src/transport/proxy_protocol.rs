@@ -400,12 +400,9 @@ impl TryFrom<(UpstreamProxyProtocolConfig, &SecretManager)> for ProxyProtocolCon
 
 #[cfg(test)]
 mod tests {
-    use crate::utils::instrumented_stream::InstrumentedStream;
-
     use super::*;
-    use orion_configuration::config::transport::{PassTlvMatchType, ProxyProtocolPassThroughTlvs, TlvEntry};
-    use std::net::{Ipv4Addr, SocketAddr};
-    use tokio::io::AsyncWriteExt;
+    use crate::utils::instrumented_stream::InstrumentedStream;
+    use std::net::{Ipv4Addr};
 
     #[tokio::test]
     #[allow(clippy::ref_option)]

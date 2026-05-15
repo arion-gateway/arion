@@ -405,9 +405,7 @@ pub enum ConfigSourceSpecifier {
 
 #[cfg(test)]
 mod tests {
-
     use super::*;
-    use std::str::FromStr;
 
     #[inline]
     fn request_uri(uri: &str) -> http::Request<()> {

@@ -395,10 +395,7 @@ mod tests {
     use super::*;
     use futures::future;
     use http_body_util::Full;
-    use std::{
-        num::NonZeroUsize,
-        task::{Context, Poll, Waker},
-    };
+    use std::task::Waker;
 
     #[tokio::test]
     async fn test_complete() {

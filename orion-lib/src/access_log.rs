@@ -299,17 +299,15 @@ pub async fn update_configuration(target: Target, init: Vec<AccessLogConf>) -> R
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use std::time::Duration;
 
-    use crate::access_log::start_access_loggers;
-
-    use super::*;
     use orion_format::{
         context::{DownstreamContext, DownstreamResponseContext, FinishContext, InitContext, UpstreamContext},
         types::ResponseFlags,
         LogFormatter, DEFAULT_ACCESS_LOG_FORMAT,
     };
-    use tokio::{self, time::timeout};
+    use tokio::time::timeout;
 
     fn build_request() -> http::Request<()> {
         http::Request::builder().uri("https://www.rust-lang.org/").header("User-Agent", "awesome/1.0").body(()).unwrap()

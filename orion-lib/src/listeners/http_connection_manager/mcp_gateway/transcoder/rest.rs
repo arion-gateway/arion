@@ -162,7 +162,6 @@ fn append_query_string(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rmcp::model::Request;
     use serde_json::json;
     use upon::Engine;
 

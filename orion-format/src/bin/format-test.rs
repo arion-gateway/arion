@@ -69,7 +69,7 @@ fn main() -> Result<(), BoxError> {
 
     #[allow(clippy::print_stdout)]
     {
-        println!("Running {TOTAL} log format...");
+        println!("Running {TOTAL} log format...")
     }
 
     let now = Instant::now();
@@ -99,7 +99,7 @@ fn main() -> Result<(), BoxError> {
             "LogFormat: {:.2} msg/sec - avg duration {:.2} nsec",
             TOTAL as f64 / dur.as_secs_f64(),
             (dur.as_secs_f64() * 1_000_000_000.0) / TOTAL as f64
-        );
+        )
     }
     Ok(())
 }

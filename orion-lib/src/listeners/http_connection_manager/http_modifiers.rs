@@ -437,10 +437,9 @@ impl HeaderValueModifier for HeaderValueOption {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use http::Request;
     use orion_configuration::config::network_filters::http_connection_manager::header_modifier::HeaderKeyValue;
     use orion_format::header_formatter::HeaderFormatter;
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use std::net::{Ipv4Addr};
 
     use http::header::{COOKIE, LOCATION, USER_AGENT};
 

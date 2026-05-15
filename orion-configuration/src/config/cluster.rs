@@ -73,10 +73,10 @@ fn simplify_locality_lb_endpoints<S: Serializer>(
     value: &Vec<LocalityLbEndpoints>,
     serializer: S,
 ) -> Result<S::Ok, S::Error> {
-    if value.len() == 1 && value[0].priority == 0 {
-        simplify_lb_endpoints(&value[0].lb_endpoints, serializer)
-    } else {
-        value.serialize(serializer)
+    match value.as_slice() {
+        // match exactly one element where priority is 0
+        [endpoint] if endpoint.priority == 0 => simplify_lb_endpoints(&endpoint.lb_endpoints, serializer),
+        _ => value.serialize(serializer),
     }
 }
 

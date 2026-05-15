@@ -386,10 +386,7 @@ impl Endpoint {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    use std::{collections::HashMap, time::Duration};
-
-    use super::LruCache;
+    use std::collections::HashMap;
 
     struct LruMapFixture {
         map: LruCache<usize, &'static str>,
@@ -510,7 +507,7 @@ mod tests {
 
     use crate::secrets::SecretManager;
     use orion_configuration::config::cluster::{
-        http_protocol_options::Codec, Cluster as ClusterConfig, ClusterDiscoveryType, LbPolicy, OriginalDstConfig,
+        http_protocol_options::Codec, Cluster as ClusterConfig, LbPolicy, OriginalDstConfig,
         StandardLbPolicy,
     };
     use std::str::FromStr;

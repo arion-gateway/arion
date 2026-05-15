@@ -465,7 +465,7 @@ impl ToolsRegistry {
 
         match (&entry.conf.backend, &entry.transcoder) {
             (
-                UpstreamBackend::Rest { method: _, path: _, query_params: _, cluster, r#async, body_template: _ },
+                UpstreamBackend::Rest { cluster, r#async, .. },
                 TranscoderType::Rest(transcoder),
             ) => {
                 let mut upstream_request = transcoder.encode(req_headers, &rpc.request).map_err(|e| {

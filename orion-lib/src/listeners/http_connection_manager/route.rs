@@ -164,7 +164,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
                     };
                     if path_and_query_replacement.is_some() {
                         parts.uri = {
-                            let UriParts { scheme, authority, path_and_query: _, .. } = parts.uri.into_parts();
+                            let UriParts { scheme, authority, .. } = parts.uri.into_parts();
                             let mut new_parts = UriParts::default();
                             new_parts.scheme = scheme;
                             new_parts.authority = authority;

@@ -108,12 +108,6 @@ async fn get_ready(State(mut admin_state): State<AdminState>) -> Json<Value> {
 mod tests {
     use super::*;
     use axum_test::TestServer;
-    use orion_configuration::config::Bootstrap;
-    use parking_lot::RwLock;
-    use std::{
-        sync::Arc,
-        time::{Duration, Instant},
-    };
 
     #[tokio::test]
     async fn ready_endpoint_response() {

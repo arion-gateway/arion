@@ -95,7 +95,7 @@ pub struct ClientCert {
 
 impl From<CertificateSecret> for ClientCert {
     fn from(secret: CertificateSecret) -> Self {
-        let CertificateSecret { name: _, key, certs, config: _ } = secret;
+        let CertificateSecret { key, certs, ..} = secret;
         ClientCert { key, certs }
     }
 }
@@ -148,7 +148,7 @@ impl TryFrom<TransportSecret> for ClientCert {
 impl TryFrom<CertificateSecret> for ServerCert {
     type Error = crate::Error;
     fn try_from(secret: CertificateSecret) -> Result<Self> {
-        let CertificateSecret { name, key, certs, config: _ } = secret;
+        let CertificateSecret { name, key, certs, .. } = secret;
         if let Some(name) = name {
             Ok(ServerCert { name, key: Arc::new(key.clone_key()), certs })
         } else {

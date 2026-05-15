@@ -233,7 +233,7 @@ pub struct PartialHttpConnectionManager {
 impl TryFrom<ConversionContext<'_, HttpConnectionManagerConfig>> for PartialHttpConnectionManager {
     type Error = crate::Error;
     fn try_from(ctx: ConversionContext<HttpConnectionManagerConfig>) -> Result<Self> {
-        let ConversionContext { envoy_object: configuration, secret_manager: _ } = ctx;
+        let ConversionContext { envoy_object: configuration, .. } = ctx;
         let codec_type = configuration.codec_type;
         let enabled_upgrades = configuration.enabled_upgrades;
         let http_filters_hcm = configuration

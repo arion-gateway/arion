@@ -6,16 +6,16 @@ use crate::{
         timeout_body::TimeoutBodyError,
     },
     listeners::http_connection_manager::ext_proc::{
-        kind::{MessageKind, RequestMsg, ResponseMsg},
+        kind::{MessageKind},
         mutation::apply_header_mutations,
         r#override::ModeSelector,
     },
 };
-use http::{Method, StatusCode, Version};
-use http_body_util::{BodyExt, Empty, StreamBody};
+use http::{Method, Version};
+use http_body_util::{Empty, StreamBody};
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::ext_proc::{
-    BodyProcessingMode, ExternalProcessor as ExternalProcessorConfig, GoogleGrpc, GrpcService, GrpcServiceSpecifier,
-    HeaderProcessingMode, ProcessingMode, RouteCacheAction, TrailerProcessingMode,
+    BodyProcessingMode, ExternalProcessor as ExternalProcessorConfig, GoogleGrpc, GrpcService,
+    HeaderProcessingMode, RouteCacheAction, TrailerProcessingMode,
 };
 use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::ext_proc::v3::{
     processing_mode, ProcessingMode as EnvoyProcessingMode,
@@ -32,28 +32,25 @@ use orion_data_plane_api::envoy_data_plane_api::{
             external_processor_server::{ExternalProcessor as ExternalProcessorService, ExternalProcessorServer},
             processing_request::Request as ProcessingRequestType,
             processing_response::Response as ProcessingResponseType,
-            BodyMutation, BodyResponse, CommonResponse, HeaderMutation, HeadersResponse, ProcessingRequest,
-            ProcessingResponse, StreamedBodyResponse, TrailersResponse,
+            BodyMutation, BodyResponse, CommonResponse, HeaderMutation, HeadersResponse,
+            StreamedBodyResponse, TrailersResponse,
         },
     },
     tonic::{
         async_trait,
         transport::{Error as TonicError, Server},
-        Request as TonicRequest, Response as TonicResponse, Status, Streaming,
+        Request as TonicRequest, Response as TonicResponse,
     },
 };
 use std::{
     collections::VecDeque,
-    convert::Infallible,
     net::SocketAddr,
     ops::{Deref, DerefMut},
     str::FromStr,
-    time::Duration,
 };
 use tokio::{net::TcpListener, task::JoinHandle};
 use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
 
-use crate::OrionRequestBody;
 use tokio::select;
 use tokio::sync::mpsc::Sender;
 use tokio_util::sync::CancellationToken;
@@ -3356,7 +3353,6 @@ async fn test_request_multichunk_not_merged_body_streaming_mode() {
 }
 
 use futures::task::noop_waker;
-use http_body::Body;
 use std::pin::Pin;
 use std::task::Context;
 
@@ -6462,7 +6458,6 @@ async fn test_request_and_response_mutation_with_streamed_10m_body_4k_chunks() {
 }
 
 use orion_configuration::config::core::{StringMatcher, StringMatcherPattern};
-use orion_configuration::config::network_filters::http_connection_manager::http_filters::ext_proc::HeaderForwardingRules;
 use smol_str::SmolStr;
 
 #[tokio::test]

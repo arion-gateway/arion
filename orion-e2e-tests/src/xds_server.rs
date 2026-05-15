@@ -21,7 +21,7 @@ use orion_data_plane_api::envoy_data_plane_api::{
         aggregated_discovery_service_server::{AggregatedDiscoveryService, AggregatedDiscoveryServiceServer},
         DeltaDiscoveryRequest, DeltaDiscoveryResponse, DiscoveryRequest, DiscoveryResponse, ResourceName,
     },
-    tonic::{self, transport::Server, IntoStreamingRequest, Response, Status},
+    tonic::{transport::Server, IntoStreamingRequest, Response, Status},
 };
 use tokio::sync::{
     broadcast,

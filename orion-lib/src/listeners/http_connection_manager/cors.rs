@@ -241,8 +241,6 @@ impl Cors {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::OrionRequestBody;
-    use http::{Request, Response};
     use orion_configuration::config::core::StringMatcher;
 
     fn mock_req(method: Method, origin: Option<&str>, acr_method: Option<&str>) -> Request<OrionRequestBody> {

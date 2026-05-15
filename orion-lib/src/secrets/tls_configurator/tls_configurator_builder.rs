@@ -266,7 +266,7 @@ impl TlsContextBuilder<WantsToBuildServer> {
         };
         let provider = get_crypto_key_provider()?;
 
-        if let [SecretHolder { name: _, server_cert: ServerCert { certs, key, name: _ } }] =
+        if let [SecretHolder { server_cert: ServerCert { certs, key, .. }, .. }] =
             self.state.server_ids_and_certificates.as_slice()
         {
             // If only a single certificate exists, do not install SNI resolver, just accept all

@@ -20,7 +20,6 @@ use super::{
     model::{RejectedConfig, ResourceId, ResourceVersion, TypeUrl, XdsError, XdsResourcePayload, XdsResourceUpdate},
     request::{DeltaDiscoveryRequestBuilder, StatusBuilder},
 };
-use core::result::Result::{Err, Ok};
 
 use orion_configuration::config::bootstrap::Node;
 use orion_data_plane_api::envoy_data_plane_api::{

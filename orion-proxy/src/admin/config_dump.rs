@@ -102,20 +102,17 @@ pub async fn get_config_dump(State(admin_state): State<AdminState>) -> Json<Valu
 
 #[cfg(test)]
 mod config_dump_tests {
-    use super::{super::*, *};
+    use std::{sync::Arc, time::Instant};
+
+use crate::admin::{ServerInfo, build_admin_router};
+
+use super::*;
     use axum_test::TestServer;
     use orion_configuration::config::{
-        core::DataSource,
-        listener::ListenerType,
-        network_filters::http_connection_manager::{HeaderModifiersAdd, HeaderModifiersRemove},
-        secret::{Secret, TlsCertificate, Type, ValidationContext},
-        Bootstrap, Listener,
+        Bootstrap, Listener, listener::ListenerType, network_filters::http_connection_manager::{HeaderModifiersAdd, HeaderModifiersRemove}, secret::{TlsCertificate, ValidationContext}
     };
-    use orion_lib::{ConfigDump, ListenerConfigurationChange};
     use parking_lot::RwLock;
-    use smol_str::SmolStr;
-    use std::{sync::Arc, time::Instant};
-    use tokio::sync::mpsc;
+use smol_str::SmolStr;
 
     use orion_data_plane_api::envoy_data_plane_api::envoy::{
         config::core::v3::{data_source::Specifier::InlineString, DataSource as EnvoyDataSource},
