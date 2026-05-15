@@ -173,7 +173,7 @@ impl UserRateLimiter {
                     Ok(TokenBucket::new(tb.max_tokens, tb.tokens_per_fill, tb.fill_interval))
                 },
                 Limit::SimpleRateLimit(s) => {
-                    TokenBucket::with_rate_and_capacity(s.max_tokens, s.rate).map_err(|_| FilterDecision::Continue)
+                    TokenBucket::with_rate_and_capacity(s.max_tokens, s.rate).map_err(|_e| FilterDecision::Continue)
                 },
             }
         });

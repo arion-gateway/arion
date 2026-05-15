@@ -497,7 +497,7 @@ impl RelaxedResolvesServerCertUsingSni {
         let test_name_str = if is_wildcard { format!("dummy.{base_domain}") } else { name.clone() };
 
         let server_name = rustls::pki_types::ServerName::try_from(test_name_str)
-            .map_err(|_| rustls::Error::General("Bad Server/DNS name".into()))?;
+            .map_err(|_e| rustls::Error::General("Bad Server/DNS name".into()))?;
 
         // 3. Sanity check: verify the certificate actually covers the domain/wildcard
         ck.end_entity_cert()

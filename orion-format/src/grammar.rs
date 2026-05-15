@@ -210,7 +210,7 @@ impl AccessLogGrammar {
             Ok(t.clone())
         } else {
             let valid_name =
-                http::HeaderName::from_bytes(arg.as_bytes()).map_err(|_| FormatError::InvalidRequestArg(arg.into()))?;
+                http::HeaderName::from_bytes(arg.as_bytes()).map_err(|_e| FormatError::InvalidRequestArg(arg.into()))?;
             Ok(ReqArgument::Header(HeaderName(valid_name.as_str().into())))
         }
     }
@@ -220,7 +220,7 @@ impl AccessLogGrammar {
             Ok(t.clone())
         } else {
             let valid_name = http::HeaderName::from_bytes(arg.as_bytes())
-                .map_err(|_| FormatError::InvalidResponseArg(arg.into()))?;
+                .map_err(|_e| FormatError::InvalidResponseArg(arg.into()))?;
             Ok(RespArgument::Header(HeaderName(valid_name.as_str().into())))
         }
     }

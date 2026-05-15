@@ -204,7 +204,7 @@ impl LocalConnectorWithDNSResolver {
             let stream = if let Some(connection_timeout) = connection_timeout {
                 fast_timeout(connection_timeout, sock.connect(addr))
                     .await // Result<Result<TcpStream, io::Error>>, Elapsed>
-                    .map_err(|_| UpstreamError::ConnectTimeout(elapsed()))
+                    .map_err(|_e| UpstreamError::ConnectTimeout(elapsed()))
                     .map_err(|e| {
                         WithContext::new(e)
                             .with_context_data(TcpErrorContext {

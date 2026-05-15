@@ -497,7 +497,7 @@ impl JwtAuthentication {
         let validation_key = match self.inner.context.providers.get(provider_name) {
             Some(context) => {
                 let kid_ref = header.kid.as_ref().map(|kid| KidStr::ref_cast(kid));
-                match context.validation_key_lookup(kid_ref, provider_name, &provider_config).await {
+                match context.validation_key_lookup(kid_ref, provider_name, provider_config).await {
                     Some(Asset::Permanent(key)) | Some(Asset::Expiring((key, _))) => Ok(key),
                     Some(Asset::Pending) => Err(JwkError::NoValidationKey),
                     None => Err(JwkError::NoValidationKey),

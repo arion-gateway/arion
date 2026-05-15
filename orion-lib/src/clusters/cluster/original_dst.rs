@@ -285,7 +285,7 @@ impl OriginalDstCluster {
 
     #[inline]
     fn get_http_connection_by_dynamic_dest(&mut self, dynamic_dest: &DynamicDest) -> Result<HttpChannel> {
-        let authority = Authority::try_from(dynamic_dest.0.as_str()).map_err(|_| {
+        let authority = Authority::try_from(dynamic_dest.0.as_str()).map_err(|_e| {
             format!(
                 "Invalid Authority in dynamic_dest metadata ({}) for ORIGINAL_DST cluster {}",
                 dynamic_dest.0, self.name
@@ -297,7 +297,7 @@ impl OriginalDstCluster {
     #[inline]
     fn get_http_connection_by_header(&mut self, header_value: &HeaderValue) -> Result<HttpChannel> {
         let authority = Authority::try_from(header_value.as_bytes())
-            .map_err(|_| format!("Invalid authority in header for ORIGINAL_DST cluster {}", self.name))?;
+            .map_err(|_e| format!("Invalid authority in header for ORIGINAL_DST cluster {}", self.name))?;
         self.get_http_connection_by_authority(&authority)
     }
 

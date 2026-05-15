@@ -567,7 +567,7 @@ mod envoy_conversions {
                                 OriginalDstRoutingMethod::Default
                             };
                             let upstream_port_override = if let Some(port_value) = &config.upstream_port_override {
-                                let port = u16::try_from(port_value.value).map_err(|_| {
+                                let port = u16::try_from(port_value.value).map_err(|_e| {
                                     GenericError::from_msg(format!("failed to convert {} to a port number", port_value.value))
                                         .with_node("upstream_port_override")
                                 })?;
@@ -693,12 +693,12 @@ mod envoy_conversions {
                 let connect_timeout = connect_timeout
                     .map(RustType::<Duration>::try_from)
                     .transpose()
-                    .map_err(|_| GenericError::from_msg("Failed to convert connect_timeout into Duration"))
+                    .map_err(|_e| GenericError::from_msg("Failed to convert connect_timeout into Duration"))
                     .with_node("connect_timeout")?.map(RustType::into_inner);
                 let cleanup_interval = cleanup_interval
                     .map(RustType::<Duration>::try_from)
                     .transpose()
-                    .map_err(|_| GenericError::from_msg("Failed to convert cleanup_interval into Duration"))
+                    .map_err(|_e| GenericError::from_msg("Failed to convert cleanup_interval into Duration"))
                     .with_node("cleanup_interval")?.map(RustType::into_inner);
                 let circuit_breakers = circuit_breakers
                     .map(CircuitBreakers::try_from)
@@ -814,7 +814,7 @@ mod envoy_conversions {
             .with_node("host")?;
             let load_balancing_weight = load_balancing_weight.map(|v| v.value).unwrap_or(1);
             let load_balancing_weight = NonZeroU32::try_from(load_balancing_weight)
-                .map_err(|_| GenericError::from_msg("load_balancing_weight can't be zero"))
+                .map_err(|_e| GenericError::from_msg("load_balancing_weight can't be zero"))
                 .with_node("load_balancing_weight")?;
             let health_status = health_status.try_into().with_node("health_status")?;
             Ok(Self { address, health_status, load_balancing_weight })
@@ -1236,7 +1236,7 @@ mod envoy_conversions {
             )?;
 
             let priority = EnvoyRoutingPriority::try_from(priority)
-                .map_err(|_| GenericError::from_msg(format!("unknown routing priority: {priority}")))?
+                .map_err(|_e| GenericError::from_msg(format!("unknown routing priority: {priority}")))?
                 .try_into()
                 .with_node("priority")?;
             Ok(Self {

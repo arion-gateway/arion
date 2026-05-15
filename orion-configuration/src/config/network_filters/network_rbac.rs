@@ -272,7 +272,7 @@ mod envoy_conversions {
         type Error = GenericError;
         fn try_from(value: i32) -> Result<Self, Self::Error> {
             EnvoyAction::try_from(value)
-                .map_err(|_| GenericError::unsupported_variant(format!("[unknown action {value}]")))?
+                .map_err(|_e| GenericError::unsupported_variant(format!("[unknown action {value}]")))?
                 .try_into()
         }
     }

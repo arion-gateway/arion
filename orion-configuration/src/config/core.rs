@@ -342,7 +342,7 @@ pub mod envoy_conversions {
         type Error = GenericError;
         fn try_from(value: u32) -> Result<Self, Self::Error> {
             let code: u16 =
-                value.try_into().map_err(|_| GenericError::from_msg(format!("invalid envoy status code {value:?}")))?;
+                value.try_into().map_err(|_e| GenericError::from_msg(format!("invalid envoy status code {value:?}")))?;
             StatusCode::from_u16(code)
                 .map(RustType)
                 .map_err(|e| GenericError::from_msg(format!("Failed to convert {code} into a StatusCode: {e}")))
@@ -355,7 +355,7 @@ pub mod envoy_conversions {
             let code: u16 = value
                 .code
                 .try_into()
-                .map_err(|_| GenericError::from_msg(format!("invalid envoy status code {value:?}")))?;
+                .map_err(|_e| GenericError::from_msg(format!("invalid envoy status code {value:?}")))?;
             StatusCode::from_u16(code)
                 .map(RustType)
                 .map_err(|e| GenericError::from_msg(format!("Failed to convert {code} into a StatusCode: {e}")))
@@ -381,7 +381,7 @@ pub mod envoy_conversions {
             // defaults to 0 when unset
             // https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/core/v3/address.proto#envoy-v3-api-msg-config-core-v3-cidrrange
             let prefix_len = prefix_len.map(|v| v.value).unwrap_or(0);
-            let prefix_len = u8::try_from(prefix_len).map_err(|_| {
+            let prefix_len = u8::try_from(prefix_len).map_err(|_e| {
                 GenericError::from_msg(format!("failed to convert {prefix_len} to a u8")).with_node("prefix_len")
             })?;
             let ip_net = IpNet::new(address_prefix, prefix_len).map_err(|e| {
@@ -457,7 +457,7 @@ pub mod envoy_conversions {
                 PortSpecifier::NamedPort(_) => Err(GenericError::unsupported_variant("NamedPort")),
                 PortSpecifier::PortValue(port) => Ok(port),
             }?;
-            let port = u16::try_from(port_specifier).map_err(|_| {
+            let port = u16::try_from(port_specifier).map_err(|_e| {
                 GenericError::from_msg(format!("failed to convert {port_specifier} to a port number"))
                     .with_node("port_specifier")
             })?;

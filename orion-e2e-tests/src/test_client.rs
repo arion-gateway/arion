@@ -170,7 +170,7 @@ impl TestClient {
 
         let response = fast_timeout(self.timeout, self.client.request(request))
             .await
-            .map_err(|_| Error::RequestTimeout(self.timeout))?
+            .map_err(|_e| Error::RequestTimeout(self.timeout))?
             .map_err(Error::Hyper)?;
 
         self.convert_response(response).await
@@ -198,7 +198,7 @@ impl TestClient {
 
         let response = fast_timeout(self.timeout, self.client.request(http_request))
             .await
-            .map_err(|_| Error::RequestTimeout(self.timeout))?
+            .map_err(|_e| Error::RequestTimeout(self.timeout))?
             .map_err(Error::Hyper)?;
 
         self.convert_response(response).await

@@ -181,7 +181,7 @@ impl TlsTestClient {
     pub fn new(addr: SocketAddr, server_name: impl Into<String>, config: TlsClientConfig) -> Result<Self> {
         let server_name_str = server_name.into();
         let server_name = ServerName::try_from(server_name_str.clone())
-            .map_err(|_| Error::Config(format!("Invalid server name: {server_name_str}")))?
+            .map_err(|_e| Error::Config(format!("Invalid server name: {server_name_str}")))?
             .to_owned();
         let tls_config = Arc::new(config.build_client_config()?);
         Ok(Self { addr, server_name, tls_config, timeout: DEFAULT_TIMEOUT, default_headers: vec![] })
@@ -244,7 +244,7 @@ impl TlsTestClient {
 
         fast_timeout(self.timeout, self.send_tls_request(request))
             .await
-            .map_err(|_| Error::RequestTimeout(self.timeout))?
+            .map_err(|_e| Error::RequestTimeout(self.timeout))?
     }
 
     #[allow(clippy::disallowed_methods)]
@@ -271,7 +271,7 @@ impl TlsTestClient {
 
         fast_timeout(self.timeout, self.send_tls_request(http_request))
             .await
-            .map_err(|_| Error::RequestTimeout(self.timeout))?
+            .map_err(|_e| Error::RequestTimeout(self.timeout))?
     }
 
     async fn send_tls_request(&self, request: Request<Full<Bytes>>) -> Result<TestResponse> {

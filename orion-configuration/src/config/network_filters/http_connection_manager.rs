@@ -153,7 +153,7 @@ impl<'de> Deserialize<'de> for MatchHost {
 impl MatchHost {
     pub fn try_from_smol_str(value: SmolStr) -> Result<Self, GenericError> {
         let _ = HeaderValue::from_str(&value)
-            .map_err(|_| GenericError::from_msg(format!("failed to parse \"{value}\" as a headervalue")))?;
+            .map_err(|_e| GenericError::from_msg(format!("failed to parse \"{value}\" as a headervalue")))?;
 
         if value == "*" {
             return Ok(Self::Wildcard);
@@ -530,13 +530,13 @@ mod tests {
 
     #[test]
     fn test_bad_rules() {
-        assert!("*asdf*".parse::<MatchHost>().is_err());
-        assert!("*.example.*.com".parse::<MatchHost>().is_err());
-        assert!("**".parse::<MatchHost>().is_err());
-        assert!("asdf*asdf".parse::<MatchHost>().is_err());
-        assert!("*asdf*".parse::<MatchHost>().is_err());
-        assert!("*asdf*asdf".parse::<MatchHost>().is_err());
-        assert!("asdf*asdf*".parse::<MatchHost>().is_err());
+        "*asdf*".parse::<MatchHost>().unwrap_err();
+        "*.example.*.com".parse::<MatchHost>().unwrap_err();
+        "**".parse::<MatchHost>().unwrap_err();
+        "asdf*asdf".parse::<MatchHost>().unwrap_err();
+        "*asdf*".parse::<MatchHost>().unwrap_err();
+        "*asdf*asdf".parse::<MatchHost>().unwrap_err();
+        "asdf*asdf*".parse::<MatchHost>().unwrap_err();
     }
 
     #[test]
@@ -761,7 +761,7 @@ mod envoy_conversions {
             let request_timeout = request_timeout
                 .map(RustType::<Duration>::try_from)
                 .transpose()
-                .map_err(|_| GenericError::from_msg("failed to convert into Duration"))
+                .map_err(|_e| GenericError::from_msg("failed to convert into Duration"))
                 .with_node("request_timeout")?
                 .map(RustType::into_inner);
             let enabled_upgrades = upgrade_configs
@@ -822,7 +822,7 @@ mod envoy_conversions {
             let tracing = tracing
                 .map(TryInto::try_into)
                 .transpose()
-                .map_err(|_| GenericError::from_msg("failed to convert tracing object"))?;
+                .map_err(|_e| GenericError::from_msg("failed to convert tracing object"))?;
 
             Ok(Self {
                 codec_type,
@@ -1107,7 +1107,7 @@ mod envoy_conversions {
             let per_try_timeout = per_try_timeout
                 .map(RustType::<Duration>::try_from)
                 .transpose()
-                .map_err(|_| GenericError::from_msg("failed to convert into Duration").with_node("per_try_timeout"))?
+                .map_err(|_e| GenericError::from_msg("failed to convert into Duration").with_node("per_try_timeout"))?
                 .map(RustType::into_inner);
             let retriable_status_codes = retriable_status_codes
                 .into_iter()
@@ -1146,7 +1146,7 @@ mod envoy_conversions {
             let max_interval = max_interval
                 .map(RustType::<Duration>::try_from)
                 .transpose()
-                .map_err(|_| GenericError::from_msg("failed to convert into Duration"))
+                .map_err(|_e| GenericError::from_msg("failed to convert into Duration"))
                 .with_node("max_interval")?
                 .map(RustType::into_inner)
                 .unwrap_or(base_interval * 10);

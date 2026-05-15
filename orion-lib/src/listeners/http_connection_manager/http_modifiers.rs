@@ -364,7 +364,7 @@ impl HeaderValueModifier for HeaderValueOption {
         let get_header_value = |req: &Request<B>| -> HeaderValue {
             let mut formatter = self.header.value.clone();
             formatter.with_context(&DownstreamContext {
-                request: &req,
+                request: req,
                 request_head_size: 0,
                 trace_id: None,
                 server_name: None,
@@ -379,18 +379,18 @@ impl HeaderValueModifier for HeaderValueOption {
         };
 
         let action = match self.append_action {
-            HeaderAppendAction::AppendIfExistsOrAdd => HeaderAction::Append(get_header_value(&req)),
+            HeaderAppendAction::AppendIfExistsOrAdd => HeaderAction::Append(get_header_value(req)),
             HeaderAppendAction::AppendIfAbsent => {
                 if !has_key_already {
-                    HeaderAction::Append(get_header_value(&req))
+                    HeaderAction::Append(get_header_value(req))
                 } else {
                     HeaderAction::Nop
                 }
             },
-            HeaderAppendAction::OverwriteIfExistsOrAdd => HeaderAction::Overwrite(get_header_value(&req)),
+            HeaderAppendAction::OverwriteIfExistsOrAdd => HeaderAction::Overwrite(get_header_value(req)),
             HeaderAppendAction::OverwriteIfExists => {
                 if has_key_already {
-                    HeaderAction::Overwrite(get_header_value(&req))
+                    HeaderAction::Overwrite(get_header_value(req))
                 } else {
                     HeaderAction::Nop
                 }
@@ -405,7 +405,7 @@ impl HeaderValueModifier for HeaderValueOption {
 
         let get_header_value = |res: &Response<B>| -> HeaderValue {
             let mut formatter = self.header.value.clone();
-            formatter.with_context(&DownstreamResponseContext { response: &res, response_head_size: 0 });
+            formatter.with_context(&DownstreamResponseContext { response: res, response_head_size: 0 });
             formatter
                 .into_header_value()
                 .inspect_err(|e| {
@@ -415,18 +415,18 @@ impl HeaderValueModifier for HeaderValueOption {
         };
 
         let action = match self.append_action {
-            HeaderAppendAction::AppendIfExistsOrAdd => HeaderAction::Append(get_header_value(&res)),
+            HeaderAppendAction::AppendIfExistsOrAdd => HeaderAction::Append(get_header_value(res)),
             HeaderAppendAction::AppendIfAbsent => {
                 if !has_key_already {
-                    HeaderAction::Append(get_header_value(&res))
+                    HeaderAction::Append(get_header_value(res))
                 } else {
                     HeaderAction::Nop
                 }
             },
-            HeaderAppendAction::OverwriteIfExistsOrAdd => HeaderAction::Overwrite(get_header_value(&res)),
+            HeaderAppendAction::OverwriteIfExistsOrAdd => HeaderAction::Overwrite(get_header_value(res)),
             HeaderAppendAction::OverwriteIfExists => {
                 if has_key_already {
-                    HeaderAction::Overwrite(get_header_value(&res))
+                    HeaderAction::Overwrite(get_header_value(res))
                 } else {
                     HeaderAction::Nop
                 }

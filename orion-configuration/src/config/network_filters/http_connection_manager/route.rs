@@ -755,7 +755,7 @@ mod envoy_conversions {
                 })?
                 .into();
 
-            let port_redirect = u16::try_from(port_redirect).map(NonZeroU16::new).map_err(|_| {
+            let port_redirect = u16::try_from(port_redirect).map(NonZeroU16::new).map_err(|_e| {
                 GenericError::from_msg("{port_redirect} is not a valid port").with_node("port_redirect")
             })?;
             let host_redirect = host_redirect.is_used().then_some(host_redirect);
@@ -834,7 +834,7 @@ mod envoy_conversions {
         fn try_from(value: EnvoyDirectResponseAction) -> Result<Self, Self::Error> {
             let EnvoyDirectResponseAction { status, body, body_format } = value;
             unsupported_field!(body_format)?;
-            let status_u16: u16 = status.try_into().map_err(|_| GenericError::from_msg("invalid status code"))?;
+            let status_u16: u16 = status.try_into().map_err(|_e| GenericError::from_msg("invalid status code"))?;
             let status = RustType::<StatusCode>::try_from(status_u16).with_node("status")?.into_inner();
             let body = if let Some(source) = body.map(DataSource::try_from).transpose().with_node("body")? {
                 let data = source

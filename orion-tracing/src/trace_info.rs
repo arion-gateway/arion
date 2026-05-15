@@ -179,7 +179,7 @@ impl TraceInfo {
         // Check for W3C Trace Context first
         //
         if let Some(value) = headers.get(TRACEPARENT).and_then(|v| v.to_str().ok()) {
-            let tp = traceparent::parse(value).map_err(|_| TraceError::InvalidFormat)?;
+            let tp = traceparent::parse(value).map_err(|_e| TraceError::InvalidFormat)?;
             return Ok(Some(TraceInfo {
                 trace_id: tp.trace_id(),
                 span_id: Some(tp.parent_id()), // despite the name, this is actual span id of this node.
@@ -195,9 +195,9 @@ impl TraceInfo {
             let parts: Vec<&str> = value.split(':').collect();
             if parts.len() == 4 {
                 // Uber trace id ID is the first part, parent ID is the second part
-                let trace_id = u128::from_str_radix(parts[0], 16).map_err(|_| TraceError::InvalidFormat)?;
-                let span_id = Some(u64::from_str_radix(parts[1], 16).map_err(|_| TraceError::InvalidFormat)?);
-                let parent_id = Some(u64::from_str_radix(parts[2], 16).map_err(|_| TraceError::InvalidFormat)?);
+                let trace_id = u128::from_str_radix(parts[0], 16).map_err(|_e| TraceError::InvalidFormat)?;
+                let span_id = Some(u64::from_str_radix(parts[1], 16).map_err(|_e| TraceError::InvalidFormat)?);
+                let parent_id = Some(u64::from_str_radix(parts[2], 16).map_err(|_e| TraceError::InvalidFormat)?);
                 let sampled: bool = match parts[3] {
                     "1" => Ok(true),
                     "0" => Ok(false),
@@ -216,8 +216,8 @@ impl TraceInfo {
             if parts.len() >= 3 {
                 // let mut rng = rand::rng();
                 // B3 trace ID is the first part, parent ID is the second part
-                let trace_id = u128::from_str_radix(parts[0], 16).map_err(|_| TraceError::InvalidFormat)?;
-                let span_id = Some(u64::from_str_radix(parts[1], 16).map_err(|_| TraceError::InvalidFormat)?);
+                let trace_id = u128::from_str_radix(parts[0], 16).map_err(|_e| TraceError::InvalidFormat)?;
+                let span_id = Some(u64::from_str_radix(parts[1], 16).map_err(|_e| TraceError::InvalidFormat)?);
                 let sampled: bool = match parts[2] {
                     "1" => Ok(true),
                     "0" => Ok(false),
@@ -225,7 +225,7 @@ impl TraceInfo {
                 }?;
 
                 let parent_id = if parts.len() == 4 {
-                    Some(u64::from_str_radix(parts[3], 16).map_err(|_| TraceError::InvalidFormat)?)
+                    Some(u64::from_str_radix(parts[3], 16).map_err(|_e| TraceError::InvalidFormat)?)
                 } else {
                     None
                 };
@@ -249,20 +249,20 @@ impl TraceInfo {
             (Some(trace_id), Some(span_id)) => {
                 // Parse Trace ID
                 let trace_id = {
-                    let id = trace_id.to_str().map_err(|_| TraceError::InvalidFormat)?;
-                    u128::from_str_radix(id, 16).map_err(|_| TraceError::InvalidFormat)?
+                    let id = trace_id.to_str().map_err(|_e| TraceError::InvalidFormat)?;
+                    u128::from_str_radix(id, 16).map_err(|_e| TraceError::InvalidFormat)?
                 };
 
                 // Parse Span ID
                 let span_id = {
-                    let id = span_id.to_str().map_err(|_| TraceError::InvalidFormat)?;
-                    Some(u64::from_str_radix(id, 16).map_err(|_| TraceError::InvalidFormat)?)
+                    let id = span_id.to_str().map_err(|_e| TraceError::InvalidFormat)?;
+                    Some(u64::from_str_radix(id, 16).map_err(|_e| TraceError::InvalidFormat)?)
                 };
 
                 let parent_id = incoming_parent_id_header
                     .map(|incoming_parent_id| -> Result<u64, TraceError> {
-                        let id = incoming_parent_id.to_str().map_err(|_| TraceError::InvalidFormat)?;
-                        u64::from_str_radix(id, 16).map_err(|_| TraceError::InvalidFormat)
+                        let id = incoming_parent_id.to_str().map_err(|_e| TraceError::InvalidFormat)?;
+                        u64::from_str_radix(id, 16).map_err(|_e| TraceError::InvalidFormat)
                     })
                     .transpose()?;
 

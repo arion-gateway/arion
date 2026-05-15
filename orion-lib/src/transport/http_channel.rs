@@ -721,7 +721,7 @@ impl HttpChannel {
 
             // actually send the request and wait for the response...
             let result: Result<Response<Incoming>> = if let Some(t) = retry_policy.per_try_timeout() {
-                match fast_timeout(t, sender.request(cloned_req)).await.map_err(|_| UpstreamError::PerTryTimeout) {
+                match fast_timeout(t, sender.request(cloned_req)).await.map_err(|_e| UpstreamError::PerTryTimeout) {
                     Ok(result) => result.map_err(Into::into),
                     Err(err) => Err(err.into()),
                 }
@@ -933,7 +933,7 @@ fn maybe_normalize_uri(
                 parts.scheme = if is_tls { Some(http::uri::Scheme::HTTPS) } else { Some(http::uri::Scheme::HTTP) };
             }
             parts.authority = Some(authority);
-            let new = Uri::from_parts(parts).map_err(|_| format!("Can't normalize uri: {uri}"))?;
+            let new = Uri::from_parts(parts).map_err(|_e| format!("Can't normalize uri: {uri}"))?;
             *uri = new;
         }
     }

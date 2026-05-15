@@ -56,7 +56,7 @@ pub fn update_server_metrics(rename: &std::collections::HashMap<String, String>)
             )
         })
         .value
-        .record(memory_heap_size as u64, &[]);
+        .record(memory_heap_size, &[]);
 
     MEMORY_PHYSICAL_SIZE
         .get_or_init(|| {

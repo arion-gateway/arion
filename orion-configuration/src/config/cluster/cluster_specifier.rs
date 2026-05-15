@@ -137,7 +137,7 @@ mod envoy_conversions {
                 let weight = weight.map(|x| x.value).ok_or(GenericError::MissingField("weight"))?;
                 let weight = weight
                     .try_into()
-                    .map_err(|_| GenericError::from_msg("cluster-weight has to be > 0"))
+                    .map_err(|_e| GenericError::from_msg("cluster-weight has to be > 0"))
                     .with_node("weight")?;
                 Ok(Self { cluster: cluster.to_smolstr(), weight })
             })()
@@ -179,7 +179,7 @@ mod envoy_conversions {
             let cluster = required!(name)?.into();
             let weight = weight
                 .try_into()
-                .map_err(|_| GenericError::from_msg("cluster-weight has to be > 0"))
+                .map_err(|_e| GenericError::from_msg("cluster-weight has to be > 0"))
                 .with_node("weight")?;
             Ok(Self { cluster, weight })
         }

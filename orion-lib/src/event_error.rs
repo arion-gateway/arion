@@ -328,7 +328,7 @@ impl<'a> TryInferFrom<&'a (dyn std::error::Error + 'static)> for UpstreamError {
     fn try_infer_from(err: &'a (dyn std::error::Error + 'static)) -> Option<Self> {
         if err.downcast_ref::<Elapsed>().is_some() {
             // Note: This should never happen, as the user should remap the Tokio timeout
-            // to a suitable EventError (e.g., timeout(dur, fut).await.map_err(|_| EventError::ConnectTimeout)).
+            // to a suitable EventError (e.g., timeout(dur, fut).await.map_err(|_e| EventError::ConnectTimeout)).
             // Just in case, the PerTryTimeout error is the closest one we can choose.
             return Some(UpstreamError::PerTryTimeout);
         }

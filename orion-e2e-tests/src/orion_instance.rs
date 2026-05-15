@@ -187,8 +187,8 @@ impl OrionInstance {
 
         let listener_addr = fast_timeout(options.ready_timeout, result_rx)
             .await
-            .map_err(|_| Error::ReadyTimeout(options.ready_timeout))?
-            .map_err(|_| Error::Config("Channel closed unexpectedly".into()))?
+            .map_err(|_e| Error::ReadyTimeout(options.ready_timeout))?
+            .map_err(|_e| Error::Config("Channel closed unexpectedly".into()))?
             .map_err(|output| Error::StartupFailed { exit_code: None, output })?;
 
         info!(?listener_addr, "Discovered Orion listener address");
@@ -332,8 +332,8 @@ impl OrionInstance {
 
         fast_timeout(options.ready_timeout, result_rx)
             .await
-            .map_err(|_| Error::ReadyTimeout(options.ready_timeout))?
-            .map_err(|_| Error::Config("Channel closed unexpectedly".into()))?
+            .map_err(|_e| Error::ReadyTimeout(options.ready_timeout))?
+            .map_err(|_e| Error::Config("Channel closed unexpectedly".into()))?
             .map_err(|output| Error::StartupFailed { exit_code: None, output })?;
 
         let listener_addr = SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), port);

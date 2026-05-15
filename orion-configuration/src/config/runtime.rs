@@ -149,7 +149,7 @@ fn parse_cgroup_v2_cpu_max(content: &str) -> crate::Result<usize> {
         let period: i64 = parts[1].parse()?;
         if quota > 0 && period > 0 {
             let cpus =
-                usize::try_from((quota + period - 1) / period).map_err(|_| "Failed to convert CPU count to usize")?;
+                usize::try_from((quota + period - 1) / period).map_err(|_e| "Failed to convert CPU count to usize")?;
             if cpus > 0 {
                 return Ok(cpus);
             }
@@ -175,7 +175,7 @@ fn parse_cgroup_v1_cpu_limit(quota_content: &str, period_content: &str) -> crate
 
     if quota > 0 && period > 0 {
         let cpus =
-            usize::try_from((quota + period - 1) / period).map_err(|_| "Failed to convert CPU count to usize")?;
+            usize::try_from((quota + period - 1) / period).map_err(|_e| "Failed to convert CPU count to usize")?;
         if cpus > 0 {
             return Ok(cpus);
         }

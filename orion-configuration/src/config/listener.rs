@@ -757,13 +757,13 @@ mod envoy_conversions {
             let destination_port = destination_port
                 .map(|x| x.value.try_into())
                 .transpose()
-                .map_err(|_| GenericError::from_msg("invalid destination port").with_node("destination_port"))?;
+                .map_err(|_e| GenericError::from_msg("invalid destination port").with_node("destination_port"))?;
 
             let source_ports = source_ports
                 .into_iter()
                 .map(TryInto::try_into)
                 .collect::<Result<_, _>>()
-                .map_err(|_| GenericError::from_msg("invalid source port").with_node("source_ports"))?;
+                .map_err(|_e| GenericError::from_msg("invalid source port").with_node("source_ports"))?;
 
             let destination_prefix_ranges = prefix_ranges
                 .into_iter()

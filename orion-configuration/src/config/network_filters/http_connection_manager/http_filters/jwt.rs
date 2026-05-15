@@ -196,7 +196,7 @@ mod envoy_conversions {
             let max_interval = max_interval
                 .map(RustType::<Duration>::try_from)
                 .transpose()
-                .map_err(|_| GenericError::from_msg("failed to convert into Duration"))
+                .map_err(|_e| GenericError::from_msg("failed to convert into Duration"))
                 .with_node("max_interval")?
                 .map(RustType::into_inner)
                 .unwrap_or(base_interval * 10);
