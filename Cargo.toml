@@ -199,3 +199,4 @@ module_name_repetitions             = "allow"
 must_use_candidate                  = "allow"
 needless_raw_string_hashes          = "allow"
 semicolon_if_nothing_returned       = "allow"
+ignore_without_reason               = "allow" # ignore is used all orion-e2e tests
