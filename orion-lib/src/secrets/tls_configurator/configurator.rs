@@ -241,7 +241,7 @@ impl TlsConfigurator<ClientConfig, WantsToBuildClient> {
                     .with_sni(sni)
                     .with_trust_chain_verification(trust_chain_verification)
                 } else {
-                    let msg = format!("Secret name doesn't match {secret_id} {validation_context_secret_id:?}",);
+                    let msg = format!("Secret name doesn't match {secret_id} {validation_context_secret_id:?}");
                     warn!("{msg}");
                     return Err(msg.into());
                 }
@@ -292,7 +292,7 @@ impl TlsConfigurator<ServerConfig, WantsToBuildServer> {
                         .with_certificates(server_ids_and_certificates)
                         .with_client_authentication(require_client_cert)
                 } else {
-                    let msg = format!("Can't find secret {secret_id} {validation_context_secret_id:?}",);
+                    let msg = format!("Can't find secret {secret_id} {validation_context_secret_id:?}");
                     debug!("{msg}");
                     return Err(msg.into());
                 }

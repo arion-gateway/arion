@@ -94,7 +94,7 @@ async fn test_weighted_clusters_basic() {
     for _ in 0..20 {
         let response = client.get("/test").await.unwrap();
         response.assert_status(StatusCode::OK);
-        let body = response.body_str().unwrap_or("").to_string();
+        let body = response.body_str().unwrap_or("").to_owned();
         *counts.entry(body).or_insert(0) += 1;
     }
 
@@ -282,8 +282,8 @@ async fn test_redirect_host_rewrite() {
     let response = client.get("/path").await.unwrap();
     response.assert_status(StatusCode::FOUND);
     let location = response.header("location").expect("Missing location header");
-    assert!(location.contains("example.com"), "Expected host in location, got: {}", location);
-    assert!(location.contains("/redirected"), "Expected path in location, got: {}", location);
+    assert!(location.contains("example.com"), "Expected host in location, got: {location}");
+    assert!(location.contains("/redirected"), "Expected path in location, got: {location}");
 
     orion.shutdown();
     let _ = std::fs::remove_file(&config_path);
@@ -324,7 +324,7 @@ async fn test_redirect_https_upgrade() {
     let response = client.get("/path").await.unwrap();
     response.assert_status(StatusCode::MOVED_PERMANENTLY);
     let location = response.header("location").expect("Missing location header");
-    assert!(location.starts_with("https://"), "Expected https scheme, got: {}", location);
+    assert!(location.starts_with("https://"), "Expected https scheme, got: {location}");
 
     orion.shutdown();
     let _ = std::fs::remove_file(&config_path);
@@ -345,8 +345,8 @@ async fn test_redirect_strip_query() {
     let response = client.get("/old?foo=bar&baz=qux").await.unwrap();
     response.assert_status(StatusCode::FOUND);
     let location = response.header("location").expect("Missing location header");
-    assert!(!location.contains('?'), "Expected query to be stripped, got: {}", location);
-    assert!(location.contains("/new"), "Expected path /new, got: {}", location);
+    assert!(!location.contains('?'), "Expected query to be stripped, got: {location}");
+    assert!(location.contains("/new"), "Expected path /new, got: {location}");
 
     orion.shutdown();
     let _ = std::fs::remove_file(&config_path);
@@ -367,7 +367,7 @@ async fn test_redirect_preserve_query() {
     let response = client.get("/old?foo=bar").await.unwrap();
     response.assert_status(StatusCode::FOUND);
     let location = response.header("location").expect("Missing location header");
-    assert!(location.contains("foo=bar"), "Expected query to be preserved, got: {}", location);
+    assert!(location.contains("foo=bar"), "Expected query to be preserved, got: {location}");
 
     orion.shutdown();
     let _ = std::fs::remove_file(&config_path);

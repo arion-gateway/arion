@@ -654,11 +654,10 @@ async fn test_header_manipulation_route_level_when_configured_over_xds() {
     pingora::time::timeout(Duration::from_secs(10), async {
         loop {
             if let Ok(response) = client.get("/test").await {
-                if response.status == StatusCode::OK {
-                    if response.header("x-version") == Some("v1") {
+                if response.status == StatusCode::OK
+                    && response.header("x-version") == Some("v1") {
                         break;
                     }
-                }
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
@@ -692,12 +691,11 @@ async fn test_header_manipulation_route_level_when_configured_over_xds() {
     pingora::time::timeout(Duration::from_secs(10), async {
         loop {
             if let Ok(response) = client.get("/test").await {
-                if response.status == StatusCode::OK {
-                    if response.header("x-version") == Some("v2") && response.header("x-source") == Some("orion-proxy")
+                if response.status == StatusCode::OK
+                    && response.header("x-version") == Some("v2") && response.header("x-source") == Some("orion-proxy")
                     {
                         break;
                     }
-                }
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }

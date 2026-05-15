@@ -437,7 +437,7 @@ mod tests {
         let domain = unique_domain();
         let (uri, mock) = start_mock_rls(MockRls::with_responses(vec![ok_response()])).await;
         let filter = make_filter(uri, Some(domain.as_str()), false);
-        assert!(filter.check(None).await.is_ok());
+        filter.check(None).await.unwrap();
         assert_eq!(mock.call_count(), 1);
     }
 
@@ -456,7 +456,7 @@ mod tests {
         let domain = unique_domain();
         let (uri, mock) = start_mock_rls(MockRls::always_failing()).await;
         let filter = make_filter(uri, Some(domain.as_str()), false);
-        assert!(filter.check(None).await.is_ok());
+        filter.check(None).await.unwrap();
         assert_eq!(mock.call_count(), 1);
     }
 
@@ -482,7 +482,7 @@ mod tests {
         let sni = unique_domain();
         let (uri, mock) = start_mock_rls(MockRls::with_responses(vec![ok_response()])).await;
         let filter = make_filter(uri, None, false);
-        assert!(filter.check(Some(&sni)).await.is_ok());
+        filter.check(Some(&sni)).await.unwrap();
         assert_eq!(mock.domains_seen().await, [sni.as_str()]);
     }
 
@@ -492,7 +492,7 @@ mod tests {
         let sni = unique_domain();
         let (uri, mock) = start_mock_rls(MockRls::with_responses(vec![ok_response()])).await;
         let filter = make_filter(uri, Some(static_domain.as_str()), false);
-        assert!(filter.check(Some(&sni)).await.is_ok());
+        filter.check(Some(&sni)).await.unwrap();
         assert_eq!(mock.domains_seen().await, [static_domain.as_str()]);
     }
 
@@ -505,7 +505,7 @@ mod tests {
             start_mock_rls(MockRls::with_responses(vec![ok_response_with_quota(3), ok_response_with_quota(3)])).await;
         let filter = make_filter(uri, Some(domain.as_str()), false);
         for _ in 0..4 {
-            assert!(filter.check(None).await.is_ok());
+            filter.check(None).await.unwrap();
         }
         assert_eq!(mock.call_count(), 2);
     }
@@ -518,8 +518,8 @@ mod tests {
         let (uri, mock) =
             start_mock_rls(MockRls::with_responses(vec![ok_response_with_quota(2), over_limit_response()])).await;
         let filter = make_filter(uri, Some(domain.as_str()), false);
-        assert!(filter.check(None).await.is_ok()); // call 1: RLS hit, remaining stored as 1
-        assert!(filter.check(None).await.is_ok()); // call 2: bucket, remaining 1→0
+        filter.check(None).await.unwrap(); // call 1: RLS hit, remaining stored as 1
+        filter.check(None).await.unwrap(); // call 2: bucket, remaining 1→0
         assert!(filter.check(None).await.is_err()); // call 3: exhausted, RLS hit → OVER_LIMIT
         assert_eq!(mock.call_count(), 2);
     }

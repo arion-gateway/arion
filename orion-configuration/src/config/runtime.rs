@@ -288,12 +288,12 @@ mod tests {
         let quota_content = "-1\n";
         let period_content = "100000\n";
         let result = parse_cgroup_v1_cpu_limit(quota_content, period_content);
-        assert!(result.is_err());
+        result.unwrap_err();
 
         let quota_content = "0\n";
         let period_content = "100000\n";
         let result = parse_cgroup_v1_cpu_limit(quota_content, period_content);
-        assert!(result.is_err());
+        result.unwrap_err();
     }
 
     #[test]
@@ -306,7 +306,7 @@ mod tests {
         // Test max case (no limit)
         let content = "max 100000\n";
         let result = parse_cgroup_v2_cpu_max(content);
-        assert!(result.is_err());
+        result.unwrap_err();
 
         // Test fractional case: 150000/100000 = 1.5, should ceil to 2 CPUs
         let content = "150000 100000\n";

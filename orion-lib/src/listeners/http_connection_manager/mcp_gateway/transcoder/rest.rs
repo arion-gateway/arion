@@ -204,12 +204,12 @@ mod tests {
         let http_request = create_http_request();
         let query_params: Vec<super::super::McpRestQueryParams> = vec![];
 
-        let body_template = r#"{"name": "{{username}}", "years": {{age}}}"#.to_string();
+        let body_template = r#"{"name": "{{username}}", "years": {{age}}}"#.to_owned();
         let transcoder =
             create_transcoder(http::Method::POST, "/api/users".to_owned(), query_params, true, Some(body_template));
 
         let result = transcoder.encode(http_request.headers(), &mcp_request);
-        assert!(result.is_ok(), "Expected successful encoding but got: {:?}", result);
+        assert!(result.is_ok(), "Expected successful encoding but got: {result:?}");
 
         let request = result.unwrap();
         assert_eq!(request.method(), http::Method::POST);
@@ -229,12 +229,12 @@ mod tests {
         let http_request = create_http_request();
         let query_params: Vec<super::super::McpRestQueryParams> = vec![];
 
-        let body_template = r#"{"username": "{{user.name}}", "contact": "{{user.email}}}"#.to_string();
+        let body_template = r#"{"username": "{{user.name}}", "contact": "{{user.email}}}"#.to_owned();
         let transcoder =
             create_transcoder(http::Method::POST, "/api/users".to_owned(), query_params, true, Some(body_template));
 
         let result = transcoder.encode(http_request.headers(), &mcp_request);
-        assert!(result.is_ok(), "Expected successful encoding but got: {:?}", result);
+        assert!(result.is_ok(), "Expected successful encoding but got: {result:?}");
     }
 
     #[test]
@@ -246,13 +246,13 @@ mod tests {
         let http_request = create_http_request();
         let query_params: Vec<super::super::McpRestQueryParams> = vec![];
 
-        let body_template = r#"{"name": "{{username}}", "missing": {{nonexistent}}}"#.to_string();
+        let body_template = r#"{"name": "{{username}}", "missing": {{nonexistent}}}"#.to_owned();
         let transcoder =
             create_transcoder(http::Method::POST, "/api/users".to_owned(), query_params, true, Some(body_template));
 
         // Missing variables now cause template render errors (schema validation should catch these)
         let result = transcoder.encode(http_request.headers(), &mcp_request);
-        assert!(result.is_err(), "Expected error for missing variable but got: {:?}", result);
+        assert!(result.is_err(), "Expected error for missing variable but got: {result:?}");
     }
 
     #[test]
@@ -270,13 +270,13 @@ mod tests {
 
         // upon doesn't have a json filter - complex types need to be handled differently
         // This test verifies that the template engine is strict about type formatting
-        let body_template = r#"{"tags": {{tags}}, "metadata": {{meta}}}"#.to_string();
+        let body_template = r#"{"tags": {{tags}}, "metadata": {{meta}}}"#.to_owned();
         let transcoder =
             create_transcoder(http::Method::POST, "/api/data".to_owned(), query_params, true, Some(body_template));
 
         // Complex types without proper formatting will cause render errors
         let result = transcoder.encode(http_request.headers(), &mcp_request);
-        assert!(result.is_err(), "Expected error for unformatted complex types: {:?}", result);
+        assert!(result.is_err(), "Expected error for unformatted complex types: {result:?}");
     }
 
     fn render_template_with_engine(template_str: String, arguments: &serde_json::Map<String, Value>) -> String {
@@ -292,7 +292,7 @@ mod tests {
         args.insert("name".to_owned(), json!("Alice"));
         args.insert("count".to_owned(), json!(42));
 
-        let template = r#"{"user": "{{name}}", "value": {{count}}}"#.to_string();
+        let template = r#"{"user": "{{name}}", "value": {{count}}}"#.to_owned();
         let result = render_template_with_engine(template, &args);
 
         assert_eq!(result, r#"{"user": "Alice", "value": 42}"#);
@@ -311,7 +311,7 @@ mod tests {
         assert_eq!(result, "User john_doe performed login");
 
         // XML template
-        let xml_template = r#"<user><name>{{username}}</name><action>{{action}}</action></user>"#.to_string();
+        let xml_template = r#"<user><name>{{username}}</name><action>{{action}}</action></user>"#.to_owned();
         let result = render_template_with_engine(xml_template, &args);
         assert_eq!(result, r#"<user><name>john_doe</name><action>login</action></user>"#);
 
@@ -330,7 +330,7 @@ mod tests {
         user.insert("id".to_owned(), json!(123));
         args.insert("user".to_owned(), Value::Object(user));
 
-        let template = r#"{"username": "{{user.name}}", "user_id": {{user.id}}}"#.to_string();
+        let template = r#"{"username": "{{user.name}}", "user_id": {{user.id}}}"#.to_owned();
         let result = render_template_with_engine(template, &args);
 
         assert_eq!(result, r#"{"username": "Bob", "user_id": 123}"#);
@@ -342,7 +342,7 @@ mod tests {
         // This test verifies that upon leaves missing variables as-is (template error).
         let args = serde_json::Map::new();
 
-        let template = r#"{"value": {{missing}}}"#.to_string();
+        let template = r#"{"value": {{missing}}}"#.to_owned();
         // Missing variables now cause template render errors (schema validation should catch these)
         let result = std::panic::catch_unwind(|| render_template_with_engine(template, &args));
         assert!(result.is_err(), "Expected panic for missing variable");
@@ -356,7 +356,7 @@ mod tests {
         args.insert("deleted".to_owned(), json!(false));
         args.insert("empty".to_owned(), Value::Null);
 
-        let template = r#"{"is_active": {{active}}, "is_deleted": {{deleted}}, "empty_field": {{empty}}}"#.to_string();
+        let template = r#"{"is_active": {{active}}, "is_deleted": {{deleted}}, "empty_field": {{empty}}}"#.to_owned();
         let result = render_template_with_engine(template, &args);
 
         // Note: upon renders null as empty string, not "null"
@@ -409,10 +409,10 @@ mod tests {
 
         let path_template = "/api/users/{{user_id}}/{{action}}";
         let query_params: Vec<super::super::McpRestQueryParams> = vec![];
-        let transcoder = create_transcoder(http::Method::GET, path_template.to_string(), query_params, false, None);
+        let transcoder = create_transcoder(http::Method::GET, path_template.to_owned(), query_params, false, None);
 
         let result = transcoder.encode(http_request.headers(), &mcp_request);
-        assert!(result.is_ok(), "Expected successful encoding but got: {:?}", result);
+        assert!(result.is_ok(), "Expected successful encoding but got: {result:?}");
 
         let request = result.unwrap();
         assert_eq!(request.uri(), "/api/users/12345/profile");
@@ -430,10 +430,10 @@ mod tests {
 
         let path_template = "/api/weather/{{location.city}}";
         let query_params: Vec<super::super::McpRestQueryParams> = vec![];
-        let transcoder = create_transcoder(http::Method::GET, path_template.to_string(), query_params, false, None);
+        let transcoder = create_transcoder(http::Method::GET, path_template.to_owned(), query_params, false, None);
 
         let result = transcoder.encode(http_request.headers(), &mcp_request);
-        assert!(result.is_ok(), "Expected successful encoding but got: {:?}", result);
+        assert!(result.is_ok(), "Expected successful encoding but got: {result:?}");
 
         let request = result.unwrap();
         assert_eq!(request.uri(), "/api/weather/dublin");
@@ -455,13 +455,13 @@ mod tests {
         let transcoder = create_transcoder(http::Method::GET, "/api/search".to_owned(), query_params, false, None);
 
         let result = transcoder.encode(http_request.headers(), &mcp_request);
-        assert!(result.is_ok(), "Expected successful encoding but got: {:?}", result);
+        assert!(result.is_ok(), "Expected successful encoding but got: {result:?}");
 
         let request = result.unwrap();
         let uri = request.uri().to_string();
-        assert!(uri.starts_with("/api/search?"), "URI should start with /api/search?: {}", uri);
-        assert!(uri.contains("q=rust%20language"), "URI should contain q=rust%20language: {}", uri);
-        assert!(uri.contains("limit=10"), "URI should contain limit=10: {}", uri);
+        assert!(uri.starts_with("/api/search?"), "URI should start with /api/search?: {uri}");
+        assert!(uri.contains("q=rust%20language"), "URI should contain q=rust%20language: {uri}");
+        assert!(uri.contains("limit=10"), "URI should contain limit=10: {uri}");
     }
 
     #[test]
@@ -484,13 +484,13 @@ mod tests {
         let transcoder = create_transcoder(http::Method::GET, "/api/weather".to_owned(), query_params, false, None);
 
         let result = transcoder.encode(http_request.headers(), &mcp_request);
-        assert!(result.is_ok(), "Expected successful encoding but got: {:?}", result);
+        assert!(result.is_ok(), "Expected successful encoding but got: {result:?}");
 
         let request = result.unwrap();
         let uri = request.uri().to_string();
-        assert!(uri.contains("latitude=51.5074"), "URI should contain latitude=51.5074: {}", uri);
-        assert!(uri.contains("longitude=-0.1278"), "URI should contain longitude=-0.1278: {}", uri);
-        assert!(uri.contains("days=5"), "URI should contain days=5: {}", uri);
+        assert!(uri.contains("latitude=51.5074"), "URI should contain latitude=51.5074: {uri}");
+        assert!(uri.contains("longitude=-0.1278"), "URI should contain longitude=-0.1278: {uri}");
+        assert!(uri.contains("days=5"), "URI should contain days=5: {uri}");
     }
 
     #[test]
@@ -509,11 +509,11 @@ mod tests {
         let transcoder = create_transcoder(http::Method::GET, "/api/locations".to_owned(), query_params, false, None);
 
         let result = transcoder.encode(http_request.headers(), &mcp_request);
-        assert!(result.is_ok(), "Expected successful encoding but got: {:?}", result);
+        assert!(result.is_ok(), "Expected successful encoding but got: {result:?}");
 
         let request = result.unwrap();
         let uri = request.uri().to_string();
-        assert_eq!(uri, "/api/locations?city=London", "URI should only contain city param: {}", uri);
+        assert_eq!(uri, "/api/locations?city=London", "URI should only contain city param: {uri}");
     }
 
     #[test]
@@ -538,11 +538,11 @@ mod tests {
         );
 
         let result = transcoder.encode(http_request.headers(), &mcp_request);
-        assert!(result.is_ok(), "Expected successful encoding but got: {:?}", result);
+        assert!(result.is_ok(), "Expected successful encoding but got: {result:?}");
 
         let request = result.unwrap();
         let uri = request.uri().to_string();
-        assert_eq!(uri, "/api/users/42/orders?status=active", "URI should have path and query: {}", uri);
+        assert_eq!(uri, "/api/users/42/orders?status=active", "URI should have path and query: {uri}");
     }
 
     #[test]
@@ -569,8 +569,8 @@ mod tests {
 
         let mut result = String::new();
         append_query_string(&mut result, &query_params, &args);
-        assert!(result.contains("lat=53.3498"), "Result should contain lat=53.3498: {}", result);
-        assert!(result.contains("lon=-6.2603"), "Result should contain lon=-6.2603: {}", result);
+        assert!(result.contains("lat=53.3498"), "Result should contain lat=53.3498: {result}");
+        assert!(result.contains("lon=-6.2603"), "Result should contain lon=-6.2603: {result}");
     }
 
     #[test]
@@ -591,10 +591,10 @@ mod tests {
 
         let mut result = String::new();
         append_query_string(&mut result, &query_params, &args);
-        assert!(result.contains("space=hello%20world"), "Space should be encoded as %20: {}", result);
-        assert!(result.contains("amp=foo%26bar"), "& should be encoded: {}", result);
-        assert!(result.contains("equal=a%3Db"), "= should be encoded: {}", result);
-        assert!(result.contains("slash=test%2Fvalue"), "/ should be encoded: {}", result);
+        assert!(result.contains("space=hello%20world"), "Space should be encoded as %20: {result}");
+        assert!(result.contains("amp=foo%26bar"), "& should be encoded: {result}");
+        assert!(result.contains("equal=a%3Db"), "= should be encoded: {result}");
+        assert!(result.contains("slash=test%2Fvalue"), "/ should be encoded: {result}");
     }
 
     #[test]
@@ -612,10 +612,9 @@ mod tests {
         append_query_string(&mut result, &query_params, &args);
         assert!(
             result.contains("city%20name=M%C3%BCnchen"),
-            "Non-ASCII and spaces in names should be encoded: {}",
-            result
+            "Non-ASCII and spaces in names should be encoded: {result}"
         );
-        assert!(result.contains("emoji%20param=%F0%9F%9A%80"), "Emojis should be encoded: {}", result);
+        assert!(result.contains("emoji%20param=%F0%9F%9A%80"), "Emojis should be encoded: {result}");
     }
 
     #[test]
@@ -634,8 +633,8 @@ mod tests {
 
         let mut result = String::new();
         append_query_string(&mut result, &query_params, &args);
-        assert!(result.contains("alpha=ABCxyz"), "Alphanumeric should not be encoded: {}", result);
-        assert!(result.contains("numeric=123"), "Numeric should not be encoded: {}", result);
-        assert!(result.contains("special=-_.~"), "Unreserved chars -_.~ should not be encoded: {}", result);
+        assert!(result.contains("alpha=ABCxyz"), "Alphanumeric should not be encoded: {result}");
+        assert!(result.contains("numeric=123"), "Numeric should not be encoded: {result}");
+        assert!(result.contains("special=-_.~"), "Unreserved chars -_.~ should not be encoded: {result}");
     }
 }

@@ -82,55 +82,52 @@ impl ProviderContext {
         provider_name: &str,
         provider_config: &JwtProvider,
     ) -> Option<Asset<Arc<ValidationKey>>> {
-        match kid {
-            Some(kid) => {
-                let m = self.key_map.load_full();
-                match m.as_ref() {
-                    Asset::Permanent(keys) => keys.get(kid).cloned().map(Asset::Permanent),
-                    Asset::Expiring((keys, expiration)) => {
-                        if Instant::now() > *expiration {
-                            // refresh keys if necessary...
-                            if let JwksSourceSpecifier::RemoteJwks(remote) = &provider_config.jwks_source_specifier {
-                                if let Ok(new_keys) = fetch_remote_jwks(remote, provider_name, provider_config).await {
-                                    let deadline = Instant::now() + remote.cache_duration;
-                                    self.key_map.store(Arc::new(Asset::Expiring((new_keys, deadline))));
-                                }
-                            }
-                        }
-
-                        // for simplicity, validate this token with with the key set,
-                        // no matter if the cache is expired, the key is still valid.
-                        // next requests will be validated with the fresh key set
-
-                        keys.get(kid).cloned().map(|x| Asset::Expiring((x, *expiration)))
-                    },
-                    Asset::Pending => {
-                        // force remote key fetching...
+        if let Some(kid) = kid {
+            let m = self.key_map.load_full();
+            match m.as_ref() {
+                Asset::Permanent(keys) => keys.get(kid).cloned().map(Asset::Permanent),
+                Asset::Expiring((keys, expiration)) => {
+                    if Instant::now() > *expiration {
+                        // refresh keys if necessary...
                         if let JwksSourceSpecifier::RemoteJwks(remote) = &provider_config.jwks_source_specifier {
                             if let Ok(new_keys) = fetch_remote_jwks(remote, provider_name, provider_config).await {
                                 let deadline = Instant::now() + remote.cache_duration;
-                                let res = new_keys.get(kid).cloned().map(|x| Asset::Expiring((x, deadline)));
                                 self.key_map.store(Arc::new(Asset::Expiring((new_keys, deadline))));
-                                return res;
                             }
                         }
+                    }
 
-                        Some(Asset::Pending)
-                    },
-                }
-            },
-            None => {
-                let m = self.key_map.load_full();
-                match m.as_ref() {
-                    Asset::Permanent(keys) => keys.values().next().cloned().map(Asset::Permanent),
-                    Asset::Expiring((keys, expiration)) => {
-                        // Regardless of whether the keys are expiring, we will continue validating with them
-                        // until the fetcher updates them.
-                        keys.values().next().cloned().map(|x| Asset::Expiring((x, *expiration)))
-                    },
-                    Asset::Pending => Some(Asset::Pending), // validation key is pending...
-                }
-            },
+                    // for simplicity, validate this token with with the key set,
+                    // no matter if the cache is expired, the key is still valid.
+                    // next requests will be validated with the fresh key set
+
+                    keys.get(kid).cloned().map(|x| Asset::Expiring((x, *expiration)))
+                },
+                Asset::Pending => {
+                    // force remote key fetching...
+                    if let JwksSourceSpecifier::RemoteJwks(remote) = &provider_config.jwks_source_specifier {
+                        if let Ok(new_keys) = fetch_remote_jwks(remote, provider_name, provider_config).await {
+                            let deadline = Instant::now() + remote.cache_duration;
+                            let res = new_keys.get(kid).cloned().map(|x| Asset::Expiring((x, deadline)));
+                            self.key_map.store(Arc::new(Asset::Expiring((new_keys, deadline))));
+                            return res;
+                        }
+                    }
+
+                    Some(Asset::Pending)
+                },
+            }
+        } else {
+            let m = self.key_map.load_full();
+            match m.as_ref() {
+                Asset::Permanent(keys) => keys.values().next().cloned().map(Asset::Permanent),
+                Asset::Expiring((keys, expiration)) => {
+                    // Regardless of whether the keys are expiring, we will continue validating with them
+                    // until the fetcher updates them.
+                    keys.values().next().cloned().map(|x| Asset::Expiring((x, *expiration)))
+                },
+                Asset::Pending => Some(Asset::Pending), // validation key is pending...
+            }
         }
     }
 }
@@ -425,15 +422,14 @@ impl JwtAuthentication {
                         let remote = match inner_clone
                             .config
                             .providers
-                            .get(&provider_name)
-                            .and_then(|config| Some(&config.jwks_source_specifier))
+                            .get(&provider_name).map(|config| &config.jwks_source_specifier)
                         {
                             Some(JwksSourceSpecifier::RemoteJwks(remote)) => remote.clone(),
                             _ => continue,
                         };
 
                         let task = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
-                            let mut interval = tokio::time::interval(tokio::time::Duration::from(remote.cache_duration));
+                            let mut interval = tokio::time::interval(remote.cache_duration);
 
                             loop {
                                 match context.key_map.load().as_ref() {
@@ -498,7 +494,7 @@ impl JwtAuthentication {
             Some(context) => {
                 let kid_ref = header.kid.as_ref().map(|kid| KidStr::ref_cast(kid));
                 match context.validation_key_lookup(kid_ref, provider_name, provider_config).await {
-                    Some(Asset::Permanent(key)) | Some(Asset::Expiring((key, _))) => Ok(key),
+                    Some(Asset::Permanent(key) | Asset::Expiring((key, _))) => Ok(key),
                     Some(Asset::Pending) => Err(JwkError::NoValidationKey),
                     None => Err(JwkError::NoValidationKey),
                 }

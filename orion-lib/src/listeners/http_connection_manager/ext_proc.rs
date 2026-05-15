@@ -1718,14 +1718,14 @@ impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
                     let _ = reply_channel.send(self.response_processing.status_error(
                         "Lost connection to external processor",
                         self.inner.worker_config.failure_mode_allow,
-                    ));
+                    )).ok();
                 }
 
                 if let Some(reply_channel) = self.request_processing.reply_channel.take() {
                     let _ = reply_channel.send(self.request_processing.status_error(
                         "Lost connection to external processor",
                         self.inner.worker_config.failure_mode_allow,
-                    ));
+                    )).ok();
                 }
 
                 self.timeout_state.active = false;
@@ -1743,12 +1743,12 @@ impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
             let msg = "External processor attempted multiple timeout extensions";
             if let Some(reply_channel) = self.response_processing.reply_channel.take() {
                 let _ = reply_channel
-                    .send(self.response_processing.status_error(msg, self.inner.worker_config.failure_mode_allow));
+                    .send(self.response_processing.status_error(msg, self.inner.worker_config.failure_mode_allow)).ok();
             }
 
             if let Some(reply_channel) = self.request_processing.reply_channel.take() {
                 let _ = reply_channel
-                    .send(self.request_processing.status_error(msg, self.inner.worker_config.failure_mode_allow));
+                    .send(self.request_processing.status_error(msg, self.inner.worker_config.failure_mode_allow)).ok();
             }
 
             return false;

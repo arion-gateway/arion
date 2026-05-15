@@ -279,12 +279,12 @@ async fn test_upstream_tls_multiple_backends() {
     for _ in 0..4 {
         let response = client.get("/").await.expect("Failed to send request");
         response.assert_status(StatusCode::OK);
-        responses.push(response.body_str().unwrap_or("").to_string());
+        responses.push(response.body_str().unwrap_or("").to_owned());
     }
 
     let has_backend1 = responses.iter().any(|r| r == "backend1");
     let has_backend2 = responses.iter().any(|r| r == "backend2");
-    assert!(has_backend1 && has_backend2, "Expected requests to be distributed to both backends, got: {:?}", responses);
+    assert!(has_backend1 && has_backend2, "Expected requests to be distributed to both backends, got: {responses:?}");
 
     orion.shutdown();
     let _ = std::fs::remove_file(&config_path);

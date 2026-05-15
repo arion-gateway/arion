@@ -513,10 +513,10 @@ async fn test_ext_proc_headers_and_body_mode() {
 
     tokio::time::sleep(Duration::from_millis(100)).await;
     let captured = ext_proc_server.captured_requests().await;
-    assert!(captured.iter().any(|r| r.is_request_headers()));
-    assert!(captured.iter().any(|r| r.is_request_body()));
-    assert!(captured.iter().any(|r| r.is_response_headers()));
-    assert!(captured.iter().any(|r| r.is_response_body()));
+    assert!(captured.iter().any(orion_e2e_tests::CapturedProcessingRequest::is_request_headers));
+    assert!(captured.iter().any(orion_e2e_tests::CapturedProcessingRequest::is_request_body));
+    assert!(captured.iter().any(orion_e2e_tests::CapturedProcessingRequest::is_response_headers));
+    assert!(captured.iter().any(orion_e2e_tests::CapturedProcessingRequest::is_response_body));
 }
 
 #[tokio::test]

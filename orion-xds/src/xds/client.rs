@@ -70,7 +70,7 @@ where
 
     fn subscribe_resource_name_by_typeurl(mut self, resource_id: ResourceId, type_url: TypeUrl) -> Self {
         let configured_type_url = C::type_url();
-        if configured_type_url.is_none() || configured_type_url.is_some_and(|type_is_set| type_is_set == type_url) {
+        if configured_type_url.is_none_or(|type_is_set| type_is_set == type_url) {
             self.initial_subscriptions.entry(type_url).or_default().insert(resource_id);
         } else {
             self.error = Some("can only subscribe by type_url when using a compatible typed binding".to_owned());

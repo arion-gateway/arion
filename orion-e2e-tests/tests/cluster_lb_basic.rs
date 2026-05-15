@@ -48,16 +48,16 @@ async fn test_round_robin_distribution() {
     for _ in 0..9 {
         let response = client.get("/test").await.unwrap();
         response.assert_status(StatusCode::OK);
-        responses.push(response.body_str().unwrap_or("").to_string());
+        responses.push(response.body_str().unwrap_or("").to_owned());
     }
 
     let b1_count = responses.iter().filter(|r| *r == "b1").count();
     let b2_count = responses.iter().filter(|r| *r == "b2").count();
     let b3_count = responses.iter().filter(|r| *r == "b3").count();
 
-    assert_eq!(b1_count, 3, "Expected 3 requests to b1, got {}", b1_count);
-    assert_eq!(b2_count, 3, "Expected 3 requests to b2, got {}", b2_count);
-    assert_eq!(b3_count, 3, "Expected 3 requests to b3, got {}", b3_count);
+    assert_eq!(b1_count, 3, "Expected 3 requests to b1, got {b1_count}");
+    assert_eq!(b2_count, 3, "Expected 3 requests to b2, got {b2_count}");
+    assert_eq!(b3_count, 3, "Expected 3 requests to b3, got {b3_count}");
 
     orion.shutdown();
     let _ = std::fs::remove_file(&config_path);
@@ -91,22 +91,22 @@ async fn test_round_robin_weighted() {
     for _ in 0..total_requests {
         let response = client.get("/test").await.unwrap();
         response.assert_status(StatusCode::OK);
-        let body = response.body_str().unwrap_or("").to_string();
+        let body = response.body_str().unwrap_or("").to_owned();
         *counts.entry(body).or_insert(0) += 1;
     }
 
-    let b1 = *counts.get("b1").unwrap_or(&0) as f64;
-    let b2 = *counts.get("b2").unwrap_or(&0) as f64;
-    let b3 = *counts.get("b3").unwrap_or(&0) as f64;
+    let b1 = f64::from(*counts.get("b1").unwrap_or(&0));
+    let b2 = f64::from(*counts.get("b2").unwrap_or(&0));
+    let b3 = f64::from(*counts.get("b3").unwrap_or(&0));
 
-    let expected_b1 = total_requests as f64 / 6.0;
-    let expected_b2 = total_requests as f64 * 2.0 / 6.0;
-    let expected_b3 = total_requests as f64 * 3.0 / 6.0;
+    let expected_b1 = f64::from(total_requests) / 6.0;
+    let expected_b2 = f64::from(total_requests) * 2.0 / 6.0;
+    let expected_b3 = f64::from(total_requests) * 3.0 / 6.0;
 
     let tolerance = 0.3;
-    assert!((b1 - expected_b1).abs() / expected_b1 < tolerance, "b1: expected ~{:.0}, got {:.0}", expected_b1, b1);
-    assert!((b2 - expected_b2).abs() / expected_b2 < tolerance, "b2: expected ~{:.0}, got {:.0}", expected_b2, b2);
-    assert!((b3 - expected_b3).abs() / expected_b3 < tolerance, "b3: expected ~{:.0}, got {:.0}", expected_b3, b3);
+    assert!((b1 - expected_b1).abs() / expected_b1 < tolerance, "b1: expected ~{expected_b1:.0}, got {b1:.0}");
+    assert!((b2 - expected_b2).abs() / expected_b2 < tolerance, "b2: expected ~{expected_b2:.0}, got {b2:.0}");
+    assert!((b3 - expected_b3).abs() / expected_b3 < tolerance, "b3: expected ~{expected_b3:.0}, got {b3:.0}");
 
     orion.shutdown();
     let _ = std::fs::remove_file(&config_path);
@@ -140,7 +140,7 @@ async fn test_random_distribution() {
     for _ in 0..total_requests {
         let response = client.get("/test").await.unwrap();
         response.assert_status(StatusCode::OK);
-        let body = response.body_str().unwrap_or("").to_string();
+        let body = response.body_str().unwrap_or("").to_owned();
         *counts.entry(body).or_insert(0) += 1;
     }
 
@@ -154,9 +154,9 @@ async fn test_random_distribution() {
     let expected = total_requests / 3;
     let tolerance = expected / 2;
 
-    assert!(b1.abs_diff(expected) < tolerance, "b1 count {} too far from expected {}", b1, expected);
-    assert!(b2.abs_diff(expected) < tolerance, "b2 count {} too far from expected {}", b2, expected);
-    assert!(b3.abs_diff(expected) < tolerance, "b3 count {} too far from expected {}", b3, expected);
+    assert!(b1.abs_diff(expected) < tolerance, "b1 count {b1} too far from expected {expected}");
+    assert!(b2.abs_diff(expected) < tolerance, "b2 count {b2} too far from expected {expected}");
+    assert!(b3.abs_diff(expected) < tolerance, "b3 count {b3} too far from expected {expected}");
 
     orion.shutdown();
     let _ = std::fs::remove_file(&config_path);
@@ -207,7 +207,7 @@ async fn test_least_request_prefers_idle() {
         if let Ok(Ok(response)) = result {
             let response: orion_e2e_tests::TestResponse = response;
             response.assert_status(StatusCode::OK);
-            let body = response.body_str().unwrap_or("").to_string();
+            let body = response.body_str().unwrap_or("").to_owned();
             *counts.entry(body).or_insert(0) += 1;
         }
     }
@@ -217,9 +217,7 @@ async fn test_least_request_prefers_idle() {
 
     assert!(
         fast_count > slow_count + 100,
-        "Expected fast backend ({}) to receive more requests than slow backend ({})",
-        fast_count,
-        slow_count
+        "Expected fast backend ({fast_count}) to receive more requests than slow backend ({slow_count})"
     );
 
     orion.shutdown();
@@ -273,8 +271,7 @@ async fn test_connect_timeout() {
 
     assert!(
         elapsed < Duration::from_millis(500),
-        "Request should have timed out quickly (~100ms), but took {:?}",
-        elapsed
+        "Request should have timed out quickly (~100ms), but took {elapsed:?}"
     );
 
     orion.shutdown();

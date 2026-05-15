@@ -179,7 +179,7 @@ pub fn log_access_blocking(target: Target, vec: Vec<FormattedMessage>) {
             if is_blocking() {
                 tokio::task::block_in_place(move || {
                     if let Some(sender) = get_sender() {
-                        let _ = sender.blocking_send(AccessLogMessage::Message(target_clone, vec));
+                        sender.blocking_send(AccessLogMessage::Message(target_clone, vec)).ok();
                     }
                 });
             }

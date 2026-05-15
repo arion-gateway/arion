@@ -640,7 +640,7 @@ mod tests {
             "age": 25
         });
 
-        assert!(tool_entry.validate_against_input_schema(&args).is_ok());
+        tool_entry.validate_against_input_schema(&args).unwrap();
     }
 
     #[test]
@@ -663,7 +663,7 @@ mod tests {
         let result = tool_entry.validate_against_input_schema(&args);
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("username"), "Error should mention missing field: {}", err_msg);
+        assert!(err_msg.contains("username"), "Error should mention missing field: {err_msg}");
     }
 
     #[test]
@@ -687,7 +687,7 @@ mod tests {
         let result = tool_entry.validate_against_input_schema(&args);
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("number"), "Error should mention type mismatch: {}", err_msg);
+        assert!(err_msg.contains("number"), "Error should mention type mismatch: {err_msg}");
     }
 
     #[test]
@@ -702,7 +702,7 @@ mod tests {
             "count": 123
         });
 
-        assert!(tool_entry.validate_against_input_schema(&args).is_ok());
+        tool_entry.validate_against_input_schema(&args).unwrap();
     }
 
     #[test]
@@ -726,7 +726,7 @@ mod tests {
             "unit": "F"
         });
 
-        assert!(tool_entry.validate_against_output_schema(&response).is_ok());
+        tool_entry.validate_against_output_schema(&response).unwrap();
     }
 
     #[test]
@@ -766,7 +766,7 @@ mod tests {
             }
         });
 
-        assert!(tool_entry.validate_against_output_schema(&response).is_ok());
+        tool_entry.validate_against_output_schema(&response).unwrap();
     }
 
     #[test]
@@ -825,7 +825,7 @@ mod tests {
                 "age": 30
             }
         });
-        assert!(tool_entry.validate_against_input_schema(&valid_args).is_ok());
+        tool_entry.validate_against_input_schema(&valid_args).unwrap();
 
         // Invalid - missing required nested field
         let invalid_args = json!({
@@ -857,7 +857,7 @@ mod tests {
         let valid_args = json!({
             "tags": ["rust", "mcp", "api"]
         });
-        assert!(tool_entry.validate_against_input_schema(&valid_args).is_ok());
+        tool_entry.validate_against_input_schema(&valid_args).unwrap();
 
         // Invalid - wrong item type
         let invalid_args = json!({

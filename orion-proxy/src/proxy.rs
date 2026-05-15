@@ -213,7 +213,7 @@ fn launch_runtimes(
 
     let proxy_handles = {
         (0..num_runtimes)
-            .zip(config_receivers.into_iter())
+            .zip(config_receivers)
             .map(|(id, config_receivers)| {
                 spawn_proxy_runtime_from_thread(
                     "proxy",

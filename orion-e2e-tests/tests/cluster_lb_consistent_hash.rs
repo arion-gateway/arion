@@ -48,7 +48,7 @@ async fn test_ring_hash_header_routing() {
     for i in 0..10 {
         let response = client.send(RequestBuilder::get("/test").header("x-hash-key", "user-123")).await.unwrap();
         response.assert_status(StatusCode::OK);
-        let body = response.body_str().unwrap_or("").to_string();
+        let body = response.body_str().unwrap_or("").to_owned();
         if i == 0 {
             first_response = body.clone();
         }
@@ -87,10 +87,10 @@ async fn test_ring_hash_different_keys() {
 
     let mut backends_hit: HashSet<String> = HashSet::new();
     for i in 0..100 {
-        let key = format!("unique-key-{}", i);
+        let key = format!("unique-key-{i}");
         let response = client.send(RequestBuilder::get("/test").header("x-hash-key", &key)).await.unwrap();
         response.assert_status(StatusCode::OK);
-        let body = response.body_str().unwrap_or("").to_string();
+        let body = response.body_str().unwrap_or("").to_owned();
         backends_hit.insert(body);
     }
 
@@ -134,7 +134,7 @@ async fn test_maglev_header_routing() {
     for i in 0..10 {
         let response = client.send(RequestBuilder::get("/test").header("x-hash-key", "user-456")).await.unwrap();
         response.assert_status(StatusCode::OK);
-        let body = response.body_str().unwrap_or("").to_string();
+        let body = response.body_str().unwrap_or("").to_owned();
         if i == 0 {
             first_response = body.clone();
         }
@@ -173,10 +173,10 @@ async fn test_maglev_different_keys() {
 
     let mut backends_hit: HashSet<String> = HashSet::new();
     for i in 0..100 {
-        let key = format!("maglev-key-{}", i);
+        let key = format!("maglev-key-{i}");
         let response = client.send(RequestBuilder::get("/test").header("x-hash-key", &key)).await.unwrap();
         response.assert_status(StatusCode::OK);
-        let body = response.body_str().unwrap_or("").to_string();
+        let body = response.body_str().unwrap_or("").to_owned();
         backends_hit.insert(body);
     }
 

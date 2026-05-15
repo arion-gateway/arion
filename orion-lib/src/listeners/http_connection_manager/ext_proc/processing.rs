@@ -223,7 +223,7 @@ pub(crate) mod protected {
         inner: PubFrameBridge,
     }
 
-    
+
 
     impl Stream for FrameBridge {
         type Item = Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>;
@@ -719,7 +719,7 @@ impl<Msg: kind::MessageKind + OverridableModeSelector> Processing<kind::Processi
             // update the local version of trailers, if required if let Some(trailers) = self.body_context.trailers.as_mut() {
             debug!(target: "ext_proc", "handle_trailers_response: mutating trailers...");
             if let Some(trailers_updates) = trailers_response.header_mutation.take() {
-                let _ = apply_trailer_mutations(&mut trailers, trailers_updates, None);
+                let _ = apply_trailer_mutations(&mut trailers, trailers_updates, None).ok();
             }
 
             _ = self.frame_bridge.inject_frame(Ok(Frame::trailers(trailers)), proof).await;

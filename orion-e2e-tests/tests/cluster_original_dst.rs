@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Integration tests for ORIGINAL_DST clusters.
+//! Integration tests for `ORIGINAL_DST` clusters.
 //!
-//! ORIGINAL_DST clusters route requests to dynamically-determined destinations
+//! `ORIGINAL_DST` clusters route requests to dynamically-determined destinations
 //! based on the `x-envoy-original-dst-host` HTTP header (or a custom header).
 
 use std::time::Duration;
@@ -47,7 +47,7 @@ async fn test_original_dst_routes_to_header_destination() {
 
     for _ in 0..10 {
         let response = client
-            .send(RequestBuilder::get("/test").header(DEFAULT_DST_HEADER, &dest_header(&backend1)))
+            .send(RequestBuilder::get("/test").header(DEFAULT_DST_HEADER, dest_header(&backend1)))
             .await
             .unwrap();
         response.assert_status(StatusCode::OK);
@@ -56,7 +56,7 @@ async fn test_original_dst_routes_to_header_destination() {
 
     for _ in 0..10 {
         let response = client
-            .send(RequestBuilder::get("/test").header(DEFAULT_DST_HEADER, &dest_header(&backend2)))
+            .send(RequestBuilder::get("/test").header(DEFAULT_DST_HEADER, dest_header(&backend2)))
             .await
             .unwrap();
         response.assert_status(StatusCode::OK);
@@ -87,14 +87,14 @@ async fn test_original_dst_custom_header_name() {
 
     for _ in 0..10 {
         let response =
-            client.send(RequestBuilder::get("/test").header(CUSTOM_HEADER, &dest_header(&backend1))).await.unwrap();
+            client.send(RequestBuilder::get("/test").header(CUSTOM_HEADER, dest_header(&backend1))).await.unwrap();
         response.assert_status(StatusCode::OK);
         response.assert_body("b1");
     }
 
     for _ in 0..10 {
         let response =
-            client.send(RequestBuilder::get("/test").header(CUSTOM_HEADER, &dest_header(&backend2))).await.unwrap();
+            client.send(RequestBuilder::get("/test").header(CUSTOM_HEADER, dest_header(&backend2))).await.unwrap();
         response.assert_status(StatusCode::OK);
         response.assert_body("b2");
     }
@@ -149,7 +149,7 @@ async fn test_original_dst_multiple_destinations() {
 
     for (backend, expected_body) in [(&backend1, "b1"), (&backend2, "b2"), (&backend3, "b3")] {
         let response =
-            client.send(RequestBuilder::get("/test").header(DEFAULT_DST_HEADER, &dest_header(backend))).await.unwrap();
+            client.send(RequestBuilder::get("/test").header(DEFAULT_DST_HEADER, dest_header(backend))).await.unwrap();
         response.assert_status(StatusCode::OK);
         response.assert_body(expected_body);
     }
@@ -244,8 +244,7 @@ async fn test_original_dst_connect_timeout() {
 
     assert!(
         elapsed < Duration::from_millis(500),
-        "Request should have timed out quickly (~100ms), but took {:?}",
-        elapsed
+        "Request should have timed out quickly (~100ms), but took {elapsed:?}"
     );
 
     orion.shutdown();

@@ -98,7 +98,7 @@ async fn test_override_host_missing_header_uses_fallback() {
     for _ in 0..9 {
         let response = client.get("/test").await.unwrap();
         response.assert_status(StatusCode::OK);
-        seen_backends.insert(response.body_str().unwrap_or("").to_string());
+        seen_backends.insert(response.body_str().unwrap_or("").to_owned());
     }
 
     assert!(seen_backends.contains("b1"), "Expected traffic to b1 via fallback");
@@ -137,7 +137,7 @@ async fn test_override_host_invalid_header_uses_fallback() {
             let response =
                 client.send(RequestBuilder::get("/test").header(OVERRIDE_HEADER, invalid_value)).await.unwrap();
             response.assert_status(StatusCode::OK);
-            seen_backends.insert(response.body_str().unwrap_or("").to_string());
+            seen_backends.insert(response.body_str().unwrap_or("").to_owned());
         }
         assert!(
             seen_backends.len() > 1 && seen_backends.contains("b1") && seen_backends.contains("b2"),
@@ -175,7 +175,7 @@ async fn test_override_host_unknown_host_uses_fallback() {
     for _ in 0..6 {
         let response = client.send(RequestBuilder::get("/test").header(OVERRIDE_HEADER, unknown_host)).await.unwrap();
         response.assert_status(StatusCode::OK);
-        seen_backends.insert(response.body_str().unwrap_or("").to_string());
+        seen_backends.insert(response.body_str().unwrap_or("").to_owned());
     }
 
     assert!(seen_backends.contains("b1"), "Expected traffic to b1 via fallback");

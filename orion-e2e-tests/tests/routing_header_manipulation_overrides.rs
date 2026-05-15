@@ -15,8 +15,8 @@
 //! Tests for header manipulation inheritance across configuration levels.
 //!
 //! This file tests the three-level hierarchy of header manipulation:
-//! - RouteConfiguration (global level)
-//! - VirtualHost (group level)
+//! - `RouteConfiguration` (global level)
+//! - `VirtualHost` (group level)
 //! - Route (specific level)
 //!
 //! It also tests the `most_specific_header_mutations_wins` flag which controls
@@ -79,7 +79,7 @@ async fn test_route_request_header_overrides_vhost() {
 
     let captured = backend.await_request().await.unwrap();
     let values = captured.header_all("x-version");
-    assert_eq!(values, vec!["route-value"], "Expected single value, got: {:?}", values);
+    assert_eq!(values, vec!["route-value"], "Expected single value, got: {values:?}");
 
     orion.shutdown();
     let _ = std::fs::remove_file(&config_path);
@@ -192,7 +192,7 @@ async fn test_route_response_header_overrides_vhost() {
     let response = client.get("/test").await.unwrap();
     response.assert_status(StatusCode::OK);
     let values = response.header_all("x-version");
-    assert_eq!(values, vec!["route-value"], "Expected single value, got: {:?}", values);
+    assert_eq!(values, vec!["route-value"], "Expected single value, got: {values:?}");
 
     backend.await_request().await.unwrap();
 
@@ -451,7 +451,7 @@ async fn test_route_overrides_vhost_overrides_config() {
 
     let captured = backend.await_request().await.unwrap();
     let values = captured.header_all("x-version");
-    assert_eq!(values, vec!["route-value"], "Expected single value, got: {:?}", values);
+    assert_eq!(values, vec!["route-value"], "Expected single value, got: {values:?}");
 
     orion.shutdown();
     let _ = std::fs::remove_file(&config_path);
@@ -576,7 +576,7 @@ async fn test_vhost_add_if_absent_route_overwrite() {
 
     let captured = backend.await_request().await.unwrap();
     let values = captured.header_all("x-header");
-    assert_eq!(values, vec!["route-override"], "Expected single value, got: {:?}", values);
+    assert_eq!(values, vec!["route-override"], "Expected single value, got: {values:?}");
 
     orion.shutdown();
     let _ = std::fs::remove_file(&config_path);

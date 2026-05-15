@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use tokio::sync::oneshot;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::{Error, Result};
 
@@ -160,7 +160,9 @@ impl OrionInstance {
 
                             if let Some(tx) = result_tx.take() {
                                 if let Some(addr) = parse_listener_started(&line, &name_for_parser) {
-                                    let _ = tx.send(Ok(addr));
+                                    tx.send(Ok(addr)).unwrap_or_else(|e| {
+                                        error!("Failed to send listener address: {e:?}");
+                                    });
                                 } else {
                                     result_tx = Some(tx); // Put it back
                                 }
@@ -180,7 +182,9 @@ impl OrionInstance {
                 if let Some(tx) = result_tx.take() {
                     std::thread::sleep(Duration::from_millis(100));
                     let output = stdout_lines.lock().map(|lines| lines.join("\n")).unwrap_or_default();
-                    let _ = tx.send(Err(output));
+                    tx.send(Err(output)).unwrap_or_else(|e| {
+                        error!("Failed to send listener address: {e:?}");
+                    });
                 }
             })
         });
@@ -298,13 +302,17 @@ impl OrionInstance {
                             if let Some(tx) = result_tx.take() {
                                 if let Some(addr) = parse_listener_started(&line, &name_for_parser) {
                                     if addr.port() == expected_port {
-                                        let _ = tx.send(Ok(()));
+                                        tx.send(Ok(())).unwrap_or_else(|e| {
+                                            error!("Failed to send listener ready signal: {e:?}");
+                                        });
                                     } else {
-                                        let _ = tx.send(Err(format!(
+                                        tx.send(Err(format!(
                                             "Listener started on wrong port. Expected: {}, Got: {}",
                                             expected_port,
                                             addr.port()
-                                        )));
+                                        ))).unwrap_or_else(|e| {
+                                            error!("Failed to send listener ready signal: {e:?}");
+                                        });
                                     }
                                 } else {
                                     result_tx = Some(tx);
@@ -325,7 +333,9 @@ impl OrionInstance {
                 if let Some(tx) = result_tx.take() {
                     std::thread::sleep(Duration::from_millis(100));
                     let output = stdout_lines.lock().map(|lines| lines.join("\n")).unwrap_or_default();
-                    let _ = tx.send(Err(output));
+                    tx.send(Err(output)).unwrap_or_else(|e| {
+                        error!("Failed to send listener ready signal: {e:?}");
+                    });
                 }
             })
         });
@@ -442,7 +452,9 @@ impl OrionInstance {
 
             if start.elapsed() > timeout {
                 if let Some(ref mut process) = self.process {
-                    let _ = process.kill();
+                    process.kill().unwrap_or_else(|e| {
+                        error!("Failed to kill orion process after timeout: {e}");
+                    });
                 }
                 return Err(Error::ReadyTimeout(timeout));
             }

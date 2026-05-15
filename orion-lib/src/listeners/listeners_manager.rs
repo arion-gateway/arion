@@ -204,7 +204,7 @@ mod tests {
             access_log: vec![],
         };
         man.start_listener(l1, l1_info.clone()).unwrap();
-        assert!(routeb_tx1.send(RouteConfigurationChange::Removed("n/a".into(), None)).is_ok());
+        routeb_tx1.send(RouteConfigurationChange::Removed("n/a".into(), None)).unwrap();
         tokio::task::yield_now().await;
 
         let (routeb_tx2, routeb_rx) = broadcast::channel(chan);
@@ -212,11 +212,11 @@ mod tests {
         let l2 = Listener::test_listener(name, routeb_rx, secb_rx);
         let l2_info = l1_info;
         man.start_listener(l2, l2_info).unwrap();
-        assert!(routeb_tx2.send(RouteConfigurationChange::Removed("n/a".into(), None)).is_ok());
+        routeb_tx2.send(RouteConfigurationChange::Removed("n/a".into(), None)).unwrap();
         tokio::task::yield_now().await;
 
         // This should fail because the old listener exited already dropping the rx
-        assert!(routeb_tx1.send(RouteConfigurationChange::Removed("n/a".into(), None)).is_err());
+        routeb_tx1.send(RouteConfigurationChange::Removed("n/a".into(), None)).unwrap_err();
         // Yield once more just in case more logs can be seen
         tokio::task::yield_now().await;
     }

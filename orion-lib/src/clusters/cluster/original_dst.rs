@@ -572,7 +572,7 @@ mod tests {
         assert_eq!(channel.upstream_authority.as_str(), "localhost:50001");
 
         let http_no_dest = cluster.get_http_connection(RoutingContext::None);
-        assert!(http_no_dest.is_err());
+        http_no_dest.unwrap_err();
     }
 
     #[test]
@@ -588,7 +588,7 @@ mod tests {
         assert_eq!(endpoints[0].0.as_str(), "localhost:50002");
 
         let tcp_no_dest = cluster.get_tcp_connection(RoutingContext::None);
-        assert!(tcp_no_dest.is_err());
+        tcp_no_dest.unwrap_err();
     }
 
     #[test]
@@ -612,6 +612,6 @@ mod tests {
         }
 
         let grpc_no_dest = cluster.get_grpc_connection(RoutingContext::None);
-        assert!(grpc_no_dest.is_err());
+        grpc_no_dest.unwrap_err();
     }
 }

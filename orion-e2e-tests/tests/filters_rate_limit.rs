@@ -404,15 +404,12 @@ async fn test_hcm_local_rate_limit_statistical_multi_runtime() {
             let mut rate_limited = 0;
 
             for _ in 0..requests_per_client {
-                match client.get("/test").await {
-                    Ok(response) => {
-                        if response.status == StatusCode::OK {
-                            successful += 1;
-                        } else if response.status == StatusCode::TOO_MANY_REQUESTS {
-                            rate_limited += 1;
-                        }
-                    },
-                    Err(_) => {},
+                if let Ok(response) = client.get("/test").await {
+                    if response.status == StatusCode::OK {
+                        successful += 1;
+                    } else if response.status == StatusCode::TOO_MANY_REQUESTS {
+                        rate_limited += 1;
+                    }
                 }
             }
             (successful, rate_limited)
@@ -430,8 +427,8 @@ async fn test_hcm_local_rate_limit_statistical_multi_runtime() {
 
     let expected_allowed = 50;
     let tolerance = 0.3;
-    let min_allowed = (expected_allowed as f64 * (1.0 - tolerance)) as usize;
-    let max_allowed = (expected_allowed as f64 * (1.0 + tolerance)) as usize;
+    let min_allowed = (f64::from(expected_allowed) * (1.0 - tolerance)) as usize;
+    let max_allowed = (f64::from(expected_allowed) * (1.0 + tolerance)) as usize;
 
     assert!(
         total_successful >= min_allowed && total_successful <= max_allowed,
@@ -498,15 +495,15 @@ async fn test_listener_local_rate_limit_statistical_multi_runtime() {
     let mut failed = 0;
     for task in tasks {
         match task.await.unwrap() {
-            Ok(_) => successful += 1,
-            Err(_) => failed += 1,
+            Ok(()) => successful += 1,
+            Err(()) => failed += 1,
         }
     }
 
     let expected_allowed = 80;
     let tolerance = 0.5;
-    let min_allowed = (expected_allowed as f64 * (1.0 - tolerance)) as usize;
-    let max_allowed = (expected_allowed as f64 * (1.0 + tolerance)) as usize;
+    let min_allowed = (f64::from(expected_allowed) * (1.0 - tolerance)) as usize;
+    let max_allowed = (f64::from(expected_allowed) * (1.0 + tolerance)) as usize;
 
     assert!(
         successful >= min_allowed && successful <= max_allowed,
@@ -577,8 +574,8 @@ async fn test_hcm_rate_limit_aggregate_over_time() {
 
     let expected_burst = 10;
     let burst_tolerance = 0.50;
-    let min_burst = (expected_burst as f64 * (1.0 - burst_tolerance)) as usize;
-    let max_burst = (expected_burst as f64 * (1.0 + burst_tolerance)) as usize;
+    let min_burst = (f64::from(expected_burst) * (1.0 - burst_tolerance)) as usize;
+    let max_burst = (f64::from(expected_burst) * (1.0 + burst_tolerance)) as usize;
 
     assert!(
         burst_successful >= min_burst && burst_successful <= max_burst,
@@ -615,8 +612,8 @@ async fn test_hcm_rate_limit_aggregate_over_time() {
 
     let expected_refill = 10;
     let refill_tolerance = 0.50;
-    let min_refill = (expected_refill as f64 * (1.0 - refill_tolerance)) as usize;
-    let max_refill = (expected_refill as f64 * (1.0 + refill_tolerance)) as usize;
+    let min_refill = (f64::from(expected_refill) * (1.0 - refill_tolerance)) as usize;
+    let max_refill = (f64::from(expected_refill) * (1.0 + refill_tolerance)) as usize;
 
     assert!(
         refill_successful >= min_refill && refill_successful <= max_refill,

@@ -325,7 +325,7 @@ pub struct HttpConnectionManager {
 
 impl fmt::Display for HttpConnectionManager {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "HttpConnectionManager {}", &self.listener_name,)
+        write!(f, "HttpConnectionManager {}", &self.listener_name)
     }
 }
 

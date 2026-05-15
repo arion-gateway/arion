@@ -90,13 +90,10 @@ pub fn strip_trailers_headers(http_version: Codec, headers: &mut HeaderMap) {
         // TE header is allowed in HTTP2 only if its value is "trailers"
         Codec::Http2 => {
             headers.remove(header::TRAILER);
-            match headers.get(header::TE) {
-                Some(hdr_value) => {
-                    if hdr_value != "trailers" {
-                        headers.remove(header::TE);
-                    }
-                },
-                None => (),
+            if let Some(hdr_value) = headers.get(header::TE) {
+                if hdr_value != "trailers" {
+                    headers.remove(header::TE);
+                }
             }
         },
     }
@@ -381,10 +378,10 @@ impl HeaderValueModifier for HeaderValueOption {
         let action = match self.append_action {
             HeaderAppendAction::AppendIfExistsOrAdd => HeaderAction::Append(get_header_value(req)),
             HeaderAppendAction::AppendIfAbsent => {
-                if !has_key_already {
-                    HeaderAction::Append(get_header_value(req))
-                } else {
+                if has_key_already {
                     HeaderAction::Nop
+                } else {
+                    HeaderAction::Append(get_header_value(req))
                 }
             },
             HeaderAppendAction::OverwriteIfExistsOrAdd => HeaderAction::Overwrite(get_header_value(req)),
@@ -417,10 +414,10 @@ impl HeaderValueModifier for HeaderValueOption {
         let action = match self.append_action {
             HeaderAppendAction::AppendIfExistsOrAdd => HeaderAction::Append(get_header_value(res)),
             HeaderAppendAction::AppendIfAbsent => {
-                if !has_key_already {
-                    HeaderAction::Append(get_header_value(res))
-                } else {
+                if has_key_already {
                     HeaderAction::Nop
+                } else {
+                    HeaderAction::Append(get_header_value(res))
                 }
             },
             HeaderAppendAction::OverwriteIfExistsOrAdd => HeaderAction::Overwrite(get_header_value(res)),
