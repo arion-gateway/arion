@@ -225,6 +225,7 @@ impl AccessLogGrammar {
         }
     }
 
+    #[allow(clippy::string_slice)]
     fn extract_operator_arg(input: &str) -> Result<(&str, usize), FormatError> {
         if let Some(rest) = input.strip_prefix('(') {
             if let Some(end) = rest.find(')') {
@@ -242,6 +243,7 @@ impl AccessLogGrammar {
 
 impl Grammar for AccessLogGrammar {
     #[allow(clippy::too_many_lines)]
+    #[allow(clippy::string_slice)]
     fn parse(input: &str) -> Result<Vec<Template>, FormatError> {
         let mut parts = Vec::new();
         let mut literal_start = 0;

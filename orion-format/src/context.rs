@@ -494,7 +494,7 @@ pub fn authority_from_request<T>(request: &Request<T>) -> Option<&str> {
 
 #[inline]
 fn strip_userinfo(s: &str) -> &str {
-    s.find('@').map_or(s, |i| &s[i + 1..])
+    s.split_once('@').map_or(s, |(_, tail)| tail)
 }
 
 const TWO_DIGITS: [&str; 100] = [
