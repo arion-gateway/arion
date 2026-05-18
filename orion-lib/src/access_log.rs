@@ -219,6 +219,7 @@ pub fn log_access_blocking(target: Target, vec: Vec<FormattedMessage>) {
 /// A [`JoinSet<()>`] containing all spawned logger tasks. Dropping it cancels
 /// the loggers; awaiting [`JoinSet::join_all`] waits for them to finish.
 #[allow(clippy::needless_pass_by_value)]
+#[allow(clippy::too_many_arguments)]
 pub fn start_access_loggers(
     num_instances: usize,
     buffer: usize,

@@ -277,6 +277,7 @@ impl ExternalProcessor {
         )
     }
 
+    #[allow(clippy::too_many_lines)]
     pub async fn apply_request_prepare_processing_data(
         &mut self,
         request: &mut Request<OrionRequestBody>,

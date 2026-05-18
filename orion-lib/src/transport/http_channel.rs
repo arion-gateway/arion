@@ -554,6 +554,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
 }
 
 impl HttpChannel {
+    #[allow(clippy::too_many_arguments)]
     pub async fn send_request(
         &self,
         mut request: Request<OrionRequestBody>,
@@ -620,6 +621,7 @@ impl HttpChannel {
     /// Send the request and return the Result, either the Response or an Error,
     /// along with the time spent for possible retransmissions. Note: the returned
     /// duration does not include the time spent receiving the Body of the Response.
+    #[allow(clippy::too_many_arguments)]
     async fn send_with_policy<C>(
         &self,
         mut req: Request<OrionRequestBody>,
@@ -670,6 +672,7 @@ impl HttpChannel {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn send_with_retry<C>(
         &self,
         req: Request<OrionRequestBody>,

@@ -286,6 +286,7 @@ impl Listener {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     pub async fn start(self) -> Error {
         let Self {
             name,
@@ -641,6 +642,7 @@ impl Listener {
     }
 
     #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_arguments)]
     async fn process_connection(
         listener_name: &'static str,
         filter_chains: Arc<HashMap<FilterChainMatch, FilterchainType>>,

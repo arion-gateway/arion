@@ -82,6 +82,7 @@ pub fn is_websocket_enabled_by_hcm(hcm_enabled_upgrades: &[UpgradeType]) -> bool
     hcm_enabled_upgrades.iter().any(|upgrade| matches!(upgrade, UpgradeType::Websocket))
 }
 
+#[allow(clippy::too_many_lines)]
 pub async fn handle_websocket_upgrade(
     trans_handler: &TransactionContext,
     mut request: Request<OrionRequestBody>,

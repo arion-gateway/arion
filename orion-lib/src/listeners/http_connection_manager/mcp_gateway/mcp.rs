@@ -301,6 +301,7 @@ impl McpGateway {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     pub async fn apply_response(&mut self, response: &mut Response<OrionResponseBody>) -> FilterDecision {
         debug!(target: "mcp_gateway", "apply_response: processing response...");
 
@@ -496,6 +497,7 @@ impl McpGateway {
         FilterDecision::DirectResponse(response)
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn handle_mcp_post_endpoint(
         &mut self,
         ctx: &McpGatewayListenerContext,
@@ -822,6 +824,7 @@ impl McpGateway {
         FilterDecision::DirectResponse(response)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn handle_rpc_json_message(
         &mut self,
         ctx: &McpGatewayListenerContext,
@@ -899,6 +902,8 @@ impl McpGateway {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_lines)]
     async fn handle_rpc_json_request(
         &mut self,
         ctx: &McpGatewayListenerContext,

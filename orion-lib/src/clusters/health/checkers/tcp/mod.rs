@@ -38,6 +38,7 @@ use super::checker::{IntervalWaiter, ProtocolChecker, WaitInterval};
 
 const DEFAULT_MAX_PAYLOAD_BUFFER_SIZE: usize = 0x10_0000; // 1 MB
 
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_tcp_health_checker(
     endpoint: EndpointId,
     cluster_config: ClusterHealthCheck,
@@ -72,6 +73,7 @@ impl TcpClient for TcpChannelConnector {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_tcp_health_checker_impl<T, W, const MAX_PAYLOAD_BUFFER_SIZE: usize>(
     endpoint: EndpointId,
     cluster_config: ClusterHealthCheck,
@@ -224,6 +226,7 @@ where
 
         // 2. UNSAFE: Create a slice that points to the uninitialized memory
         // area after the current end of the buffer.
+        // SAFETY: the buffer has been reserved, so it's safe to write up to 'to_read' bytes starting from 'prev_size'.
         let received = unsafe {
             // Get a pointer to the start of the uninitialized area
             let ptr = self.buffer.as_mut_ptr().add(prev_size);
@@ -241,7 +244,7 @@ where
             return Err("end of stream".into());
         }
 
-        // 3. UNSAFE: Now that we know 'received' bytes are valid data,
+        // SAFETY: 3. Now that we know 'received' bytes are valid data,
         // we can safely update the Vec's length.
         unsafe {
             self.buffer.set_len(prev_size + received);
@@ -263,6 +266,7 @@ where
 
         // 2. UNSAFE: Create a mutable slice from uninitialized memory.
         // We must ensure the read_exact succeeds before we 'trust' these bytes.
+        // SAFETY: The buffer has been reserved, so it's safe to write up to 'bytes_to_read' bytes starting from 'prev_size'.
         let read_result = unsafe {
             let ptr = self.buffer.as_mut_ptr().add(prev_size);
             let slice = std::slice::from_raw_parts_mut(ptr, bytes_to_read);
@@ -272,6 +276,7 @@ where
         match read_result {
             Ok(_) => {
                 // 3. UNSAFE: Successfully read exact bytes, update the length.
+                // SAFETY: We have just read 'bytes_to_read' bytes into the uninitialized area, so it's now valid data.
                 unsafe {
                     self.buffer.set_len(prev_size + bytes_to_read)
                 }

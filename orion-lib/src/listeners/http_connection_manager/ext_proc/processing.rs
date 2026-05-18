@@ -456,6 +456,7 @@ impl Processing<kind::Processing, kind::ResponseMsg> {
 
 impl<Msg: kind::MessageKind + OverridableModeSelector> Processing<kind::Processing, Msg> {
     #[must_use = "must handle the returned Processing Request"]
+    #[allow(clippy::too_many_lines)]
     pub async fn handle_headers_response(
         &mut self,
         mut headers_response: HeadersResponse,

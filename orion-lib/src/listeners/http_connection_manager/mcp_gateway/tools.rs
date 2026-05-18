@@ -415,6 +415,7 @@ impl ToolsRegistry {
         Ok(MessageResult::JsonRpcNotificationResponse(json_rpc_notification, json_rpc_response))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn call(
         &self,
         req_ext: &http::Extensions,

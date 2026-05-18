@@ -479,6 +479,7 @@ struct EventInfo {
 }
 
 impl TransactionContext {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         request_id: Option<RequestId>,
         user_partition_key: Option<&'static str>,
@@ -515,6 +516,7 @@ impl TransactionContext {
     }
 
     #[allow(unused_variables)]
+    #[allow(clippy::too_many_lines)]
     fn trace_status_code(self: Arc<Self>, res: &Result<Response<OrionRequestBody>>, listener_name: &'static str) {
         if let Ok(response) = &res {
             let status_code = response.status().as_u16();
@@ -660,6 +662,7 @@ where
     RC: RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> + Clone,
 {
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_lines)]
     async fn to_response(
         self,
         trans_handler: Arc<TransactionContext>,
@@ -1577,6 +1580,7 @@ struct FinishContextParams<'a> {
 
 #[allow(unused_mut)]
 #[cfg(any(feature = "access-log", feature = "metrics"))]
+#[allow(clippy::too_many_lines)]
 fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
     let latency = params.trans_start_time.elapsed();
 
@@ -1816,6 +1820,7 @@ const MAX_METHOD_LENGTH: usize = 1024;
 /// Maximum allowed length for an HTTP URI string.
 const MAX_URI_LENGTH: usize = 2048;
 
+#[allow(clippy::too_many_arguments)]
 fn reject_request_if_invalid(
     request: &Request<Incoming>,
     trans_handler: &Arc<TransactionContext>,
