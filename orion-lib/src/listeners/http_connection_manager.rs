@@ -800,7 +800,7 @@ fn select_virtual_host<'a, T>(request: &Request<T>, virtual_hosts: &'a [VirtualH
 pub trait RequestHandler<R, A>: Sized {
     fn to_response(
         self,
-        trans_handler: &TransactionContext,
+        trans_context: &TransactionContext,
         request: R,
         arg: A,
     ) -> impl Future<Output = Result<Response<OrionResponseBody>>> + Send;
@@ -825,7 +825,7 @@ impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usiz
     #[allow(clippy::too_many_lines)]
     async fn to_response(
         self,
-        trans_handle: &TransactionContext,
+        trans_context: &TransactionContext,
         mut request: Request<OrionRequestBody>,
         (connection_manager, mut filter_idx, http_filter): (Arc<HttpConnectionManager>, usize, HttpFilterValue),
     ) -> Result<Response<OrionResponseBody>> {
@@ -918,10 +918,10 @@ impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usiz
 
                     let mut response = match &cached_route.route.action {
                         Action::DirectResponse(dr) => {
-                            dr.to_response(trans_handle, request, &cached_route.route.name).await
+                            dr.to_response(trans_context, request, &cached_route.route.name).await
                         },
                         Action::Redirect(rd) => {
-                            rd.to_response(trans_handle, request, (&cached_route.route_match, &cached_route.route.name))
+                            rd.to_response(trans_context, request, (&cached_route.route_match, &cached_route.route.name))
                                 .await
                         },
                         Action::Route(route) => {
@@ -939,7 +939,7 @@ impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usiz
                                 .unwrap_or_else(|| SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0));
                             route
                                 .to_response(
-                                    trans_handle,
+                                    trans_context,
                                     request,
                                     (
                                         RouteContext {
@@ -984,10 +984,11 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
     #[allow(clippy::too_many_lines)]
     async fn to_response(
         self,
-        trans_handler: &TransactionContext,
+        trans_context: &TransactionContext,
         mut request: Request<OrionRequestBody>,
-        connection_manager: Arc<HttpConnectionManager>,
+        arg: Arc<HttpConnectionManager>,
     ) -> Result<Response<OrionResponseBody>> {
+        let connection_manager = arg;
         let mut cached_route = match_request_route(&request, &self);
         // let mut request: Request<HttpBody> = request.map(|body| body.map_inner(TimeoutBody::map_into));
         let mut active_filters: SmallVec<[HttpFilterValue; 4]> = SmallVec::new();
@@ -1093,11 +1094,11 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
 
                     let mut response = match &cached_route.route.action {
                         Action::DirectResponse(dr) => {
-                            dr.to_response(trans_handler, request, &cached_route.route.name).await
+                            dr.to_response(trans_context, request, &cached_route.route.name).await
                         },
                         Action::Redirect(rd) => {
                             rd.to_response(
-                                trans_handler,
+                                trans_context,
                                 request,
                                 (&cached_route.route_match, &cached_route.route.name),
                             )
@@ -1118,7 +1119,7 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
                                 .unwrap_or_else(|| SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0));
                             route
                                 .to_response(
-                                    trans_handler,
+                                    trans_context,
                                     request,
                                     (
                                         RouteContext {
@@ -1219,7 +1220,8 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
     type Future = BoxFuture<'static, StdResult<Self::Response, Self::Error>>;
 
     #[allow(clippy::too_many_lines)]
-    fn call(&self, incoming_request: Request<Incoming>) -> Self::Future {
+    fn call(&self, req: Request<Incoming>) -> Self::Future {
+        let incoming_request = req;
         // destructure the Request to get the request and addresses
         let incoming_request_id = RequestId::from_request(&incoming_request);
         let incoming_version = incoming_request.version();

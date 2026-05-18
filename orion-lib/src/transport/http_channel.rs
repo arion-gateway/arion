@@ -399,12 +399,13 @@ fn update_upstream_stats(event: PoolEvent, tag: &dyn Any, keys: &[&PoolKey]) {
 impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &HttpChannels {
     async fn to_response(
         self,
-        trans_handler: &TransactionContext,
+        trans_context: &TransactionContext,
         request: Request<OrionRequestBody>,
-        ctx: RequestContext<'a>,
+        arg: RequestContext<'a>,
     ) -> Result<Response<OrionResponseBody>> {
+        let ctx = arg;
         match self {
-            HttpChannels::Single(channel) => channel.to_response(trans_handler, request, ctx).await,
+            HttpChannels::Single(channel) => channel.to_response(trans_context, request, ctx).await,
             HttpChannels::MultiWithFailover { channel, failover_channels } => {
                 let RequestContext { route_timeout, priority, .. } = ctx;
                 let (parts, mut body) = request.into_parts();
@@ -429,7 +430,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
                     let rebuilt_req = Request::from_parts(parts.clone(), cloned_body);
                     let attempt_ctx = RequestContext { route_timeout, retry_policy: None, priority };
 
-                    match channel.to_response(trans_handler, rebuilt_req, attempt_ctx).await {
+                    match channel.to_response(trans_context, rebuilt_req, attempt_ctx).await {
                         Ok(response) => {
                             if response.status().is_server_error() && (attempt + 1) < total_attempts {
                                 debug!(
@@ -471,11 +472,12 @@ pub struct Retries {
 impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &HttpChannel {
     async fn to_response(
         self,
-        #[allow(unused_variables)] trans_handler: &TransactionContext,
+        #[allow(unused_variables)] trans_context: &TransactionContext,
         request: Request<OrionRequestBody>,
-        ctx: RequestContext<'a>,
+        arg: RequestContext<'a>,
     ) -> Result<Response<OrionResponseBody>> {
-        instrument_function!(trans_handler.clock, |nanos| {
+        let ctx = arg;
+        instrument_function!(trans_context.clock, |nanos| {
             crate::instrumentation::metrics::REQUEST_TO_RESPONSE_TIME.observe(nanos as usize)
         });
 
@@ -509,7 +511,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
         let mut retries = Retries::default();
         let start_time = std::time::Instant::now();
         let result = instrument_block!(
-            trans_handler.clock,
+            trans_context.clock,
             |nanos| {
                 crate::instrumentation::metrics::SEND_REQUEST_WAIT_RESPONSE.observe(nanos as usize);
             },
@@ -521,7 +523,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
                     priority,
                     Some(&mut retries),
                     #[cfg(feature = "instrumentation")]
-                    &trans_handler.clock,
+                    &trans_context.clock,
                 )
                 .await
             }

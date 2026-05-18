@@ -75,11 +75,11 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
     #[allow(unused_variables)]
     async fn to_response(
         self,
-        trans_handler: &TransactionContext,
+        trans_context: &TransactionContext,
         request: Request<OrionRequestBody>,
         (route_context, connection_manager): (RouteContext<'a>, &HttpConnectionManager),
     ) -> Result<Response<OrionResponseBody>> {
-        instrument_function!(trans_handler.clock, |nanos| {
+        instrument_function!(trans_context.clock, |nanos| {
             crate::instrumentation::metrics::TOTAL_ROUTE_ACTION.observe(nanos as usize)
         });
 
@@ -132,7 +132,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
         let routing_context = RoutingContext::try_from((&routing_requirement, &request, hash_state))?;
 
         let maybe_channel = instrument_block!(
-            trans_handler.clock,
+            trans_context.clock,
             |nanos| {
                 crate::instrumentation::metrics::LOAD_BALANCING_SRV.observe(nanos as usize);
             },
@@ -143,7 +143,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
             Ok(svc_channel) => {
                 #[cfg(feature = "access-log")]
                 with_access_log!(
-                    &mut trans_handler.trans_ctx.lock().loggers,
+                    &mut trans_context.trans_ctx.lock().loggers,
                     UpstreamContext {
                         authority: Some(svc_channel.upstream_authority()),
                         cluster_name: Some(svc_channel.cluster_name()),
@@ -178,7 +178,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
 
                 #[cfg(feature = "tracing")]
                 let mut client_span = connection_manager.http_tracer.try_create_span(
-                    trans_handler.trace_ctx.as_ref(),
+                    trans_context.trace_ctx.as_ref(),
                     &connection_manager.get_tracing_key(),
                     SpanKind::Client,
                     SpanName::Str::<()>(svc_channel.upstream_authority().as_str()),
@@ -198,13 +198,13 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
 
                 // ... store the span in the span_state
                 #[cfg(feature = "tracing")]
-                if let Some(ref span_state) = trans_handler.span_state {
+                if let Some(ref span_state) = trans_context.span_state {
                     *span_state.client_span.lock() = client_span;
                 }
 
                 #[cfg(feature = "access-log")]
                 with_access_log!(
-                    &mut trans_handler.trans_ctx.lock().loggers,
+                    &mut trans_context.trans_ctx.lock().loggers,
                     UpstreamRequestContext(&upstream_request)
                 );
 
@@ -228,7 +228,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
 
                 if should_upgrade_websocket {
                     return upgrade_utils::handle_websocket_upgrade(
-                        trans_handler,
+                        trans_context,
                         upstream_request,
                         &svc_channel,
                         #[cfg(feature = "metrics")]
@@ -244,7 +244,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
                 // send the request to the upstream service channel and wait for the response...
                 let resp = svc_channel
                     .to_response(
-                        trans_handler,
+                        trans_context,
                         upstream_request,
                         RequestContext { route_timeout: self.timeout, retry_policy, priority },
                     )

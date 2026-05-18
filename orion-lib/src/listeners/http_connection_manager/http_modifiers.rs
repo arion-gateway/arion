@@ -313,8 +313,8 @@ pub enum HeaderAction {
 }
 
 pub trait HeaderValueModifier {
-    fn apply_to_request<B>(&self, res: &mut Request<B>) -> bool;
-    fn apply_to_response<B>(&self, res: &mut Response<B>) -> bool;
+    fn apply_to_request<B>(&self, request: &mut Request<B>) -> bool;
+    fn apply_to_response<B>(&self, response: &mut Response<B>) -> bool;
     fn run_action(
         &self,
         action: HeaderAction,
@@ -345,10 +345,10 @@ pub trait HeaderValueModifier {
 }
 
 impl HeaderValueModifier for HeaderValueOption {
-    fn apply_to_request<B>(&self, req: &mut Request<B>) -> bool {
-        let has_key_already = req.headers_mut().get(&self.header.key).is_some();
+    fn apply_to_request<B>(&self, request: &mut Request<B>) -> bool {
+        let has_key_already = request.headers_mut().get(&self.header.key).is_some();
 
-        let socket_address = || match req.extensions().get::<MetadataContext>() {
+        let socket_address = || match request.extensions().get::<MetadataContext>() {
             Some(meta) => SocketAddrContext {
                 downstream_local_addr: Some(meta.downstream.connection.local_address()),
                 downstream_peer_addr: Some(meta.downstream.connection.peer_address()),
@@ -376,29 +376,29 @@ impl HeaderValueModifier for HeaderValueOption {
         };
 
         let action = match self.append_action {
-            HeaderAppendAction::AppendIfExistsOrAdd => HeaderAction::Append(get_header_value(req)),
+            HeaderAppendAction::AppendIfExistsOrAdd => HeaderAction::Append(get_header_value(request)),
             HeaderAppendAction::AppendIfAbsent => {
                 if has_key_already {
                     HeaderAction::Nop
                 } else {
-                    HeaderAction::Append(get_header_value(req))
+                    HeaderAction::Append(get_header_value(request))
                 }
             },
-            HeaderAppendAction::OverwriteIfExistsOrAdd => HeaderAction::Overwrite(get_header_value(req)),
+            HeaderAppendAction::OverwriteIfExistsOrAdd => HeaderAction::Overwrite(get_header_value(request)),
             HeaderAppendAction::OverwriteIfExists => {
                 if has_key_already {
-                    HeaderAction::Overwrite(get_header_value(req))
+                    HeaderAction::Overwrite(get_header_value(request))
                 } else {
                     HeaderAction::Nop
                 }
             },
         };
 
-        self.run_action(action, req.headers_mut(), self.keep_empty_value, &self.header.key)
+        self.run_action(action, request.headers_mut(), self.keep_empty_value, &self.header.key)
     }
 
-    fn apply_to_response<B>(&self, res: &mut Response<B>) -> bool {
-        let has_key_already = res.headers_mut().get(&self.header.key).is_some();
+    fn apply_to_response<B>(&self, response: &mut Response<B>) -> bool {
+        let has_key_already = response.headers_mut().get(&self.header.key).is_some();
 
         let get_header_value = |res: &Response<B>| -> HeaderValue {
             let mut formatter = self.header.value.clone();
@@ -412,25 +412,25 @@ impl HeaderValueModifier for HeaderValueOption {
         };
 
         let action = match self.append_action {
-            HeaderAppendAction::AppendIfExistsOrAdd => HeaderAction::Append(get_header_value(res)),
+            HeaderAppendAction::AppendIfExistsOrAdd => HeaderAction::Append(get_header_value(response)),
             HeaderAppendAction::AppendIfAbsent => {
                 if has_key_already {
                     HeaderAction::Nop
                 } else {
-                    HeaderAction::Append(get_header_value(res))
+                    HeaderAction::Append(get_header_value(response))
                 }
             },
-            HeaderAppendAction::OverwriteIfExistsOrAdd => HeaderAction::Overwrite(get_header_value(res)),
+            HeaderAppendAction::OverwriteIfExistsOrAdd => HeaderAction::Overwrite(get_header_value(response)),
             HeaderAppendAction::OverwriteIfExists => {
                 if has_key_already {
-                    HeaderAction::Overwrite(get_header_value(res))
+                    HeaderAction::Overwrite(get_header_value(response))
                 } else {
                     HeaderAction::Nop
                 }
             },
         };
 
-        self.run_action(action, res.headers_mut(), self.keep_empty_value, &self.header.key)
+        self.run_action(action, response.headers_mut(), self.keep_empty_value, &self.header.key)
     }
 }
 

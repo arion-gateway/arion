@@ -61,10 +61,10 @@ impl AggregatedDiscoveryService for AggregateServer {
 
     async fn stream_aggregated_resources(
         &self,
-        req: tonic::Request<tonic::Streaming<DiscoveryRequest>>,
+        request: tonic::Request<tonic::Streaming<DiscoveryRequest>>,
     ) -> AggregatedDiscoveryServiceResult<Self::StreamAggregatedResourcesStream> {
         info!("AggregateServer::stream_aggregated_resources");
-        info!("\tclient connected from: {:?}", req.remote_addr());
+        info!("\tclient connected from: {:?}", request.remote_addr());
 
         let (tx, rx) = mpsc::channel(128);
         let mut resources_rx =
@@ -108,7 +108,7 @@ impl AggregatedDiscoveryService for AggregateServer {
             }
         });
 
-        let mut incoming_stream = req.into_streaming_request().into_inner();
+        let mut incoming_stream = request.into_streaming_request().into_inner();
         tokio::spawn(async move {
             while let Some(item) = incoming_stream.next().await {
                 info!("Sever : Got item {item:?}");
@@ -125,10 +125,10 @@ impl AggregatedDiscoveryService for AggregateServer {
 
     async fn delta_aggregated_resources(
         &self,
-        req: tonic::Request<tonic::Streaming<DeltaDiscoveryRequest>>,
+        request: tonic::Request<tonic::Streaming<DeltaDiscoveryRequest>>,
     ) -> AggregatedDiscoveryServiceResult<Self::DeltaAggregatedResourcesStream> {
         info!("AggregateServer::delta_aggregated_resources");
-        info!("\tclient connected from: {:?}", req.remote_addr());
+        info!("\tclient connected from: {:?}", request.remote_addr());
 
         // spawn and channel are required if you want handle "disconnect" functionality
         // the `out_stream` will not be polled after client disconnect
@@ -180,7 +180,7 @@ impl AggregatedDiscoveryService for AggregateServer {
             info!("\tclient disconnected");
         });
 
-        let mut incoming_stream = req.into_streaming_request().into_inner();
+        let mut incoming_stream = request.into_streaming_request().into_inner();
         tokio::spawn(async move {
             while let Some(Ok(item)) = incoming_stream.next().await {
                 info!("Sever : Got item {item:?}");

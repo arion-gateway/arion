@@ -353,7 +353,8 @@ impl Service<Uri> for UnifiedConnector {
         }
     }
 
-    fn call(&mut self, uri: Uri) -> Self::Future {
+    fn call(&mut self, req: Uri) -> Self::Future {
+        let uri = req;
         match self {
             UnifiedConnector::Socket(c) => {
                 let fut = c.call(uri);

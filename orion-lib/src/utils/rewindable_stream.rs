@@ -108,14 +108,14 @@ impl<R> AsyncWrite for RewindableHeadAsyncStream<R>
 where
     R: AsyncReadWriteInstrumented + ?Sized,
 {
-    fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, write_buf: &[u8]) -> Poll<std::io::Result<usize>> {
+    fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<std::io::Result<usize>> {
         match &mut *self {
             Self::HeadBufferingReadOnlyMode { .. } => Poll::Ready(Err(std::io::Error::other(
                 "RewindableHeadAsyncStream: write operations are not supported in HeadBufferingReadOnlyMode",
             ))),
             Self::FullReplayMode { inner, replay_buffer, read_pos } => {
                 if *read_pos >= replay_buffer.len() {
-                    Pin::new(inner).poll_write(cx, write_buf)
+                    Pin::new(inner).poll_write(cx, buf)
                 } else {
                     Poll::Ready(Err(std::io::Error::other(
                         "RewindableHeadAsyncStream: write operations are not supported while replaying buffered data",

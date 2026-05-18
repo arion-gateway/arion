@@ -113,11 +113,11 @@ impl BufRead for DataSourceReader<'_> {
         }
     }
 
-    fn consume(&mut self, amt: usize) {
+    fn consume(&mut self, amount: usize) {
         match self {
-            Self::OwnedBytes { read, .. } => *read += amt,
-            Self::InlineBytes(b) => b.consume(amt),
-            Self::Path(reader) => reader.consume(amt),
+            Self::OwnedBytes { read, .. } => *read += amount,
+            Self::InlineBytes(b) => b.consume(amount),
+            Self::Path(reader) => reader.consume(amount),
         }
     }
 }

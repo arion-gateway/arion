@@ -290,10 +290,10 @@ mod tests {
     impl RateLimitService for MockRls {
         async fn should_rate_limit(
             &self,
-            req: tonic::Request<RateLimitRequest>,
+            request: tonic::Request<RateLimitRequest>,
         ) -> Result<tonic::Response<RateLimitResponse>, tonic::Status> {
             self.call_count.fetch_add(1, Ordering::SeqCst);
-            self.captured_domains.lock().await.push(req.get_ref().domain.clone());
+            self.captured_domains.lock().await.push(request.get_ref().domain.clone());
             if self.fail_with_error {
                 return Err(tonic::Status::unavailable("simulated RLS failure"));
             }

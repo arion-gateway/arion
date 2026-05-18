@@ -102,7 +102,8 @@ impl Service<Request<GrpcBody>> for GrpcService {
         std::task::Poll::Ready(Ok(()))
     }
 
-    fn call(&mut self, grpc_req: Request<GrpcBody>) -> Self::Future {
+    fn call(&mut self, req: Request<GrpcBody>) -> Self::Future {
+        let grpc_req = req;
         self.clone()
             .do_call(grpc_req)
             .map_err(|e| Box::new(crate::Error::into_inner(e)) as orion_xds::grpc_deps::Error)
@@ -137,7 +138,8 @@ impl Service<Request<GrpcBody>> for SimpleRoundRobinGrpcServiceLB {
         std::task::Poll::Ready(Ok(()))
     }
 
-    fn call(&mut self, grpc_req: Request<GrpcBody>) -> Self::Future {
+    fn call(&mut self, req: Request<GrpcBody>) -> Self::Future {
+        let grpc_req = req;
         if let Some(mut service) = self.next_service() {
             service.call(grpc_req)
         } else {
