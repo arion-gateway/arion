@@ -196,7 +196,11 @@ impl FromStr for ServerNameMatch {
     type Err = GenericError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         // we don't check if the label is a valid hostname here, we only check for wildcards
-        let (match_subdomains, s) = if s.starts_with("*.") { (true, &s[1..]) } else { (false, s) };
+        let (match_subdomains, s) = match s.strip_prefix('*') {
+            Some(rest) if rest.starts_with('.') => (true, rest),
+            _ => (false, s),
+        };
+
         if s.contains('*') {
             return Err(GenericError::from_msg(
                 "internal wildcards are not supported (Hostnames may only start with '*.')",
@@ -287,15 +291,22 @@ impl FilterChainMatch {
                     // trim the '*' in the matcher
                     if server_name.ends_with(name_match.name.as_str()) {
                         // the score is the amount of labels in server_name that matched on the '*' (lower is more specific)
-                        MatchResult::Matched(
-                            // -1 so we include and extra dot and ".bad.domain" matching "*.bad.domain" won't score equal to an exact match
-                            server_name[0..server_name.len() - (name_match.name.len() - 1)]
-                                .chars()
-                                .filter(|c| *c == '.')
-                                .count()
-                                .try_into()
-                                .unwrap_or(u32::MAX),
-                        )
+                        //
+
+                        let prefix_len = server_name.len() - name_match.name.len();
+
+                        // use get to avoid panicking if prefix_len is out of bounds, or for utf8 boundary issues,
+                        // in which case we just assume there are no extra labels and return a score of 0
+                        //
+                        let score = server_name
+                            .as_bytes()
+                            .get(..=prefix_len)
+                            .unwrap_or(server_name.as_bytes())
+                            .iter()
+                            .filter(|&&b| b == b'.')
+                            .count() as u32;
+
+                        MatchResult::Matched(score)
                     } else {
                         MatchResult::FailedMatch
                     }

@@ -572,6 +572,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::indexing_slicing)]
     fn test_get_tcp_connection() {
         let config = create_test_cluster_config("test-cluster", OriginalDstRoutingMethod::Default, Some(50002), None);
         let mut cluster = build_original_dst_cluster(config);

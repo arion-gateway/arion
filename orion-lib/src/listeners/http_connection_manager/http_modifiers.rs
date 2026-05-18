@@ -182,25 +182,32 @@ fn determine_trusted_client_address(
 ) -> (IpAddr, bool) {
     let mut trusted_client_address = downstream_addr.ip();
     let mut xff_contains_single_ip = false;
-    let xff_ips = existing_xff
+    let xff_ips: Vec<IpAddr> = existing_xff
         .map_or_else(Vec::new, |value| value.split(',').filter_map(|ip_str| ip_str.trim().parse().ok()).collect());
+
     let num_xff_ips = xff_ips.len();
+
     if !xff_settings.use_remote_address && !xff_ips.is_empty() {
         if xff_settings.xff_num_trusted_hops > 0 {
-            let required_index_from_right = xff_settings.xff_num_trusted_hops as usize + 1;
-            if num_xff_ips >= required_index_from_right {
-                trusted_client_address = xff_ips[num_xff_ips - required_index_from_right];
+            let hops = xff_settings.xff_num_trusted_hops as usize;
+            // Use checked_sub or get() to safely access the IP from the right side
+            if let Some(&ip) = num_xff_ips.checked_sub(hops + 1).and_then(|idx| xff_ips.get(idx)) {
+                trusted_client_address = ip;
             }
         } else {
-            trusted_client_address = xff_ips[num_xff_ips - 1];
-            xff_contains_single_ip = num_xff_ips == 1;
+            // .last() is a safe alternative to [len - 1]
+            if let Some(&ip) = xff_ips.last() {
+                trusted_client_address = ip;
+                xff_contains_single_ip = num_xff_ips == 1;
+            }
         }
     } else if xff_settings.use_remote_address && xff_settings.xff_num_trusted_hops > 0 && !xff_ips.is_empty() {
-        let required_index_from_right = xff_settings.xff_num_trusted_hops as usize;
-        if num_xff_ips >= required_index_from_right {
-            trusted_client_address = xff_ips[num_xff_ips - required_index_from_right];
+        let hops = xff_settings.xff_num_trusted_hops as usize;
+        if let Some(&ip) = num_xff_ips.checked_sub(hops).and_then(|idx| xff_ips.get(idx)) {
+            trusted_client_address = ip;
         }
     }
+
     (trusted_client_address, xff_contains_single_ip)
 }
 

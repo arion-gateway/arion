@@ -139,6 +139,7 @@ mod test {
     }
 
     #[test]
+    #[allow(clippy::indexing_slicing)]
     pub fn test_random_balancer_2() {
         let items = [LbItem::new(1, Arc::new(0)), LbItem::new(1, Arc::new(1)), LbItem::new(2, Arc::new(2))];
         let mut counts = vec![0_u32; items.len()];
@@ -154,6 +155,7 @@ mod test {
     }
 
     #[test]
+    #[allow(clippy::indexing_slicing)]
     pub fn test_random_balancer_3() {
         let items = [LbItem::new(1, Arc::new(0)), LbItem::new(2, Arc::new(1)), LbItem::new(4, Arc::new(2))];
         let mut counts = vec![0_u32; items.len()];
@@ -174,6 +176,7 @@ mod test {
     }
 
     #[test]
+    #[allow(clippy::indexing_slicing)]
     fn random_balancer_weight_overflow() {
         let items = [
             LbItem::new(u32::MAX / 2, Arc::new(0)),

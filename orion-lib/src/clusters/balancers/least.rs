@@ -246,7 +246,11 @@ mod test {
             rng,
         );
         let mut counts = vec![0; items.len()];
-        (0..20).filter_map(|_| balancer.next_item(None).map(|item| item.value())).for_each(|item| counts[item] += 1);
+        (0..20).filter_map(|_| balancer.next_item(None).map(|item| item.value())).for_each(|val| {
+            if let Some(slot) = counts.get_mut(val) {
+                *slot += 1;
+            }
+        });
         assert!(counts.into_iter().all(|count| count > 0));
 
         for busy_item in &items {
@@ -281,8 +285,8 @@ mod test {
         let mut balancer: WeightedLeastRequestBalancer<TestEndpoint> = items.into_iter().map(Arc::new).collect();
         for _n in 0..20 {
             // Get the content and drop the Arc reference to not increase the load factor
-            if let Some(index) = balancer.next_item(None).map(|item| item.value()) {
-                counts[index] += 1;
+            if let Some(slot) = balancer.next_item(None).and_then(|item| counts.get_mut(item.value())) {
+                *slot += 1;
             }
         }
 
@@ -306,6 +310,7 @@ mod test {
     }
 
     #[test]
+    #[allow(clippy::indexing_slicing)]
     /// Expect items to be selected less frequently when its load is increased.
     pub fn test_least_request_balancer_weights_load() {
         fn expect_balancing(

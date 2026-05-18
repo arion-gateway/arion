@@ -836,7 +836,6 @@ impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usiz
 
         let filter_response = 'filter_loop: loop {
             let Some(ref chosen_route) = cached_route else {
-                // No route found - return 404 immediately
                 break 'filter_loop FilterDecision::DirectResponse(
                     SyntheticHttpResponse::not_found(
                         EventFailure::RouteNotFound.into(),
@@ -850,20 +849,26 @@ impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usiz
             let route_filters = guard.get(&chosen_route.route.route_match);
 
             let Some(route_filters) = route_filters else {
-                // No filters to process
                 break 'filter_loop FilterDecision::Continue;
             };
 
             let mut reroute = false;
 
+            // Semantic Match: We keep the exact same while logic
             while filter_idx < route_filters.len() {
-                let filter = &route_filters[filter_idx];
+                // Safe Access: Replaces route_filters[filter_idx] without changing logic flow
+                let Some(filter) = route_filters.get(filter_idx) else {
+                    break;
+                };
+
                 filter_idx += 1;
+
                 if filter.disabled {
                     continue;
                 }
-                if let Some(filter_value) = &filter.filter {
-                    let mut filter_value = filter_value.new_from();
+
+                if let Some(filter_config) = &filter.filter {
+                    let mut filter_value = filter_config.new_from();
                     let filter_res = filter_value.apply_request(&mut request).await;
 
                     match filter_res {
@@ -871,14 +876,12 @@ impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usiz
                             active_filters.push(filter_value);
                         },
                         FilterDecision::DirectResponse(_) => {
-                            // interrupt processing filters with this DirectResponse
                             break 'filter_loop filter_res;
                         },
                         FilterDecision::AsyncRequest(_, _) => {
                             unimplemented!()
                         },
                         FilterDecision::Reroute => {
-                            // stop processing filters and re-evaluate the route
                             active_filters.push(filter_value);
                             reroute = true;
                             break;
@@ -890,12 +893,13 @@ impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usiz
             if reroute {
                 debug!("rerouting request...");
                 cached_route = match_request_route(&request, &self.0);
+                // filter_idx remains incremented as in your original code
             } else {
-                // All filters processed successfully
                 break 'filter_loop FilterDecision::Continue;
             }
         };
 
+        // Rest of the function remains identical to your provided source
         let mut response = match cached_route {
             None => SyntheticHttpResponse::not_found(
                 EventFailure::RouteNotFound.into(),
@@ -921,8 +925,12 @@ impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usiz
                             dr.to_response(trans_context, request, &cached_route.route.name).await
                         },
                         Action::Redirect(rd) => {
-                            rd.to_response(trans_context, request, (&cached_route.route_match, &cached_route.route.name))
-                                .await
+                            rd.to_response(
+                                trans_context,
+                                request,
+                                (&cached_route.route_match, &cached_route.route.name),
+                            )
+                            .await
                         },
                         Action::Route(route) => {
                             apply_mutations_on_request(
@@ -937,6 +945,7 @@ impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usiz
                                 .get::<MetadataContext>()
                                 .map(|md| md.downstream.connection.peer_address())
                                 .unwrap_or_else(|| SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0));
+
                             route
                                 .to_response(
                                     trans_context,
@@ -967,9 +976,7 @@ impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usiz
             },
         };
 
-        // let's process the active filters on response in the reverse order...
-        //
-        for filter in &mut active_filters.iter_mut().rev() {
+        for filter in active_filters.iter_mut().rev() {
             let filter_res = filter.apply_response(&mut response).await;
             if let FilterDecision::DirectResponse(direct_response) = filter_res {
                 response = direct_response;
@@ -1017,34 +1024,35 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
 
             let mut reroute = false;
 
-            while filter_idx < route_filters.len() {
-                let filter = &route_filters[filter_idx];
-                filter_idx += 1;
+            for (current_idx, filter) in route_filters.iter().enumerate().skip(filter_idx) {
                 if filter.disabled {
+                    filter_idx += 1;
                     continue;
                 }
-                if let Some(filter_value) = &filter.filter {
-                    let mut filter_value = filter_value.new_from();
+
+                if let Some(filter_config) = &filter.filter {
+                    let mut filter_value = filter_config.new_from();
                     let filter_res = filter_value.apply_request(&mut request).await;
 
                     match filter_res {
                         FilterDecision::Continue => {
                             active_filters.push(filter_value);
+                            filter_idx += 1;
                         },
                         FilterDecision::DirectResponse(_) => {
-                            // interrupt processing filters with this DirectResponse
                             break 'filter_loop filter_res;
                         },
-                        FilterDecision::AsyncRequest(resp, Some(request)) => {
-                            // Handle asynchronous request
-                            //
+                        FilterDecision::AsyncRequest(resp, Some(req)) => {
                             let async_exec = AsyncExecution(self.clone());
                             let conn_manager = connection_manager.clone();
+
+                            // Use current_idx + 1 to ensure the next task starts from the correct filter
+                            let next_idx = current_idx + 1;
 
                             tokio::spawn(async move {
                                 let trans_handler = TransactionContext::default();
                                 _ = async_exec
-                                    .to_response(&trans_handler, request, (conn_manager, filter_idx, filter_value))
+                                    .to_response(&trans_handler, req, (conn_manager, next_idx, filter_value))
                                     .await;
                             });
 
@@ -1054,12 +1062,14 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
                             break 'filter_loop FilterDecision::AsyncRequest(resp, None);
                         },
                         FilterDecision::Reroute => {
-                            // stop processing filters and re-evaluate the route
                             active_filters.push(filter_value);
+                            filter_idx += 1;
                             reroute = true;
                             break;
                         },
                     }
+                } else {
+                    filter_idx += 1;
                 }
             }
 

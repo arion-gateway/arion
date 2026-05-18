@@ -143,18 +143,30 @@ fn get_cgroup_v2_cpu_limit() -> crate::Result<usize> {
 }
 
 fn parse_cgroup_v2_cpu_max(content: &str) -> crate::Result<usize> {
-    let parts: Vec<&str> = content.split_whitespace().collect();
-    if parts.len() == 2 && parts[0] != "max" {
-        let quota: i64 = parts[0].parse()?;
-        let period: i64 = parts[1].parse()?;
-        if quota > 0 && period > 0 {
-            let cpus =
-                usize::try_from((quota + period - 1) / period).map_err(|_e| "Failed to convert CPU count to usize")?;
-            if cpus > 0 {
-                return Ok(cpus);
+    let mut parts = content.split_whitespace();
+
+    // The kernel's cpu.max always provides exactly two values: quota and period.
+    // We match on a third None to ensure we aren't parsing malformed or unexpected data.
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(quota_str), Some(period_str), None) if quota_str != "max" => {
+            let quota: i64 = quota_str.parse()?;
+            let period: i64 = period_str.parse()?;
+
+            if quota > 0 && period > 0 {
+                // Standard ceiling division to calculate required cores
+                let cpus = usize::try_from((quota + period - 1) / period)
+                    .map_err(|_| "Failed to convert CPU count to usize")?;
+
+                if cpus > 0 {
+                    return Ok(cpus);
+                }
             }
         }
+        // If it's exactly "max [period]", it means no limit is set.
+        // We fall through to the error which indicates no specific limit found.
+        _ => {}
     }
+
     Err("No valid cgroups v2 CPU limit found".into())
 }
 

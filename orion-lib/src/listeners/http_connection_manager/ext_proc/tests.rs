@@ -921,7 +921,9 @@ fn assert_result<M>(
                         }
                         if let Some(body_mutation) = body_mutation {
                             let body_mutation = should_send_body.then_some(body_mutation.mutation.as_ref()).flatten();
-                            expected_body[idx] = mock.apply_body_mutation(body_mutation, idx);
+                            if let Some(body) = expected_body.get_mut(idx) {
+                                *body = mock.apply_body_mutation(body_mutation, idx);
+                            }
                             idx += 1;
                         }
                     },
@@ -3360,6 +3362,7 @@ use futures::task::noop_waker;
 use std::pin::Pin;
 use std::task::Context;
 
+#[allow(clippy::indexing_slicing)]
 async fn assert_body_frames<B: Body + Unpin>(
     mut body: B,
     expected_data: &[Bytes],
@@ -6534,6 +6537,7 @@ async fn test_forward_rules_allowed_headers() {
 }
 
 #[tokio::test]
+#[allow(clippy::indexing_slicing)]
 async fn test_header_append_action_append_if_exists_or_add() {
     // We need to create a custom response to test AppendIfExistsOrAdd
     let mut header_mutation = HeaderMutation::default();

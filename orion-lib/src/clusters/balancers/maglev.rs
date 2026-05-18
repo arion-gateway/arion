@@ -374,6 +374,7 @@ mod test {
     }
 
     #[test]
+    #[allow(clippy::indexing_slicing)]
     fn maglev_balancer_distribution() {
         const TABLE_SIZE: usize = 257;
 
@@ -414,6 +415,7 @@ mod test {
     }
 
     #[test]
+    #[allow(clippy::indexing_slicing)]
     fn maglev_balancer_overflow() {
         const TABLE_SIZE: usize = 47;
 

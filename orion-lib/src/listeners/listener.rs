@@ -56,6 +56,7 @@ use orion_configuration::config::{
 use orion_interner::StringInterner;
 #[cfg(feature = "metrics")]
 use orion_metrics::metrics::filters;
+use smallvec::{smallvec, SmallVec};
 use tokio::sync::mpsc;
 
 #[cfg(feature = "access-log")]
@@ -541,6 +542,7 @@ impl Listener {
     ) -> Result<Option<&'a T>> {
         let source_addr = connection_metadata.peer_address();
         let destination_addr = connection_metadata.local_address();
+
         fn match_subitem<'a, F: Fn(&FilterChainMatch, T) -> MatchResult, T: Copy>(
             function: F,
             comparand: T,
@@ -549,27 +551,42 @@ impl Listener {
             possible_filters: &mut [bool],
         ) {
             let mut best_match = MatchResult::FailedMatch;
-            // check all filters still in the running, skipping over those already eliminated
-            for (i, match_config) in iter.enumerate().filter(|(i, _)| possible_filters[*i]) {
+
+            // Check all filters still in the running, skipping over those already eliminated
+            for (i, match_config) in iter.enumerate() {
+                // Use get() to safely skip if index is out of bounds or filter is already eliminated
+                if !possible_filters.get(i).copied().unwrap_or(false) {
+                    continue;
+                }
+
                 let match_result = function(match_config, comparand);
-                //mark the outcome of this iteration, and keep track of the best result
-                scratchpad[i] = match_result;
+
+                // Safely update the scratchpad at the given index
+                if let Some(slot) = scratchpad.get_mut(i) {
+                    *slot = match_result;
+                }
+
                 if match_result > best_match {
                     best_match = match_result;
                 }
             }
-            // now trim all the results that failed to match, or were less specific than the best match
-            for i in 0..scratchpad.len() {
-                if scratchpad[i] != best_match || scratchpad[i] == MatchResult::FailedMatch {
-                    possible_filters[i] = false;
+
+            // Now trim all the results that failed to match, or were less specific than the best match
+            for (i, result) in scratchpad.iter().enumerate() {
+                if *result != best_match || *result == MatchResult::FailedMatch {
+                    if let Some(is_possible) = possible_filters.get_mut(i) {
+                        *is_possible = false;
+                    }
                 }
             }
         }
 
-        //todo: smallvec? other optimization?
-        let mut possible_filters = vec![true; filter_chains.len()];
-        let mut scratchpad = vec![MatchResult::NoRule; filter_chains.len()];
+        let num_chains = filter_chains.len();
+        let mut possible_filters: SmallVec<[bool; 8]> = smallvec![true; num_chains];
+        let mut scratchpad: SmallVec<[MatchResult; 8]> = smallvec![MatchResult::NoRule; num_chains];
 
+        // Note: We use .keys() consistently. HashMap order is non-deterministic but stable
+        // within the same process as long as it's not mutated.
         match_subitem(
             FilterChainMatch::matches_destination_port,
             destination_addr.port(),
@@ -610,13 +627,13 @@ impl Listener {
             &mut possible_filters,
         );
 
-        let mut possible_filters = possible_filters
+        let mut final_candidates = possible_filters
             .into_iter()
-            .zip(filter_chains.iter())
-            .filter_map(|(include, item)| include.then_some(item.1));
+            .zip(filter_chains.values()) // values() matches keys() order in the same state
+            .filter_map(|(include, value)| include.then_some(value));
 
-        let first_match = possible_filters.next();
-        if possible_filters.next().is_some() {
+        let first_match = final_candidates.next();
+        if final_candidates.next().is_some() {
             Err("multiple filterchains matched a single connection. This is a bug in orion!".into())
         } else {
             Ok(first_match)

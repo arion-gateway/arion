@@ -201,6 +201,7 @@ pub mod streamable_http {
     }
 
     impl<T: Serialize> Event<'_, T> {
+        #[allow(clippy::expect_used)]
         pub fn write_to(&self, buf: &mut BytesMut) {
             let prefix = INSTANCE_PREFIX.get_or_init(|| {
                 let start = SystemTime::now();

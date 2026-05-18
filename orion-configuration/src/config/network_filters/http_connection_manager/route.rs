@@ -91,13 +91,14 @@ impl PathRewriteSpecifier {
         route_match_result: &RouteMatchResult,
     ) -> Result<Option<PathAndQuery>, InvalidUri> {
         let old_path = path_and_query.map(PathAndQuery::path).unwrap_or_default();
-        let old_query = path_and_query.map(PathAndQuery::query).unwrap_or_default();
+        let old_query = path_and_query.and_then(|pq| pq.query());
+
         let new_path = match self {
-            //full overwrite, doesn't care what original was
+            // Full overwrite, doesn't care what original was
             PathRewriteSpecifier::Path(p) => p.path().into(),
-            // apply a regex tot the original
+
+            // Apply a regex to the original
             PathRewriteSpecifier::Regex(regex) => {
-                //we need to run the regex even if the original is empty because it could match against '^$' (^ = start-of-string, $ = end-of-string)
                 let replacement = regex.pattern.replace_all(old_path, regex.substitution.as_str());
                 if let Cow::Borrowed(_) = replacement {
                     return Ok(None);
@@ -105,21 +106,30 @@ impl PathRewriteSpecifier {
                     replacement
                 }
             },
+
             PathRewriteSpecifier::Prefix(prefix) => {
                 if let Some(matched_range) = route_match_result.matched_range() {
-                    let orig_without_prefix = &old_path[matched_range.end..];
+                    // Use get() to safely handle range bounds and avoid panics on non-char boundaries
+                    let orig_without_prefix = old_path.get(matched_range.end..).unwrap_or("");
                     format!("{prefix}{orig_without_prefix}").into()
                 } else {
                     return Ok(None);
                 }
             },
         };
-        if let Some(old_query) = old_query {
+
+        // Construct the final path with the original query string if present
+        let final_uri = if let Some(q) = old_query {
             if !new_path.contains('?') {
-                return Some(PathAndQuery::from_str(&format!("{new_path}?{old_query}"))).transpose();
+                format!("{new_path}?{q}")
+            } else {
+                new_path.into_owned()
             }
-        }
-        Some(PathAndQuery::from_str(&new_path)).transpose()
+        } else {
+            new_path.into_owned()
+        };
+
+        PathAndQuery::from_str(&final_uri).map(Some)
     }
 }
 
@@ -476,9 +486,15 @@ impl PathMatcher {
             PathSpecifier::Exact(s) => case_matcher.equals(s).then_some(s.len()),
             PathSpecifier::Prefix(p) => case_matcher.starts_with(p).then_some(p.len()),
             PathSpecifier::PathSeparatedPrefix(psp) => {
-                if case_matcher.equals(&psp[..psp.len() - 1]) {
-                    Some(psp.len() - 1)
-                } else if case_matcher.starts_with(psp) {
+                // Use strip_suffix to safely get the prefix without the trailing slash
+                // it returns None if the suffix is not present, avoiding manual len() - 1
+                if let Some(without_slash) = psp.strip_suffix('/') {
+                    if case_matcher.equals(without_slash) {
+                        return PathMatcherResult { inner: Some(without_slash.len()) };
+                    }
+                }
+
+                if case_matcher.starts_with(psp) {
                     Some(psp.len())
                 } else {
                     None
