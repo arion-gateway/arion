@@ -1429,7 +1429,7 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
                                 let ctx_event = trans_ctx.event.clone();
 
                                 eval_http_finish_context(FinishContextParams {
-                                    stream_metrics: stream_metrics,
+                                    stream_metrics,
                                     listener_name,
                                     user_partition_key,
                                     filterchain_id,
@@ -1523,7 +1523,7 @@ fn eval_http_init_context<R>(
         use crate::with_access_log;
         use orion_format::context::SocketAddrContext;
 
-        let server_name = metadata.and_then(|md| md.sni.as_ref().map(|s| s.as_str()));
+        let server_name = metadata.and_then(|md| md.sni.as_ref().map(SmolStr::as_str));
 
         #[cfg(feature = "access-log")]
         with_access_log!(
@@ -1770,7 +1770,7 @@ fn instrument_early_failure_response(
                         let ctx_event = log_ctx.event.clone();
 
                         eval_http_finish_context(FinishContextParams {
-                            stream_metrics: stream_metrics,
+                            stream_metrics,
                             listener_name,
                             user_partition_key,
                             filterchain_id,

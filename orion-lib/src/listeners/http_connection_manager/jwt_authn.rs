@@ -453,7 +453,7 @@ impl JwtAuthentication {
                                         // sleep until next tick
                                         interval.tick().await;
                                     },
-                                    Asset::Permanent(_) => continue, // let's skip this
+                                    Asset::Permanent(_) => (), // let's skip this
                                 }
                             }
                         }));

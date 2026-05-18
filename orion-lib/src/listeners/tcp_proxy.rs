@@ -294,7 +294,7 @@ impl TcpProxy {
                                         upstream_local_addr: None,
                                         upstream_peer_addr: maybe_upstream_peer_addr,
                                     },
-                                    cluster_name: cluster_name,
+                                    cluster_name,
                                 }
                             );
                         }
@@ -338,7 +338,7 @@ impl TcpProxy {
                 duration: start_instant.elapsed(),
                 bytes_received: bytes_received_down,
                 bytes_sent: bytes_sent_down,
-                response_flags: response_flags,
+                response_flags,
                 upstream_transport_failure_reason: maybe_upstream_transport_failure_reason.as_ref().map(|x| x.0),
                 response_code_details: maybe_response_code_details.as_ref().map(|x| x.0),
                 connection_termination_details: maybe_connection_termination_details.as_ref().map(|x| x.0),

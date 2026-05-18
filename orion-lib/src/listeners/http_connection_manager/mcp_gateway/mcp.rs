@@ -672,7 +672,7 @@ impl McpGateway {
 
                         notif.write_to(&mut buf);
                         resp.write_to(&mut buf);
-                        let body: Bytes = buf.freeze();
+                        let body = buf.freeze();
 
                         let headers = self.build_headers_with_session(MIME_TEXT_EVENT_STREAM);
                         match self.build_mcp_http_response(

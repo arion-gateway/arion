@@ -61,29 +61,28 @@ impl LocalRateLimit {
                     &[KeyValue::new("filter", self.inner.stat_prefix.0), KeyValue::new("result", filters::EVENT_OK)]
                 );
                 return FilterDecision::Continue;
-            } else {
-                let status = self.inner.status;
-                #[cfg(feature = "metrics")]
-                with_metric!(
-                    filters::LOCAL_RATE_LIMIT,
-                    add,
-                    1,
-                    get_shard_id!(),
-                    &[
-                        KeyValue::new("filter", self.inner.stat_prefix.0),
-                        KeyValue::new("result", filters::EVENT_RATE_LIMITED)
-                    ]
-                );
-                return FilterDecision::DirectResponse(
-                    SyntheticHttpResponse::custom_error(
-                        status,
-                        None,
-                        EventFailure::RateLimited.into(),
-                        ResponseFlags(FmtResponseFlags::RATE_LIMITED),
-                    )
-                    .into_response(req.version()),
-                );
             }
+            let status = self.inner.status;
+            #[cfg(feature = "metrics")]
+            with_metric!(
+                filters::LOCAL_RATE_LIMIT,
+                add,
+                1,
+                get_shard_id!(),
+                &[
+                    KeyValue::new("filter", self.inner.stat_prefix.0),
+                    KeyValue::new("result", filters::EVENT_RATE_LIMITED)
+                ]
+            );
+            return FilterDecision::DirectResponse(
+                SyntheticHttpResponse::custom_error(
+                    status,
+                    None,
+                    EventFailure::RateLimited.into(),
+                    ResponseFlags(FmtResponseFlags::RATE_LIMITED),
+                )
+                .into_response(req.version()),
+            );
         }
         #[cfg(feature = "metrics")]
         with_metric!(

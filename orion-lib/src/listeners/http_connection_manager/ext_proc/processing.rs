@@ -242,7 +242,7 @@ pub(crate) mod protected {
         pub fn return_status(&mut self, status: ProcessingStatus, msg: &str) -> ReturnStatusProof {
             if let Some(reply_channel) = self.reply_channel.take() {
                 debug!(target: "ext_proc", "{msg} @{kind}: -> return {status:?}", kind = Msg::NAME);
-                if let Err(_) = reply_channel.send(status) {
+                if reply_channel.send(status).is_err() {
                     warn!(target: "ext_proc", "{msg} @{kind}: failed to send response status through reply channel", kind = Msg::NAME);
                 }
             }

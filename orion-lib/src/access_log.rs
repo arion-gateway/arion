@@ -243,10 +243,8 @@ pub fn start_access_loggers(
 
     let mut join_set = JoinSet::new();
     for (i, recv) in receivers.into_iter().enumerate() {
-        let frequency = frequency;
-        let max_size = max_file_size;
         join_set.spawn(async move {
-            let mut logger = AccessLogger::new(i, frequency, max_size, max_log_files);
+            let mut logger = AccessLogger::new(i, frequency, max_file_size, max_log_files);
             logger.run(recv).await
         });
     }
