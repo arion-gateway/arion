@@ -199,7 +199,10 @@ impl HttpFilterValue {
             HttpFilterValue::ExternalProcessor(ext_proc) => ext_proc.apply_response(response).await,
             HttpFilterValue::McpGateway(mcp) => mcp.apply_response(response).await,
             HttpFilterValue::Cors(cors) => cors.apply_response(response),
-            HttpFilterValue::Rbac(_) | HttpFilterValue::RateLimit(_) | HttpFilterValue::UserRateLimit(_) | HttpFilterValue::JwtAuthentication(_) => FilterDecision::Continue,
+            HttpFilterValue::Rbac(_)
+            | HttpFilterValue::RateLimit(_)
+            | HttpFilterValue::UserRateLimit(_)
+            | HttpFilterValue::JwtAuthentication(_) => FilterDecision::Continue,
         }
     }
     pub(crate) fn from_filter_override(

@@ -160,8 +160,8 @@ impl ProxyProtocolReader {
         I: AsyncRead + Unpin,
     {
         // Use get_mut to safely access the initial prefix range
-        let initial_buf = buffer.get_mut(..V1_PREFIX_LEN)
-            .ok_or_else(|| Error::new("V1_PREFIX_LEN is out of bounds"))?;
+        let initial_buf =
+            buffer.get_mut(..V1_PREFIX_LEN).ok_or_else(|| Error::new("V1_PREFIX_LEN is out of bounds"))?;
 
         stream
             .read_exact(initial_buf)
@@ -195,7 +195,8 @@ impl ProxyProtocolReader {
         } else {
             // Safe access for V2 minimum requirements
             let v2_min_range = V1_PREFIX_LEN..V2_MINIMUM_LEN;
-            let v2_min_buf = buffer.get_mut(v2_min_range)
+            let v2_min_buf = buffer
+                .get_mut(v2_min_range)
                 .ok_or_else(|| Error::new("V2_MINIMUM_LEN is out of bounds for the current buffer"))?;
 
             stream
@@ -221,23 +222,19 @@ impl ProxyProtocolReader {
                     // Ensure length is set for read_exact
                     dynamic_buffer.resize(full_length, 0);
 
-                    let tail_buf = dynamic_buffer.get_mut(V2_MINIMUM_LEN..full_length)
+                    let tail_buf = dynamic_buffer
+                        .get_mut(V2_MINIMUM_LEN..full_length)
                         .ok_or_else(|| Error::new("Dynamic buffer range invalid"))?;
 
-                    stream
-                        .read_exact(tail_buf)
-                        .await
-                        .with_context_msg("Problem reading V2 into extended buffer")?;
+                    stream.read_exact(tail_buf).await.with_context_msg("Problem reading V2 into extended buffer")?;
                     Some(dynamic_buffer)
                 } else {
                     // Safe read into the remaining part of the fixed buffer
-                    let tail_buf = buffer.get_mut(V2_MINIMUM_LEN..full_length)
+                    let tail_buf = buffer
+                        .get_mut(V2_MINIMUM_LEN..full_length)
                         .ok_or_else(|| Error::new("V2 full length exceeds fixed buffer capacity"))?;
 
-                    stream
-                        .read_exact(tail_buf)
-                        .await
-                        .with_context_msg("Problem reading V2 into fixed buffer")?;
+                    stream.read_exact(tail_buf).await.with_context_msg("Problem reading V2 into fixed buffer")?;
                     None
                 };
                 Ok(DetectedHeader::V2 { extra_buffer })

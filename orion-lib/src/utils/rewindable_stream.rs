@@ -59,14 +59,16 @@ where
 
     pub fn get_ref(&self) -> &R {
         match self {
-            RewindableHeadAsyncStream::HeadBufferingReadOnlyMode { inner, .. } | RewindableHeadAsyncStream::FullReplayMode { inner, .. } => inner.as_ref(),
+            RewindableHeadAsyncStream::HeadBufferingReadOnlyMode { inner, .. }
+            | RewindableHeadAsyncStream::FullReplayMode { inner, .. } => inner.as_ref(),
         }
     }
 
     #[allow(dead_code)]
     pub fn get_mut(&mut self) -> &mut R {
         match self {
-            RewindableHeadAsyncStream::HeadBufferingReadOnlyMode { inner, .. } | RewindableHeadAsyncStream::FullReplayMode { inner, .. } => inner.as_mut(),
+            RewindableHeadAsyncStream::HeadBufferingReadOnlyMode { inner, .. }
+            | RewindableHeadAsyncStream::FullReplayMode { inner, .. } => inner.as_mut(),
         }
     }
 }

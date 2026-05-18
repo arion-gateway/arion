@@ -277,16 +277,14 @@ where
             Ok(_) => {
                 // 3. UNSAFE: Successfully read exact bytes, update the length.
                 // SAFETY: We have just read 'bytes_to_read' bytes into the uninitialized area, so it's now valid data.
-                unsafe {
-                    self.buffer.set_len(prev_size + bytes_to_read)
-                }
+                unsafe { self.buffer.set_len(prev_size + bytes_to_read) }
                 Ok(())
-            }
+            },
             Err(e) => {
                 // If read_exact fails, the buffer length remains prev_size,
                 // naturally discarding the uninitialized memory area.
                 Err(e.into())
-            }
+            },
         }
     }
 }
