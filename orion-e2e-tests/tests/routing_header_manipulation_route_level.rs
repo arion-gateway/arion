@@ -21,7 +21,8 @@ use orion_e2e_tests::config_builder::{
     RouteConfigBuilder, VirtualHostBuilder,
 };
 use orion_e2e_tests::{
-    OrionInstance, PreConfiguredResponse, RequestBuilder, SpawnOptions, TestBackend, TestClient, XdsEnabledHarness,
+    cleanup_config_file, OrionInstance, PreConfiguredResponse, RequestBuilder, SpawnOptions, TestBackend, TestClient,
+    XdsEnabledHarness,
 };
 
 #[tokio::test]
@@ -47,7 +48,7 @@ async fn test_request_add_header_basic() {
     assert_eq!(captured.header("x-added"), Some("value"));
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -73,7 +74,7 @@ async fn test_request_add_header_if_absent_when_missing() {
     assert_eq!(captured.header("x-added"), Some("default"));
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -99,7 +100,7 @@ async fn test_request_add_header_if_absent_when_present() {
     assert_eq!(captured.header("x-added"), Some("original"));
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -125,7 +126,7 @@ async fn test_request_overwrite_header() {
     assert_eq!(captured.header("x-version"), Some("v2"));
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -158,7 +159,7 @@ async fn test_request_add_multiple_headers() {
     assert_eq!(captured.header("x-third"), Some("three"));
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -184,7 +185,7 @@ async fn test_request_remove_header_basic() {
     assert!(captured.header("x-remove-me").is_none());
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -209,7 +210,7 @@ async fn test_request_remove_header_missing() {
     backend.await_request().await.unwrap();
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -244,7 +245,7 @@ async fn test_request_remove_multiple_headers() {
     assert_eq!(captured.header("x-keep"), Some("keep"));
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -274,7 +275,7 @@ async fn test_request_remove_then_add_same() {
     assert_eq!(captured.header("x-header"), Some("new-value"));
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -300,7 +301,7 @@ async fn test_response_add_header_basic() {
     backend.await_request().await.unwrap();
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -326,7 +327,7 @@ async fn test_response_add_header_if_absent_when_missing() {
     backend.await_request().await.unwrap();
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -355,7 +356,7 @@ async fn test_response_add_header_if_absent_when_present() {
     backend.await_request().await.unwrap();
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -381,7 +382,7 @@ async fn test_response_overwrite_header() {
     backend.await_request().await.unwrap();
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -414,7 +415,7 @@ async fn test_response_add_multiple_headers() {
     backend.await_request().await.unwrap();
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -440,7 +441,7 @@ async fn test_response_remove_header_basic() {
     backend.await_request().await.unwrap();
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -465,7 +466,7 @@ async fn test_response_remove_header_missing() {
     backend.await_request().await.unwrap();
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -504,7 +505,7 @@ async fn test_response_remove_multiple_headers() {
     backend.await_request().await.unwrap();
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -534,7 +535,7 @@ async fn test_response_remove_then_add_same() {
     backend.await_request().await.unwrap();
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -565,7 +566,7 @@ async fn test_both_request_and_response_headers() {
     assert_eq!(captured.header("x-request"), Some("from-route"));
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -592,7 +593,7 @@ async fn test_request_header_not_in_response() {
     assert_eq!(captured.header("x-request-only"), Some("value"));
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -619,7 +620,7 @@ async fn test_response_header_not_in_request() {
     assert!(captured.header("x-response-only").is_none());
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]

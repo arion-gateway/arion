@@ -24,7 +24,9 @@
 
 use http::StatusCode;
 use orion_e2e_tests::config_builder::{presets, RouteBuilder, RouteConfigBuilder, VirtualHostBuilder};
-use orion_e2e_tests::{OrionInstance, PreConfiguredResponse, RequestBuilder, SpawnOptions, TestBackend, TestClient};
+use orion_e2e_tests::{
+    cleanup_config_file, OrionInstance, PreConfiguredResponse, RequestBuilder, SpawnOptions, TestBackend, TestClient,
+};
 
 #[tokio::test]
 #[ignore]
@@ -49,7 +51,7 @@ async fn test_vhost_request_headers_inherited() {
     assert_eq!(captured.header("x-vhost"), Some("from-vhost"));
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -82,7 +84,7 @@ async fn test_route_request_header_overrides_vhost() {
     assert_eq!(values, vec!["route-value"], "Expected single value, got: {values:?}");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -109,7 +111,7 @@ async fn test_vhost_and_route_request_headers_combine() {
     assert_eq!(captured.header("x-route"), Some("route-value"));
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -138,7 +140,7 @@ async fn test_route_removes_vhost_request_header() {
     assert!(captured.header("x-remove-me").is_none());
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -164,7 +166,7 @@ async fn test_vhost_response_headers_inherited() {
     backend.await_request().await.unwrap();
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -197,7 +199,7 @@ async fn test_route_response_header_overrides_vhost() {
     backend.await_request().await.unwrap();
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -224,7 +226,7 @@ async fn test_vhost_and_route_response_headers_combine() {
     backend.await_request().await.unwrap();
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -254,7 +256,7 @@ async fn test_route_removes_vhost_response_header() {
     backend.await_request().await.unwrap();
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -281,7 +283,7 @@ async fn test_route_config_request_headers_inherited() {
     assert_eq!(captured.header("x-config"), Some("from-config"));
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -308,7 +310,7 @@ async fn test_route_config_response_headers_inherited() {
     backend.await_request().await.unwrap();
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -356,7 +358,7 @@ async fn test_route_config_headers_with_multiple_vhosts() {
     assert_eq!(captured_b.header("x-config"), Some("from-config"));
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -387,7 +389,7 @@ async fn test_all_three_levels_request_headers_combine() {
     assert_eq!(captured.header("x-route"), Some("from-route"));
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -418,7 +420,7 @@ async fn test_all_three_levels_response_headers_combine() {
     backend.await_request().await.unwrap();
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -454,7 +456,7 @@ async fn test_route_overrides_vhost_overrides_config() {
     assert_eq!(values, vec!["route-value"], "Expected single value, got: {values:?}");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -484,7 +486,7 @@ async fn test_most_specific_wins_true_route_priority() {
     assert_eq!(captured.header("x-value"), Some("route-value"));
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -514,7 +516,7 @@ async fn test_most_specific_wins_false_config_priority() {
     assert_eq!(captured.header("x-value"), Some("config-value"));
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -546,7 +548,7 @@ async fn test_priority_affects_execution_order() {
     assert!(captured.header("x-header").is_none());
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -579,7 +581,7 @@ async fn test_vhost_add_if_absent_route_overwrite() {
     assert_eq!(values, vec!["route-override"], "Expected single value, got: {values:?}");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -610,5 +612,5 @@ async fn test_route_removes_config_header() {
     assert!(captured.header("x-config-header").is_none());
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }

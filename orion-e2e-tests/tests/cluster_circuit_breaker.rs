@@ -25,7 +25,9 @@ use orion_e2e_tests::config_builder::{
     presets, ClusterBuilder, FilterChainBuilder, HcmBuilder, ListenerBuilder, RetryPolicyBuilder, RouteBuilder,
     RouteConfigBuilder, VirtualHostBuilder,
 };
-use orion_e2e_tests::{OrionInstance, PreConfiguredResponse, SpawnOptions, TestBackend, TestClient, XdsEnabledHarness};
+use orion_e2e_tests::{
+    cleanup_config_file, OrionInstance, PreConfiguredResponse, SpawnOptions, TestBackend, TestClient, XdsEnabledHarness,
+};
 
 #[tokio::test]
 #[ignore]
@@ -66,7 +68,7 @@ async fn test_circuit_breaker_max_requests_overflow() {
     }
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -93,7 +95,7 @@ async fn test_circuit_breaker_under_limit_all_succeed() {
     }
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -130,7 +132,7 @@ async fn test_circuit_breaker_recovery_after_drain() {
     response_c.assert_status(StatusCode::OK);
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -152,7 +154,7 @@ async fn test_circuit_breaker_default_config_allows_traffic() {
     }
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -189,7 +191,7 @@ async fn test_circuit_breaker_exact_boundary() {
     assert_eq!(overflow_count, 3, "Expected 3 overflow responses, got {overflow_count}");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -221,7 +223,7 @@ async fn test_circuit_breaker_max_retries_zero_prevents_retries() {
     assert!(backend.try_recv_request().is_none(), "Should not have received any retry requests");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -254,7 +256,7 @@ async fn test_circuit_breaker_max_retries_permits_retry_attempts() {
     assert!(backend.try_recv_request().is_some(), "Expected at least one retry request");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -325,7 +327,7 @@ async fn test_circuit_breaker_high_priority_independent() {
     assert_eq!(high_ok, 3, "Expected all 3 high-priority requests to succeed, got {high_ok}");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]

@@ -488,8 +488,14 @@ impl OrionInstance {
 
         if let Some(mut process) = self.process.take() {
             info!("Shutting down Orion instance");
-            let _ = process.kill();
-            let _ = process.wait();
+            if let Err(e) = process.kill() {
+                if e.kind() != std::io::ErrorKind::InvalidInput {
+                    error!("Failed to kill orion process during shutdown: {e}");
+                }
+            }
+            if let Err(e) = process.wait() {
+                error!("Failed to wait for orion process during shutdown: {e}");
+            }
         }
     }
 }
@@ -498,9 +504,35 @@ impl Drop for OrionInstance {
     fn drop(&mut self) {
         self.shutdown_requested.store(true, Ordering::SeqCst);
 
-        if let Some(ref mut process) = self.process {
-            let _ = process.kill();
-            let _ = process.wait();
+        if let Some(mut process) = self.process.take() {
+            if let Err(e) = process.kill() {
+                // InvalidInput means the process already exited — that's expected
+                if e.kind() != std::io::ErrorKind::InvalidInput {
+                    error!("Failed to send kill signal to orion process: {e}");
+                }
+            }
+
+            // Bounded wait: SIGKILL should be near-instant; timeout signals a kernel issue.
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                match process.try_wait() {
+                    Ok(Some(_)) => break,
+                    Ok(None) if Instant::now() < deadline => {
+                        std::thread::sleep(Duration::from_millis(50));
+                    },
+                    Ok(None) => {
+                        error!(
+                            "Orion process did not exit within 5s after kill — \
+                             port may remain bound and affect subsequent tests"
+                        );
+                        break;
+                    },
+                    Err(e) => {
+                        error!("Failed to wait for orion process exit: {e}");
+                        break;
+                    },
+                }
+            }
         }
 
         if self.cleanup_config {

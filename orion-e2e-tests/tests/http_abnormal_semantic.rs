@@ -16,8 +16,8 @@ use std::time::Duration;
 
 use orion_e2e_tests::config_builder::presets;
 use orion_e2e_tests::{
-    OrionInstance, PartialSendClient, PreConfiguredResponse, RawHttpRequestBuilder, RawHttpResponse, SpawnOptions,
-    TcpTestClient, TestBackend,
+    cleanup_config_file, OrionInstance, PartialSendClient, PreConfiguredResponse, RawHttpRequestBuilder,
+    RawHttpResponse, SpawnOptions, TcpTestClient, TestBackend,
 };
 
 async fn setup() -> (OrionInstance, TestBackend, TcpTestClient, std::path::PathBuf) {
@@ -38,7 +38,7 @@ async fn setup() -> (OrionInstance, TestBackend, TcpTestClient, std::path::PathB
 
 fn cleanup(orion: OrionInstance, config_path: std::path::PathBuf) {
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -144,7 +144,7 @@ async fn test_tc1104_data_after_connection_close() {
     // Try to send another request on the same connection
     let second_req = RawHttpRequestBuilder::new().uri(b"/second").host("localhost").build();
     // This may fail (broken pipe) which is expected — the connection should be closed
-    let _ = client.send_bytes(&second_req).await;
+    let _broken_pipe = client.send_bytes(&second_req).await;
 
     cleanup(orion, config_path);
 }

@@ -21,7 +21,8 @@ use orion_e2e_tests::config_builder::{
     RouteConfigBuilder, VirtualHostBuilder,
 };
 use orion_e2e_tests::{
-    OrionInstance, PreConfiguredResponse, RequestBuilder, SpawnOptions, TestBackend, TestClient, XdsEnabledHarness,
+    cleanup_config_file, OrionInstance, PreConfiguredResponse, RequestBuilder, SpawnOptions, TestBackend, TestClient,
+    XdsEnabledHarness,
 };
 
 #[tokio::test]
@@ -51,7 +52,7 @@ async fn test_header_exact_match() {
     matched.await_request().await.unwrap();
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -86,7 +87,7 @@ async fn test_header_exact_no_match() {
     fallback.await_request().await.unwrap();
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -121,7 +122,7 @@ async fn test_header_present_match() {
     matched.await_request().await.unwrap();
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -151,7 +152,7 @@ async fn test_header_present_missing() {
     fallback.await_request().await.unwrap();
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -186,7 +187,7 @@ async fn test_header_absent_match() {
     fallback.await_request().await.unwrap();
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -224,7 +225,7 @@ async fn test_header_prefix_match() {
     fallback.await_request().await.unwrap();
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -259,7 +260,7 @@ async fn test_header_suffix_match() {
     fallback.await_request().await.unwrap();
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -295,7 +296,7 @@ async fn test_header_contains_match() {
     fallback.await_request().await.unwrap();
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -331,7 +332,7 @@ async fn test_header_regex_match() {
     fallback.await_request().await.unwrap();
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -378,7 +379,7 @@ async fn test_multiple_headers_and_logic() {
     fallback.await_request().await.unwrap();
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -418,7 +419,7 @@ async fn test_header_case_sensitivity() {
     fallback.await_request().await.unwrap();
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -465,7 +466,7 @@ async fn test_pseudo_header_method() {
     fallback.await_request().await.unwrap();
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]

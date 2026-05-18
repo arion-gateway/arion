@@ -21,7 +21,9 @@ use std::time::Duration;
 
 use http::StatusCode;
 use orion_e2e_tests::config_builder::{presets, ClusterBuilder, RouteBuilder};
-use orion_e2e_tests::{OrionInstance, PreConfiguredResponse, RequestBuilder, SpawnOptions, TestBackend, TestClient};
+use orion_e2e_tests::{
+    cleanup_config_file, OrionInstance, PreConfiguredResponse, RequestBuilder, SpawnOptions, TestBackend, TestClient,
+};
 
 const DEFAULT_DST_HEADER: &str = "x-envoy-original-dst-host";
 
@@ -60,7 +62,7 @@ async fn test_original_dst_routes_to_header_destination() {
     }
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -96,7 +98,7 @@ async fn test_original_dst_custom_header_name() {
     }
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -122,7 +124,7 @@ async fn test_original_dst_port_override() {
     response.assert_body("overridden");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -151,7 +153,7 @@ async fn test_original_dst_multiple_destinations() {
     }
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -178,7 +180,7 @@ async fn test_original_dst_missing_header_returns_error() {
     );
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -209,7 +211,7 @@ async fn test_original_dst_invalid_header_returns_error() {
     }
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -244,7 +246,7 @@ async fn test_original_dst_connect_timeout() {
     );
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -264,5 +266,5 @@ async fn test_original_dst_connection_refused() {
     response.assert_status(StatusCode::SERVICE_UNAVAILABLE);
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }

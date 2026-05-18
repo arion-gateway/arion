@@ -16,7 +16,9 @@ use std::collections::HashSet;
 
 use http::StatusCode;
 use orion_e2e_tests::config_builder::{presets, ClusterBuilder, EndpointBuilder, RouteBuilder};
-use orion_e2e_tests::{OrionInstance, PreConfiguredResponse, RequestBuilder, SpawnOptions, TestBackend, TestClient};
+use orion_e2e_tests::{
+    cleanup_config_file, OrionInstance, PreConfiguredResponse, RequestBuilder, SpawnOptions, TestBackend, TestClient,
+};
 
 #[tokio::test]
 #[ignore]
@@ -56,7 +58,7 @@ async fn test_ring_hash_header_routing() {
     }
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -101,7 +103,7 @@ async fn test_ring_hash_different_keys() {
     );
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -142,7 +144,7 @@ async fn test_maglev_header_routing() {
     }
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -187,5 +189,5 @@ async fn test_maglev_different_keys() {
     );
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }

@@ -16,8 +16,8 @@ use std::time::Duration;
 
 use orion_e2e_tests::config_builder::presets;
 use orion_e2e_tests::{
-    assert_rejected, OrionInstance, PartialSendClient, PreConfiguredResponse, RawHttpRequestBuilder, RawHttpResponse,
-    SpawnOptions, TcpTestClient, TestBackend,
+    assert_rejected, cleanup_config_file, OrionInstance, PartialSendClient, PreConfiguredResponse,
+    RawHttpRequestBuilder, RawHttpResponse, SpawnOptions, TcpTestClient, TestBackend,
 };
 
 async fn setup() -> (OrionInstance, TestBackend, TcpTestClient, std::path::PathBuf) {
@@ -38,7 +38,7 @@ async fn setup() -> (OrionInstance, TestBackend, TcpTestClient, std::path::PathB
 
 fn cleanup(orion: OrionInstance, config_path: std::path::PathBuf) {
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]

@@ -20,7 +20,9 @@ use orion_e2e_tests::config_builder::{
     presets, ClusterBuilder, EndpointBuilder, FilterChainBuilder, HcmBuilder, ListenerBuilder, RouteBuilder,
     RouteConfigBuilder, VirtualHostBuilder,
 };
-use orion_e2e_tests::{OrionInstance, PreConfiguredResponse, SpawnOptions, TestBackend, TestClient, XdsEnabledHarness};
+use orion_e2e_tests::{
+    cleanup_config_file, OrionInstance, PreConfiguredResponse, SpawnOptions, TestBackend, TestClient, XdsEnabledHarness,
+};
 
 #[tokio::test]
 #[ignore]
@@ -52,7 +54,7 @@ async fn test_prefix_match_basic() {
     backend.await_request().await.unwrap();
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -77,7 +79,7 @@ async fn test_prefix_match_no_match() {
     response.assert_status(StatusCode::NOT_FOUND);
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -101,7 +103,7 @@ async fn test_exact_match_basic() {
     response.assert_body("exact");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -129,7 +131,7 @@ async fn test_exact_match_no_match() {
     response.assert_status(StatusCode::NOT_FOUND);
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -161,7 +163,7 @@ async fn test_regex_match_basic() {
     backend.await_request().await.unwrap();
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -189,7 +191,7 @@ async fn test_regex_match_no_match() {
     response.assert_status(StatusCode::NOT_FOUND);
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -232,7 +234,7 @@ async fn test_path_separated_prefix() {
     fallback_backend.await_request().await.unwrap();
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -264,7 +266,7 @@ async fn test_case_insensitive_prefix() {
     backend.await_request().await.unwrap();
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -293,7 +295,7 @@ async fn test_first_match_wins() {
     first_backend.await_request().await.unwrap();
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]

@@ -16,7 +16,9 @@ use std::collections::HashSet;
 
 use http::StatusCode;
 use orion_e2e_tests::config_builder::{presets, ClusterBuilder, EndpointBuilder, LbPolicy, RouteBuilder};
-use orion_e2e_tests::{OrionInstance, PreConfiguredResponse, RequestBuilder, SpawnOptions, TestBackend, TestClient};
+use orion_e2e_tests::{
+    cleanup_config_file, OrionInstance, PreConfiguredResponse, RequestBuilder, SpawnOptions, TestBackend, TestClient,
+};
 
 const OVERRIDE_HEADER: &str = "x-override-host";
 
@@ -68,7 +70,7 @@ async fn test_override_host_routes_to_specified_backend() {
     }
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -106,7 +108,7 @@ async fn test_override_host_missing_header_uses_fallback() {
     assert!(seen_backends.contains("b3"), "Expected traffic to b3 via fallback");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -146,7 +148,7 @@ async fn test_override_host_invalid_header_uses_fallback() {
     }
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -182,7 +184,7 @@ async fn test_override_host_unknown_host_uses_fallback() {
     assert!(seen_backends.contains("b2"), "Expected traffic to b2 via fallback");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -215,7 +217,7 @@ async fn test_override_host_multiple_hosts_uses_first() {
     }
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -251,5 +253,5 @@ async fn test_override_host_multiple_hosts_uses_next_available_on_failover() {
     }
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }

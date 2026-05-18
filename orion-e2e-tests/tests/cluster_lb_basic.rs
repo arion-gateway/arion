@@ -19,7 +19,9 @@ use std::time::Duration;
 use futures::future::join_all;
 use http::StatusCode;
 use orion_e2e_tests::config_builder::{presets, ClusterBuilder, EndpointBuilder, RouteBuilder};
-use orion_e2e_tests::{OrionInstance, PreConfiguredResponse, SpawnOptions, TestBackend, TestClient};
+use orion_e2e_tests::{
+    cleanup_config_file, OrionInstance, PreConfiguredResponse, SpawnOptions, TestBackend, TestClient,
+};
 
 #[tokio::test]
 #[ignore]
@@ -60,7 +62,7 @@ async fn test_round_robin_distribution() {
     assert_eq!(b3_count, 3, "Expected 3 requests to b3, got {b3_count}");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -109,7 +111,7 @@ async fn test_round_robin_weighted() {
     assert!((b3 - expected_b3).abs() / expected_b3 < tolerance, "b3: expected ~{expected_b3:.0}, got {b3:.0}");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -159,7 +161,7 @@ async fn test_random_distribution() {
     assert!(b3.abs_diff(expected) < tolerance, "b3 count {b3} too far from expected {expected}");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -221,7 +223,7 @@ async fn test_least_request_prefers_idle() {
     );
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -240,7 +242,7 @@ async fn test_endpoint_connection_refused() {
     response.assert_status(StatusCode::SERVICE_UNAVAILABLE);
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -275,5 +277,5 @@ async fn test_connect_timeout() {
     );
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }

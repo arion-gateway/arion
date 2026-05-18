@@ -17,7 +17,8 @@ use orion_e2e_tests::config_builder::{
     presets, BootstrapBuilder, ClusterBuilder, DownstreamTlsBuilder, EndpointBuilder, UpstreamTlsBuilder,
 };
 use orion_e2e_tests::{
-    OrionInstance, PreConfiguredResponse, SpawnOptions, TestCerts, TlsTestBackend, TlsTestClientBuilder,
+    cleanup_config_file, OrionInstance, PreConfiguredResponse, SpawnOptions, TestCerts, TlsTestBackend,
+    TlsTestClientBuilder,
 };
 
 #[tokio::test]
@@ -63,7 +64,7 @@ async fn test_full_tls_chain_skip_verify() {
     assert_eq!(captured_request.path(), "/full-chain");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -106,7 +107,7 @@ async fn test_full_tls_chain_with_ca_validation() {
     response.assert_body("Validated chain OK!");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -149,7 +150,7 @@ async fn test_full_tls_chain_different_certs_each_side() {
     response.assert_body("Different certs OK!");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -196,7 +197,7 @@ async fn test_full_tls_chain_post_with_body() {
     assert_eq!(req.body_str(), Some(body));
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -242,7 +243,7 @@ async fn test_full_tls_chain_multiple_requests() {
     }
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -288,5 +289,5 @@ async fn test_full_tls_chain_upstream_validation_failure() {
     );
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }

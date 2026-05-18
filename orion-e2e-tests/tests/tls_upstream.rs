@@ -17,7 +17,9 @@ use orion_e2e_tests::config_builder::{
     presets, BootstrapBuilder, ClusterBuilder, EndpointBuilder, FilterChainBuilder, HcmBuilder, ListenerBuilder,
     RouteConfigBuilder, UpstreamTlsBuilder, VirtualHostBuilder,
 };
-use orion_e2e_tests::{OrionInstance, PreConfiguredResponse, SpawnOptions, TestCerts, TestClient, TlsTestBackend};
+use orion_e2e_tests::{
+    cleanup_config_file, OrionInstance, PreConfiguredResponse, SpawnOptions, TestCerts, TestClient, TlsTestBackend,
+};
 
 fn http_listener(name: &str, cluster_name: &str) -> ListenerBuilder {
     ListenerBuilder::new(name).port(0).filter_chain(
@@ -63,7 +65,7 @@ async fn test_upstream_tls_origination_skip_verify() {
     assert_eq!(captured_request.path(), "/hello");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -96,7 +98,7 @@ async fn test_upstream_tls_with_ca_validation() {
     response.assert_body("Validated TLS OK");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -132,7 +134,7 @@ async fn test_upstream_tls_wrong_ca_fails() {
     );
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -167,7 +169,7 @@ async fn test_upstream_tls_sni_sent() {
     let _ = backend.await_request().await.expect("No request received");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -204,7 +206,7 @@ async fn test_upstream_tls_multiple_requests() {
     }
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -241,7 +243,7 @@ async fn test_upstream_tls_post_with_body() {
     assert_eq!(req.body_str(), Some(body));
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -287,7 +289,7 @@ async fn test_upstream_tls_multiple_backends() {
     assert!(has_backend1 && has_backend2, "Expected requests to be distributed to both backends, got: {responses:?}");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -321,7 +323,7 @@ async fn test_upstream_tls_1_2_only() {
     response.assert_body("TLS 1.2 OK");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -355,7 +357,7 @@ async fn test_upstream_tls_1_3_only() {
     response.assert_body("TLS 1.3 OK");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -392,5 +394,5 @@ async fn test_upstream_tls_sni_mismatch_fails() {
     );
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }

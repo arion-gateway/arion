@@ -66,7 +66,9 @@ impl AckTracker {
 
     pub fn complete(&self, nonce: &str, result: PushResult) -> bool {
         if let Some((_, tx)) = self.pending.remove(nonce) {
-            let _ = tx.send(result);
+            if tx.send(result).is_err() {
+                debug!("ack receiver dropped before result could be delivered for nonce {nonce}");
+            }
             true
         } else {
             false
@@ -220,7 +222,9 @@ impl AggregatedDiscoveryService for TrackedAggregateServer {
                 if first_message {
                     first_message = false;
                     let node_id = item.node.as_ref().map(|n| n.id.clone()).unwrap_or_default();
-                    let _ = event_tx.send(ServerEvent::ClientConnected { remote_addr, node_id });
+                    if event_tx.send(ServerEvent::ClientConnected { remote_addr, node_id }).is_err() {
+                        debug!("no active event subscribers for ClientConnected");
+                    }
                 }
 
                 if !item.response_nonce.is_empty() {
@@ -234,7 +238,9 @@ impl AggregatedDiscoveryService for TrackedAggregateServer {
                     }
                 }
             }
-            let _ = event_tx.send(ServerEvent::ClientDisconnected { remote_addr });
+            if event_tx.send(ServerEvent::ClientDisconnected { remote_addr }).is_err() {
+                debug!("no active event subscribers for ClientDisconnected");
+            }
             info!("TrackedServer delta side closed");
         });
 

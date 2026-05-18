@@ -296,7 +296,7 @@ async fn test_xds_add_tls_dynamically() {
     let http_client = orion_e2e_tests::TestClient::new(listener_addr);
     let response = http_client.get("/http-phase").await.expect("Failed to send HTTP request");
     response.assert_status(StatusCode::OK);
-    let _ = backend.await_request().await;
+    assert!(backend.await_request().await.is_ok(), "backend should have received a request");
 
     let server_cert = SecretBuilder::new("server-cert")
         .tls_certificate_files(certs.beefcake_dublin_cert(), certs.beefcake_dublin_key())
@@ -407,7 +407,7 @@ async fn test_xds_sni_routing() {
     let response = client_dublin.get("/dublin").await.expect("Failed to send dublin request");
     response.assert_status(StatusCode::OK);
     response.assert_body("backend1");
-    let _ = backend1.await_request().await;
+    assert!(backend1.await_request().await.is_ok(), "backend should have received a request");
 
     let client_athlone = TlsTestClientBuilder::new(listener_addr)
         .server_name("athlone.beefcake.example.com")
@@ -418,7 +418,7 @@ async fn test_xds_sni_routing() {
     let response = client_athlone.get("/athlone").await.expect("Failed to send athlone request");
     response.assert_status(StatusCode::OK);
     response.assert_body("backend2");
-    let _ = backend2.await_request().await;
+    assert!(backend2.await_request().await.is_ok(), "backend should have received a request");
 
     harness.shutdown();
 }

@@ -50,3 +50,9 @@ pub use test_client::{RequestBuilder, TestClient, TestResponse};
 pub use tls_test_backend::{TlsBackendConfig, TlsTestBackend};
 pub use tls_test_client::{TlsClientConfig, TlsTestClient, TlsTestClientBuilder};
 pub use xds_harness::{HarnessError, HarnessTimeouts, XdsEnabledHarness, XdsHarnessOptions};
+
+pub fn cleanup_config_file(path: &std::path::Path) {
+    if let Err(e) = std::fs::remove_file(path) {
+        tracing::warn!(?e, ?path, "Failed to remove config file");
+    }
+}
