@@ -993,9 +993,7 @@ async fn test_request_combinatorial_processing() {
                 let mut ext_proc = ExternalProcessor::from(config);
                 let mut request = build_request_from_mock(mock_request).await;
                 let result = fast_timeout(Duration::from_secs(2), ext_proc.apply_request(&mut request)).await;
-                let result = if let Ok(res) = result {
-                    res
-                } else {
+                let Ok(result) = result else {
                     warn!(target: "ext_proc_tests", "test_request_combinatorial_modes_continue: ############ test {test_case_num} HANGS ############");
                     timed_out_tests.push(test_case_num);
                     continue;
@@ -1059,9 +1057,7 @@ async fn test_response_combinatorial_processing() {
                 let mut ext_proc = ExternalProcessor::from(config);
                 let mut response = build_response_from_mock(mock_response).await;
                 let result = fast_timeout(Duration::from_secs(2), ext_proc.apply_response(&mut response)).await;
-                let result = if let Ok(res) = result {
-                    res
-                } else {
+                let Ok(result) = result else {
                     warn!(target: "ext_proc_tests", "test_response_combinatorial_modes_continue: ############ test {test_case_num} HANGS ############");
                     timed_out_tests.push(test_case_num);
                     continue;
@@ -1125,9 +1121,7 @@ async fn test_request_combinatorial_observability() {
                 let mut ext_proc = ExternalProcessor::from(config);
                 let mut request = build_request_from_mock(mock_request).await;
                 let result = fast_timeout(Duration::from_secs(2), ext_proc.apply_request(&mut request)).await;
-                let result = if let Ok(res) = result {
-                    res
-                } else {
+                let Ok(result) = result else {
                     warn!(target: "ext_proc_tests", "test_request_combinatorial_modes_observability: ############ test {test_case_num} HANGS ############");
                     timed_out_tests.push(test_case_num);
                     continue;
@@ -1191,9 +1185,7 @@ async fn test_response_combinatorial_observability() {
                 let mut ext_proc = ExternalProcessor::from(config);
                 let mut response = build_response_from_mock(mock_response).await;
                 let result = fast_timeout(Duration::from_secs(2), ext_proc.apply_response(&mut response)).await;
-                let result = if let Ok(res) = result {
-                    res
-                } else {
+                let Ok(result) = result else {
                     warn!(target: "ext_proc_tests", "test_response_combinatorial_observability: ############ test {test_case_num} HANGS ############");
                     timed_out_tests.push(test_case_num);
                     continue;

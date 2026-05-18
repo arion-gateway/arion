@@ -35,14 +35,12 @@ impl Cors {
         debug!(target: "cors", "applying CORS filter to request");
         // 1. Extract Origin Header.
         // If missing, it's not a CORS request (or it is same-origin).
-        let origin_header = match req.headers().get(ORIGIN) {
-            Some(h) => h,
-            None => return FilterDecision::Continue,
+        let Some(origin_header) = req.headers().get(ORIGIN) else {
+            return FilterDecision::Continue;
         };
 
-        let origin_str = match origin_header.to_str() {
-            Ok(s) => s,
-            Err(_) => return FilterDecision::Continue,
+        let Ok(origin_str) = origin_header.to_str() else {
+            return FilterDecision::Continue;
         };
 
         // 2. Validate Origin and save state.
@@ -62,14 +60,11 @@ impl Cors {
 
         if is_preflight {
             // Strict Validation: Check if the requested method is actually allowed.
-            let req_method_hdr = match req.headers().get(ACCESS_CONTROL_REQUEST_METHOD) {
-                Some(h) => h,
-                None => return FilterDecision::Continue, // Should not happen given is_preflight check
+            let Some(req_method_hdr) = req.headers().get(ACCESS_CONTROL_REQUEST_METHOD) else {
+                return FilterDecision::Continue; // Should not happen given is_preflight check
             };
 
-            let req_method = if let Ok(m) = Method::from_bytes(req_method_hdr.as_bytes()) {
-                m
-            } else {
+            let Ok(req_method) = Method::from_bytes(req_method_hdr.as_bytes()) else {
                 debug!(target: "cors", "Preflight failed: Invalid method in Access-Control-Request-Method");
                 return FilterDecision::Continue;
             };
@@ -114,9 +109,8 @@ impl Cors {
     pub fn apply_response(&mut self, response: &mut Response<OrionResponseBody>) -> FilterDecision {
         debug!(target: "cors", "applying CORS filter to response");
         // If we didn't validate an origin during the request phase, do nothing.
-        let allowed_origin = match &self.validated_origin {
-            Some(o) => o,
-            None => return FilterDecision::Continue,
+        let Some(allowed_origin) = &self.validated_origin else {
+            return FilterDecision::Continue;
         };
 
         let headers = response.headers_mut();

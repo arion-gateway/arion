@@ -111,9 +111,8 @@ impl TryFrom<&TlsCertificate> for CertificateSecret {
         let subject = x509_cert.subject();
         if let Ok(Some(san)) = x509_cert.subject_alternative_name() {
             for san_name in &san.value.general_names {
-                let name = match *san_name {
-                    GeneralName::DNSName(name) => name,
-                    _ => continue,
+                let GeneralName::DNSName(name) = *san_name else {
+                    continue;
                 };
 
                 let is_server_name = ServerName::try_from(name).is_ok();
