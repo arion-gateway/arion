@@ -425,7 +425,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
                         body_kind,
                         body_bytes,
                         stream_metrics: stream_metrics.clone(),
-                        on_complete: on_complete.clone(),
+                        on_complete: Arc::clone(&on_complete),
                     };
                     let rebuilt_req = Request::from_parts(parts.clone(), cloned_body);
                     let attempt_ctx = RequestContext { route_timeout, retry_policy: None, priority };
@@ -711,7 +711,7 @@ impl HttpChannel {
                 body_kind,
                 body_bytes,
                 stream_metrics: stream_metrics.clone(),
-                on_complete: on_complete.clone(),
+                on_complete: Arc::clone(&on_complete),
             };
 
             // avoid to clone parts on the last attempt

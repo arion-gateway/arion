@@ -50,7 +50,7 @@ impl From<(&'static str, u64, ConnectionLimitConfig)> for NetworkConnectionLimit
     fn from((listener_name, filterchain_id, config): (&'static str, u64, ConnectionLimitConfig)) -> Self {
         let active = {
             let map = GLOBAL_CONNECTION_COUNTS.pin();
-            map.get_or_insert_with((listener_name, filterchain_id), || Arc::new(AtomicU64::new(0))).clone()
+            Arc::clone(map.get_or_insert_with((listener_name, filterchain_id), || Arc::new(AtomicU64::new(0))))
         };
         Self { active, max_connections: config.max_connections, delay: config.delay }
     }

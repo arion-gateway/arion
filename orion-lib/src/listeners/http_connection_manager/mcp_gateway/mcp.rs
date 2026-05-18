@@ -195,7 +195,7 @@ impl McpGatewayListenerContext {
             prompt: Mutex::new(None),
             active_tools: DashSet::with_hasher(ahash::RandomState::default()),
         });
-        self.session_map.insert(session_id, session.clone());
+        self.session_map.insert(session_id, Arc::clone(&session));
         Ok(session)
     }
 
@@ -254,7 +254,7 @@ impl TryFrom<McpGatewayConfig> for McpGateway {
 impl FilterFactory for McpGateway {
     fn new_from(&self) -> Self {
         Self {
-            inner: self.inner.clone(),
+            inner: Arc::clone(&self.inner),
             session: None,
             request_id: model::RequestId::Number(0),
             initialize_request_params: None,

@@ -675,7 +675,7 @@ where
             .map(|md| md.downstream.connection.peer_address())
             .unwrap_or_else(|| SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0));
 
-        let stream_metrics = metadata.map(|md| md.stream_metrics.clone());
+        let stream_metrics = metadata.map(|md| Arc::clone(&md.stream_metrics));
 
         #[allow(clippy::unwrap_used)]
         stream_metrics.as_ref().unwrap().inc_requests();
@@ -684,7 +684,7 @@ where
         http_modifiers::apply_prerouting_functions(&mut request, downstream_addr, manager.xff_settings);
 
         // process request, get the response..
-        let result = self.route_conf.to_response(&trans_handler, request, manager.clone()).await;
+        let result = self.route_conf.to_response(&trans_handler, request, Arc::clone(&manager)).await;
 
         // calculate the time to first byte..
         #[cfg(any(feature = "access-log", feature = "metrics"))]
@@ -1043,8 +1043,8 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
                             break 'filter_loop filter_res;
                         },
                         FilterDecision::AsyncRequest(resp, Some(req)) => {
-                            let async_exec = AsyncExecution(self.clone());
-                            let conn_manager = connection_manager.clone();
+                            let async_exec = AsyncExecution(Arc::clone(&self));
+                            let conn_manager = Arc::clone(&connection_manager);
 
                             // Use current_idx + 1 to ensure the next task starts from the correct filter
                             let next_idx = current_idx + 1;
@@ -1236,7 +1236,7 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
         let incoming_request_id = RequestId::from_request(&incoming_request);
         let incoming_version = incoming_request.version();
         let metadata_context = incoming_request.extensions().get::<MetadataContext>();
-        let stream_metrics = metadata_context.map(|md| md.stream_metrics.clone());
+        let stream_metrics = metadata_context.map(|md| Arc::clone(&md.stream_metrics));
         #[cfg(feature = "metrics")]
         let sni = metadata_context.and_then(|md| md.downstream.sni.clone());
 
@@ -1472,7 +1472,7 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
             //
 
             let pipeline = TransactionPipeline { route_conf };
-            let response = pipeline.to_response(trans_handler.clone(), manager, request).await;
+            let response = pipeline.to_response(Arc::clone(&trans_handler), manager, request).await;
 
             #[cfg(feature = "metrics")]
             if let Ok(response) = &response {

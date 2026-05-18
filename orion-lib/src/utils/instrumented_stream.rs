@@ -272,7 +272,7 @@ impl<S> HasMetrics for InstrumentedStream<S> {
     }
 
     fn shared_metrics(&self) -> Arc<StreamMetrics> {
-        self.metrics.clone()
+        Arc::clone(&self.metrics)
     }
 }
 

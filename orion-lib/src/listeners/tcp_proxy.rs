@@ -274,7 +274,7 @@ impl TcpProxy {
 
                             if let Some(tcp_error) = e.get_context_data::<TcpErrorContext>() {
                                 maybe_upstream_peer_addr = Some(tcp_error.upstream_addr);
-                                response_flags = tcp_error.response_flags.clone();
+                                response_flags = tcp_error.response_flags;
                                 cluster_name = tcp_error.cluster_name;
                             } else {
                                 // impossible case to make the compiler happy...

@@ -56,7 +56,7 @@ impl GrpcService {
 
 impl GrpcService {
     async fn do_call(self, grpc_req: Request<GrpcBody>) -> std::result::Result<http::Response<GrpcBody>, crate::Error> {
-        let stream_metrics = grpc_req.extensions().get::<MetadataContext>().map(|md| md.stream_metrics.clone());
+        let stream_metrics = grpc_req.extensions().get::<MetadataContext>().map(|md| Arc::clone(&md.stream_metrics));
 
         let (mut parts, grpc_body) = grpc_req.into_parts();
 

@@ -279,7 +279,7 @@ impl FilterchainType {
                         hyper::service::service_fn(move |mut req: Request<hyper::body::Incoming>| {
                             req.extensions_mut().insert(MetadataContext {
                                 downstream: metadata.clone(),
-                                stream_metrics: stream_metrics.clone(),
+                                stream_metrics: Arc::clone(&stream_metrics),
                             });
                             req_handler.call(req).map_err(orion_error::Error::into_inner)
                         }),

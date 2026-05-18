@@ -273,7 +273,7 @@ where
             Ok(_) => {
                 // 3. UNSAFE: Successfully read exact bytes, update the length.
                 unsafe {
-                    self.buffer.set_len(prev_size + bytes_to_read);
+                    self.buffer.set_len(prev_size + bytes_to_read)
                 }
                 Ok(())
             }

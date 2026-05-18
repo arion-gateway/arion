@@ -223,13 +223,13 @@ pub struct JwtAuthentication {
 
 impl FilterFactory for JwtAuthentication {
     fn new_from(&self) -> Self {
-        JwtAuthentication { inner: self.inner.clone() }
+        JwtAuthentication { inner: Arc::clone(&self.inner) }
     }
 }
 
 impl Clone for JwtAuthentication {
     fn clone(&self) -> Self {
-        JwtAuthentication { inner: self.inner.clone() }
+        JwtAuthentication { inner: Arc::clone(&self.inner) }
     }
 }
 
@@ -406,7 +406,7 @@ impl JwtAuthentication {
     }
 
     async fn start_jwks_fetcher(&mut self) {
-        let inner_clone = self.inner.clone();
+        let inner_clone = Arc::clone(&self.inner);
         let _ = self
             .inner
             .jwks_fetchers
@@ -416,8 +416,8 @@ impl JwtAuthentication {
                 for (provider, context) in &inner_clone.context.providers {
                     if let Some(conf) = inner_clone.config.providers.get(provider) {
                         let provider_name = provider.clone();
-                        let provider_config = conf.clone();
-                        let context = context.clone();
+                        let provider_config = Arc::clone(&conf);
+                        let context = Arc::clone(&context);
 
                         let remote = match inner_clone
                             .config
@@ -509,7 +509,7 @@ impl JwtAuthentication {
         });
 
         JWT_CACHE.with(|cache| {
-            cache.insert(cache_key.to_owned(), res.clone());
+            cache.insert(cache_key.to_owned(), Arc::clone(&res));
         });
         Ok(res)
     }
