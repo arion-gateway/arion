@@ -171,8 +171,7 @@ impl TryFrom<HttpFilterConfig> for HttpFilter {
                 let builder = JwtAuthenticationBuilder::new(conf);
                 HttpFilterValue::JwtAuthentication(builder.build())
             },
-            HttpFilterType::Cors(conf) => HttpFilterValue::Cors(conf.into()),
-            HttpFilterType::CorsPolicy(conf) => HttpFilterValue::Cors(conf.into()),
+            HttpFilterType::Cors(conf) | HttpFilterType::CorsPolicy(conf) => HttpFilterValue::Cors(conf.into()),
             HttpFilterType::McpGateway(mcp) => HttpFilterValue::McpGateway(Box::new(mcp.try_into()?)),
             HttpFilterType::UserRateLimit(user_rate_limit) => {
                 HttpFilterValue::UserRateLimit(user_rate_limit.try_into()?)
@@ -197,12 +196,10 @@ impl HttpFilterValue {
     pub async fn apply_response(&mut self, response: &mut Response<OrionResponseBody>) -> FilterDecision {
         match self {
             // RBAC and RateLimit do not apply on the response path
-            HttpFilterValue::Rbac(_) | HttpFilterValue::RateLimit(_) => FilterDecision::Continue,
             HttpFilterValue::ExternalProcessor(ext_proc) => ext_proc.apply_response(response).await,
-            HttpFilterValue::JwtAuthentication(_) => FilterDecision::Continue,
             HttpFilterValue::McpGateway(mcp) => mcp.apply_response(response).await,
             HttpFilterValue::Cors(cors) => cors.apply_response(response),
-            HttpFilterValue::UserRateLimit(_) => FilterDecision::Continue,
+            HttpFilterValue::Rbac(_) | HttpFilterValue::RateLimit(_) | HttpFilterValue::UserRateLimit(_) | HttpFilterValue::JwtAuthentication(_) => FilterDecision::Continue,
         }
     }
     pub(crate) fn from_filter_override(

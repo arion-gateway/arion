@@ -42,16 +42,14 @@ impl AcceptedMime {
     pub fn is_app_json(&self) -> bool {
         match self {
             AcceptedMime::EventStream => false,
-            AcceptedMime::ApplicationJson => true,
-            AcceptedMime::EventStreamAndJson => true,
+            AcceptedMime::ApplicationJson | AcceptedMime::EventStreamAndJson => true,
         }
     }
     #[allow(dead_code)]
     pub fn is_event_stream(&self) -> bool {
         match self {
-            AcceptedMime::EventStream => true,
             AcceptedMime::ApplicationJson => false,
-            AcceptedMime::EventStreamAndJson => true,
+            AcceptedMime::EventStreamAndJson | AcceptedMime::EventStream => true,
         }
     }
 }

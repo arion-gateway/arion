@@ -223,8 +223,7 @@ impl ExternalProcessorService for MockExternalProcessor {
 
                         let processing_request = match result_msg {
                                             Ok(Some(req)) => req,
-                                            Ok(None) => break, // Stream ended naturally
-                                            Err(_) => break,   // Error in stream
+                                            Ok(None) | Err(_) => break, // Stream ended naturally or Error
                                       };
 
                         let end_of_stream = processing_request.request.as_ref().map(|req| {

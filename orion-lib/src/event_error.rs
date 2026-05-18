@@ -123,12 +123,11 @@ impl EventKind {
 
     pub fn termination_details(&self) -> Option<ConnectionTerminationDetails> {
         match self {
-            EventKind::Upstream(_) => None,
             EventKind::Downstream(err) => match err {
                 DownstreamError::Io(err) => Some(ConnectionTerminationDetails::from(err)),
                 DownstreamError::Reset => Some(ConnectionTerminationDetails("downstream_connection_reset")),
             },
-            EventKind::Failure(_) => None,
+            EventKind::Upstream(_) | EventKind::Failure(_) => None,
         }
     }
 }

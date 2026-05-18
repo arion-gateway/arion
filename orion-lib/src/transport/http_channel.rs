@@ -862,9 +862,8 @@ impl HttpChannel {
 
     pub fn is_https(&self) -> bool {
         match &self.channel_client {
-            HttpChannelClient::Plain(_) => false,
             HttpChannelClient::Tls(_) => true,
-            HttpChannelClient::Unix(_, _) => false,
+            HttpChannelClient::Plain(_) | HttpChannelClient::Unix(_, _) => false,
         }
     }
 

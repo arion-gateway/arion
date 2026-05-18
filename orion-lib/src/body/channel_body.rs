@@ -217,12 +217,11 @@ impl FrameBridge {
             Box::pin(http_body_util::BodyStream::new(body).map(|result| result.map_err(Into::into)));
 
         let (orig_has_body, orig_has_trailers) = match (end_of_stream, body_type) {
-            (false, Some(BodyType::Empty)) => (Some(false), Some(false)),
             (false, Some(BodyType::Body)) => (Some(true), Some(false)),
             (false, Some(BodyType::Trailers)) => (Some(false), Some(true)),
             (false, Some(BodyType::BodyAndTrailers)) => (Some(true), Some(true)),
             (false, None) => (None, None),
-            (true, _) => (Some(false), Some(false)),
+            (false, Some(BodyType::Empty)) | (true, _) => (Some(false), Some(false)),
         };
 
         Self {

@@ -118,8 +118,7 @@ impl ListenersManager {
                     if let Err(tokio::sync::broadcast::error::SendError(change)) = res {
                         warn!("No listeners subscribed to route updates, dropping update");
                         match change {
-                            RouteConfigurationChange::Added(_, Some(notify)) => notify.notify_one(),
-                            RouteConfigurationChange::Removed(_, Some(notify)) => notify.notify_one(),
+                            RouteConfigurationChange::Added(_, Some(notify)) | RouteConfigurationChange::Removed(_, Some(notify)) => notify.notify_one(),
                             _ => {}
                         }
                     }

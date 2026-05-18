@@ -42,8 +42,7 @@ impl std::fmt::Debug for StreamMetrics {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let error = match self.error.as_ref(Ordering::Relaxed) {
             None => None,
-            Some(ErrorSource::Read(err)) => Some(err.to_string()),
-            Some(ErrorSource::Write(err)) => Some(err.to_string()),
+            Some(ErrorSource::Read(err)) | Some(ErrorSource::Write(err)) => Some(err.to_string()),
         };
         f.debug_struct("StreamMetrics")
             .field("total_bytes_read", &self.total_bytes_read)
@@ -121,8 +120,7 @@ impl StreamMetrics {
         let err = self.error.as_ref(Ordering::Relaxed);
         match err {
             None => None,
-            Some(ErrorSource::Read(err)) => Some(err),
-            Some(ErrorSource::Write(err)) => Some(err),
+            Some(ErrorSource::Read(err)) | Some(ErrorSource::Write(err)) => Some(err),
         }
     }
 

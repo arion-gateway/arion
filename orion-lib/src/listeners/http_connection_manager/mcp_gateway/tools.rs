@@ -556,7 +556,6 @@ fn convert_config_rbac_to_runtime(config_rbac: &McpToolRbac) -> ToolRbac {
                     "cty" | "content_type" => JwtHeaderField::ContentType,
                     "jku" | "json_key_url" => JwtHeaderField::JsonKeyURL,
                     "jwk" | "json_web_key" => JwtHeaderField::JsonWebKey,
-                    "kid" | "key_id" => JwtHeaderField::KeyID,
                     "x5u" | "x509_url" => JwtHeaderField::X509URL,
                     "x5c" | "x509_certificate_chain" => JwtHeaderField::X509CertificateChain,
                     "x5t" | "x509_certificate_sha1_thumbprint" => JwtHeaderField::X509CertificateSHA1Thumbprint,
@@ -568,7 +567,7 @@ fn convert_config_rbac_to_runtime(config_rbac: &McpToolRbac) -> ToolRbac {
                     "zip" => JwtHeaderField::Zip,
                     "url" => JwtHeaderField::Url,
                     "nonce" => JwtHeaderField::Nonce,
-                    _ => JwtHeaderField::KeyID, // default fallback
+                    "kid" | "key_id" | _ => JwtHeaderField::KeyID,
                 };
                 RbacPermission::JwtHeader(JwtHeaderMatcher { field: header_field, value: value.clone() })
             },
