@@ -407,6 +407,8 @@ impl Listener {
                                                         shard_id,
                                                         &[KeyValue::new("listener", listener_name)]
                                                     );
+
+                                                    ()
                                                 }
                                                 #[cfg(feature = "access-log")]
                                                 {
@@ -426,7 +428,7 @@ impl Listener {
                                                        upstream_peer_addr: None });
 
                                                    let messages = conn_formatters.into_iter().map(LogFormatter::into_message).collect::<Vec<_>>();
-                                                   log_access_blocking(Target::Listener(listener_name.into()), messages);
+                                                   log_access_blocking(Target::Listener(listener_name.into()), messages)
                                                }
                                             })
                                         };
@@ -434,7 +436,7 @@ impl Listener {
                                         let stream = InstrumentedStream::new(stream);
                                         #[cfg(any(feature = "access-log", feature = "metrics"))]
                                         {
-                                           stream.metrics().with_drop_fn(drop_cb);
+                                           stream.metrics().with_drop_fn(drop_cb)
                                         }
 
                                         with_metric!(listeners::DOWNSTREAM_CX_TOTAL, add, 1, shard_id,&[KeyValue::new("listener", listener_name)]);

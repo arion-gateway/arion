@@ -246,9 +246,7 @@ where
 
         // SAFETY: 3. Now that we know 'received' bytes are valid data,
         // we can safely update the Vec's length.
-        unsafe {
-            self.buffer.set_len(prev_size + received);
-        }
+        unsafe { self.buffer.set_len(prev_size + received) }
 
         Ok(())
     }

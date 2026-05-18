@@ -1762,7 +1762,7 @@ fn instrument_early_failure_response(
                         let duration = first_byte_instant.saturating_duration_since(trans_handler.start_instant);
                         #[allow(unused_variables)]
                         let tx_duration = Instant::now().saturating_duration_since(first_byte_instant);
-                        with_access_log!(&mut log_ctx.loggers, HttpResponseDurationContext { duration, tx_duration });
+                        with_access_log!(&mut log_ctx.loggers, HttpResponseDurationContext { duration, tx_duration })
                     }
 
                     if trans_handler.trans_phase.is_complete() {

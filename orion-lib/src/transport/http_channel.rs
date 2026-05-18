@@ -210,8 +210,8 @@ impl HttpChannelBuilder {
         #[cfg(feature = "metrics")]
         {
             let cluster_name = self.cluster_name.unwrap_or_default();
-            client_builder.pool_event_handler(EventHandler::new(update_upstream_stats, cluster_name));
-        }
+            client_builder.pool_event_handler(EventHandler::new(update_upstream_stats, cluster_name))
+        };
 
         client_builder
     }
@@ -769,7 +769,7 @@ impl HttpChannel {
                             shard_id,
                             &[KeyValue::new("cluster", self.cluster_name)]
                         );
-                    }
+                    };
                     return result;
                 }
                 retry_acquired = true;

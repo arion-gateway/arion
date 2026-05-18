@@ -336,19 +336,19 @@ mod test {
         // Increase load factor of item 0
         {
             let _load = [items[0].load_reference(), items[0].load_reference(), items[0].load_reference()];
-            expect_balancing(&mut balancer, 20, &[3, 6, 11]);
+            expect_balancing(&mut balancer, 20, &[3, 6, 11])
         }
 
         // Increase load factor of item 1
         {
             let _load = [items[1].load_reference(), items[1].load_reference(), items[1].load_reference()];
-            expect_balancing(&mut balancer, 20, &[5, 3, 12]);
+            expect_balancing(&mut balancer, 20, &[5, 3, 12])
         }
 
         // Increase load factor of item 2
         {
             let _load = [items[2].load_reference(), items[2].load_reference(), items[2].load_reference()];
-            expect_balancing(&mut balancer, 20, &[7, 6, 7]);
+            expect_balancing(&mut balancer, 20, &[7, 6, 7])
         }
     }
 }

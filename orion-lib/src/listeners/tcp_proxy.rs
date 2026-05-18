@@ -150,7 +150,7 @@ impl TcpProxy {
                         #[cfg(feature = "access-log")]
                         {
                             maybe_upstream_local_addr = channel.upstream_local_addr;
-                            maybe_upstream_peer_addr = channel.upstream_peer_addr;
+                            maybe_upstream_peer_addr = channel.upstream_peer_addr
                         }
 
                         let mut downstream = InstrumentedStream::new(stream);
@@ -164,7 +164,7 @@ impl TcpProxy {
                             bytes_received_down = downstream.metrics().bytes_read();
                             bytes_sent_down = downstream.metrics().bytes_written();
                             bytes_received_up = upstream.metrics().bytes_read();
-                            bytes_sent_up = upstream.metrics().bytes_written();
+                            bytes_sent_up = upstream.metrics().bytes_written()
                         }
 
                         #[cfg(feature = "access-log")]
@@ -296,8 +296,8 @@ impl TcpProxy {
                                     },
                                     cluster_name,
                                 }
-                            );
-                        }
+                            )
+                        };
 
                         Err(e)
                     },
@@ -324,8 +324,8 @@ impl TcpProxy {
                             },
                             cluster_name: &cluster_selector.name(),
                         }
-                    );
-                }
+                    )
+                };
 
                 Err(e)
             },
@@ -355,7 +355,7 @@ impl TcpProxy {
         {
             use crate::access_log::log_access_blocking;
             let messages = access_loggers.into_iter().map(LogFormatter::into_message).collect::<Vec<_>>();
-            log_access_blocking(Target::ListenerFilterChain(self.listener_name.into(), self.filterchain_id), messages);
+            log_access_blocking(Target::ListenerFilterChain(self.listener_name.into(), self.filterchain_id), messages)
         }
         res
     }
