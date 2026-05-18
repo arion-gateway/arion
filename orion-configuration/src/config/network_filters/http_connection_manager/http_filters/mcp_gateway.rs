@@ -49,7 +49,7 @@ pub enum UpstreamBackend {
         url: String,
         cache_duration: Option<Duration>,
     },
-    FunctionGraph {},
+    FunctionGraph,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
