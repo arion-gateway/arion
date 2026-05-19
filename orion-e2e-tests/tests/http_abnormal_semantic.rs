@@ -38,9 +38,9 @@ async fn setup() -> (OrionInstance, TestBackend, TcpTestClient, std::path::PathB
     (orion, backend, tcp_client, config_path)
 }
 
-fn cleanup(orion: OrionInstance, config_path: std::path::PathBuf) {
+fn cleanup(orion: OrionInstance, config_path: &std::path::Path) {
     orion.shutdown();
-    cleanup_config_file(&config_path);
+    cleanup_config_file(config_path);
 }
 
 #[tokio::test]
@@ -67,7 +67,7 @@ async fn test_tc1101_content_type_body_mismatch() {
     assert_eq!(captured.body_str(), Some("<root><item>test</item></root>"));
     assert_eq!(captured.header("content-type"), Some("application/json"));
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -101,7 +101,7 @@ async fn test_tc1102_expect_100_continue() {
     let final_resp = RawHttpResponse::parse(&final_response).expect("Expected final response");
     final_resp.assert_status(200);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -123,7 +123,7 @@ async fn test_tc1103_invalid_expect_value() {
     // Orion ignores unknown Expect values and forwards the request rather than returning 417.
     resp.assert_status(200);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -148,7 +148,7 @@ async fn test_tc1104_data_after_connection_close() {
     // This may fail (broken pipe) which is expected — the connection should be closed
     let _broken_pipe = client.send_bytes(&second_req).await;
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -167,7 +167,7 @@ async fn test_tc1105_upgrade_to_unknown_protocol() {
     // Orion refuses the upgrade to an unknown protocol with 403.
     resp.assert_status(403);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -185,5 +185,5 @@ async fn test_tc1106_http10_without_host() {
     // Orion returns 404 (no virtual host matches the empty authority) rather than 400.
     resp.assert_status(404);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }

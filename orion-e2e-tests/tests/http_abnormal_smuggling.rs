@@ -56,9 +56,9 @@ async fn setup_with_tcp_backend() -> (OrionInstance, TcpTestBackend, TcpTestClie
     (orion, backend, tcp_client, config_path)
 }
 
-fn cleanup(orion: OrionInstance, config_path: std::path::PathBuf) {
+fn cleanup(orion: OrionInstance, config_path: &std::path::Path) {
     orion.shutdown();
-    cleanup_config_file(&config_path);
+    cleanup_config_file(config_path);
 }
 
 #[tokio::test]
@@ -95,7 +95,7 @@ async fn test_tc0701_cl_te_smuggling() {
         assert!(!received.contains("/smuggled"), "Backend received smuggled request! Data: {received}");
     }
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -132,7 +132,7 @@ async fn test_tc0702_te_cl_smuggling() {
         assert!(!received.contains("/smuggled"), "Backend received smuggled request! Data: {received}");
     }
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -152,7 +152,7 @@ async fn test_tc0703_te_obfuscation() {
     // Orion trims whitespace around the TE value and treats it as chunked (correct per RFC 7230 §3.2.3).
     resp.assert_status(200);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -171,5 +171,5 @@ async fn test_tc0704_te_case_obfuscation() {
     // RFC 7230 §3.2 requires case-insensitive field-value parsing; Orion accepts "ChUnKeD".
     resp.assert_status(200);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }

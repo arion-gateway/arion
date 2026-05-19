@@ -39,9 +39,9 @@ async fn setup() -> (OrionInstance, TestBackend, TcpTestClient, std::path::PathB
     (orion, backend, tcp_client, config_path)
 }
 
-fn cleanup(orion: OrionInstance, config_path: std::path::PathBuf) {
+fn cleanup(orion: OrionInstance, config_path: &std::path::Path) {
     orion.shutdown();
-    cleanup_config_file(&config_path);
+    cleanup_config_file(config_path);
 }
 
 #[tokio::test]
@@ -65,7 +65,7 @@ async fn test_tc1001_truncated_request_line() {
     let resp = http_client.get("/health-check").await.expect("Proxy should still be healthy");
     assert!(resp.status == http::StatusCode::OK || resp.status == http::StatusCode::NOT_FOUND);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -83,7 +83,7 @@ async fn test_tc1002_truncated_header() {
     let response = client.read_response(Duration::from_secs(5)).await.expect("Failed to read");
     assert_rejected(&response, &[400, 408]);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -99,13 +99,14 @@ async fn test_tc1003_slowloris() {
     let chunks: Vec<&[u8]> = request_line.iter().map(std::slice::from_ref).collect();
 
     // Send with 500ms delay between bytes (not full 1s to keep test reasonable)
-    client.send_bytes_with_delay(&chunks[..10], Duration::from_millis(500)).await.expect("Failed to send slow bytes");
+    let first_ten = chunks.get(..10).expect("request_line has at least 10 bytes");
+    client.send_bytes_with_delay(first_ten, Duration::from_millis(500)).await.expect("Failed to send slow bytes");
 
     // The proxy should eventually time out this connection.
     let response = client.read_response(Duration::from_secs(10)).await.expect("Failed to read");
     assert_rejected(&response, &[400, 408, 504]);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -121,7 +122,7 @@ async fn test_tc1004_no_data_after_connect() {
     // Response may be empty (connection closed) or an error
     assert_rejected(&response, &[400, 408]);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -178,7 +179,7 @@ async fn test_tc1006_tls_on_plaintext_port() {
     // HTTP parser should reject this as invalid HTTP
     assert_rejected(&response, &[400]);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -200,7 +201,7 @@ async fn test_tc1007_http_pipelining() {
     let resp = RawHttpResponse::parse(&response).expect("Expected at least one response");
     resp.assert_status(200);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -221,5 +222,5 @@ async fn test_tc1008_keep_alive_limit() {
     let resp = RawHttpResponse::parse(&response).expect("Expected at least one response");
     resp.assert_status(200);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
