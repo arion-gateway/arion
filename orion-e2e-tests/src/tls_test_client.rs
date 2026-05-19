@@ -177,7 +177,7 @@ pub struct TlsTestClient {
 }
 
 impl TlsTestClient {
-    pub fn new(addr: SocketAddr, server_name: impl Into<String>, config: TlsClientConfig) -> Result<Self> {
+    pub fn new(addr: SocketAddr, server_name: impl Into<String>, config: &TlsClientConfig) -> Result<Self> {
         let server_name_str = server_name.into();
         let server_name = ServerName::try_from(server_name_str.clone())
             .map_err(|_e| Error::Config(format!("Invalid server name: {server_name_str}")))?
@@ -406,7 +406,7 @@ impl TlsTestClientBuilder {
         config.tls_min_version = self.tls_min_version;
         config.tls_max_version = self.tls_max_version;
 
-        let mut client = TlsTestClient::new(self.addr, server_name, config)?;
+        let mut client = TlsTestClient::new(self.addr, server_name, &config)?;
         client.timeout = self.timeout;
         client.default_headers = self.default_headers;
 
