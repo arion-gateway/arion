@@ -305,7 +305,7 @@ impl TestBackend {
             }
             match fast_timeout(remaining, self.request_rx.recv()).await {
                 Ok(Some(req)) if req.path() == path => return Ok(req),
-                Ok(Some(_)) => continue, // Discard non-matching request
+                Ok(Some(_)) => {},
                 Ok(None) | Err(_) => return Err(Error::NoRequestReceived(timeout)),
             }
         }
@@ -321,7 +321,7 @@ impl TestBackend {
             }
             match fast_timeout(remaining, self.request_rx.recv()).await {
                 Ok(Some(req)) if req.path() == path => received += 1,
-                Ok(Some(_)) => continue,
+                Ok(Some(_)) => {},
                 Ok(None) | Err(_) => return Err(Error::NoRequestReceived(timeout)),
             }
         }

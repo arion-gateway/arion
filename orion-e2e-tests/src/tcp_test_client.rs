@@ -61,9 +61,8 @@ impl TcpTestClient {
         })
         .await
         {
-            Ok(Ok(())) => {},
+            Ok(Ok(())) | Err(_) => {},
             Ok(Err(e)) => return Err(e.into()),
-            Err(_) => {},
         }
 
         Ok(response)

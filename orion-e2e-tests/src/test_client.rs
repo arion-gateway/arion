@@ -155,6 +155,7 @@ impl TestClient {
         let body = if body.is_empty() {
             http_body_util::Either::Right(Full::new(Bytes::new()))
         } else if body.len() > 1 {
+            #[allow(clippy::unnecessary_wraps, reason = "StreamBody requires Result items")]
             fn frame_mapper(chunk: Bytes) -> std::result::Result<Frame<Bytes>, Infallible> {
                 Ok(Frame::data(chunk))
             }

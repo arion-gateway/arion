@@ -469,7 +469,6 @@ async fn test_listener_local_rate_limit_statistical_multi_runtime() {
     let mut tasks = vec![];
 
     for _ in 0..num_concurrent_attempts {
-        let addr = addr;
         let task = tokio::spawn(async move {
             let client = TestClient::new(addr);
             match client.get("/test").await {
@@ -541,7 +540,6 @@ async fn test_hcm_rate_limit_aggregate_over_time() {
     let mut tasks = vec![];
 
     for _ in 0..num_burst_clients {
-        let addr = addr;
         let task = tokio::spawn(async move {
             let client = TestClient::new(addr);
             let mut successful = 0;
@@ -576,7 +574,6 @@ async fn test_hcm_rate_limit_aggregate_over_time() {
 
     let mut tasks = vec![];
     for _ in 0..200 {
-        let addr = addr;
         let task = tokio::spawn(async move {
             let client = TestClient::new(addr);
             let mut successful = 0;

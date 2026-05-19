@@ -61,9 +61,7 @@ impl PortBlock {
                     tracing::debug!(block_id, start_port, "Reserved port block");
                     return Ok(Self { block_id, start_port, next_offset: AtomicU16::new(0), lock_file: lock_path });
                 },
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    continue;
-                },
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {},
                 Err(e) => {
                     return Err(Error::PortAllocationFailed(format!("Lock file error: {e}")));
                 },

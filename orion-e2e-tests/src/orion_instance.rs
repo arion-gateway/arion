@@ -73,6 +73,7 @@ impl OrionInstance {
         listener_name: impl Into<String>,
         options: SpawnOptions,
     ) -> Result<Self> {
+        const MAX_CAPTURED_LINES: usize = 75;
         let listener_name = listener_name.into();
         let config_path = config_path.as_ref().to_path_buf();
         let shutdown_requested = Arc::new(AtomicBool::new(false));
@@ -110,7 +111,6 @@ impl OrionInstance {
         let verbose = options.verbose_output;
         let name_for_parser = listener_name.clone();
 
-        const MAX_CAPTURED_LINES: usize = 75;
         let captured_lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::with_capacity(MAX_CAPTURED_LINES)));
 
         let stderr_lines = Arc::clone(&captured_lines);
@@ -213,6 +213,7 @@ impl OrionInstance {
         port: u16,
         options: SpawnOptions,
     ) -> Result<Self> {
+        const MAX_CAPTURED_LINES: usize = 75;
         let listener_name = listener_name.into();
         let config_path = config_path.as_ref().to_path_buf();
         let shutdown_requested = Arc::new(AtomicBool::new(false));
@@ -251,7 +252,6 @@ impl OrionInstance {
         let name_for_parser = listener_name.clone();
         let expected_port = port;
 
-        const MAX_CAPTURED_LINES: usize = 75;
         let captured_lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::with_capacity(MAX_CAPTURED_LINES)));
 
         let stderr_lines = Arc::clone(&captured_lines);

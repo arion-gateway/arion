@@ -31,10 +31,8 @@ const ALIVE_CHECK_TIMEOUT: Duration = Duration::from_millis(200);
 async fn connection_is_alive(stream: &mut TcpStream) -> bool {
     let mut buf = [0u8; 1];
     match fast_timeout(ALIVE_CHECK_TIMEOUT, stream.read(&mut buf)).await {
-        Err(_timeout) => true,
-        Ok(Ok(0)) => false,
-        Ok(Ok(_)) => true,
-        Ok(Err(_)) => false,
+        Ok(Ok(0)) | Ok(Err(_)) => false,
+        Ok(Ok(_)) | Err(_) => true,
     }
 }
 
