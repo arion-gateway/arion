@@ -30,7 +30,7 @@ pub type LocalRateLimit = EnvoyLocalRateLimit;
 pub type UserRateLimiter = OrionUserRateLimiter;
 pub type TokenBucket = EnvoyTokenBucket;
 
-/// Builder for TokenBucket configuration
+/// Builder for `TokenBucket` configuration
 #[derive(Debug, Clone)]
 pub struct TokenBucketBuilder {
     max_tokens: u32,
@@ -67,6 +67,7 @@ impl TokenBucketBuilder {
         EnvoyTokenBucket {
             max_tokens: self.max_tokens,
             tokens_per_fill: Some(UInt32Value { value: self.tokens_per_fill }),
+            #[allow(clippy::cast_possible_wrap, reason = "fill_interval_secs is a config value that fits i64")]
             fill_interval: Some(ProtoDuration { seconds: self.fill_interval_secs as i64, nanos: 0 }),
         }
     }
@@ -78,7 +79,7 @@ impl From<TokenBucketBuilder> for EnvoyTokenBucket {
     }
 }
 
-/// Builder for LocalRateLimit configuration (HCM-level or per-route)
+/// Builder for `LocalRateLimit` configuration (HCM-level or per-route)
 #[derive(Debug, Clone)]
 pub struct LocalRateLimitBuilder {
     proto: EnvoyLocalRateLimit,
@@ -89,7 +90,7 @@ impl LocalRateLimitBuilder {
     pub fn new() -> Self {
         Self {
             proto: EnvoyLocalRateLimit {
-                stat_prefix: "http_local_rate_limiter".to_string(),
+                stat_prefix: "http_local_rate_limiter".to_owned(),
                 status: None,
                 token_bucket: None,
                 filter_enabled: None,
@@ -118,8 +119,9 @@ impl LocalRateLimitBuilder {
 
     #[must_use]
     pub fn status_code(mut self, code: u32) -> Self {
-        self.proto.status =
-            Some(orion_data_plane_api::envoy_data_plane_api::envoy::r#type::v3::HttpStatus { code: code as i32 });
+        #[allow(clippy::cast_possible_wrap, reason = "HTTP status codes 100-599 always fit in i32")]
+        let code = code as i32;
+        self.proto.status = Some(orion_data_plane_api::envoy_data_plane_api::envoy::r#type::v3::HttpStatus { code });
         self
     }
 
@@ -148,7 +150,7 @@ impl From<LocalRateLimitBuilder> for EnvoyLocalRateLimit {
     }
 }
 
-/// Builder for UserRateLimiter configuration
+/// Builder for `UserRateLimiter` configuration
 #[derive(Debug, Clone)]
 pub struct UserRateLimiterBuilder {
     stat_prefix: String,
@@ -161,8 +163,8 @@ impl UserRateLimiterBuilder {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            stat_prefix: "user_rate_limiter".to_string(),
-            user_id_header: "x-user-id".to_string(),
+            stat_prefix: "user_rate_limiter".to_owned(),
+            user_id_header: "x-user-id".to_owned(),
             status_code: 429,
             user_rate_limits: Vec::new(),
         }
@@ -196,7 +198,7 @@ impl UserRateLimiterBuilder {
     ) -> Self {
         let token_bucket = TokenBucketBuilder::new(max_tokens, tokens_per_fill, fill_interval_secs).build();
         let local_rate_limit = UserLocalRateLimit {
-            stat_prefix: "user_rate_limit".to_string(),
+            stat_prefix: "user_rate_limit".to_owned(),
             status: None,
             token_bucket: Some(token_bucket),
             filter_enabled: None,
@@ -215,7 +217,7 @@ impl UserRateLimiterBuilder {
             rate_limits: Vec::new(),
         };
         let limit = UserLimit::LocalRateLimit(local_rate_limit);
-        self.user_rate_limits.push(UserRateLimitEntry { user_id: user.map(|u| u.into()), limit: Some(limit) });
+        self.user_rate_limits.push(UserRateLimitEntry { user_id: user.map(Into::into), limit: Some(limit) });
         self
     }
 
@@ -227,7 +229,7 @@ impl UserRateLimiterBuilder {
         rate_per_sec: u32,
     ) -> Self {
         let limit = UserLimit::SimpleRateLimit(SimpleRateLimit { max_tokens, rate: rate_per_sec });
-        self.user_rate_limits.push(UserRateLimitEntry { user_id: user.map(|u| u.into()), limit: Some(limit) });
+        self.user_rate_limits.push(UserRateLimitEntry { user_id: user.map(Into::into), limit: Some(limit) });
         self
     }
 
@@ -236,6 +238,7 @@ impl UserRateLimiterBuilder {
         OrionUserRateLimiter {
             stat_prefix: self.stat_prefix,
             user_id_header_name: self.user_id_header,
+            #[allow(clippy::cast_possible_wrap, reason = "HTTP status codes 100-599 always fit in i32")]
             status: Some(orion_data_plane_api::envoy_data_plane_api::envoy::r#type::v3::HttpStatus {
                 code: self.status_code as i32,
             }),

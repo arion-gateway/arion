@@ -18,7 +18,7 @@ use orion_configuration::config::network_filters::http_connection_manager::http_
 use rmcp::{
     model::{
         CallToolRequestParams, CallToolResult, ClientCapabilities, ClientInfo, Content, Implementation,
-        InitializeRequestParams, JsonRpcNotification, RawContent, RawTextContent, ServerNotification,
+        InitializeRequestParams, JsonRpcNotification, ProtocolVersion, RawContent, RawTextContent, ServerNotification,
         ToolListChangedNotification,
     },
     service::ClientInitializeError,
@@ -71,6 +71,7 @@ pub struct ToolEntry {
 }
 
 #[derive(Debug, thiserror::Error)]
+#[allow(clippy::large_enum_variant)]
 pub enum CallToolError {
     #[error("'name' parameter is missing or not a string")]
     NameNotString,
@@ -95,6 +96,7 @@ pub enum CallToolError {
 }
 
 #[derive(Debug, thiserror::Error)]
+#[allow(clippy::large_enum_variant)]
 pub enum ListToolsError {
     #[error("Unsupported transport")]
     UnsupportedTransport,
@@ -115,6 +117,7 @@ pub enum ToolBuilderError {
 }
 
 impl ToolEntry {
+    #[allow(clippy::result_large_err)]
     fn validate_json_against_schema(
         validator: Option<&jsonschema::Validator>,
         arguments: &Value,
@@ -128,11 +131,13 @@ impl ToolEntry {
     }
 
     #[inline]
+    #[allow(clippy::result_large_err)]
     pub fn validate_against_input_schema(&self, arguments: &Value) -> Result<(), CallToolError> {
         Self::validate_json_against_schema(self.input_schema_validator.as_ref(), arguments)
     }
 
     #[inline]
+    #[allow(clippy::result_large_err)]
     pub fn validate_against_output_schema(&self, arguments: &Value) -> Result<(), CallToolError> {
         Self::validate_json_against_schema(self.output_schema_validator.as_ref(), arguments)
     }
@@ -144,21 +149,21 @@ impl ToolsRegistry {
             .into_iter()
             .map(|tool_conf| -> Result<ToolEntry, ToolBuilderError> {
                 let rbac = tool_conf.rbac.as_ref().map(convert_config_rbac_to_runtime);
-                let input_schema_validator = if !tool_conf.input_schema.is_empty() {
+                let input_schema_validator = if tool_conf.input_schema.is_empty() {
+                    None
+                } else {
                     Some(
                         Validator::new(&Value::Object(tool_conf.input_schema.clone()))
                             .map_err(|e| ToolBuilderError::InvalidInputSchema(e.to_string()))?,
                     )
-                } else {
-                    None
                 };
-                let output_schema_validator = if !tool_conf.output_schema.is_empty() {
+                let output_schema_validator = if tool_conf.output_schema.is_empty() {
+                    None
+                } else {
                     Some(
                         Validator::new(&Value::Object(tool_conf.output_schema.clone()))
                             .map_err(|e| ToolBuilderError::InvalidOutputSchema(e.to_string()))?,
                     )
-                } else {
-                    None
                 };
                 let transcoder = match &tool_conf.backend {
                     UpstreamBackend::Rest { method, path, query_params, body_template, .. } => {
@@ -174,7 +179,7 @@ impl ToolsRegistry {
                             template_engine,
                         })
                     },
-                    UpstreamBackend::FunctionGraph { .. } => TranscoderType::FunctionGraph(FunctionGraphTranscoder {}),
+                    UpstreamBackend::FunctionGraph => TranscoderType::FunctionGraph(FunctionGraphTranscoder {}),
                     UpstreamBackend::McpServer { .. } => TranscoderType::NoTranscoder,
                 };
                 Ok(ToolEntry { conf: tool_conf, transcoder, rbac, input_schema_validator, output_schema_validator })
@@ -192,7 +197,7 @@ impl ToolsRegistry {
     pub async fn build_list_tools(
         &self,
         req_ext: &http::Extensions,
-        session: &Option<Arc<Session>>,
+        session: Option<&Arc<Session>>,
     ) -> ListToolsResult {
         let mut tools = Vec::with_capacity(self.registry.len() + 1);
         if self.dynamic_tool_discovery {
@@ -234,7 +239,7 @@ impl ToolsRegistry {
         words.iter().any(|word| description.contains(word))
     }
 
-    async fn fill_list_tools(&self, req_ext: &http::Extensions, session: &Option<Arc<Session>>, tools: &mut Vec<Tool>) {
+    async fn fill_list_tools(&self, req_ext: &http::Extensions, session: Option<&Arc<Session>>, tools: &mut Vec<Tool>) {
         let Some(session) = session.as_ref() else {
             debug!(target: "mcp_gateway", "build_list_tool_apis without session!");
             return;
@@ -245,14 +250,14 @@ impl ToolsRegistry {
 
         let prompt_words: Option<Vec<String>> = {
             let prompt_guard = session.prompt.lock();
-            prompt_guard.as_ref().map(|p| p.split_whitespace().map(|w| w.to_lowercase()).collect())
+            prompt_guard.as_ref().map(|p| p.split_whitespace().map(str::to_lowercase).collect())
         };
 
         // populate the list of active tools as well as the list of tools to return...
         for entry in self
             .registry
             .iter()
-            .filter(|entry| entry.rbac.as_ref().map_or(true, |rbac| rbac.is_permitted(req_ext)))
+            .filter(|entry| entry.rbac.as_ref().is_none_or(|rbac| rbac.is_permitted(req_ext)))
             .filter(|entry| Self::filter_tool_by_vector_similarity(entry, prompt_words.as_deref()))
         {
             match &entry.conf.backend {
@@ -281,10 +286,10 @@ impl ToolsRegistry {
                         }
                     }
 
-                    match self.get_list_tools_from_upstream(&transport, &url, &entry.conf.name).await {
+                    match self.get_list_tools_from_upstream(transport, url, &entry.conf.name).await {
                         Ok(up_tools) => {
                             if let Some(expiration) =
-                                cache_duration.as_ref().and_then(|d| std::time::Instant::now().checked_add(d.clone()))
+                                cache_duration.as_ref().and_then(|d| std::time::Instant::now().checked_add(*d))
                             {
                                 self.cache.insert(
                                     entry.conf.name.to_smolstr(),
@@ -293,9 +298,9 @@ impl ToolsRegistry {
                             }
 
                             if self.dynamic_tool_discovery {
-                                up_tools.iter().for_each(|t| {
+                                for t in &up_tools {
                                     session.active_tools.insert(t.name.to_smolstr());
-                                });
+                                }
                             }
                             tools.extend(up_tools);
                         },
@@ -304,7 +309,7 @@ impl ToolsRegistry {
                         },
                     }
                 },
-                UpstreamBackend::FunctionGraph {} => todo!(),
+                UpstreamBackend::FunctionGraph => todo!(),
             }
         }
     }
@@ -330,7 +335,7 @@ impl ToolsRegistry {
         let client = Self::get_mcp_client(url).await?;
 
         // List tools
-        let mut tools = client.list_tools(Default::default()).await?;
+        let mut tools = client.list_tools(Option::default()).await?;
 
         for tool in &mut tools.tools {
             tool.name = Cow::Owned(format!("{namespace}__{}", tool.name));
@@ -346,12 +351,12 @@ impl ToolsRegistry {
         let transport = StreamableHttpClientTransport::from_uri(url);
         let client_info = ClientInfo {
             meta: None,
-            protocol_version: Default::default(),
+            protocol_version: ProtocolVersion::default(),
             capabilities: ClientCapabilities::default(),
             client_info: Implementation {
                 name: DEFAULT_USER_AGENT.into(),
                 title: None,
-                version: "0.0.1".to_string(),
+                version: "0.0.1".to_owned(),
                 website_url: None,
                 icons: None,
                 description: None,
@@ -362,13 +367,15 @@ impl ToolsRegistry {
         })
     }
 
-    pub async fn call_dynamic_tool_discovery(
+    #[allow(clippy::unused_self)]
+    #[allow(clippy::result_large_err)]
+    pub fn call_dynamic_tool_discovery(
         &self,
         rpc: &model::JsonRpcRequest,
         session: &Session,
     ) -> Result<MessageResult, CallToolError> {
         let arguments = match &rpc.request.params.get("arguments") {
-            Some(&serde_json::Value::Object(ref o)) => o.clone(),
+            Some(serde_json::Value::Object(o)) => o.clone(),
             _ => {
                 return Err(CallToolError::ValidationError("call_dynamic_tool_discovery: missing arguments".into()));
             },
@@ -394,7 +401,7 @@ impl ToolsRegistry {
         drop(session_prompt);
 
         let text_content = RawTextContent {
-            text: "Context acquired. Relevant APIs loaded. The tool list has been updated, please proceed with the new tools.".to_string(),
+            text: "Context acquired. Relevant APIs loaded. The tool list has been updated, please proceed with the new tools.".to_owned(),
             meta: None
         };
 
@@ -415,12 +422,13 @@ impl ToolsRegistry {
         Ok(MessageResult::JsonRpcNotificationResponse(json_rpc_notification, json_rpc_response))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn call(
         &self,
         req_ext: &http::Extensions,
         req_headers: &http::HeaderMap,
         rpc: &model::JsonRpcRequest,
-        cluster_header: &Option<ClusterHeader>,
+        cluster_header: Option<&ClusterHeader>,
         session: &Session,
     ) -> Result<MessageResult, CallToolError> {
         // get tool name, and in case of upstream MCP, sub-tool name as well...
@@ -436,7 +444,7 @@ impl ToolsRegistry {
         debug!(target: "mcp_gateway", "call: method:{} tool {tool_sub_name}@{tool_name}", rpc.request.method);
 
         if self.dynamic_tool_discovery && tool_name == DYNAMIC_TOOL_DISCOVERY {
-            return self.call_dynamic_tool_discovery(rpc, session).await;
+            return self.call_dynamic_tool_discovery(rpc, session);
         }
 
         let (index, entry) = self
@@ -445,11 +453,11 @@ impl ToolsRegistry {
             .enumerate()
             .find(|(_, e)| e.conf.name == tool_name)
             .filter(|(_, e)| !self.dynamic_tool_discovery || session.active_tools.contains(&e.conf.name))
-            .ok_or_else(|| CallToolError::ToolNotFound(tool_name.to_string()))?;
+            .ok_or_else(|| CallToolError::ToolNotFound(tool_name.to_owned()))?;
 
         if let Some(rbac) = &entry.rbac {
             if !rbac.is_permitted(req_ext) {
-                return Err(CallToolError::RbacDenied(tool_name.to_string()));
+                return Err(CallToolError::RbacDenied(tool_name.to_owned()));
             }
         }
 
@@ -464,16 +472,13 @@ impl ToolsRegistry {
         }
 
         match (&entry.conf.backend, &entry.transcoder) {
-            (
-                UpstreamBackend::Rest { method: _, path: _, query_params: _, cluster, r#async, body_template: _ },
-                TranscoderType::Rest(transcoder),
-            ) => {
+            (UpstreamBackend::Rest { cluster, r#async, .. }, TranscoderType::Rest(transcoder)) => {
                 let mut upstream_request = transcoder.encode(req_headers, &rpc.request).map_err(|e| {
                     CallToolError::TranscoderError { tool: tool_name.to_owned(), reason: e.to_string() }
                 })?;
                 if let Some(cluster_header) = cluster_header {
                     let headers = upstream_request.headers_mut();
-                    headers.append(cluster_header.0.clone(), HeaderValue::from_str(&cluster)?);
+                    headers.append(cluster_header.0.clone(), HeaderValue::from_str(cluster)?);
                 }
                 Ok(MessageResult::UpstreamRequest((upstream_request, *r#async, ToolRegistryIndex(index))))
             },
@@ -487,7 +492,7 @@ impl ToolsRegistry {
                 };
 
                 let arguments = match &rpc.request.params.get("arguments") {
-                    Some(&serde_json::Value::Object(ref o)) => Some(o.clone()),
+                    Some(serde_json::Value::Object(o)) => Some(o.clone()),
                     _ => None,
                 };
 
@@ -511,7 +516,7 @@ impl ToolsRegistry {
                                 session.mcp_upstreams.remove(url);
                             },
                             _ => (),
-                        };
+                        }
                         return Err(err.into());
                     },
                 };
@@ -528,8 +533,8 @@ impl ToolsRegistry {
 
                 Ok(MessageResult::JsonRpcResponse(json_rcp_response))
             },
-            (UpstreamBackend::FunctionGraph {}, TranscoderType::FunctionGraph(_)) => {
-                return Err(CallToolError::FunctionGraphNotImplemented);
+            (UpstreamBackend::FunctionGraph, TranscoderType::FunctionGraph(_)) => {
+                Err(CallToolError::FunctionGraphNotImplemented)
             },
             _ => unreachable!(),
         }
@@ -552,13 +557,13 @@ fn convert_config_rbac_to_runtime(config_rbac: &McpToolRbac) -> ToolRbac {
         .iter()
         .map(|p| match p {
             McpRbacPermission::JwtHeader { field, value } => {
+                #[allow(clippy::wildcard_in_or_patterns)]
                 let header_field = match field.as_str() {
                     "alg" | "algorithm" => JwtHeaderField::Algorithm,
                     "typ" | "type" => JwtHeaderField::Type,
                     "cty" | "content_type" => JwtHeaderField::ContentType,
                     "jku" | "json_key_url" => JwtHeaderField::JsonKeyURL,
                     "jwk" | "json_web_key" => JwtHeaderField::JsonWebKey,
-                    "kid" | "key_id" => JwtHeaderField::KeyID,
                     "x5u" | "x509_url" => JwtHeaderField::X509URL,
                     "x5c" | "x509_certificate_chain" => JwtHeaderField::X509CertificateChain,
                     "x5t" | "x509_certificate_sha1_thumbprint" => JwtHeaderField::X509CertificateSHA1Thumbprint,
@@ -570,7 +575,7 @@ fn convert_config_rbac_to_runtime(config_rbac: &McpToolRbac) -> ToolRbac {
                     "zip" => JwtHeaderField::Zip,
                     "url" => JwtHeaderField::Url,
                     "nonce" => JwtHeaderField::Nonce,
-                    _ => JwtHeaderField::KeyID, // default fallback
+                    "kid" | "key_id" | _ => JwtHeaderField::KeyID,
                 };
                 RbacPermission::JwtHeader(JwtHeaderMatcher { field: header_field, value: value.clone() })
             },
@@ -582,7 +587,7 @@ fn convert_config_rbac_to_runtime(config_rbac: &McpToolRbac) -> ToolRbac {
                     "exp" | "expiration" => JwtClaimField::Expiration,
                     "iat" | "issued_at" => JwtClaimField::IssuedAt,
                     "nbf" | "not_before" => JwtClaimField::NotBefore,
-                    "jti" | "jwt_id" => JwtClaimField::JWTID,
+                    "jti" | "jwt_id" => JwtClaimField::JwtID,
                     custom => JwtClaimField::Extra(custom.into()),
                 };
                 RbacPermission::JwtClaim(JwtPayloadMatcher { field: claim_field, value: value.clone() })
@@ -640,7 +645,7 @@ mod tests {
             "age": 25
         });
 
-        assert!(tool_entry.validate_against_input_schema(&args).is_ok());
+        tool_entry.validate_against_input_schema(&args).unwrap();
     }
 
     #[test]
@@ -663,7 +668,7 @@ mod tests {
         let result = tool_entry.validate_against_input_schema(&args);
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("username"), "Error should mention missing field: {}", err_msg);
+        assert!(err_msg.contains("username"), "Error should mention missing field: {err_msg}");
     }
 
     #[test]
@@ -687,7 +692,7 @@ mod tests {
         let result = tool_entry.validate_against_input_schema(&args);
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("number"), "Error should mention type mismatch: {}", err_msg);
+        assert!(err_msg.contains("number"), "Error should mention type mismatch: {err_msg}");
     }
 
     #[test]
@@ -702,7 +707,7 @@ mod tests {
             "count": 123
         });
 
-        assert!(tool_entry.validate_against_input_schema(&args).is_ok());
+        tool_entry.validate_against_input_schema(&args).unwrap();
     }
 
     #[test]
@@ -726,7 +731,7 @@ mod tests {
             "unit": "F"
         });
 
-        assert!(tool_entry.validate_against_output_schema(&response).is_ok());
+        tool_entry.validate_against_output_schema(&response).unwrap();
     }
 
     #[test]
@@ -766,7 +771,7 @@ mod tests {
             }
         });
 
-        assert!(tool_entry.validate_against_output_schema(&response).is_ok());
+        tool_entry.validate_against_output_schema(&response).unwrap();
     }
 
     #[test]
@@ -825,7 +830,7 @@ mod tests {
                 "age": 30
             }
         });
-        assert!(tool_entry.validate_against_input_schema(&valid_args).is_ok());
+        tool_entry.validate_against_input_schema(&valid_args).unwrap();
 
         // Invalid - missing required nested field
         let invalid_args = json!({
@@ -857,7 +862,7 @@ mod tests {
         let valid_args = json!({
             "tags": ["rust", "mcp", "api"]
         });
-        assert!(tool_entry.validate_against_input_schema(&valid_args).is_ok());
+        tool_entry.validate_against_input_schema(&valid_args).unwrap();
 
         // Invalid - wrong item type
         let invalid_args = json!({

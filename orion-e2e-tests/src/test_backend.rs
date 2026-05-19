@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use pingora::prelude::fast_timeout::fast_timeout;
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -75,7 +76,7 @@ impl Default for PreConfiguredResponse {
     fn default() -> Self {
         Self {
             status: StatusCode::OK,
-            headers: vec![("content-type".to_string(), "text/plain".to_string())],
+            headers: vec![("content-type".to_owned(), "text/plain".to_owned())],
             body: Bytes::from_static(b"OK"),
             delay: None,
         }
@@ -128,20 +129,20 @@ impl TestBackend {
 
     pub async fn start_with_capacity(channel_capacity: usize) -> Result<Self> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
-        Self::start_with_listener_and_capacity(listener, channel_capacity).await
+        Self::start_with_listener_and_capacity(listener, channel_capacity)
     }
 
     pub async fn start_on_port(port: u16) -> Result<Self> {
         let addr = SocketAddr::from(([127, 0, 0, 1], port));
         let listener = TcpListener::bind(addr).await?;
-        Self::start_with_listener_and_capacity(listener, DEFAULT_CHANNEL_CAPACITY).await
+        Self::start_with_listener_and_capacity(listener, DEFAULT_CHANNEL_CAPACITY)
     }
 
-    pub async fn start_with_listener(listener: TcpListener) -> Result<Self> {
-        Self::start_with_listener_and_capacity(listener, DEFAULT_CHANNEL_CAPACITY).await
+    pub fn start_with_listener(listener: TcpListener) -> Result<Self> {
+        Self::start_with_listener_and_capacity(listener, DEFAULT_CHANNEL_CAPACITY)
     }
 
-    pub async fn start_with_listener_and_capacity(listener: TcpListener, channel_capacity: usize) -> Result<Self> {
+    pub fn start_with_listener_and_capacity(listener: TcpListener, channel_capacity: usize) -> Result<Self> {
         let addr = listener.local_addr()?;
 
         info!(?addr, "Starting test backend server");
@@ -285,7 +286,7 @@ impl TestBackend {
 
     #[allow(clippy::disallowed_methods)]
     pub async fn await_request_with_timeout(&mut self, timeout: Duration) -> Result<CapturedRequest> {
-        match tokio::time::timeout(timeout, self.request_rx.recv()).await {
+        match fast_timeout(timeout, self.request_rx.recv()).await {
             Ok(Some(req)) => Ok(req),
             Ok(None) | Err(_) => Err(Error::NoRequestReceived(timeout)),
         }
@@ -302,9 +303,9 @@ impl TestBackend {
             if remaining.is_zero() {
                 return Err(Error::NoRequestReceived(timeout));
             }
-            match tokio::time::timeout(remaining, self.request_rx.recv()).await {
+            match fast_timeout(remaining, self.request_rx.recv()).await {
                 Ok(Some(req)) if req.path() == path => return Ok(req),
-                Ok(Some(_)) => continue, // Discard non-matching request
+                Ok(Some(_)) => {},
                 Ok(None) | Err(_) => return Err(Error::NoRequestReceived(timeout)),
             }
         }
@@ -318,9 +319,9 @@ impl TestBackend {
             if remaining.is_zero() {
                 return Err(Error::NoRequestReceived(timeout));
             }
-            match tokio::time::timeout(remaining, self.request_rx.recv()).await {
+            match fast_timeout(remaining, self.request_rx.recv()).await {
                 Ok(Some(req)) if req.path() == path => received += 1,
-                Ok(Some(_)) => continue,
+                Ok(Some(_)) => {},
                 Ok(None) | Err(_) => return Err(Error::NoRequestReceived(timeout)),
             }
         }
@@ -329,7 +330,7 @@ impl TestBackend {
 
     pub fn drain_requests_for_path(&mut self, path: &str) -> usize {
         let mut count = 0;
-        while let Some(req) = self.request_rx.try_recv().ok() {
+        while let Ok(req) = self.request_rx.try_recv() {
             if req.path() == path {
                 count += 1;
             }

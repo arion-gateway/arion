@@ -71,7 +71,7 @@ impl AccessLogger {
                                 let handler = LogWriter::new(
                                     self.id,
                                     conf,
-                                    self.frequency.clone(),
+                                    self.frequency,
                                     self.max_file_size,
                                     self.max_log_files,
                                 );

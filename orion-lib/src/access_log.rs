@@ -67,8 +67,8 @@ pub enum Target {
 impl From<AccessLogTarget> for Target {
     fn from(value: AccessLogTarget) -> Self {
         match value {
-            AccessLogTarget::Listener(name) => Target::Listener(name.into()),
-            AccessLogTarget::ListenerFilterChain(name, hash) => Target::ListenerFilterChain(name.into(), hash),
+            AccessLogTarget::Listener(name) => Target::Listener(name),
+            AccessLogTarget::ListenerFilterChain(name, hash) => Target::ListenerFilterChain(name, hash),
             AccessLogTarget::Admin => Target::Admin,
         }
     }
@@ -128,10 +128,8 @@ pub async fn log_access(target: Target, vec: Vec<FormattedMessage>) {
             if let Err(e) = sender.send(AccessLogMessage::Message(target, vec)).await {
                 error!("Failed to send access log message: {e}");
             }
-        } else {
-            if let Err(e) = sender.try_send(AccessLogMessage::Message(target, vec)) {
-                error!("Failed to send access log message: {e}");
-            }
+        } else if let Err(e) = sender.try_send(AccessLogMessage::Message(target, vec)) {
+            error!("Failed to send access log message: {e}");
         }
     } else {
         error!("Failed to send access log message: no available sender.");
@@ -176,13 +174,13 @@ pub fn try_log_access(target: Target, vec: Vec<FormattedMessage>) -> Result<(), 
 #[inline]
 pub fn log_access_blocking(target: Target, vec: Vec<FormattedMessage>) {
     let target_clone = target.clone();
-    match try_log_access(target, vec) {
-        Err(err) => match err {
+    if let Err(err) = try_log_access(target, vec) {
+        match err {
             TrySendError::Full(vec) => {
                 if is_blocking() {
                     tokio::task::block_in_place(move || {
                         if let Some(sender) = get_sender() {
-                            let _ = sender.blocking_send(AccessLogMessage::Message(target_clone, vec));
+                            let _ = sender.blocking_send(AccessLogMessage::Message(target_clone, vec)).ok();
                         }
                     });
                 }
@@ -190,8 +188,7 @@ pub fn log_access_blocking(target: Target, vec: Vec<FormattedMessage>) {
             TrySendError::Closed(_) => {
                 error!("Failed to send access log message: no available sender (channel closed)");
             },
-        },
-        Ok(_) => (),
+        }
     }
 }
 
@@ -222,6 +219,7 @@ pub fn log_access_blocking(target: Target, vec: Vec<FormattedMessage>) {
 /// A [`JoinSet<()>`] containing all spawned logger tasks. Dropping it cancels
 /// the loggers; awaiting [`JoinSet::join_all`] waits for them to finish.
 #[allow(clippy::needless_pass_by_value)]
+#[allow(clippy::too_many_arguments)]
 pub fn start_access_loggers(
     num_instances: usize,
     buffer: usize,
@@ -246,10 +244,8 @@ pub fn start_access_loggers(
 
     let mut join_set = JoinSet::new();
     for (i, recv) in receivers.into_iter().enumerate() {
-        let frequency = frequency.clone();
-        let max_size = max_file_size;
         join_set.spawn(async move {
-            let mut logger = AccessLogger::new(i, frequency, max_size, max_log_files);
+            let mut logger = AccessLogger::new(i, frequency, max_file_size, max_log_files);
             logger.run(recv).await
         });
     }
@@ -281,7 +277,7 @@ fn get_sender_at(index: usize) -> Option<&'static Sender<AccessLogMessage>> {
 /// dropping messages when the buffer is full.
 #[inline]
 fn is_blocking() -> bool {
-    SENDER_POOL.get().and_then(|pool| Some(pool.blocking)).unwrap_or(false)
+    SENDER_POOL.get().map(|pool| pool.blocking).unwrap_or(false)
 }
 
 /// Broadcasts a configuration update for `target` to every logger instance.
@@ -304,17 +300,18 @@ pub async fn update_configuration(target: Target, init: Vec<AccessLogConf>) -> R
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use std::time::Duration;
 
-    use crate::access_log::start_access_loggers;
-
-    use super::*;
     use orion_format::{
-        context::{DownstreamContext, DownstreamResponseContext, FinishContext, InitContext, UpstreamContext},
+        context::{
+            DownstreamContext, DownstreamResponseContext, FinishContext, InitContext, SocketAddrContext,
+            UpstreamContext,
+        },
         types::ResponseFlags,
         LogFormatter, DEFAULT_ACCESS_LOG_FORMAT,
     };
-    use tokio::{self, time::timeout};
+    use tokio::time::timeout;
 
     fn build_request() -> http::Request<()> {
         http::Request::builder().uri("https://www.rust-lang.org/").header("User-Agent", "awesome/1.0").body(()).unwrap()
@@ -340,7 +337,7 @@ mod tests {
             trace_id: None,
             request_head_size: 0,
             server_name: None,
-            socket_address: Default::default(),
+            socket_address: SocketAddrContext::default(),
         });
         fmt.with_context(&UpstreamContext {
             authority: Some(req.uri().authority().unwrap()),

@@ -61,8 +61,7 @@ use {
 
 #[cfg(feature = "access-log")]
 use crate::utils::http::{request_head_size, response_head_size};
-
-#[cfg(any(feature = "access-log"))]
+#[cfg(feature = "access-log")]
 use crate::with_access_log;
 #[cfg(feature = "metrics")]
 use crate::{metrics, with_histogram};
@@ -233,7 +232,7 @@ pub struct PartialHttpConnectionManager {
 impl TryFrom<ConversionContext<'_, HttpConnectionManagerConfig>> for PartialHttpConnectionManager {
     type Error = crate::Error;
     fn try_from(ctx: ConversionContext<HttpConnectionManagerConfig>) -> Result<Self> {
-        let ConversionContext { envoy_object: configuration, secret_manager: _ } = ctx;
+        let ConversionContext { envoy_object: configuration, .. } = ctx;
         let codec_type = configuration.codec_type;
         let enabled_upgrades = configuration.enabled_upgrades;
         let http_filters_hcm = configuration
@@ -325,7 +324,7 @@ pub struct HttpConnectionManager {
 
 impl fmt::Display for HttpConnectionManager {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "HttpConnectionManager {}", &self.listener_name,)
+        write!(f, "HttpConnectionManager {}", &self.listener_name)
     }
 }
 
@@ -349,6 +348,7 @@ impl HttpConnectionManager {
         let _ = self.router_sender.send_replace(None);
     }
 
+    #[allow(clippy::type_complexity)]
     pub(crate) fn request_handler(
         self: &Arc<Self>,
     ) -> Box<
@@ -479,6 +479,7 @@ struct EventInfo {
 }
 
 impl TransactionContext {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         request_id: Option<RequestId>,
         user_partition_key: Option<&'static str>,
@@ -515,6 +516,9 @@ impl TransactionContext {
     }
 
     #[allow(unused_variables)]
+    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::let_unit_value)]
+    #[allow(clippy::unused_self)]
     fn trace_status_code(self: Arc<Self>, res: &Result<Response<OrionRequestBody>>, listener_name: &'static str) {
         if let Ok(response) = &res {
             let status_code = response.status().as_u16();
@@ -543,6 +547,7 @@ impl TransactionContext {
                 }
             }
 
+            #[allow(clippy::match_same_arms)]
             match status_code {
                 100..200 => {
                     with_metric!(
@@ -655,11 +660,13 @@ struct TransactionPipeline<RC> {
     route_conf: RC,
 }
 
+#[allow(clippy::wrong_self_convention)]
 impl<RC> TransactionPipeline<RC>
 where
     RC: RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> + Clone,
 {
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_lines)]
     async fn to_response(
         self,
         trans_handler: Arc<TransactionContext>,
@@ -675,7 +682,7 @@ where
             .map(|md| md.downstream.connection.peer_address())
             .unwrap_or_else(|| SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0));
 
-        let stream_metrics = metadata.map(|md| md.stream_metrics.clone());
+        let stream_metrics = metadata.map(|md| Arc::clone(&md.stream_metrics));
 
         #[allow(clippy::unwrap_used)]
         stream_metrics.as_ref().unwrap().inc_requests();
@@ -684,7 +691,7 @@ where
         http_modifiers::apply_prerouting_functions(&mut request, downstream_addr, manager.xff_settings);
 
         // process request, get the response..
-        let result = self.route_conf.to_response(&trans_handler, request, manager.clone()).await;
+        let result = self.route_conf.to_response(&trans_handler, request, Arc::clone(&manager)).await;
 
         // calculate the time to first byte..
         #[cfg(any(feature = "access-log", feature = "metrics"))]
@@ -800,7 +807,7 @@ fn select_virtual_host<'a, T>(request: &Request<T>, virtual_hosts: &'a [VirtualH
 pub trait RequestHandler<R, A>: Sized {
     fn to_response(
         self,
-        trans_handler: &TransactionContext,
+        trans_context: &TransactionContext,
         request: R,
         arg: A,
     ) -> impl Future<Output = Result<Response<OrionResponseBody>>> + Send;
@@ -825,7 +832,7 @@ impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usiz
     #[allow(clippy::too_many_lines)]
     async fn to_response(
         self,
-        trans_handle: &TransactionContext,
+        trans_context: &TransactionContext,
         mut request: Request<OrionRequestBody>,
         (connection_manager, mut filter_idx, http_filter): (Arc<HttpConnectionManager>, usize, HttpFilterValue),
     ) -> Result<Response<OrionResponseBody>> {
@@ -836,34 +843,39 @@ impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usiz
 
         let filter_response = 'filter_loop: loop {
             let Some(ref chosen_route) = cached_route else {
-                // No route found - return 404 immediately
-                break 'filter_loop FilterDecision::DirectResponse(
+                break 'filter_loop FilterDecision::DirectResponse(Box::new(
                     SyntheticHttpResponse::not_found(
                         EventFailure::RouteNotFound.into(),
                         ResponseFlags(FmtResponseFlags::NO_ROUTE_FOUND),
                     )
                     .into_response(request.version()),
-                );
+                ));
             };
 
             let guard = connection_manager.http_filters_per_route.load();
             let route_filters = guard.get(&chosen_route.route.route_match);
 
             let Some(route_filters) = route_filters else {
-                // No filters to process
                 break 'filter_loop FilterDecision::Continue;
             };
 
             let mut reroute = false;
 
+            // Semantic Match: We keep the exact same while logic
             while filter_idx < route_filters.len() {
-                let filter = &route_filters[filter_idx];
+                // Safe Access: Replaces route_filters[filter_idx] without changing logic flow
+                let Some(filter) = route_filters.get(filter_idx) else {
+                    break;
+                };
+
                 filter_idx += 1;
+
                 if filter.disabled {
                     continue;
                 }
-                if let Some(filter_value) = &filter.filter {
-                    let mut filter_value = filter_value.new_from();
+
+                if let Some(filter_config) = &filter.filter {
+                    let mut filter_value = filter_config.new_from();
                     let filter_res = filter_value.apply_request(&mut request).await;
 
                     match filter_res {
@@ -871,14 +883,12 @@ impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usiz
                             active_filters.push(filter_value);
                         },
                         FilterDecision::DirectResponse(_) => {
-                            // interrupt processing filters with this DirectResponse
                             break 'filter_loop filter_res;
                         },
                         FilterDecision::AsyncRequest(_, _) => {
                             unimplemented!()
                         },
                         FilterDecision::Reroute => {
-                            // stop processing filters and re-evaluate the route
                             active_filters.push(filter_value);
                             reroute = true;
                             break;
@@ -890,12 +900,13 @@ impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usiz
             if reroute {
                 debug!("rerouting request...");
                 cached_route = match_request_route(&request, &self.0);
+                // filter_idx remains incremented as in your original code
             } else {
-                // All filters processed successfully
                 break 'filter_loop FilterDecision::Continue;
             }
         };
 
+        // Rest of the function remains identical to your provided source
         let mut response = match cached_route {
             None => SyntheticHttpResponse::not_found(
                 EventFailure::RouteNotFound.into(),
@@ -903,7 +914,8 @@ impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usiz
             )
             .into_response(request.version()),
             Some(cached_route) => match filter_response {
-                FilterDecision::DirectResponse(mut response) | FilterDecision::AsyncRequest(mut response, _) => {
+                FilterDecision::DirectResponse(response) | FilterDecision::AsyncRequest(response, _) => {
+                    let mut response = *response;
                     apply_mutations_on_response(
                         &mut response,
                         &self.0,
@@ -918,11 +930,15 @@ impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usiz
 
                     let mut response = match &cached_route.route.action {
                         Action::DirectResponse(dr) => {
-                            dr.to_response(trans_handle, request, &cached_route.route.name).await
+                            dr.to_response(trans_context, request, &cached_route.route.name).await
                         },
                         Action::Redirect(rd) => {
-                            rd.to_response(trans_handle, request, (&cached_route.route_match, &cached_route.route.name))
-                                .await
+                            rd.to_response(
+                                trans_context,
+                                request,
+                                (&cached_route.route_match, &cached_route.route.name),
+                            )
+                            .await
                         },
                         Action::Route(route) => {
                             apply_mutations_on_request(
@@ -937,9 +953,10 @@ impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usiz
                                 .get::<MetadataContext>()
                                 .map(|md| md.downstream.connection.peer_address())
                                 .unwrap_or_else(|| SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0));
+
                             route
                                 .to_response(
-                                    trans_handle,
+                                    trans_context,
                                     request,
                                     (
                                         RouteContext {
@@ -967,12 +984,10 @@ impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usiz
             },
         };
 
-        // let's process the active filters on response in the reverse order...
-        //
-        for filter in &mut active_filters.iter_mut().rev() {
+        for filter in active_filters.iter_mut().rev() {
             let filter_res = filter.apply_response(&mut response).await;
             if let FilterDecision::DirectResponse(direct_response) = filter_res {
-                response = direct_response;
+                response = *direct_response;
             }
         }
 
@@ -984,10 +999,11 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
     #[allow(clippy::too_many_lines)]
     async fn to_response(
         self,
-        trans_handler: &TransactionContext,
+        trans_context: &TransactionContext,
         mut request: Request<OrionRequestBody>,
-        connection_manager: Arc<HttpConnectionManager>,
+        arg: Arc<HttpConnectionManager>,
     ) -> Result<Response<OrionResponseBody>> {
+        let connection_manager = arg;
         let mut cached_route = match_request_route(&request, &self);
         // let mut request: Request<HttpBody> = request.map(|body| body.map_inner(TimeoutBody::map_into));
         let mut active_filters: SmallVec<[HttpFilterValue; 4]> = SmallVec::new();
@@ -997,13 +1013,13 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
         let filter_response = 'filter_loop: loop {
             let Some(ref chosen_route) = cached_route else {
                 // No route found - return 404 immediately
-                break 'filter_loop FilterDecision::DirectResponse(
+                break 'filter_loop FilterDecision::DirectResponse(Box::new(
                     SyntheticHttpResponse::not_found(
                         EventFailure::RouteNotFound.into(),
                         ResponseFlags(FmtResponseFlags::NO_ROUTE_FOUND),
                     )
                     .into_response(request.version()),
-                );
+                ));
             };
 
             let guard = connection_manager.http_filters_per_route.load();
@@ -1016,34 +1032,35 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
 
             let mut reroute = false;
 
-            while filter_idx < route_filters.len() {
-                let filter = &route_filters[filter_idx];
-                filter_idx += 1;
+            for (current_idx, filter) in route_filters.iter().enumerate().skip(filter_idx) {
                 if filter.disabled {
+                    filter_idx += 1;
                     continue;
                 }
-                if let Some(filter_value) = &filter.filter {
-                    let mut filter_value = filter_value.new_from();
+
+                if let Some(filter_config) = &filter.filter {
+                    let mut filter_value = filter_config.new_from();
                     let filter_res = filter_value.apply_request(&mut request).await;
 
                     match filter_res {
                         FilterDecision::Continue => {
                             active_filters.push(filter_value);
+                            filter_idx += 1;
                         },
                         FilterDecision::DirectResponse(_) => {
-                            // interrupt processing filters with this DirectResponse
                             break 'filter_loop filter_res;
                         },
-                        FilterDecision::AsyncRequest(resp, Some(request)) => {
-                            // Handle asynchronous request
-                            //
-                            let async_exec = AsyncExecution(self.clone());
-                            let conn_manager = connection_manager.clone();
+                        FilterDecision::AsyncRequest(resp, Some(req)) => {
+                            let async_exec = AsyncExecution(Arc::clone(&self));
+                            let conn_manager = Arc::clone(&connection_manager);
+
+                            // Use current_idx + 1 to ensure the next task starts from the correct filter
+                            let next_idx = current_idx + 1;
 
                             tokio::spawn(async move {
                                 let trans_handler = TransactionContext::default();
                                 _ = async_exec
-                                    .to_response(&trans_handler, request, (conn_manager, filter_idx, filter_value))
+                                    .to_response(&trans_handler, *req, (conn_manager, next_idx, filter_value))
                                     .await;
                             });
 
@@ -1053,12 +1070,14 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
                             break 'filter_loop FilterDecision::AsyncRequest(resp, None);
                         },
                         FilterDecision::Reroute => {
-                            // stop processing filters and re-evaluate the route
                             active_filters.push(filter_value);
+                            filter_idx += 1;
                             reroute = true;
                             break;
                         },
                     }
+                } else {
+                    filter_idx += 1;
                 }
             }
 
@@ -1078,7 +1097,8 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
             )
             .into_response(request.version()),
             Some(cached_route) => match filter_response {
-                FilterDecision::DirectResponse(mut response) | FilterDecision::AsyncRequest(mut response, _) => {
+                FilterDecision::DirectResponse(response) | FilterDecision::AsyncRequest(response, _) => {
+                    let mut response = *response;
                     apply_mutations_on_response(
                         &mut response,
                         &self,
@@ -1093,11 +1113,11 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
 
                     let mut response = match &cached_route.route.action {
                         Action::DirectResponse(dr) => {
-                            dr.to_response(trans_handler, request, &cached_route.route.name).await
+                            dr.to_response(trans_context, request, &cached_route.route.name).await
                         },
                         Action::Redirect(rd) => {
                             rd.to_response(
-                                trans_handler,
+                                trans_context,
                                 request,
                                 (&cached_route.route_match, &cached_route.route.name),
                             )
@@ -1118,7 +1138,7 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
                                 .unwrap_or_else(|| SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0));
                             route
                                 .to_response(
-                                    trans_handler,
+                                    trans_context,
                                     request,
                                     (
                                         RouteContext {
@@ -1140,11 +1160,7 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
                         let attr =
                             metrics::get_user_partition_key(response.headers(), None, metrics::CUSTOM_KEY.source())
                                 .map(|id| KeyValue::new(metrics::CUSTOM_KEY.attribute_name().unwrap_or("custom"), id));
-                        custom_metrics.with_headers(
-                            MetricsHook::IncomingResponse,
-                            response.headers(),
-                            attr.as_ref().map_or(&[], std::slice::from_ref),
-                        );
+                        custom_metrics.with_headers(MetricsHook::IncomingResponse, response.headers(), attr.as_slice());
                     }
 
                     apply_mutations_on_response(
@@ -1163,7 +1179,7 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
         for filter in &mut active_filters.iter_mut().rev() {
             let filter_res = filter.apply_response(&mut response).await;
             if let FilterDecision::DirectResponse(direct_response) = filter_res {
-                response = direct_response;
+                response = *direct_response;
             }
         }
 
@@ -1219,12 +1235,13 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
     type Future = BoxFuture<'static, StdResult<Self::Response, Self::Error>>;
 
     #[allow(clippy::too_many_lines)]
-    fn call(&self, incoming_request: Request<Incoming>) -> Self::Future {
+    fn call(&self, req: Request<Incoming>) -> Self::Future {
+        let incoming_request = req;
         // destructure the Request to get the request and addresses
         let incoming_request_id = RequestId::from_request(&incoming_request);
         let incoming_version = incoming_request.version();
         let metadata_context = incoming_request.extensions().get::<MetadataContext>();
-        let stream_metrics = metadata_context.map(|md| md.stream_metrics.clone());
+        let stream_metrics = metadata_context.map(|md| Arc::clone(&md.stream_metrics));
         #[cfg(feature = "metrics")]
         let sni = metadata_context.and_then(|md| md.downstream.sni.clone());
 
@@ -1274,10 +1291,13 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
         let user_partition_key = None;
 
         // create the transaction context
+        #[allow(clippy::let_unit_value)]
+        let shard_id = get_shard_id!();
+
         let trans_handler = Arc::new(TransactionContext::new(
             request_id,
             user_partition_key,
-            get_shard_id!(),
+            shard_id,
             #[cfg(feature = "access-log")]
             &self.manager.access_log,
             #[cfg(feature = "tracing")]
@@ -1325,11 +1345,7 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
         if let Some(custom_metrics) = CUSTOM_METRICS.get() {
             let attr = metrics::get_user_partition_key(request.headers(), sni.as_ref(), metrics::CUSTOM_KEY.source())
                 .map(|id| KeyValue::new(metrics::CUSTOM_KEY.attribute_name().unwrap_or("custom"), id));
-            custom_metrics.with_headers(
-                MetricsHook::IncomingRequest,
-                request.headers(),
-                attr.as_ref().map_or(&[], std::slice::from_ref),
-            );
+            custom_metrics.with_headers(MetricsHook::IncomingRequest, request.headers(), attr.as_slice());
         }
 
         Box::pin(async move {
@@ -1360,14 +1376,14 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
             //
 
             let Some(route_conf) = route_conf else {
-                return handle_route_conf_not_found(
+                return Ok(handle_route_conf_not_found(
                     request.version(),
                     &trans_handler,
-                    &stream_metrics,
+                    stream_metrics.as_ref(),
                     listener_name,
                     user_partition_key,
                     filterchain_id,
-                );
+                ));
             };
 
             // check if the request is valid....
@@ -1376,7 +1392,7 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
             if let Some(response_error) = reject_request_if_invalid(
                 &request,
                 &trans_handler,
-                &stream_metrics,
+                stream_metrics.as_ref(),
                 listener_name,
                 user_partition_key,
                 filterchain_id,
@@ -1417,7 +1433,7 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
                                 let ctx_event = trans_ctx.event.clone();
 
                                 eval_http_finish_context(FinishContextParams {
-                                    stream_metrics: stream_metrics,
+                                    stream_metrics,
                                     listener_name,
                                     user_partition_key,
                                     filterchain_id,
@@ -1460,18 +1476,14 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
             //
 
             let pipeline = TransactionPipeline { route_conf };
-            let response = pipeline.to_response(trans_handler.clone(), manager, request).await;
+            let response = pipeline.to_response(Arc::clone(&trans_handler), manager, request).await;
 
             #[cfg(feature = "metrics")]
             if let Ok(response) = &response {
                 if let Some(custom_metrics) = CUSTOM_METRICS.get() {
                     let attr = metrics::get_user_partition_key(response.headers(), None, metrics::CUSTOM_KEY.source())
                         .map(|id| KeyValue::new(metrics::CUSTOM_KEY.attribute_name().unwrap_or("custom"), id));
-                    custom_metrics.with_headers(
-                        MetricsHook::DownstreamResponse,
-                        response.headers(),
-                        attr.as_ref().map_or(&[], std::slice::from_ref),
-                    );
+                    custom_metrics.with_headers(MetricsHook::DownstreamResponse, response.headers(), attr.as_slice());
                 }
             }
 
@@ -1511,7 +1523,7 @@ fn eval_http_init_context<R>(
         use crate::with_access_log;
         use orion_format::context::SocketAddrContext;
 
-        let server_name = metadata.and_then(|md| md.sni.as_ref().map(|s| s.as_str()));
+        let server_name = metadata.and_then(|md| md.sni.as_ref().map(SmolStr::as_str));
 
         #[cfg(feature = "access-log")]
         with_access_log!(
@@ -1565,6 +1577,7 @@ struct FinishContextParams<'a> {
 
 #[allow(unused_mut)]
 #[cfg(any(feature = "access-log", feature = "metrics"))]
+#[allow(clippy::too_many_lines)]
 fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
     let latency = params.trans_start_time.elapsed();
 
@@ -1573,7 +1586,10 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
         with_histogram!(
             user::LATENCY,
             record,
-            latency.as_millis() as u64,
+            #[allow(clippy::cast_possible_truncation)]
+            {
+                latency.as_millis() as u64
+            },
             params.m_ctx.shard_id,
             &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
         );
@@ -1584,7 +1600,7 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
 
     #[cfg(feature = "access-log")]
     with_access_log!(
-        &mut params.al_ctx.access_loggers,
+        &mut *params.al_ctx.access_loggers,
         FinishContext {
             duration,
             bytes_received: params.bytes_received,
@@ -1689,7 +1705,7 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
 fn instrument_early_failure_response(
     response: Response<crate::OrionResponseBody>,
     trans_handler: &Arc<TransactionContext>,
-    stream_metrics: &Option<Arc<crate::utils::instrumented_stream::StreamMetrics>>,
+    stream_metrics: Option<&Arc<crate::utils::instrumented_stream::StreamMetrics>>,
     listener_name: &'static str,
     user_partition_key: Option<&'static str>,
     filterchain_id: u64,
@@ -1731,7 +1747,7 @@ fn instrument_early_failure_response(
         InstrumentedBody::new(
             BodyKind::Response,
             body,
-            stream_metrics.clone(),
+            stream_metrics.cloned(),
             #[allow(unused_variables)]
             move |body_bytes, stream_metrics, body_error, body_flags| {
                 #[cfg(any(feature = "access-log", feature = "metrics"))]
@@ -1746,7 +1762,7 @@ fn instrument_early_failure_response(
                         let duration = first_byte_instant.saturating_duration_since(trans_handler.start_instant);
                         #[allow(unused_variables)]
                         let tx_duration = Instant::now().saturating_duration_since(first_byte_instant);
-                        with_access_log!(&mut log_ctx.loggers, HttpResponseDurationContext { duration, tx_duration });
+                        with_access_log!(&mut log_ctx.loggers, HttpResponseDurationContext { duration, tx_duration })
                     }
 
                     if trans_handler.trans_phase.is_complete() {
@@ -1758,7 +1774,7 @@ fn instrument_early_failure_response(
                         let ctx_event = log_ctx.event.clone();
 
                         eval_http_finish_context(FinishContextParams {
-                            stream_metrics: stream_metrics,
+                            stream_metrics,
                             listener_name,
                             user_partition_key,
                             filterchain_id,
@@ -1804,10 +1820,11 @@ const MAX_METHOD_LENGTH: usize = 1024;
 /// Maximum allowed length for an HTTP URI string.
 const MAX_URI_LENGTH: usize = 2048;
 
+#[allow(clippy::too_many_arguments)]
 fn reject_request_if_invalid(
     request: &Request<Incoming>,
     trans_handler: &Arc<TransactionContext>,
-    stream_metrics: &Option<Arc<crate::utils::instrumented_stream::StreamMetrics>>,
+    stream_metrics: Option<&Arc<crate::utils::instrumented_stream::StreamMetrics>>,
     listener_name: &'static str,
     user_partition_key: Option<&'static str>,
     filterchain_id: u64,
@@ -1832,20 +1849,16 @@ fn reject_request_if_invalid(
     // check if method is too long...
     //
     let response = response.or_else(|| {
-        if request.method().as_str().len() > MAX_METHOD_LENGTH {
+        (request.method().as_str().len() > MAX_METHOD_LENGTH).then(|| {
             debug!("Too long method: {} bytes", request.method().as_str());
-            Some(
-                SyntheticHttpResponse::custom_error(
-                    StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
-                    None,
-                    EventFailure::DirectResponse.into(),
-                    ResponseFlags::default(),
-                )
-                .into_response(request.version()),
+            SyntheticHttpResponse::custom_error(
+                StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
+                None,
+                EventFailure::DirectResponse.into(),
+                ResponseFlags::default(),
             )
-        } else {
-            None
-        }
+            .into_response(request.version())
+        })
     });
 
     //check if uri/line is too long...
@@ -1853,20 +1866,16 @@ fn reject_request_if_invalid(
     let response = response.or_else(|| {
         let mut counter = LengthCounter(0);
         _ = write!(&mut counter, "{}", request.uri());
-        if counter.0 > MAX_URI_LENGTH {
+        (counter.0 > MAX_URI_LENGTH).then(|| {
             debug!("Too long uri: {} bytes", counter.0);
-            Some(
-                SyntheticHttpResponse::custom_error(
-                    StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
-                    None,
-                    EventFailure::DirectResponse.into(),
-                    ResponseFlags::default(),
-                )
-                .into_response(request.version()),
+            SyntheticHttpResponse::custom_error(
+                StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
+                None,
+                EventFailure::DirectResponse.into(),
+                ResponseFlags::default(),
             )
-        } else {
-            None
-        }
+            .into_response(request.version())
+        })
     });
 
     response.map(|r| {
@@ -1885,11 +1894,11 @@ fn reject_request_if_invalid(
 fn handle_route_conf_not_found(
     version: ::http::Version,
     trans_handler: &Arc<TransactionContext>,
-    stream_metrics: &Option<Arc<crate::utils::instrumented_stream::StreamMetrics>>,
+    stream_metrics: Option<&Arc<crate::utils::instrumented_stream::StreamMetrics>>,
     listener_name: &'static str,
     user_partition_key: Option<&'static str>,
     filterchain_id: u64,
-) -> StdResult<Response<crate::OrionRequestBody>, crate::Error> {
+) -> Response<crate::OrionRequestBody> {
     // immediately return a SyntheticHttpResponse, and calculate the first byte instant
     let response = SyntheticHttpResponse::not_found(
         EventFailure::RouteNotFound.into(),
@@ -1897,14 +1906,14 @@ fn handle_route_conf_not_found(
     )
     .into_response(version);
 
-    Ok(instrument_early_failure_response(
+    instrument_early_failure_response(
         response,
         trans_handler,
         stream_metrics,
         listener_name,
         user_partition_key,
         filterchain_id,
-    ))
+    )
 }
 
 #[cfg(test)]

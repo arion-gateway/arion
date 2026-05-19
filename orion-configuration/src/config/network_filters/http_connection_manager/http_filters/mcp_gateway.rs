@@ -49,7 +49,7 @@ pub enum UpstreamBackend {
         url: String,
         cache_duration: Option<Duration>,
     },
-    FunctionGraph {},
+    FunctionGraph,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
@@ -124,7 +124,7 @@ mod envoy_conversions {
             let OrionTool { name, description, input_schema, output_schema, upstream_backend, rbac } = orion;
             let backend = required!(upstream_backend)?.try_into()?;
 
-            if let UpstreamBackend::FunctionGraph { .. } = backend {
+            if let UpstreamBackend::FunctionGraph = backend {
                 unimplemented!("FunctionGraph backend is not supported yet")
             }
 
@@ -146,7 +146,7 @@ mod envoy_conversions {
             };
 
             let input_schema = match backend {
-                UpstreamBackend::Rest { .. } | UpstreamBackend::FunctionGraph { .. } => {
+                UpstreamBackend::Rest { .. } | UpstreamBackend::FunctionGraph => {
                     validate_schema_fn(input_schema, "input")?
                 },
                 UpstreamBackend::McpServer { .. } => {
@@ -159,7 +159,7 @@ mod envoy_conversions {
             };
 
             let output_schema = match backend {
-                UpstreamBackend::Rest { .. } | UpstreamBackend::FunctionGraph { .. } => {
+                UpstreamBackend::Rest { .. } | UpstreamBackend::FunctionGraph => {
                     validate_schema_fn(output_schema, "output")?
                 },
                 UpstreamBackend::McpServer { .. } => {
@@ -276,6 +276,7 @@ mod envoy_conversions {
         use super::*;
 
         #[test]
+        #[allow(clippy::indexing_slicing)]
         fn test_tool_rbac_config_parsing() {
             use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::mcp::mcp_gateway::v3::{
                 permission, JwtClaimMatcher, Permission as OrionPermission, ToolRbac as OrionToolRbac,

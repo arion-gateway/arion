@@ -1,8 +1,8 @@
 #[derive(Debug, Clone, Default)]
-pub struct Observability {}
+pub struct Observability;
 
 #[derive(Debug, Copy, Clone, Default)]
-pub struct Processing {}
+pub struct Processing;
 
 pub trait Mode {
     const OBSERVABILITY: bool;
@@ -17,9 +17,9 @@ impl Mode for Processing {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct RequestMsg {}
+pub struct RequestMsg;
 #[derive(Debug, Clone, Default)]
-pub struct ResponseMsg {}
+pub struct ResponseMsg;
 
 pub trait MessageKind {
     const IS_REQUEST: bool;

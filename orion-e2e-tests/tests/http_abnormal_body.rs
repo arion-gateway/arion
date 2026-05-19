@@ -12,12 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#![allow(clippy::expect_used, reason = "test infrastructure — panicking on setup failure is intentional")]
+
 use std::time::Duration;
 
 use orion_e2e_tests::config_builder::presets;
 use orion_e2e_tests::{
-    assert_rejected, OrionInstance, PartialSendClient, PreConfiguredResponse, RawHttpRequestBuilder, RawHttpResponse,
-    SpawnOptions, TcpTestClient, TestBackend,
+    assert_rejected, cleanup_config_file, OrionInstance, PartialSendClient, PreConfiguredResponse,
+    RawHttpRequestBuilder, RawHttpResponse, SpawnOptions, TcpTestClient, TestBackend,
 };
 
 async fn setup() -> (OrionInstance, TestBackend, TcpTestClient, std::path::PathBuf) {
@@ -31,13 +33,14 @@ async fn setup() -> (OrionInstance, TestBackend, TcpTestClient, std::path::PathB
         .await
         .expect("Failed to spawn Orion");
 
+    #[allow(clippy::unwrap_used)]
     let tcp_client = TcpTestClient::new(orion.listener_addr().unwrap());
     (orion, backend, tcp_client, config_path)
 }
 
-fn cleanup(orion: OrionInstance, config_path: std::path::PathBuf) {
+fn cleanup(orion: OrionInstance, config_path: &std::path::Path) {
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(config_path);
 }
 
 #[tokio::test]
@@ -64,7 +67,7 @@ async fn test_tc0801_truncated_body() {
     // Orion surfaces an upstream-side failure as 503 when the body is truncated.
     assert_rejected(&response, &[503]);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -88,7 +91,7 @@ async fn test_tc0802_excess_body() {
         assert!(captured.body.len() <= 10, "Backend received {} bytes, expected at most 10", captured.body.len());
     }
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -106,7 +109,7 @@ async fn test_tc0803_cl_integer_overflow() {
     let response = tcp_client.send(&req).await.expect("Failed to send");
     assert_rejected(&response, &[400]);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -127,7 +130,7 @@ async fn test_tc0804_cl_zero_with_body() {
     // Orion forwards the request and the excess body is ignored (RFC 7230 §3.3.3 case 4).
     resp.assert_status(200);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -148,7 +151,7 @@ async fn test_tc0805_get_with_body() {
     // RFC 7230 allows body on any method; Orion forwards GET-with-body as-is.
     resp.assert_status(200);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -168,7 +171,7 @@ async fn test_tc0901_non_hex_chunk_size() {
     // Orion fails the upstream body forward and returns 503.
     assert_rejected(&response, &[503]);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -187,7 +190,7 @@ async fn test_tc0902_negative_chunk_size() {
     let response = tcp_client.send_with_timeout(&req, Duration::from_secs(3)).await.expect("Failed to send");
     assert_rejected(&response, &[503]);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -206,7 +209,7 @@ async fn test_tc0903_chunk_size_overflow() {
     let response = tcp_client.send_with_timeout(&req, Duration::from_secs(3)).await.expect("Failed to send");
     assert_rejected(&response, &[400]);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -233,7 +236,7 @@ async fn test_tc0904_missing_terminator_chunk() {
     let response = client.read_response(Duration::from_secs(5)).await.expect("Failed to read");
     assert_rejected(&response, &[503]);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -260,7 +263,7 @@ async fn test_tc0905_insufficient_chunk_data() {
     let response = client.read_response(Duration::from_secs(5)).await.expect("Failed to read");
     assert_rejected(&response, &[503]);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -280,7 +283,7 @@ async fn test_tc0906_missing_crlf_after_chunk() {
     let response = tcp_client.send_with_timeout(&req, Duration::from_secs(3)).await.expect("Failed to send");
     assert_rejected(&response, &[503]);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -302,7 +305,7 @@ async fn test_tc0907_forbidden_trailer_header() {
     // Orion ignores the forbidden Host trailer as per RFC 7230 §4.1.2.
     resp.assert_status(200);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -325,5 +328,5 @@ async fn test_tc0908_oversized_chunk_extension() {
     // Orion tolerates chunk extensions up to the header-size limit.
     resp.assert_status(200);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }

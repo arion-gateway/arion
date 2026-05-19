@@ -51,29 +51,7 @@ pub struct ListenerLocalRateLimit {
 impl LocalRateLimit {
     pub fn run<B>(&self, req: &Request<B>) -> FilterDecision {
         if let Some(token_bucket) = &self.inner.token_bucket {
-            if !token_bucket.consume(1) {
-                let status = self.inner.status;
-                #[cfg(feature = "metrics")]
-                with_metric!(
-                    filters::LOCAL_RATE_LIMIT,
-                    add,
-                    1,
-                    get_shard_id!(),
-                    &[
-                        KeyValue::new("filter", self.inner.stat_prefix.0),
-                        KeyValue::new("result", filters::EVENT_RATE_LIMITED)
-                    ]
-                );
-                return FilterDecision::DirectResponse(
-                    SyntheticHttpResponse::custom_error(
-                        status,
-                        None,
-                        EventFailure::RateLimited.into(),
-                        ResponseFlags(FmtResponseFlags::RATE_LIMITED),
-                    )
-                    .into_response(req.version()),
-                );
-            } else {
+            if token_bucket.consume(1) {
                 #[cfg(feature = "metrics")]
                 with_metric!(
                     filters::LOCAL_RATE_LIMIT,
@@ -84,6 +62,27 @@ impl LocalRateLimit {
                 );
                 return FilterDecision::Continue;
             }
+            let status = self.inner.status;
+            #[cfg(feature = "metrics")]
+            with_metric!(
+                filters::LOCAL_RATE_LIMIT,
+                add,
+                1,
+                get_shard_id!(),
+                &[
+                    KeyValue::new("filter", self.inner.stat_prefix.0),
+                    KeyValue::new("result", filters::EVENT_RATE_LIMITED)
+                ]
+            );
+            return FilterDecision::DirectResponse(Box::new(
+                SyntheticHttpResponse::custom_error(
+                    status,
+                    None,
+                    EventFailure::RateLimited.into(),
+                    ResponseFlags(FmtResponseFlags::RATE_LIMITED),
+                )
+                .into_response(req.version()),
+            ));
         }
         #[cfg(feature = "metrics")]
         with_metric!(

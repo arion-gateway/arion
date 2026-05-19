@@ -15,7 +15,8 @@
 use http::StatusCode;
 use orion_e2e_tests::config_builder::{presets, BootstrapBuilder, ClusterBuilder, DownstreamTlsBuilder};
 use orion_e2e_tests::{
-    OrionInstance, PreConfiguredResponse, SpawnOptions, TestBackend, TestCerts, TlsTestClientBuilder,
+    cleanup_config_file, OrionInstance, PreConfiguredResponse, SpawnOptions, TestBackend, TestCerts,
+    TlsTestClientBuilder,
 };
 
 #[tokio::test]
@@ -60,7 +61,7 @@ async fn test_mtls_downstream_valid_client_cert() {
     assert_eq!(captured_request.path(), "/mtls");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -99,7 +100,7 @@ async fn test_mtls_downstream_no_client_cert_rejected() {
     assert!(result.is_err(), "Expected TLS handshake to fail without client cert");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -139,7 +140,7 @@ async fn test_mtls_downstream_wrong_ca_rejected() {
     assert!(result.is_err(), "Expected TLS handshake to fail with wrong client CA");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -184,7 +185,7 @@ async fn test_mtls_downstream_multiple_requests() {
     }
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -230,7 +231,7 @@ async fn test_mtls_downstream_post_with_body() {
     assert_eq!(req.body_str(), Some(body));
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -282,5 +283,5 @@ async fn test_mtls_downstream_different_valid_certs() {
     let _ = backend.await_request().await.expect("No request received");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }

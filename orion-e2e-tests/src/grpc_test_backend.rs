@@ -32,6 +32,9 @@ use tracing::{debug, error, info};
 
 use crate::{Error, Result};
 
+#[allow(clippy::clone_on_ref_ptr, reason = "generated tonic code uses .clone() on Arc<T>")]
+#[allow(clippy::default_trait_access, reason = "generated tonic code uses Default::default()")]
+#[allow(clippy::doc_markdown, reason = "generated tonic doc comments")]
 pub mod test_proto {
     tonic::include_proto!("orion.test");
 }
@@ -51,7 +54,7 @@ impl TrackingHealthState {
     }
 
     async fn set_status(&self, service: &str, status: ServingStatus) {
-        self.status_map.lock().await.insert(service.to_string(), status);
+        self.status_map.lock().await.insert(service.to_owned(), status);
     }
 
     async fn get_status(&self, service: &str) -> ServingStatus {
@@ -185,13 +188,12 @@ impl GrpcTestBackendBuilder {
 
         let test_service_enabled = self.enable_test_service;
 
-        let health_state = if self.enable_health { Some(TrackingHealthState::new()) } else { None };
+        let health_state = self.enable_health.then(TrackingHealthState::new);
 
-        let test_service = if self.enable_test_service {
-            Some(TestServiceImpl { backend_id: self.backend_id.clone(), request_count: Arc::clone(&request_count) })
-        } else {
-            None
-        };
+        let test_service = self.enable_test_service.then(|| TestServiceImpl {
+            backend_id: self.backend_id.clone(),
+            request_count: Arc::clone(&request_count),
+        });
 
         let shutdown_clone = Arc::clone(&shutdown);
         let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);

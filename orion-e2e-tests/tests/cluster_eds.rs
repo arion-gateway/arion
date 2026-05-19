@@ -109,7 +109,7 @@ async fn test_eds_add_endpoint() {
     for _ in 0..20 {
         let response = client.get("/test").await.unwrap();
         response.assert_status(StatusCode::OK);
-        let body = response.body_str().unwrap_or("").to_string();
+        let body = response.body_str().unwrap_or("").to_owned();
         *counts.entry(body).or_insert(0) += 1;
     }
 
@@ -163,7 +163,7 @@ async fn test_eds_remove_endpoint() {
     for _ in 0..10 {
         let response = client.get("/test").await.unwrap();
         response.assert_status(StatusCode::OK);
-        let body = response.body_str().unwrap_or("").to_string();
+        let body = response.body_str().unwrap_or("").to_owned();
         *counts.entry(body).or_insert(0) += 1;
     }
     assert!(counts.contains_key("b1") && counts.contains_key("b2"), "Both backends should receive traffic initially");
@@ -223,16 +223,14 @@ async fn test_eds_weight_update() {
     for _ in 0..20 {
         let response = client.get("/test").await.unwrap();
         response.assert_status(StatusCode::OK);
-        let body = response.body_str().unwrap_or("").to_string();
+        let body = response.body_str().unwrap_or("").to_owned();
         *initial_counts.entry(body).or_insert(0) += 1;
     }
     let initial_b1 = *initial_counts.get("b1").unwrap_or(&0);
     let initial_b2 = *initial_counts.get("b2").unwrap_or(&0);
     assert!(
-        initial_b1 >= 6 && initial_b1 <= 14 && initial_b2 >= 6 && initial_b2 <= 14,
-        "With equal weights, both backends should receive roughly equal traffic. b1={}, b2={}",
-        initial_b1,
-        initial_b2
+        (6..=14).contains(&initial_b1) && (6..=14).contains(&initial_b2),
+        "With equal weights, both backends should receive roughly equal traffic. b1={initial_b1}, b2={initial_b2}"
     );
 
     harness
@@ -251,7 +249,7 @@ async fn test_eds_weight_update() {
     for _ in 0..total_requests {
         let response = client.get("/test").await.unwrap();
         response.assert_status(StatusCode::OK);
-        let body = response.body_str().unwrap_or("").to_string();
+        let body = response.body_str().unwrap_or("").to_owned();
         *counts.entry(body).or_insert(0) += 1;
     }
 
@@ -260,9 +258,7 @@ async fn test_eds_weight_update() {
 
     assert!(
         b2_count >= b1_count * 2,
-        "b2 (weight 9) should receive significantly more traffic than b1 (weight 1). b1={}, b2={}",
-        b1_count,
-        b2_count
+        "b2 (weight 9) should receive significantly more traffic than b1 (weight 1). b1={b1_count}, b2={b2_count}"
     );
 
     harness.shutdown();

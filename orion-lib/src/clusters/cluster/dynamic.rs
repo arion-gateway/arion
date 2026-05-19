@@ -47,7 +47,7 @@ pub struct DynamicClusterBuilder {
     pub transport_socket: UpstreamTransportSocketConfigurator,
     pub health_check: Option<HealthCheck>,
     pub load_balancing_policy: LbPolicy,
-    pub config: orion_configuration::config::cluster::Cluster,
+    pub config: Box<orion_configuration::config::cluster::Cluster>,
     pub circuit_breaker: ClusterCircuitBreaker,
 }
 
@@ -83,7 +83,7 @@ pub struct DynamicCluster {
     pub transport_socket: UpstreamTransportSocketConfigurator,
     pub health_check: Option<HealthCheck>,
     pub load_balancing_policy: LbPolicy,
-    pub config: orion_configuration::config::cluster::Cluster,
+    pub config: Box<orion_configuration::config::cluster::Cluster>,
     pub circuit_breaker: ClusterCircuitBreaker,
 }
 
@@ -115,7 +115,7 @@ impl ClusterOps for DynamicCluster {
     }
 
     fn change_tls_context(&mut self, secret_id: &str, secret: TransportSecret) -> Result<()> {
-        self.transport_socket.update_secret(secret_id, secret)?;
+        self.transport_socket.update_secret(secret_id, &secret)?;
         if let Some(mut load_assignment) = self.load_assignment.take() {
             load_assignment.transport_socket = self.transport_socket.clone();
             let load_assignment = load_assignment.rebuild()?;

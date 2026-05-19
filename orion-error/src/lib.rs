@@ -81,7 +81,7 @@ impl<E: ErrorTrait + Send + Sync + 'static> WithContext<E> {
     }
 
     pub fn get_context_data<T: 'static>(&self) -> Option<&T> {
-        if let ErrorInfo { message: _, any: Some(val) } = &self.context {
+        if let ErrorInfo { any: Some(val), .. } = &self.context {
             val.downcast_ref::<T>()
         } else {
             None
@@ -197,7 +197,7 @@ impl Error {
     }
 
     pub fn get_context_data<T: 'static>(&self) -> Option<&T> {
-        if let ErrorImpl::Context(ErrorInfo { message: _, any: Some(val) }, _) = &self.0 {
+        if let ErrorImpl::Context(ErrorInfo { any: Some(val), .. }, _) = &self.0 {
             val.downcast_ref::<T>()
         } else {
             None

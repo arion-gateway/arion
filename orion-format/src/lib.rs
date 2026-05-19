@@ -167,13 +167,13 @@ impl LogFormatter {
 
     pub fn with_context<C: Context>(&mut self, ctx: &C) -> &Self {
         for (idx, template) in self.conf.templates.iter().enumerate() {
-            unsafe {
-                if let Template::Placeholder(op, _) = template {
-                    if matches!(self.format.get_unchecked(idx), StringType::None) {
-                        let result = ctx.eval_part(op);
-                        if !matches!(result, StringType::None) {
-                            *self.format.get_unchecked_mut(idx) = result;
-                        }
+            if let Template::Placeholder(op, _) = template {
+                // SAFETY: `idx` is guaranteed to be valid for `format` vector by construction.
+                if matches!(unsafe { self.format.get_unchecked(idx) }, StringType::None) {
+                    let result = ctx.eval_part(op);
+                    if !matches!(result, StringType::None) {
+                        // SAFETY: `idx` is guaranteed to be valid for `format` vector, by construction.
+                        unsafe { *self.format.get_unchecked_mut(idx) = result };
                     }
                 }
             }

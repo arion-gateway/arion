@@ -215,6 +215,7 @@ mod test {
     }
 
     #[test]
+    #[allow(clippy::indexing_slicing)]
     pub fn test_wrr_balancer_2() {
         let mut items = vec![];
         let mut counts = vec![];
@@ -240,6 +241,7 @@ mod test {
     }
 
     #[test]
+    #[allow(clippy::indexing_slicing)]
     pub fn test_wrr_balancer_3() {
         let mut items = vec![];
         let mut counts = vec![];

@@ -72,14 +72,17 @@ use tokio::sync::{mpsc, oneshot, Semaphore};
 use tracing::{debug, info, warn};
 
 /// The total number of frames to prefetch before sending the request to the upstream service.
-const CHANNEL_BODY_PREFETCH_FRAMES: NonZeroUsize = unsafe {
-    NonZeroUsize::new_unchecked(parse!(
+const CHANNEL_BODY_PREFETCH_FRAMES: NonZeroUsize = {
+    let val = parse!(
         match option_env!("CHANNEL_BODY_PREFETCH_FRAMES") {
             Some(s) => s,
             None => "4",
         },
         usize
-    ))
+    );
+
+    // Evaluates safely at compile time, panicking during the build if val is 0
+    NonZeroUsize::new(val).expect("CHANNEL_BODY_PREFETCH_FRAMES must be greater than 0")
 };
 
 /// The maximum number of bytes to buffer in memory for the request body in buffered mode.
@@ -109,7 +112,7 @@ const EXT_PROC_FRAME_MERGE_LIMIT: u32 = parse!(
     u32
 );
 
-/// The number of max concurrent ext_proc requests per core. This limits the number of concurrent requests to avoid
+/// The number of max concurrent `ext_proc` requests per core. This limits the number of concurrent requests to avoid
 /// overloading the external processor and spawning too many tasks.
 const EXT_PROC_MAX_CONCURRENT_REQUESTS: usize = parse!(
     match option_env!("EXT_PROC_MAX_CONCURRENT_REQUESTS") {
@@ -274,6 +277,7 @@ impl ExternalProcessor {
         )
     }
 
+    #[allow(clippy::too_many_lines)]
     pub async fn apply_request_prepare_processing_data(
         &mut self,
         request: &mut Request<OrionRequestBody>,
@@ -368,16 +372,16 @@ impl ExternalProcessor {
                     let collected = match body.collect().await {
                         Ok(collected) => collected,
                         Err(e) => {
-                            if let Some(_) = e.downcast_ref::<LengthLimitError>() {
+                            if e.downcast_ref::<LengthLimitError>().is_some() {
                                 return Err(self.on_filter_error(
-                                    &format!("Request body: {}", e),
+                                    &format!("Request body: {e}"),
                                     None,
                                     request.version(),
                                     Some(StatusCode::PAYLOAD_TOO_LARGE),
                                 ));
                             }
                             return Err(self.on_filter_error(
-                                &format!("Error collecting request body: {}", e),
+                                &format!("Error collecting request body: {e}"),
                                 None,
                                 request.version(),
                                 None,
@@ -386,7 +390,7 @@ impl ExternalProcessor {
                     };
 
                     let (buffered, body_len) = Self::to_buffered(collected).await;
-                    let has_trailers = buffered.trailers().map_or(false, |t| !t.is_empty());
+                    let has_trailers = buffered.trailers().is_some_and(|t| !t.is_empty());
 
                     let body_type = match (body_len > 0, has_trailers) {
                         (true, true) => BodyType::BodyAndTrailers,
@@ -474,7 +478,7 @@ impl ExternalProcessor {
         // Acquire permit before proceeding. This reduces the pressure on Tokio, reducing the number of tasks spawned.
         // Note: It's safe the call unwrap here, since the semaphore is never closed explicitly.
         #[allow(clippy::unwrap_used)]
-        let _permit = EXT_PROC_CONCURRENT_PERMIT.with(|sem| sem.clone()).acquire_owned().await.unwrap();
+        let _permit = EXT_PROC_CONCURRENT_PERMIT.with(Clone::clone).acquire_owned().await.unwrap();
 
         let Ok(response_rx) = self.send_processing_data(processing_data, ver).await else {
             if self.inner.worker_config.failure_mode_allow {
@@ -577,16 +581,16 @@ impl ExternalProcessor {
                     let collected = match body.collect().await {
                         Ok(collected) => collected,
                         Err(e) => {
-                            if let Some(_) = e.downcast_ref::<LengthLimitError>() {
+                            if e.downcast_ref::<LengthLimitError>().is_some() {
                                 return Err(self.on_filter_error(
-                                    &format!("Response body: {}", e),
+                                    &format!("Response body: {e}"),
                                     None,
                                     response.version(),
                                     Some(StatusCode::PAYLOAD_TOO_LARGE),
                                 ));
                             }
                             return Err(self.on_filter_error(
-                                &format!("Error collecting response body: {}", e),
+                                &format!("Error collecting response body: {e}"),
                                 None,
                                 response.version(),
                                 None,
@@ -595,7 +599,7 @@ impl ExternalProcessor {
                     };
 
                     let (buffered, body_len) = Self::to_buffered(collected).await;
-                    let has_trailers = buffered.trailers().map_or(false, |t| !t.is_empty());
+                    let has_trailers = buffered.trailers().is_some_and(|t| !t.is_empty());
 
                     let body_type = match (body_len > 0, has_trailers) {
                         (true, true) => BodyType::BodyAndTrailers,
@@ -680,7 +684,7 @@ impl ExternalProcessor {
         // Acquire permit before proceeding. This reduces the pressure on Tokio, reducing the number of tasks spawned.
         // Note: It's safe the call unwrap here, since the semaphore is never closed explicitly.
         #[allow(clippy::unwrap_used)]
-        let _permit = EXT_PROC_CONCURRENT_PERMIT.with(|sem| sem.clone()).acquire_owned().await.unwrap();
+        let _permit = EXT_PROC_CONCURRENT_PERMIT.with(Clone::clone).acquire_owned().await.unwrap();
 
         let Ok(response_rx) = self.send_processing_data(processing_data, ver).await else {
             if self.inner.worker_config.failure_mode_allow {
@@ -744,7 +748,7 @@ impl ExternalProcessor {
         if self.inner.worker_config.failure_mode_allow {
             FilterDecision::Continue
         } else {
-            FilterDecision::DirectResponse(
+            FilterDecision::DirectResponse(Box::new(
                 SyntheticHttpResponse::custom_error(
                     status_code.unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
                     Some(msg.to_owned().into()),
@@ -752,7 +756,7 @@ impl ExternalProcessor {
                     ResponseFlags(FmtResponseFlags::UPSTREAM_CONNECTION_FAILURE),
                 )
                 .into_response(http_version),
-            )
+            ))
         }
     }
 
@@ -906,27 +910,25 @@ impl ExternalProcessingWorker<kind::Processing> {
     }
 
     async fn recover_or_failure(&mut self, err: ExtProcError, log_msg: &str) {
-        let proof_request = self.request_processing.make_proof().unwrap_or_else(|| match err {
-            ExtProcError::Timeout(_) => {
+        let proof_request = self.request_processing.make_proof().unwrap_or_else(|| {
+            if let ExtProcError::Timeout(_) = err {
                 let status = self.request_processing.status_timeout(self.inner.worker_config.failure_mode_allow);
                 self.request_processing.return_status(status, "recover_or_failure: timeout")
-            },
-            _ => {
+            } else {
                 let status = self.request_processing.status_error(log_msg, self.inner.worker_config.failure_mode_allow);
                 self.request_processing.return_status(status, "recover_or_failure: error")
-            },
+            }
         });
 
-        let proof_response = self.response_processing.make_proof().unwrap_or_else(|| match err {
-            ExtProcError::Timeout(_) => {
+        let proof_response = self.response_processing.make_proof().unwrap_or_else(|| {
+            if let ExtProcError::Timeout(_) = err {
                 let status = self.response_processing.status_timeout(self.inner.worker_config.failure_mode_allow);
                 self.response_processing.return_status(status, "recover_or_failure: timeout")
-            },
-            _ => {
+            } else {
                 let status =
                     self.response_processing.status_error(log_msg, self.inner.worker_config.failure_mode_allow);
                 self.response_processing.return_status(status, "recover_or_failure: error")
-            },
+            }
         });
 
         if self.inner.worker_config.failure_mode_allow {
@@ -1060,7 +1062,7 @@ impl ExternalProcessingWorker<kind::Processing> {
                                     Some(MessageType::Request) => {
                                         let direct_response = self.build_direct_response(&mut response_attempt);
                                         let proof = self.request_processing.make_proof().unwrap_or_else(|| {
-                                            let status = ProcessingStatus::EndWithDirectResponse(direct_response);
+                                            let status = ProcessingStatus::EndWithDirectResponse(Box::new(direct_response));
                                             self.request_processing.return_status(status, "immediate_response on request")
                                         });
 
@@ -1072,7 +1074,7 @@ impl ExternalProcessingWorker<kind::Processing> {
                                     Some(MessageType::Response) => {
                                         let direct_response = self.build_direct_response(&mut response_attempt);
                                         let proof = self.response_processing.make_proof().unwrap_or_else(|| {
-                                            let status = ProcessingStatus::EndWithDirectResponse(direct_response);
+                                            let status = ProcessingStatus::EndWithDirectResponse(Box::new(direct_response));
                                             self.response_processing.return_status(status, "immediate_response on response")
                                         });
 
@@ -1213,25 +1215,22 @@ impl ExternalProcessingWorker<kind::Processing> {
                             debug!(target: "ext_proc", "outbound request body frame: buffering frame...");
                             if let Some(frame_to_send) = self.request_processing.frames_buffer.push(frame, tokio::time::Instant::now()) {
                                 // invariant: frame_to_send is always a DATA frame at this point. TRAILERS are sent later.
-                                match body_mode {
-                                    OverridableBodyMode::None => { // body processing is disabled, just inject back the frame
-                                        let proof = self.request_processing.make_proof().unwrap_or_else(|| {
-                                            let status = ProcessingStatus::RequestReady(ReadyStatus::default());
-                                            self.request_processing.return_status(status, "proof for frame injection when body processing is disabled")
-                                        });
+                                if let OverridableBodyMode::None = body_mode { // body processing is disabled, just inject back the frame
+                                    let proof = self.request_processing.make_proof().unwrap_or_else(|| {
+                                        let status = ProcessingStatus::RequestReady(ReadyStatus::default());
+                                        self.request_processing.return_status(status, "proof for frame injection when body processing is disabled")
+                                    });
 
-                                        debug!(target: "ext_proc", "outbound request body frame: injecting the frame DATA into the body");
-                                        _ = self.request_processing.frame_bridge.inject_frame(Ok(frame_to_send), proof).await;
-                                    },
-                                    _ => { // send the merged frame to ext_proc and park a copy for later injection
-                                        debug!(target: "ext_proc", "outbound request body frame: sending body chunk of request ({})",  if frame_to_send.is_data() { "DATA" } else { "TRAILERS" });
-                                        if let Some(proc_req) = self.request_processing.handle_outgoing_body_chunk(clone_frame(&frame_to_send), false) {
-                                            debug!(target: "ext_proc", "handle_outgoing_body_chunk -> forward {outbound:?}", outbound = TruncatedDebug::<_,1024>(&proc_req));
-                                            self.forward_to_external_processor(proc_req).await;
-                                        }
-                                        // save a copy of the frame to inject into the body bridge later
-                                        self.request_processing.inflight_frames.push(frame_to_send);
+                                    debug!(target: "ext_proc", "outbound request body frame: injecting the frame DATA into the body");
+                                    _ = self.request_processing.frame_bridge.inject_frame(Ok(frame_to_send), proof).await;
+                                } else { // send the merged frame to ext_proc and park a copy for later injection
+                                    debug!(target: "ext_proc", "outbound request body frame: sending body chunk of request ({})",  if frame_to_send.is_data() { "DATA" } else { "TRAILERS" });
+                                    if let Some(proc_req) = self.request_processing.handle_outgoing_body_chunk(clone_frame(&frame_to_send), false) {
+                                        debug!(target: "ext_proc", "handle_outgoing_body_chunk -> forward {outbound:?}", outbound = TruncatedDebug::<_,1024>(&proc_req));
+                                        self.forward_to_external_processor(proc_req).await;
                                     }
+                                    // save a copy of the frame to inject into the body bridge later
+                                    self.request_processing.inflight_frames.push(frame_to_send);
                                 }
                             }
                         },
@@ -1305,24 +1304,21 @@ impl ExternalProcessingWorker<kind::Processing> {
                             debug!(target: "ext_proc", "outbound response body frame: buffering frame...");
                             if let Some(frame_to_send) = self.response_processing.frames_buffer.push(frame, tokio::time::Instant::now()) {
                                 // invariant: frame_to_send is always a DATA frame at this point. TRAILERS are sent later.
-                                match body_mode {
-                                    OverridableBodyMode::None => { // body processing is disabled, just inject back the frame
-                                        debug!(target: "ext_proc", "outbound response body frame: injecting the frame DATA into the body");
-                                        let proof = self.response_processing.make_proof().unwrap_or_else(|| {
-                                            let status = ProcessingStatus::ResponseReady(ReadyStatus::default());
-                                            self.response_processing.return_status(status, "proof for frame injection when body processing is disabled")
-                                        });
-                                        _ = self.response_processing.frame_bridge.inject_frame(Ok(frame_to_send), proof).await;
-                                    },
-                                    _ => { // send the merged frame to ext_proc and park a copy for later injection
-                                        debug!(target: "ext_proc", "outbound response body frame: sending body chunk of response ({})",  if frame_to_send.is_data() { "DATA" } else { "TRAILERS" });
-                                        if let Some(proc_req) = self.response_processing.handle_outgoing_body_chunk(clone_frame(&frame_to_send), false) {
-                                            debug!(target: "ext_proc", "handle_outgoing_body_chunk (merged frame sent) -> forward {outbound:?}", outbound = TruncatedDebug::<_,1024>(&proc_req));
-                                            self.forward_to_external_processor(proc_req).await;
-                                        }
-                                        // save a copy of the frame to inject into the body bridge later
-                                        self.response_processing.inflight_frames.push(frame_to_send);
+                                if let OverridableBodyMode::None = body_mode { // body processing is disabled, just inject back the frame
+                                    debug!(target: "ext_proc", "outbound response body frame: injecting the frame DATA into the body");
+                                    let proof = self.response_processing.make_proof().unwrap_or_else(|| {
+                                        let status = ProcessingStatus::ResponseReady(ReadyStatus::default());
+                                        self.response_processing.return_status(status, "proof for frame injection when body processing is disabled")
+                                    });
+                                    _ = self.response_processing.frame_bridge.inject_frame(Ok(frame_to_send), proof).await;
+                                } else { // send the merged frame to ext_proc and park a copy for later injection
+                                    debug!(target: "ext_proc", "outbound response body frame: sending body chunk of response ({})",  if frame_to_send.is_data() { "DATA" } else { "TRAILERS" });
+                                    if let Some(proc_req) = self.response_processing.handle_outgoing_body_chunk(clone_frame(&frame_to_send), false) {
+                                        debug!(target: "ext_proc", "handle_outgoing_body_chunk (merged frame sent) -> forward {outbound:?}", outbound = TruncatedDebug::<_,1024>(&proc_req));
+                                        self.forward_to_external_processor(proc_req).await;
                                     }
+                                    // save a copy of the frame to inject into the body bridge later
+                                    self.response_processing.inflight_frames.push(frame_to_send);
                                 }
                             }
                         },
@@ -1389,7 +1385,7 @@ impl ExternalProcessingWorker<kind::Processing> {
 
                 () = fast_timeout::fast_sleep(self.timeout_state.duration), if self.timeout_state.active => {
                     let msg = "processing_loop: message timeout";
-                    self.recover_or_failure(ExtProcError::Timeout("message timeout"), &msg).await;
+                    self.recover_or_failure(ExtProcError::Timeout("message timeout"), msg).await;
                     break 'transaction_loop;
                 }
             }
@@ -1619,7 +1615,7 @@ impl ExternalProcessingWorker<kind::Observability> {
                     }
                 },
 
-                _ = std::future::ready(()), if streaming_enabled && !outbound_req_enabled && !outbound_resp_enabled => {
+                () = std::future::ready(()), if streaming_enabled && !outbound_req_enabled && !outbound_resp_enabled => {
                     debug!(target: "ext_proc", "no outbound request or response enabled (observability terminating...)");
                     break 'transaction_loop;
                 }
@@ -1724,17 +1720,21 @@ impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
             Some(Err(err)) => {
                 info!(target: "ext_proc", "External processor is unavailable: {err}");
                 if let Some(reply_channel) = self.response_processing.reply_channel.take() {
-                    let _ = reply_channel.send(self.response_processing.status_error(
-                        "Lost connection to external processor",
-                        self.inner.worker_config.failure_mode_allow,
-                    ));
+                    let _ = reply_channel
+                        .send(self.response_processing.status_error(
+                            "Lost connection to external processor",
+                            self.inner.worker_config.failure_mode_allow,
+                        ))
+                        .ok();
                 }
 
                 if let Some(reply_channel) = self.request_processing.reply_channel.take() {
-                    let _ = reply_channel.send(self.request_processing.status_error(
-                        "Lost connection to external processor",
-                        self.inner.worker_config.failure_mode_allow,
-                    ));
+                    let _ = reply_channel
+                        .send(self.request_processing.status_error(
+                            "Lost connection to external processor",
+                            self.inner.worker_config.failure_mode_allow,
+                        ))
+                        .ok();
                 }
 
                 self.timeout_state.active = false;
@@ -1752,12 +1752,14 @@ impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
             let msg = "External processor attempted multiple timeout extensions";
             if let Some(reply_channel) = self.response_processing.reply_channel.take() {
                 let _ = reply_channel
-                    .send(self.response_processing.status_error(msg, self.inner.worker_config.failure_mode_allow));
+                    .send(self.response_processing.status_error(msg, self.inner.worker_config.failure_mode_allow))
+                    .ok();
             }
 
             if let Some(reply_channel) = self.request_processing.reply_channel.take() {
                 let _ = reply_channel
-                    .send(self.request_processing.status_error(msg, self.inner.worker_config.failure_mode_allow));
+                    .send(self.request_processing.status_error(msg, self.inner.worker_config.failure_mode_allow))
+                    .ok();
             }
 
             return false;
@@ -1795,7 +1797,8 @@ impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
                 &mut response,
                 header_mutation,
                 self.inner.worker_config.mutation_rules.as_ref(),
-            );
+            )
+            .ok();
         }
         if let Some(grpc_status) = &response_attempt.grpc_status {
             if let Ok(status_value) = http::HeaderValue::from_str(&grpc_status.status.to_string()) {

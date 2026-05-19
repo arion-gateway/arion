@@ -12,12 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#![allow(clippy::expect_used, reason = "test infrastructure — panicking on setup failure is intentional")]
+
 use std::time::Duration;
 
 use orion_e2e_tests::config_builder::presets;
 use orion_e2e_tests::{
-    OrionInstance, PartialSendClient, PreConfiguredResponse, RawHttpRequestBuilder, RawHttpResponse, SpawnOptions,
-    TcpTestClient, TestBackend,
+    cleanup_config_file, OrionInstance, PartialSendClient, PreConfiguredResponse, RawHttpRequestBuilder,
+    RawHttpResponse, SpawnOptions, TcpTestClient, TestBackend,
 };
 
 async fn setup() -> (OrionInstance, TestBackend, TcpTestClient, std::path::PathBuf) {
@@ -31,13 +33,14 @@ async fn setup() -> (OrionInstance, TestBackend, TcpTestClient, std::path::PathB
         .await
         .expect("Failed to spawn Orion");
 
+    #[allow(clippy::unwrap_used)]
     let tcp_client = TcpTestClient::new(orion.listener_addr().unwrap());
     (orion, backend, tcp_client, config_path)
 }
 
-fn cleanup(orion: OrionInstance, config_path: std::path::PathBuf) {
+fn cleanup(orion: OrionInstance, config_path: &std::path::Path) {
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(config_path);
 }
 
 #[tokio::test]
@@ -64,7 +67,7 @@ async fn test_tc1101_content_type_body_mismatch() {
     assert_eq!(captured.body_str(), Some("<root><item>test</item></root>"));
     assert_eq!(captured.header("content-type"), Some("application/json"));
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -98,7 +101,7 @@ async fn test_tc1102_expect_100_continue() {
     let final_resp = RawHttpResponse::parse(&final_response).expect("Expected final response");
     final_resp.assert_status(200);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -120,7 +123,7 @@ async fn test_tc1103_invalid_expect_value() {
     // Orion ignores unknown Expect values and forwards the request rather than returning 417.
     resp.assert_status(200);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -143,9 +146,9 @@ async fn test_tc1104_data_after_connection_close() {
     // Try to send another request on the same connection
     let second_req = RawHttpRequestBuilder::new().uri(b"/second").host("localhost").build();
     // This may fail (broken pipe) which is expected — the connection should be closed
-    let _ = client.send_bytes(&second_req).await;
+    let _broken_pipe = client.send_bytes(&second_req).await;
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -164,7 +167,7 @@ async fn test_tc1105_upgrade_to_unknown_protocol() {
     // Orion refuses the upgrade to an unknown protocol with 403.
     resp.assert_status(403);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -182,5 +185,5 @@ async fn test_tc1106_http10_without_host() {
     // Orion returns 404 (no virtual host matches the empty authority) rather than 400.
     resp.assert_status(404);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }

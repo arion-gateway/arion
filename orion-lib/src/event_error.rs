@@ -123,12 +123,11 @@ impl EventKind {
 
     pub fn termination_details(&self) -> Option<ConnectionTerminationDetails> {
         match self {
-            EventKind::Upstream(_) => None,
             EventKind::Downstream(err) => match err {
                 DownstreamError::Io(err) => Some(ConnectionTerminationDetails::from(err)),
                 DownstreamError::Reset => Some(ConnectionTerminationDetails("downstream_connection_reset")),
             },
-            EventKind::Failure(_) => None,
+            EventKind::Upstream(_) | EventKind::Failure(_) => None,
         }
     }
 }
@@ -288,6 +287,7 @@ impl From<UpstreamError> for ResponseFlags {
 }
 
 pub fn elapsed() -> Elapsed {
+    // SAFETY: a way to construct the Elapsed tokio time error
     unsafe { std::mem::transmute(()) }
 }
 
@@ -314,8 +314,8 @@ impl<'a, B> TryInferFrom<&'a Result<Response<B>, BoxError>> for RetryCondition<'
 }
 
 impl<'a> TryInferFrom<&'a (dyn std::error::Error + 'static)> for DownstreamError {
-    fn try_infer_from(err: &'a (dyn std::error::Error + 'static)) -> Option<Self> {
-        if let Some(io_err) = err.downcast_ref::<io::Error>() {
+    fn try_infer_from(source: &'a (dyn std::error::Error + 'static)) -> Option<Self> {
+        if let Some(io_err) = source.downcast_ref::<io::Error>() {
             return Some(DownstreamError::Io(io::Error::new(io_err.kind(), io_err.to_string())));
         }
 
@@ -324,19 +324,19 @@ impl<'a> TryInferFrom<&'a (dyn std::error::Error + 'static)> for DownstreamError
 }
 
 impl<'a> TryInferFrom<&'a (dyn std::error::Error + 'static)> for UpstreamError {
-    fn try_infer_from(err: &'a (dyn std::error::Error + 'static)) -> Option<Self> {
-        if err.downcast_ref::<Elapsed>().is_some() {
+    fn try_infer_from(source: &'a (dyn std::error::Error + 'static)) -> Option<Self> {
+        if source.downcast_ref::<Elapsed>().is_some() {
             // Note: This should never happen, as the user should remap the Tokio timeout
-            // to a suitable EventError (e.g., timeout(dur, fut).await.map_err(|_| EventError::ConnectTimeout)).
+            // to a suitable EventError (e.g., timeout(dur, fut).await.map_err(|_e| EventError::ConnectTimeout)).
             // Just in case, the PerTryTimeout error is the closest one we can choose.
             return Some(UpstreamError::PerTryTimeout);
         }
 
-        if let Some(failure) = err.downcast_ref::<UpstreamError>() {
+        if let Some(failure) = source.downcast_ref::<UpstreamError>() {
             return Some(failure.clone());
         }
 
-        if let Some(h2_reason) = err.downcast_ref::<h2::Error>().and_then(h2::Error::reason) {
+        if let Some(h2_reason) = source.downcast_ref::<h2::Error>().and_then(h2::Error::reason) {
             match h2_reason {
                 h2::Reason::REFUSED_STREAM => return Some(UpstreamError::RefusedStream),
                 h2::Reason::CONNECT_ERROR => {
@@ -349,11 +349,11 @@ impl<'a> TryInferFrom<&'a (dyn std::error::Error + 'static)> for UpstreamError {
             }
         }
 
-        if let Some(io_err) = err.downcast_ref::<io::Error>() {
+        if let Some(io_err) = source.downcast_ref::<io::Error>() {
             return Some(UpstreamError::Io(io::Error::new(io_err.kind(), io_err.to_string())));
         }
 
-        if let Some(source_err) = err.source() {
+        if let Some(source_err) = source.source() {
             return Self::try_infer_from(source_err);
         }
 

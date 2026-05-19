@@ -119,9 +119,9 @@ impl NetworkGlobalRateLimit {
                 Ok(response) => {
                     if let Some((requests, valid_until_ms)) = extract_quota(&response) {
                         bucket.valid_until_ms.store(valid_until_ms, Ordering::Release);
-                        bucket.remaining.store(requests as i64, Ordering::Release);
+                        bucket.remaining.store(i64::from(requests), Ordering::Release);
                     }
-                    Self::eval_rls_response(response)
+                    Self::eval_rls_response(&response)
                 },
                 Err(e) => {
                     if self.failure_mode_deny {
@@ -153,9 +153,9 @@ impl NetworkGlobalRateLimit {
                         })
                     });
                     bucket.valid_until_ms.store(valid_until_ms, Ordering::Release);
-                    bucket.remaining.store(requests as i64, Ordering::Release);
+                    bucket.remaining.store(i64::from(requests), Ordering::Release);
                 }
-                Self::eval_rls_response(response)
+                Self::eval_rls_response(&response)
             },
             Err(e) => {
                 if self.failure_mode_deny {
@@ -167,7 +167,7 @@ impl NetworkGlobalRateLimit {
         }
     }
 
-    fn eval_rls_response(response: RateLimitResponse) -> crate::Result<()> {
+    fn eval_rls_response(response: &RateLimitResponse) -> crate::Result<()> {
         let code =
             rate_limit_response::Code::try_from(response.overall_code).unwrap_or(rate_limit_response::Code::Unknown);
         if code == rate_limit_response::Code::OverLimit {
@@ -204,6 +204,7 @@ impl NetworkGlobalRateLimit {
         };
 
         #[cfg(feature = "instrumentation")]
+        #[allow(clippy::cast_possible_truncation)]
         crate::instrumentation::metrics::SEND_RLS_REQUEST
             .observe(clock.delta_as_nanos(start_clock, clock.raw()) as usize);
 
@@ -222,6 +223,7 @@ fn extract_quota(response: &RateLimitResponse) -> Option<(u32, u64)> {
 }
 
 fn now_ms() -> u64 {
+    #[allow(clippy::cast_possible_truncation)]
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
@@ -290,10 +292,10 @@ mod tests {
     impl RateLimitService for MockRls {
         async fn should_rate_limit(
             &self,
-            req: tonic::Request<RateLimitRequest>,
+            request: tonic::Request<RateLimitRequest>,
         ) -> Result<tonic::Response<RateLimitResponse>, tonic::Status> {
             self.call_count.fetch_add(1, Ordering::SeqCst);
-            self.captured_domains.lock().await.push(req.get_ref().domain.clone());
+            self.captured_domains.lock().await.push(request.get_ref().domain.clone());
             if self.fail_with_error {
                 return Err(tonic::Status::unavailable("simulated RLS failure"));
             }
@@ -307,7 +309,7 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
-            Server::builder()
+            let _ = Server::builder()
                 .add_service(RateLimitServiceServer::new(server_mock))
                 .serve_with_incoming(TcpListenerStream::new(listener))
                 .await
@@ -336,7 +338,7 @@ mod tests {
     }
 
     fn ok_response_with_quota(requests: u32) -> RateLimitResponse {
-        let valid_secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64 + 3600;
+        let valid_secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs().cast_signed() + 3600;
         RateLimitResponse {
             overall_code: rate_limit_response::Code::Ok as i32,
             quota: Some(rate_limit_response::Quota {
@@ -437,7 +439,7 @@ mod tests {
         let domain = unique_domain();
         let (uri, mock) = start_mock_rls(MockRls::with_responses(vec![ok_response()])).await;
         let filter = make_filter(uri, Some(domain.as_str()), false);
-        assert!(filter.check(None).await.is_ok());
+        filter.check(None).await.unwrap();
         assert_eq!(mock.call_count(), 1);
     }
 
@@ -456,7 +458,7 @@ mod tests {
         let domain = unique_domain();
         let (uri, mock) = start_mock_rls(MockRls::always_failing()).await;
         let filter = make_filter(uri, Some(domain.as_str()), false);
-        assert!(filter.check(None).await.is_ok());
+        filter.check(None).await.unwrap();
         assert_eq!(mock.call_count(), 1);
     }
 
@@ -482,7 +484,7 @@ mod tests {
         let sni = unique_domain();
         let (uri, mock) = start_mock_rls(MockRls::with_responses(vec![ok_response()])).await;
         let filter = make_filter(uri, None, false);
-        assert!(filter.check(Some(&sni)).await.is_ok());
+        filter.check(Some(&sni)).await.unwrap();
         assert_eq!(mock.domains_seen().await, [sni.as_str()]);
     }
 
@@ -492,7 +494,7 @@ mod tests {
         let sni = unique_domain();
         let (uri, mock) = start_mock_rls(MockRls::with_responses(vec![ok_response()])).await;
         let filter = make_filter(uri, Some(static_domain.as_str()), false);
-        assert!(filter.check(Some(&sni)).await.is_ok());
+        filter.check(Some(&sni)).await.unwrap();
         assert_eq!(mock.domains_seen().await, [static_domain.as_str()]);
     }
 
@@ -505,7 +507,7 @@ mod tests {
             start_mock_rls(MockRls::with_responses(vec![ok_response_with_quota(3), ok_response_with_quota(3)])).await;
         let filter = make_filter(uri, Some(domain.as_str()), false);
         for _ in 0..4 {
-            assert!(filter.check(None).await.is_ok());
+            filter.check(None).await.unwrap();
         }
         assert_eq!(mock.call_count(), 2);
     }
@@ -518,8 +520,8 @@ mod tests {
         let (uri, mock) =
             start_mock_rls(MockRls::with_responses(vec![ok_response_with_quota(2), over_limit_response()])).await;
         let filter = make_filter(uri, Some(domain.as_str()), false);
-        assert!(filter.check(None).await.is_ok()); // call 1: RLS hit, remaining stored as 1
-        assert!(filter.check(None).await.is_ok()); // call 2: bucket, remaining 1→0
+        filter.check(None).await.unwrap(); // call 1: RLS hit, remaining stored as 1
+        filter.check(None).await.unwrap(); // call 2: bucket, remaining 1→0
         assert!(filter.check(None).await.is_err()); // call 3: exhausted, RLS hit → OVER_LIMIT
         assert_eq!(mock.call_count(), 2);
     }

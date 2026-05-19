@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use pingora::prelude::fast_timeout::fast_timeout;
 use std::collections::VecDeque;
 use std::io::BufReader;
 use std::net::SocketAddr;
@@ -51,7 +52,6 @@ impl TlsBackendConfig {
         Ok(Self { cert_chain, private_key, client_ca: None, require_client_cert: false })
     }
 
-    #[must_use]
     pub fn with_client_ca(mut self, ca_path: impl AsRef<Path>) -> Result<Self> {
         self.client_ca = Some(Self::load_root_store(ca_path)?);
         Ok(self)
@@ -133,7 +133,7 @@ pub struct TlsTestBackend {
 impl TlsTestBackend {
     pub async fn start(config: TlsBackendConfig) -> Result<Self> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
-        Self::start_with_listener(listener, config).await
+        Self::start_with_listener(listener, &config)
     }
 
     pub async fn start_with_files(cert_path: impl AsRef<Path>, key_path: impl AsRef<Path>) -> Result<Self> {
@@ -154,10 +154,10 @@ impl TlsTestBackend {
     pub async fn start_on_port(port: u16, config: TlsBackendConfig) -> Result<Self> {
         let addr = SocketAddr::from(([127, 0, 0, 1], port));
         let listener = TcpListener::bind(addr).await?;
-        Self::start_with_listener(listener, config).await
+        Self::start_with_listener(listener, &config)
     }
 
-    async fn start_with_listener(listener: TcpListener, config: TlsBackendConfig) -> Result<Self> {
+    fn start_with_listener(listener: TcpListener, config: &TlsBackendConfig) -> Result<Self> {
         let addr = listener.local_addr()?;
         let server_config = config.build_server_config()?;
         let tls_acceptor = TlsAcceptor::from(Arc::new(server_config));
@@ -182,6 +182,10 @@ impl TlsTestBackend {
         Ok(Self { addr, request_rx, responses, default_response, shutdown, _server_handle: server_handle })
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "server state is flat by design — grouping into a struct adds boilerplate with no clarity benefit"
+    )]
     async fn run_server(
         listener: TcpListener,
         tls_acceptor: TlsAcceptor,
@@ -313,7 +317,7 @@ impl TlsTestBackend {
 
     #[allow(clippy::disallowed_methods)]
     pub async fn await_request_with_timeout(&mut self, timeout: Duration) -> Result<CapturedRequest> {
-        match tokio::time::timeout(timeout, self.request_rx.recv()).await {
+        match fast_timeout(timeout, self.request_rx.recv()).await {
             Ok(Some(req)) => Ok(req),
             Ok(None) | Err(_) => Err(Error::NoRequestReceived(timeout)),
         }

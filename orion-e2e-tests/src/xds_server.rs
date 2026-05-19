@@ -21,7 +21,7 @@ use orion_data_plane_api::envoy_data_plane_api::{
         aggregated_discovery_service_server::{AggregatedDiscoveryService, AggregatedDiscoveryServiceServer},
         DeltaDiscoveryRequest, DeltaDiscoveryResponse, DiscoveryRequest, DiscoveryResponse, ResourceName,
     },
-    tonic::{self, transport::Server, IntoStreamingRequest, Response, Status},
+    tonic::{transport::Server, IntoStreamingRequest, Response, Status},
 };
 use tokio::sync::{
     broadcast,
@@ -66,7 +66,9 @@ impl AckTracker {
 
     pub fn complete(&self, nonce: &str, result: PushResult) -> bool {
         if let Some((_, tx)) = self.pending.remove(nonce) {
-            let _ = tx.send(result);
+            if tx.send(result).is_err() {
+                debug!("ack receiver dropped before result could be delivered for nonce {nonce}");
+            }
             true
         } else {
             false
@@ -122,10 +124,10 @@ impl AggregatedDiscoveryService for TrackedAggregateServer {
 
     async fn stream_aggregated_resources(
         &self,
-        req: tonic::Request<tonic::Streaming<DiscoveryRequest>>,
+        request: tonic::Request<tonic::Streaming<DiscoveryRequest>>,
     ) -> AggregatedDiscoveryServiceResult<Self::StreamAggregatedResourcesStream> {
         info!("TrackedAggregateServer::stream_aggregated_resources");
-        info!("\tclient connected from: {:?}", req.remote_addr());
+        info!("\tclient connected from: {:?}", request.remote_addr());
 
         let (tx, rx) = mpsc::channel(128);
         let mut resources_rx =
@@ -164,7 +166,7 @@ impl AggregatedDiscoveryService for TrackedAggregateServer {
             info!("\tclient disconnected");
         });
 
-        let mut incoming_stream = req.into_streaming_request().into_inner();
+        let mut incoming_stream = request.into_streaming_request().into_inner();
         tokio::spawn(async move {
             while let Some(item) = incoming_stream.next().await {
                 debug!("TrackedServer stream: Got item {item:?}");
@@ -181,15 +183,15 @@ impl AggregatedDiscoveryService for TrackedAggregateServer {
 
     async fn delta_aggregated_resources(
         &self,
-        req: tonic::Request<tonic::Streaming<DeltaDiscoveryRequest>>,
+        request: tonic::Request<tonic::Streaming<DeltaDiscoveryRequest>>,
     ) -> AggregatedDiscoveryServiceResult<Self::DeltaAggregatedResourcesStream> {
         info!("TrackedAggregateServer::delta_aggregated_resources");
-        let remote_addr = req.remote_addr().unwrap_or_else(|| SocketAddr::from(([0, 0, 0, 0], 0)));
+        let remote_addr = request.remote_addr().unwrap_or_else(|| SocketAddr::from(([0, 0, 0, 0], 0)));
         info!("\tclient connected from: {:?}", remote_addr);
 
         let (tx, rx) = mpsc::channel(128);
         let mut resources_rx = self.delta_resources_rx.take().ok_or(Status::internal("Delta stream is unavailable"))?;
-        let ack_tracker = self.ack_tracker.clone();
+        let ack_tracker = Arc::clone(&self.ack_tracker);
 
         tokio::spawn(async move {
             while let Some(TrackedPush { action, nonce, result_tx }) = resources_rx.recv().await {
@@ -210,8 +212,8 @@ impl AggregatedDiscoveryService for TrackedAggregateServer {
             info!("\tclient disconnected");
         });
 
-        let mut incoming_stream = req.into_streaming_request().into_inner();
-        let ack_tracker_for_incoming = self.ack_tracker.clone();
+        let mut incoming_stream = request.into_streaming_request().into_inner();
+        let ack_tracker_for_incoming = Arc::clone(&self.ack_tracker);
         let event_tx = self.event_tx.clone();
         let mut first_message = true;
 
@@ -220,7 +222,9 @@ impl AggregatedDiscoveryService for TrackedAggregateServer {
                 if first_message {
                     first_message = false;
                     let node_id = item.node.as_ref().map(|n| n.id.clone()).unwrap_or_default();
-                    let _ = event_tx.send(ServerEvent::ClientConnected { remote_addr, node_id });
+                    if event_tx.send(ServerEvent::ClientConnected { remote_addr, node_id }).is_err() {
+                        debug!("no active event subscribers for ClientConnected");
+                    }
                 }
 
                 if !item.response_nonce.is_empty() {
@@ -234,7 +238,9 @@ impl AggregatedDiscoveryService for TrackedAggregateServer {
                     }
                 }
             }
-            let _ = event_tx.send(ServerEvent::ClientDisconnected { remote_addr });
+            if event_tx.send(ServerEvent::ClientDisconnected { remote_addr }).is_err() {
+                debug!("no active event subscribers for ClientDisconnected");
+            }
             info!("TrackedServer delta side closed");
         });
 
@@ -288,7 +294,7 @@ pub fn start_tracked_aggregate_server(
     let (action_tx, action_rx) = mpsc::channel::<TrackedPush>(128);
     let ack_tracker = Arc::new(AckTracker::new());
 
-    let server = TrackedAggregateServer::new(action_rx, stream_resources_rx, event_tx, ack_tracker.clone());
+    let server = TrackedAggregateServer::new(action_rx, stream_resources_rx, event_tx, Arc::clone(&ack_tracker));
     let aggregate_server = AggregatedDiscoveryServiceServer::new(server);
 
     tokio::spawn(async move {

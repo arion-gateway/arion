@@ -12,10 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#![allow(clippy::expect_used, reason = "test infrastructure — panicking on setup failure is intentional")]
+
 use orion_e2e_tests::config_builder::presets;
 use orion_e2e_tests::{
-    assert_rejected, OrionInstance, PreConfiguredResponse, RawHttpRequestBuilder, RawHttpResponse, SpawnOptions,
-    TcpTestClient, TestBackend,
+    assert_rejected, cleanup_config_file, OrionInstance, PreConfiguredResponse, RawHttpRequestBuilder, RawHttpResponse,
+    SpawnOptions, TcpTestClient, TestBackend,
 };
 
 async fn setup() -> (OrionInstance, TestBackend, TcpTestClient, std::path::PathBuf) {
@@ -29,13 +31,14 @@ async fn setup() -> (OrionInstance, TestBackend, TcpTestClient, std::path::PathB
         .await
         .expect("Failed to spawn Orion");
 
+    #[allow(clippy::unwrap_used)]
     let tcp_client = TcpTestClient::new(orion.listener_addr().unwrap());
     (orion, backend, tcp_client, config_path)
 }
 
-fn cleanup(orion: OrionInstance, config_path: std::path::PathBuf) {
+fn cleanup(orion: OrionInstance, config_path: &std::path::Path) {
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(config_path);
 }
 
 #[tokio::test]
@@ -48,7 +51,7 @@ async fn test_tc0501_empty_header_name() {
     let response = tcp_client.send(&req).await.expect("Failed to send");
     assert_rejected(&response, &[400]);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -61,7 +64,7 @@ async fn test_tc0502_space_in_header_name() {
     let response = tcp_client.send(&req).await.expect("Failed to send");
     assert_rejected(&response, &[400]);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -74,7 +77,7 @@ async fn test_tc0503_invalid_chars_in_header_name() {
     let response = tcp_client.send(&req).await.expect("Failed to send");
     assert_rejected(&response, &[400]);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -87,7 +90,7 @@ async fn test_tc0504_missing_colon() {
     let response = tcp_client.send(&req).await.expect("Failed to send");
     assert_rejected(&response, &[400]);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -100,7 +103,7 @@ async fn test_tc0505_space_before_colon() {
     let response = tcp_client.send(&req).await.expect("Failed to send");
     assert_rejected(&response, &[400]);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -113,7 +116,7 @@ async fn test_tc0506_control_chars_in_value() {
     let response = tcp_client.send(&req).await.expect("Failed to send");
     assert_rejected(&response, &[400]);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -127,7 +130,7 @@ async fn test_tc0507_oversized_header() {
     let response = tcp_client.send(&req).await.expect("Failed to send");
     assert_rejected(&response, &[400, 431]);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -144,7 +147,7 @@ async fn test_tc0508_too_many_headers() {
     let response = tcp_client.send(&req).await.expect("Failed to send");
     assert_rejected(&response, &[431]);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -163,7 +166,7 @@ async fn test_tc0509_total_header_size_exceeded() {
     let response = tcp_client.send(&req).await.expect("Failed to send");
     assert_rejected(&response, &[400, 431]);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -179,7 +182,7 @@ async fn test_tc0510_obsolete_line_folding() {
     // Orion rejects obsolete line folding as RFC 7230 §3.2.4 recommends.
     resp.assert_status(400);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -193,7 +196,7 @@ async fn test_tc0601_missing_host() {
     let response = tcp_client.send(&req).await.expect("Failed to send");
     assert_rejected(&response, &[400]);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -206,7 +209,7 @@ async fn test_tc0602_duplicate_host() {
     let response = tcp_client.send(&req).await.expect("Failed to send");
     assert_rejected(&response, &[400]);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -221,7 +224,7 @@ async fn test_tc0603_invalid_host_port() {
     // Orion does not validate the authority component's port; the request is forwarded.
     resp.assert_status(200);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -236,7 +239,7 @@ async fn test_tc0604_empty_host_value() {
     // Orion routes the empty-Host request but the upstream connection fails → 502.
     resp.assert_status(502);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -249,7 +252,7 @@ async fn test_tc0605_non_numeric_content_length() {
     let response = tcp_client.send(&req).await.expect("Failed to send");
     assert_rejected(&response, &[400]);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -262,7 +265,7 @@ async fn test_tc0606_negative_content_length() {
     let response = tcp_client.send(&req).await.expect("Failed to send");
     assert_rejected(&response, &[400]);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -282,7 +285,7 @@ async fn test_tc0607_duplicate_inconsistent_cl() {
     let response = tcp_client.send(&req).await.expect("Failed to send");
     assert_rejected(&response, &[400]);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -305,7 +308,7 @@ async fn test_tc0608_cl_and_te_coexist() {
     // RFC 7230 §3.3.3 allows rejection with 400 as a stricter option — not enforced here.
     resp.assert_status(200);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -324,7 +327,7 @@ async fn test_tc0609_invalid_transfer_encoding() {
     let response = tcp_client.send(&req).await.expect("Failed to send");
     assert_rejected(&response, &[400]);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -346,5 +349,5 @@ async fn test_tc0610_stacked_te_values() {
     // Orion accepts stacked "chunked, chunked" TE and forwards.
     resp.assert_status(200);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }

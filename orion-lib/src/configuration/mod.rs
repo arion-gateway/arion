@@ -38,7 +38,7 @@ pub fn get_listeners_and_clusters(
     let clusters = static_resources
         .clusters
         .into_iter()
-        .map(|c| PartialClusterType::try_from((c, &secret_manager)))
+        .map(|c| PartialClusterType::try_from((Box::new(c), &secret_manager)))
         .collect::<Result<Vec<_>>>()?;
     if clusters.is_empty() {
         //shouldn't happen with new config

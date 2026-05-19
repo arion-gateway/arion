@@ -22,19 +22,13 @@
  * connections are done. It's a bit more code, but worth in the long run.
  */
 
-use http::{Request, Response};
 use orion_configuration::config::cluster::http_protocol_options::Codec;
 use parking_lot::Mutex;
-use std::{sync::Arc, time::Duration};
-use tokio::sync::mpsc;
+use std::time::Duration;
 
 use super::*;
 use crate::{
-    clusters::health::{
-        checkers::tests::{deref, TestFixture},
-        HealthStatus,
-    },
-    listeners::http_connection_manager::TransactionContext,
+    clusters::health::checkers::tests::{deref, TestFixture},
     PolyBody, Result,
 };
 
@@ -60,7 +54,7 @@ impl MockHttpStack {
 impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &MockHttpStack {
     async fn to_response(
         self,
-        _trans_handler: &TransactionContext,
+        _trans_context: &TransactionContext,
         request: Request<OrionRequestBody>,
         _ctx: RequestContext<'a>,
     ) -> Result<Response<OrionResponseBody>> {

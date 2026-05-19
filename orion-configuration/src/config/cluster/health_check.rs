@@ -241,7 +241,7 @@ impl HttpHealthCheck {
             //ideally all of the options here would be a headervalue and we wouldn't need to error out
             Ok(host.to_owned())
         } else {
-            Authority::from_str(cluster_name).map_err(|_| ClusterHostnameError)
+            Authority::from_str(cluster_name).map_err(|_e| ClusterHostnameError)
         }
     }
 }
@@ -375,14 +375,14 @@ mod envoy_conversions {
             let unhealthy_threshold = required!(unhealthy_threshold)?.value;
             let unhealthy_threshold = unhealthy_threshold
                 .try_into()
-                .map_err(|_| {
+                .map_err(|_e| {
                     GenericError::from_msg(format!("invalid value {unhealthy_threshold}. Must be less than 65536."))
                 })
                 .with_node("unhealthy_threshold")?;
             let healthy_threshold = required!(healthy_threshold)?.value;
             let healthy_threshold = healthy_threshold
                 .try_into()
-                .map_err(|_| {
+                .map_err(|_e| {
                     GenericError::from_msg(format!("invalid value {healthy_threshold}. Must be less than 65536."))
                 })
                 .with_node("healthy_threshold")?;

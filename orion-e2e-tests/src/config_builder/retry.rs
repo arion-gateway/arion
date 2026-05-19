@@ -15,8 +15,7 @@
 use std::time::Duration;
 
 use orion_data_plane_api::envoy_data_plane_api::{
-    envoy::config::route::v3::RetryPolicy as EnvoyRetryPolicy,
-    google::protobuf::{Duration as ProtoDuration, UInt32Value},
+    envoy::config::route::v3::RetryPolicy as EnvoyRetryPolicy, google::protobuf::UInt32Value,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -141,9 +140,7 @@ impl RetryPolicyBuilder {
         EnvoyRetryPolicy {
             retry_on,
             num_retries: self.num_retries.map(|n| UInt32Value { value: n }),
-            per_try_timeout: self
-                .per_try_timeout
-                .map(|d| ProtoDuration { seconds: d.as_secs() as i64, nanos: d.subsec_nanos() as i32 }),
+            per_try_timeout: self.per_try_timeout.map(super::duration_to_proto),
             retriable_status_codes: self.retriable_status_codes,
             ..Default::default()
         }

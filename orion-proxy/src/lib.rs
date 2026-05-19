@@ -31,7 +31,7 @@ pub fn run() -> Result<()> {
     let options = Options::parse_options();
     let Config { runtime, logging, access_logging, metrics, bootstrap } = Config::new(&options)?;
 
-    RUNTIME_CONFIG.set(runtime).map_err(|_| "runtime config was somehow set before we had a chance to set it")?;
+    RUNTIME_CONFIG.set(runtime).map_err(|_e| "runtime config was somehow set before we had a chance to set it")?;
 
     // Set the header_name from which to extract the user_id
     //

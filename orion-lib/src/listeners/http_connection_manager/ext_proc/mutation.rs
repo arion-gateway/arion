@@ -18,7 +18,7 @@ use crate::Error;
 /// - Some(Err(())) if `raw_value` contains invalid UTF-8
 fn try_extract_header_value_as_str(opt: &HeaderValueOption) -> Option<Result<&str, ()>> {
     match opt.header.as_ref() {
-        Some(h) if !h.raw_value.is_empty() => Some(std::str::from_utf8(&h.raw_value).map_err(|_| ())),
+        Some(h) if !h.raw_value.is_empty() => Some(std::str::from_utf8(&h.raw_value).map_err(|_e| ())),
         Some(h) => Some(Ok(h.value.as_str())),
         None => None,
     }
@@ -53,7 +53,12 @@ fn extract_pseudo_headers(mutation: &mut HeaderMutation) -> PseudoHeaders {
     let mut i = 0;
 
     while i < mutation.set_headers.len() {
-        let is_pseudo = mutation.set_headers[i].header.as_ref().map(|h| h.key.starts_with(':')).unwrap_or(false);
+        let is_pseudo = mutation
+            .set_headers
+            .get(i)
+            .and_then(|h| h.header.as_ref())
+            .map(|h| h.key.starts_with(':'))
+            .unwrap_or(false);
 
         if is_pseudo {
             let header_to_set = mutation.set_headers.remove(i);

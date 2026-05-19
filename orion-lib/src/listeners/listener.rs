@@ -56,6 +56,7 @@ use orion_configuration::config::{
 use orion_interner::StringInterner;
 #[cfg(feature = "metrics")]
 use orion_metrics::metrics::filters;
+use smallvec::{smallvec, SmallVec};
 use tokio::sync::mpsc;
 
 #[cfg(feature = "access-log")]
@@ -195,7 +196,7 @@ impl ListenerFactory {
             filter_chains,
             with_tls_inspector,
             proxy_protocol_config,
-            listener_local_rate_limit,
+            local_rate_limit: listener_local_rate_limit,
             route_updates_receiver,
             secret_updates_receiver,
             access_log,
@@ -232,8 +233,8 @@ impl FilterListenerContext for McpGatewayListenerContext {
 
 #[inline]
 fn get_listener_context(listener_name: &'static str) -> Arc<ListenerContext> {
-    let dmap = LISTENERS_CONTEXT.get_or_init(|| DashMap::new());
-    dmap.entry(listener_name).or_insert_with(|| Arc::new(ListenerContext::default())).value().clone()
+    let dmap = LISTENERS_CONTEXT.get_or_init(DashMap::new);
+    Arc::clone(dmap.entry(listener_name).or_insert_with(|| Arc::new(ListenerContext::default())).value())
 }
 
 #[derive(Debug)]
@@ -243,7 +244,7 @@ pub struct Listener {
     pub filter_chains: HashMap<FilterChainMatch, FilterchainType>,
     with_tls_inspector: bool,
     proxy_protocol_config: Option<DownstreamProxyProtocolConfig>,
-    listener_local_rate_limit: Option<ListenerLocalRateLimit>,
+    local_rate_limit: Option<ListenerLocalRateLimit>,
     route_updates_receiver: broadcast::Receiver<RouteConfigurationChange>,
     secret_updates_receiver: broadcast::Receiver<TlsContextChange>,
     access_log: Vec<AccessLog>,
@@ -267,7 +268,7 @@ impl Listener {
             filter_chains: HashMap::new(),
             with_tls_inspector: false,
             proxy_protocol_config: None,
-            listener_local_rate_limit: None,
+            local_rate_limit: None,
             route_updates_receiver: route_rx,
             secret_updates_receiver: secret_rx,
             access_log: vec![],
@@ -285,6 +286,7 @@ impl Listener {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     pub async fn start(self) -> Error {
         let Self {
             name,
@@ -292,10 +294,11 @@ impl Listener {
             filter_chains,
             with_tls_inspector,
             proxy_protocol_config,
-            listener_local_rate_limit,
+            local_rate_limit: listener_local_rate_limit,
             mut route_updates_receiver,
             mut secret_updates_receiver,
-            access_log: _access_log,
+            #[allow(unused_variables)]
+            access_log,
         } = self;
 
         let mut filter_chains = Arc::new(filter_chains);
@@ -365,7 +368,7 @@ impl Listener {
                                     let proxy_protocol_config = proxy_protocol_config.clone();
 
                                     #[cfg(feature = "access-log")]
-                                    let mut conn_formatters : Vec<_> = _access_log.iter().map(AccessLog::get_logger).cloned().collect();
+                                    let mut conn_formatters : Vec<_> = access_log.iter().map(AccessLog::get_logger).cloned().collect();
 
                                     tokio::spawn(async move {
                                         let start = Instant::now();
@@ -405,6 +408,8 @@ impl Listener {
                                                         shard_id,
                                                         &[KeyValue::new("listener", listener_name)]
                                                     );
+
+                                                    ()
                                                 }
                                                 #[cfg(feature = "access-log")]
                                                 {
@@ -424,7 +429,7 @@ impl Listener {
                                                        upstream_peer_addr: None });
 
                                                    let messages = conn_formatters.into_iter().map(LogFormatter::into_message).collect::<Vec<_>>();
-                                                   log_access_blocking(Target::Listener(listener_name.into()), messages);
+                                                   log_access_blocking(Target::Listener(listener_name.into()), messages)
                                                }
                                             })
                                         };
@@ -432,7 +437,7 @@ impl Listener {
                                         let stream = InstrumentedStream::new(stream);
                                         #[cfg(any(feature = "access-log", feature = "metrics"))]
                                         {
-                                           stream.metrics().with_drop_fn(drop_cb);
+                                           stream.metrics().with_drop_fn(drop_cb)
                                         }
 
                                         with_metric!(listeners::DOWNSTREAM_CX_TOTAL, add, 1, shard_id,&[KeyValue::new("listener", listener_name)]);
@@ -451,6 +456,7 @@ impl Listener {
                                     #[cfg(feature = "instrumentation")]
                                     {
                                         let nanos = clock.delta_as_nanos(start_clock, clock.raw());
+                                        #[allow(clippy::cast_possible_truncation)]
                                         instrumentation::metrics::CONNECTION_SETUP_TIME.observe(nanos as usize);
                                     }
                                 },
@@ -539,8 +545,6 @@ impl Listener {
         connection_metadata: &DownstreamConnectionMetadata,
         server_name: Option<&str>,
     ) -> Result<Option<&'a T>> {
-        let source_addr = connection_metadata.peer_address();
-        let destination_addr = connection_metadata.local_address();
         fn match_subitem<'a, F: Fn(&FilterChainMatch, T) -> MatchResult, T: Copy>(
             function: F,
             comparand: T,
@@ -549,27 +553,44 @@ impl Listener {
             possible_filters: &mut [bool],
         ) {
             let mut best_match = MatchResult::FailedMatch;
-            // check all filters still in the running, skipping over those already eliminated
-            for (i, match_config) in iter.enumerate().filter(|(i, _)| possible_filters[*i]) {
+
+            // Check all filters still in the running, skipping over those already eliminated
+            for (i, match_config) in iter.enumerate() {
+                // Use get() to safely skip if index is out of bounds or filter is already eliminated
+                if !possible_filters.get(i).copied().unwrap_or(false) {
+                    continue;
+                }
+
                 let match_result = function(match_config, comparand);
-                //mark the outcome of this iteration, and keep track of the best result
-                scratchpad[i] = match_result;
+
+                // Safely update the scratchpad at the given index
+                if let Some(slot) = scratchpad.get_mut(i) {
+                    *slot = match_result;
+                }
+
                 if match_result > best_match {
                     best_match = match_result;
                 }
             }
-            // now trim all the results that failed to match, or were less specific than the best match
-            for i in 0..scratchpad.len() {
-                if scratchpad[i] != best_match || scratchpad[i] == MatchResult::FailedMatch {
-                    possible_filters[i] = false;
+
+            // Now trim all the results that failed to match, or were less specific than the best match
+            for (i, result) in scratchpad.iter().enumerate() {
+                if *result != best_match || *result == MatchResult::FailedMatch {
+                    if let Some(is_possible) = possible_filters.get_mut(i) {
+                        *is_possible = false;
+                    }
                 }
             }
         }
 
-        //todo: smallvec? other optimization?
-        let mut possible_filters = vec![true; filter_chains.len()];
-        let mut scratchpad = vec![MatchResult::NoRule; filter_chains.len()];
+        let source_addr = connection_metadata.peer_address();
+        let destination_addr = connection_metadata.local_address();
+        let num_chains = filter_chains.len();
+        let mut possible_filters: SmallVec<[bool; 8]> = smallvec![true; num_chains];
+        let mut scratchpad: SmallVec<[MatchResult; 8]> = smallvec![MatchResult::NoRule; num_chains];
 
+        // Note: We use .keys() consistently. HashMap order is non-deterministic but stable
+        // within the same process as long as it's not mutated.
         match_subitem(
             FilterChainMatch::matches_destination_port,
             destination_addr.port(),
@@ -610,13 +631,13 @@ impl Listener {
             &mut possible_filters,
         );
 
-        let mut possible_filters = possible_filters
+        let mut final_candidates = possible_filters
             .into_iter()
-            .zip(filter_chains.iter())
-            .filter_map(|(include, item)| include.then_some(item.1));
+            .zip(filter_chains.values()) // values() matches keys() order in the same state
+            .filter_map(|(include, value)| include.then_some(value));
 
-        let first_match = possible_filters.next();
-        if possible_filters.next().is_some() {
+        let first_match = final_candidates.next();
+        if final_candidates.next().is_some() {
             Err("multiple filterchains matched a single connection. This is a bug in orion!".into())
         } else {
             Ok(first_match)
@@ -624,6 +645,7 @@ impl Listener {
     }
 
     #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_arguments)]
     async fn process_connection(
         listener_name: &'static str,
         filter_chains: Arc<HashMap<FilterChainMatch, FilterchainType>>,
@@ -641,8 +663,9 @@ impl Listener {
             if ssl.load(Ordering::Relaxed) {
                 with_metric!(http::DOWNSTREAM_CX_SSL_ACTIVE, add, 1, shard_id, &[KeyValue::new("listener", listener_name)]);
             }
-            let _ms = u64::try_from(start_instant.elapsed().as_millis()).unwrap_or(u64::MAX);
-            with_histogram!(listeners::DOWNSTREAM_CX_LENGTH_MS, record, _ms, shard_id, &[KeyValue::new("listener", listener_name)]);
+            with_histogram!(listeners::DOWNSTREAM_CX_LENGTH_MS, record,
+                u64::try_from(start_instant.elapsed().as_millis()).unwrap_or(u64::MAX),
+                shard_id, &[KeyValue::new("listener", listener_name)]);
         }
 
         let sni = if with_tls_inspector {

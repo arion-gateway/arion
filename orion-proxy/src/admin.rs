@@ -65,12 +65,12 @@ fn build_admin_router(admin_state: AdminState) -> Router {
     let mut router = Router::new();
     #[cfg(feature = "config-dump")]
     {
-        router = router.route("/config_dump", get(config_dump::get_config_dump));
+        router = router.route("/config_dump", get(config_dump::get_config_dump))
     }
     #[cfg(feature = "prometheus")]
     {
         use crate::admin::prometheus::prometheus_handler;
-        router = router.route("/stats/prometheus", get(prometheus_handler));
+        router = router.route("/stats/prometheus", get(prometheus_handler))
     }
 
     router = router.route("/ready", get(get_ready));
@@ -108,14 +108,9 @@ async fn get_ready(State(mut admin_state): State<AdminState>) -> Json<Value> {
 mod tests {
     use super::*;
     use axum_test::TestServer;
-    use orion_configuration::config::Bootstrap;
-    use parking_lot::RwLock;
-    use std::{
-        sync::Arc,
-        time::{Duration, Instant},
-    };
 
     #[tokio::test]
+    #[allow(clippy::indexing_slicing)]
     async fn ready_endpoint_response() {
         let server_startup = Instant::now();
         let admin_state = AdminState {

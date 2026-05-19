@@ -83,11 +83,11 @@ impl TcpProxyBuilder {
     }
 
     #[inline]
-    pub fn build(self) -> Result<TcpProxy> {
+    pub fn build(self) -> TcpProxy {
         let listener_name = self.listener_name.unwrap_or("listener name is not set");
-        let filterchain_id = self.filterchain_id.unwrap_or(0 as u64);
+        let filterchain_id = self.filterchain_id.unwrap_or(0_u64);
         let TcpProxyConfig { cluster_specifier, access_log } = self.tcp_proxy_config;
-        Ok(TcpProxy { listener_name, filterchain_id, access_log, cluster: cluster_specifier })
+        TcpProxy { listener_name, filterchain_id, access_log, cluster: cluster_specifier }
     }
 }
 
@@ -150,7 +150,7 @@ impl TcpProxy {
                         #[cfg(feature = "access-log")]
                         {
                             maybe_upstream_local_addr = channel.upstream_local_addr;
-                            maybe_upstream_peer_addr = channel.upstream_peer_addr;
+                            maybe_upstream_peer_addr = channel.upstream_peer_addr
                         }
 
                         let mut downstream = InstrumentedStream::new(stream);
@@ -164,7 +164,7 @@ impl TcpProxy {
                             bytes_received_down = downstream.metrics().bytes_read();
                             bytes_sent_down = downstream.metrics().bytes_written();
                             bytes_received_up = upstream.metrics().bytes_read();
-                            bytes_sent_up = upstream.metrics().bytes_written();
+                            bytes_sent_up = upstream.metrics().bytes_written()
                         }
 
                         #[cfg(feature = "access-log")]
@@ -274,7 +274,7 @@ impl TcpProxy {
 
                             if let Some(tcp_error) = e.get_context_data::<TcpErrorContext>() {
                                 maybe_upstream_peer_addr = Some(tcp_error.upstream_addr);
-                                response_flags = tcp_error.response_flags.clone();
+                                response_flags = tcp_error.response_flags;
                                 cluster_name = tcp_error.cluster_name;
                             } else {
                                 // impossible case to make the compiler happy...
@@ -294,10 +294,10 @@ impl TcpProxy {
                                         upstream_local_addr: None,
                                         upstream_peer_addr: maybe_upstream_peer_addr,
                                     },
-                                    cluster_name: cluster_name,
+                                    cluster_name,
                                 }
-                            );
-                        }
+                            )
+                        };
 
                         Err(e)
                     },
@@ -324,8 +324,8 @@ impl TcpProxy {
                             },
                             cluster_name: &cluster_selector.name(),
                         }
-                    );
-                }
+                    )
+                };
 
                 Err(e)
             },
@@ -338,7 +338,7 @@ impl TcpProxy {
                 duration: start_instant.elapsed(),
                 bytes_received: bytes_received_down,
                 bytes_sent: bytes_sent_down,
-                response_flags: response_flags,
+                response_flags,
                 upstream_transport_failure_reason: maybe_upstream_transport_failure_reason.as_ref().map(|x| x.0),
                 response_code_details: maybe_response_code_details.as_ref().map(|x| x.0),
                 connection_termination_details: maybe_connection_termination_details.as_ref().map(|x| x.0),
@@ -355,7 +355,7 @@ impl TcpProxy {
         {
             use crate::access_log::log_access_blocking;
             let messages = access_loggers.into_iter().map(LogFormatter::into_message).collect::<Vec<_>>();
-            log_access_blocking(Target::ListenerFilterChain(self.listener_name.into(), self.filterchain_id), messages);
+            log_access_blocking(Target::ListenerFilterChain(self.listener_name.into(), self.filterchain_id), messages)
         }
         res
     }

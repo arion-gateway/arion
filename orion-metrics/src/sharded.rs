@@ -259,6 +259,7 @@ mod tests {
 
     fn build_thread_id(n: u64) -> ThreadId {
         let nz = NonZeroU64::new(n).expect("NonZeroU64 should not be zero");
+        // SAFETY: the only way to build arbitrary ThreadId for testing
         unsafe { std::mem::transmute(nz) }
     }
 

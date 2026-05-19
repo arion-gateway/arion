@@ -69,6 +69,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let _xds_resource_producer = tokio::spawn(var_name);
 
-    let _ = grpc_server.into_future().await;
+    let _ = grpc_server.into_future().await.ok();
     Ok(())
 }

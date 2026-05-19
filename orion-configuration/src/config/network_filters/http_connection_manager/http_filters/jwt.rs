@@ -104,7 +104,6 @@ mod envoy_conversions {
     use crate::config::core::RustType;
     use crate::config::network_filters::http_connection_manager::{RetryBackoff, RetryOn};
     use crate::config::{required, unsupported_field, GenericError, WithNodeOnResult};
-    use http::HeaderName;
     use orion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::http_uri::HttpUpstreamType as EnvoyHttpClusterType;
     use orion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::BackoffStrategy as EnvoyCoreBackoffStrategy;
     use orion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::HttpUri as EnvoyHttpUri;
@@ -196,7 +195,7 @@ mod envoy_conversions {
             let max_interval = max_interval
                 .map(RustType::<Duration>::try_from)
                 .transpose()
-                .map_err(|_| GenericError::from_msg("failed to convert into Duration"))
+                .map_err(|_e| GenericError::from_msg("failed to convert into Duration"))
                 .with_node("max_interval")?
                 .map(RustType::into_inner)
                 .unwrap_or(base_interval * 10);

@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use pingora::prelude::fast_timeout::fast_timeout;
 use std::time::Duration;
 
 use orion_e2e_tests::config_builder::{
@@ -29,11 +30,9 @@ const ALIVE_CHECK_TIMEOUT: Duration = Duration::from_millis(200);
 // false if Orion closed it (EOF or error).
 async fn connection_is_alive(stream: &mut TcpStream) -> bool {
     let mut buf = [0u8; 1];
-    match tokio::time::timeout(ALIVE_CHECK_TIMEOUT, stream.read(&mut buf)).await {
-        Err(_timeout) => true,
-        Ok(Ok(0)) => false,
-        Ok(Ok(_)) => true,
-        Ok(Err(_)) => false,
+    match fast_timeout(ALIVE_CHECK_TIMEOUT, stream.read(&mut buf)).await {
+        Ok(Ok(0) | Err(_)) => false,
+        Ok(Ok(_)) | Err(_) => true,
     }
 }
 
@@ -48,8 +47,11 @@ async fn setup(backend: &TcpTestBackend) -> (OrionInstance, TcpTestClient) {
         )
         .cluster(ClusterBuilder::new("backend").endpoint(EndpointBuilder::from_socket_addr(backend.addr())));
 
+    #[allow(clippy::unwrap_used)]
     let config_path = bootstrap.build_to_temp().unwrap();
+    #[allow(clippy::unwrap_used)]
     let orion = OrionInstance::spawn_auto_port(&config_path, "tcp", SpawnOptions::default()).await.unwrap();
+    #[allow(clippy::unwrap_used)]
     let client = TcpTestClient::new(orion.listener_addr().unwrap());
     (orion, client)
 }

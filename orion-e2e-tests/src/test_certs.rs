@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub struct TestCerts {
@@ -38,9 +38,7 @@ impl TestCerts {
             if dir.join("test_certs").exists() {
                 return dir;
             }
-            if !dir.pop() {
-                panic!("Could not find workspace root (directory containing test_certs/)");
-            }
+            assert!(dir.pop(), "Could not find workspace root (directory containing test_certs/)")
         }
     }
 
@@ -140,7 +138,7 @@ impl TestCerts {
     }
 
     #[must_use]
-    pub fn path_to_string(path: &PathBuf) -> String {
-        path.to_str().expect("Path is not valid UTF-8").to_string()
+    pub fn path_to_string(path: &Path) -> String {
+        path.to_str().expect("Path is not valid UTF-8").to_owned()
     }
 }

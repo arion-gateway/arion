@@ -146,6 +146,6 @@ mod tests {
         assert_eq!("refused-stream".parse::<RetryOn>().unwrap(), RetryOn::RefusedStream);
         assert_eq!("retriable-status-codes".parse::<RetryOn>().unwrap(), RetryOn::RetriableStatusCodes);
         assert_eq!("retriable-headers".parse::<RetryOn>().unwrap(), RetryOn::RetriableHeaders);
-        assert!("unknown".parse::<RetryOn>().is_err());
+        "unknown".parse::<RetryOn>().unwrap_err();
     }
 }

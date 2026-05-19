@@ -1,3 +1,5 @@
+#![allow(clippy::expect_used, reason = "test infrastructure — panicking on setup failure is intentional")]
+
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -38,6 +40,7 @@ async fn setup(
     let config_path = bootstrap.build_to_temp().expect("build config");
     let orion =
         OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default()).await.expect("spawn orion");
+    #[allow(clippy::unwrap_used)]
     let client = TestClient::new(orion.listener_addr().unwrap());
 
     (backend, ext_proc_server, orion, client, config_path)
@@ -512,10 +515,10 @@ async fn test_ext_proc_headers_and_body_mode() {
 
     tokio::time::sleep(Duration::from_millis(100)).await;
     let captured = ext_proc_server.captured_requests().await;
-    assert!(captured.iter().any(|r| r.is_request_headers()));
-    assert!(captured.iter().any(|r| r.is_request_body()));
-    assert!(captured.iter().any(|r| r.is_response_headers()));
-    assert!(captured.iter().any(|r| r.is_response_body()));
+    assert!(captured.iter().any(orion_e2e_tests::CapturedProcessingRequest::is_request_headers));
+    assert!(captured.iter().any(orion_e2e_tests::CapturedProcessingRequest::is_request_body));
+    assert!(captured.iter().any(orion_e2e_tests::CapturedProcessingRequest::is_response_headers));
+    assert!(captured.iter().any(orion_e2e_tests::CapturedProcessingRequest::is_response_body));
 }
 
 #[tokio::test]

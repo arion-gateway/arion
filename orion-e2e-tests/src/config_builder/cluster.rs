@@ -38,7 +38,7 @@ use orion_data_plane_api::envoy_data_plane_api::{
             round_robin::v3::RoundRobin as EnvoyRoundRobin,
         },
     },
-    google::protobuf::{Any, Duration as ProtoDuration, UInt32Value},
+    google::protobuf::{Any, UInt32Value},
     prost::Message,
 };
 
@@ -115,7 +115,9 @@ impl ClusterBuilder {
             if la.endpoints.is_empty() {
                 la.endpoints.push(LocalityLbEndpoints::default());
             }
-            la.endpoints[0].lb_endpoints.push(endpoint.into());
+            if let Some(first) = la.endpoints.first_mut() {
+                first.lb_endpoints.push(endpoint.into());
+            }
         }
         self
     }
@@ -134,8 +136,7 @@ impl ClusterBuilder {
 
     #[must_use]
     pub fn connect_timeout(mut self, timeout: Duration) -> Self {
-        self.proto.connect_timeout =
-            Some(ProtoDuration { seconds: timeout.as_secs() as i64, nanos: timeout.subsec_nanos() as i32 });
+        self.proto.connect_timeout = Some(super::duration_to_proto(timeout));
         self
     }
 
@@ -176,27 +177,27 @@ impl ClusterBuilder {
         let fallback_lb_policy = LoadBalancingPolicy {
             policies: vec![Policy {
                 typed_extension_config: Some(TypedExtensionConfig {
-                    name: "fallback".to_string(),
+                    name: "fallback".to_owned(),
                     typed_config: Some(fallback_typed_config),
                 }),
             }],
         };
 
         let override_host = OverrideHost {
-            override_host_sources: vec![OverrideHostSource { header: header_name.to_string(), metadata: None }],
+            override_host_sources: vec![OverrideHostSource { header: header_name.to_owned(), metadata: None }],
             fallback_policy: Some(fallback_lb_policy),
         };
 
         let override_host_typed_config = Any {
             type_url: "type.googleapis.com/envoy.extensions.load_balancing_policies.override_host.v3.OverrideHost"
-                .to_string(),
+                .to_owned(),
             value: override_host.encode_to_vec(),
         };
 
         self.proto.load_balancing_policy = Some(LoadBalancingPolicy {
             policies: vec![Policy {
                 typed_extension_config: Some(TypedExtensionConfig {
-                    name: "override_host".to_string(),
+                    name: "override_host".to_owned(),
                     typed_config: Some(override_host_typed_config),
                 }),
             }],
@@ -209,11 +210,11 @@ impl ClusterBuilder {
         match policy {
             LbPolicy::RoundRobin => Any {
                 type_url: "type.googleapis.com/envoy.extensions.load_balancing_policies.round_robin.v3.RoundRobin"
-                    .to_string(),
+                    .to_owned(),
                 value: EnvoyRoundRobin::default().encode_to_vec(),
             },
             LbPolicy::Random => Any {
-                type_url: "type.googleapis.com/envoy.extensions.load_balancing_policies.random.v3.Random".to_string(),
+                type_url: "type.googleapis.com/envoy.extensions.load_balancing_policies.random.v3.Random".to_owned(),
                 value: EnvoyRandom::default().encode_to_vec(),
             },
             LbPolicy::LeastRequest => {
@@ -221,7 +222,7 @@ impl ClusterBuilder {
                 Any {
                     type_url:
                         "type.googleapis.com/envoy.extensions.load_balancing_policies.least_request.v3.LeastRequest"
-                            .to_string(),
+                            .to_owned(),
                     value: LeastRequest::default().encode_to_vec(),
                 }
             },
@@ -229,7 +230,7 @@ impl ClusterBuilder {
                 use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::load_balancing_policies::ring_hash::v3::RingHash;
                 Any {
                     type_url: "type.googleapis.com/envoy.extensions.load_balancing_policies.ring_hash.v3.RingHash"
-                        .to_string(),
+                        .to_owned(),
                     value: RingHash::default().encode_to_vec(),
                 }
             },
@@ -237,7 +238,7 @@ impl ClusterBuilder {
                 use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::load_balancing_policies::maglev::v3::Maglev;
                 Any {
                     type_url: "type.googleapis.com/envoy.extensions.load_balancing_policies.maglev.v3.Maglev"
-                        .to_string(),
+                        .to_owned(),
                     value: Maglev::default().encode_to_vec(),
                 }
             },
@@ -258,7 +259,7 @@ impl ClusterBuilder {
         self.proto.load_assignment = None;
         self.proto.lb_config = Some(LbConfig::OriginalDstLbConfig(OriginalDstLbConfig {
             use_http_header: true,
-            http_header_name: header_name.to_string(),
+            http_header_name: header_name.to_owned(),
             upstream_port_override: None,
             metadata_key: None,
         }));
@@ -273,7 +274,7 @@ impl ClusterBuilder {
     #[must_use]
     pub fn original_dst_port_override(mut self, port: u16) -> Self {
         if let Some(LbConfig::OriginalDstLbConfig(ref mut config)) = self.proto.lb_config {
-            config.upstream_port_override = Some(UInt32Value { value: port as u32 });
+            config.upstream_port_override = Some(UInt32Value { value: u32::from(port) });
         }
         self
     }
@@ -333,10 +334,9 @@ impl ClusterBuilder {
     pub fn upstream_tls(mut self, tls: impl Into<UpstreamTls>) -> Self {
         let tls_proto = tls.into();
         let transport_socket = TransportSocket {
-            name: "envoy.transport_sockets.tls".to_string(),
+            name: "envoy.transport_sockets.tls".to_owned(),
             config_type: Some(TransportSocketConfigType::TypedConfig(Any {
-                type_url: "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext"
-                    .to_string(),
+                type_url: "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext".to_owned(),
                 value: tls_proto.encode_to_vec(),
             })),
         };
@@ -371,10 +371,11 @@ impl ClusterBuilder {
 
     fn ensure_default_circuit_breaker_threshold(&mut self) -> &mut EnvoyThresholds {
         let cb = self.proto.circuit_breakers.get_or_insert_with(EnvoyCircuitBreakers::default);
-        if !cb.thresholds.iter().any(|t| t.priority == 0) {
+        let idx = cb.thresholds.iter().position(|t| t.priority == 0).unwrap_or_else(|| {
             cb.thresholds.push(EnvoyThresholds { priority: 0, ..Default::default() });
-        }
-        cb.thresholds.iter_mut().find(|t| t.priority == 0).unwrap()
+            cb.thresholds.len() - 1
+        });
+        cb.thresholds.get_mut(idx).expect("element at idx")
     }
 
     #[must_use]

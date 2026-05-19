@@ -36,42 +36,42 @@ pub enum FilterDecision {
     #[default]
     Continue,
     Reroute,
-    DirectResponse(Response<OrionResponseBody>),
-    AsyncRequest(Response<OrionResponseBody>, Option<Request<OrionRequestBody>>),
+    DirectResponse(Box<Response<OrionResponseBody>>),
+    AsyncRequest(Box<Response<OrionResponseBody>>, Option<Box<Request<OrionRequestBody>>>),
 }
 
 impl FilterDecision {
     #[inline]
     pub fn internal_server_error(msg: &str, ver: http::Version) -> FilterDecision {
-        FilterDecision::DirectResponse(
+        FilterDecision::DirectResponse(Box::new(
             SyntheticHttpResponse::internal_server_error(
                 EventFailure::DirectResponse.into(),
                 ResponseFlags::default(),
                 msg,
             )
             .into_response(ver),
-        )
+        ))
     }
 
     #[inline]
     pub fn bad_request(ver: http::Version) -> FilterDecision {
-        FilterDecision::DirectResponse(
+        FilterDecision::DirectResponse(Box::new(
             SyntheticHttpResponse::bad_request(EventFailure::DirectResponse.into()).into_response(ver),
-        )
+        ))
     }
 
     #[inline]
     #[allow(dead_code)]
     pub fn not_found(ver: http::Version) -> FilterDecision {
-        FilterDecision::DirectResponse(
+        FilterDecision::DirectResponse(Box::new(
             SyntheticHttpResponse::not_found(EventFailure::DirectResponse.into(), ResponseFlags::default())
                 .into_response(ver),
-        )
+        ))
     }
 
     #[inline]
     pub fn method_not_allowed(ver: http::Version) -> FilterDecision {
-        FilterDecision::DirectResponse(
+        FilterDecision::DirectResponse(Box::new(
             SyntheticHttpResponse::custom_error(
                 StatusCode::METHOD_NOT_ALLOWED,
                 None,
@@ -79,23 +79,23 @@ impl FilterDecision {
                 ResponseFlags(FmtResponseFlags::NO_ROUTE_FOUND),
             )
             .into_response(ver),
-        )
+        ))
     }
 
     #[inline]
     pub fn no_route_found(ver: http::Version) -> FilterDecision {
-        FilterDecision::DirectResponse(
+        FilterDecision::DirectResponse(Box::new(
             SyntheticHttpResponse::not_found(
                 EventFailure::RouteNotFound.into(),
                 ResponseFlags(FmtResponseFlags::NO_ROUTE_FOUND),
             )
             .into_response(ver),
-        )
+        ))
     }
 
     #[inline]
     pub fn rate_limited(status: Option<StatusCode>, ver: http::Version) -> FilterDecision {
-        FilterDecision::DirectResponse(
+        FilterDecision::DirectResponse(Box::new(
             SyntheticHttpResponse::custom_error(
                 status.unwrap_or(http::StatusCode::TOO_MANY_REQUESTS),
                 None,
@@ -103,15 +103,15 @@ impl FilterDecision {
                 ResponseFlags(FmtResponseFlags::RATE_LIMITED),
             )
             .into_response(ver),
-        )
+        ))
     }
 
     #[inline]
     #[allow(dead_code)]
     pub fn unauthorized(msg: &str, ver: http::Version) -> FilterDecision {
-        FilterDecision::DirectResponse(
+        FilterDecision::DirectResponse(Box::new(
             SyntheticHttpResponse::unauthorized(EventFailure::ExtProcError.into(), msg).into_response(ver),
-        )
+        ))
     }
 }
 
@@ -171,8 +171,7 @@ impl TryFrom<HttpFilterConfig> for HttpFilter {
                 let builder = JwtAuthenticationBuilder::new(conf);
                 HttpFilterValue::JwtAuthentication(builder.build())
             },
-            HttpFilterType::Cors(conf) => HttpFilterValue::Cors(conf.into()),
-            HttpFilterType::CorsPolicy(conf) => HttpFilterValue::Cors(conf.into()),
+            HttpFilterType::Cors(conf) | HttpFilterType::CorsPolicy(conf) => HttpFilterValue::Cors(conf.into()),
             HttpFilterType::McpGateway(mcp) => HttpFilterValue::McpGateway(Box::new(mcp.try_into()?)),
             HttpFilterType::UserRateLimit(user_rate_limit) => {
                 HttpFilterValue::UserRateLimit(user_rate_limit.try_into()?)
@@ -191,18 +190,19 @@ impl HttpFilterValue {
             HttpFilterValue::JwtAuthentication(jwt) => jwt.apply_request(request).await,
             HttpFilterValue::Cors(cors) => cors.apply_request(request),
             HttpFilterValue::McpGateway(mcp) => mcp.apply_request(request).await,
-            HttpFilterValue::UserRateLimit(user_rate_limiter) => user_rate_limiter.apply_request(request).await,
+            HttpFilterValue::UserRateLimit(user_rate_limiter) => user_rate_limiter.apply_request(request),
         }
     }
     pub async fn apply_response(&mut self, response: &mut Response<OrionResponseBody>) -> FilterDecision {
         match self {
             // RBAC and RateLimit do not apply on the response path
-            HttpFilterValue::Rbac(_) | HttpFilterValue::RateLimit(_) => FilterDecision::Continue,
             HttpFilterValue::ExternalProcessor(ext_proc) => ext_proc.apply_response(response).await,
-            HttpFilterValue::JwtAuthentication(_) => FilterDecision::Continue,
             HttpFilterValue::McpGateway(mcp) => mcp.apply_response(response).await,
             HttpFilterValue::Cors(cors) => cors.apply_response(response),
-            HttpFilterValue::UserRateLimit(_) => FilterDecision::Continue,
+            HttpFilterValue::Rbac(_)
+            | HttpFilterValue::RateLimit(_)
+            | HttpFilterValue::UserRateLimit(_)
+            | HttpFilterValue::JwtAuthentication(_) => FilterDecision::Continue,
         }
     }
     pub(crate) fn from_filter_override(
@@ -212,7 +212,7 @@ impl HttpFilterValue {
         match &value.filter_settings {
             Some(filter_settings) => match filter_settings {
                 FilterConfigOverride::LocalRateLimit(rl) => Some(HttpFilterValue::RateLimit(rl.clone().into())),
-                FilterConfigOverride::Rbac(Some(rbac)) => Some(HttpFilterValue::Rbac(HttpRbac::new(&rbac))),
+                FilterConfigOverride::Rbac(Some(rbac)) => Some(HttpFilterValue::Rbac(HttpRbac::new(rbac))),
                 FilterConfigOverride::Rbac(None) => None,
                 FilterConfigOverride::ExternalProcessor(ext_proc_per_route) => {
                     if let Some(HttpFilterConfig { filter: HttpFilterType::ExternalProcessor(filter_config), .. }) =
@@ -238,16 +238,19 @@ fn apply_authorization_rules<B>(rbac: &HttpRbac, req: &Request<B>) -> FilterDeci
     if permitted {
         FilterDecision::Continue
     } else {
-        FilterDecision::DirectResponse(
+        FilterDecision::DirectResponse(Box::new(
             SyntheticHttpResponse::forbidden(
                 EventFailure::RbacAccessDenied(enforced_policy.unwrap_or(SmolStr::new_static("unknown"))).into(),
                 "RBAC: access denied",
             )
             .into_response(req.version()),
-        )
+        ))
     }
 }
 
+// `RouteMatch` contains `Regex` which has interior mutability, but its `Hash` and `PartialEq`
+// implementations use only `as_str()` (the immutable pattern string), so this is safe.
+#[allow(clippy::mutable_key_type)]
 pub(crate) fn per_route_http_filters(
     route_config: &RouteConfiguration,
     hcm_filters: &[Arc<HttpFilter>],

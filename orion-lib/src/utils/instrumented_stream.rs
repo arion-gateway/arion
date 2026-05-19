@@ -28,6 +28,7 @@ pub struct StreamMetrics {
     txn_bytes_written_start: AtomicU64,
     requests_counter: AtomicU64,
     error: AtomicOption<ErrorSource>,
+    #[allow(clippy::type_complexity)]
     drop_fn: AtomicOption<Box<dyn FnOnce(&StreamMetrics) + Send>>,
     txn_fn: AtomicOption<Box<dyn FnOnce(u64, u64) + Send>>,
 }
@@ -42,14 +43,16 @@ impl std::fmt::Debug for StreamMetrics {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let error = match self.error.as_ref(Ordering::Relaxed) {
             None => None,
-            Some(ErrorSource::Read(err)) => Some(err.to_string()),
-            Some(ErrorSource::Write(err)) => Some(err.to_string()),
+            Some(ErrorSource::Read(err) | ErrorSource::Write(err)) => Some(err.to_string()),
         };
         f.debug_struct("StreamMetrics")
             .field("total_bytes_read", &self.total_bytes_read)
             .field("total_bytes_written", &self.total_bytes_written)
             .field("txn_bytes_read_start", &self.txn_bytes_read_start)
             .field("txn_bytes_written_start", &self.txn_bytes_written_start)
+            .field("requests_counter", &self.requests_counter)
+            .field("drop_fn", &self.drop_fn.is_some(Ordering::Relaxed))
+            .field("txn_fn", &self.txn_fn.is_some(Ordering::Relaxed))
             .field("error", &error)
             .finish()
     }
@@ -121,8 +124,7 @@ impl StreamMetrics {
         let err = self.error.as_ref(Ordering::Relaxed);
         match err {
             None => None,
-            Some(ErrorSource::Read(err)) => Some(err),
-            Some(ErrorSource::Write(err)) => Some(err),
+            Some(ErrorSource::Read(err) | ErrorSource::Write(err)) => Some(err),
         }
     }
 
@@ -272,7 +274,7 @@ impl<S> HasMetrics for InstrumentedStream<S> {
     }
 
     fn shared_metrics(&self) -> Arc<StreamMetrics> {
-        self.metrics.clone()
+        Arc::clone(&self.metrics)
     }
 }
 

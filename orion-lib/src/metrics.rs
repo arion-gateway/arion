@@ -14,7 +14,7 @@ macro_rules! with_metric {
         }
         #[cfg(not(feature = "metrics"))]
         {
-            ()
+
         }
     };
 }
@@ -28,7 +28,7 @@ macro_rules! with_histogram {
         }
         #[cfg(not(feature = "metrics"))]
         {
-            ()
+
         }
     };
 }
@@ -46,6 +46,7 @@ macro_rules! get_shard_id {
     }};
 }
 
+#[derive(Default)]
 pub struct PartitionKey {
     source: AtomicOption<PartitionKeySource>,
     attribute_name: AtomicOption<String>,
@@ -69,7 +70,7 @@ impl PartitionKey {
 
     #[inline]
     pub fn attribute_name(&self) -> Option<&str> {
-        self.attribute_name.as_ref(Ordering::Acquire).map(|s| s.as_str())
+        self.attribute_name.as_ref(Ordering::Acquire).map(String::as_str)
     }
 
     #[inline]
@@ -92,6 +93,6 @@ pub fn get_user_partition_key(
         PartitionKeySource::HeaderName(keym) => {
             headers.get(keym).map(|value| value.to_str()).transpose().ok().flatten().map(|s| s.to_static_str())
         },
-        PartitionKeySource::Sni => sni.map(|s| s.to_static_str()),
+        PartitionKeySource::Sni => sni.map(orion_interner::StringInterner::to_static_str),
     })
 }

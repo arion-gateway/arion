@@ -101,6 +101,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tokio::time::sleep(Duration::from_secs(15)).await;
     });
 
-    let _ = grpc_server.into_future().await;
+    let _ = grpc_server.into_future().await.ok();
     Ok(())
 }

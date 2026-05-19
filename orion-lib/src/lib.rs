@@ -91,10 +91,10 @@ impl Default for OrionRequestBody {
 pub type OrionResponseBody = TimeoutBody<PolyBody>;
 
 /// Example with Result:
-/// Captures the error in 'e' and returns early from the function main()
-///    let _v1 = unwrap_or_run!(result_val, |e| {
+/// Captures the error in 'e' and returns early from the function `main()`
+///    let _v1 = `unwrap_or_run!(result_val`, |e| {
 ///        println!("Error handled: {}", e);
-///        return; // This returns from main(), unlike a closure!
+///        return; // This returns from `main()`, unlike a closure!
 ///    });
 #[macro_export]
 macro_rules! unwrap_or_run {
@@ -212,8 +212,9 @@ use ctor::ctor;
 #[ctor]
 fn init() {
     //
-    // intialize AWS-LC-RS as defualt crypto provider
+    // intialise AWS-LC-RS as default crypto provider
     //
+    #[allow(clippy::expect_used)]
     rustls::crypto::aws_lc_rs::default_provider()
         .install_default()
         .expect("Could not install crypto provider (aws-lc-rs)");

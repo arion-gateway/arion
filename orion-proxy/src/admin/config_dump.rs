@@ -60,7 +60,7 @@ pub async fn get_config_dump(State(admin_state): State<AdminState>) -> Json<Valu
 
     // Retrieve active listers configuration
     let change = ListenerConfigurationChange::GetConfiguration(config_dump_sender.clone());
-    let _ = send_change_to_runtimes(&listeners_senders, change).await;
+    let _ = send_change_to_runtimes(&listeners_senders, change).await.ok();
     if let Some(listeners_config) = config_dump_receiver.recv().await {
         config.listeners = listeners_config.listeners;
         // Extract and flatten routes from listeners
@@ -102,20 +102,20 @@ pub async fn get_config_dump(State(admin_state): State<AdminState>) -> Json<Valu
 
 #[cfg(test)]
 mod config_dump_tests {
-    use super::{super::*, *};
+    use std::{sync::Arc, time::Instant};
+
+    use crate::admin::{build_admin_router, ServerInfo};
+
+    use super::*;
     use axum_test::TestServer;
     use orion_configuration::config::{
-        core::DataSource,
         listener::ListenerType,
         network_filters::http_connection_manager::{HeaderModifiersAdd, HeaderModifiersRemove},
-        secret::{Secret, TlsCertificate, Type, ValidationContext},
+        secret::{TlsCertificate, ValidationContext},
         Bootstrap, Listener,
     };
-    use orion_lib::{ConfigDump, ListenerConfigurationChange};
     use parking_lot::RwLock;
     use smol_str::SmolStr;
-    use std::{sync::Arc, time::Instant};
-    use tokio::sync::mpsc;
 
     use orion_data_plane_api::envoy_data_plane_api::envoy::{
         config::core::v3::{data_source::Specifier::InlineString, DataSource as EnvoyDataSource},
@@ -132,7 +132,7 @@ mod config_dump_tests {
             while let Some(message) = list_rx.recv().await {
                 if let ListenerConfigurationChange::GetConfiguration(response_sender) = message {
                     let config = ConfigDump { listeners: mock_listeners.clone(), ..Default::default() };
-                    let _ = response_sender.send(config).await;
+                    let _ = response_sender.send(config).await.ok();
                 }
             }
         });
@@ -140,6 +140,7 @@ mod config_dump_tests {
     }
 
     #[test]
+    #[allow(clippy::indexing_slicing)]
     fn test_redact_secrets_tls_certificate() {
         let secret = Secret {
             name: SmolStr::new_static("test_tls"),
@@ -169,6 +170,7 @@ mod config_dump_tests {
     }
 
     #[test]
+    #[allow(clippy::indexing_slicing)]
     fn test_redact_secrets_validation_context() {
         let secret = Secret {
             name: SmolStr::new_static("test_validation"),
@@ -193,6 +195,7 @@ mod config_dump_tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::indexing_slicing)]
     async fn config_dump_bootstrap() {
         use orion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::{
             address::Address as EnvoyAddress, socket_address::PortSpecifier, Address as EnvoyOuterAddress,
@@ -230,6 +233,7 @@ mod config_dump_tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::indexing_slicing)]
     async fn config_dump_listeners_and_routes() {
         use orion_configuration::config::{
             listener::{FilterChain, FilterChainMatch, Listener, MainFilter},
@@ -334,6 +338,7 @@ mod config_dump_tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::indexing_slicing)]
     async fn config_dump_clusters() {
         use orion_configuration::config::{
             cluster::{
@@ -369,8 +374,9 @@ mod config_dump_tests {
         };
         let secret_manager = orion_lib::SecretManager::default();
         let partial_cluster =
-            orion_lib::clusters::cluster::PartialClusterType::try_from((cluster.clone(), &secret_manager)).unwrap();
-        let _ = orion_lib::clusters::clusters_manager::add_cluster(partial_cluster);
+            orion_lib::clusters::cluster::PartialClusterType::try_from((Box::new(cluster.clone()), &secret_manager))
+                .unwrap();
+        let _ = orion_lib::clusters::clusters_manager::add_cluster(partial_cluster).ok();
         let (configuration_senders, handle) = spawn_mock_listener_manager(None);
         let admin_state = AdminState {
             bootstrap: Bootstrap::default(),
@@ -389,6 +395,7 @@ mod config_dump_tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::indexing_slicing)]
     async fn config_dump_endpoints() {
         use orion_configuration::config::{
             cluster::{
@@ -424,8 +431,9 @@ mod config_dump_tests {
         };
         let secret_manager = orion_lib::SecretManager::default();
         let partial_cluster =
-            orion_lib::clusters::cluster::PartialClusterType::try_from((cluster.clone(), &secret_manager)).unwrap();
-        let _ = orion_lib::clusters::clusters_manager::add_cluster(partial_cluster);
+            orion_lib::clusters::cluster::PartialClusterType::try_from((Box::new(cluster.clone()), &secret_manager))
+                .unwrap();
+        orion_lib::clusters::clusters_manager::add_cluster(partial_cluster).unwrap();
         let (configuration_senders, handle) = spawn_mock_listener_manager(None);
         let admin_state = AdminState {
             bootstrap: Bootstrap::default(),
@@ -445,6 +453,7 @@ mod config_dump_tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::indexing_slicing)]
     async fn config_dump_secrets() {
         use orion_configuration::config::secret::{Secret, TlsCertificate, Type, ValidationContext};
         use smol_str::SmolStr;

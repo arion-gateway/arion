@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use pingora::prelude::fast_timeout::fast_timeout;
 use std::net::SocketAddr;
 use std::time::Duration;
 
@@ -48,11 +49,15 @@ impl TcpTestClient {
         let mut response = Vec::new();
         let mut buf = [0u8; READ_BUFFER_SIZE];
 
-        match tokio::time::timeout(timeout, async {
+        match fast_timeout(timeout, async {
             loop {
                 match stream.read(&mut buf).await {
                     Ok(0) => break,
-                    Ok(n) => response.extend_from_slice(&buf[..n]),
+                    Ok(n) => {
+                        if let Some(slice) = buf.get(..n) {
+                            response.extend_from_slice(slice);
+                        }
+                    },
                     Err(e) => return Err(e),
                 }
             }
@@ -60,9 +65,8 @@ impl TcpTestClient {
         })
         .await
         {
-            Ok(Ok(())) => {},
+            Ok(Ok(())) | Err(_) => {},
             Ok(Err(e)) => return Err(e.into()),
-            Err(_) => {},
         }
 
         Ok(response)

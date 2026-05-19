@@ -210,8 +210,8 @@ impl HttpChannelBuilder {
         #[cfg(feature = "metrics")]
         {
             let cluster_name = self.cluster_name.unwrap_or_default();
-            client_builder.pool_event_handler(EventHandler::new(update_upstream_stats, cluster_name));
-        }
+            client_builder.pool_event_handler(EventHandler::new(update_upstream_stats, cluster_name))
+        };
 
         client_builder
     }
@@ -399,16 +399,17 @@ fn update_upstream_stats(event: PoolEvent, tag: &dyn Any, keys: &[&PoolKey]) {
 impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &HttpChannels {
     async fn to_response(
         self,
-        trans_handler: &TransactionContext,
+        trans_context: &TransactionContext,
         request: Request<OrionRequestBody>,
-        ctx: RequestContext<'a>,
+        arg: RequestContext<'a>,
     ) -> Result<Response<OrionResponseBody>> {
+        let ctx = arg;
         match self {
-            HttpChannels::Single(channel) => channel.to_response(trans_handler, request, ctx).await,
+            HttpChannels::Single(channel) => channel.to_response(trans_context, request, ctx).await,
             HttpChannels::MultiWithFailover { channel, failover_channels } => {
                 let RequestContext { route_timeout, priority, .. } = ctx;
                 let (parts, mut body) = request.into_parts();
-                let free_body = std::mem::replace(&mut body.inner, TimeoutBody::<PolyBody>::default());
+                let free_body = std::mem::take(&mut body.inner);
                 let InstrumentedBody { body_kind, body_bytes, ref stream_metrics, ref on_complete, .. } = body;
 
                 let body_timeout = free_body.timeout;
@@ -423,13 +424,13 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
                         inner: TimeoutBody::new(body_timeout, replay_body.clone().into()),
                         body_kind,
                         body_bytes,
-                        stream_metrics: stream_metrics.clone(),
-                        on_complete: on_complete.clone(),
+                        stream_metrics: Clone::clone(stream_metrics),
+                        on_complete: Clone::clone(on_complete),
                     };
                     let rebuilt_req = Request::from_parts(parts.clone(), cloned_body);
                     let attempt_ctx = RequestContext { route_timeout, retry_policy: None, priority };
 
-                    match channel.to_response(trans_handler, rebuilt_req, attempt_ctx).await {
+                    match channel.to_response(trans_context, rebuilt_req, attempt_ctx).await {
                         Ok(response) => {
                             if response.status().is_server_error() && (attempt + 1) < total_attempts {
                                 debug!(
@@ -471,11 +472,13 @@ pub struct Retries {
 impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &HttpChannel {
     async fn to_response(
         self,
-        trans_handler: &TransactionContext,
+        #[allow(unused_variables)] trans_context: &TransactionContext,
         request: Request<OrionRequestBody>,
-        ctx: RequestContext<'a>,
+        arg: RequestContext<'a>,
     ) -> Result<Response<OrionResponseBody>> {
-        instrument_function!(trans_handler.clock, |nanos| {
+        let ctx = arg;
+        instrument_function!(trans_context.clock, |nanos| {
+            #[allow(clippy::cast_possible_truncation)]
             crate::instrumentation::metrics::REQUEST_TO_RESPONSE_TIME.observe(nanos as usize)
         });
 
@@ -497,11 +500,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
 
             let attr = metrics::get_user_partition_key(request.headers(), None, metrics::CUSTOM_KEY.source())
                 .map(|id| KeyValue::new(metrics::CUSTOM_KEY.attribute_name().unwrap_or("custom"), id));
-            custom_metrics.with_headers(
-                MetricsHook::UpstreamRequest,
-                request.headers(),
-                attr.as_ref().map_or(&[], std::slice::from_ref),
-            );
+            custom_metrics.with_headers(MetricsHook::UpstreamRequest, request.headers(), attr.as_slice());
         }
 
         let RequestContext { route_timeout, retry_policy, priority } = ctx;
@@ -509,8 +508,9 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
         let mut retries = Retries::default();
         let start_time = std::time::Instant::now();
         let result = instrument_block!(
-            trans_handler.clock,
+            trans_context.clock,
             |nanos| {
+                #[allow(clippy::cast_possible_truncation)]
                 crate::instrumentation::metrics::SEND_REQUEST_WAIT_RESPONSE.observe(nanos as usize);
             },
             {
@@ -521,7 +521,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
                     priority,
                     Some(&mut retries),
                     #[cfg(feature = "instrumentation")]
-                    &trans_handler.clock,
+                    &trans_context.clock,
                 )
                 .await
             }
@@ -534,7 +534,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
         with_metric!(
             clusters::UPSTREAM_RQ_RETRY,
             add,
-            retries.requests as u64,
+            u64::from(retries.requests),
             shard_id,
             &[KeyValue::new("cluster", self.cluster_name)]
         );
@@ -542,7 +542,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
         with_metric!(
             clusters::UPSTREAM_RQ_PER_TRY_TIMEOUT,
             add,
-            retries.timeouts as u64,
+            u64::from(retries.timeouts),
             shard_id,
             &[KeyValue::new("cluster", self.cluster_name)]
         );
@@ -552,6 +552,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
 }
 
 impl HttpChannel {
+    #[allow(clippy::too_many_arguments)]
     pub async fn send_request(
         &self,
         mut request: Request<OrionRequestBody>,
@@ -618,6 +619,7 @@ impl HttpChannel {
     /// Send the request and return the Result, either the Response or an Error,
     /// along with the time spent for possible retransmissions. Note: the returned
     /// duration does not include the time spent receiving the Body of the Response.
+    #[allow(clippy::too_many_arguments)]
     async fn send_with_policy<C>(
         &self,
         mut req: Request<OrionRequestBody>,
@@ -653,6 +655,7 @@ impl HttpChannel {
                     instrument_block!(
                         clock,
                         |nanos| {
+                            #[allow(clippy::cast_possible_truncation)]
                             crate::instrumentation::metrics::SEND_REQUEST.observe(nanos as usize);
                         },
                         { sender.request(req).await.map_err(Error::from) }
@@ -668,6 +671,7 @@ impl HttpChannel {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn send_with_retry<C>(
         &self,
         req: Request<OrionRequestBody>,
@@ -681,11 +685,12 @@ impl HttpChannel {
         C: Connect + Clone + Send + Sync + 'static,
     {
         instrument_function!(clock, |nanos| {
+            #[allow(clippy::cast_possible_truncation)]
             crate::instrumentation::metrics::SEND_REQUEST_WITH_RETRY.observe(nanos as usize)
         });
 
         let (parts, mut body) = req.into_parts();
-        let free_body = std::mem::replace(&mut body.inner, TimeoutBody::<PolyBody>::default());
+        let free_body = std::mem::take(&mut body.inner);
         let InstrumentedBody { body_kind, body_bytes, ref stream_metrics, ref on_complete, .. } = body;
 
         let collected_bytes = if http_body::Body::size_hint(&free_body).exact() == Some(0) {
@@ -708,11 +713,12 @@ impl HttpChannel {
                 inner: TimeoutBody::new(None, body.clone().into()),
                 body_kind,
                 body_bytes,
-                stream_metrics: stream_metrics.clone(),
-                on_complete: on_complete.clone(),
+                stream_metrics: Clone::clone(stream_metrics),
+                on_complete: Clone::clone(on_complete),
             };
 
             // avoid to clone parts on the last attempt
+            #[allow(clippy::unwrap_used)]
             let current_parts =
                 if index == max_retries { parts_opt.take().unwrap() } else { parts_opt.as_ref().unwrap().clone() };
 
@@ -720,7 +726,7 @@ impl HttpChannel {
 
             // actually send the request and wait for the response...
             let result: Result<Response<Incoming>> = if let Some(t) = retry_policy.per_try_timeout() {
-                match fast_timeout(t, sender.request(cloned_req)).await.map_err(|_| UpstreamError::PerTryTimeout) {
+                match fast_timeout(t, sender.request(cloned_req)).await.map_err(|_e| UpstreamError::PerTryTimeout) {
                     Ok(result) => result.map_err(Into::into),
                     Err(err) => Err(err.into()),
                 }
@@ -734,7 +740,10 @@ impl HttpChannel {
             };
 
             if condition.is_per_try_timeout() {
-                output.as_mut().map(|output| output.timeouts += 1);
+                if let Some(retries) = output.as_deref_mut() {
+                    // Increment the timeout counter
+                    retries.timeouts += 1;
+                }
             }
 
             // check for a possible retry...
@@ -742,7 +751,9 @@ impl HttpChannel {
                 return result;
             }
 
-            output.as_mut().map(|output| output.requests += 1);
+            if let Some(output) = output.as_deref_mut() {
+                output.requests += 1;
+            }
 
             // take an exponential back off break and retry...
             if index < retry_policy.num_retries() as usize {
@@ -763,7 +774,7 @@ impl HttpChannel {
                             shard_id,
                             &[KeyValue::new("cluster", self.cluster_name)]
                         );
-                    }
+                    };
                     return result;
                 }
                 retry_acquired = true;
@@ -856,9 +867,8 @@ impl HttpChannel {
 
     pub fn is_https(&self) -> bool {
         match &self.channel_client {
-            HttpChannelClient::Plain(_) => false,
             HttpChannelClient::Tls(_) => true,
-            HttpChannelClient::Unix(_, _) => false,
+            HttpChannelClient::Plain(_) | HttpChannelClient::Unix(_, _) => false,
         }
     }
 
@@ -932,7 +942,7 @@ fn maybe_normalize_uri(
                 parts.scheme = if is_tls { Some(http::uri::Scheme::HTTPS) } else { Some(http::uri::Scheme::HTTP) };
             }
             parts.authority = Some(authority);
-            let new = Uri::from_parts(parts).map_err(|_| format!("Can't normalize uri: {uri}"))?;
+            let new = Uri::from_parts(parts).map_err(|_e| format!("Can't normalize uri: {uri}"))?;
             *uri = new;
         }
     }

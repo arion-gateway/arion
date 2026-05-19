@@ -20,7 +20,9 @@ use orion_e2e_tests::config_builder::{
     presets, ClusterBuilder, EndpointBuilder, FilterChainBuilder, HcmBuilder, ListenerBuilder, RouteBuilder,
     RouteConfigBuilder, VirtualHostBuilder,
 };
-use orion_e2e_tests::{OrionInstance, PreConfiguredResponse, SpawnOptions, TestBackend, TestClient, XdsEnabledHarness};
+use orion_e2e_tests::{
+    cleanup_config_file, OrionInstance, PreConfiguredResponse, SpawnOptions, TestBackend, TestClient, XdsEnabledHarness,
+};
 
 #[tokio::test]
 #[ignore]
@@ -49,7 +51,7 @@ async fn test_query_exact_match() {
     matched.await_request().await.unwrap();
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -89,7 +91,7 @@ async fn test_query_exact_no_match() {
     fallback.await_request().await.unwrap();
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -129,7 +131,7 @@ async fn test_query_present_match() {
     matched.await_request().await.unwrap();
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -164,7 +166,7 @@ async fn test_query_present_missing() {
     fallback.await_request().await.unwrap();
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -204,7 +206,7 @@ async fn test_query_absent_match() {
     fallback.await_request().await.unwrap();
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -244,7 +246,7 @@ async fn test_query_regex_match() {
     fallback.await_request().await.unwrap();
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -293,7 +295,7 @@ async fn test_multiple_query_params_and() {
     fallback.await_request().await.unwrap();
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -323,7 +325,7 @@ async fn test_url_encoded_values() {
     matched.await_request().await.unwrap();
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -363,7 +365,7 @@ async fn test_query_with_path_match() {
     fallback.await_request().await.unwrap();
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -427,7 +429,7 @@ async fn test_query_matchers_when_configured_over_xds() {
     // Wait for the updated route config to propagate: with the new config, a plain request
     // (no query params) falls through to backend-v1 ("v1") instead of backend-v2 ("v2").
     // This distinguishes new config from old and serves as our propagation sentinel.
-    tokio::time::timeout(Duration::from_secs(10), async {
+    pingora::time::timeout(Duration::from_secs(10), async {
         loop {
             if let Ok(response) = client.get("/test").await {
                 if response.body_str() == Some("v1") {

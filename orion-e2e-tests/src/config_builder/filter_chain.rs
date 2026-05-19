@@ -24,7 +24,7 @@ use orion_data_plane_api::envoy_data_plane_api::{
             rbac::v3::Rbac as NetworkRbac, tcp_proxy::v3::TcpProxy,
         },
     },
-    google::protobuf::{Any, Duration as ProtoDuration, UInt32Value, UInt64Value},
+    google::protobuf::{Any, UInt32Value, UInt64Value},
     prost::Message,
 };
 
@@ -54,7 +54,6 @@ impl FilterChainBuilder {
         self.proto.filters.push(Filter {
             name: "envoy.filters.network.http_connection_manager".into(),
             config_type: Some(ConfigType::TypedConfig(hcm_any)),
-            ..Default::default()
         });
         self
     }
@@ -70,7 +69,6 @@ impl FilterChainBuilder {
         self.proto.filters.push(Filter {
             name: "envoy.filters.network.tcp_proxy".into(),
             config_type: Some(ConfigType::TypedConfig(tcp_proxy_any)),
-            ..Default::default()
         });
         self
     }
@@ -80,7 +78,7 @@ impl FilterChainBuilder {
         let proto = EnvoyConnectionLimit {
             stat_prefix: "cx_limit".into(),
             max_connections: Some(UInt64Value { value: max_connections }),
-            delay: delay.map(|d| ProtoDuration { seconds: d.as_secs() as i64, nanos: d.subsec_nanos() as i32 }),
+            delay: delay.map(super::duration_to_proto),
             runtime_enabled: None,
         };
         let any = Any {
@@ -90,7 +88,6 @@ impl FilterChainBuilder {
         self.proto.filters.push(Filter {
             name: "envoy.filters.network.connection_limit".into(),
             config_type: Some(ConfigType::TypedConfig(any)),
-            ..Default::default()
         });
         self
     }
@@ -105,7 +102,6 @@ impl FilterChainBuilder {
         self.proto.filters.push(Filter {
             name: "envoy.filters.network.ratelimit".into(),
             config_type: Some(ConfigType::TypedConfig(any)),
-            ..Default::default()
         });
         self
     }
@@ -121,7 +117,6 @@ impl FilterChainBuilder {
         self.proto.filters.push(Filter {
             name: "envoy.filters.network.rbac".into(),
             config_type: Some(ConfigType::TypedConfig(rbac_any)),
-            ..Default::default()
         });
         self
     }
@@ -130,10 +125,10 @@ impl FilterChainBuilder {
     pub fn downstream_tls(mut self, tls: impl Into<DownstreamTls>) -> Self {
         let tls_proto = tls.into();
         let transport_socket = TransportSocket {
-            name: "envoy.transport_sockets.tls".to_string(),
+            name: "envoy.transport_sockets.tls".to_owned(),
             config_type: Some(TransportSocketConfigType::TypedConfig(Any {
                 type_url: "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext"
-                    .to_string(),
+                    .to_owned(),
                 value: tls_proto.encode_to_vec(),
             })),
         };
@@ -145,7 +140,7 @@ impl FilterChainBuilder {
     pub fn server_names(mut self, names: &[&str]) -> Self {
         self.ensure_filter_chain_match();
         if let Some(ref mut m) = self.proto.filter_chain_match {
-            m.server_names = names.iter().map(|s| (*s).to_string()).collect();
+            m.server_names = names.iter().map(|s| (*s).to_owned()).collect();
         }
         self
     }

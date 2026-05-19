@@ -123,7 +123,7 @@ pub fn otel_update_tracers(tracers: HashMap<TracingKey, TracingConfig>) -> Resul
     // insert new tracers...
     for (key, ref config) in tracers {
         info!("Updating tracer with {key:?}...");
-        insert_tracer(key.clone(), config, &mut cur_map)?;
+        insert_tracer(key, config, &mut cur_map)?;
     }
 
     GLOBAL_TRACERS.tracers.store(Arc::new(cur_map));

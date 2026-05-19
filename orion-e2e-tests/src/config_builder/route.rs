@@ -39,7 +39,7 @@ use orion_data_plane_api::envoy_data_plane_api::{
             v3::Int64Range,
         },
     },
-    google::protobuf::{Any, BoolValue, Duration as ProtoDuration, UInt32Value},
+    google::protobuf::{Any, BoolValue, UInt32Value},
     prost::Message,
 };
 
@@ -314,7 +314,7 @@ impl RouteBuilder {
         let cluster_weights: Vec<ClusterWeight> = clusters
             .iter()
             .map(|(name, weight)| ClusterWeight {
-                name: (*name).to_string(),
+                name: (*name).to_owned(),
                 weight: Some(UInt32Value { value: *weight }),
                 ..Default::default()
             })
@@ -380,8 +380,7 @@ impl RouteBuilder {
     #[must_use]
     pub fn timeout(mut self, timeout: Duration) -> Self {
         if let Some(Action::Route(ref mut route_action)) = self.proto.action {
-            route_action.timeout =
-                Some(ProtoDuration { seconds: timeout.as_secs() as i64, nanos: timeout.subsec_nanos() as i32 });
+            route_action.timeout = Some(super::duration_to_proto(timeout));
         }
         self
     }

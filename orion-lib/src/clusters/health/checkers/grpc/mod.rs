@@ -44,6 +44,7 @@ use crate::{
 };
 
 /// Spawns an HTTP health checker and returns its handle. Must be called from a Tokio runtime context.
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_grpc_health_checker(
     endpoint: EndpointId,
     cluster_config: ClusterHealthCheck,
@@ -81,6 +82,7 @@ impl GrpcHealthChannel for HealthClient<GrpcService> {
 
 /// Actual implementation of `spawn_grpc_health_checker()`, with `dependencies` containing the
 /// injected gRPC stack builder and interval waiter.
+#[allow(clippy::too_many_arguments)]
 fn spawn_grpc_health_checker_impl<G, W>(
     endpoint: EndpointId,
     cluster_config: ClusterHealthCheck,

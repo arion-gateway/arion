@@ -404,15 +404,12 @@ async fn test_hcm_local_rate_limit_statistical_multi_runtime() {
             let mut rate_limited = 0;
 
             for _ in 0..requests_per_client {
-                match client.get("/test").await {
-                    Ok(response) => {
-                        if response.status == StatusCode::OK {
-                            successful += 1;
-                        } else if response.status == StatusCode::TOO_MANY_REQUESTS {
-                            rate_limited += 1;
-                        }
-                    },
-                    Err(_) => {},
+                if let Ok(response) = client.get("/test").await {
+                    if response.status == StatusCode::OK {
+                        successful += 1;
+                    } else if response.status == StatusCode::TOO_MANY_REQUESTS {
+                        rate_limited += 1;
+                    }
                 }
             }
             (successful, rate_limited)
@@ -428,19 +425,14 @@ async fn test_hcm_local_rate_limit_statistical_multi_runtime() {
         total_rate_limited += rate_limited;
     }
 
-    let expected_allowed = 50;
-    let tolerance = 0.3;
-    let min_allowed = (expected_allowed as f64 * (1.0 - tolerance)) as usize;
-    let max_allowed = (expected_allowed as f64 * (1.0 + tolerance)) as usize;
+    let expected_allowed: usize = 50;
+    let tolerance_pct: usize = 30;
+    let min_allowed = expected_allowed.saturating_sub(expected_allowed * tolerance_pct / 100);
+    let max_allowed = expected_allowed + expected_allowed * tolerance_pct / 100;
 
     assert!(
         total_successful >= min_allowed && total_successful <= max_allowed,
-        "Expected approximately {} successful requests (±{}%), got {} successful and {} rate limited out of {} total",
-        expected_allowed,
-        (tolerance * 100.0) as usize,
-        total_successful,
-        total_rate_limited,
-        total_requests
+        "Expected approximately {expected_allowed} successful requests (±{tolerance_pct}%), got {total_successful} successful and {total_rate_limited} rate limited out of {total_requests} total"
     );
 
     orion.shutdown();
@@ -477,7 +469,6 @@ async fn test_listener_local_rate_limit_statistical_multi_runtime() {
     let mut tasks = vec![];
 
     for _ in 0..num_concurrent_attempts {
-        let addr = addr;
         let task = tokio::spawn(async move {
             let client = TestClient::new(addr);
             match client.get("/test").await {
@@ -498,24 +489,19 @@ async fn test_listener_local_rate_limit_statistical_multi_runtime() {
     let mut failed = 0;
     for task in tasks {
         match task.await.unwrap() {
-            Ok(_) => successful += 1,
-            Err(_) => failed += 1,
+            Ok(()) => successful += 1,
+            Err(()) => failed += 1,
         }
     }
 
-    let expected_allowed = 80;
-    let tolerance = 0.5;
-    let min_allowed = (expected_allowed as f64 * (1.0 - tolerance)) as usize;
-    let max_allowed = (expected_allowed as f64 * (1.0 + tolerance)) as usize;
+    let expected_allowed: usize = 80;
+    let tolerance_pct: usize = 50;
+    let min_allowed = expected_allowed.saturating_sub(expected_allowed * tolerance_pct / 100);
+    let max_allowed = expected_allowed + expected_allowed * tolerance_pct / 100;
 
     assert!(
         successful >= min_allowed && successful <= max_allowed,
-        "Expected approximately {} successful connections (±{}%) with 4 runtimes × 30 tokens/runtime ≈ 120 total capacity, got {} successful and {} failed out of {} total",
-        expected_allowed,
-        (tolerance * 100.0) as usize,
-        successful,
-        failed,
-        num_concurrent_attempts
+        "Expected approximately {expected_allowed} successful connections (±{tolerance_pct}%) with 4 runtimes × 30 tokens/runtime ≈ 120 total capacity, got {successful} successful and {failed} failed out of {num_concurrent_attempts} total"
     );
 
     orion.shutdown();
@@ -554,7 +540,6 @@ async fn test_hcm_rate_limit_aggregate_over_time() {
     let mut tasks = vec![];
 
     for _ in 0..num_burst_clients {
-        let addr = addr;
         let task = tokio::spawn(async move {
             let client = TestClient::new(addr);
             let mut successful = 0;
@@ -575,24 +560,20 @@ async fn test_hcm_rate_limit_aggregate_over_time() {
         burst_successful += task.await.unwrap();
     }
 
-    let expected_burst = 10;
-    let burst_tolerance = 0.50;
-    let min_burst = (expected_burst as f64 * (1.0 - burst_tolerance)) as usize;
-    let max_burst = (expected_burst as f64 * (1.0 + burst_tolerance)) as usize;
+    let expected_burst: usize = 10;
+    let burst_tolerance_pct: usize = 50;
+    let min_burst = expected_burst.saturating_sub(expected_burst * burst_tolerance_pct / 100);
+    let max_burst = expected_burst + expected_burst * burst_tolerance_pct / 100;
 
     assert!(
         burst_successful >= min_burst && burst_successful <= max_burst,
-        "Burst phase: expected ~{} successful (±{}%), got {}",
-        expected_burst,
-        (burst_tolerance * 100.0) as usize,
-        burst_successful
+        "Burst phase: expected ~{expected_burst} successful (±{burst_tolerance_pct}%), got {burst_successful}"
     );
 
     tokio::time::sleep(Duration::from_secs(5)).await;
 
     let mut tasks = vec![];
     for _ in 0..200 {
-        let addr = addr;
         let task = tokio::spawn(async move {
             let client = TestClient::new(addr);
             let mut successful = 0;
@@ -613,17 +594,14 @@ async fn test_hcm_rate_limit_aggregate_over_time() {
         refill_successful += task.await.unwrap();
     }
 
-    let expected_refill = 10;
-    let refill_tolerance = 0.50;
-    let min_refill = (expected_refill as f64 * (1.0 - refill_tolerance)) as usize;
-    let max_refill = (expected_refill as f64 * (1.0 + refill_tolerance)) as usize;
+    let expected_refill: usize = 10;
+    let refill_tolerance_pct: usize = 50;
+    let min_refill = expected_refill.saturating_sub(expected_refill * refill_tolerance_pct / 100);
+    let max_refill = expected_refill + expected_refill * refill_tolerance_pct / 100;
 
     assert!(
         refill_successful >= min_refill && refill_successful <= max_refill,
-        "Refill phase: after 5s (>4s fill interval with 4 runtimes), buckets refill to max capacity, expected ~{} successful (±{}%), got {}",
-        expected_refill,
-        (refill_tolerance * 100.0) as usize,
-        refill_successful
+        "Refill phase: after 5s (>4s fill interval with 4 runtimes), buckets refill to max capacity, expected ~{expected_refill} successful (±{refill_tolerance_pct}%), got {refill_successful}"
     );
 
     orion.shutdown();

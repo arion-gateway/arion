@@ -22,7 +22,8 @@ use orion_e2e_tests::config_builder::{
     RouteBuilder, RouteConfigBuilder, VirtualHostBuilder,
 };
 use orion_e2e_tests::{
-    OrionInstance, PreConfiguredResponse, RequestBuilder, SpawnOptions, TestBackend, TestClient, XdsEnabledHarness,
+    cleanup_config_file, OrionInstance, PreConfiguredResponse, RequestBuilder, SpawnOptions, TestBackend, TestClient,
+    XdsEnabledHarness,
 };
 
 #[tokio::test]
@@ -47,7 +48,7 @@ async fn test_cluster_routing_basic() {
     backend.await_request().await.unwrap();
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -69,7 +70,7 @@ async fn test_cluster_missing() {
     response.assert_status(StatusCode::INTERNAL_SERVER_ERROR);
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -94,7 +95,7 @@ async fn test_weighted_clusters_basic() {
     for _ in 0..20 {
         let response = client.get("/test").await.unwrap();
         response.assert_status(StatusCode::OK);
-        let body = response.body_str().unwrap_or("").to_string();
+        let body = response.body_str().unwrap_or("").to_owned();
         *counts.entry(body).or_insert(0) += 1;
     }
 
@@ -102,7 +103,7 @@ async fn test_weighted_clusters_basic() {
     assert!(counts.contains_key("backend2"), "Expected traffic to backend2");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -129,7 +130,7 @@ async fn test_weighted_clusters_single() {
     }
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -161,7 +162,7 @@ async fn test_cluster_header_routing() {
     backend2.await_request().await.unwrap();
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -184,7 +185,7 @@ async fn test_cluster_header_missing() {
     response.assert_status(StatusCode::INTERNAL_SERVER_ERROR);
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -204,7 +205,7 @@ async fn test_redirect_302_basic() {
     response.assert_header("location", "/new");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -224,7 +225,7 @@ async fn test_redirect_301_permanent() {
     response.assert_header("location", "/new");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -244,7 +245,7 @@ async fn test_redirect_307_temporary() {
     response.assert_header("location", "/new");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -264,7 +265,7 @@ async fn test_redirect_308_permanent() {
     response.assert_header("location", "/new");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -282,11 +283,11 @@ async fn test_redirect_host_rewrite() {
     let response = client.get("/path").await.unwrap();
     response.assert_status(StatusCode::FOUND);
     let location = response.header("location").expect("Missing location header");
-    assert!(location.contains("example.com"), "Expected host in location, got: {}", location);
-    assert!(location.contains("/redirected"), "Expected path in location, got: {}", location);
+    assert!(location.contains("example.com"), "Expected host in location, got: {location}");
+    assert!(location.contains("/redirected"), "Expected path in location, got: {location}");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -306,7 +307,7 @@ async fn test_redirect_path_rewrite() {
     response.assert_header("location", "/v2/users");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -324,10 +325,10 @@ async fn test_redirect_https_upgrade() {
     let response = client.get("/path").await.unwrap();
     response.assert_status(StatusCode::MOVED_PERMANENTLY);
     let location = response.header("location").expect("Missing location header");
-    assert!(location.starts_with("https://"), "Expected https scheme, got: {}", location);
+    assert!(location.starts_with("https://"), "Expected https scheme, got: {location}");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -345,11 +346,11 @@ async fn test_redirect_strip_query() {
     let response = client.get("/old?foo=bar&baz=qux").await.unwrap();
     response.assert_status(StatusCode::FOUND);
     let location = response.header("location").expect("Missing location header");
-    assert!(!location.contains('?'), "Expected query to be stripped, got: {}", location);
-    assert!(location.contains("/new"), "Expected path /new, got: {}", location);
+    assert!(!location.contains('?'), "Expected query to be stripped, got: {location}");
+    assert!(location.contains("/new"), "Expected path /new, got: {location}");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -367,10 +368,10 @@ async fn test_redirect_preserve_query() {
     let response = client.get("/old?foo=bar").await.unwrap();
     response.assert_status(StatusCode::FOUND);
     let location = response.header("location").expect("Missing location header");
-    assert!(location.contains("foo=bar"), "Expected query to be preserved, got: {}", location);
+    assert!(location.contains("foo=bar"), "Expected query to be preserved, got: {location}");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -390,7 +391,7 @@ async fn test_direct_response_with_body() {
     response.assert_body("Hello, World!");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -408,7 +409,7 @@ async fn test_direct_response_empty() {
     response.assert_status(StatusCode::NO_CONTENT);
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -433,7 +434,7 @@ async fn test_direct_response_error_status() {
     response.assert_body("Internal Server Error");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -465,7 +466,7 @@ async fn test_direct_response_with_path_match() {
     backend.await_request().await.unwrap();
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -500,7 +501,7 @@ async fn test_direct_response_with_header_match() {
     backend.await_request().await.unwrap();
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -532,7 +533,7 @@ async fn test_direct_response_fallback() {
     response.assert_body("Not Found");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -579,7 +580,7 @@ async fn test_routing_actions_when_configured_over_xds() {
     let client = TestClient::new(listener_addr);
 
     // Wait until Orion applies the updated route config (RDS propagation)
-    tokio::time::timeout(Duration::from_secs(10), async {
+    pingora::time::timeout(Duration::from_secs(10), async {
         loop {
             if let Ok(response) = client.get("/test").await {
                 if response.status == StatusCode::OK {

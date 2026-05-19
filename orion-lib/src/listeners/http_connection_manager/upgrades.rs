@@ -82,6 +82,7 @@ pub fn is_websocket_enabled_by_hcm(hcm_enabled_upgrades: &[UpgradeType]) -> bool
     hcm_enabled_upgrades.iter().any(|upgrade| matches!(upgrade, UpgradeType::Websocket))
 }
 
+#[allow(clippy::too_many_lines)]
 pub async fn handle_websocket_upgrade(
     trans_handler: &TransactionContext,
     mut request: Request<OrionRequestBody>,
@@ -124,12 +125,16 @@ pub async fn handle_websocket_upgrade(
                                 let mut upstream = InstrumentedStream::new(TokioIo::new(response_upgraded));
 
                                 #[allow(unused_variables)]
+                                #[allow(clippy::let_unit_value)]
                                 let shard_id = get_shard_id!();
 
-                                let _ = copy_bidirectional(&mut downstream, &mut upstream).await.map_err(|err| {
-                                    error!("Upgrade failure, bidi copy failed for websocket {:?}", err);
-                                    err
-                                });
+                                let _ = copy_bidirectional(&mut downstream, &mut upstream)
+                                    .await
+                                    .map_err(|err| {
+                                        error!("Upgrade failure, bidi copy failed for websocket {:?}", err);
+                                        err
+                                    })
+                                    .ok();
 
                                 #[allow(unused_variables)]
                                 let bytes_received_down = downstream.metrics().bytes_read();

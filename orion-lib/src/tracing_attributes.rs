@@ -88,7 +88,7 @@ pub fn set_attributes_from_request<B>(span: &mut BoxedSpan, request: &Request<B>
     span.set_attributes([
         KeyValue::new(HTTP_REQUEST_METHOD, request.method().as_str().to_static_str()), // the number of HTTP methods is small, hence we can use the string interner here..
         KeyValue::new(URL_FULL, request.uri().to_string()),
-        KeyValue::new(URL_PATH, request.uri().path().to_string()),
+        KeyValue::new(URL_PATH, request.uri().path().to_owned()),
         KeyValue::new(NETWORK_PROTOCOL_NAME, "http"),
         KeyValue::new(
             NETWORK_PROTOCOL_VERSION,
@@ -102,7 +102,7 @@ pub fn set_attributes_from_request<B>(span: &mut BoxedSpan, request: &Request<B>
                 .unwrap_or(&HeaderValue::from_static("unknown"))
                 .to_str()
                 .unwrap_or("invalid-user-agent")
-                .to_string(),
+                .to_owned(),
         ),
     ]);
 

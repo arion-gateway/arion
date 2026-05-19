@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use pingora::prelude::fast_timeout::fast_timeout;
 use std::io::{BufRead, BufReader};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
@@ -21,7 +22,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use tokio::sync::oneshot;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::{Error, Result};
 
@@ -67,11 +68,16 @@ impl OrionInstance {
         Self::spawn_internal(config_path, None, options).await
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "process spawn logic is inherently sequential and would gain nothing from splitting"
+    )]
     pub async fn spawn_auto_port(
         config_path: impl AsRef<Path>,
         listener_name: impl Into<String>,
         options: SpawnOptions,
     ) -> Result<Self> {
+        const MAX_CAPTURED_LINES: usize = 75;
         let listener_name = listener_name.into();
         let config_path = config_path.as_ref().to_path_buf();
         let shutdown_requested = Arc::new(AtomicBool::new(false));
@@ -98,9 +104,9 @@ impl OrionInstance {
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
-        let mut process = cmd
-            .spawn()
-            .map_err(|e| Error::ProcessStartFailed(format!("Failed to spawn orion binary at {orion_bin:?}: {e}")))?;
+        let mut process = cmd.spawn().map_err(|e| {
+            Error::ProcessStartFailed(format!("Failed to spawn orion binary at {}: {e}", orion_bin.display()))
+        })?;
 
         let stdout = process.stdout.take();
         let stderr = process.stderr.take();
@@ -109,7 +115,6 @@ impl OrionInstance {
         let verbose = options.verbose_output;
         let name_for_parser = listener_name.clone();
 
-        const MAX_CAPTURED_LINES: usize = 75;
         let captured_lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::with_capacity(MAX_CAPTURED_LINES)));
 
         let stderr_lines = Arc::clone(&captured_lines);
@@ -129,7 +134,7 @@ impl OrionInstance {
                             lines.push(line.clone());
                         }
                         if verbose {
-                            eprintln!("[ORION-ERR] {}", line);
+                            eprintln!("[ORION-ERR] {line}");
                         }
                         debug!(target: "orion_stderr", "{}", line);
                     }
@@ -159,13 +164,15 @@ impl OrionInstance {
 
                             if let Some(tx) = result_tx.take() {
                                 if let Some(addr) = parse_listener_started(&line, &name_for_parser) {
-                                    let _ = tx.send(Ok(addr));
+                                    tx.send(Ok(addr)).unwrap_or_else(|e| {
+                                        error!("Failed to send listener address: {e:?}");
+                                    });
                                 } else {
                                     result_tx = Some(tx); // Put it back
                                 }
                             }
                             if verbose {
-                                eprintln!("[ORION] {}", line);
+                                eprintln!("[ORION] {line}");
                             }
                             debug!(target: "orion_output", "{}", line);
                         },
@@ -179,15 +186,17 @@ impl OrionInstance {
                 if let Some(tx) = result_tx.take() {
                     std::thread::sleep(Duration::from_millis(100));
                     let output = stdout_lines.lock().map(|lines| lines.join("\n")).unwrap_or_default();
-                    let _ = tx.send(Err(output));
+                    tx.send(Err(output)).unwrap_or_else(|e| {
+                        error!("Failed to send listener address: {e:?}");
+                    });
                 }
             })
         });
 
-        let listener_addr = tokio::time::timeout(options.ready_timeout, result_rx)
+        let listener_addr = fast_timeout(options.ready_timeout, result_rx)
             .await
-            .map_err(|_| Error::ReadyTimeout(options.ready_timeout))?
-            .map_err(|_| Error::Config("Channel closed unexpectedly".into()))?
+            .map_err(|_e| Error::ReadyTimeout(options.ready_timeout))?
+            .map_err(|_e| Error::Config("Channel closed unexpectedly".into()))?
             .map_err(|output| Error::StartupFailed { exit_code: None, output })?;
 
         info!(?listener_addr, "Discovered Orion listener address");
@@ -202,12 +211,17 @@ impl OrionInstance {
         })
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "process spawn logic is inherently sequential and would gain nothing from splitting"
+    )]
     pub async fn spawn_with_fixed_port(
         config_path: impl AsRef<Path>,
         listener_name: impl Into<String>,
         port: u16,
         options: SpawnOptions,
     ) -> Result<Self> {
+        const MAX_CAPTURED_LINES: usize = 75;
         let listener_name = listener_name.into();
         let config_path = config_path.as_ref().to_path_buf();
         let shutdown_requested = Arc::new(AtomicBool::new(false));
@@ -234,9 +248,9 @@ impl OrionInstance {
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
-        let mut process = cmd
-            .spawn()
-            .map_err(|e| Error::ProcessStartFailed(format!("Failed to spawn orion binary at {orion_bin:?}: {e}")))?;
+        let mut process = cmd.spawn().map_err(|e| {
+            Error::ProcessStartFailed(format!("Failed to spawn orion binary at {}: {e}", orion_bin.display()))
+        })?;
 
         let stdout = process.stdout.take();
         let stderr = process.stderr.take();
@@ -246,7 +260,6 @@ impl OrionInstance {
         let name_for_parser = listener_name.clone();
         let expected_port = port;
 
-        const MAX_CAPTURED_LINES: usize = 75;
         let captured_lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::with_capacity(MAX_CAPTURED_LINES)));
 
         let stderr_lines = Arc::clone(&captured_lines);
@@ -266,7 +279,7 @@ impl OrionInstance {
                             lines.push(line.clone());
                         }
                         if verbose {
-                            eprintln!("[ORION-ERR] {}", line);
+                            eprintln!("[ORION-ERR] {line}");
                         }
                         debug!(target: "orion_stderr", "{}", line);
                     }
@@ -297,20 +310,25 @@ impl OrionInstance {
                             if let Some(tx) = result_tx.take() {
                                 if let Some(addr) = parse_listener_started(&line, &name_for_parser) {
                                     if addr.port() == expected_port {
-                                        let _ = tx.send(Ok(()));
+                                        tx.send(Ok(())).unwrap_or_else(|e| {
+                                            error!("Failed to send listener ready signal: {e:?}");
+                                        });
                                     } else {
-                                        let _ = tx.send(Err(format!(
+                                        tx.send(Err(format!(
                                             "Listener started on wrong port. Expected: {}, Got: {}",
                                             expected_port,
                                             addr.port()
-                                        )));
+                                        )))
+                                        .unwrap_or_else(|e| {
+                                            error!("Failed to send listener ready signal: {e:?}");
+                                        });
                                     }
                                 } else {
                                     result_tx = Some(tx);
                                 }
                             }
                             if verbose {
-                                eprintln!("[ORION] {}", line);
+                                eprintln!("[ORION] {line}");
                             }
                             debug!(target: "orion_output", "{}", line);
                         },
@@ -324,15 +342,17 @@ impl OrionInstance {
                 if let Some(tx) = result_tx.take() {
                     std::thread::sleep(Duration::from_millis(100));
                     let output = stdout_lines.lock().map(|lines| lines.join("\n")).unwrap_or_default();
-                    let _ = tx.send(Err(output));
+                    tx.send(Err(output)).unwrap_or_else(|e| {
+                        error!("Failed to send listener ready signal: {e:?}");
+                    });
                 }
             })
         });
 
-        tokio::time::timeout(options.ready_timeout, result_rx)
+        fast_timeout(options.ready_timeout, result_rx)
             .await
-            .map_err(|_| Error::ReadyTimeout(options.ready_timeout))?
-            .map_err(|_| Error::Config("Channel closed unexpectedly".into()))?
+            .map_err(|_e| Error::ReadyTimeout(options.ready_timeout))?
+            .map_err(|_e| Error::Config("Channel closed unexpectedly".into()))?
             .map_err(|output| Error::StartupFailed { exit_code: None, output })?;
 
         let listener_addr = SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), port);
@@ -372,9 +392,9 @@ impl OrionInstance {
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
-        let mut process = cmd
-            .spawn()
-            .map_err(|e| Error::ProcessStartFailed(format!("Failed to spawn orion binary at {orion_bin:?}: {e}")))?;
+        let mut process = cmd.spawn().map_err(|e| {
+            Error::ProcessStartFailed(format!("Failed to spawn orion binary at {}: {e}", orion_bin.display()))
+        })?;
 
         let stderr = process.stderr.take();
         let shutdown_flag = Arc::clone(&shutdown_requested);
@@ -389,7 +409,7 @@ impl OrionInstance {
                     match line {
                         Ok(line) => {
                             if verbose {
-                                eprintln!("[ORION] {}", line);
+                                eprintln!("[ORION] {line}");
                             }
                             debug!(target: "orion_output", "{}", line);
                         },
@@ -441,7 +461,9 @@ impl OrionInstance {
 
             if start.elapsed() > timeout {
                 if let Some(ref mut process) = self.process {
-                    let _ = process.kill();
+                    process.kill().unwrap_or_else(|e| {
+                        error!("Failed to kill orion process after timeout: {e}");
+                    });
                 }
                 return Err(Error::ReadyTimeout(timeout));
             }
@@ -474,8 +496,14 @@ impl OrionInstance {
 
         if let Some(mut process) = self.process.take() {
             info!("Shutting down Orion instance");
-            let _ = process.kill();
-            let _ = process.wait();
+            if let Err(e) = process.kill() {
+                if e.kind() != std::io::ErrorKind::InvalidInput {
+                    error!("Failed to kill orion process during shutdown: {e}");
+                }
+            }
+            if let Err(e) = process.wait() {
+                error!("Failed to wait for orion process during shutdown: {e}");
+            }
         }
     }
 }
@@ -484,9 +512,35 @@ impl Drop for OrionInstance {
     fn drop(&mut self) {
         self.shutdown_requested.store(true, Ordering::SeqCst);
 
-        if let Some(ref mut process) = self.process {
-            let _ = process.kill();
-            let _ = process.wait();
+        if let Some(mut process) = self.process.take() {
+            if let Err(e) = process.kill() {
+                // InvalidInput means the process already exited — that's expected
+                if e.kind() != std::io::ErrorKind::InvalidInput {
+                    error!("Failed to send kill signal to orion process: {e}");
+                }
+            }
+
+            // Bounded wait: SIGKILL should be near-instant; timeout signals a kernel issue.
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                match process.try_wait() {
+                    Ok(Some(_)) => break,
+                    Ok(None) if Instant::now() < deadline => {
+                        std::thread::sleep(Duration::from_millis(50));
+                    },
+                    Ok(None) => {
+                        error!(
+                            "Orion process did not exit within 5s after kill — \
+                             port may remain bound and affect subsequent tests"
+                        );
+                        break;
+                    },
+                    Err(e) => {
+                        error!("Failed to wait for orion process exit: {e}");
+                        break;
+                    },
+                }
+            }
         }
 
         if self.cleanup_config {
@@ -570,7 +624,7 @@ fn find_orion_binary() -> Result<PathBuf> {
             }
         }
         if !current.pop() {
-            return Err(Error::ProcessStartFailed("Could not find workspace root".to_string()));
+            return Err(Error::ProcessStartFailed("Could not find workspace root".to_owned()));
         }
     };
 
@@ -584,14 +638,14 @@ fn find_orion_binary() -> Result<PathBuf> {
         return Ok(release_path);
     }
 
-    Err(Error::ProcessStartFailed("Could not find orion binary. Run `cargo build -p orion-proxy` first.".to_string()))
+    Err(Error::ProcessStartFailed("Could not find orion binary. Run `cargo build -p orion-proxy` first.".to_owned()))
 }
 
 fn parse_listener_started(line: &str, name: &str) -> Option<SocketAddr> {
-    let pattern = format!("listener '{}' started: ", name);
-    line.find(&pattern).and_then(|idx| {
-        let addr_start = idx + pattern.len();
-        let addr_end = line[addr_start..].find(' ').map(|i| addr_start + i).unwrap_or(line.len());
-        line[addr_start..addr_end].parse().ok()
-    })
+    let pattern = format!("listener '{name}' started: ");
+    let idx = line.find(&pattern)?;
+    let addr_start = idx + pattern.len();
+    let suffix = line.get(addr_start..)?;
+    let addr_end = suffix.find(' ').map(|i| addr_start + i).unwrap_or(line.len());
+    line.get(addr_start..addr_end)?.parse().ok()
 }

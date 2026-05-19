@@ -35,14 +35,12 @@ impl Cors {
         debug!(target: "cors", "applying CORS filter to request");
         // 1. Extract Origin Header.
         // If missing, it's not a CORS request (or it is same-origin).
-        let origin_header = match req.headers().get(ORIGIN) {
-            Some(h) => h,
-            None => return FilterDecision::Continue,
+        let Some(origin_header) = req.headers().get(ORIGIN) else {
+            return FilterDecision::Continue;
         };
 
-        let origin_str = match origin_header.to_str() {
-            Ok(s) => s,
-            Err(_) => return FilterDecision::Continue,
+        let Ok(origin_str) = origin_header.to_str() else {
+            return FilterDecision::Continue;
         };
 
         // 2. Validate Origin and save state.
@@ -55,24 +53,20 @@ impl Cors {
                 // Origin not allowed: ignore. Browser will block response due to missing headers.
                 return FilterDecision::Continue;
             },
-        };
+        }
 
         // 3. Preflight Handling (OPTIONS + Access-Control-Request-Method)
         let is_preflight = req.method() == Method::OPTIONS && req.headers().contains_key(ACCESS_CONTROL_REQUEST_METHOD);
 
         if is_preflight {
             // Strict Validation: Check if the requested method is actually allowed.
-            let req_method_hdr = match req.headers().get(ACCESS_CONTROL_REQUEST_METHOD) {
-                Some(h) => h,
-                None => return FilterDecision::Continue, // Should not happen given is_preflight check
+            let Some(req_method_hdr) = req.headers().get(ACCESS_CONTROL_REQUEST_METHOD) else {
+                return FilterDecision::Continue; // Should not happen given is_preflight check
             };
 
-            let req_method = match Method::from_bytes(req_method_hdr.as_bytes()) {
-                Ok(m) => m,
-                Err(_) => {
-                    debug!(target: "cors", "Preflight failed: Invalid method in Access-Control-Request-Method");
-                    return FilterDecision::Continue;
-                },
+            let Ok(req_method) = Method::from_bytes(req_method_hdr.as_bytes()) else {
+                debug!(target: "cors", "Preflight failed: Invalid method in Access-Control-Request-Method");
+                return FilterDecision::Continue;
             };
 
             if !self.inner.allow_methods.contains(&req_method) {
@@ -115,9 +109,8 @@ impl Cors {
     pub fn apply_response(&mut self, response: &mut Response<OrionResponseBody>) -> FilterDecision {
         debug!(target: "cors", "applying CORS filter to response");
         // If we didn't validate an origin during the request phase, do nothing.
-        let allowed_origin = match &self.validated_origin {
-            Some(o) => o,
-            None => return FilterDecision::Continue,
+        let Some(allowed_origin) = &self.validated_origin else {
+            return FilterDecision::Continue;
         };
 
         let headers = response.headers_mut();
@@ -175,7 +168,7 @@ impl Cors {
         }
 
         // C. Methods
-        let methods_str = conf.allow_methods.iter().map(|m| m.as_str()).collect::<Vec<_>>().join(", ");
+        let methods_str = conf.allow_methods.iter().map(http::Method::as_str).collect::<Vec<_>>().join(", ");
         if let Ok(val) = HeaderValue::from_str(&methods_str) {
             headers.insert(ACCESS_CONTROL_ALLOW_METHODS, val);
         }
@@ -216,7 +209,7 @@ impl Cors {
             return FilterDecision::internal_server_error("failed to build CORS response", ver);
         };
 
-        FilterDecision::DirectResponse(response)
+        FilterDecision::DirectResponse(Box::new(response))
     }
 
     fn determine_allowed_origin(&self, request_origin: &str) -> Option<(HeaderValue, bool)> {
@@ -244,8 +237,6 @@ impl Cors {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::OrionRequestBody;
-    use http::{Request, Response};
     use orion_configuration::config::core::StringMatcher;
 
     fn mock_req(method: Method, origin: Option<&str>, acr_method: Option<&str>) -> Request<OrionRequestBody> {

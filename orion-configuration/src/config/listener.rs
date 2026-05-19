@@ -42,7 +42,7 @@ const DEFAULT_TCP_BACKLOG_SIZE: UInt32Value = UInt32Value { value: 128 };
 
 /// Empty configuration marker for internal listeners
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-pub struct EmptyConfig {}
+pub struct EmptyConfig;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
@@ -196,7 +196,11 @@ impl FromStr for ServerNameMatch {
     type Err = GenericError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         // we don't check if the label is a valid hostname here, we only check for wildcards
-        let (match_subdomains, s) = if s.starts_with("*.") { (true, &s[1..]) } else { (false, s) };
+        let (match_subdomains, s) = match s.strip_prefix('*') {
+            Some(rest) if rest.starts_with('.') => (true, rest),
+            _ => (false, s),
+        };
+
         if s.contains('*') {
             return Err(GenericError::from_msg(
                 "internal wildcards are not supported (Hostnames may only start with '*.')",
@@ -287,15 +291,26 @@ impl FilterChainMatch {
                     // trim the '*' in the matcher
                     if server_name.ends_with(name_match.name.as_str()) {
                         // the score is the amount of labels in server_name that matched on the '*' (lower is more specific)
-                        MatchResult::Matched(
-                            // -1 so we include and extra dot and ".bad.domain" matching "*.bad.domain" won't score equal to an exact match
-                            server_name[0..server_name.len() - (name_match.name.len() - 1)]
-                                .chars()
-                                .filter(|c| *c == '.')
-                                .count()
-                                .try_into()
-                                .unwrap_or(u32::MAX),
+                        //
+
+                        let prefix_len = server_name.len() - name_match.name.len();
+
+                        // use get to avoid panicking if prefix_len is out of bounds, or for utf8 boundary issues,
+                        // in which case we just assume there are no extra labels and return a score of 0
+
+                        #[allow(clippy::naive_bytecount)]
+                        let score = u32::try_from(
+                            server_name
+                                .as_bytes()
+                                .get(..=prefix_len)
+                                .unwrap_or(server_name.as_bytes())
+                                .iter()
+                                .filter(|&&b| b == b'.')
+                                .count(),
                         )
+                        .unwrap_or_default();
+
+                        MatchResult::Matched(score)
                     } else {
                         MatchResult::FailedMatch
                     }
@@ -757,13 +772,13 @@ mod envoy_conversions {
             let destination_port = destination_port
                 .map(|x| x.value.try_into())
                 .transpose()
-                .map_err(|_| GenericError::from_msg("invalid destination port").with_node("destination_port"))?;
+                .map_err(|_e| GenericError::from_msg("invalid destination port").with_node("destination_port"))?;
 
             let source_ports = source_ports
                 .into_iter()
                 .map(TryInto::try_into)
                 .collect::<Result<_, _>>()
-                .map_err(|_| GenericError::from_msg("invalid source port").with_node("source_ports"))?;
+                .map_err(|_e| GenericError::from_msg("invalid source port").with_node("source_ports"))?;
 
             let destination_prefix_ranges = prefix_ranges
                 .into_iter()

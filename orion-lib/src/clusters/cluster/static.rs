@@ -37,7 +37,7 @@ pub struct StaticClusterBuilder {
     pub load_assignment: ClusterLoadAssignmentBuilder,
     pub transport_socket: UpstreamTransportSocketConfigurator,
     pub health_check: Option<HealthCheck>,
-    pub config: orion_configuration::config::cluster::Cluster,
+    pub config: Box<orion_configuration::config::cluster::Cluster>,
     pub circuit_breaker: ClusterCircuitBreaker,
 }
 
@@ -63,7 +63,7 @@ pub struct StaticCluster {
     pub load_assignment: ClusterLoadAssignment,
     pub(super) transport_socket: UpstreamTransportSocketConfigurator,
     pub health_check: Option<HealthCheck>,
-    pub config: orion_configuration::config::cluster::Cluster,
+    pub config: Box<orion_configuration::config::cluster::Cluster>,
     pub circuit_breaker: ClusterCircuitBreaker,
 }
 
@@ -89,7 +89,7 @@ impl ClusterOps for StaticCluster {
     }
 
     fn change_tls_context(&mut self, secret_id: &str, secret: TransportSecret) -> Result<()> {
-        self.transport_socket.update_secret(secret_id, secret)?;
+        self.transport_socket.update_secret(secret_id, &secret)?;
         let mut load_assignment = self.load_assignment.clone();
         load_assignment.transport_socket = self.transport_socket.clone();
         let load_assignment = load_assignment.rebuild()?;

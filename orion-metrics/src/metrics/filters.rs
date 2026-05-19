@@ -7,9 +7,9 @@ pub static CONNECTION_RATE_LIMIT: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceL
 pub static LOCAL_RATE_LIMIT: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 pub static USER_RATE_LIMIT: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 
-pub static EVENT_OK: &'static str = "ok";
-pub static EVENT_RATE_LIMITED: &'static str = "rate_limited";
-pub static EVENT_NOT_APPLICABLE: &'static str = "not_applicable";
+pub static EVENT_OK: &str = "ok";
+pub static EVENT_RATE_LIMITED: &str = "rate_limited";
+pub static EVENT_NOT_APPLICABLE: &str = "not_applicable";
 
 pub(crate) fn init_metrics(rename: &std::collections::HashMap<String, String>) {
     init_observable_counter!(

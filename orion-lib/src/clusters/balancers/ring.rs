@@ -253,6 +253,7 @@ mod test {
     }
 
     #[test]
+    #[allow(clippy::indexing_slicing)]
     fn ring_balancer_distribution() {
         const RING_MIN: u32 = 10;
         const RING_MAX: u32 = 50;
@@ -299,6 +300,7 @@ mod test {
     }
 
     #[test]
+    #[allow(clippy::indexing_slicing)]
     fn ring_balancer_overflow() {
         const RING_MIN: u32 = 1;
         const RING_MAX: u16 = 10;

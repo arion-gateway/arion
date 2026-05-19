@@ -217,7 +217,11 @@ impl CapturedProcessingRequest {
 }
 
 pub mod ext_proc_responses {
-    use super::*;
+    use super::{
+        BodyMutation, BodyResponse, CommonResponse, EnvoyHeaderValue, EnvoyHttpStatus, HeaderAppendAction,
+        HeaderMutation, HeaderValueOption, HeadersResponse, ImmediateResponse, Mutation, ProcessingResponse,
+        ProcessingResponseType, ResponseStatus,
+    };
 
     fn header_value_option(key: &str, value: &str) -> HeaderValueOption {
         HeaderValueOption {
@@ -252,7 +256,7 @@ pub mod ext_proc_responses {
                     status: ResponseStatus::Continue.into(),
                     header_mutation: Some(HeaderMutation {
                         set_headers: set.iter().map(|(k, v)| header_value_option(k, v)).collect(),
-                        remove_headers: remove.iter().map(|s| s.to_string()).collect(),
+                        remove_headers: remove.iter().map(ToString::to_string).collect(),
                     }),
                     ..Default::default()
                 }),
@@ -268,7 +272,7 @@ pub mod ext_proc_responses {
                     status: ResponseStatus::Continue.into(),
                     header_mutation: Some(HeaderMutation {
                         set_headers: set.iter().map(|(k, v)| header_value_option(k, v)).collect(),
-                        remove_headers: remove.iter().map(|s| s.to_string()).collect(),
+                        remove_headers: remove.iter().map(ToString::to_string).collect(),
                     }),
                     ..Default::default()
                 }),
@@ -278,9 +282,11 @@ pub mod ext_proc_responses {
     }
 
     pub fn immediate_response(status_code: u32, body: &str) -> ProcessingResponse {
+        #[allow(clippy::cast_possible_wrap, reason = "HTTP status codes 100-599 always fit in i32")]
+        let status_code = status_code as i32;
         ProcessingResponse {
             response: Some(ProcessingResponseType::ImmediateResponse(ImmediateResponse {
-                status: Some(EnvoyHttpStatus { code: status_code as i32 }),
+                status: Some(EnvoyHttpStatus { code: status_code }),
                 body: body.as_bytes().to_vec(),
                 ..Default::default()
             })),
@@ -293,9 +299,11 @@ pub mod ext_proc_responses {
         body: &str,
         headers: &[(&str, &str)],
     ) -> ProcessingResponse {
+        #[allow(clippy::cast_possible_wrap, reason = "HTTP status codes 100-599 always fit in i32")]
+        let status_code = status_code as i32;
         ProcessingResponse {
             response: Some(ProcessingResponseType::ImmediateResponse(ImmediateResponse {
-                status: Some(EnvoyHttpStatus { code: status_code as i32 }),
+                status: Some(EnvoyHttpStatus { code: status_code }),
                 body: body.as_bytes().to_vec(),
                 headers: Some(HeaderMutation {
                     set_headers: headers.iter().map(|(k, v)| header_value_option(k, v)).collect(),

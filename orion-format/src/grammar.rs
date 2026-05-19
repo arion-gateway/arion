@@ -209,8 +209,8 @@ impl AccessLogGrammar {
         if let Some((t, _, _, _)) = ENVOY_REQ_ARGS.find_longest_prefix(arg.bytes()) {
             Ok(t.clone())
         } else {
-            let valid_name =
-                http::HeaderName::from_bytes(arg.as_bytes()).map_err(|_| FormatError::InvalidRequestArg(arg.into()))?;
+            let valid_name = http::HeaderName::from_bytes(arg.as_bytes())
+                .map_err(|_e| FormatError::InvalidRequestArg(arg.into()))?;
             Ok(ReqArgument::Header(HeaderName(valid_name.as_str().into())))
         }
     }
@@ -220,11 +220,12 @@ impl AccessLogGrammar {
             Ok(t.clone())
         } else {
             let valid_name = http::HeaderName::from_bytes(arg.as_bytes())
-                .map_err(|_| FormatError::InvalidResponseArg(arg.into()))?;
+                .map_err(|_e| FormatError::InvalidResponseArg(arg.into()))?;
             Ok(RespArgument::Header(HeaderName(valid_name.as_str().into())))
         }
     }
 
+    #[allow(clippy::string_slice)]
     fn extract_operator_arg(input: &str) -> Result<(&str, usize), FormatError> {
         if let Some(rest) = input.strip_prefix('(') {
             if let Some(end) = rest.find(')') {
@@ -242,6 +243,7 @@ impl AccessLogGrammar {
 
 impl Grammar for AccessLogGrammar {
     #[allow(clippy::too_many_lines)]
+    #[allow(clippy::string_slice)]
     fn parse(input: &str) -> Result<Vec<Template>, FormatError> {
         let mut parts = Vec::new();
         let mut literal_start = 0;

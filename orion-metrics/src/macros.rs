@@ -63,6 +63,7 @@ macro_rules! init_observable_gauge {
     };
 }
 
+#[allow(unused_macros)]
 macro_rules! init_gauge {
     ($gauge: ident, $prefix: expr, $name: expr, $descr: literal) => {
         _ = $gauge.set(Metric::new($prefix, $name, $descr, crate::sharded::Gauge::new()));

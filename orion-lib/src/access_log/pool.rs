@@ -30,11 +30,14 @@ impl<T> LoggerPool<T> {
     pub(crate) fn get(&self) -> Option<&Sender<T>> {
         match self.senders.len() {
             0 => None,
-            1 => unsafe { Some(self.senders.get_unchecked(0)) },
+            1 =>
+            // SAFETY: if len is 1, then 0 is safe
+            unsafe { Some(self.senders.get_unchecked(0)) },
             n => {
                 let idx = Self::hash_thread_id(std::thread::current().id()) % n as u64;
                 #[allow(clippy::cast_possible_truncation)]
                 unsafe {
+                    // SAFETY: idx < n, where n is the length of the senders
                     Some(self.senders.get_unchecked(idx as usize))
                 }
             },

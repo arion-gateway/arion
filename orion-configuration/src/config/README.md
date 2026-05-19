@@ -144,6 +144,6 @@ let header_name = http::HeaderName::from_str(header_name)
 // for this one, we don't include the error because the TryFromIntError does not tells us anything new
 // whereas the header name one might say which character was invalid for example
 let port = u16::try_from(port)
-            .map_err(|_| GenericError::from_msg(format!("\"{port}\" is not a valid port number")))
+            .map_err(|_e| GenericError::from_msg(format!("\"{port}\" is not a valid port number")))
             .with_node(port)?;
 ```

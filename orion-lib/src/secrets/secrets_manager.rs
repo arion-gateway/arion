@@ -30,7 +30,7 @@ use smol_str::{SmolStr, ToSmolStr};
 use std::sync::Arc;
 use tracing::{debug, warn};
 use webpki::types::ServerName;
-use x509_parser::{self, extensions::GeneralName};
+use x509_parser::extensions::GeneralName;
 
 #[derive(Clone, Debug)]
 pub struct CertStore {
@@ -111,9 +111,8 @@ impl TryFrom<&TlsCertificate> for CertificateSecret {
         let subject = x509_cert.subject();
         if let Ok(Some(san)) = x509_cert.subject_alternative_name() {
             for san_name in &san.value.general_names {
-                let name = match *san_name {
-                    GeneralName::DNSName(name) => name,
-                    _ => continue,
+                let GeneralName::DNSName(name) = *san_name else {
+                    continue;
                 };
 
                 let is_server_name = ServerName::try_from(name).is_ok();
@@ -142,12 +141,12 @@ impl SecretManager {
         let secret = match secret.kind() {
             Type::TlsCertificate(certificate) => {
                 let secret = Arc::new(CertificateSecret::try_from(certificate)?);
-                let _old_value = self.certificate_secrets.insert(secret_id.to_owned(), Arc::clone(&secret));
+                let _ = self.certificate_secrets.insert(secret_id.to_owned(), Arc::clone(&secret));
                 TransportSecret::Certificate(secret)
             },
             Type::ValidationContext(validation_context) => {
                 let store = Arc::new(CertStore::try_from(validation_context)?);
-                let _old_value = self.validation_contexts.insert(secret_id.to_owned(), Arc::clone(&store));
+                let _ = self.validation_contexts.insert(secret_id.to_owned(), Arc::clone(&store));
                 TransportSecret::ValidationContext(store)
             },
         };
@@ -156,10 +155,10 @@ impl SecretManager {
     pub fn remove(&mut self, secret_id: &str, secret_type: &Type) -> Result<()> {
         match secret_type {
             Type::TlsCertificate(_) => {
-                let _old_value = self.certificate_secrets.remove(secret_id);
+                let _ = self.certificate_secrets.remove(secret_id);
             },
             Type::ValidationContext(_) => {
-                let _old_value = self.validation_contexts.remove(secret_id);
+                let _ = self.validation_contexts.remove(secret_id);
             },
         }
         Ok(())

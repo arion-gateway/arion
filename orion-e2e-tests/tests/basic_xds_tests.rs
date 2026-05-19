@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use pingora::prelude::fast_timeout::fast_timeout;
 use std::net::SocketAddr;
 use std::time::Duration;
 
@@ -50,7 +51,7 @@ async fn test_dynamic_xds_config() {
 
     let client = TestClient::new(listener_addr);
 
-    tokio::time::timeout(Duration::from_secs(10), async {
+    fast_timeout(Duration::from_secs(10), async {
         loop {
             if let Ok(response) = client.get("/test").await {
                 if response.status == StatusCode::OK {
@@ -118,7 +119,7 @@ async fn test_dynamic_config_update() {
 
     let client = TestClient::new(listener_addr);
 
-    tokio::time::timeout(Duration::from_secs(10), async {
+    fast_timeout(Duration::from_secs(10), async {
         loop {
             if let Ok(response) = client.get("/api/test").await {
                 if response.status == StatusCode::OK {
@@ -148,7 +149,7 @@ async fn test_dynamic_config_update() {
 
     // Wait for cluster2 to become active — XDS cluster push is async and Orion may not
     // have applied it yet by the time push_cluster returns.
-    tokio::time::timeout(Duration::from_secs(10), async {
+    fast_timeout(Duration::from_secs(10), async {
         loop {
             if let Ok(response) = client.get("/service/test").await {
                 if response.status == StatusCode::OK {

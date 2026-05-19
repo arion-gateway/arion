@@ -54,3 +54,16 @@ pub use secret::{Secret, SecretBuilder};
 pub use tcp_proxy::TcpProxyBuilder;
 pub use tls::{DownstreamTls, DownstreamTlsBuilder, TlsVersion, UpstreamTls, UpstreamTlsBuilder};
 pub use virtual_host::{VirtualHost, VirtualHostBuilder};
+
+#[allow(
+    clippy::cast_possible_wrap,
+    reason = "subsec_nanos() <= 999_999_999 < i32::MAX; as_secs() fits i64 for any realistic duration"
+)]
+pub(super) fn duration_to_proto(
+    d: std::time::Duration,
+) -> orion_data_plane_api::envoy_data_plane_api::google::protobuf::Duration {
+    orion_data_plane_api::envoy_data_plane_api::google::protobuf::Duration {
+        seconds: d.as_secs() as i64,
+        nanos: d.subsec_nanos() as i32,
+    }
+}

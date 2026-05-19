@@ -198,7 +198,7 @@ mod tests {
         let mock_body = MockBody { sleep: sleep(mock_sleep) };
         let body_with_timeout = TimeoutBody::new(Some(timeout_sleep), mock_body);
 
-        assert!(body_with_timeout.boxed_unsync().frame().await.expect("no frame").is_ok());
+        body_with_timeout.boxed_unsync().frame().await.expect("no frame").unwrap();
     }
 
     #[tokio::test]
@@ -209,6 +209,6 @@ mod tests {
         let mock_body = MockBody { sleep: sleep(mock_sleep) };
         let body_with_timeout = TimeoutBody::new(Some(timeout_sleep), mock_body);
 
-        assert!(body_with_timeout.boxed_unsync().frame().await.unwrap().is_err());
+        body_with_timeout.boxed_unsync().frame().await.unwrap().unwrap_err();
     }
 }
