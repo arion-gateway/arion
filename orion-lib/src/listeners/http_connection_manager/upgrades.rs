@@ -125,6 +125,7 @@ pub async fn handle_websocket_upgrade(
                                 let mut upstream = InstrumentedStream::new(TokioIo::new(response_upgraded));
 
                                 #[allow(unused_variables)]
+                                #[allow(clippy::let_unit_value)]
                                 let shard_id = get_shard_id!();
 
                                 let _ = copy_bidirectional(&mut downstream, &mut upstream)

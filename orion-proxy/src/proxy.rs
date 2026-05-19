@@ -108,6 +108,7 @@ struct ServiceInfo {
 
 type SenderGuards = Vec<ConfigurationSenders>;
 
+#[allow(clippy::needless_pass_by_value)]
 fn launch_runtimes(
     bootstrap: Bootstrap,
     #[allow(unused_variables)] metrics_config: Option<MetricsConfig>,
@@ -237,7 +238,7 @@ fn launch_runtimes(
 
     #[cfg(feature = "instrumentation")]
     {
-        orion_lib::instrumentation::dump_instrumentation_counters();
+        orion_lib::instrumentation::dump_instrumentation_counters()
     }
 
     Ok(sender_guards)
@@ -339,7 +340,7 @@ async fn spawn_services(info: ServiceInfo) -> Result<()> {
     // spawn XSD configuration service...
     let configuration_senders_clone = configuration_senders.clone();
     let bootstrap_clone = bootstrap.clone();
-    let secret_manager_clone = secret_manager.clone();
+    let secret_manager_clone = Arc::clone(&secret_manager);
     set.spawn(async move {
         let initial_clusters = configure_initial_resources(
             bootstrap_clone,
@@ -363,8 +364,8 @@ async fn spawn_services(info: ServiceInfo) -> Result<()> {
             let handles = start_access_loggers(
                 conf.num_instances.get(),
                 conf.queue_length.get(),
-                conf.log_rotation.map(|x| x.0).clone(),
-                conf.log_max_size.clone(),
+                conf.log_rotation.map(|x| x.0),
+                conf.log_max_size,
                 conf.max_log_files.get(),
                 conf.blocking,
             );
@@ -372,7 +373,7 @@ async fn spawn_services(info: ServiceInfo) -> Result<()> {
             info!("Access loggers started with {} instances", conf.num_instances);
 
             for (target, access_log_config) in
-                listeners.iter().map(|l| l.all_access_log_configs()).flatten().collect::<Vec<_>>()
+                listeners.iter().flat_map(orion_configuration::config::Listener::all_access_log_configs).collect::<Vec<_>>()
             {
                 _ = update_configuration(target.into(), access_log_config).await;
             }

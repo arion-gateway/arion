@@ -424,7 +424,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
                         inner: TimeoutBody::new(body_timeout, replay_body.clone().into()),
                         body_kind,
                         body_bytes,
-                        stream_metrics: stream_metrics.clone(),
+                        stream_metrics: Clone::clone(stream_metrics),
                         on_complete: Clone::clone(on_complete),
                     };
                     let rebuilt_req = Request::from_parts(parts.clone(), cloned_body);
@@ -713,7 +713,7 @@ impl HttpChannel {
                 inner: TimeoutBody::new(None, body.clone().into()),
                 body_kind,
                 body_bytes,
-                stream_metrics: stream_metrics.clone(),
+                stream_metrics: Clone::clone(stream_metrics),
                 on_complete: Clone::clone(on_complete),
             };
 

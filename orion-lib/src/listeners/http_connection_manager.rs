@@ -517,6 +517,8 @@ impl TransactionContext {
 
     #[allow(unused_variables)]
     #[allow(clippy::too_many_lines)]
+    #[allow(clippy::let_unit_value)]
+    #[allow(clippy::unused_self)]
     fn trace_status_code(self: Arc<Self>, res: &Result<Response<OrionRequestBody>>, listener_name: &'static str) {
         if let Ok(response) = &res {
             let status_code = response.status().as_u16();
@@ -545,6 +547,7 @@ impl TransactionContext {
                 }
             }
 
+            #[allow(clippy::match_same_arms)]
             match status_code {
                 100..200 => {
                     with_metric!(
@@ -1286,10 +1289,13 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
         let user_partition_key = None;
 
         // create the transaction context
+        #[allow(clippy::let_unit_value)]
+        let shard_id = get_shard_id!();
+
         let trans_handler = Arc::new(TransactionContext::new(
             request_id,
             user_partition_key,
-            get_shard_id!(),
+            shard_id,
             #[cfg(feature = "access-log")]
             &self.manager.access_log,
             #[cfg(feature = "tracing")]

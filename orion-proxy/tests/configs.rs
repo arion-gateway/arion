@@ -33,7 +33,7 @@ where
 {
     static TEST_CURRENT_DIR_MUTEX: Mutex<()> = Mutex::new(());
     let _guard = TEST_CURRENT_DIR_MUTEX.lock().expect("Failed to lock test mutex");
-    let _ = RUNTIME_CONFIG.set(Runtime::default());
+    let _ = RUNTIME_CONFIG.set(Runtime::default()).ok();
     let save = std::env::current_dir().expect("Failed to get current dir");
     std::env::set_current_dir(p).expect("Failed to set current dir");
     let r = f();
@@ -41,12 +41,13 @@ where
     r
 }
 
+#[allow(clippy::expect_used)]
 fn check_config_file(file_path: &str) -> Result<(), orion_error::Error> {
     // file_path is relative to crate root
     let bootstrap = Config::new(&Options::from_path_to_envoy(file_path))?.bootstrap;
-    // but anciliary files are stored in workspace root - adjust PWD
+    // but ancillary files are stored in workspace root - adjust PWD
     let d =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").canonicalize().expect("Failed to get cargo crate root");
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").canonicalize()?;
     with_current_dir(&d, || get_listeners_and_clusters(bootstrap).map(|_| ()))
 }
 

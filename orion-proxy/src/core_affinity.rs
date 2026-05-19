@@ -73,10 +73,10 @@ pub fn get_core_ids() -> Result<Vec<CoreId>> {
 
 /// Set the current set of cores available to the caller thread.
 #[inline]
-pub fn set_cores_for_current(_cores: &[CoreId]) -> Result<()> {
+pub fn set_cores_for_current(#[allow(unused_variables)] cores: &[CoreId]) -> Result<()> {
     #[cfg(target_os = "linux")]
     {
-        affinity::set_thread_affinity(_cores.iter().map(|x| **x).collect::<Vec<usize>>())
+        affinity::set_thread_affinity(cores.iter().map(|x| **x).collect::<Vec<usize>>())
             .map_err(|err| format!("set_cores_for_current: {err}").into())
     }
 
@@ -101,12 +101,8 @@ fn group_by_numa(cores: Vec<CoreId>, cpuinfo: &str) -> Result<Vec<Vec<CoreId>>> 
             .lines()
             .filter(|l| l.starts_with(needle))
             .filter_map(|s| {
-                let xs = s.split(':').collect::<Vec<_>>();
-                if xs.len() == 2 {
-                    xs[1].trim().parse::<usize>().ok()
-                } else {
-                    None
-                }
+                let (_, value) = s.split_once(':')?;
+                value.trim().parse::<usize>().ok()
             })
             .collect::<Vec<_>>()
     };
