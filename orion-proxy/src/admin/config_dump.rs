@@ -369,7 +369,8 @@ mod config_dump_tests {
         };
         let secret_manager = orion_lib::SecretManager::default();
         let partial_cluster =
-            orion_lib::clusters::cluster::PartialClusterType::try_from((cluster.clone(), &secret_manager)).unwrap();
+            orion_lib::clusters::cluster::PartialClusterType::try_from((Box::new(cluster.clone()), &secret_manager))
+                .unwrap();
         let _ = orion_lib::clusters::clusters_manager::add_cluster(partial_cluster);
         let (configuration_senders, handle) = spawn_mock_listener_manager(None);
         let admin_state = AdminState {
@@ -424,7 +425,8 @@ mod config_dump_tests {
         };
         let secret_manager = orion_lib::SecretManager::default();
         let partial_cluster =
-            orion_lib::clusters::cluster::PartialClusterType::try_from((cluster.clone(), &secret_manager)).unwrap();
+            orion_lib::clusters::cluster::PartialClusterType::try_from((Box::new(cluster.clone()), &secret_manager))
+                .unwrap();
         let _ = orion_lib::clusters::clusters_manager::add_cluster(partial_cluster);
         let (configuration_senders, handle) = spawn_mock_listener_manager(None);
         let admin_state = AdminState {

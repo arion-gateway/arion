@@ -229,8 +229,8 @@ impl XdsConfigurationHandler {
     }
 
     #[allow(clippy::too_many_lines)]
-    async fn process_update_event(&mut self, _: &str, resource: XdsResourcePayload) -> Result<()> {
-        match resource {
+    async fn process_update_event(&mut self, _: &str, resource: Box<XdsResourcePayload>) -> Result<()> {
+        match *resource {
             XdsResourcePayload::Listener(id, listener) => {
                 debug!("Got update for listener {id} {:?}", listener);
                 let factory =
