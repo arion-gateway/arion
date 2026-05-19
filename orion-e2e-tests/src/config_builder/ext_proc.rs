@@ -102,8 +102,7 @@ impl ExtProcBuilder {
 
     #[must_use]
     pub fn message_timeout(mut self, timeout: Duration) -> Self {
-        self.proto.message_timeout =
-            Some(ProtoDuration { seconds: timeout.as_secs() as i64, nanos: timeout.subsec_nanos() as i32 });
+        self.proto.message_timeout = Some(super::duration_to_proto(timeout));
         self
     }
 

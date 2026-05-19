@@ -112,6 +112,7 @@ impl ListenerBuilder {
         let token_bucket = EnvoyTokenBucket {
             max_tokens,
             tokens_per_fill: Some(UInt32Value { value: tokens_per_fill }),
+            #[allow(clippy::cast_possible_wrap, reason = "fill_interval_secs is a config value that fits i64")]
             fill_interval: Some(ProtoDuration { seconds: fill_interval_secs as i64, nanos: 0 }),
         };
         let local_ratelimit = EnvoyListenerLocalRateLimit {

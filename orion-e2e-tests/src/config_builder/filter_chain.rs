@@ -24,7 +24,7 @@ use orion_data_plane_api::envoy_data_plane_api::{
             rbac::v3::Rbac as NetworkRbac, tcp_proxy::v3::TcpProxy,
         },
     },
-    google::protobuf::{Any, Duration as ProtoDuration, UInt32Value, UInt64Value},
+    google::protobuf::{Any, UInt32Value, UInt64Value},
     prost::Message,
 };
 
@@ -80,7 +80,7 @@ impl FilterChainBuilder {
         let proto = EnvoyConnectionLimit {
             stat_prefix: "cx_limit".into(),
             max_connections: Some(UInt64Value { value: max_connections }),
-            delay: delay.map(|d| ProtoDuration { seconds: d.as_secs() as i64, nanos: d.subsec_nanos() as i32 }),
+            delay: delay.map(super::duration_to_proto),
             runtime_enabled: None,
         };
         let any = Any {

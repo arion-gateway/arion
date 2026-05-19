@@ -33,7 +33,7 @@ use orion_data_plane_api::envoy_data_plane_api::{
             },
         },
     },
-    google::protobuf::{Any, BoolValue, Duration as ProtoDuration},
+    google::protobuf::{Any, BoolValue},
     orion::extensions::filters::http::user_rate_limit::v3::UserRateLimiter as OrionUserRateLimiter,
     prost::Message,
 };
@@ -115,8 +115,7 @@ impl HcmBuilder {
 
     #[must_use]
     pub fn request_timeout(mut self, timeout: Duration) -> Self {
-        self.proto.request_timeout =
-            Some(ProtoDuration { seconds: timeout.as_secs() as i64, nanos: timeout.subsec_nanos() as i32 });
+        self.proto.request_timeout = Some(super::duration_to_proto(timeout));
         self
     }
 

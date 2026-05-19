@@ -67,6 +67,7 @@ impl TokenBucketBuilder {
         EnvoyTokenBucket {
             max_tokens: self.max_tokens,
             tokens_per_fill: Some(UInt32Value { value: self.tokens_per_fill }),
+            #[allow(clippy::cast_possible_wrap, reason = "fill_interval_secs is a config value that fits i64")]
             fill_interval: Some(ProtoDuration { seconds: self.fill_interval_secs as i64, nanos: 0 }),
         }
     }
@@ -118,8 +119,9 @@ impl LocalRateLimitBuilder {
 
     #[must_use]
     pub fn status_code(mut self, code: u32) -> Self {
-        self.proto.status =
-            Some(orion_data_plane_api::envoy_data_plane_api::envoy::r#type::v3::HttpStatus { code: code as i32 });
+        #[allow(clippy::cast_possible_wrap, reason = "HTTP status codes 100-599 always fit in i32")]
+        let code = code as i32;
+        self.proto.status = Some(orion_data_plane_api::envoy_data_plane_api::envoy::r#type::v3::HttpStatus { code });
         self
     }
 
@@ -236,6 +238,7 @@ impl UserRateLimiterBuilder {
         OrionUserRateLimiter {
             stat_prefix: self.stat_prefix,
             user_id_header_name: self.user_id_header,
+            #[allow(clippy::cast_possible_wrap, reason = "HTTP status codes 100-599 always fit in i32")]
             status: Some(orion_data_plane_api::envoy_data_plane_api::envoy::r#type::v3::HttpStatus {
                 code: self.status_code as i32,
             }),

@@ -27,7 +27,7 @@ use orion_data_plane_api::envoy_data_plane_api::{
         },
         r#type::v3::Int64Range,
     },
-    google::protobuf::{Duration as ProtoDuration, UInt32Value},
+    google::protobuf::UInt32Value,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -148,14 +148,8 @@ impl HttpHealthCheckBuilder {
         };
 
         ProtoHealthCheck {
-            timeout: Some(ProtoDuration {
-                seconds: self.timeout.as_secs() as i64,
-                nanos: self.timeout.subsec_nanos() as i32,
-            }),
-            interval: Some(ProtoDuration {
-                seconds: self.interval.as_secs() as i64,
-                nanos: self.interval.subsec_nanos() as i32,
-            }),
+            timeout: Some(super::duration_to_proto(self.timeout)),
+            interval: Some(super::duration_to_proto(self.interval)),
             unhealthy_threshold: Some(UInt32Value { value: self.unhealthy_threshold }),
             healthy_threshold: Some(UInt32Value { value: self.healthy_threshold }),
             health_checker: Some(HealthChecker::HttpHealthCheck(http_health_check)),
@@ -223,14 +217,8 @@ impl TcpHealthCheckBuilder {
         let tcp_health_check = ProtoTcpHealthCheck { send, receive, ..Default::default() };
 
         ProtoHealthCheck {
-            timeout: Some(ProtoDuration {
-                seconds: self.timeout.as_secs() as i64,
-                nanos: self.timeout.subsec_nanos() as i32,
-            }),
-            interval: Some(ProtoDuration {
-                seconds: self.interval.as_secs() as i64,
-                nanos: self.interval.subsec_nanos() as i32,
-            }),
+            timeout: Some(super::duration_to_proto(self.timeout)),
+            interval: Some(super::duration_to_proto(self.interval)),
             unhealthy_threshold: Some(UInt32Value { value: self.unhealthy_threshold }),
             healthy_threshold: Some(UInt32Value { value: self.healthy_threshold }),
             health_checker: Some(HealthChecker::TcpHealthCheck(tcp_health_check)),
@@ -301,14 +289,8 @@ impl GrpcHealthCheckBuilder {
         };
 
         ProtoHealthCheck {
-            timeout: Some(ProtoDuration {
-                seconds: self.timeout.as_secs() as i64,
-                nanos: self.timeout.subsec_nanos() as i32,
-            }),
-            interval: Some(ProtoDuration {
-                seconds: self.interval.as_secs() as i64,
-                nanos: self.interval.subsec_nanos() as i32,
-            }),
+            timeout: Some(super::duration_to_proto(self.timeout)),
+            interval: Some(super::duration_to_proto(self.interval)),
             unhealthy_threshold: Some(UInt32Value { value: self.unhealthy_threshold }),
             healthy_threshold: Some(UInt32Value { value: self.healthy_threshold }),
             health_checker: Some(HealthChecker::GrpcHealthCheck(grpc_health_check)),

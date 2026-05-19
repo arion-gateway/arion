@@ -38,7 +38,7 @@ use orion_data_plane_api::envoy_data_plane_api::{
             round_robin::v3::RoundRobin as EnvoyRoundRobin,
         },
     },
-    google::protobuf::{Any, Duration as ProtoDuration, UInt32Value},
+    google::protobuf::{Any, UInt32Value},
     prost::Message,
 };
 
@@ -134,8 +134,7 @@ impl ClusterBuilder {
 
     #[must_use]
     pub fn connect_timeout(mut self, timeout: Duration) -> Self {
-        self.proto.connect_timeout =
-            Some(ProtoDuration { seconds: timeout.as_secs() as i64, nanos: timeout.subsec_nanos() as i32 });
+        self.proto.connect_timeout = Some(super::duration_to_proto(timeout));
         self
     }
 
