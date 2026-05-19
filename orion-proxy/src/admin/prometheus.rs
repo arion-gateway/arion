@@ -15,8 +15,8 @@
 //
 //
 
-use std::fmt::Write;
 use std::hash::Hash;
+use std::io::{self, Write};
 use std::sync::OnceLock;
 use std::{borrow::Cow, collections::HashMap};
 
@@ -37,245 +37,248 @@ use orion_metrics::{
 
 /// Escapes special characters in label values according to Prometheus specifications.
 fn escape_label_value(val: &str) -> Cow<'_, str> {
-    if val.contains(|c| c == '\\' || c == '"' || c == '\n') {
+    if val.contains(['\\', '"', '\n']) {
         Cow::Owned(val.replace('\\', "\\\\").replace('\n', "\\n").replace('"', "\\\""))
     } else {
         Cow::Borrowed(val)
     }
 }
 
-fn write_metric_labels(out: &mut String, labels: &[KeyValue]) {
+fn write_metric_labels(out: &mut impl Write, labels: &[KeyValue]) -> io::Result<()> {
     if labels.is_empty() {
-        return;
+        return Ok(());
     }
-    let _ = write!(out, "{{");
+    write!(out, "{{")?;
     for (i, kv) in labels.iter().enumerate() {
         if i > 0 {
-            let _ = write!(out, ",");
+            write!(out, ",")?;
         }
         let val = kv.value.as_str();
         let escaped_val = escape_label_value(val.as_ref());
-        let _ = write!(out, "{}=\"{}\"", kv.key.as_str(), escaped_val);
+        write!(out, "{}=\"{}\"", kv.key.as_str(), escaped_val)?;
     }
-    let _ = write!(out, "}}");
+    write!(out, "}}")?;
+    Ok(())
 }
 
-fn write_metric_labels_with_extra(out: &mut String, labels: &[KeyValue], extra_key: &str, extra_val: &str) {
-    let _ = write!(out, "{{");
+#[allow(clippy::too_many_arguments)]
+fn write_metric_labels_with_extra(out: &mut impl Write, labels: &[KeyValue], extra_key: &str, extra_val: &str) -> io::Result<()> {
+    write!(out, "{{")?;
     let mut first = true;
-    for kv in labels.iter() {
+    for kv in labels {
         if !first {
-            let _ = write!(out, ",");
+            write!(out, ",")?;
         }
         first = false;
         let val = kv.value.as_str();
         let escaped_val = escape_label_value(val.as_ref());
-        let _ = write!(out, "{}=\"{}\"", kv.key.as_str(), escaped_val);
+        write!(out, "{}=\"{}\"", kv.key.as_str(), escaped_val)?;
     }
     if !first {
-        let _ = write!(out, ",");
+        write!(out, ",")?;
     }
     let escaped_extra_val = escape_label_value(extra_val);
-    let _ = write!(out, "{}=\"{}\"", extra_key, escaped_extra_val);
-    let _ = write!(out, "}}");
+    write!(out, "{extra_key}=\"{escaped_extra_val}\"")?;
+    write!(out, "}}")?;
+    Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn format_metric<S: Eq + Hash>(
-    out: &mut String,
+    out: &mut impl Write,
     prefix: &str,
     name: &str,
     desc: &str,
     metric_type: &str,
     metric_source: &ShardedU64<S>,
-) {
+) -> io::Result<()> {
     let data = metric_source.load_all();
     if data.is_empty() {
-        return;
+        return Ok(());
     }
 
     let full_name = format!("{prefix}_{name}");
-    let _ = writeln!(out, "# HELP {full_name} {desc}");
-    let _ = writeln!(out, "# TYPE {full_name} {metric_type}");
+    writeln!(out, "# HELP {full_name} {desc}")?;
+    writeln!(out, "# TYPE {full_name} {metric_type}")?;
 
     for (labels, value) in data {
-        let _ = write!(out, "{full_name}");
-        write_metric_labels(out, &labels);
-        let _ = writeln!(out, " {value}");
+        write!(out, "{full_name}")?;
+        write_metric_labels(out, &labels)?;
+        writeln!(out, " {value}")?;
     }
+    Ok(())
 }
 
-fn format_gauge(out: &mut String, prefix: &str, name: &str, desc: &str, metric_type: &str, metric_source: &Gauge) {
+#[allow(clippy::too_many_arguments)]
+fn format_gauge(out: &mut impl Write, prefix: &str, name: &str, desc: &str, metric_type: &str, metric_source: &Gauge) -> io::Result<()> {
     let data = metric_source.load_all();
     if data.is_empty() {
-        return;
+        return Ok(());
     }
 
     let full_name = format!("{prefix}_{name}");
-    let _ = writeln!(out, "# HELP {full_name} {desc}");
-    let _ = writeln!(out, "# TYPE {full_name} {metric_type}");
+    writeln!(out, "# HELP {full_name} {desc}")?;
+    writeln!(out, "# TYPE {full_name} {metric_type}")?;
 
     for (labels, value) in data {
-        let _ = write!(out, "{full_name}");
-        write_metric_labels(out, &labels);
-        let _ = writeln!(out, " {value}");
+        write!(out, "{full_name}")?;
+        write_metric_labels(out, &labels)?;
+        writeln!(out, " {value}")?;
     }
+    Ok(())
 }
 
 fn format_histogram<S: Eq + Hash + Clone + Copy>(
-    out: &mut String,
+    out: &mut impl Write,
     prefix: &str,
     name: &str,
     desc: &str,
     metric_source: &ShardedHistogram<S>,
-) {
+) -> io::Result<()> {
     let count_data = metric_source.count().load_all();
     if count_data.is_empty() {
-        return;
+        return Ok(());
     }
 
     let full_name = format!("{prefix}_{name}");
 
-    // Write HELP and TYPE for the histogram
-    let _ = writeln!(out, "# HELP {full_name} {desc}");
-    let _ = writeln!(out, "# TYPE {full_name} histogram");
+    writeln!(out, "# HELP {full_name} {desc}")?;
+    writeln!(out, "# TYPE {full_name} histogram")?;
 
-    // Write buckets
-    for (i, &bound) in metric_source.buckets().iter().enumerate() {
+    for (&bound, count) in metric_source.buckets().iter().zip(metric_source.counts().iter()) {
         let bound_str = if bound == u64::MAX { "+Inf".to_owned() } else { bound.to_string() };
-        let bucket_data = metric_source.counts()[i].load_all();
+        let bucket_data = count.load_all();
         for (labels, value) in bucket_data {
-            let _ = write!(out, "{full_name}_bucket");
-            write_metric_labels_with_extra(out, &labels, "le", &bound_str);
-            let _ = writeln!(out, " {value}");
+            write!(out, "{full_name}_bucket")?;
+            write_metric_labels_with_extra(out, &labels, "le", &bound_str)?;
+            writeln!(out, " {value}")?;
         }
     }
 
-    // Write sum
     let sum_data = metric_source.sum().load_all();
     for (labels, value) in sum_data {
-        let _ = write!(out, "{full_name}_sum");
-        write_metric_labels(out, &labels);
-        let _ = writeln!(out, " {value}");
+        write!(out, "{full_name}_sum")?;
+        write_metric_labels(out, &labels)?;
+        writeln!(out, " {value}")?;
     }
 
-    // Write count
     for (labels, value) in count_data {
-        let _ = write!(out, "{full_name}_count");
-        write_metric_labels(out, &labels);
-        let _ = writeln!(out, " {value}");
+        write!(out, "{full_name}_count")?;
+        write_metric_labels(out, &labels)?;
+        writeln!(out, " {value}")?;
     }
+    Ok(())
 }
 
-fn process_metric_as_counter<S: Eq + Hash>(out: &mut String, source: &OnceLock<Metric<ShardedU64<S>>>) {
+fn process_metric_as_counter<S: Eq + Hash>(out: &mut impl Write, source: &OnceLock<Metric<ShardedU64<S>>>) -> io::Result<()> {
     if let Some(metric) = source.get() {
-        format_metric(out, metric.prefix, metric.name, metric.descr, "counter", &metric.value);
+        format_metric(out, metric.prefix, metric.name, metric.descr, "counter", &metric.value)?;
     }
+    Ok(())
 }
 
-fn process_metric_as_gauge<S: Eq + Hash>(out: &mut String, source: &OnceLock<Metric<ShardedU64<S>>>) {
+fn process_metric_as_gauge<S: Eq + Hash>(out: &mut impl Write, source: &OnceLock<Metric<ShardedU64<S>>>) -> io::Result<()> {
     if let Some(metric) = source.get() {
-        format_metric(out, metric.prefix, metric.name, metric.descr, "gauge", &metric.value);
+        format_metric(out, metric.prefix, metric.name, metric.descr, "gauge", &metric.value)?;
     }
+    Ok(())
 }
 
-fn process_gauge(out: &mut String, source: &OnceLock<Metric<Gauge>>) {
+fn process_gauge(out: &mut impl Write, source: &OnceLock<Metric<Gauge>>) -> io::Result<()> {
     if let Some(metric) = source.get() {
-        format_gauge(out, metric.prefix, metric.name, metric.descr, "gauge", &metric.value);
+        format_gauge(out, metric.prefix, metric.name, metric.descr, "gauge", &metric.value)?;
     }
+    Ok(())
 }
 
-fn process_histogram<S: Eq + Hash + Clone + Copy>(out: &mut String, source: &OnceLock<Metric<ShardedHistogram<S>>>) {
+fn process_histogram<S: Eq + Hash + Clone + Copy>(out: &mut impl Write, source: &OnceLock<Metric<ShardedHistogram<S>>>) -> io::Result<()> {
     if let Some(metric) = source.get() {
-        format_histogram(out, metric.prefix, metric.name, metric.descr, &metric.value);
+        format_histogram(out, metric.prefix, metric.name, metric.descr, &metric.value)?;
     }
+    Ok(())
 }
 
-pub(crate) async fn prometheus_handler(
-    State(_): State<AdminState>,
-) -> Result<(HeaderMap, String), (StatusCode, String)> {
+fn build_prometheus_output() -> io::Result<String> {
     debug!(target: "prometheus", "prometheus_handler: running");
-    update_server_metrics(&HashMap::new());
-
-    // Pre-allocate a reasonable sized string buffer to avoid reallocations
-    let mut out = String::with_capacity(16384);
+    let mut out: Vec<u8> = Vec::with_capacity(16384);
 
     // listeners metrics
-    process_metric_as_counter(&mut out, &listeners::DOWNSTREAM_CX_TOTAL);
-    process_metric_as_counter(&mut out, &listeners::DOWNSTREAM_CX_DESTROY);
-    process_metric_as_gauge(&mut out, &listeners::DOWNSTREAM_CX_ACTIVE);
-    process_metric_as_counter(&mut out, &listeners::NO_FILTER_CHAIN_MATCH);
-    process_histogram(&mut out, &listeners::DOWNSTREAM_CX_LENGTH_MS);
+    process_metric_as_counter(&mut out, &listeners::DOWNSTREAM_CX_TOTAL)?;
+    process_metric_as_counter(&mut out, &listeners::DOWNSTREAM_CX_DESTROY)?;
+    process_metric_as_gauge(&mut out, &listeners::DOWNSTREAM_CX_ACTIVE)?;
+    process_metric_as_counter(&mut out, &listeners::NO_FILTER_CHAIN_MATCH)?;
+    process_histogram(&mut out, &listeners::DOWNSTREAM_CX_LENGTH_MS)?;
 
     // clusters metrics
-    process_metric_as_counter(&mut out, &clusters::UPSTREAM_RQ_TOTAL);
-    process_metric_as_gauge(&mut out, &clusters::UPSTREAM_RQ_ACTIVE);
-    process_metric_as_counter(&mut out, &clusters::UPSTREAM_RQ_TIMEOUT);
-    process_metric_as_counter(&mut out, &clusters::UPSTREAM_RQ_PER_TRY_TIMEOUT);
-    process_metric_as_counter(&mut out, &clusters::UPSTREAM_RQ_RETRY);
+    process_metric_as_counter(&mut out, &clusters::UPSTREAM_RQ_TOTAL)?;
+    process_metric_as_gauge(&mut out, &clusters::UPSTREAM_RQ_ACTIVE)?;
+    process_metric_as_counter(&mut out, &clusters::UPSTREAM_RQ_TIMEOUT)?;
+    process_metric_as_counter(&mut out, &clusters::UPSTREAM_RQ_PER_TRY_TIMEOUT)?;
+    process_metric_as_counter(&mut out, &clusters::UPSTREAM_RQ_RETRY)?;
 
-    process_metric_as_counter(&mut out, &clusters::UPSTREAM_CX_TOTAL);
-    process_metric_as_counter(&mut out, &clusters::UPSTREAM_CX_IDLE_TIMEOUT);
-    process_metric_as_counter(&mut out, &clusters::UPSTREAM_CX_CONNECT_FAIL);
-    process_metric_as_counter(&mut out, &clusters::UPSTREAM_CX_CONNECT_TIMEOUT);
-    process_metric_as_counter(&mut out, &clusters::UPSTREAM_CX_DESTROY);
-    process_metric_as_gauge(&mut out, &clusters::UPSTREAM_CX_ACTIVE);
+    process_metric_as_counter(&mut out, &clusters::UPSTREAM_CX_TOTAL)?;
+    process_metric_as_counter(&mut out, &clusters::UPSTREAM_CX_IDLE_TIMEOUT)?;
+    process_metric_as_counter(&mut out, &clusters::UPSTREAM_CX_CONNECT_FAIL)?;
+    process_metric_as_counter(&mut out, &clusters::UPSTREAM_CX_CONNECT_TIMEOUT)?;
+    process_metric_as_counter(&mut out, &clusters::UPSTREAM_CX_DESTROY)?;
+    process_metric_as_gauge(&mut out, &clusters::UPSTREAM_CX_ACTIVE)?;
 
     // http metrics
-    process_metric_as_counter(&mut out, &http::DOWNSTREAM_CX_TOTAL);
-    process_metric_as_counter(&mut out, &http::DOWNSTREAM_CX_SSL_TOTAL);
-    process_metric_as_gauge(&mut out, &http::DOWNSTREAM_CX_SSL_ACTIVE);
-    process_metric_as_counter(&mut out, &http::DOWNSTREAM_CX_DESTROY);
-    process_metric_as_gauge(&mut out, &http::DOWNSTREAM_CX_ACTIVE);
-    process_metric_as_counter(&mut out, &http::DOWNSTREAM_RQ_1XX);
-    process_metric_as_counter(&mut out, &http::DOWNSTREAM_RQ_2XX);
-    process_metric_as_counter(&mut out, &http::DOWNSTREAM_RQ_3XX);
-    process_metric_as_counter(&mut out, &http::DOWNSTREAM_RQ_4XX);
-    process_metric_as_counter(&mut out, &http::DOWNSTREAM_RQ_5XX);
-    process_metric_as_counter(&mut out, &http::DOWNSTREAM_RQ_TOTAL);
-    process_metric_as_gauge(&mut out, &http::DOWNSTREAM_RQ_ACTIVE);
-    process_metric_as_counter(&mut out, &http::DOWNSTREAM_CX_RX_BYTES_TOTAL);
-    process_metric_as_counter(&mut out, &http::DOWNSTREAM_CX_TX_BYTES_TOTAL);
-    process_histogram(&mut out, &http::DOWNSTREAM_CX_LENGTH_MS);
+    process_metric_as_counter(&mut out, &http::DOWNSTREAM_CX_TOTAL)?;
+    process_metric_as_counter(&mut out, &http::DOWNSTREAM_CX_SSL_TOTAL)?;
+    process_metric_as_gauge(&mut out, &http::DOWNSTREAM_CX_SSL_ACTIVE)?;
+    process_metric_as_counter(&mut out, &http::DOWNSTREAM_CX_DESTROY)?;
+    process_metric_as_gauge(&mut out, &http::DOWNSTREAM_CX_ACTIVE)?;
+    process_metric_as_counter(&mut out, &http::DOWNSTREAM_RQ_1XX)?;
+    process_metric_as_counter(&mut out, &http::DOWNSTREAM_RQ_2XX)?;
+    process_metric_as_counter(&mut out, &http::DOWNSTREAM_RQ_3XX)?;
+    process_metric_as_counter(&mut out, &http::DOWNSTREAM_RQ_4XX)?;
+    process_metric_as_counter(&mut out, &http::DOWNSTREAM_RQ_5XX)?;
+    process_metric_as_counter(&mut out, &http::DOWNSTREAM_RQ_TOTAL)?;
+    process_metric_as_gauge(&mut out, &http::DOWNSTREAM_RQ_ACTIVE)?;
+    process_metric_as_counter(&mut out, &http::DOWNSTREAM_CX_RX_BYTES_TOTAL)?;
+    process_metric_as_counter(&mut out, &http::DOWNSTREAM_CX_TX_BYTES_TOTAL)?;
+    process_histogram(&mut out, &http::DOWNSTREAM_CX_LENGTH_MS)?;
 
     // server metrics
-    process_gauge(&mut out, &server::UPTIME);
-    process_gauge(&mut out, &server::CONCURRENCY);
-    process_gauge(&mut out, &server::MEMORY_HEAP_SIZE);
-    process_gauge(&mut out, &server::MEMORY_PHYSICAL_SIZE);
-    process_gauge(&mut out, &server::MEMORY_ALLOCATED);
+    process_gauge(&mut out, &server::UPTIME)?;
+    process_gauge(&mut out, &server::CONCURRENCY)?;
+    process_gauge(&mut out, &server::MEMORY_HEAP_SIZE)?;
+    process_gauge(&mut out, &server::MEMORY_PHYSICAL_SIZE)?;
+    process_gauge(&mut out, &server::MEMORY_ALLOCATED)?;
 
     // tcp metrics
-    process_metric_as_counter(&mut out, &tcp::DOWNSTREAM_CX_TOTAL);
-    process_metric_as_counter(&mut out, &tcp::DOWNSTREAM_CX_DESTROY);
-    process_metric_as_gauge(&mut out, &tcp::DOWNSTREAM_CX_ACTIVE);
-    process_histogram(&mut out, &tcp::DOWNSTREAM_CX_LENGTH_MS);
-    process_metric_as_counter(&mut out, &tcp::CX_RX_BYTES_RECEIVED);
-    process_metric_as_counter(&mut out, &tcp::CX_TX_BYTES_SENT);
+    process_metric_as_counter(&mut out, &tcp::DOWNSTREAM_CX_TOTAL)?;
+    process_metric_as_counter(&mut out, &tcp::DOWNSTREAM_CX_DESTROY)?;
+    process_metric_as_gauge(&mut out, &tcp::DOWNSTREAM_CX_ACTIVE)?;
+    process_histogram(&mut out, &tcp::DOWNSTREAM_CX_LENGTH_MS)?;
+    process_metric_as_counter(&mut out, &tcp::CX_RX_BYTES_RECEIVED)?;
+    process_metric_as_counter(&mut out, &tcp::CX_TX_BYTES_SENT)?;
 
     // tls
-    process_metric_as_counter(&mut out, &tls::HANDSHAKES);
+    process_metric_as_counter(&mut out, &tls::HANDSHAKES)?;
 
     // websocket
-    process_metric_as_counter(&mut out, &http::DOWNSTREAM_CX_WS_UPGRADES_TOTAL);
-    process_metric_as_gauge(&mut out, &http::DOWNSTREAM_CX_WS_UPGRADES_ACTIVE);
-    process_metric_as_counter(&mut out, &http::DOWNSTREAM_RQ_WS_ON_NON_WS_ROUTE);
+    process_metric_as_counter(&mut out, &http::DOWNSTREAM_CX_WS_UPGRADES_TOTAL)?;
+    process_metric_as_gauge(&mut out, &http::DOWNSTREAM_CX_WS_UPGRADES_ACTIVE)?;
+    process_metric_as_counter(&mut out, &http::DOWNSTREAM_RQ_WS_ON_NON_WS_ROUTE)?;
 
     // user/agentrun
-    process_metric_as_counter(&mut out, &user::INVOCATIONS);
-    process_metric_as_counter(&mut out, &user::THROTTLES);
-    process_metric_as_counter(&mut out, &user::SYSTEM_ERRORS);
-    process_metric_as_counter(&mut out, &user::USER_ERRORS);
-    process_metric_as_counter(&mut out, &user::TOTAL_ERRORS);
-    process_metric_as_counter(&mut out, &user::BYTES_TX);
-    process_metric_as_counter(&mut out, &user::BYTES_RX);
-    process_metric_as_counter(&mut out, &user::INBOUND_STREAMING_BYTES_PROCESSED);
-    process_metric_as_counter(&mut out, &user::OUTBOUND_STREAMING_BYTES_PROCESSED);
-    process_histogram(&mut out, &user::LATENCY);
+    process_metric_as_counter(&mut out, &user::INVOCATIONS)?;
+    process_metric_as_counter(&mut out, &user::THROTTLES)?;
+    process_metric_as_counter(&mut out, &user::SYSTEM_ERRORS)?;
+    process_metric_as_counter(&mut out, &user::USER_ERRORS)?;
+    process_metric_as_counter(&mut out, &user::TOTAL_ERRORS)?;
+    process_metric_as_counter(&mut out, &user::BYTES_TX)?;
+    process_metric_as_counter(&mut out, &user::BYTES_RX)?;
+    process_metric_as_counter(&mut out, &user::INBOUND_STREAMING_BYTES_PROCESSED)?;
+    process_metric_as_counter(&mut out, &user::OUTBOUND_STREAMING_BYTES_PROCESSED)?;
+    process_histogram(&mut out, &user::LATENCY)?;
 
     // filters
-    process_metric_as_counter(&mut out, &filters::CONNECTION_RATE_LIMIT);
-    process_metric_as_counter(&mut out, &filters::LOCAL_RATE_LIMIT);
-    process_metric_as_counter(&mut out, &filters::USER_RATE_LIMIT);
+    process_metric_as_counter(&mut out, &filters::CONNECTION_RATE_LIMIT)?;
+    process_metric_as_counter(&mut out, &filters::LOCAL_RATE_LIMIT)?;
+    process_metric_as_counter(&mut out, &filters::USER_RATE_LIMIT)?;
 
     // dynamic metrics
     if let Some(custom_metrics) = custom::CUSTOM_METRICS.get() {
@@ -287,7 +290,7 @@ pub(crate) async fn prometheus_handler(
                 counter.metric.descr,
                 "counter",
                 &counter.metric.value,
-            );
+            )?;
         }
         for histogram in custom_metrics.histograms() {
             format_histogram(
@@ -296,7 +299,7 @@ pub(crate) async fn prometheus_handler(
                 histogram.metric.name,
                 histogram.metric.descr,
                 &histogram.metric.value,
-            );
+            )?;
         }
         for gauge in custom_metrics.gauges() {
             format_gauge(
@@ -306,9 +309,20 @@ pub(crate) async fn prometheus_handler(
                 gauge.metric.descr,
                 "gauge",
                 &gauge.metric.value,
-            );
+            )?;
         }
     }
+
+    String::from_utf8(out).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+}
+
+pub(crate) async fn prometheus_handler(
+    State(_): State<AdminState>,
+) -> Result<(HeaderMap, String), (StatusCode, String)> {
+    debug!(target: "prometheus", "prometheus_handler: running");
+    update_server_metrics(&HashMap::new());
+
+    let out = build_prometheus_output().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let mut headers = HeaderMap::new();
     #[allow(clippy::unwrap_used)]

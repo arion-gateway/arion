@@ -65,12 +65,12 @@ fn build_admin_router(admin_state: AdminState) -> Router {
     let mut router = Router::new();
     #[cfg(feature = "config-dump")]
     {
-        router = router.route("/config_dump", get(config_dump::get_config_dump));
+        router = router.route("/config_dump", get(config_dump::get_config_dump))
     }
     #[cfg(feature = "prometheus")]
     {
         use crate::admin::prometheus::prometheus_handler;
-        router = router.route("/stats/prometheus", get(prometheus_handler));
+        router = router.route("/stats/prometheus", get(prometheus_handler))
     }
 
     router = router.route("/ready", get(get_ready));
@@ -110,6 +110,7 @@ mod tests {
     use axum_test::TestServer;
 
     #[tokio::test]
+    #[allow(clippy::indexing_slicing)]
     async fn ready_endpoint_response() {
         let server_startup = Instant::now();
         let admin_state = AdminState {
