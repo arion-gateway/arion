@@ -1797,7 +1797,8 @@ impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
                 &mut response,
                 header_mutation,
                 self.inner.worker_config.mutation_rules.as_ref(),
-            );
+            )
+            .ok();
         }
         if let Some(grpc_status) = &response_attempt.grpc_status {
             if let Ok(status_value) = http::HeaderValue::from_str(&grpc_status.status.to_string()) {

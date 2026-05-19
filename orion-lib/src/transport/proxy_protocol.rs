@@ -182,7 +182,7 @@ impl ProxyProtocolReader {
 
                 // Safe look-back: check the current and previous byte without panicking
                 let current_two_bytes = buffer.get(i.saturating_sub(1)..=i);
-                if current_two_bytes == Some(&V1_TERMINATOR) {
+                if current_two_bytes == Some(V1_TERMINATOR) {
                     end_found = true;
                     break;
                 }
@@ -335,12 +335,12 @@ pub struct ProxyProtocolConfigurator {
 }
 
 impl ProxyProtocolConfigurator {
-    pub fn update_secret(&mut self, secret_id: &str, secret: crate::secrets::TransportSecret) -> Result<()> {
+    pub fn update_secret(&mut self, secret_id: &str, secret: &crate::secrets::TransportSecret) -> Result<()> {
         if let Some(inner_tls_configurator) = &self.inner_tls_configurator {
             let updated_tls = TlsConfigurator::<ClientConfig, WantsToBuildClient>::update(
                 inner_tls_configurator.clone(),
                 secret_id,
-                &secret,
+                secret,
             )?;
             self.inner_tls_configurator = Some(updated_tls);
         }
@@ -478,7 +478,7 @@ mod tests {
                 assert_eq!(proxy_local_address, local_addr);
                 assert_eq!(protocol, ppp::v2::Protocol::Stream);
             },
-            _ => unreachable!("Expected FromProxyProtocol metadata"),
+            DownstreamConnectionMetadata::FromSocket { .. } => unreachable!("Expected FromProxyProtocol metadata"),
         }
     }
 
@@ -530,7 +530,7 @@ mod tests {
                 assert_eq!(proxy_local_address, local_addr);
                 assert_eq!(protocol, ppp::v2::Protocol::Stream);
             },
-            _ => unreachable!("Expected FromProxyProtocol metadata"),
+            DownstreamConnectionMetadata::FromSocket { .. } => unreachable!("Expected FromProxyProtocol metadata"),
         }
     }
 
@@ -621,7 +621,7 @@ mod tests {
                 assert_eq!(tlv_data.get(&TlvType::Custom(0x02)), Some(&b"custom_type_2".to_vec()));
                 assert_eq!(tlv_data.get(&TlvType::Custom(0x03)), None);
             },
-            _ => unreachable!("Expected FromProxyProtocol metadata"),
+            DownstreamConnectionMetadata::FromSocket { .. } => unreachable!("Expected FromProxyProtocol metadata"),
         }
     }
 }

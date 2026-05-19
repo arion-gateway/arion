@@ -46,6 +46,7 @@ macro_rules! get_shard_id {
     }};
 }
 
+#[derive(Default)]
 pub struct PartitionKey {
     source: AtomicOption<PartitionKeySource>,
     attribute_name: AtomicOption<String>,

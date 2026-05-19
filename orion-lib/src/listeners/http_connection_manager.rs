@@ -61,8 +61,7 @@ use {
 
 #[cfg(feature = "access-log")]
 use crate::utils::http::{request_head_size, response_head_size};
-
-#[cfg(any(feature = "access-log"))]
+#[cfg(feature = "access-log")]
 use crate::with_access_log;
 #[cfg(feature = "metrics")]
 use crate::{metrics, with_histogram};
@@ -349,6 +348,7 @@ impl HttpConnectionManager {
         let _ = self.router_sender.send_replace(None);
     }
 
+    #[allow(clippy::type_complexity)]
     pub(crate) fn request_handler(
         self: &Arc<Self>,
     ) -> Box<
@@ -657,6 +657,7 @@ struct TransactionPipeline<RC> {
     route_conf: RC,
 }
 
+#[allow(clippy::wrong_self_convention)]
 impl<RC> TransactionPipeline<RC>
 where
     RC: RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> + Clone,
@@ -1154,11 +1155,7 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
                         let attr =
                             metrics::get_user_partition_key(response.headers(), None, metrics::CUSTOM_KEY.source())
                                 .map(|id| KeyValue::new(metrics::CUSTOM_KEY.attribute_name().unwrap_or("custom"), id));
-                        custom_metrics.with_headers(
-                            MetricsHook::IncomingResponse,
-                            response.headers(),
-                            attr.as_ref().map_or(&[], std::slice::from_ref),
-                        );
+                        custom_metrics.with_headers(MetricsHook::IncomingResponse, response.headers(), attr.as_slice());
                     }
 
                     apply_mutations_on_response(
@@ -1340,11 +1337,7 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
         if let Some(custom_metrics) = CUSTOM_METRICS.get() {
             let attr = metrics::get_user_partition_key(request.headers(), sni.as_ref(), metrics::CUSTOM_KEY.source())
                 .map(|id| KeyValue::new(metrics::CUSTOM_KEY.attribute_name().unwrap_or("custom"), id));
-            custom_metrics.with_headers(
-                MetricsHook::IncomingRequest,
-                request.headers(),
-                attr.as_ref().map_or(&[], std::slice::from_ref),
-            );
+            custom_metrics.with_headers(MetricsHook::IncomingRequest, request.headers(), attr.as_slice());
         }
 
         Box::pin(async move {
@@ -1375,14 +1368,14 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
             //
 
             let Some(route_conf) = route_conf else {
-                return handle_route_conf_not_found(
+                return Ok(handle_route_conf_not_found(
                     request.version(),
                     &trans_handler,
-                    &stream_metrics,
+                    stream_metrics.as_ref(),
                     listener_name,
                     user_partition_key,
                     filterchain_id,
-                );
+                ));
             };
 
             // check if the request is valid....
@@ -1391,7 +1384,7 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
             if let Some(response_error) = reject_request_if_invalid(
                 &request,
                 &trans_handler,
-                &stream_metrics,
+                stream_metrics.as_ref(),
                 listener_name,
                 user_partition_key,
                 filterchain_id,
@@ -1482,11 +1475,7 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
                 if let Some(custom_metrics) = CUSTOM_METRICS.get() {
                     let attr = metrics::get_user_partition_key(response.headers(), None, metrics::CUSTOM_KEY.source())
                         .map(|id| KeyValue::new(metrics::CUSTOM_KEY.attribute_name().unwrap_or("custom"), id));
-                    custom_metrics.with_headers(
-                        MetricsHook::DownstreamResponse,
-                        response.headers(),
-                        attr.as_ref().map_or(&[], std::slice::from_ref),
-                    );
+                    custom_metrics.with_headers(MetricsHook::DownstreamResponse, response.headers(), attr.as_slice());
                 }
             }
 
@@ -1708,7 +1697,7 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
 fn instrument_early_failure_response(
     response: Response<crate::OrionResponseBody>,
     trans_handler: &Arc<TransactionContext>,
-    stream_metrics: &Option<Arc<crate::utils::instrumented_stream::StreamMetrics>>,
+    stream_metrics: Option<&Arc<crate::utils::instrumented_stream::StreamMetrics>>,
     listener_name: &'static str,
     user_partition_key: Option<&'static str>,
     filterchain_id: u64,
@@ -1750,7 +1739,7 @@ fn instrument_early_failure_response(
         InstrumentedBody::new(
             BodyKind::Response,
             body,
-            stream_metrics.clone(),
+            stream_metrics.cloned(),
             #[allow(unused_variables)]
             move |body_bytes, stream_metrics, body_error, body_flags| {
                 #[cfg(any(feature = "access-log", feature = "metrics"))]
@@ -1827,7 +1816,7 @@ const MAX_URI_LENGTH: usize = 2048;
 fn reject_request_if_invalid(
     request: &Request<Incoming>,
     trans_handler: &Arc<TransactionContext>,
-    stream_metrics: &Option<Arc<crate::utils::instrumented_stream::StreamMetrics>>,
+    stream_metrics: Option<&Arc<crate::utils::instrumented_stream::StreamMetrics>>,
     listener_name: &'static str,
     user_partition_key: Option<&'static str>,
     filterchain_id: u64,
@@ -1897,11 +1886,11 @@ fn reject_request_if_invalid(
 fn handle_route_conf_not_found(
     version: ::http::Version,
     trans_handler: &Arc<TransactionContext>,
-    stream_metrics: &Option<Arc<crate::utils::instrumented_stream::StreamMetrics>>,
+    stream_metrics: Option<&Arc<crate::utils::instrumented_stream::StreamMetrics>>,
     listener_name: &'static str,
     user_partition_key: Option<&'static str>,
     filterchain_id: u64,
-) -> StdResult<Response<crate::OrionRequestBody>, crate::Error> {
+) -> Response<crate::OrionRequestBody> {
     // immediately return a SyntheticHttpResponse, and calculate the first byte instant
     let response = SyntheticHttpResponse::not_found(
         EventFailure::RouteNotFound.into(),
@@ -1909,14 +1898,14 @@ fn handle_route_conf_not_found(
     )
     .into_response(version);
 
-    Ok(instrument_early_failure_response(
+    instrument_early_failure_response(
         response,
         trans_handler,
         stream_metrics,
         listener_name,
         user_partition_key,
         filterchain_id,
-    ))
+    )
 }
 
 #[cfg(test)]

@@ -200,7 +200,7 @@ pub mod streamable_http {
 
     impl<T: Serialize> Event<'_, T> {
         #[allow(clippy::expect_used)]
-        pub fn write_to(&self, buf: &mut BytesMut) {
+        pub fn write_to(&self, buf: &mut BytesMut) -> std::io::Result<()> {
             let prefix = INSTANCE_PREFIX.get_or_init(|| {
                 let start = SystemTime::now();
                 let since_the_epoch = start.duration_since(UNIX_EPOCH).expect("Time went backwards");
@@ -214,18 +214,20 @@ pub mod streamable_http {
             match self {
                 Event::Message(value) => {
                     // 1. Write the SSE header using the io::Write trait
-                    let _ = write!(writer, "event: message\nid: {prefix:x}_{count}\ndata: ");
+                    write!(writer, "event: message\nid: {prefix:x}_{count}\ndata: ")?;
 
                     // 2. Serialize JSON directly into the writer
-                    let _ = serde_json::to_writer(&mut writer, value);
+                    serde_json::to_writer(&mut writer, value).map_err(std::io::Error::other)?;
 
                     // 3. Append the closing newlines
-                    let _ = writer.write_all(b"\n\n");
+                    writer.write_all(b"\n\n")?;
                 },
                 Event::Priming => {
-                    let _ = write!(writer, "event: message\nid: {prefix:x}_{count}\ndata:\n\n");
+                    write!(writer, "event: message\nid: {prefix:x}_{count}\ndata:\n\n")?;
                 },
             }
+
+            Ok(())
         }
     }
 }

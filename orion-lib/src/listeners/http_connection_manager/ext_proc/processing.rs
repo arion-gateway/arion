@@ -67,6 +67,7 @@ impl<M: kind::Mode> DerefMut for ResponseProcessing<M> {
 }
 
 #[allow(dead_code)]
+#[derive(Copy, Clone, Debug)]
 pub enum Phase {
     Headers,
     Body,

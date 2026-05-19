@@ -106,7 +106,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
             #[cfg(feature = "metrics")]
             {
                 let shard_id = get_shard_id!();
-                let attrs = &[KeyValue::new("cluster", cluster_id.to_string())];
+                let attrs = &[KeyValue::new("cluster", cluster_id.to_owned())];
                 match denial {
                     CircuitBreakerDenial::MaxConnections => {
                         with_metric!(clusters::UPSTREAM_CX_OVERFLOW, add, 1, shard_id, attrs);

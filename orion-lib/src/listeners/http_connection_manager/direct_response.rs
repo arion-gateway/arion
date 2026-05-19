@@ -32,12 +32,13 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, &'a str> for &DirectResponseA
         self,
         #[allow(unused_variables)] trans_context: &TransactionContext,
         request: Request<OrionRequestBody>,
-        _route_name: &'a str,
+        arg: &'a str,
     ) -> Result<Response<OrionResponseBody>> {
+        let route_name = arg;
         #[cfg(feature = "access-log")]
         with_access_log!(
             &mut trans_context.trans_ctx.lock().loggers,
-            UpstreamContext { authority: None, cluster_name: None, route_name: _route_name }
+            UpstreamContext { authority: None, cluster_name: None, route_name }
         );
 
         let body = Full::new(self.body.as_ref().map(|b| bytes::Bytes::copy_from_slice(b.data())).unwrap_or_default());

@@ -72,7 +72,7 @@ pub struct OriginalDstClusterBuilder {
     pub transport_socket: UpstreamTransportSocketConfigurator,
     pub connect_timeout: Option<Duration>,
     pub server_name: Option<ServerName<'static>>,
-    pub config: orion_configuration::config::cluster::Cluster,
+    pub config: Box<orion_configuration::config::cluster::Cluster>,
     pub circuit_breaker: ClusterCircuitBreaker,
 }
 
@@ -148,7 +148,7 @@ pub struct OriginalDstCluster {
     endpoints: LruCache<EndpointAddress, Endpoint>,
     routing_requirements: RoutingRequirement,
     upstream_port_override: Option<u16>,
-    pub config: orion_configuration::config::cluster::Cluster,
+    pub config: Box<orion_configuration::config::cluster::Cluster>,
     pub circuit_breaker: ClusterCircuitBreaker,
 }
 
@@ -536,7 +536,7 @@ mod tests {
 
     fn build_original_dst_cluster(config: ClusterConfig) -> OriginalDstCluster {
         let secrets_man = SecretManager::new();
-        let partial = super::super::PartialClusterType::try_from((config, &secrets_man)).unwrap();
+        let partial = super::super::PartialClusterType::try_from((Box::new(config), &secrets_man)).unwrap();
         match partial.build().unwrap() {
             ClusterType::OnDemand(cluster) => cluster,
             _ => unreachable!("expected OriginalDstCluster config"),

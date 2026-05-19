@@ -121,7 +121,7 @@ impl NetworkGlobalRateLimit {
                         bucket.valid_until_ms.store(valid_until_ms, Ordering::Release);
                         bucket.remaining.store(i64::from(requests), Ordering::Release);
                     }
-                    Self::eval_rls_response(response)
+                    Self::eval_rls_response(&response)
                 },
                 Err(e) => {
                     if self.failure_mode_deny {
@@ -155,7 +155,7 @@ impl NetworkGlobalRateLimit {
                     bucket.valid_until_ms.store(valid_until_ms, Ordering::Release);
                     bucket.remaining.store(i64::from(requests), Ordering::Release);
                 }
-                Self::eval_rls_response(response)
+                Self::eval_rls_response(&response)
             },
             Err(e) => {
                 if self.failure_mode_deny {
@@ -167,7 +167,7 @@ impl NetworkGlobalRateLimit {
         }
     }
 
-    fn eval_rls_response(response: RateLimitResponse) -> crate::Result<()> {
+    fn eval_rls_response(response: &RateLimitResponse) -> crate::Result<()> {
         let code =
             rate_limit_response::Code::try_from(response.overall_code).unwrap_or(rate_limit_response::Code::Unknown);
         if code == rate_limit_response::Code::OverLimit {

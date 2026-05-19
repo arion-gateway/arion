@@ -126,6 +126,8 @@ impl std::fmt::Debug for MockExternalProcessorState {
         f.debug_struct("MockExternalProcessorState")
             .field("responses", &self.responses)
             .field("token", &self.token)
+            .field("sender", &"Sender<OutState>")
+            .field("observability_mode", &self.observability_mode)
             .finish()
     }
 }

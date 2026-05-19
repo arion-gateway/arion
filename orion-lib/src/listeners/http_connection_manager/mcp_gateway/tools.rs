@@ -18,7 +18,7 @@ use orion_configuration::config::network_filters::http_connection_manager::http_
 use rmcp::{
     model::{
         CallToolRequestParams, CallToolResult, ClientCapabilities, ClientInfo, Content, Implementation,
-        InitializeRequestParams, JsonRpcNotification, RawContent, RawTextContent, ServerNotification,
+        InitializeRequestParams, JsonRpcNotification, ProtocolVersion, RawContent, RawTextContent, ServerNotification,
         ToolListChangedNotification,
     },
     service::ClientInitializeError,
@@ -71,6 +71,7 @@ pub struct ToolEntry {
 }
 
 #[derive(Debug, thiserror::Error)]
+#[allow(clippy::large_enum_variant)]
 pub enum CallToolError {
     #[error("'name' parameter is missing or not a string")]
     NameNotString,
@@ -95,6 +96,7 @@ pub enum CallToolError {
 }
 
 #[derive(Debug, thiserror::Error)]
+#[allow(clippy::large_enum_variant)]
 pub enum ListToolsError {
     #[error("Unsupported transport")]
     UnsupportedTransport,
@@ -115,6 +117,7 @@ pub enum ToolBuilderError {
 }
 
 impl ToolEntry {
+    #[allow(clippy::result_large_err)]
     fn validate_json_against_schema(
         validator: Option<&jsonschema::Validator>,
         arguments: &Value,
@@ -128,11 +131,13 @@ impl ToolEntry {
     }
 
     #[inline]
+    #[allow(clippy::result_large_err)]
     pub fn validate_against_input_schema(&self, arguments: &Value) -> Result<(), CallToolError> {
         Self::validate_json_against_schema(self.input_schema_validator.as_ref(), arguments)
     }
 
     #[inline]
+    #[allow(clippy::result_large_err)]
     pub fn validate_against_output_schema(&self, arguments: &Value) -> Result<(), CallToolError> {
         Self::validate_json_against_schema(self.output_schema_validator.as_ref(), arguments)
     }
@@ -174,7 +179,7 @@ impl ToolsRegistry {
                             template_engine,
                         })
                     },
-                    UpstreamBackend::FunctionGraph { .. } => TranscoderType::FunctionGraph(FunctionGraphTranscoder {}),
+                    UpstreamBackend::FunctionGraph => TranscoderType::FunctionGraph(FunctionGraphTranscoder {}),
                     UpstreamBackend::McpServer { .. } => TranscoderType::NoTranscoder,
                 };
                 Ok(ToolEntry { conf: tool_conf, transcoder, rbac, input_schema_validator, output_schema_validator })
@@ -192,7 +197,7 @@ impl ToolsRegistry {
     pub async fn build_list_tools(
         &self,
         req_ext: &http::Extensions,
-        session: &Option<Arc<Session>>,
+        session: Option<&Arc<Session>>,
     ) -> ListToolsResult {
         let mut tools = Vec::with_capacity(self.registry.len() + 1);
         if self.dynamic_tool_discovery {
@@ -234,7 +239,7 @@ impl ToolsRegistry {
         words.iter().any(|word| description.contains(word))
     }
 
-    async fn fill_list_tools(&self, req_ext: &http::Extensions, session: &Option<Arc<Session>>, tools: &mut Vec<Tool>) {
+    async fn fill_list_tools(&self, req_ext: &http::Extensions, session: Option<&Arc<Session>>, tools: &mut Vec<Tool>) {
         let Some(session) = session.as_ref() else {
             debug!(target: "mcp_gateway", "build_list_tool_apis without session!");
             return;
@@ -293,9 +298,9 @@ impl ToolsRegistry {
                             }
 
                             if self.dynamic_tool_discovery {
-                                up_tools.iter().for_each(|t| {
+                                for t in &up_tools {
                                     session.active_tools.insert(t.name.to_smolstr());
-                                });
+                                }
                             }
                             tools.extend(up_tools);
                         },
@@ -304,7 +309,7 @@ impl ToolsRegistry {
                         },
                     }
                 },
-                UpstreamBackend::FunctionGraph {} => todo!(),
+                UpstreamBackend::FunctionGraph => todo!(),
             }
         }
     }
@@ -330,7 +335,7 @@ impl ToolsRegistry {
         let client = Self::get_mcp_client(url).await?;
 
         // List tools
-        let mut tools = client.list_tools(Default::default()).await?;
+        let mut tools = client.list_tools(Option::default()).await?;
 
         for tool in &mut tools.tools {
             tool.name = Cow::Owned(format!("{namespace}__{}", tool.name));
@@ -346,7 +351,7 @@ impl ToolsRegistry {
         let transport = StreamableHttpClientTransport::from_uri(url);
         let client_info = ClientInfo {
             meta: None,
-            protocol_version: Default::default(),
+            protocol_version: ProtocolVersion::default(),
             capabilities: ClientCapabilities::default(),
             client_info: Implementation {
                 name: DEFAULT_USER_AGENT.into(),
@@ -362,6 +367,8 @@ impl ToolsRegistry {
         })
     }
 
+    #[allow(clippy::unused_self)]
+    #[allow(clippy::result_large_err)]
     pub fn call_dynamic_tool_discovery(
         &self,
         rpc: &model::JsonRpcRequest,
@@ -421,7 +428,7 @@ impl ToolsRegistry {
         req_ext: &http::Extensions,
         req_headers: &http::HeaderMap,
         rpc: &model::JsonRpcRequest,
-        cluster_header: &Option<ClusterHeader>,
+        cluster_header: Option<&ClusterHeader>,
         session: &Session,
     ) -> Result<MessageResult, CallToolError> {
         // get tool name, and in case of upstream MCP, sub-tool name as well...
@@ -526,7 +533,7 @@ impl ToolsRegistry {
 
                 Ok(MessageResult::JsonRpcResponse(json_rcp_response))
             },
-            (UpstreamBackend::FunctionGraph {}, TranscoderType::FunctionGraph(_)) => {
+            (UpstreamBackend::FunctionGraph, TranscoderType::FunctionGraph(_)) => {
                 Err(CallToolError::FunctionGraphNotImplemented)
             },
             _ => unreachable!(),
@@ -550,6 +557,7 @@ fn convert_config_rbac_to_runtime(config_rbac: &McpToolRbac) -> ToolRbac {
         .iter()
         .map(|p| match p {
             McpRbacPermission::JwtHeader { field, value } => {
+                #[allow(clippy::wildcard_in_or_patterns)]
                 let header_field = match field.as_str() {
                     "alg" | "algorithm" => JwtHeaderField::Algorithm,
                     "typ" | "type" => JwtHeaderField::Type,
@@ -579,7 +587,7 @@ fn convert_config_rbac_to_runtime(config_rbac: &McpToolRbac) -> ToolRbac {
                     "exp" | "expiration" => JwtClaimField::Expiration,
                     "iat" | "issued_at" => JwtClaimField::IssuedAt,
                     "nbf" | "not_before" => JwtClaimField::NotBefore,
-                    "jti" | "jwt_id" => JwtClaimField::JWTID,
+                    "jti" | "jwt_id" => JwtClaimField::JwtID,
                     custom => JwtClaimField::Extra(custom.into()),
                 };
                 RbacPermission::JwtClaim(JwtPayloadMatcher { field: claim_field, value: value.clone() })

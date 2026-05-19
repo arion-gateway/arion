@@ -416,8 +416,8 @@ impl JwtAuthentication {
                 for (provider, context) in &inner_clone.context.providers {
                     if let Some(conf) = inner_clone.config.providers.get(provider) {
                         let provider_name = provider.clone();
-                        let provider_config = Arc::clone(&conf);
-                        let context = Arc::clone(&context);
+                        let provider_config = Arc::clone(conf);
+                        let context = Arc::clone(context);
 
                         let remote = match inner_clone
                             .config

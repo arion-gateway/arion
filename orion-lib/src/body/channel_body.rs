@@ -19,6 +19,18 @@ pub struct ChannelBody {
     is_end_stream: bool,
 }
 
+impl std::fmt::Debug for ChannelBody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ChannelBody")
+            .field("stream_body", &self.stream)
+            .field("prefetch", &self.prefetch)
+            .field("prefetch_num_frames", &self.prefetch_num_frames)
+            .field("prefetched_data_len", &self.prefetched_data_len)
+            .field("is_end_stream", &self.is_end_stream)
+            .finish()
+    }
+}
+
 pub enum BodyType {
     Empty,
     Body,
@@ -83,12 +95,6 @@ impl ChannelBody {
                 return;
             }
         }
-    }
-}
-
-impl std::fmt::Debug for ChannelBody {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ChannelBody").field("stream_body", &self.stream).field("buffered", &self.prefetch).finish()
     }
 }
 

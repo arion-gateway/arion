@@ -117,8 +117,7 @@ mod metrics_enabled {
 
         #[inline]
         pub fn into_inner(mut self) -> B {
-            let inner = std::mem::take(&mut self.inner);
-            inner
+            std::mem::take(&mut self.inner)
         }
     }
 

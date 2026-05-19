@@ -38,7 +38,7 @@ pub enum JwtClaimField {
     Expiration,
     IssuedAt,
     NotBefore,
-    JWTID,
+    JwtID,
     Extra(SmolStr),
 }
 
@@ -90,7 +90,7 @@ impl JwtPayloadMatcher {
                 JwtClaimField::Audience => {
                     claims.aud.as_ref().is_some_and(|aud| aud.iter().any(|a| a.as_str() == self.value.as_str()))
                 },
-                JwtClaimField::JWTID => claims.jti.as_ref().is_some_and(|jti| jti.as_str() == self.value.as_str()),
+                JwtClaimField::JwtID => claims.jti.as_ref().is_some_and(|jti| jti.as_str() == self.value.as_str()),
                 JwtClaimField::Expiration => claims.exp.is_some_and(|exp| exp.to_string() == self.value.as_str()),
                 JwtClaimField::IssuedAt => claims.iat.is_some_and(|iat| iat.to_string() == self.value.as_str()),
                 JwtClaimField::NotBefore => claims.nbf.is_some_and(|nbf| nbf.to_string() == self.value.as_str()),

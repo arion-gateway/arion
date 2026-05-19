@@ -127,10 +127,13 @@ pub async fn handle_websocket_upgrade(
                                 #[allow(unused_variables)]
                                 let shard_id = get_shard_id!();
 
-                                let _ = copy_bidirectional(&mut downstream, &mut upstream).await.map_err(|err| {
-                                    error!("Upgrade failure, bidi copy failed for websocket {:?}", err);
-                                    err
-                                });
+                                let _ = copy_bidirectional(&mut downstream, &mut upstream)
+                                    .await
+                                    .map_err(|err| {
+                                        error!("Upgrade failure, bidi copy failed for websocket {:?}", err);
+                                        err
+                                    })
+                                    .ok();
 
                                 #[allow(unused_variables)]
                                 let bytes_received_down = downstream.metrics().bytes_read();

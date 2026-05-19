@@ -55,6 +55,7 @@ const MCP_MESSAGE_ENDPOINT: &str = "/mcp";
 const SSE_MESSAGE_ENDPOINT: &str = "/sse";
 const SESSION_IDLE_TIMEOUT: tokio::time::Duration = tokio::time::Duration::from_secs(60);
 
+#[allow(clippy::struct_field_names)]
 pub struct Session {
     pub listener_name: &'static str, // to handle session eviction from listener.sse_map
     pub session_id: SessionId,
@@ -140,7 +141,7 @@ impl Default for McpGatewayListenerContext {
     fn default() -> Self {
         Self {
             session_map: Arc::new(DashMap::default()),
-            active_async_requests: Default::default(),
+            active_async_requests: AtomicUsize::default(),
             cleanup_task: Mutex::new(None),
             cleanup_task_started: AtomicBool::new(false),
         }
@@ -214,6 +215,7 @@ pub struct McpGatewayInner {
 #[derive(Debug, Clone, Copy)]
 pub struct ToolRegistryIndex(pub usize);
 
+#[allow(clippy::large_enum_variant)]
 pub enum MessageResult {
     Nothing,
     JsonRpcError(model::JsonRpcError),
@@ -346,7 +348,13 @@ impl McpGateway {
                         let mut sender_guard = sender.lock().await;
                         let sender = &mut *sender_guard;
                         let mut buf = BytesMut::with_capacity(1024);
-                        event.write_to(&mut buf);
+                        if let Err(e) = event.write_to(&mut buf) {
+                            debug!(target: "mcp_gateway", "apply_response: failed to serialize SSE event: {e}");
+                            return FilterDecision::internal_server_error(
+                                "Failed to serialize SSE event",
+                                self.version,
+                            );
+                        }
                         if let Err(e) = Self::send_sse_message(sender, buf.freeze(), self.version).await {
                             return e;
                         }
@@ -444,7 +452,10 @@ impl McpGateway {
                     let sender = &mut *sender_guard;
                     let event = transport::streamable_http::Event::Message(&json_rpc_response);
                     let mut buf = BytesMut::with_capacity(1024);
-                    event.write_to(&mut buf);
+                    if let Err(e) = event.write_to(&mut buf) {
+                        debug!(target: "mcp_gateway", "apply_response: failed to serialize SSE event: {e}");
+                        return FilterDecision::internal_server_error("Failed to serialize SSE event", self.version);
+                    }
                     if let Err(e) = sender.send(buf.freeze()).await {
                         debug!(target: "mcp_gateway", "apply_response: failed to send message for session {}, error {e}", session.session_id);
                     }
@@ -672,8 +683,20 @@ impl McpGateway {
                         let resp = transport::streamable_http::Event::Message(&json_rpc_response);
                         let mut buf = BytesMut::with_capacity(1024);
 
-                        notif.write_to(&mut buf);
-                        resp.write_to(&mut buf);
+                        if let Err(e) = notif.write_to(&mut buf) {
+                            debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: failed to serialize notification SSE event: {e}");
+                            return FilterDecision::internal_server_error(
+                                "Failed to serialize SSE event",
+                                self.version,
+                            );
+                        }
+                        if let Err(e) = resp.write_to(&mut buf) {
+                            debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: failed to serialize response SSE event: {e}");
+                            return FilterDecision::internal_server_error(
+                                "Failed to serialize SSE event",
+                                self.version,
+                            );
+                        }
                         let body = buf.freeze();
 
                         let headers = self.build_headers_with_session(MIME_TEXT_EVENT_STREAM);
@@ -729,7 +752,13 @@ impl McpGateway {
                         // priming event...
                         let event: transport::streamable_http::Event = transport::streamable_http::Event::Priming;
                         let mut buf = BytesMut::with_capacity(1024);
-                        event.write_to(&mut buf);
+                        if let Err(e) = event.write_to(&mut buf) {
+                            debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: failed to serialize priming event: {e}");
+                            return FilterDecision::internal_server_error(
+                                "Failed to serialize priming event",
+                                self.version,
+                            );
+                        }
                         if let Err(e) = sender.send(buf.freeze()).await {
                             debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: failed to send priming event: {e}");
                             return FilterDecision::internal_server_error("Failed to send priming event", self.version);
@@ -988,7 +1017,7 @@ impl McpGateway {
             },
             ListToolsRequestMethod::VALUE => {
                 debug!(target: "mcp_gateway", "handle_rpc_json_request: tools/list received");
-                let tools = self.inner.tools.build_list_tools(req_ext, session).await;
+                let tools = self.inner.tools.build_list_tools(req_ext, session.as_ref()).await;
                 let response = model::JsonRpcResponse {
                     jsonrpc: model::JsonRpcVersion2_0,
                     id: self.request_id.clone(),
@@ -1011,7 +1040,7 @@ impl McpGateway {
                 let resp = match self
                     .inner
                     .tools
-                    .call(req_ext, req_headers, &rpc, &self.inner.config.cluster_header, session)
+                    .call(req_ext, req_headers, &rpc, self.inner.config.cluster_header.as_ref(), session)
                     .await
                 {
                     Ok(result) => result,
@@ -1116,6 +1145,7 @@ impl McpGateway {
         }
     }
 
+    #[allow(clippy::unused_self)]
     fn get_valid_session(
         &mut self,
         ctx: &McpGatewayListenerContext,
@@ -1203,6 +1233,7 @@ impl McpGateway {
         }
     }
 
+    #[allow(clippy::result_large_err)]
     fn build_mcp_http_response(
         &self,
         status: StatusCode,

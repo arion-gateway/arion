@@ -227,6 +227,7 @@ where
         // 2. UNSAFE: Create a slice that points to the uninitialized memory
         // area after the current end of the buffer.
         // SAFETY: the buffer has been reserved, so it's safe to write up to 'to_read' bytes starting from 'prev_size'.
+        #[allow(clippy::multiple_unsafe_ops_per_block)]
         let received = unsafe {
             // Get a pointer to the start of the uninitialized area
             let ptr = self.buffer.as_mut_ptr().add(prev_size);
@@ -265,6 +266,7 @@ where
         // 2. UNSAFE: Create a mutable slice from uninitialized memory.
         // We must ensure the read_exact succeeds before we 'trust' these bytes.
         // SAFETY: The buffer has been reserved, so it's safe to write up to 'bytes_to_read' bytes starting from 'prev_size'.
+        #[allow(clippy::multiple_unsafe_ops_per_block)]
         let read_result = unsafe {
             let ptr = self.buffer.as_mut_ptr().add(prev_size);
             let slice = std::slice::from_raw_parts_mut(ptr, bytes_to_read);

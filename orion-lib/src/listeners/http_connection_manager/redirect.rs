@@ -42,12 +42,12 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (&'a RouteMatchResult, &'a st
         self,
         #[allow(unused_variables)] trans_context: &TransactionContext,
         request: Request<OrionRequestBody>,
-        (route_match_result, _route_name): (&'a RouteMatchResult, &'a str),
+        (route_match_result, route_name): (&'a RouteMatchResult, &'a str),
     ) -> Result<Response<OrionResponseBody>> {
         #[cfg(feature = "access-log")]
         with_access_log!(
             &mut trans_context.trans_ctx.lock().loggers,
-            UpstreamContext { authority: None, cluster_name: None, route_name: _route_name }
+            UpstreamContext { authority: None, cluster_name: None, route_name }
         );
 
         let (parts, _) = request.into_parts();

@@ -212,8 +212,9 @@ use ctor::ctor;
 #[ctor]
 fn init() {
     //
-    // intialize AWS-LC-RS as defualt crypto provider
+    // intialise AWS-LC-RS as default crypto provider
     //
+    #[allow(clippy::expect_used)]
     rustls::crypto::aws_lc_rs::default_provider()
         .install_default()
         .expect("Could not install crypto provider (aws-lc-rs)");

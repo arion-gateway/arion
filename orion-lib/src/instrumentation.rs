@@ -6,6 +6,7 @@ use {
 
 #[cfg(feature = "instrumentation")]
 pub mod metrics {
+    #[allow(clippy::wildcard_imports)]
     use super::*;
     pub static CONNECTIONS: Monotone = Monotone::new();
     pub static CONNECTION_SETUP_TIME: Average = Average::new();

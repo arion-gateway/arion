@@ -196,7 +196,7 @@ impl ListenerFactory {
             filter_chains,
             with_tls_inspector,
             proxy_protocol_config,
-            listener_local_rate_limit,
+            local_rate_limit: listener_local_rate_limit,
             route_updates_receiver,
             secret_updates_receiver,
             access_log,
@@ -244,7 +244,7 @@ pub struct Listener {
     pub filter_chains: HashMap<FilterChainMatch, FilterchainType>,
     with_tls_inspector: bool,
     proxy_protocol_config: Option<DownstreamProxyProtocolConfig>,
-    listener_local_rate_limit: Option<ListenerLocalRateLimit>,
+    local_rate_limit: Option<ListenerLocalRateLimit>,
     route_updates_receiver: broadcast::Receiver<RouteConfigurationChange>,
     secret_updates_receiver: broadcast::Receiver<TlsContextChange>,
     access_log: Vec<AccessLog>,
@@ -268,7 +268,7 @@ impl Listener {
             filter_chains: HashMap::new(),
             with_tls_inspector: false,
             proxy_protocol_config: None,
-            listener_local_rate_limit: None,
+            local_rate_limit: None,
             route_updates_receiver: route_rx,
             secret_updates_receiver: secret_rx,
             access_log: vec![],
@@ -294,10 +294,10 @@ impl Listener {
             filter_chains,
             with_tls_inspector,
             proxy_protocol_config,
-            listener_local_rate_limit,
+            local_rate_limit: listener_local_rate_limit,
             mut route_updates_receiver,
             mut secret_updates_receiver,
-            access_log: _access_log,
+            access_log,
         } = self;
 
         let mut filter_chains = Arc::new(filter_chains);
@@ -367,7 +367,7 @@ impl Listener {
                                     let proxy_protocol_config = proxy_protocol_config.clone();
 
                                     #[cfg(feature = "access-log")]
-                                    let mut conn_formatters : Vec<_> = _access_log.iter().map(AccessLog::get_logger).cloned().collect();
+                                    let mut conn_formatters : Vec<_> = access_log.iter().map(AccessLog::get_logger).cloned().collect();
 
                                     tokio::spawn(async move {
                                         let start = Instant::now();
@@ -544,9 +544,6 @@ impl Listener {
         connection_metadata: &DownstreamConnectionMetadata,
         server_name: Option<&str>,
     ) -> Result<Option<&'a T>> {
-        let source_addr = connection_metadata.peer_address();
-        let destination_addr = connection_metadata.local_address();
-
         fn match_subitem<'a, F: Fn(&FilterChainMatch, T) -> MatchResult, T: Copy>(
             function: F,
             comparand: T,
@@ -585,6 +582,8 @@ impl Listener {
             }
         }
 
+        let source_addr = connection_metadata.peer_address();
+        let destination_addr = connection_metadata.local_address();
         let num_chains = filter_chains.len();
         let mut possible_filters: SmallVec<[bool; 8]> = smallvec![true; num_chains];
         let mut scratchpad: SmallVec<[MatchResult; 8]> = smallvec![MatchResult::NoRule; num_chains];

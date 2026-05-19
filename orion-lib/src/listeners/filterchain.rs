@@ -82,7 +82,7 @@ pub struct Filterchain {
 
 #[derive(Debug, Clone)]
 pub enum MainFilterBuilder {
-    Http(HttpConnectionManagerBuilder),
+    Http(Box<HttpConnectionManagerBuilder>),
     Tcp(TcpProxyBuilder),
 }
 
@@ -91,9 +91,9 @@ impl TryFrom<ConversionContext<'_, MainFilter>> for MainFilterBuilder {
     fn try_from(ctx: ConversionContext<MainFilter>) -> Result<Self> {
         let ConversionContext { envoy_object: main_filter, secret_manager } = ctx;
         match main_filter {
-            MainFilter::Http(http) => {
-                Ok(Self::Http(HttpConnectionManagerBuilder::try_from(ConversionContext::new((http, secret_manager)))?))
-            },
+            MainFilter::Http(http) => Ok(Self::Http(Box::new(HttpConnectionManagerBuilder::try_from(
+                ConversionContext::new((http, secret_manager)),
+            )?))),
             MainFilter::Tcp(tcp) => Ok(Self::Tcp(tcp.into())),
         }
     }
@@ -139,7 +139,7 @@ impl FilterchainBuilder {
                     .build()?,
             )),
             MainFilterBuilder::Tcp(tcp_proxy) => ConnectionHandler::Tcp(
-                tcp_proxy.with_listener_name(listener_name).with_filterchain_id(self.filterchain_id).build()?,
+                tcp_proxy.with_listener_name(listener_name).with_filterchain_id(self.filterchain_id).build(),
             ),
         };
         Ok(FilterchainType { config, handler })

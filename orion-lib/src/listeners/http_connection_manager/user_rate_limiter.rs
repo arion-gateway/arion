@@ -129,6 +129,7 @@ impl UserRateLimiter {
 
         // If the entry for the user does not exist in the global map, let's try to insert a new one.
         //
+        #[allow(clippy::result_large_err)]
         let token_bucket = USER_RATE_LIMITERS.entry(user.into()).or_try_insert_with(|| {
             let limit = if let Some(limit) = self.inner.user_rate_limits.get(&Some(user.into())) {
                 limit

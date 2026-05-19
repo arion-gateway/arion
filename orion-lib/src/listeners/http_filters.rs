@@ -32,6 +32,7 @@ use crate::Result;
 
 #[derive(Debug, Default)]
 #[allow(dead_code)]
+#[allow(clippy::large_enum_variant)]
 pub enum FilterDecision {
     #[default]
     Continue,

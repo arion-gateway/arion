@@ -100,7 +100,7 @@ where
                     if !remaining_buffer.is_empty() {
                         let to_copy = std::cmp::min(remaining_buffer.len(), buf.remaining());
 
-                        // Further safety: ensure we only slice what we actually need
+                        // Further: ensure we only slice what we actually need
                         if let Some(data_to_put) = remaining_buffer.get(..to_copy) {
                             buf.put_slice(data_to_put);
                             *read_pos += to_copy;

@@ -425,7 +425,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
                         body_kind,
                         body_bytes,
                         stream_metrics: stream_metrics.clone(),
-                        on_complete: Arc::clone(&on_complete),
+                        on_complete: Clone::clone(on_complete),
                     };
                     let rebuilt_req = Request::from_parts(parts.clone(), cloned_body);
                     let attempt_ctx = RequestContext { route_timeout, retry_policy: None, priority };
@@ -500,11 +500,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
 
             let attr = metrics::get_user_partition_key(request.headers(), None, metrics::CUSTOM_KEY.source())
                 .map(|id| KeyValue::new(metrics::CUSTOM_KEY.attribute_name().unwrap_or("custom"), id));
-            custom_metrics.with_headers(
-                MetricsHook::UpstreamRequest,
-                request.headers(),
-                attr.as_ref().map_or(&[], std::slice::from_ref),
-            );
+            custom_metrics.with_headers(MetricsHook::UpstreamRequest, request.headers(), attr.as_slice());
         }
 
         let RequestContext { route_timeout, retry_policy, priority } = ctx;
@@ -718,7 +714,7 @@ impl HttpChannel {
                 body_kind,
                 body_bytes,
                 stream_metrics: stream_metrics.clone(),
-                on_complete: Arc::clone(&on_complete),
+                on_complete: Clone::clone(on_complete),
             };
 
             // avoid to clone parts on the last attempt
@@ -744,7 +740,10 @@ impl HttpChannel {
             };
 
             if condition.is_per_try_timeout() {
-                output.as_mut().map(|output| output.timeouts += 1);
+                if let Some(retries) = output.as_deref_mut() {
+                    // Increment the timeout counter
+                    retries.timeouts += 1;
+                }
             }
 
             // check for a possible retry...
@@ -752,7 +751,9 @@ impl HttpChannel {
                 return result;
             }
 
-            output.as_mut().map(|output| output.requests += 1);
+            if let Some(output) = output.as_deref_mut() {
+                output.requests += 1;
+            }
 
             // take an exponential back off break and retry...
             if index < retry_policy.num_retries() as usize {

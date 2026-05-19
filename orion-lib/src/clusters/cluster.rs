@@ -45,9 +45,9 @@ use original_dst::{OriginalDstCluster, OriginalDstClusterBuilder};
 use orion_interner::StringInterner;
 use r#static::{StaticCluster, StaticClusterBuilder};
 
-impl TryFrom<(ClusterConfig, &SecretManager)> for PartialClusterType {
+impl TryFrom<(Box<ClusterConfig>, &SecretManager)> for PartialClusterType {
     type Error = Error;
-    fn try_from(value: (ClusterConfig, &SecretManager)) -> std::result::Result<Self, Self::Error> {
+    fn try_from(value: (Box<ClusterConfig>, &SecretManager)) -> std::result::Result<Self, Self::Error> {
         let (cluster, secrets) = value;
         let config = cluster.clone();
         let transport_socket_config = cluster.transport_socket;
@@ -83,14 +83,14 @@ impl TryFrom<(ClusterConfig, &SecretManager)> for PartialClusterType {
                     .with_protocol_options(Some(protocol_options))
                     .prepare();
 
-                Ok(PartialClusterType::Static(StaticClusterBuilder {
+                Ok(PartialClusterType::Static(Box::new(StaticClusterBuilder {
                     name: cluster.name.to_static_str(),
                     load_assignment: cla,
                     transport_socket,
                     health_check,
                     config,
                     circuit_breaker: circuit_breaker.clone(),
-                }))
+                })))
             },
 
             // at the moment there is no difference for us since both cluster types are using the same resolver
@@ -111,17 +111,17 @@ impl TryFrom<(ClusterConfig, &SecretManager)> for PartialClusterType {
                     .with_protocol_options(Some(protocol_options))
                     .prepare();
 
-                Ok(PartialClusterType::Static(StaticClusterBuilder {
+                Ok(PartialClusterType::Static(Box::new(StaticClusterBuilder {
                     name: cluster.name.to_static_str(),
                     load_assignment: cla,
                     transport_socket,
                     health_check,
                     config,
                     circuit_breaker,
-                }))
+                })))
             },
 
-            ClusterDiscoveryType::Eds(None) => Ok(PartialClusterType::Dynamic(DynamicClusterBuilder {
+            ClusterDiscoveryType::Eds(None) => Ok(PartialClusterType::Dynamic(Box::new(DynamicClusterBuilder {
                 name: cluster.name.to_static_str(),
                 bind_device,
                 transport_socket,
@@ -129,7 +129,7 @@ impl TryFrom<(ClusterConfig, &SecretManager)> for PartialClusterType {
                 load_balancing_policy,
                 config,
                 circuit_breaker,
-            })),
+            }))),
             ClusterDiscoveryType::Eds(Some(_)) => {
                 Err("EDS clusters can't have a static cluster load assignment configured".into())
             },
@@ -140,7 +140,7 @@ impl TryFrom<(ClusterConfig, &SecretManager)> for PartialClusterType {
                     .map(|tls_configurator| ServerName::try_from(tls_configurator.sni()))
                     .transpose()?;
 
-                Ok(PartialClusterType::OnDemand(OriginalDstClusterBuilder {
+                Ok(PartialClusterType::OnDemand(Box::new(OriginalDstClusterBuilder {
                     name: cluster.name.to_static_str(),
                     bind_device,
                     transport_socket,
@@ -148,7 +148,7 @@ impl TryFrom<(ClusterConfig, &SecretManager)> for PartialClusterType {
                     server_name,
                     config,
                     circuit_breaker,
-                }))
+                })))
             },
         }
     }
@@ -182,23 +182,23 @@ impl TryFrom<&ClusterType> for ClusterConfig {
     type Error = Error;
     fn try_from(cluster: &ClusterType) -> Result<Self> {
         match cluster {
-            ClusterType::Static(static_cluster) => Ok(static_cluster.config.clone()),
+            ClusterType::Static(static_cluster) => Ok((*static_cluster.config).clone()),
             ClusterType::Dynamic(dynamic_cluster) => {
                 let cla: ClusterLoadAssignmentConfig = dynamic_cluster.try_into()?;
-                let mut config = dynamic_cluster.config.clone();
+                let mut config = (*dynamic_cluster.config).clone();
                 config.discovery_settings = ClusterDiscoveryType::Eds(Some(cla));
                 Ok(config)
             },
-            ClusterType::OnDemand(original_dst_cluster) => Ok(original_dst_cluster.config.clone()),
+            ClusterType::OnDemand(original_dst_cluster) => Ok((*original_dst_cluster.config).clone()),
         }
     }
 }
 
 #[derive(Debug, Clone)]
 pub enum PartialClusterType {
-    Static(StaticClusterBuilder),
-    Dynamic(DynamicClusterBuilder),
-    OnDemand(OriginalDstClusterBuilder),
+    Static(Box<StaticClusterBuilder>),
+    Dynamic(Box<DynamicClusterBuilder>),
+    OnDemand(Box<OriginalDstClusterBuilder>),
 }
 
 impl PartialClusterType {
@@ -289,7 +289,7 @@ load_assignment:
         let secrets_man = SecretManager::new();
         let envoy_cluster: EnvoyCluster = from_yaml(CLUSTER).unwrap();
         let cluster = ClusterConfig::try_from(envoy_cluster).unwrap();
-        let c = PartialClusterType::try_from((cluster, &secrets_man)).unwrap();
+        let c = PartialClusterType::try_from((Box::new(cluster), &secrets_man)).unwrap();
         let c = c.build().unwrap();
 
         check_bind_device(&c, "virt1");
@@ -312,7 +312,7 @@ upstream_bind_config:
         let secrets_man = SecretManager::new();
         let envoy_cluster: EnvoyCluster = from_yaml(CLUSTER).unwrap();
         let cluster = ClusterConfig::try_from(envoy_cluster).unwrap();
-        let c = PartialClusterType::try_from((cluster, &secrets_man)).unwrap();
+        let c = PartialClusterType::try_from((Box::new(cluster), &secrets_man)).unwrap();
         println!("{c:#?}");
         let c = c.build().unwrap();
         check_bind_device(&c, "virt1");

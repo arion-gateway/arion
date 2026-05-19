@@ -83,11 +83,11 @@ impl TcpProxyBuilder {
     }
 
     #[inline]
-    pub fn build(self) -> Result<TcpProxy> {
+    pub fn build(self) -> TcpProxy {
         let listener_name = self.listener_name.unwrap_or("listener name is not set");
         let filterchain_id = self.filterchain_id.unwrap_or(0_u64);
         let TcpProxyConfig { cluster_specifier, access_log } = self.tcp_proxy_config;
-        Ok(TcpProxy { listener_name, filterchain_id, access_log, cluster: cluster_specifier })
+        TcpProxy { listener_name, filterchain_id, access_log, cluster: cluster_specifier }
     }
 }
 

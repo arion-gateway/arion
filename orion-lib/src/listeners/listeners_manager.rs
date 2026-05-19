@@ -94,7 +94,7 @@ impl ListenersManager {
                             }
                         }
                         ListenerConfigurationChange::Removed(listener_name) => {
-                            let _ = self.stop_listener(&listener_name);
+                            let _ = self.stop_listener(&listener_name).ok();
                         },
                         ListenerConfigurationChange::TlsContextChanged((secret_id, secret)) => {
                             info!("Got tls secret update {secret_id}");
