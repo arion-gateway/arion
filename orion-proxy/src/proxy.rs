@@ -372,8 +372,10 @@ async fn spawn_services(info: ServiceInfo) -> Result<()> {
 
             info!("Access loggers started with {} instances", conf.num_instances);
 
-            for (target, access_log_config) in
-                listeners.iter().flat_map(orion_configuration::config::Listener::all_access_log_configs).collect::<Vec<_>>()
+            for (target, access_log_config) in listeners
+                .iter()
+                .flat_map(orion_configuration::config::Listener::all_access_log_configs)
+                .collect::<Vec<_>>()
             {
                 _ = update_configuration(target.into(), access_log_config).await;
             }

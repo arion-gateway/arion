@@ -62,7 +62,12 @@ fn write_metric_labels(out: &mut impl Write, labels: &[KeyValue]) -> io::Result<
 }
 
 #[allow(clippy::too_many_arguments)]
-fn write_metric_labels_with_extra(out: &mut impl Write, labels: &[KeyValue], extra_key: &str, extra_val: &str) -> io::Result<()> {
+fn write_metric_labels_with_extra(
+    out: &mut impl Write,
+    labels: &[KeyValue],
+    extra_key: &str,
+    extra_val: &str,
+) -> io::Result<()> {
     write!(out, "{{")?;
     let mut first = true;
     for kv in labels {
@@ -110,7 +115,14 @@ fn format_metric<S: Eq + Hash>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn format_gauge(out: &mut impl Write, prefix: &str, name: &str, desc: &str, metric_type: &str, metric_source: &Gauge) -> io::Result<()> {
+fn format_gauge(
+    out: &mut impl Write,
+    prefix: &str,
+    name: &str,
+    desc: &str,
+    metric_type: &str,
+    metric_source: &Gauge,
+) -> io::Result<()> {
     let data = metric_source.load_all();
     if data.is_empty() {
         return Ok(());
@@ -170,14 +182,20 @@ fn format_histogram<S: Eq + Hash + Clone + Copy>(
     Ok(())
 }
 
-fn process_metric_as_counter<S: Eq + Hash>(out: &mut impl Write, source: &OnceLock<Metric<ShardedU64<S>>>) -> io::Result<()> {
+fn process_metric_as_counter<S: Eq + Hash>(
+    out: &mut impl Write,
+    source: &OnceLock<Metric<ShardedU64<S>>>,
+) -> io::Result<()> {
     if let Some(metric) = source.get() {
         format_metric(out, metric.prefix, metric.name, metric.descr, "counter", &metric.value)?;
     }
     Ok(())
 }
 
-fn process_metric_as_gauge<S: Eq + Hash>(out: &mut impl Write, source: &OnceLock<Metric<ShardedU64<S>>>) -> io::Result<()> {
+fn process_metric_as_gauge<S: Eq + Hash>(
+    out: &mut impl Write,
+    source: &OnceLock<Metric<ShardedU64<S>>>,
+) -> io::Result<()> {
     if let Some(metric) = source.get() {
         format_metric(out, metric.prefix, metric.name, metric.descr, "gauge", &metric.value)?;
     }
@@ -191,7 +209,10 @@ fn process_gauge(out: &mut impl Write, source: &OnceLock<Metric<Gauge>>) -> io::
     Ok(())
 }
 
-fn process_histogram<S: Eq + Hash + Clone + Copy>(out: &mut impl Write, source: &OnceLock<Metric<ShardedHistogram<S>>>) -> io::Result<()> {
+fn process_histogram<S: Eq + Hash + Clone + Copy>(
+    out: &mut impl Write,
+    source: &OnceLock<Metric<ShardedHistogram<S>>>,
+) -> io::Result<()> {
     if let Some(metric) = source.get() {
         format_histogram(out, metric.prefix, metric.name, metric.descr, &metric.value)?;
     }
