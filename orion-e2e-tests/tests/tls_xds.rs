@@ -305,7 +305,7 @@ async fn test_xds_add_tls_dynamically() {
 
     harness.push_secret(&server_cert).await.expect("Failed to push server cert");
 
-    let https_listener = ListenerBuilder::new("http")
+    let tls_listener = ListenerBuilder::new("http")
         .port(listener_port)
         .filter_chain(
             FilterChainBuilder::new("main").downstream_tls(DownstreamTlsBuilder::new().sds_secret("server-cert")).hcm(
@@ -316,7 +316,7 @@ async fn test_xds_add_tls_dynamically() {
         )
         .build();
 
-    harness.push_listener(&https_listener).await.expect("Failed to push HTTPS listener");
+    harness.push_listener(&tls_listener).await.expect("Failed to push HTTPS listener");
 
     let tls_client = TlsTestClientBuilder::new(listener_addr)
         .server_name("dublin.beefcake.example.com")

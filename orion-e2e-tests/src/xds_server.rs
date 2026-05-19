@@ -124,10 +124,10 @@ impl AggregatedDiscoveryService for TrackedAggregateServer {
 
     async fn stream_aggregated_resources(
         &self,
-        req: tonic::Request<tonic::Streaming<DiscoveryRequest>>,
+        request: tonic::Request<tonic::Streaming<DiscoveryRequest>>,
     ) -> AggregatedDiscoveryServiceResult<Self::StreamAggregatedResourcesStream> {
         info!("TrackedAggregateServer::stream_aggregated_resources");
-        info!("\tclient connected from: {:?}", req.remote_addr());
+        info!("\tclient connected from: {:?}", request.remote_addr());
 
         let (tx, rx) = mpsc::channel(128);
         let mut resources_rx =
@@ -166,7 +166,7 @@ impl AggregatedDiscoveryService for TrackedAggregateServer {
             info!("\tclient disconnected");
         });
 
-        let mut incoming_stream = req.into_streaming_request().into_inner();
+        let mut incoming_stream = request.into_streaming_request().into_inner();
         tokio::spawn(async move {
             while let Some(item) = incoming_stream.next().await {
                 debug!("TrackedServer stream: Got item {item:?}");
@@ -183,10 +183,10 @@ impl AggregatedDiscoveryService for TrackedAggregateServer {
 
     async fn delta_aggregated_resources(
         &self,
-        req: tonic::Request<tonic::Streaming<DeltaDiscoveryRequest>>,
+        request: tonic::Request<tonic::Streaming<DeltaDiscoveryRequest>>,
     ) -> AggregatedDiscoveryServiceResult<Self::DeltaAggregatedResourcesStream> {
         info!("TrackedAggregateServer::delta_aggregated_resources");
-        let remote_addr = req.remote_addr().unwrap_or_else(|| SocketAddr::from(([0, 0, 0, 0], 0)));
+        let remote_addr = request.remote_addr().unwrap_or_else(|| SocketAddr::from(([0, 0, 0, 0], 0)));
         info!("\tclient connected from: {:?}", remote_addr);
 
         let (tx, rx) = mpsc::channel(128);
@@ -212,7 +212,7 @@ impl AggregatedDiscoveryService for TrackedAggregateServer {
             info!("\tclient disconnected");
         });
 
-        let mut incoming_stream = req.into_streaming_request().into_inner();
+        let mut incoming_stream = request.into_streaming_request().into_inner();
         let ack_tracker_for_incoming = self.ack_tracker.clone();
         let event_tx = self.event_tx.clone();
         let mut first_message = true;

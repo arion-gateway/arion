@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub struct TestCerts {
@@ -138,7 +138,7 @@ impl TestCerts {
     }
 
     #[must_use]
-    pub fn path_to_string(path: &PathBuf) -> String {
+    pub fn path_to_string(path: &Path) -> String {
         path.to_str().expect("Path is not valid UTF-8").to_owned()
     }
 }

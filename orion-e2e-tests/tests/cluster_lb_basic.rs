@@ -188,8 +188,7 @@ async fn test_least_request_prefers_idle() {
 
     for wave in 0..10 {
         let handles: Vec<_> = (0..50)
-            .map(|i| {
-                let _task_id = wave * 50 + i;
+            .map(|_| {
                 let client = Arc::clone(&client);
                 tokio::spawn(async move { client.get("/test").await })
             })

@@ -127,7 +127,7 @@ impl HttpHealthCheckBuilder {
 
     #[must_use]
     pub fn accept_2xx(mut self) -> Self {
-        self.expected_statuses = vec![200..300];
+        self.expected_statuses = vec![Range { start: 200, end: 300 }];
         self
     }
 

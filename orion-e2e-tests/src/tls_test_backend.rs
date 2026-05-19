@@ -52,7 +52,6 @@ impl TlsBackendConfig {
         Ok(Self { cert_chain, private_key, client_ca: None, require_client_cert: false })
     }
 
-    #[must_use]
     pub fn with_client_ca(mut self, ca_path: impl AsRef<Path>) -> Result<Self> {
         self.client_ca = Some(Self::load_root_store(ca_path)?);
         Ok(self)

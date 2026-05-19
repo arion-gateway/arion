@@ -102,7 +102,7 @@ impl OrionInstance {
 
         let mut process = cmd
             .spawn()
-            .map_err(|e| Error::ProcessStartFailed(format!("Failed to spawn orion binary at {orion_bin:?}: {e}")))?;
+            .map_err(|e| Error::ProcessStartFailed(format!("Failed to spawn orion binary at {}: {e}", orion_bin.display())))?;
 
         let stdout = process.stdout.take();
         let stderr = process.stderr.take();
@@ -242,7 +242,7 @@ impl OrionInstance {
 
         let mut process = cmd
             .spawn()
-            .map_err(|e| Error::ProcessStartFailed(format!("Failed to spawn orion binary at {orion_bin:?}: {e}")))?;
+            .map_err(|e| Error::ProcessStartFailed(format!("Failed to spawn orion binary at {}: {e}", orion_bin.display())))?;
 
         let stdout = process.stdout.take();
         let stderr = process.stderr.take();
@@ -386,7 +386,7 @@ impl OrionInstance {
 
         let mut process = cmd
             .spawn()
-            .map_err(|e| Error::ProcessStartFailed(format!("Failed to spawn orion binary at {orion_bin:?}: {e}")))?;
+            .map_err(|e| Error::ProcessStartFailed(format!("Failed to spawn orion binary at {}: {e}", orion_bin.display())))?;
 
         let stderr = process.stderr.take();
         let shutdown_flag = Arc::clone(&shutdown_requested);
