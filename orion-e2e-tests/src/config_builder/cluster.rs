@@ -115,7 +115,9 @@ impl ClusterBuilder {
             if la.endpoints.is_empty() {
                 la.endpoints.push(LocalityLbEndpoints::default());
             }
-            la.endpoints[0].lb_endpoints.push(endpoint.into());
+            if let Some(first) = la.endpoints.first_mut() {
+                first.lb_endpoints.push(endpoint.into());
+            }
         }
         self
     }
@@ -369,12 +371,11 @@ impl ClusterBuilder {
 
     fn ensure_default_circuit_breaker_threshold(&mut self) -> &mut EnvoyThresholds {
         let cb = self.proto.circuit_breakers.get_or_insert_with(EnvoyCircuitBreakers::default);
-        if let Some(idx) = cb.thresholds.iter().position(|t| t.priority == 0) {
-            return &mut cb.thresholds[idx];
-        }
-        cb.thresholds.push(EnvoyThresholds { priority: 0, ..Default::default() });
-        let len = cb.thresholds.len();
-        &mut cb.thresholds[len - 1]
+        let idx = cb.thresholds.iter().position(|t| t.priority == 0).unwrap_or_else(|| {
+            cb.thresholds.push(EnvoyThresholds { priority: 0, ..Default::default() });
+            cb.thresholds.len() - 1
+        });
+        cb.thresholds.get_mut(idx).expect("element at idx")
     }
 
     #[must_use]

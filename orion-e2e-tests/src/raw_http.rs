@@ -219,7 +219,7 @@ impl RawHttpResponse {
             }
         }
 
-        let body = if let Some(pos) = find_header_end(data) { data[pos..].to_vec() } else { Vec::new() };
+        let body = find_header_end(data).and_then(|pos| data.get(pos..)).map(<[u8]>::to_vec).unwrap_or_default();
 
         Some(Self { status_code, reason, version, headers, body })
     }
@@ -316,7 +316,11 @@ impl PartialSendClient {
             loop {
                 match self.stream.read(&mut buf).await {
                     Ok(0) => break,
-                    Ok(n) => response.extend_from_slice(&buf[..n]),
+                    Ok(n) => {
+                        if let Some(slice) = buf.get(..n) {
+                            response.extend_from_slice(slice);
+                        }
+                    },
                     Err(e) => return Err(e),
                 }
             }

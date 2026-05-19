@@ -68,6 +68,10 @@ impl OrionInstance {
         Self::spawn_internal(config_path, None, options).await
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "process spawn logic is inherently sequential and would gain nothing from splitting"
+    )]
     pub async fn spawn_auto_port(
         config_path: impl AsRef<Path>,
         listener_name: impl Into<String>,
@@ -100,9 +104,9 @@ impl OrionInstance {
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
-        let mut process = cmd
-            .spawn()
-            .map_err(|e| Error::ProcessStartFailed(format!("Failed to spawn orion binary at {}: {e}", orion_bin.display())))?;
+        let mut process = cmd.spawn().map_err(|e| {
+            Error::ProcessStartFailed(format!("Failed to spawn orion binary at {}: {e}", orion_bin.display()))
+        })?;
 
         let stdout = process.stdout.take();
         let stderr = process.stderr.take();
@@ -207,6 +211,10 @@ impl OrionInstance {
         })
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "process spawn logic is inherently sequential and would gain nothing from splitting"
+    )]
     pub async fn spawn_with_fixed_port(
         config_path: impl AsRef<Path>,
         listener_name: impl Into<String>,
@@ -240,9 +248,9 @@ impl OrionInstance {
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
-        let mut process = cmd
-            .spawn()
-            .map_err(|e| Error::ProcessStartFailed(format!("Failed to spawn orion binary at {}: {e}", orion_bin.display())))?;
+        let mut process = cmd.spawn().map_err(|e| {
+            Error::ProcessStartFailed(format!("Failed to spawn orion binary at {}: {e}", orion_bin.display()))
+        })?;
 
         let stdout = process.stdout.take();
         let stderr = process.stderr.take();
@@ -384,9 +392,9 @@ impl OrionInstance {
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
-        let mut process = cmd
-            .spawn()
-            .map_err(|e| Error::ProcessStartFailed(format!("Failed to spawn orion binary at {}: {e}", orion_bin.display())))?;
+        let mut process = cmd.spawn().map_err(|e| {
+            Error::ProcessStartFailed(format!("Failed to spawn orion binary at {}: {e}", orion_bin.display()))
+        })?;
 
         let stderr = process.stderr.take();
         let shutdown_flag = Arc::clone(&shutdown_requested);
@@ -635,9 +643,9 @@ fn find_orion_binary() -> Result<PathBuf> {
 
 fn parse_listener_started(line: &str, name: &str) -> Option<SocketAddr> {
     let pattern = format!("listener '{name}' started: ");
-    line.find(&pattern).and_then(|idx| {
-        let addr_start = idx + pattern.len();
-        let addr_end = line[addr_start..].find(' ').map(|i| addr_start + i).unwrap_or(line.len());
-        line[addr_start..addr_end].parse().ok()
-    })
+    let idx = line.find(&pattern)?;
+    let addr_start = idx + pattern.len();
+    let suffix = line.get(addr_start..)?;
+    let addr_end = suffix.find(' ').map(|i| addr_start + i).unwrap_or(line.len());
+    line.get(addr_start..addr_end)?.parse().ok()
 }

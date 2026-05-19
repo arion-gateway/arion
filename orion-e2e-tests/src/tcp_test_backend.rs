@@ -125,7 +125,9 @@ impl TcpTestBackend {
                                     .await
                                     {
                                         Ok(Ok(n)) if n > 0 => {
-                                            received_data.extend_from_slice(&buf[..n]);
+                                            if let Some(slice) = buf.get(..n) {
+                                                received_data.extend_from_slice(slice);
+                                            }
                                             debug!(?peer_addr, bytes = n, "Read data from connection");
                                         }
                                         Ok(Ok(_)) => {

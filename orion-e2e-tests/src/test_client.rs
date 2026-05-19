@@ -164,7 +164,7 @@ impl TestClient {
             );
             http_body_util::Either::Left(StreamBody::new(stream))
         } else {
-            http_body_util::Either::Right(Full::new(body[0].clone()))
+            http_body_util::Either::Right(Full::new(body.into_iter().next().unwrap_or_default()))
         };
 
         let request = builder.body(body).map_err(|e| Error::Http(format!("Failed to build request: {e}")))?;

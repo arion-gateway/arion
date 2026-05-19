@@ -53,7 +53,11 @@ impl TcpTestClient {
             loop {
                 match stream.read(&mut buf).await {
                     Ok(0) => break,
-                    Ok(n) => response.extend_from_slice(&buf[..n]),
+                    Ok(n) => {
+                        if let Some(slice) = buf.get(..n) {
+                            response.extend_from_slice(slice);
+                        }
+                    },
                     Err(e) => return Err(e),
                 }
             }
