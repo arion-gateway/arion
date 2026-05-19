@@ -304,7 +304,12 @@ mod tests {
     use std::time::Duration;
 
     use orion_format::{
-        DEFAULT_ACCESS_LOG_FORMAT, LogFormatter, context::{DownstreamContext, DownstreamResponseContext, FinishContext, InitContext, SocketAddrContext, UpstreamContext}, types::ResponseFlags
+        context::{
+            DownstreamContext, DownstreamResponseContext, FinishContext, InitContext, SocketAddrContext,
+            UpstreamContext,
+        },
+        types::ResponseFlags,
+        LogFormatter, DEFAULT_ACCESS_LOG_FORMAT,
     };
     use tokio::time::timeout;
 

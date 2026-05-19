@@ -45,7 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let xds_client = tokio::spawn(async move {
         while let Some(notification) = client.recv().await {
             debug!("Got notification {notification:?}");
-            let _ = notification.ack_channel.send(vec![]);
+            let _ = notification.ack_channel.send(vec![]).ok();
 
             for update in notification.updates {
                 match update {

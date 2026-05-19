@@ -413,36 +413,33 @@ mod tests {
     }
 
     #[test]
-    fn match_host_exact() -> Result<(), GenericError> {
-        assert_eq!(MatchHost::from_str("www.example.com")?, MatchHost::Exact("www.example.com".into()));
+    fn match_host_exact() {
+        assert_eq!(MatchHost::from_str("www.example.com").unwrap(), MatchHost::Exact("www.example.com".into()));
 
         assert_eq!(
-            MatchHost::from_str("www.example.com")?.eval_lpm_host("www.example.com"),
+            MatchHost::from_str("www.example.com").unwrap().eval_lpm_host("www.example.com"),
             Some(MatchHostScoreLPM::Exact("www.example.com".len()))
         );
 
-        assert_eq!(MatchHost::from_str("another.example.com")?.eval_lpm_host("www.example.com"), None);
+        assert_eq!(MatchHost::from_str("another.example.com").unwrap().eval_lpm_host("www.example.com"), None);
 
         assert_eq!(
-            MatchHost::from_str("localhost")?.eval_lpm_host("localhost"),
+            MatchHost::from_str("localhost").unwrap().eval_lpm_host("localhost"),
             Some(MatchHostScoreLPM::Exact("localhost".len()))
         );
-        assert_eq!(MatchHost::from_str("localhost")?.eval_lpm_host("another"), None);
-        Ok(())
+        assert_eq!(MatchHost::from_str("localhost").unwrap().eval_lpm_host("another"), None);
     }
 
     #[test]
-    fn match_host_suffix() -> Result<(), GenericError> {
-        assert_eq!(MatchHost::from_str("*.example.com")?, MatchHost::Suffix(".example.com".into()));
+    fn match_host_suffix() {
+        assert_eq!(MatchHost::from_str("*.example.com").unwrap(), MatchHost::Suffix(".example.com".into()));
 
         assert_eq!(
-            MatchHost::from_str("*.example.com")?.eval_lpm_host("www.example.com"),
+            MatchHost::from_str("*.example.com").unwrap().eval_lpm_host("www.example.com"),
             Some(MatchHostScoreLPM::Suffix(12))
         );
 
-        assert_eq!(MatchHost::from_str("*.example.com")?.eval_lpm_host("example.com"), None);
-
-        Ok(())
+        assert_eq!(MatchHost::from_str("*.example.com").unwrap().eval_lpm_host("example.com"), None);
     }
 
     #[test]

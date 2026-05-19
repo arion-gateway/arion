@@ -97,6 +97,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    let _ = grpc_server.into_future().await;
+    let _ = grpc_server.into_future().await.ok();
     Ok(())
 }

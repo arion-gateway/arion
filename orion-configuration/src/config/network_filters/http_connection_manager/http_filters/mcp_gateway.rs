@@ -276,6 +276,7 @@ mod envoy_conversions {
         use super::*;
 
         #[test]
+        #[allow(clippy::indexing_slicing)]
         fn test_tool_rbac_config_parsing() {
             use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::mcp::mcp_gateway::v3::{
                 permission, JwtClaimMatcher, Permission as OrionPermission, ToolRbac as OrionToolRbac,
