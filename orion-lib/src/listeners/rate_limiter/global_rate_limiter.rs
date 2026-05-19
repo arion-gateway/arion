@@ -309,7 +309,7 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
-            Server::builder()
+            let _ = Server::builder()
                 .add_service(RateLimitServiceServer::new(server_mock))
                 .serve_with_incoming(TcpListenerStream::new(listener))
                 .await
@@ -338,7 +338,7 @@ mod tests {
     }
 
     fn ok_response_with_quota(requests: u32) -> RateLimitResponse {
-        let valid_secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64 + 3600;
+        let valid_secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs().cast_signed() + 3600;
         RateLimitResponse {
             overall_code: rate_limit_response::Code::Ok as i32,
             quota: Some(rate_limit_response::Quota {

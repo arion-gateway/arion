@@ -304,9 +304,7 @@ mod tests {
     use std::time::Duration;
 
     use orion_format::{
-        context::{DownstreamContext, DownstreamResponseContext, FinishContext, InitContext, UpstreamContext},
-        types::ResponseFlags,
-        LogFormatter, DEFAULT_ACCESS_LOG_FORMAT,
+        DEFAULT_ACCESS_LOG_FORMAT, LogFormatter, context::{DownstreamContext, DownstreamResponseContext, FinishContext, InitContext, SocketAddrContext, UpstreamContext}, types::ResponseFlags
     };
     use tokio::time::timeout;
 
@@ -334,7 +332,7 @@ mod tests {
             trace_id: None,
             request_head_size: 0,
             server_name: None,
-            socket_address: Default::default(),
+            socket_address: SocketAddrContext::default(),
         });
         fmt.with_context(&UpstreamContext {
             authority: Some(req.uri().authority().unwrap()),

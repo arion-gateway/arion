@@ -187,21 +187,18 @@ impl MockExternalProcessor {
 }
 
 pub fn processing_match(req: &ProcessingRequest, res: &ProcessingResponse) -> bool {
-    match (&req.request, &res.response) {
-        (Some(ProcessingRequestType::RequestHeaders(_)), Some(ProcessingResponseType::RequestHeaders(_)))
-        | (Some(ProcessingRequestType::RequestBody(_)), Some(ProcessingResponseType::RequestBody(_)))
-        | (Some(ProcessingRequestType::RequestTrailers(_)), Some(ProcessingResponseType::RequestTrailers(_)))
-        | (Some(ProcessingRequestType::ResponseHeaders(_)), Some(ProcessingResponseType::ResponseHeaders(_)))
-        | (Some(ProcessingRequestType::ResponseBody(_)), Some(ProcessingResponseType::ResponseBody(_)))
-        | (Some(ProcessingRequestType::ResponseTrailers(_)), Some(ProcessingResponseType::ResponseTrailers(_))) => true,
-
-        (Some(_), Some(ProcessingResponseType::ImmediateResponse(_))) => true,
+    matches!(
+        (&req.request, &res.response),
         (
             Some(ProcessingRequestType::RequestHeaders(_)),
-            Some(ProcessingResponseType::StreamedImmediateResponse(_)),
-        ) => true,
-        _ => false,
-    }
+            Some(ProcessingResponseType::RequestHeaders(_) | ProcessingResponseType::StreamedImmediateResponse(_))
+        ) | (Some(ProcessingRequestType::RequestBody(_)), Some(ProcessingResponseType::RequestBody(_)))
+            | (Some(ProcessingRequestType::RequestTrailers(_)), Some(ProcessingResponseType::RequestTrailers(_)))
+            | (Some(ProcessingRequestType::ResponseHeaders(_)), Some(ProcessingResponseType::ResponseHeaders(_)))
+            | (Some(ProcessingRequestType::ResponseBody(_)), Some(ProcessingResponseType::ResponseBody(_)))
+            | (Some(ProcessingRequestType::ResponseTrailers(_)), Some(ProcessingResponseType::ResponseTrailers(_)))
+            | (Some(_), Some(ProcessingResponseType::ImmediateResponse(_)))
+    )
 }
 
 #[async_trait]
@@ -222,12 +219,7 @@ impl ExternalProcessorService for MockExternalProcessor {
             loop {
                 select! {
                      result_msg = inbound.message() => {
-
-                        let processing_request = match result_msg {
-                                            Ok(Some(req)) => req,
-                                            Ok(None) | Err(_) => break, // Stream ended naturally or Error
-                                      };
-
+                        let Ok(Some(processing_request)) = result_msg else { break }; // Ok(None) or Err(_) indicates stream end or error, we break the loop in both cases
                         let end_of_stream = processing_request.request.as_ref().map(|req| {
                             match req {
                                ProcessingRequestType::RequestHeaders(hdrs) | ProcessingRequestType::ResponseHeaders(hdrs) => {
@@ -246,13 +238,13 @@ impl ExternalProcessorService for MockExternalProcessor {
 
                         if let Some(processing_response) = state.get_next_response() {
                             if !processing_match(&processing_request, &processing_response) {
-                                let _ = tx.send(Err(Status::internal(format!("MockExternalProcessor: Received a processing request that does not match the expected response type. Request: {processing_request:#?}, Response: {processing_response:#?}")))).await;
+                                let _ = tx.send(Err(Status::internal(format!("MockExternalProcessor: Received a processing request that does not match the expected response type. Request: {processing_request:#?}, Response: {processing_response:#?}")))).await.ok();
                                 break;
                             }
 
                             if let Some(expected_end_of_stream) = processing_response.expected_end_of_stream() {
                                 if end_of_stream != Some(expected_end_of_stream) {
-                                    let _ = tx.send(Err(Status::internal(format!("MockExternalProcessor: Received a processing request with end_of_stream={end_of_stream:?} but expected end_of_stream={expected_end_of_stream:?}. Request: {processing_request:#?}, Response: {processing_response:#?}")))).await;
+                                    let _ = tx.send(Err(Status::internal(format!("MockExternalProcessor: Received a processing request with end_of_stream={end_of_stream:?} but expected end_of_stream={expected_end_of_stream:?}. Request: {processing_request:#?}, Response: {processing_response:#?}")))).await.ok();
                                     break;
                                 }
                             }
@@ -270,7 +262,7 @@ impl ExternalProcessorService for MockExternalProcessor {
                                     break;
                                 }
                         } else {
-                            let _ = tx.send(Err(Status::internal("MockExternalProcessor: Received more processing requests than configured responses."))).await;
+                            let _ = tx.send(Err(Status::internal("MockExternalProcessor: Received more processing requests than configured responses."))).await.ok();
                             break;
                         }
                      }
@@ -286,7 +278,8 @@ impl ExternalProcessorService for MockExternalProcessor {
                     .send(Err(Status::internal(
                         "MockExternalProcessor: Stream ended but there are still unprocessed responses.",
                     )))
-                    .await;
+                    .await
+                    .ok();
             }
 
             if let Some(ref sender) = state.sender {
@@ -864,7 +857,7 @@ fn assert_result<M>(
     test_case_num: i32,
     mock: &MockMessage<M>,
     headers: &http::HeaderMap,
-    body: Vec<Bytes>,
+    body: &[Bytes],
     trailers: &http::HeaderMap,
     mock_state: &MockExternalProcessorState,
     processing_mode: &ProcessingMode,
@@ -1019,7 +1012,7 @@ async fn test_request_combinatorial_processing() {
                     test_case_num,
                     mock_request,
                     &request_headers,
-                    request_body,
+                    &request_body,
                     &request_trailers,
                     mock_state,
                     processing_mode,
@@ -1083,7 +1076,7 @@ async fn test_response_combinatorial_processing() {
                     test_case_num,
                     mock_response,
                     &response_headers,
-                    response_body,
+                    &response_body,
                     &response_trailers,
                     mock_state,
                     processing_mode,
@@ -1147,7 +1140,7 @@ async fn test_request_combinatorial_observability() {
                     test_case_num,
                     mock_request,
                     &request_headers,
-                    request_body,
+                    &request_body,
                     &request_trailers,
                     mock_state,
                     processing_mode,
@@ -1211,7 +1204,7 @@ async fn test_response_combinatorial_observability() {
                     test_case_num,
                     mock_response,
                     &response_headers,
-                    response_body,
+                    &response_body,
                     &response_trailers,
                     mock_state,
                     processing_mode,
@@ -3179,7 +3172,7 @@ async fn test_request_body_buffered_too_large() {
         FilterDecision::DirectResponse(response) => {
             assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
         },
-        _ => assert!(false, "Unexpected filter decision"),
+        _ => panic!("Unexpected filter decision"),
     }
 }
 
@@ -3364,12 +3357,13 @@ use std::pin::Pin;
 use std::task::Context;
 
 #[allow(clippy::indexing_slicing)]
-async fn assert_body_frames<B: Body + Unpin>(
+async fn assert_body_frames<B>(
     mut body: B,
     expected_data: &[Bytes],
     expected_trailers: Option<http::HeaderMap>,
 ) -> Result<(), String>
 where
+    B: Body + Unpin,
     B: Body<Data = Bytes>,
     B::Error: Sized + Unpin + std::fmt::Debug,
 {
@@ -4142,7 +4136,7 @@ async fn test_response_body_buffered_too_large() {
         FilterDecision::DirectResponse(direct_response) => {
             assert_eq!(direct_response.status(), StatusCode::PAYLOAD_TOO_LARGE);
         },
-        _ => assert!(false, "Unexpected filter decision"),
+        _ => panic!("Unexpected filter decision"),
     }
 }
 

@@ -162,6 +162,7 @@ fn append_query_string(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rmcp::model::Extensions;
     use serde_json::json;
     use upon::Engine;
 
@@ -171,7 +172,7 @@ mod tests {
         if let Some(args) = arguments {
             params.insert("arguments".to_owned(), Value::Object(args));
         }
-        Request { method: "tools/call".into(), params, extensions: Default::default() }
+        Request { method: "tools/call".into(), params, extensions: Extensions::default() }
     }
 
     fn create_http_request() -> http::Request<OrionRequestBody> {

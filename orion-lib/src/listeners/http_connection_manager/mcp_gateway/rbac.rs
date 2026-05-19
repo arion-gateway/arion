@@ -179,9 +179,9 @@ mod tool_rbac_tests {
             iss: Some("test-issuer".into()),
             sub: Some(subject.into()),
             aud: Some(vec!["test-audience".into()]),
-            exp: Some(1234567890),
-            iat: Some(1234567800),
-            nbf: Some(1234567800),
+            exp: Some(1_234_567_890),
+            iat: Some(1_234_567_800),
+            nbf: Some(1_234_567_800),
             jti: Some("test-jti".into()),
             extra,
         }
