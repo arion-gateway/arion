@@ -297,6 +297,7 @@ impl Listener {
             local_rate_limit: listener_local_rate_limit,
             mut route_updates_receiver,
             mut secret_updates_receiver,
+            #[allow(unused_variables)]
             access_log,
         } = self;
 

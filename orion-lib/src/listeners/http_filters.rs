@@ -249,6 +249,9 @@ fn apply_authorization_rules<B>(rbac: &HttpRbac, req: &Request<B>) -> FilterDeci
     }
 }
 
+// `RouteMatch` contains `Regex` which has interior mutability, but its `Hash` and `PartialEq`
+// implementations use only `as_str()` (the immutable pattern string), so this is safe.
+#[allow(clippy::mutable_key_type)]
 pub(crate) fn per_route_http_filters(
     route_config: &RouteConfiguration,
     hcm_filters: &[Arc<HttpFilter>],

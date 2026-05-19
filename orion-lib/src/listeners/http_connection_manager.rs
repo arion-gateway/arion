@@ -1592,7 +1592,7 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
 
     #[cfg(feature = "access-log")]
     with_access_log!(
-        &mut params.al_ctx.access_loggers,
+        &mut *params.al_ctx.access_loggers,
         FinishContext {
             duration,
             bytes_received: params.bytes_received,

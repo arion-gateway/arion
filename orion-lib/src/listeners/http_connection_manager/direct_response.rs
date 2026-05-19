@@ -32,8 +32,9 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, &'a str> for &DirectResponseA
         self,
         #[allow(unused_variables)] trans_context: &TransactionContext,
         request: Request<OrionRequestBody>,
-        arg: &'a str,
+        #[allow(unused_variables)] arg: &'a str,
     ) -> Result<Response<OrionResponseBody>> {
+        #[cfg(feature = "access-log")]
         let route_name = arg;
         #[cfg(feature = "access-log")]
         with_access_log!(

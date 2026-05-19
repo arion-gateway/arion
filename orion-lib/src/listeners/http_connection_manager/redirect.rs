@@ -42,7 +42,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (&'a RouteMatchResult, &'a st
         self,
         #[allow(unused_variables)] trans_context: &TransactionContext,
         request: Request<OrionRequestBody>,
-        (route_match_result, route_name): (&'a RouteMatchResult, &'a str),
+        #[allow(unused_variables)] (route_match_result, route_name): (&'a RouteMatchResult, &'a str),
     ) -> Result<Response<OrionResponseBody>> {
         #[cfg(feature = "access-log")]
         with_access_log!(
