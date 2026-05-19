@@ -108,7 +108,6 @@ impl HcmBuilder {
                 config_source_specifier: Some(ConfigSourceSpecifier::Ads(AggregatedConfigSource {})),
                 ..Default::default()
             }),
-            ..Default::default()
         }));
         self
     }

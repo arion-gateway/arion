@@ -54,7 +54,6 @@ impl FilterChainBuilder {
         self.proto.filters.push(Filter {
             name: "envoy.filters.network.http_connection_manager".into(),
             config_type: Some(ConfigType::TypedConfig(hcm_any)),
-            ..Default::default()
         });
         self
     }
@@ -70,7 +69,6 @@ impl FilterChainBuilder {
         self.proto.filters.push(Filter {
             name: "envoy.filters.network.tcp_proxy".into(),
             config_type: Some(ConfigType::TypedConfig(tcp_proxy_any)),
-            ..Default::default()
         });
         self
     }
@@ -90,7 +88,6 @@ impl FilterChainBuilder {
         self.proto.filters.push(Filter {
             name: "envoy.filters.network.connection_limit".into(),
             config_type: Some(ConfigType::TypedConfig(any)),
-            ..Default::default()
         });
         self
     }
@@ -105,7 +102,6 @@ impl FilterChainBuilder {
         self.proto.filters.push(Filter {
             name: "envoy.filters.network.ratelimit".into(),
             config_type: Some(ConfigType::TypedConfig(any)),
-            ..Default::default()
         });
         self
     }
@@ -121,7 +117,6 @@ impl FilterChainBuilder {
         self.proto.filters.push(Filter {
             name: "envoy.filters.network.rbac".into(),
             config_type: Some(ConfigType::TypedConfig(rbac_any)),
-            ..Default::default()
         });
         self
     }
