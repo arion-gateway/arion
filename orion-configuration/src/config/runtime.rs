@@ -155,16 +155,16 @@ fn parse_cgroup_v2_cpu_max(content: &str) -> crate::Result<usize> {
             if quota > 0 && period > 0 {
                 // Standard ceiling division to calculate required cores
                 let cpus = usize::try_from((quota + period - 1) / period)
-                    .map_err(|_| "Failed to convert CPU count to usize")?;
+                    .map_err(|_e| "Failed to convert CPU count to usize")?;
 
                 if cpus > 0 {
                     return Ok(cpus);
                 }
             }
-        }
+        },
         // If it's exactly "max [period]", it means no limit is set.
         // We fall through to the error which indicates no specific limit found.
-        _ => {}
+        _ => {},
     }
 
     Err("No valid cgroups v2 CPU limit found".into())

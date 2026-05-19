@@ -120,10 +120,10 @@ impl PathRewriteSpecifier {
 
         // Construct the final path with the original query string if present
         let final_uri = if let Some(q) = old_query {
-            if !new_path.contains('?') {
-                format!("{new_path}?{q}")
-            } else {
+            if new_path.contains('?') {
                 new_path.into_owned()
+            } else {
+                format!("{new_path}?{q}")
             }
         } else {
             new_path.into_owned()
@@ -494,11 +494,7 @@ impl PathMatcher {
                     }
                 }
 
-                if case_matcher.starts_with(psp) {
-                    Some(psp.len())
-                } else {
-                    None
-                }
+                case_matcher.starts_with(psp).then(|| psp.len())
             },
             PathSpecifier::Regex(r) => r.matches_full(path).then_some(path.len()),
         };

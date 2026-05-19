@@ -157,7 +157,9 @@ impl CaseSensitive<'_> {
             self.1.ends_with(suffix)
         } else {
             // .get() safely handles both bounds checking and UTF-8 char boundaries
-            self.1.len().checked_sub(suffix.len())
+            self.1
+                .len()
+                .checked_sub(suffix.len())
                 .and_then(|start| self.1.get(start..))
                 .is_some_and(|slice| slice.eq_ignore_ascii_case(suffix))
         }
@@ -171,9 +173,7 @@ impl CaseSensitive<'_> {
             let n_len = needle.len();
             self.1.char_indices().find_map(|(i, _)| {
                 // .get() safely handles both bounds checking and UTF-8 char boundaries
-                self.1.get(i..i + n_len)
-                    .filter(|slice| slice.eq_ignore_ascii_case(needle))
-                    .map(|_| i)
+                self.1.get(i..i + n_len).filter(|slice| slice.eq_ignore_ascii_case(needle)).map(|_| i)
             })
         }
     }

@@ -455,6 +455,7 @@ impl Listener {
                                     #[cfg(feature = "instrumentation")]
                                     {
                                         let nanos = clock.delta_as_nanos(start_clock, clock.raw());
+                                        #[allow(clippy::cast_possible_truncation)]
                                         instrumentation::metrics::CONNECTION_SETUP_TIME.observe(nanos as usize);
                                     }
                                 },

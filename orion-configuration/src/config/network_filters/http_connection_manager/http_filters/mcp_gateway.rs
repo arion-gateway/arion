@@ -124,7 +124,7 @@ mod envoy_conversions {
             let OrionTool { name, description, input_schema, output_schema, upstream_backend, rbac } = orion;
             let backend = required!(upstream_backend)?.try_into()?;
 
-            if let UpstreamBackend::FunctionGraph { .. } = backend {
+            if let UpstreamBackend::FunctionGraph = backend {
                 unimplemented!("FunctionGraph backend is not supported yet")
             }
 
@@ -146,7 +146,7 @@ mod envoy_conversions {
             };
 
             let input_schema = match backend {
-                UpstreamBackend::Rest { .. } | UpstreamBackend::FunctionGraph { .. } => {
+                UpstreamBackend::Rest { .. } | UpstreamBackend::FunctionGraph => {
                     validate_schema_fn(input_schema, "input")?
                 },
                 UpstreamBackend::McpServer { .. } => {
@@ -159,7 +159,7 @@ mod envoy_conversions {
             };
 
             let output_schema = match backend {
-                UpstreamBackend::Rest { .. } | UpstreamBackend::FunctionGraph { .. } => {
+                UpstreamBackend::Rest { .. } | UpstreamBackend::FunctionGraph => {
                     validate_schema_fn(output_schema, "output")?
                 },
                 UpstreamBackend::McpServer { .. } => {

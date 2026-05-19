@@ -204,6 +204,7 @@ impl NetworkGlobalRateLimit {
         };
 
         #[cfg(feature = "instrumentation")]
+        #[allow(clippy::cast_possible_truncation)]
         crate::instrumentation::metrics::SEND_RLS_REQUEST
             .observe(clock.delta_as_nanos(start_clock, clock.raw()) as usize);
 
@@ -222,6 +223,7 @@ fn extract_quota(response: &RateLimitResponse) -> Option<(u32, u64)> {
 }
 
 fn now_ms() -> u64 {
+    #[allow(clippy::cast_possible_truncation)]
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 

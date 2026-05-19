@@ -80,6 +80,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
         (route_context, connection_manager): (RouteContext<'a>, &HttpConnectionManager),
     ) -> Result<Response<OrionResponseBody>> {
         instrument_function!(trans_context.clock, |nanos| {
+            #[allow(clippy::cast_possible_truncation)]
             crate::instrumentation::metrics::TOTAL_ROUTE_ACTION.observe(nanos as usize)
         });
 
@@ -134,6 +135,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
         let maybe_channel = instrument_block!(
             trans_context.clock,
             |nanos| {
+                #[allow(clippy::cast_possible_truncation)]
                 crate::instrumentation::metrics::LOAD_BALANCING_SRV.observe(nanos as usize);
             },
             { clusters_manager::get_http_connection(cluster_id, routing_context) }

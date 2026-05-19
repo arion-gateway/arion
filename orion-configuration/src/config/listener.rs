@@ -297,14 +297,18 @@ impl FilterChainMatch {
 
                         // use get to avoid panicking if prefix_len is out of bounds, or for utf8 boundary issues,
                         // in which case we just assume there are no extra labels and return a score of 0
-                        //
-                        let score = server_name
-                            .as_bytes()
-                            .get(..=prefix_len)
-                            .unwrap_or(server_name.as_bytes())
-                            .iter()
-                            .filter(|&&b| b == b'.')
-                            .count() as u32;
+
+                        #[allow(clippy::naive_bytecount)]
+                        let score = u32::try_from(
+                            server_name
+                                .as_bytes()
+                                .get(..=prefix_len)
+                                .unwrap_or(server_name.as_bytes())
+                                .iter()
+                                .filter(|&&b| b == b'.')
+                                .count(),
+                        )
+                        .unwrap_or_default();
 
                         MatchResult::Matched(score)
                     } else {

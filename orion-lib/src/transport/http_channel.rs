@@ -478,6 +478,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
     ) -> Result<Response<OrionResponseBody>> {
         let ctx = arg;
         instrument_function!(trans_context.clock, |nanos| {
+            #[allow(clippy::cast_possible_truncation)]
             crate::instrumentation::metrics::REQUEST_TO_RESPONSE_TIME.observe(nanos as usize)
         });
 
@@ -513,6 +514,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
         let result = instrument_block!(
             trans_context.clock,
             |nanos| {
+                #[allow(clippy::cast_possible_truncation)]
                 crate::instrumentation::metrics::SEND_REQUEST_WAIT_RESPONSE.observe(nanos as usize);
             },
             {
@@ -536,7 +538,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
         with_metric!(
             clusters::UPSTREAM_RQ_RETRY,
             add,
-            retries.requests as u64,
+            u64::from(retries.requests),
             shard_id,
             &[KeyValue::new("cluster", self.cluster_name)]
         );
@@ -544,7 +546,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
         with_metric!(
             clusters::UPSTREAM_RQ_PER_TRY_TIMEOUT,
             add,
-            retries.timeouts as u64,
+            u64::from(retries.timeouts),
             shard_id,
             &[KeyValue::new("cluster", self.cluster_name)]
         );
@@ -657,6 +659,7 @@ impl HttpChannel {
                     instrument_block!(
                         clock,
                         |nanos| {
+                            #[allow(clippy::cast_possible_truncation)]
                             crate::instrumentation::metrics::SEND_REQUEST.observe(nanos as usize);
                         },
                         { sender.request(req).await.map_err(Error::from) }
@@ -686,6 +689,7 @@ impl HttpChannel {
         C: Connect + Clone + Send + Sync + 'static,
     {
         instrument_function!(clock, |nanos| {
+            #[allow(clippy::cast_possible_truncation)]
             crate::instrumentation::metrics::SEND_REQUEST_WITH_RETRY.observe(nanos as usize)
         });
 

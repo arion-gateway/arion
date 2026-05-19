@@ -1589,7 +1589,10 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
         with_histogram!(
             user::LATENCY,
             record,
-            latency.as_millis() as u64,
+            #[allow(clippy::cast_possible_truncation)]
+            {
+                latency.as_millis() as u64
+            },
             params.m_ctx.shard_id,
             &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
         );
