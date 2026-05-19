@@ -1,3 +1,5 @@
+#![allow(clippy::expect_used, reason = "test infrastructure — panicking on setup failure is intentional")]
+
 use std::path::PathBuf;
 use std::time::Duration;
 
