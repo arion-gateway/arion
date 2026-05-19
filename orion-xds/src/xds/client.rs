@@ -374,7 +374,7 @@ impl<C: bindings::TypedXdsBinding> DeltaClientBackgroundWorker<C> {
                             .with_nounce(nonce.clone())
                             .with_error_detail(Some(StatusBuilder::unspecified_error().with_message(error_msg).build()))
                             .build();
-                        let _ = acknowledgments_tx.send(upstream_response).await;
+                        let _ = acknowledgments_tx.send(upstream_response).await.ok();
                     }
                 }
             },
@@ -466,7 +466,7 @@ impl<C: bindings::TypedXdsBinding> DeltaClientBackgroundWorker<C> {
                     decoding_errors.push(RejectedConfig::from((resource_id.clone(), decoding_error)));
                     warn!(error_msg);
                 }
-                decoded.ok().map(|value| XdsResourceUpdate::Update(resource_id, value, resource_version))
+                decoded.ok().map(|value| XdsResourceUpdate::Update(resource_id, Box::new(value), resource_version))
             })
             .collect();
         if decoding_errors.is_empty() {
