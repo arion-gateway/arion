@@ -32,6 +32,9 @@ use tracing::{debug, error, info};
 
 use crate::{Error, Result};
 
+#[allow(clippy::clone_on_ref_ptr, reason = "generated tonic code uses .clone() on Arc<T>")]
+#[allow(clippy::default_trait_access, reason = "generated tonic code uses Default::default()")]
+#[allow(clippy::doc_markdown, reason = "generated tonic doc comments")]
 pub mod test_proto {
     tonic::include_proto!("orion.test");
 }

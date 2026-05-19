@@ -191,7 +191,7 @@ impl AggregatedDiscoveryService for TrackedAggregateServer {
 
         let (tx, rx) = mpsc::channel(128);
         let mut resources_rx = self.delta_resources_rx.take().ok_or(Status::internal("Delta stream is unavailable"))?;
-        let ack_tracker = self.ack_tracker.clone();
+        let ack_tracker = Arc::clone(&self.ack_tracker);
 
         tokio::spawn(async move {
             while let Some(TrackedPush { action, nonce, result_tx }) = resources_rx.recv().await {
@@ -213,7 +213,7 @@ impl AggregatedDiscoveryService for TrackedAggregateServer {
         });
 
         let mut incoming_stream = request.into_streaming_request().into_inner();
-        let ack_tracker_for_incoming = self.ack_tracker.clone();
+        let ack_tracker_for_incoming = Arc::clone(&self.ack_tracker);
         let event_tx = self.event_tx.clone();
         let mut first_message = true;
 
@@ -294,7 +294,7 @@ pub fn start_tracked_aggregate_server(
     let (action_tx, action_rx) = mpsc::channel::<TrackedPush>(128);
     let ack_tracker = Arc::new(AckTracker::new());
 
-    let server = TrackedAggregateServer::new(action_rx, stream_resources_rx, event_tx, ack_tracker.clone());
+    let server = TrackedAggregateServer::new(action_rx, stream_resources_rx, event_tx, Arc::clone(&ack_tracker));
     let aggregate_server = AggregatedDiscoveryServiceServer::new(server);
 
     tokio::spawn(async move {
