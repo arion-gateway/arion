@@ -209,7 +209,7 @@ impl Cors {
             return FilterDecision::internal_server_error("failed to build CORS response", ver);
         };
 
-        FilterDecision::DirectResponse(response)
+        FilterDecision::DirectResponse(Box::new(response))
     }
 
     fn determine_allowed_origin(&self, request_origin: &str) -> Option<(HeaderValue, bool)> {

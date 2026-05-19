@@ -843,13 +843,13 @@ impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usiz
 
         let filter_response = 'filter_loop: loop {
             let Some(ref chosen_route) = cached_route else {
-                break 'filter_loop FilterDecision::DirectResponse(
+                break 'filter_loop FilterDecision::DirectResponse(Box::new(
                     SyntheticHttpResponse::not_found(
                         EventFailure::RouteNotFound.into(),
                         ResponseFlags(FmtResponseFlags::NO_ROUTE_FOUND),
                     )
                     .into_response(request.version()),
-                );
+                ));
             };
 
             let guard = connection_manager.http_filters_per_route.load();
@@ -914,7 +914,8 @@ impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usiz
             )
             .into_response(request.version()),
             Some(cached_route) => match filter_response {
-                FilterDecision::DirectResponse(mut response) | FilterDecision::AsyncRequest(mut response, _) => {
+                FilterDecision::DirectResponse(response) | FilterDecision::AsyncRequest(response, _) => {
+                    let mut response = *response;
                     apply_mutations_on_response(
                         &mut response,
                         &self.0,
@@ -986,7 +987,7 @@ impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usiz
         for filter in active_filters.iter_mut().rev() {
             let filter_res = filter.apply_response(&mut response).await;
             if let FilterDecision::DirectResponse(direct_response) = filter_res {
-                response = direct_response;
+                response = *direct_response;
             }
         }
 
@@ -1012,13 +1013,13 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
         let filter_response = 'filter_loop: loop {
             let Some(ref chosen_route) = cached_route else {
                 // No route found - return 404 immediately
-                break 'filter_loop FilterDecision::DirectResponse(
+                break 'filter_loop FilterDecision::DirectResponse(Box::new(
                     SyntheticHttpResponse::not_found(
                         EventFailure::RouteNotFound.into(),
                         ResponseFlags(FmtResponseFlags::NO_ROUTE_FOUND),
                     )
                     .into_response(request.version()),
-                );
+                ));
             };
 
             let guard = connection_manager.http_filters_per_route.load();
@@ -1059,7 +1060,7 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
                             tokio::spawn(async move {
                                 let trans_handler = TransactionContext::default();
                                 _ = async_exec
-                                    .to_response(&trans_handler, req, (conn_manager, next_idx, filter_value))
+                                    .to_response(&trans_handler, *req, (conn_manager, next_idx, filter_value))
                                     .await;
                             });
 
@@ -1096,7 +1097,8 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
             )
             .into_response(request.version()),
             Some(cached_route) => match filter_response {
-                FilterDecision::DirectResponse(mut response) | FilterDecision::AsyncRequest(mut response, _) => {
+                FilterDecision::DirectResponse(response) | FilterDecision::AsyncRequest(response, _) => {
+                    let mut response = *response;
                     apply_mutations_on_response(
                         &mut response,
                         &self,
@@ -1177,7 +1179,7 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
         for filter in &mut active_filters.iter_mut().rev() {
             let filter_res = filter.apply_response(&mut response).await;
             if let FilterDecision::DirectResponse(direct_response) = filter_res {
-                response = direct_response;
+                response = *direct_response;
             }
         }
 

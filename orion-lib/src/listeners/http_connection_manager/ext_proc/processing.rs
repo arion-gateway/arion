@@ -971,13 +971,13 @@ impl<M: kind::Mode + Default, Msg: kind::MessageKind + OverridableModeSelector> 
             ProcessingStatus::HaltedOnError
         } else {
             let http_version = self.http_version.unwrap_or(http::Version::HTTP_11);
-            ProcessingStatus::EndWithDirectResponse(
+            ProcessingStatus::EndWithDirectResponse(Box::new(
                 SyntheticHttpResponse::gateway_timeout(
                     EventFailure::ExtProcError.into(),
                     ResponseFlags(FmtResponseFlags::UPSTREAM_REQUEST_TIMEOUT),
                 )
                 .into_response(http_version),
-            )
+            ))
         }
     }
 
@@ -987,28 +987,28 @@ impl<M: kind::Mode + Default, Msg: kind::MessageKind + OverridableModeSelector> 
             ProcessingStatus::HaltedOnError
         } else {
             let http_version = self.http_version.unwrap_or(http::Version::HTTP_11);
-            ProcessingStatus::EndWithDirectResponse(
+            ProcessingStatus::EndWithDirectResponse(Box::new(
                 SyntheticHttpResponse::internal_server_error(
                     EventFailure::ExtProcError.into(),
                     ResponseFlags(FmtResponseFlags::NO_FILTER_CONFIG_FOUND),
                     msg,
                 )
                 .into_response(http_version),
-            )
+            ))
         }
     }
 
     #[inline]
     pub fn status_internal_error(&mut self, msg: &str) -> ProcessingStatus {
         let http_version = self.http_version.unwrap_or(http::Version::HTTP_11);
-        ProcessingStatus::EndWithDirectResponse(
+        ProcessingStatus::EndWithDirectResponse(Box::new(
             SyntheticHttpResponse::internal_server_error(
                 EventFailure::ExtProcError.into(),
                 ResponseFlags(FmtResponseFlags::UNAUTHORIZED_EXTERNAL_SERVICE),
                 msg,
             )
             .into_response(http_version),
-        )
+        ))
     }
 
     #[inline]

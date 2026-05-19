@@ -505,7 +505,7 @@ impl McpGateway {
             unreachable!("handle_mcp_delete_endpoint: Failed to build response body");
         };
 
-        FilterDecision::DirectResponse(response)
+        FilterDecision::DirectResponse(Box::new(response))
     }
 
     #[allow(clippy::too_many_lines)]
@@ -588,7 +588,7 @@ impl McpGateway {
                             Self::build_mcp_response_body(None),
                             &[],
                         ) {
-                            Ok(accepted) => FilterDecision::DirectResponse(accepted),
+                            Ok(accepted) => FilterDecision::DirectResponse(Box::new(accepted)),
                             Err(e) => e,
                         }
                     },
@@ -600,7 +600,7 @@ impl McpGateway {
                             Self::build_mcp_response_body(Some(body.into())),
                             &headers,
                         ) {
-                            Ok(resp) => FilterDecision::DirectResponse(resp),
+                            Ok(resp) => FilterDecision::DirectResponse(Box::new(resp)),
                             Err(e) => e,
                         }
                     },
@@ -627,7 +627,7 @@ impl McpGateway {
                             Self::build_mcp_response_body(None),
                             &[],
                         ) {
-                            Ok(accepted) => FilterDecision::DirectResponse(accepted),
+                            Ok(accepted) => FilterDecision::DirectResponse(Box::new(accepted)),
                             Err(e) => e,
                         }
                     },
@@ -639,7 +639,7 @@ impl McpGateway {
                             Self::build_mcp_response_body(Some(body.into())),
                             &headers,
                         ) {
-                            Ok(resp) => FilterDecision::DirectResponse(resp),
+                            Ok(resp) => FilterDecision::DirectResponse(Box::new(resp)),
                             Err(e) => e,
                         }
                     },
@@ -674,7 +674,7 @@ impl McpGateway {
                             Self::build_mcp_response_body(None),
                             &[],
                         ) {
-                            Ok(accepted) => FilterDecision::DirectResponse(accepted),
+                            Ok(accepted) => FilterDecision::DirectResponse(Box::new(accepted)),
                             Err(e) => e,
                         }
                     },
@@ -705,7 +705,7 @@ impl McpGateway {
                             Self::build_mcp_response_body(Some(body)),
                             &headers,
                         ) {
-                            Ok(resp) => FilterDecision::DirectResponse(resp),
+                            Ok(resp) => FilterDecision::DirectResponse(Box::new(resp)),
                             Err(e) => e,
                         }
                     },
@@ -719,7 +719,7 @@ impl McpGateway {
                 else {
                     return FilterDecision::internal_server_error("Failed to build response", self.version);
                 };
-                FilterDecision::DirectResponse(accepted)
+                FilterDecision::DirectResponse(Box::new(accepted))
             },
             MessageResult::UpstreamRequest((upstream_request, async_call, _)) => {
                 debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: handling Upstream...");
@@ -738,7 +738,7 @@ impl McpGateway {
                         ) else {
                             return FilterDecision::internal_server_error("Failed to build response", self.version);
                         };
-                        FilterDecision::AsyncRequest(accepted, Some(upstream_request))
+                        FilterDecision::AsyncRequest(Box::new(accepted), Some(Box::new(upstream_request)))
                     },
                     Transport::StreamableHttp if async_call => {
                         debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: streamable http...");
@@ -784,7 +784,7 @@ impl McpGateway {
                         }
 
                         debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: returning async request...");
-                        FilterDecision::AsyncRequest(okay, Some(upstream_request))
+                        FilterDecision::AsyncRequest(Box::new(okay), Some(Box::new(upstream_request)))
                     },
                     Transport::StreamableHttp => {
                         *request = upstream_request;
@@ -850,7 +850,7 @@ impl McpGateway {
         };
 
         self.session = Some(session);
-        FilterDecision::DirectResponse(response)
+        FilterDecision::DirectResponse(Box::new(response))
     }
 
     #[allow(clippy::too_many_arguments)]

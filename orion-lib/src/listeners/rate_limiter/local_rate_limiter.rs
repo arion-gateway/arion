@@ -74,7 +74,7 @@ impl LocalRateLimit {
                     KeyValue::new("result", filters::EVENT_RATE_LIMITED)
                 ]
             );
-            return FilterDecision::DirectResponse(
+            return FilterDecision::DirectResponse(Box::new(
                 SyntheticHttpResponse::custom_error(
                     status,
                     None,
@@ -82,7 +82,7 @@ impl LocalRateLimit {
                     ResponseFlags(FmtResponseFlags::RATE_LIMITED),
                 )
                 .into_response(req.version()),
-            );
+            ));
         }
         #[cfg(feature = "metrics")]
         with_metric!(

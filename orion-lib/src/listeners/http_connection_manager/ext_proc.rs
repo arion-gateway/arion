@@ -748,7 +748,7 @@ impl ExternalProcessor {
         if self.inner.worker_config.failure_mode_allow {
             FilterDecision::Continue
         } else {
-            FilterDecision::DirectResponse(
+            FilterDecision::DirectResponse(Box::new(
                 SyntheticHttpResponse::custom_error(
                     status_code.unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
                     Some(msg.to_owned().into()),
@@ -756,7 +756,7 @@ impl ExternalProcessor {
                     ResponseFlags(FmtResponseFlags::UPSTREAM_CONNECTION_FAILURE),
                 )
                 .into_response(http_version),
-            )
+            ))
         }
     }
 
@@ -1062,7 +1062,7 @@ impl ExternalProcessingWorker<kind::Processing> {
                                     Some(MessageType::Request) => {
                                         let direct_response = self.build_direct_response(&mut response_attempt);
                                         let proof = self.request_processing.make_proof().unwrap_or_else(|| {
-                                            let status = ProcessingStatus::EndWithDirectResponse(direct_response);
+                                            let status = ProcessingStatus::EndWithDirectResponse(Box::new(direct_response));
                                             self.request_processing.return_status(status, "immediate_response on request")
                                         });
 
@@ -1074,7 +1074,7 @@ impl ExternalProcessingWorker<kind::Processing> {
                                     Some(MessageType::Response) => {
                                         let direct_response = self.build_direct_response(&mut response_attempt);
                                         let proof = self.response_processing.make_proof().unwrap_or_else(|| {
-                                            let status = ProcessingStatus::EndWithDirectResponse(direct_response);
+                                            let status = ProcessingStatus::EndWithDirectResponse(Box::new(direct_response));
                                             self.response_processing.return_status(status, "immediate_response on response")
                                         });
 

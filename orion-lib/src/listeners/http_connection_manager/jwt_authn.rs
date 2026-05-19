@@ -623,9 +623,9 @@ impl JwtAuthentication {
 
     #[inline]
     fn unauthorized(ver: http::Version, msg: &str) -> FilterDecision {
-        FilterDecision::DirectResponse(
+        FilterDecision::DirectResponse(Box::new(
             SyntheticHttpResponse::unauthorized(EventFailure::RbacAccessDenied(msg.into()).into(), msg)
                 .into_response(ver),
-        )
+        ))
     }
 }

@@ -32,47 +32,46 @@ use crate::Result;
 
 #[derive(Debug, Default)]
 #[allow(dead_code)]
-#[allow(clippy::large_enum_variant)]
 pub enum FilterDecision {
     #[default]
     Continue,
     Reroute,
-    DirectResponse(Response<OrionResponseBody>),
-    AsyncRequest(Response<OrionResponseBody>, Option<Request<OrionRequestBody>>),
+    DirectResponse(Box<Response<OrionResponseBody>>),
+    AsyncRequest(Box<Response<OrionResponseBody>>, Option<Box<Request<OrionRequestBody>>>),
 }
 
 impl FilterDecision {
     #[inline]
     pub fn internal_server_error(msg: &str, ver: http::Version) -> FilterDecision {
-        FilterDecision::DirectResponse(
+        FilterDecision::DirectResponse(Box::new(
             SyntheticHttpResponse::internal_server_error(
                 EventFailure::DirectResponse.into(),
                 ResponseFlags::default(),
                 msg,
             )
             .into_response(ver),
-        )
+        ))
     }
 
     #[inline]
     pub fn bad_request(ver: http::Version) -> FilterDecision {
-        FilterDecision::DirectResponse(
+        FilterDecision::DirectResponse(Box::new(
             SyntheticHttpResponse::bad_request(EventFailure::DirectResponse.into()).into_response(ver),
-        )
+        ))
     }
 
     #[inline]
     #[allow(dead_code)]
     pub fn not_found(ver: http::Version) -> FilterDecision {
-        FilterDecision::DirectResponse(
+        FilterDecision::DirectResponse(Box::new(
             SyntheticHttpResponse::not_found(EventFailure::DirectResponse.into(), ResponseFlags::default())
                 .into_response(ver),
-        )
+        ))
     }
 
     #[inline]
     pub fn method_not_allowed(ver: http::Version) -> FilterDecision {
-        FilterDecision::DirectResponse(
+        FilterDecision::DirectResponse(Box::new(
             SyntheticHttpResponse::custom_error(
                 StatusCode::METHOD_NOT_ALLOWED,
                 None,
@@ -80,23 +79,23 @@ impl FilterDecision {
                 ResponseFlags(FmtResponseFlags::NO_ROUTE_FOUND),
             )
             .into_response(ver),
-        )
+        ))
     }
 
     #[inline]
     pub fn no_route_found(ver: http::Version) -> FilterDecision {
-        FilterDecision::DirectResponse(
+        FilterDecision::DirectResponse(Box::new(
             SyntheticHttpResponse::not_found(
                 EventFailure::RouteNotFound.into(),
                 ResponseFlags(FmtResponseFlags::NO_ROUTE_FOUND),
             )
             .into_response(ver),
-        )
+        ))
     }
 
     #[inline]
     pub fn rate_limited(status: Option<StatusCode>, ver: http::Version) -> FilterDecision {
-        FilterDecision::DirectResponse(
+        FilterDecision::DirectResponse(Box::new(
             SyntheticHttpResponse::custom_error(
                 status.unwrap_or(http::StatusCode::TOO_MANY_REQUESTS),
                 None,
@@ -104,15 +103,15 @@ impl FilterDecision {
                 ResponseFlags(FmtResponseFlags::RATE_LIMITED),
             )
             .into_response(ver),
-        )
+        ))
     }
 
     #[inline]
     #[allow(dead_code)]
     pub fn unauthorized(msg: &str, ver: http::Version) -> FilterDecision {
-        FilterDecision::DirectResponse(
+        FilterDecision::DirectResponse(Box::new(
             SyntheticHttpResponse::unauthorized(EventFailure::ExtProcError.into(), msg).into_response(ver),
-        )
+        ))
     }
 }
 
@@ -239,13 +238,13 @@ fn apply_authorization_rules<B>(rbac: &HttpRbac, req: &Request<B>) -> FilterDeci
     if permitted {
         FilterDecision::Continue
     } else {
-        FilterDecision::DirectResponse(
+        FilterDecision::DirectResponse(Box::new(
             SyntheticHttpResponse::forbidden(
                 EventFailure::RbacAccessDenied(enforced_policy.unwrap_or(SmolStr::new_static("unknown"))).into(),
                 "RBAC: access denied",
             )
             .into_response(req.version()),
-        )
+        ))
     }
 }
 
