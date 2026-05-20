@@ -35,13 +35,15 @@ mod virtual_host;
 pub mod xds;
 
 pub use bootstrap::BootstrapBuilder;
-pub use cluster::{Cluster, ClusterBuilder, HttpVersion, LbPolicy};
+pub use cluster::{Cluster, ClusterBuilder, HttpVersion, LbPolicy, UpstreamProxyProtocolBuilder};
 pub use endpoint::{Endpoint, EndpointBuilder, HealthStatus};
 pub use ext_proc::ExtProcBuilder;
 pub use filter_chain::{FilterChain, FilterChainBuilder};
 pub use hcm::{CodecType, Hcm, HcmBuilder};
 pub use health_check::{GrpcHealthCheckBuilder, HealthCheckMethod, HttpHealthCheckBuilder, TcpHealthCheckBuilder};
-pub use listener::{Listener, ListenerBuilder};
+pub use listener::{
+    Listener, ListenerBuilder, ProxyProtocolConfig, ProxyProtocolPassThroughTlvs, ProxyProtocolVersion,
+};
 pub use network_global_rate_limit::{NetworkGlobalRateLimit, NetworkGlobalRateLimitBuilder};
 pub use rate_limit::{
     LocalRateLimit, LocalRateLimitBuilder, TokenBucket, TokenBucketBuilder, UserRateLimiter, UserRateLimiterBuilder,

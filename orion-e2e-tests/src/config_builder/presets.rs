@@ -14,6 +14,8 @@
 
 use std::net::SocketAddr;
 
+use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::network::rbac::v3::Rbac as NetworkRbac;
+
 use super::bootstrap::BootstrapBuilder;
 use super::cluster::ClusterBuilder;
 use super::endpoint::EndpointBuilder;
@@ -46,13 +48,35 @@ pub fn https_listener(
 ) -> ListenerBuilder {
     let cluster_name = cluster_name.into();
     ListenerBuilder::new(name).port(0).filter_chain(
-        FilterChainBuilder::new("main").downstream_tls(downstream_tls).hcm(
-            HcmBuilder::new().route_config(
-                RouteConfigBuilder::new("routes")
-                    .virtual_host(VirtualHostBuilder::new("default").route(default_route(cluster_name))),
-            ),
-        ),
+        FilterChainBuilder::new("main").downstream_tls(downstream_tls).hcm(default_hcm_for_cluster(cluster_name)),
     )
+}
+
+#[must_use]
+pub fn http_filter_chain(name: impl Into<String>, cluster_name: impl Into<String>) -> FilterChainBuilder {
+    FilterChainBuilder::new(name).hcm(default_hcm_for_cluster(cluster_name))
+}
+
+#[must_use]
+pub fn http_filter_chain_with_network_rbac(
+    name: impl Into<String>,
+    cluster_name: impl Into<String>,
+    rbac: impl Into<NetworkRbac>,
+) -> FilterChainBuilder {
+    FilterChainBuilder::new(name).network_rbac(rbac).hcm(default_hcm_for_cluster(cluster_name))
+}
+
+#[must_use]
+pub fn https_sni_filter_chain(
+    name: impl Into<String>,
+    server_names: &[&str],
+    downstream_tls: DownstreamTlsBuilder,
+    cluster_name: impl Into<String>,
+) -> FilterChainBuilder {
+    FilterChainBuilder::new(name)
+        .server_names(server_names)
+        .downstream_tls(downstream_tls)
+        .hcm(default_hcm_for_cluster(cluster_name))
 }
 
 #[must_use]
@@ -76,6 +100,13 @@ pub fn static_cluster_multi<'a>(
 #[must_use]
 pub fn default_route(cluster: impl Into<String>) -> RouteBuilder {
     RouteBuilder::new().match_prefix("/").cluster(cluster)
+}
+
+fn default_hcm_for_cluster(cluster_name: impl Into<String>) -> HcmBuilder {
+    HcmBuilder::new().route_config(
+        RouteConfigBuilder::new("routes")
+            .virtual_host(VirtualHostBuilder::new("default").route(default_route(cluster_name))),
+    )
 }
 
 #[must_use]

@@ -668,6 +668,20 @@ impl Listener {
                 shard_id, &[KeyValue::new("listener", listener_name)]);
         }
 
+        let connection_metadata = match source {
+            ConnectionSource::Socket { local_address, peer_addr, proxy_protocol_config } => {
+                if let Some(config) = proxy_protocol_config.as_ref() {
+                    let reader = ProxyProtocolReader::new(Arc::clone(config));
+                    let (metadata, new_stream) = reader.try_read_proxy_header(stream, local_address, peer_addr).await?;
+                    stream = new_stream;
+                    metadata
+                } else {
+                    DownstreamConnectionMetadata::FromSocket { peer_address: peer_addr, local_address }
+                }
+            },
+            ConnectionSource::Internal { metadata } => (*metadata).clone(),
+        };
+
         let sni = if with_tls_inspector {
             let (tls_result, rewound_stream) = tls_inspector::inspect_client_hello(stream).await;
             stream = rewound_stream;
@@ -711,26 +725,12 @@ impl Listener {
                     None
                 },
                 crate::transport::tls_inspector::InspectorResult::TlsError(e) => {
-                    debug!("{listener_name} : No TLS handshake: Error: {e}");
+                    debug!("{listener_name} : TLS inspector did not detect a TLS handshake at byte 0: {e}");
                     None
                 },
             }
         } else {
             None
-        };
-
-        let connection_metadata = match source {
-            ConnectionSource::Socket { local_address, peer_addr, proxy_protocol_config } => {
-                if let Some(config) = proxy_protocol_config.as_ref() {
-                    let reader = ProxyProtocolReader::new(Arc::clone(config));
-                    let (metadata, new_stream) = reader.try_read_proxy_header(stream, local_address, peer_addr).await?;
-                    stream = new_stream;
-                    metadata
-                } else {
-                    DownstreamConnectionMetadata::FromSocket { peer_address: peer_addr, local_address }
-                }
-            },
-            ConnectionSource::Internal { metadata } => (*metadata).clone(),
         };
 
         let selected_filterchain = Self::select_filterchain(&filter_chains, &connection_metadata, sni.as_deref())?;

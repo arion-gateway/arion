@@ -16,7 +16,11 @@ use std::net::SocketAddr;
 
 use orion_data_plane_api::envoy_data_plane_api::{
     envoy::config::{
-        core::v3::{socket_address::PortSpecifier, Address, HealthStatus as ProtoHealthStatus, SocketAddress},
+        core::v3::{
+            address::Address as AddressType, envoy_internal_address::AddressNameSpecifier,
+            socket_address::PortSpecifier, Address, EnvoyInternalAddress, HealthStatus as ProtoHealthStatus,
+            SocketAddress,
+        },
         endpoint::v3::{lb_endpoint::HostIdentifier, Endpoint as EnvoyEndpoint, LbEndpoint},
     },
     google::protobuf::UInt32Value,
@@ -74,6 +78,17 @@ impl EndpointBuilder {
     #[must_use]
     pub fn from_socket_addr(addr: SocketAddr) -> Self {
         Self::new(addr.ip().to_string(), addr.port())
+    }
+
+    #[must_use]
+    pub fn internal(listener_name: impl Into<String>) -> Self {
+        let internal = EnvoyInternalAddress {
+            endpoint_id: String::new(),
+            address_name_specifier: Some(AddressNameSpecifier::ServerListenerName(listener_name.into())),
+        };
+        let address = Address { address: Some(AddressType::EnvoyInternalAddress(internal)) };
+        let endpoint = EnvoyEndpoint { address: Some(address), ..Default::default() };
+        Self { proto: LbEndpoint { host_identifier: Some(HostIdentifier::Endpoint(endpoint)), ..Default::default() } }
     }
 
     #[must_use]

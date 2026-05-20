@@ -92,6 +92,25 @@ impl TlsClientConfig {
         Ok(store)
     }
 
+    pub async fn handshake_on<S>(
+        &self,
+        stream: S,
+        server_name: impl Into<String>,
+    ) -> Result<tokio_rustls::client::TlsStream<S>>
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    {
+        let config = Arc::new(self.build_client_config()?);
+        let server_name_str = server_name.into();
+        let name = ServerName::try_from(server_name_str.clone())
+            .map_err(|_e| Error::Config(format!("Invalid server name: {server_name_str}")))?
+            .to_owned();
+        TlsConnector::from(config)
+            .connect(name, stream)
+            .await
+            .map_err(|e| Error::Http(format!("TLS handshake failed: {e}")))
+    }
+
     fn build_client_config(&self) -> Result<rustls::ClientConfig> {
         let builder = match (self.tls_min_version, self.tls_max_version) {
             (Some(min), Some(max)) if std::ptr::eq(min, max) => {

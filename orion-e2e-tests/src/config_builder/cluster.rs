@@ -345,6 +345,33 @@ impl ClusterBuilder {
     }
 
     #[must_use]
+    pub fn with_proxy_protocol_v1(self) -> Self {
+        self.with_proxy_protocol(UpstreamProxyProtocolBuilder::v1())
+    }
+
+    #[must_use]
+    pub fn with_proxy_protocol_v2(self) -> Self {
+        self.with_proxy_protocol(UpstreamProxyProtocolBuilder::v2())
+    }
+
+    #[must_use]
+    pub fn with_proxy_protocol(mut self, builder: UpstreamProxyProtocolBuilder) -> Self {
+        let inner_transport_socket = self.proto.transport_socket.take();
+        let pp_transport = builder.build(inner_transport_socket);
+        let transport_socket = TransportSocket {
+            name: "envoy.transport_sockets.upstream_proxy_protocol".to_owned(),
+            config_type: Some(TransportSocketConfigType::TypedConfig(Any {
+                type_url:
+                    "type.googleapis.com/envoy.extensions.transport_sockets.proxy_protocol.v3.ProxyProtocolUpstreamTransport"
+                        .to_owned(),
+                value: pp_transport.encode_to_vec(),
+            })),
+        };
+        self.proto.transport_socket = Some(transport_socket);
+        self
+    }
+
+    #[must_use]
     pub fn circuit_breaker_max_requests(mut self, max: u32) -> Self {
         self.ensure_default_circuit_breaker_threshold().max_requests = Some(UInt32Value { value: max });
         self
@@ -437,3 +464,66 @@ impl From<ClusterBuilder> for EnvoyCluster {
 }
 
 pub type Cluster = EnvoyCluster;
+
+#[derive(Debug, Clone)]
+pub struct UpstreamProxyProtocolBuilder {
+    version: i32,
+    pass_through_all: bool,
+    pass_through_types: Vec<u8>,
+}
+
+impl UpstreamProxyProtocolBuilder {
+    #[must_use]
+    pub fn v1() -> Self {
+        Self { version: 0, pass_through_all: false, pass_through_types: Vec::new() }
+    }
+
+    #[must_use]
+    pub fn v2() -> Self {
+        Self { version: 1, pass_through_all: false, pass_through_types: Vec::new() }
+    }
+
+    #[must_use]
+    pub fn pass_all_tlvs(mut self) -> Self {
+        self.pass_through_all = true;
+        self.pass_through_types.clear();
+        self
+    }
+
+    #[must_use]
+    pub fn pass_tlv_types(mut self, types: impl IntoIterator<Item = u8>) -> Self {
+        self.pass_through_all = false;
+        self.pass_through_types = types.into_iter().collect();
+        self
+    }
+
+    fn build(
+        self,
+        inner_transport_socket: Option<TransportSocket>,
+    ) -> orion_data_plane_api::envoy_data_plane_api::envoy::extensions::transport_sockets::proxy_protocol::v3::ProxyProtocolUpstreamTransport
+    {
+        use orion_data_plane_api::envoy_data_plane_api::envoy::{
+            config::core::v3::{
+                proxy_protocol_pass_through_tl_vs::PassTlVsMatchType as EnvoyPassTlvsMatchType,
+                ProxyProtocolConfig as EnvoyProxyProtocolConfig, ProxyProtocolPassThroughTlVs as EnvoyPassThroughTlvs,
+            },
+            extensions::transport_sockets::proxy_protocol::v3::ProxyProtocolUpstreamTransport,
+        };
+        let pass_through_tlvs =
+            (self.pass_through_all || !self.pass_through_types.is_empty()).then(|| EnvoyPassThroughTlvs {
+                match_type: if self.pass_through_all {
+                    EnvoyPassTlvsMatchType::IncludeAll as i32
+                } else {
+                    EnvoyPassTlvsMatchType::Include as i32
+                },
+                tlv_type: self.pass_through_types.iter().copied().map(u32::from).collect(),
+            });
+        let config = EnvoyProxyProtocolConfig { version: self.version, pass_through_tlvs, added_tlvs: vec![] };
+        ProxyProtocolUpstreamTransport {
+            config: Some(config),
+            transport_socket: inner_transport_socket,
+            allow_unspecified_address: false,
+            tlv_as_pool_key: false,
+        }
+    }
+}

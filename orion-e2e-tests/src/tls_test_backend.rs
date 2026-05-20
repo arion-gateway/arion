@@ -210,12 +210,12 @@ impl TlsTestBackend {
                                     Ok(tls_stream) => {
                                         debug!(?peer_addr, "TLS handshake complete");
                                         let io = hyper_util::rt::TokioIo::new(tls_stream);
-                                        let service = service_fn(|req: Request<Incoming>| {
+                                        let service = service_fn(move |req: Request<Incoming>| {
                                             let request_tx = request_tx.clone();
                                             let responses = Arc::clone(&responses);
                                             let default_response = Arc::clone(&default_response);
                                             async move {
-                                                Self::handle_request(req, request_tx, responses, default_response).await
+                                                Self::handle_request(req, peer_addr, request_tx, responses, default_response).await
                                             }
                                         });
 
@@ -247,6 +247,7 @@ impl TlsTestBackend {
 
     async fn handle_request(
         req: Request<Incoming>,
+        peer_addr: SocketAddr,
         request_tx: mpsc::Sender<CapturedRequest>,
         responses: Arc<Mutex<VecDeque<PreConfiguredResponse>>>,
         default_response: Arc<Mutex<PreConfiguredResponse>>,
@@ -266,7 +267,7 @@ impl TlsTestBackend {
             },
         };
 
-        let captured = CapturedRequest { method, uri, version, headers, body };
+        let captured = CapturedRequest { method, uri, version, headers, body, peer_addr };
         if let Err(e) = request_tx.send(captured).await {
             warn!(?e, "Failed to send captured request");
         }
