@@ -209,23 +209,21 @@ impl XdsExtensionHandler for McpXdsHandler {
             match type_url.as_str() {
                 MCP_TOOL_TYPE_URL => {
                     let proto = decode_proto::<OrionTool>(&payload, "MCP Tool")?;
-                    let tool: McpTool = convert(proto, "MCP Tool")?;
-                    #[cfg(feature = "mcp-semantic-search")]
-                    let tool_name: smol_str::SmolStr = tool.name.clone();
+                    let mut tool: McpTool = convert(proto, "MCP Tool")?;
+                    if tool.name.as_str() != name {
+                        warn!(
+                            target: "mcp_gateway",
+                            "xDS: Tool payload name '{}' does not match resource name '{name}' in scope '{scope}'; using resource name",
+                            tool.name
+                        );
+                        tool.name = name.into();
+                    }
                     for registry in &registries {
-                        registry.add_tool(tool.clone()).map_err(|e| {
+                        registry.add_tool(tool.clone()).await.map_err(|e| {
                             XdsExtensionError::HandlerError(format!("Failed to add tool '{name}': {e}"))
                         })?;
                     }
                     debug!(target: "mcp_gateway", "xDS: added/updated tool '{name}' in scope '{scope}' ({} registries)", registries.len());
-                    #[cfg(feature = "mcp-semantic-search")]
-                    if tool.embedding.is_empty() {
-                        for registry in &registries {
-                            registry.embed_tool_if_unembedded(&tool_name).await.map_err(|e| {
-                                XdsExtensionError::HandlerError(format!("Failed to embed tool '{name}': {e}"))
-                            })?;
-                        }
-                    }
                 },
                 MCP_DYNAMIC_SERVER_TYPE_URL => {
                     let proto = decode_proto::<OrionDynamicMcpServer>(&payload, "MCP DynamicMcpServer")?;
@@ -295,6 +293,9 @@ impl XdsExtensionHandler for McpXdsHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::mcp::mcp_gateway::v3::{
+        tool::UpstreamBackend as OrionUpstreamBackend, RestBackend as OrionRestBackend,
+    };
     use orion_xds::xds::client::{DeltaDiscoverySubscriptionManager, SubscriptionEvent};
     use tokio::sync::mpsc;
 
@@ -327,6 +328,25 @@ mod tests {
 
     fn subscription_map() -> SubscriptionsByScope {
         DashMap::with_hasher(ahash::RandomState::new())
+    }
+
+    fn rest_tool_proto(name: &str) -> OrionTool {
+        OrionTool {
+            name: name.into(),
+            description: "A test tool".into(),
+            input_schema: None,
+            output_schema: None,
+            upstream_backend: Some(OrionUpstreamBackend::RestBackend(OrionRestBackend {
+                method: "GET".into(),
+                path: "/test".into(),
+                query_params: Vec::new(),
+                cluster: "test_cluster".into(),
+                r#async: false,
+                body_template: None,
+            })),
+            rbac: None,
+            embedding: Vec::new(),
+        }
     }
 
     #[test]
@@ -428,6 +448,71 @@ mod tests {
         let res = handler.handle_update(MCP_TOOL_TYPE_URL, "srv/cfg/tool_x", &[]).await;
         assert!(res.is_ok());
         assert!(handler.subscriptions_by_scope.is_empty());
+    }
+
+    #[tokio::test]
+    async fn tool_update_uses_resource_name_when_payload_name_differs() {
+        let handler = stub_handler();
+        let registry = empty_registry();
+        handler.register("srv/cfg".into(), Arc::clone(&registry));
+
+        let proto = rest_tool_proto("payload_name");
+        let payload = proto.encode_to_vec();
+
+        handler.handle_update(MCP_TOOL_TYPE_URL, "srv/cfg/resource_name", &payload).await.unwrap();
+
+        assert!(registry.get_tool_by_name("resource_name").is_some());
+        assert!(registry.get_tool_by_name("payload_name").is_none());
+        assert!(registry.remove_tool("resource_name"));
+    }
+
+    #[cfg(feature = "mcp-semantic-search")]
+    #[tokio::test]
+    async fn tool_update_embedding_failure_does_not_insert_tool() {
+        use orion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::{
+            McpSemanticSearch, SimilarityConfig,
+        };
+
+        #[derive(Debug)]
+        struct FailingProvider;
+        #[async_trait::async_trait]
+        impl crate::embeddings::EmbeddingsProvider for FailingProvider {
+            fn dimensions(&self) -> usize {
+                3
+            }
+            fn description(&self) -> &str {
+                "failing"
+            }
+            async fn embed_query(
+                &self,
+                _: &str,
+            ) -> Result<crate::embeddings::Embedding, crate::embeddings::EmbeddingError> {
+                Err(crate::embeddings::EmbeddingError::Provider("boom".into()))
+            }
+        }
+
+        let handler = stub_handler();
+        let provider: Arc<dyn crate::embeddings::EmbeddingsProvider> = Arc::new(FailingProvider);
+        let registry = Arc::new(
+            ToolsRegistry::with_config(
+                Vec::new(),
+                Vec::new(),
+                Some(McpSemanticSearch {
+                    enable_assisted_discovery: false,
+                    embeddings_service: "failing".into(),
+                    similarity: SimilarityConfig::default(),
+                }),
+                Some(provider),
+            )
+            .unwrap(),
+        );
+        handler.register("srv/cfg".into(), Arc::clone(&registry));
+
+        let payload = rest_tool_proto("needs_embedding").encode_to_vec();
+        let res = handler.handle_update(MCP_TOOL_TYPE_URL, "srv/cfg/needs_embedding", &payload).await;
+
+        assert!(res.is_err(), "provider failure should NACK the update");
+        assert!(registry.get_tool_by_name("needs_embedding").is_none());
     }
 
     async fn drain_subscribes(rx: &mut mpsc::Receiver<SubscriptionEvent>) -> Vec<String> {
