@@ -106,15 +106,25 @@ where
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub enum PartitionKeySource {
+pub enum SourceHeaderName {
+    #[serde(with = "http_serde_ext::header_name")]
+    HeaderName(HeaderName),
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub enum SourceHeaderNameOrSni {
     #[serde(with = "http_serde_ext::header_name")]
     HeaderName(HeaderName),
     Sni,
 }
 
+pub trait PartitionKeySource {}
+impl PartitionKeySource for SourceHeaderName {}
+impl PartitionKeySource for SourceHeaderNameOrSni {}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub struct PartitionKey {
-    pub source: PartitionKeySource,
+pub struct PartitionKey<P: PartitionKeySource> {
+    pub source: P,
     pub attribute_name: Option<String>,
 }
 
@@ -133,9 +143,9 @@ pub struct CustomMetrics {
 #[derive(Clone, Debug, Deserialize, Default, Serialize, PartialEq, Eq)]
 pub struct MetricsConfig {
     #[serde(default)]
-    pub user_key: Option<PartitionKey>, // for user metrics (invocations, throttles, etc.)
+    pub user_key: Option<PartitionKey<SourceHeaderNameOrSni>>, // for user metrics (invocations, throttles, etc.)
     #[serde(default)]
-    pub custom_key: Option<PartitionKey>, // for custom metrics (might use a different partition key)
+    pub custom_key: Option<PartitionKey<SourceHeaderName>>, // for custom metrics (might use a different partition key)
     #[serde(default)]
     pub rename: std::collections::HashMap<String, String>,
     #[serde(default)]
@@ -149,18 +159,18 @@ mod tests {
     #[test]
     fn test_partition_key_header_name_deserialization() {
         let yaml = "source: !HeaderName x-user-id\nattribute_name: user\n";
-        let key: PartitionKey = serde_yaml::from_str(yaml).expect("failed to parse HeaderName");
+        let key: PartitionKey<SourceHeaderName> = serde_yaml::from_str(yaml).expect("failed to parse HeaderName");
         assert_eq!(key.attribute_name, Some("user".to_owned()));
-        assert!(matches!(key.source, PartitionKeySource::HeaderName(_)));
+        assert!(matches!(key.source, SourceHeaderName::HeaderName(_)));
         println!("HeaderName YAML roundtrip:\n{}", serde_yaml::to_string(&key).unwrap());
     }
 
     #[test]
     fn test_partition_key_sni_deserialization() {
         let yaml = "source: Sni\nattribute_name: user\n";
-        let key: PartitionKey = serde_yaml::from_str(yaml).expect("failed to parse Sni");
+        let key: PartitionKey<SourceHeaderNameOrSni> = serde_yaml::from_str(yaml).expect("failed to parse Sni");
         assert_eq!(key.attribute_name, Some("user".to_owned()));
-        assert!(matches!(key.source, PartitionKeySource::Sni));
+        assert!(matches!(key.source, SourceHeaderNameOrSni::Sni));
         println!("Sni YAML roundtrip:\n{}", serde_yaml::to_string(&key).unwrap());
     }
 }
@@ -193,7 +203,8 @@ mod envoy_conversions {
                 custom_metric_conversions
             )?;
 
-            let orion_data_plane_api::envoy_data_plane_api::envoy::extensions::stat_sinks::open_telemetry::v3::sink_config::ProtocolSpecifier::GrpcService(grpc_srv) = protocol_specifier.ok_or_else(|| GenericError::from_msg("ProtocolSpecifier unspecified"))?;
+            let orion_data_plane_api::envoy_data_plane_api::envoy::extensions::stat_sinks::open_telemetry::v3::sink_config::ProtocolSpecifier::GrpcService(grpc_srv)
+                = protocol_specifier.ok_or_else(|| GenericError::from_msg("ProtocolSpecifier unspecified"))?;
             let grpc_service = GrpcService::try_from(grpc_srv)?;
             Ok(Self { grpc_service, prefix })
         }

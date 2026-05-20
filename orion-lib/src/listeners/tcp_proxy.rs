@@ -215,9 +215,8 @@ impl TcpProxy {
 
                         #[cfg(feature = "metrics")]
                         {
-                            let user_partition_key = crate::metrics::get_user_partition_key(
-                                &http::HeaderMap::new(),
-                                metadata.sni.as_ref(),
+                            let user_partition_key = crate::metrics::extract_user_partition_key(
+                                (&http::HeaderMap::new(), metadata.sni.as_ref()),
                                 crate::metrics::USER_KEY.source(),
                             );
 

@@ -1158,7 +1158,7 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
                     #[cfg(feature = "metrics")]
                     if let Some(custom_metrics) = CUSTOM_METRICS.get() {
                         let attr =
-                            metrics::get_user_partition_key(response.headers(), None, metrics::CUSTOM_KEY.source())
+                            metrics::extract_custom_partition_key(response.headers(), metrics::CUSTOM_KEY.source())
                                 .map(|id| KeyValue::new(metrics::CUSTOM_KEY.attribute_name().unwrap_or("custom"), id));
                         custom_metrics.with_headers(MetricsHook::IncomingResponse, response.headers(), attr.as_slice());
                     }
@@ -1285,7 +1285,7 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
         //
         #[cfg(feature = "metrics")]
         let user_partition_key =
-            metrics::get_user_partition_key(request.headers(), sni.as_ref(), metrics::USER_KEY.source());
+            metrics::extract_user_partition_key((request.headers(), sni.as_ref()), metrics::USER_KEY.source());
 
         #[cfg(not(feature = "metrics"))]
         let user_partition_key = None;
@@ -1343,7 +1343,7 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
 
         #[cfg(feature = "metrics")]
         if let Some(custom_metrics) = CUSTOM_METRICS.get() {
-            let attr = metrics::get_user_partition_key(request.headers(), sni.as_ref(), metrics::CUSTOM_KEY.source())
+            let attr = metrics::extract_custom_partition_key(request.headers(), metrics::CUSTOM_KEY.source())
                 .map(|id| KeyValue::new(metrics::CUSTOM_KEY.attribute_name().unwrap_or("custom"), id));
             custom_metrics.with_headers(MetricsHook::IncomingRequest, request.headers(), attr.as_slice());
         }
@@ -1481,7 +1481,7 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
             #[cfg(feature = "metrics")]
             if let Ok(response) = &response {
                 if let Some(custom_metrics) = CUSTOM_METRICS.get() {
-                    let attr = metrics::get_user_partition_key(response.headers(), None, metrics::CUSTOM_KEY.source())
+                    let attr = metrics::extract_custom_partition_key(response.headers(), metrics::CUSTOM_KEY.source())
                         .map(|id| KeyValue::new(metrics::CUSTOM_KEY.attribute_name().unwrap_or("custom"), id));
                     custom_metrics.with_headers(MetricsHook::DownstreamResponse, response.headers(), attr.as_slice());
                 }

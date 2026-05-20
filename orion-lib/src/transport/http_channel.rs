@@ -498,7 +498,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
             use crate::metrics;
             use orion_metrics::metrics::custom::MetricsHook;
 
-            let attr = metrics::get_user_partition_key(request.headers(), None, metrics::CUSTOM_KEY.source())
+            let attr = metrics::extract_custom_partition_key(request.headers(), metrics::CUSTOM_KEY.source())
                 .map(|id| KeyValue::new(metrics::CUSTOM_KEY.attribute_name().unwrap_or("custom"), id));
             custom_metrics.with_headers(MetricsHook::UpstreamRequest, request.headers(), attr.as_slice());
         }
