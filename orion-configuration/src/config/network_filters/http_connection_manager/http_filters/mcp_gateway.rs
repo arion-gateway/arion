@@ -422,9 +422,7 @@ mod envoy_conversions {
         fn try_from(orion: OrionSemanticSearch) -> Result<Self, Self::Error> {
             let OrionSemanticSearch { enable_assisted_discovery, embeddings_service, similarity } = orion;
 
-            if embeddings_service.is_empty() {
-                return Err(GenericError::from_msg("SemanticSearch.embeddings_service must not be empty"));
-            }
+            let embeddings_service = required!(embeddings_service)?;
             let similarity = similarity.map(TryInto::try_into).transpose()?.unwrap_or_default();
 
             Ok(McpSemanticSearch {
