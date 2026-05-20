@@ -110,14 +110,16 @@ fn build_provider(
 }
 
 #[inline]
-pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    debug_assert_eq!(a.len(), b.len(), "cosine_similarity: length mismatch");
-    let n = a.len().min(b.len());
+pub fn cosine_similarity(a: &[f32], b: &[f32]) -> Result<f32, EmbeddingError> {
+    if a.len() != b.len() {
+        return Err(EmbeddingError::DimensionMismatch { expected: a.len(), got: b.len() });
+    }
+
     let mut acc = 0.0f32;
-    for i in 0..n {
+    for i in 0..a.len() {
         acc += a[i] * b[i];
     }
-    acc
+    Ok(acc)
 }
 
 #[inline]
@@ -173,7 +175,7 @@ mod tests {
         let mut b = vec![3.0_f32, 4.0];
         normalise_in_place(&mut a);
         normalise_in_place(&mut b);
-        let s = cosine_similarity(&a, &b);
+        let s = cosine_similarity(&a, &b).expect("matching dimensions");
         assert!((s - 1.0).abs() < 1e-6, "expected 1.0, got {s}");
     }
 
@@ -181,7 +183,7 @@ mod tests {
     fn cosine_of_orthogonal_normalised_vectors_is_zero() {
         let a = vec![1.0_f32, 0.0];
         let b = vec![0.0_f32, 1.0];
-        let s = cosine_similarity(&a, &b);
+        let s = cosine_similarity(&a, &b).expect("matching dimensions");
         assert!(s.abs() < 1e-6, "expected 0.0, got {s}");
     }
 
@@ -191,8 +193,14 @@ mod tests {
         let mut b = vec![-1.0_f32, -1.0];
         normalise_in_place(&mut a);
         normalise_in_place(&mut b);
-        let s = cosine_similarity(&a, &b);
+        let s = cosine_similarity(&a, &b).expect("matching dimensions");
         assert!((s + 1.0).abs() < 1e-6, "expected -1.0, got {s}");
+    }
+
+    #[test]
+    fn cosine_similarity_rejects_dimension_mismatch() {
+        let err = cosine_similarity(&[1.0_f32, 0.0], &[1.0]).expect_err("mismatched dimensions should fail");
+        assert!(matches!(err, EmbeddingError::DimensionMismatch { expected: 2, got: 1 }));
     }
 
     #[test]

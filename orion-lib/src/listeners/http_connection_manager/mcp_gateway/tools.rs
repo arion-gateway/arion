@@ -692,7 +692,17 @@ impl ToolsRegistry {
             }
             #[cfg(feature = "mcp-semantic-search")]
             let score = match (&query_embedding, entry.embedding.load_full()) {
-                (Some(q), Some(v)) => embeddings::cosine_similarity(q.as_slice(), v.as_slice()),
+                (Some(q), Some(v)) => match embeddings::cosine_similarity(q.as_slice(), v.as_slice()) {
+                    Ok(score) => score,
+                    Err(err) => {
+                        warn!(
+                            target: "mcp_gateway",
+                            "cosine similarity failed for tool '{}': {err}; falling back to keyword scoring",
+                            entry.conf.name
+                        );
+                        embeddings::keyword_overlap_score(&entry.conf.description, &kw_words)
+                    },
+                },
                 _ => embeddings::keyword_overlap_score(&entry.conf.description, &kw_words),
             };
             #[cfg(not(feature = "mcp-semantic-search"))]
