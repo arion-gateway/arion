@@ -1273,6 +1273,156 @@ fn apply_mutations_on_response<B>(
     }
 }
 
+async fn to_response(
+    manager: Arc<HttpConnectionManager>,
+    trans_ctx: Arc<TransactionContext>,
+    route_conf: Option<Arc<RouteConfiguration>>,
+    stream_metrics: Option<Arc<crate::utils::instrumented_stream::StreamMetrics>>,
+    request: Request<Incoming>,
+) -> Result<Response<OrionRequestBody>> {
+    let req_timeout = manager.request_timeout;
+    let listener_name = manager.listener_name;
+    let filterchain_id = manager.filterchain_id;
+
+    // optionally apply a timeout to the body.
+    // envoy says this timeout is started when the request is initiated. This is relatively vague, but because at this point we will
+    // already have the headers, it seems like a fair start.
+    //  note that we can still time-out a request due to e.g. the filters taking a long time to compute, or the proxy being overwhelmed
+    // not just due to the downstream being slow.
+    // todo(hayley): this timeout is incorrect (checks for time between frames not total time), and doesn't seem to get converted into
+    // http response
+
+    //
+    // evaluate InitHttpContext...
+
+    let metadata = request.extensions().get::<MetadataContext>();
+    eval_http_init_context(&request, &trans_ctx, metadata.map(|md| &md.downstream));
+
+    //
+    // create the InstrumentedBody which will track the size of the request body
+
+    #[cfg(feature = "access-log")]
+    let (initial_flags, initial_event) = {
+        let ec = request.extensions().get::<EventContext>();
+        (ec.map(|ec| ec.response_flags).unwrap_or_default(), ec.and_then(|ec| ec.event_kind.clone()))
+    };
+
+    // check if route config is available....
+    //
+
+    let Some(route_conf) = route_conf else {
+        return Ok(handle_route_conf_not_found(
+            request.version(),
+            &trans_ctx,
+            stream_metrics.as_ref(),
+            listener_name,
+            trans_ctx.user_partition_key,
+            filterchain_id,
+        ));
+    };
+
+    // check if the request is valid....
+    //
+
+    if let Some(response_error) = reject_request_if_invalid(
+        &request,
+        &trans_ctx,
+        stream_metrics.as_ref(),
+        listener_name,
+        trans_ctx.user_partition_key,
+        filterchain_id,
+    ) {
+        return Ok(response_error);
+    }
+
+    let request = request.map(|body| {
+        #[cfg(any(feature = "access-log", feature = "tracing", feature = "metrics"))]
+        let trans_handler = Arc::clone(&trans_ctx);
+        let body = TimeoutBody::new(req_timeout, PolyBody::from(body));
+
+        InstrumentedBody::new(
+            BodyKind::Request,
+            body,
+            stream_metrics.clone(),
+            #[allow(unused_variables)]
+            move |body_bytes, stream_metrics, body_error, body_flags| {
+                // emit the access log, if the transaction is completed..
+                #[cfg(any(feature = "access-log", feature = "metrics"))]
+                {
+                    let mut trans_ctx = trans_handler.trans_ctx.lock();
+                    #[allow(unused_variables)]
+                    let duration = trans_handler.start_instant.elapsed();
+
+                    #[cfg(feature = "access-log")]
+                    with_access_log!(
+                        &mut trans_ctx.loggers,
+                        HttpRequestDurationContext { duration, tx_duration: duration }
+                    );
+
+                    if trans_handler.trans_phase.is_complete() {
+                        #[allow(unused_variables)]
+                        let ctx_bytes = trans_ctx.bytes;
+                        #[allow(unused_variables)]
+                        let ctx_flags = trans_ctx.flags;
+                        #[allow(unused_variables)]
+                        let ctx_event = trans_ctx.event.clone();
+
+                        eval_http_finish_context(FinishContextParams {
+                            stream_metrics,
+                            listener_name,
+                            user_partition_key: trans_handler.user_partition_key,
+                            filterchain_id,
+                            bytes_received: body_bytes,
+                            bytes_sent: ctx_bytes,
+                            trans_start_time: trans_handler.start_instant,
+                            #[cfg(feature = "metrics")]
+                            m_ctx: MetricsFinishContext { shard_id: trans_handler.shard_id() },
+                            #[cfg(feature = "access-log")]
+                            al_ctx: AccessLogFinishContext {
+                                event: EventInfo {
+                                    body_kind: BodyKind::Request,
+                                    event_kind: ctx_event.or(initial_event).or(body_error),
+                                    response_flags: ctx_flags | initial_flags | body_flags,
+                                },
+                                access_loggers: trans_ctx.loggers.as_mut(),
+                            },
+                        });
+                    } else {
+                        trans_ctx.bytes = body_bytes;
+                        #[cfg(feature = "access-log")]
+                        {
+                            trans_ctx.event = initial_event.or(body_error);
+                            trans_ctx.flags = initial_flags | body_flags;
+                        }
+                    }
+                }
+
+                #[cfg(feature = "tracing")]
+                if trans_handler.trans_phase.is_complete() {
+                    if let Some(span) = trans_handler.span_state.as_ref() {
+                        span.end();
+                    }
+                }
+            },
+        )
+    });
+
+    // proxy the request to the upstream...
+    //
+
+    let pipeline = TransactionPipeline { route_conf };
+    let response = pipeline.to_response(Arc::clone(&trans_ctx), manager, request).await;
+    #[cfg(feature = "metrics")]
+    if let Ok(response) = &response {
+        if let Some(custom_metrics) = CUSTOM_METRICS.get() {
+            let attr = metrics::extract_custom_partition_key(response.headers(), metrics::CUSTOM_KEY.source())
+                .map(|id| KeyValue::new(metrics::CUSTOM_KEY.attribute_name().unwrap_or("custom"), id));
+            custom_metrics.with_headers(MetricsHook::DownstreamResponse, response.headers(), attr.as_slice());
+        }
+    }
+    response
+}
+
 impl Service<Request<Incoming>> for HttpRequestHandler {
     type Response = Response<OrionRequestBody>;
     type Error = crate::Error;
@@ -1338,7 +1488,7 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
         #[allow(clippy::let_unit_value)]
         let shard_id = get_shard_id!();
 
-        let trans_handler = Arc::new(TransactionContext::new(
+        let trans_ctx = Arc::new(TransactionContext::new(
             request_id,
             user_partition_key,
             shard_id,
@@ -1352,29 +1502,26 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
 
         // update tracing headers...
         #[cfg(feature = "tracing")]
-        if let Some(trace_ctx) = trans_handler.trace_ctx.as_ref() {
+        if let Some(trace_ctx) = trans_ctx.trace_ctx.as_ref() {
             self.manager.http_tracer.update_tracing_headers(trace_ctx, &mut request);
         }
 
-        let req_timeout = self.manager.request_timeout;
-        let listener_name = self.manager.listener_name;
-        #[allow(unused_variables)]
-        let filterchain_id = self.manager.filterchain_id;
-        let route_conf = self.router.borrow().clone();
         let manager = Arc::clone(&self.manager);
+        let listener_name = manager.listener_name;
+        let route_conf = self.router.borrow().clone();
 
         with_metric!(
             http::DOWNSTREAM_RQ_TOTAL,
             add,
             1,
-            trans_handler.shard_id(),
+            trans_ctx.shard_id(),
             &[KeyValue::new("listener", listener_name)]
         );
         with_metric!(
             http::DOWNSTREAM_RQ_ACTIVE,
             add,
             1,
-            trans_handler.shard_id(),
+            trans_ctx.shard_id(),
             &[KeyValue::new("listener", listener_name)]
         );
 
@@ -1393,145 +1540,8 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
         }
 
         Box::pin(async move {
-            // optionally apply a timeout to the body.
-            // envoy says this timeout is started when the request is initiated. This is relatively vague, but because at this point we will
-            // already have the headers, it seems like a fair start.
-            //  note that we can still time-out a request due to e.g. the filters taking a long time to compute, or the proxy being overwhelmed
-            // not just due to the downstream being slow.
-            // todo(hayley): this timeout is incorrect (checks for time between frames not total time), and doesn't seem to get converted into
-            // http response
-
-            //
-            // evaluate InitHttpContext...
-
-            let metadata = request.extensions().get::<MetadataContext>();
-            eval_http_init_context(&request, &trans_handler, metadata.map(|md| &md.downstream));
-
-            //
-            // create the InstrumentedBody which will track the size of the request body
-
-            #[cfg(feature = "access-log")]
-            let (initial_flags, initial_event) = {
-                let ec = request.extensions().get::<EventContext>();
-                (ec.map(|ec| ec.response_flags).unwrap_or_default(), ec.and_then(|ec| ec.event_kind.clone()))
-            };
-
-            // check if route config is available....
-            //
-
-            let Some(route_conf) = route_conf else {
-                return Ok(handle_route_conf_not_found(
-                    request.version(),
-                    &trans_handler,
-                    stream_metrics.as_ref(),
-                    listener_name,
-                    user_partition_key,
-                    filterchain_id,
-                ));
-            };
-
-            // check if the request is valid....
-            //
-
-            if let Some(response_error) = reject_request_if_invalid(
-                &request,
-                &trans_handler,
-                stream_metrics.as_ref(),
-                listener_name,
-                user_partition_key,
-                filterchain_id,
-            ) {
-                return Ok(response_error);
-            }
-
-            let request = request.map(|body| {
-                #[cfg(any(feature = "access-log", feature = "tracing", feature = "metrics"))]
-                let trans_handler = Arc::clone(&trans_handler);
-                let body = TimeoutBody::new(req_timeout, PolyBody::from(body));
-
-                InstrumentedBody::new(
-                    BodyKind::Request,
-                    body,
-                    stream_metrics.clone(),
-                    #[allow(unused_variables)]
-                    move |body_bytes, stream_metrics, body_error, body_flags| {
-                        // emit the access log, if the transaction is completed..
-                        #[cfg(any(feature = "access-log", feature = "metrics"))]
-                        {
-                            let mut trans_ctx = trans_handler.trans_ctx.lock();
-                            #[allow(unused_variables)]
-                            let duration = trans_handler.start_instant.elapsed();
-
-                            #[cfg(feature = "access-log")]
-                            with_access_log!(
-                                &mut trans_ctx.loggers,
-                                HttpRequestDurationContext { duration, tx_duration: duration }
-                            );
-
-                            if trans_handler.trans_phase.is_complete() {
-                                #[allow(unused_variables)]
-                                let ctx_bytes = trans_ctx.bytes;
-                                #[allow(unused_variables)]
-                                let ctx_flags = trans_ctx.flags;
-                                #[allow(unused_variables)]
-                                let ctx_event = trans_ctx.event.clone();
-
-                                eval_http_finish_context(FinishContextParams {
-                                    stream_metrics,
-                                    listener_name,
-                                    user_partition_key,
-                                    filterchain_id,
-                                    bytes_received: body_bytes,
-                                    bytes_sent: ctx_bytes,
-                                    trans_start_time: trans_handler.start_instant,
-                                    #[cfg(feature = "metrics")]
-                                    m_ctx: MetricsFinishContext { shard_id: trans_handler.shard_id() },
-                                    #[cfg(feature = "access-log")]
-                                    al_ctx: AccessLogFinishContext {
-                                        event: EventInfo {
-                                            body_kind: BodyKind::Request,
-                                            event_kind: ctx_event.or(initial_event).or(body_error),
-                                            response_flags: ctx_flags | initial_flags | body_flags,
-                                        },
-                                        access_loggers: trans_ctx.loggers.as_mut(),
-                                    },
-                                });
-                            } else {
-                                trans_ctx.bytes = body_bytes;
-                                #[cfg(feature = "access-log")]
-                                {
-                                    trans_ctx.event = initial_event.or(body_error);
-                                    trans_ctx.flags = initial_flags | body_flags;
-                                }
-                            }
-                        }
-
-                        #[cfg(feature = "tracing")]
-                        if trans_handler.trans_phase.is_complete() {
-                            if let Some(span) = trans_handler.span_state.as_ref() {
-                                span.end();
-                            }
-                        }
-                    },
-                )
-            });
-
-            // proxy the request to the upstream...
-            //
-
-            let pipeline = TransactionPipeline { route_conf };
-            let response = pipeline.to_response(Arc::clone(&trans_handler), manager, request).await;
-
-            #[cfg(feature = "metrics")]
-            if let Ok(response) = &response {
-                if let Some(custom_metrics) = CUSTOM_METRICS.get() {
-                    let attr = metrics::extract_custom_partition_key(response.headers(), metrics::CUSTOM_KEY.source())
-                        .map(|id| KeyValue::new(metrics::CUSTOM_KEY.attribute_name().unwrap_or("custom"), id));
-                    custom_metrics.with_headers(MetricsHook::DownstreamResponse, response.headers(), attr.as_slice());
-                }
-            }
-
-            trans_handler.trace_status_code(&response, listener_name);
+            let response = to_response(manager, Arc::clone(&trans_ctx), route_conf, stream_metrics, request).await;
+            trans_ctx.trace_status_code(&response, listener_name);
             if let Err(err) = response {
                 error!("Error during handling HTTP transaction: {}", err);
                 let msg = err.to_string();
@@ -1541,7 +1551,6 @@ impl Service<Request<Incoming>> for HttpRequestHandler {
                     &msg,
                 )
                 .into_response(incoming_version);
-
                 Ok(response.map(|body| InstrumentedBody::new(BodyKind::Response, body, None, |_, _, _, _| {})))
             } else {
                 response
