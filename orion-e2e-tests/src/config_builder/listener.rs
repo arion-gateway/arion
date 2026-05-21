@@ -18,10 +18,15 @@ use orion_data_plane_api::envoy_data_plane_api::{
     envoy::{
         config::{
             core::v3::{address::Address as AddressType, socket_address::PortSpecifier, Address, SocketAddress},
-            listener::v3::{listener_filter::ConfigType, FilterChain, Listener as EnvoyListener, ListenerFilter},
+            listener::v3::{
+                listener::{InternalListenerConfig, ListenerSpecifier},
+                listener_filter::ConfigType,
+                FilterChain, Listener as EnvoyListener, ListenerFilter,
+            },
         },
         extensions::filters::listener::{
-            local_ratelimit::v3::LocalRateLimit as EnvoyListenerLocalRateLimit, tls_inspector::v3::TlsInspector,
+            local_ratelimit::v3::LocalRateLimit as EnvoyListenerLocalRateLimit,
+            proxy_protocol::v3::ProxyProtocol as EnvoyProxyProtocol, tls_inspector::v3::TlsInspector,
         },
         r#type::v3::TokenBucket as EnvoyTokenBucket,
     },
@@ -29,11 +34,38 @@ use orion_data_plane_api::envoy_data_plane_api::{
     prost::Message,
 };
 
+#[derive(Debug, Clone, Default)]
+pub struct ProxyProtocolConfig {
+    pub allow_requests_without_proxy_protocol: bool,
+    pub disallowed_versions: Vec<ProxyProtocolVersion>,
+    pub pass_through_tlvs: Option<ProxyProtocolPassThroughTlvs>,
+    pub stat_prefix: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProxyProtocolVersion {
+    V1,
+    V2,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProxyProtocolPassThroughTlvs {
+    pub match_all: bool,
+    pub tlv_types: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ListenerKind {
+    Socket,
+    Internal,
+}
+
 #[derive(Debug, Clone)]
 pub struct ListenerBuilder {
     proto: EnvoyListener,
     ip_address: IpAddr,
     port: u16,
+    kind: ListenerKind,
 }
 
 impl ListenerBuilder {
@@ -43,7 +75,14 @@ impl ListenerBuilder {
             proto: EnvoyListener { name: name.into(), ..Default::default() },
             ip_address: IpAddr::V4(Ipv4Addr::LOCALHOST),
             port: 0,
+            kind: ListenerKind::Socket,
         }
+    }
+
+    #[must_use]
+    pub fn internal(mut self) -> Self {
+        self.kind = ListenerKind::Internal;
+        self
     }
 
     #[must_use]
@@ -102,6 +141,58 @@ impl ListenerBuilder {
     }
 
     #[must_use]
+    pub fn with_proxy_protocol(self) -> Self {
+        self.with_proxy_protocol_config(ProxyProtocolConfig::default())
+    }
+
+    #[must_use]
+    pub fn with_proxy_protocol_config(mut self, config: ProxyProtocolConfig) -> Self {
+        use orion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::{
+            proxy_protocol_pass_through_tl_vs::PassTlVsMatchType as EnvoyPassTlvsMatchType,
+            ProxyProtocolPassThroughTlVs as EnvoyPassThroughTlvs,
+        };
+
+        let disallowed_versions = config
+            .disallowed_versions
+            .iter()
+            .map(|v| match v {
+                ProxyProtocolVersion::V1 => 0,
+                ProxyProtocolVersion::V2 => 1,
+            })
+            .collect();
+
+        let pass_through_tlvs = config.pass_through_tlvs.as_ref().map(|p| EnvoyPassThroughTlvs {
+            match_type: if p.match_all {
+                EnvoyPassTlvsMatchType::IncludeAll as i32
+            } else {
+                EnvoyPassTlvsMatchType::Include as i32
+            },
+            tlv_type: p.tlv_types.iter().copied().map(u32::from).collect(),
+        });
+
+        let pp = EnvoyProxyProtocol {
+            rules: vec![],
+            allow_requests_without_proxy_protocol: config.allow_requests_without_proxy_protocol,
+            pass_through_tlvs,
+            disallowed_versions,
+            stat_prefix: config.stat_prefix.unwrap_or_default(),
+            ..Default::default()
+        };
+
+        let listener_filter = ListenerFilter {
+            name: "envoy.filters.listener.proxy_protocol".to_owned(),
+            config_type: Some(ConfigType::TypedConfig(Any {
+                type_url: "type.googleapis.com/envoy.extensions.filters.listener.proxy_protocol.v3.ProxyProtocol"
+                    .to_owned(),
+                value: pp.encode_to_vec(),
+            })),
+            ..Default::default()
+        };
+        self.proto.listener_filters.push(listener_filter);
+        self
+    }
+
+    #[must_use]
     pub fn listener_local_rate_limit(
         mut self,
         stat_prefix: impl Into<String>,
@@ -141,14 +232,20 @@ impl ListenerBuilder {
 
     #[must_use]
     pub fn build(mut self) -> EnvoyListener {
-        let socket_address = SocketAddress {
-            address: self.ip_address.to_string(),
-            port_specifier: Some(PortSpecifier::PortValue(u32::from(self.port))),
-            ..Default::default()
-        };
-
-        self.proto.address = Some(Address { address: Some(AddressType::SocketAddress(socket_address)) });
-
+        match self.kind {
+            ListenerKind::Socket => {
+                let socket_address = SocketAddress {
+                    address: self.ip_address.to_string(),
+                    port_specifier: Some(PortSpecifier::PortValue(u32::from(self.port))),
+                    ..Default::default()
+                };
+                self.proto.address = Some(Address { address: Some(AddressType::SocketAddress(socket_address)) });
+            },
+            ListenerKind::Internal => {
+                self.proto.address = None;
+                self.proto.listener_specifier = Some(ListenerSpecifier::InternalListener(InternalListenerConfig {}));
+            },
+        }
         self.proto
     }
 
