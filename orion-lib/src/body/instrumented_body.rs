@@ -70,15 +70,15 @@ mod metrics_enabled {
     }
 
     impl<B: Default> InstrumentedBody<B> {
-        pub fn new<F>(kind: BodyKind, inner: B, metrics: Option<Arc<StreamMetrics>>, on_complete: F) -> Self
+        pub fn new<F>(body_kind: BodyKind, inner: B, stream_metrics: Option<Arc<StreamMetrics>>, on_complete: F) -> Self
         where
             F: FnOnce(u64, &StreamMetrics, Option<EventKind>, ResponseFlags) + Send + 'static,
         {
             Self {
                 inner,
-                body_kind: kind,
+                body_kind,
                 body_bytes: 0,
-                stream_metrics: metrics,
+                stream_metrics,
                 on_complete: Arc::new(AtomicOption::some(Box::new(on_complete))),
             }
         }
@@ -88,12 +88,13 @@ mod metrics_enabled {
         where
             B: Into<B2>,
         {
-            let free_body = std::mem::replace(&mut self.inner, B::default());
+            let free_body = std::mem::take(&mut self.inner);
+            let stream_metrics = std::mem::take(&mut self.stream_metrics);
             InstrumentedBody {
                 inner: free_body.into(),
                 body_kind: self.body_kind,
                 body_bytes: self.body_bytes,
-                stream_metrics: self.stream_metrics.clone(),
+                stream_metrics,
                 on_complete: Arc::clone(&self.on_complete),
             }
         }
@@ -103,20 +104,20 @@ mod metrics_enabled {
         where
             F2: FnOnce(B) -> B2,
         {
-            let free_body = std::mem::replace(&mut self.inner, B::default());
+            let free_body = std::mem::take(&mut self.inner);
+            let stream_metrics = std::mem::take(&mut self.stream_metrics);
             InstrumentedBody {
                 inner: f(free_body),
                 body_kind: self.body_kind,
                 body_bytes: self.body_bytes,
-                stream_metrics: self.stream_metrics.clone(),
+                stream_metrics,
                 on_complete: Arc::clone(&self.on_complete),
             }
         }
 
         #[inline]
         pub fn into_inner(mut self) -> B {
-            let inner = std::mem::replace(&mut self.inner, B::default());
-            inner
+            std::mem::take(&mut self.inner)
         }
     }
 

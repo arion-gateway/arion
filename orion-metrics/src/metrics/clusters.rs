@@ -39,42 +39,106 @@ pub static UPSTREAM_CX_CONNECT_FAIL: OnceLock<Metric<ShardedU64<ThreadId>>> = On
 pub static UPSTREAM_CX_CONNECT_TIMEOUT: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 pub static UPSTREAM_CX_RX_BYTES_TOTAL: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 pub static UPSTREAM_CX_TX_BYTES_TOTAL: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
+pub static UPSTREAM_CX_OVERFLOW: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
+pub static UPSTREAM_RQ_OVERFLOW: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
+pub static UPSTREAM_RQ_RETRY_OVERFLOW: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 
-pub(crate) fn init_metrics() {
-    init_observable_counter!(UPSTREAM_RQ_TOTAL, "cluster", "upstream_rq_total", "Total number of upstream requests");
-    init_observable_gauge!(UPSTREAM_RQ_ACTIVE, "cluster", "upstream_rq_active", "Number of active upstream requests");
-    init_observable_counter!(UPSTREAM_RQ_TIMEOUT, "cluster", "upstream_rq_timeout", "Total upstream request timeouts");
+pub(crate) fn init_metrics(rename: &std::collections::HashMap<String, String>) {
+    init_observable_counter!(
+        UPSTREAM_RQ_TOTAL,
+        crate::metrics::PREFIX_CLUSTER,
+        crate::metrics::resolve_metric_name(rename, "upstream_rq_total"),
+        "Total number of upstream requests"
+    );
+    init_observable_gauge!(
+        UPSTREAM_RQ_ACTIVE,
+        crate::metrics::PREFIX_CLUSTER,
+        crate::metrics::resolve_metric_name(rename, "upstream_rq_active"),
+        "Number of active upstream requests"
+    );
+    init_observable_counter!(
+        UPSTREAM_RQ_TIMEOUT,
+        crate::metrics::PREFIX_CLUSTER,
+        crate::metrics::resolve_metric_name(rename, "upstream_rq_timeout"),
+        "Total upstream request timeouts"
+    );
     init_observable_counter!(
         UPSTREAM_RQ_PER_TRY_TIMEOUT,
-        "cluster",
-        "upstream_rq_per_try_timeout",
+        crate::metrics::PREFIX_CLUSTER,
+        crate::metrics::resolve_metric_name(rename, "upstream_rq_per_try_timeout"),
         "Total upstream request timeouts per try"
     );
-    init_observable_counter!(UPSTREAM_RQ_RETRY, "cluster", "upstream_rq_retry", "Total upstream request retries");
-    init_observable_counter!(UPSTREAM_CX_TOTAL, "cluster", "upstream_cx_total", "Total upstream connections");
+    init_observable_counter!(
+        UPSTREAM_RQ_RETRY,
+        crate::metrics::PREFIX_CLUSTER,
+        crate::metrics::resolve_metric_name(rename, "upstream_rq_retry"),
+        "Total upstream request retries"
+    );
+    init_observable_counter!(
+        UPSTREAM_CX_TOTAL,
+        crate::metrics::PREFIX_CLUSTER,
+        crate::metrics::resolve_metric_name(rename, "upstream_cx_total"),
+        "Total upstream connections"
+    );
     init_observable_counter!(
         UPSTREAM_CX_CONNECT_FAIL,
-        "cluster",
-        "upstream_cx_connect_fail",
+        crate::metrics::PREFIX_CLUSTER,
+        crate::metrics::resolve_metric_name(rename, "upstream_cx_connect_fail"),
         "Total upstream connection failures"
     );
     init_observable_counter!(
         UPSTREAM_CX_CONNECT_TIMEOUT,
-        "cluster",
-        "upstream_cx_connect_timeout",
+        crate::metrics::PREFIX_CLUSTER,
+        crate::metrics::resolve_metric_name(rename, "upstream_cx_connect_timeout"),
         "Total upstream connection timeouts"
     );
     init_observable_counter!(
         UPSTREAM_CX_IDLE_TIMEOUT,
-        "cluster",
-        "upstream_cx_idle_timeout",
+        crate::metrics::PREFIX_CLUSTER,
+        crate::metrics::resolve_metric_name(rename, "upstream_cx_idle_timeout"),
         "Total upstream connections idle timeout"
     );
     init_observable_counter!(
         UPSTREAM_CX_DESTROY,
-        "cluster",
-        "upstream_cx_destroy",
+        crate::metrics::PREFIX_CLUSTER,
+        crate::metrics::resolve_metric_name(rename, "upstream_cx_destroy"),
         "Total upstream connections destroyed"
     );
-    init_observable_gauge!(UPSTREAM_CX_ACTIVE, "cluster", "upstream_cx_active", "Number of active connections");
+    init_observable_gauge!(
+        UPSTREAM_CX_ACTIVE,
+        crate::metrics::PREFIX_CLUSTER,
+        crate::metrics::resolve_metric_name(rename, "upstream_cx_active"),
+        "Number of active connections"
+    );
+
+    init_observable_counter!(
+        UPSTREAM_CX_OVERFLOW,
+        "cluster",
+        "upstream_cx_overflow",
+        "Total connections rejected by circuit breaker"
+    );
+    init_observable_counter!(
+        UPSTREAM_RQ_OVERFLOW,
+        "cluster",
+        "upstream_rq_overflow",
+        "Total requests rejected by circuit breaker"
+    );
+    init_observable_counter!(
+        UPSTREAM_RQ_RETRY_OVERFLOW,
+        "cluster",
+        "upstream_rq_retry_overflow",
+        "Total retries rejected by circuit breaker"
+    );
+    init_observable_counter!(
+        UPSTREAM_CX_RX_BYTES_TOTAL,
+        crate::metrics::PREFIX_CLUSTER,
+        crate::metrics::resolve_metric_name(rename, "upstream_cx_rx_bytes_total"),
+        "Total upstream bytes received"
+    );
+    init_observable_counter!(
+        UPSTREAM_CX_TX_BYTES_TOTAL,
+        crate::metrics::PREFIX_CLUSTER,
+        crate::metrics::resolve_metric_name(rename, "upstream_cx_tx_bytes_total"),
+        "Total upstream bytes sent"
+    );
 }

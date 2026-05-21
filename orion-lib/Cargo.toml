@@ -40,6 +40,7 @@ atomic_enum.workspace = true
 serde_json.workspace = true
 tracing-rolling-file.workspace = true
 ahash.workspace = true
+tonic.workspace = true
 arc-swap = "1.7.1"
 arrayvec = "0.7.6"
 async-stream = "0.3"
@@ -97,6 +98,9 @@ ctor = "0.6.3"
 upon = "0.8"
 percent-encoding = "2.3.2"
 atomicoption = "0.2.0"
+papaya = "0.2.4"
+const-str = "1.1.0"
+pingora = { version = "0.8.0", features = ["time"] }
 
 
 [dev-dependencies]

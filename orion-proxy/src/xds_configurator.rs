@@ -175,7 +175,7 @@ impl XdsConfigurationHandler {
                     let XdsUpdateEvent { ack_channel, updates } = xds_update;
                     // Box::pin because the future from self.process_updates() is very large
                     let rejected_updates = Box::pin(self.process_updates(updates)).await;
-                    let _ = ack_channel.send(rejected_updates);
+                    let _ = ack_channel.send(rejected_updates).ok();
                 },
                 Some(health_update) = self.health_updates_receiver.recv() => Self::process_health_event(&health_update),
                 else => break,
@@ -214,12 +214,12 @@ impl XdsConfigurationHandler {
             },
             orion_xds::xds::model::TypeUrl::Listener => {
                 let change = ListenerConfigurationChange::Removed(id.to_owned());
-                let _ = send_change_to_runtimes(&self.listeners_senders, change).await;
+                let _ = send_change_to_runtimes(&self.listeners_senders, change).await.ok();
                 // remove access logs configuration...
                 self.access_log_listener_remove(id).await;
                 // remove tracer configuration...
                 #[cfg(feature = "tracing")]
-                self.tracer_listener_remove(id);
+                Self::tracer_listener_remove(id);
                 Ok(())
             },
             orion_xds::xds::model::TypeUrl::ClusterLoadAssignment => {
@@ -229,12 +229,12 @@ impl XdsConfigurationHandler {
             },
             orion_xds::xds::model::TypeUrl::RouteConfiguration => {
                 let notify = Arc::new(Notify::new());
-                let change = RouteConfigurationChange::Removed(id.to_owned(), Some(notify.clone()));
-                let _ = send_change_to_runtimes(&self.route_senders, change).await;
+                let change = RouteConfigurationChange::Removed(id.to_owned(), Some(Arc::clone(&notify)));
+                let _ = send_change_to_runtimes(&self.route_senders, change).await.ok();
                 match fast_timeout(ROUTE_UPDATE_TIMEOUT, notify.notified()).await {
                     Ok(()) => Ok(()),
                     Err(_) => {
-                        Err(format!("RouteConfiguration '{id}' removal timedout waiting to be applied by runtime(s)")
+                        Err(format!("RouteConfiguration '{id}' removal timed-out waiting to be applied by runtime(s)")
                             .into())
                     },
                 }
@@ -252,8 +252,8 @@ impl XdsConfigurationHandler {
     }
 
     #[allow(clippy::too_many_lines)]
-    async fn process_update_event(&mut self, _: &str, resource: XdsResourcePayload) -> Result<()> {
-        match resource {
+    async fn process_update_event(&mut self, _: &str, resource: Box<XdsResourcePayload>) -> Result<()> {
+        match *resource {
             XdsResourcePayload::Listener(id, listener) => {
                 debug!("Got update for listener {id} {:?}", listener);
                 let factory =
@@ -262,13 +262,13 @@ impl XdsConfigurationHandler {
                 match factory {
                     Ok(factory) => {
                         let change = ListenerConfigurationChange::Added(Box::new((factory, listener.clone())));
-                        let _ = send_change_to_runtimes(&self.listeners_senders, change).await;
+                        let _ = send_change_to_runtimes(&self.listeners_senders, change).await.ok();
                         // update access logs configuration...
                         self.access_log_listener_update(&id, &listener).await;
 
                         // update tracer configuration...
                         #[cfg(feature = "tracing")]
-                        self.tracer_listener_update(&id, &listener);
+                        Self::tracer_listener_update(&id, &listener);
                         Ok(())
                     },
                     Err(err) => {
@@ -291,8 +291,8 @@ impl XdsConfigurationHandler {
             XdsResourcePayload::RouteConfiguration(id, route) => {
                 debug!("Got update for route configuration {id}: {:#?}", route);
                 let notify = Arc::new(Notify::new());
-                let change = RouteConfigurationChange::Added((id.clone(), route), Some(notify.clone()));
-                let _ = send_change_to_runtimes(&self.route_senders, change).await;
+                let change = RouteConfigurationChange::Added((id.clone(), route), Some(Arc::clone(&notify)));
+                let _ = send_change_to_runtimes(&self.route_senders, change).await.ok();
                 match fast_timeout(ROUTE_UPDATE_TIMEOUT, notify.notified()).await {
                     Ok(()) => Ok(()),
                     Err(_) => {
@@ -329,7 +329,7 @@ impl XdsConfigurationHandler {
                             self.health_manager.restart_cluster(cluster_config).await;
                         }
                         let change = ListenerConfigurationChange::TlsContextChanged((id.clone(), secret));
-                        let _ = send_change_to_runtimes(&self.listeners_senders, change).await;
+                        let _ = send_change_to_runtimes(&self.listeners_senders, change).await.ok();
                         Ok(())
                     },
                     Err(err) => {
@@ -346,13 +346,13 @@ impl XdsConfigurationHandler {
     }
 
     #[cfg(feature = "tracing")]
-    fn tracer_listener_update(&self, id: &str, listener: &Listener) {
+    fn tracer_listener_update(id: &str, listener: &Listener) {
         orion_tracing::otel_update_tracers(listener.get_tracing_configurations())
             .unwrap_or_else(|err| warn!("Failed to update tracer for listener {id}: {err}"));
     }
 
     #[cfg(feature = "tracing")]
-    fn tracer_listener_remove(&self, id: &str) {
+    fn tracer_listener_remove(id: &str) {
         orion_tracing::otel_remove_tracers_by_listeners(&[id.to_smolstr()])
             .unwrap_or_else(|err| warn!("Failed to remove tracer for listener {id}: {err}"));
     }
@@ -401,13 +401,20 @@ impl XdsConfigurationHandler {
         }
         Ok(())
     }
-
     fn process_health_event(health_update: &EndpointHealthUpdate) {
-        orion_lib::clusters::update_endpoint_health(
-            &health_update.endpoint.cluster,
-            &health_update.endpoint.endpoint,
-            health_update.health,
-        );
+        if health_update.changed {
+            tracing::info!(
+                "Health state changed for endpoint {:?} in cluster {:?} to {:?}",
+                health_update.endpoint.endpoint,
+                health_update.endpoint.cluster,
+                health_update.health
+            );
+            orion_lib::clusters::update_endpoint_health(
+                &health_update.endpoint.cluster,
+                &health_update.endpoint.endpoint,
+                health_update.health,
+            );
+        }
     }
 }
 

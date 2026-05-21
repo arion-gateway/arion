@@ -12,10 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#![allow(clippy::expect_used, reason = "test infrastructure — panicking on setup failure is intentional")]
+
 use orion_e2e_tests::config_builder::presets;
 use orion_e2e_tests::{
-    assert_rejected, OrionInstance, PreConfiguredResponse, RawHttpRequestBuilder, RawHttpResponse, SpawnOptions,
-    TcpTestClient, TestBackend,
+    assert_rejected, cleanup_config_file, OrionInstance, PreConfiguredResponse, RawHttpRequestBuilder, RawHttpResponse,
+    SpawnOptions, TcpTestClient, TestBackend,
 };
 
 async fn setup() -> (OrionInstance, TestBackend, TcpTestClient, std::path::PathBuf) {
@@ -29,14 +31,15 @@ async fn setup() -> (OrionInstance, TestBackend, TcpTestClient, std::path::PathB
         .await
         .expect("Failed to spawn Orion");
 
+    #[allow(clippy::unwrap_used)]
     let tcp_client = TcpTestClient::new(orion.listener_addr().unwrap());
 
     (orion, backend, tcp_client, config_path)
 }
 
-fn cleanup(orion: OrionInstance, config_path: std::path::PathBuf) {
+fn cleanup(orion: OrionInstance, config_path: &std::path::Path) {
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(config_path);
 }
 
 #[tokio::test]
@@ -51,7 +54,7 @@ async fn test_tc0101_unregistered_method() {
     let resp = RawHttpResponse::parse(&response).expect("Expected a response");
     resp.assert_status(200);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -66,7 +69,7 @@ async fn test_tc0102_method_case_sensitivity() {
     let resp = RawHttpResponse::parse(&response).expect("Expected a response");
     resp.assert_status(200);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -79,7 +82,7 @@ async fn test_tc0103_empty_method() {
     let response = tcp_client.send(&req).await.expect("Failed to send");
     assert_rejected(&response, &[400]);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -93,7 +96,7 @@ async fn test_tc0104_oversized_method() {
     let response = tcp_client.send(&req).await.expect("Failed to send");
     assert_rejected(&response, &[400, 431]);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -106,7 +109,7 @@ async fn test_tc0105_invalid_chars_in_method() {
     let response = tcp_client.send(&req).await.expect("Failed to send");
     assert_rejected(&response, &[400]);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -119,7 +122,7 @@ async fn test_tc0106_null_byte_in_method() {
     let response = tcp_client.send(&req).await.expect("Failed to send");
     assert_rejected(&response, &[400]);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -132,7 +135,7 @@ async fn test_tc0108_missing_method() {
     let response = tcp_client.send(&req).await.expect("Failed to send");
     assert_rejected(&response, &[400]);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -145,7 +148,7 @@ async fn test_tc0110_method_only() {
     let response = tcp_client.send(&req).await.expect("Failed to send");
     assert_rejected(&response, &[400]);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -158,7 +161,7 @@ async fn test_tc0201_empty_uri() {
     let response = tcp_client.send(&req).await.expect("Failed to send");
     assert_rejected(&response, &[400]);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -172,7 +175,7 @@ async fn test_tc0202_oversized_uri() {
     let response = tcp_client.send(&req).await.expect("Failed to send");
     assert_rejected(&response, &[400, 414, 431]);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -186,7 +189,7 @@ async fn test_tc0203_invalid_chars_in_uri() {
     let response = tcp_client.send(&req).await.expect("Failed to send");
     assert_rejected(&response, &[400]);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -200,7 +203,7 @@ async fn test_tc0204_null_byte_in_uri() {
     let response = tcp_client.send(&req).await.expect("Failed to send");
     assert_rejected(&response, &[400]);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -215,7 +218,7 @@ async fn test_tc0205_path_traversal() {
     let resp = RawHttpResponse::parse(&response).expect("Expected a response");
     resp.assert_status(200);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -230,7 +233,7 @@ async fn test_tc0206_fragment_in_uri() {
     // Orion forwards request-targets containing a fragment (RFC 7230 §5.3.1 disallows, but not enforced).
     resp.assert_status(200);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -245,7 +248,7 @@ async fn test_tc0207_double_encoding() {
     // Orion does not decode the URI; double-encoded sequences pass through to the upstream.
     resp.assert_status(200);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -260,7 +263,7 @@ async fn test_tc0208_absolute_uri() {
     // Orion accepts absolute-form request-targets (RFC 7230 §5.3.2).
     resp.assert_status(200);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -273,7 +276,7 @@ async fn test_tc0301_missing_version() {
     let response = tcp_client.send(&req).await.expect("Failed to send");
     assert_rejected(&response, &[400]);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -286,7 +289,7 @@ async fn test_tc0302_malformed_version() {
     let response = tcp_client.send(&req).await.expect("Failed to send");
     assert_rejected(&response, &[400]);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -300,7 +303,7 @@ async fn test_tc0303_unsupported_version() {
     // RFC 9110 §15.6.6 suggests 505 as more specific; Orion returns generic 400.
     assert_rejected(&response, &[400]);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -313,7 +316,7 @@ async fn test_tc0401_empty_request_line() {
     let response = tcp_client.send(data).await.expect("Failed to send");
     assert_rejected(&response, &[400]);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -325,7 +328,7 @@ async fn test_tc0402_binary_data() {
     let response = tcp_client.send(data).await.expect("Failed to send");
     assert_rejected(&response, &[400]);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -340,7 +343,7 @@ async fn test_tc0403_lf_only_line_ending() {
     let resp = RawHttpResponse::parse(&response).expect("Expected a response");
     resp.assert_status(200);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -349,13 +352,13 @@ async fn test_tc0405_oversized_request_line() {
     let (orion, _backend, tcp_client, config_path) = setup().await;
 
     // Create a request line > 8KB via a very long URI
-    let big_uri = format!("/{}", "x".repeat(1200));
+    let big_uri = format!("/{}", "x".repeat(8192));
     let req = RawHttpRequestBuilder::new().uri(big_uri.as_bytes()).host("localhost").build();
 
     let response = tcp_client.send(&req).await.expect("Failed to send");
     assert_rejected(&response, &[400, 414, 431]);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -372,5 +375,5 @@ async fn test_tc0408_leading_blank_lines() {
     let resp = RawHttpResponse::parse(&response).expect("Expected a response");
     resp.assert_status(200);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }

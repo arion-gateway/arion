@@ -32,12 +32,14 @@ pingora-timeout = "0.3.0"
 dashmap = "6"
 atomic-take = "1.1.0"
 tokio-rustls = "0.26"
+ppp                 = { workspace = true }
 rustls = { version = "0.23", features = ["aws_lc_rs"] }
 rustls-pemfile = "2"
 test-log = { version = "0.2.19", features = ["trace"] }
 futures-util = "0.3.32"
 jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
 clap = { version = "4.5.51", features = ["derive"] }
+pingora = { version = "0.8.0", features = ["time"] }
 
 [dev-dependencies]
 tracing-test.workspace = true

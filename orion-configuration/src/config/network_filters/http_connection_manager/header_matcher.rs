@@ -182,9 +182,7 @@ impl HeaderMatcher {
 #[cfg(test)]
 mod header_matcher_tests {
     use super::*;
-    use crate::config::core::{StringMatcher, StringMatcherPattern};
     use http::header::*;
-    use std::str::FromStr;
 
     #[test]
     fn test_header_exact() {
@@ -345,7 +343,6 @@ mod header_matcher_tests {
 #[cfg(test)]
 mod header_matcher_present_tests {
     use super::*;
-    use crate::config::core::{StringMatcher, StringMatcherPattern};
     use http::header::*;
 
     #[test]

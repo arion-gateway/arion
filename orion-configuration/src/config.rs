@@ -237,7 +237,9 @@ mod envoy_conversions {
                     );
                     std::fs::write(test_path.clone(), serialized.as_bytes())?;
                     let deserialized: Config = serde_yaml::from_str(&serialized)?;
-                    assert_eq!(new_conf, deserialized, "failed to roundtrip config transcoding");
+                    if new_conf != deserialized {
+                        return Err(orion_error::Error::new("failed to roundtrip config transcoding"));
+                    }
                     std::fs::remove_file(test_path)?;
                 } else {
                     tracing::info!("skipping {}", path.display())

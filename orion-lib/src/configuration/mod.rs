@@ -40,7 +40,7 @@ pub fn get_secrets_and_clusters(bootstrap: &Bootstrap) -> Result<(SecretManager,
         .clusters
         .iter()
         .cloned()
-        .map(|c| PartialClusterType::try_from((c, &secret_manager)))
+        .map(|c| PartialClusterType::try_from((Box::new(c), &secret_manager)))
         .collect::<Result<Vec<_>>>()?;
     if clusters.is_empty() {
         //shouldn't happen with new config

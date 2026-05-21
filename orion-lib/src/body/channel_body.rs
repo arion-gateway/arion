@@ -14,8 +14,21 @@ type FrameResult = Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>
 pub struct ChannelBody {
     prefetch: VecDeque<Option<FrameResult>>,
     prefetch_num_frames: NonZeroUsize,
+    prefetched_data_len: u64,
     stream: ReceiverStream<FrameResult>,
     is_end_stream: bool,
+}
+
+impl std::fmt::Debug for ChannelBody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ChannelBody")
+            .field("stream_body", &self.stream)
+            .field("prefetch", &self.prefetch)
+            .field("prefetch_num_frames", &self.prefetch_num_frames)
+            .field("prefetched_data_len", &self.prefetched_data_len)
+            .field("is_end_stream", &self.is_end_stream)
+            .finish()
+    }
 }
 
 pub enum BodyType {
@@ -37,7 +50,8 @@ impl ChannelBody {
         B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
     {
         // Create a channel for injecting frames
-        let (tx, rx) = mpsc::channel(8);
+        let capacity = std::cmp::max(8, prefetch_num_frames.get());
+        let (tx, rx) = mpsc::channel(capacity);
 
         // Convert the receiver into a StreamBody
         let stream_of_body = ReceiverStream::new(rx);
@@ -48,8 +62,9 @@ impl ChannelBody {
         (
             ChannelBody {
                 stream: stream_of_body,
-                prefetch: VecDeque::new(),
+                prefetch: VecDeque::with_capacity(capacity),
                 prefetch_num_frames,
+                prefetched_data_len: 0,
                 is_end_stream: false,
             },
             bridge,
@@ -60,21 +75,26 @@ impl ChannelBody {
     ///
     /// This method does not consume the frame.
     pub async fn prefetch_frames(&mut self) {
-        self.prefetch.reserve(self.prefetch_num_frames.get());
-        for _ in 0..self.prefetch_num_frames.get() {
+        let needed = self.prefetch_num_frames.get().saturating_sub(self.prefetch.len());
+        if needed == 0 || self.is_end_stream {
+            return;
+        }
+
+        for _ in 0..needed {
             let r = Pin::new(&mut self.stream).next().await;
             self.is_end_stream = r.is_none();
+
+            if let Some(Ok(frame)) = &r {
+                if let Some(data) = frame.data_ref() {
+                    self.prefetched_data_len += data.len() as u64;
+                }
+            }
+
             self.prefetch.push_back(r);
             if self.is_end_stream {
                 return;
             }
         }
-    }
-}
-
-impl std::fmt::Debug for ChannelBody {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ChannelBody").field("stream_body", &self.stream).field("buffered", &self.prefetch).finish()
     }
 }
 
@@ -89,6 +109,13 @@ impl Body for ChannelBody {
         while self.prefetch.len() < self.prefetch_num_frames.get() {
             if let Poll::Ready(something) = Pin::new(&mut self.stream).poll_next(cx) {
                 self.is_end_stream = something.is_none();
+
+                if let Some(Ok(frame)) = &something {
+                    if let Some(data) = frame.data_ref() {
+                        self.prefetched_data_len += data.len() as u64;
+                    }
+                }
+
                 self.prefetch.push_back(something);
                 if self.is_end_stream {
                     break;
@@ -99,6 +126,11 @@ impl Body for ChannelBody {
         }
 
         if let Some(frame) = self.prefetch.pop_front() {
+            if let Some(Ok(f)) = &frame {
+                if let Some(data) = f.data_ref() {
+                    self.prefetched_data_len -= data.len() as u64;
+                }
+            }
             return Poll::Ready(frame);
         }
 
@@ -114,22 +146,11 @@ impl Body for ChannelBody {
     }
 
     fn size_hint(&self) -> SizeHint {
-        // Calculates the length of all data frames currently in the prefetch buffer.
-        // Iterates over options, flattens them, extracts data frames, and sums their lengths.
-        let prefetched_len: u64 = self
-            .prefetch
-            .iter()
-            .flatten()
-            .filter_map(|res| res.as_ref().ok()) // ignoring any Err in the buffer for the size calculation.
-            .filter_map(|f| f.data_ref()) // Keeps only frames with some data (ignores trailers), returns &Data
-            .map(|b| b.len() as u64)
-            .sum();
-
         if self.is_end_stream {
-            SizeHint::with_exact(prefetched_len)
+            SizeHint::with_exact(self.prefetched_data_len)
         } else {
             let mut sh = SizeHint::new();
-            sh.set_lower(prefetched_len);
+            sh.set_lower(self.prefetched_data_len);
             sh
         }
     }
@@ -202,12 +223,11 @@ impl FrameBridge {
             Box::pin(http_body_util::BodyStream::new(body).map(|result| result.map_err(Into::into)));
 
         let (orig_has_body, orig_has_trailers) = match (end_of_stream, body_type) {
-            (false, Some(BodyType::Empty)) => (Some(false), Some(false)),
             (false, Some(BodyType::Body)) => (Some(true), Some(false)),
             (false, Some(BodyType::Trailers)) => (Some(false), Some(true)),
             (false, Some(BodyType::BodyAndTrailers)) => (Some(true), Some(true)),
             (false, None) => (None, None),
-            (true, _) => (Some(false), Some(false)),
+            (false, Some(BodyType::Empty)) | (true, _) => (Some(false), Some(false)),
         };
 
         Self {
@@ -380,10 +400,7 @@ mod tests {
     use super::*;
     use futures::future;
     use http_body_util::Full;
-    use std::{
-        num::NonZeroUsize,
-        task::{Context, Poll, Waker},
-    };
+    use std::task::Waker;
 
     #[tokio::test]
     async fn test_complete() {

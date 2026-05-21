@@ -22,7 +22,7 @@ async fn main() {
             .serve(|| {
                 |_request| async {
                     Ok::<_, hyper::Error>(Response::new(
-                        "I am an upstream server listening on a Unix socket.".to_string(),
+                        "I am an upstream server listening on a Unix socket.".to_owned(),
                     ))
                 }
             })

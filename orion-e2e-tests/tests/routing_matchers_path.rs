@@ -20,7 +20,9 @@ use orion_e2e_tests::config_builder::{
     presets, ClusterBuilder, EndpointBuilder, FilterChainBuilder, HcmBuilder, ListenerBuilder, RouteBuilder,
     RouteConfigBuilder, VirtualHostBuilder,
 };
-use orion_e2e_tests::{OrionInstance, PreConfiguredResponse, SpawnOptions, TestBackend, TestClient, XdsEnabledHarness};
+use orion_e2e_tests::{
+    cleanup_config_file, OrionInstance, PreConfiguredResponse, SpawnOptions, TestBackend, TestClient, XdsEnabledHarness,
+};
 
 #[tokio::test]
 #[ignore]
@@ -52,7 +54,7 @@ async fn test_prefix_match_basic() {
     backend.await_request().await.unwrap();
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -77,7 +79,7 @@ async fn test_prefix_match_no_match() {
     response.assert_status(StatusCode::NOT_FOUND);
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -101,7 +103,7 @@ async fn test_exact_match_basic() {
     response.assert_body("exact");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -129,7 +131,7 @@ async fn test_exact_match_no_match() {
     response.assert_status(StatusCode::NOT_FOUND);
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -161,7 +163,7 @@ async fn test_regex_match_basic() {
     backend.await_request().await.unwrap();
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -189,7 +191,7 @@ async fn test_regex_match_no_match() {
     response.assert_status(StatusCode::NOT_FOUND);
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -232,7 +234,7 @@ async fn test_path_separated_prefix() {
     fallback_backend.await_request().await.unwrap();
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -264,7 +266,7 @@ async fn test_case_insensitive_prefix() {
     backend.await_request().await.unwrap();
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -293,7 +295,7 @@ async fn test_first_match_wins() {
     first_backend.await_request().await.unwrap();
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -353,6 +355,27 @@ async fn test_path_matchers_when_configured_over_xds() {
     harness.push_route_config(&updated_route_config).await.unwrap();
 
     let client = TestClient::new(listener_addr);
+
+    // Wait for the updated route config to propagate: with the new config, /api/users no
+    // longer matches /api -> backend-api, so it falls through to / -> backend-other ("other").
+    // With the old config it still returns "api", making this our propagation sentinel.
+    pingora::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Ok(response) = client.get("/api/users").await {
+                if response.body_str() == Some("other") {
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("Timeout waiting for updated XDS path route config to propagate");
+
+    // Drain backend queues accumulated during the polling loop.
+    while backend_other.try_recv_request().is_some() {}
+    while backend_api.try_recv_request().is_some() {}
+
     let response = client.get("/api/users").await.unwrap();
     response.assert_status(StatusCode::OK);
     response.assert_body("other");

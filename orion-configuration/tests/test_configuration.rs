@@ -27,7 +27,7 @@ fn empty_config() {
 #[test]
 fn bad_config() {
     let r: Result<Config, _> = deserialize_yaml(&PathBuf::from("tests/config_bad.yaml"));
-    assert!(r.is_err());
+    r.unwrap_err();
 }
 
 #[test]

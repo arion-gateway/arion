@@ -90,13 +90,10 @@ pub fn strip_trailers_headers(http_version: Codec, headers: &mut HeaderMap) {
         // TE header is allowed in HTTP2 only if its value is "trailers"
         Codec::Http2 => {
             headers.remove(header::TRAILER);
-            match headers.get(header::TE) {
-                Some(hdr_value) => {
-                    if hdr_value != "trailers" {
-                        headers.remove(header::TE);
-                    }
-                },
-                None => (),
+            if let Some(hdr_value) = headers.get(header::TE) {
+                if hdr_value != "trailers" {
+                    headers.remove(header::TE);
+                }
             }
         },
     }
@@ -185,25 +182,32 @@ fn determine_trusted_client_address(
 ) -> (IpAddr, bool) {
     let mut trusted_client_address = downstream_addr.ip();
     let mut xff_contains_single_ip = false;
-    let xff_ips = existing_xff
+    let xff_ips: Vec<IpAddr> = existing_xff
         .map_or_else(Vec::new, |value| value.split(',').filter_map(|ip_str| ip_str.trim().parse().ok()).collect());
+
     let num_xff_ips = xff_ips.len();
+
     if !xff_settings.use_remote_address && !xff_ips.is_empty() {
         if xff_settings.xff_num_trusted_hops > 0 {
-            let required_index_from_right = xff_settings.xff_num_trusted_hops as usize + 1;
-            if num_xff_ips >= required_index_from_right {
-                trusted_client_address = xff_ips[num_xff_ips - required_index_from_right];
+            let hops = xff_settings.xff_num_trusted_hops as usize;
+            // Use checked_sub or get() to safely access the IP from the right side
+            if let Some(&ip) = num_xff_ips.checked_sub(hops + 1).and_then(|idx| xff_ips.get(idx)) {
+                trusted_client_address = ip;
             }
         } else {
-            trusted_client_address = xff_ips[num_xff_ips - 1];
-            xff_contains_single_ip = num_xff_ips == 1;
+            // .last() is a safe alternative to [len - 1]
+            if let Some(&ip) = xff_ips.last() {
+                trusted_client_address = ip;
+                xff_contains_single_ip = num_xff_ips == 1;
+            }
         }
     } else if xff_settings.use_remote_address && xff_settings.xff_num_trusted_hops > 0 && !xff_ips.is_empty() {
-        let required_index_from_right = xff_settings.xff_num_trusted_hops as usize;
-        if num_xff_ips >= required_index_from_right {
-            trusted_client_address = xff_ips[num_xff_ips - required_index_from_right];
+        let hops = xff_settings.xff_num_trusted_hops as usize;
+        if let Some(&ip) = num_xff_ips.checked_sub(hops).and_then(|idx| xff_ips.get(idx)) {
+            trusted_client_address = ip;
         }
     }
+
     (trusted_client_address, xff_contains_single_ip)
 }
 
@@ -316,8 +320,8 @@ pub enum HeaderAction {
 }
 
 pub trait HeaderValueModifier {
-    fn apply_to_request<B>(&self, res: &mut Request<B>) -> bool;
-    fn apply_to_response<B>(&self, res: &mut Response<B>) -> bool;
+    fn apply_to_request<B>(&self, request: &mut Request<B>) -> bool;
+    fn apply_to_response<B>(&self, response: &mut Response<B>) -> bool;
     fn run_action(
         &self,
         action: HeaderAction,
@@ -348,10 +352,10 @@ pub trait HeaderValueModifier {
 }
 
 impl HeaderValueModifier for HeaderValueOption {
-    fn apply_to_request<B>(&self, req: &mut Request<B>) -> bool {
-        let has_key_already = req.headers_mut().get(&self.header.key).is_some();
+    fn apply_to_request<B>(&self, request: &mut Request<B>) -> bool {
+        let has_key_already = request.headers_mut().get(&self.header.key).is_some();
 
-        let socket_address = || match req.extensions().get::<MetadataContext>() {
+        let socket_address = || match request.extensions().get::<MetadataContext>() {
             Some(meta) => SocketAddrContext {
                 downstream_local_addr: Some(meta.downstream.connection.local_address()),
                 downstream_peer_addr: Some(meta.downstream.connection.peer_address()),
@@ -364,7 +368,7 @@ impl HeaderValueModifier for HeaderValueOption {
         let get_header_value = |req: &Request<B>| -> HeaderValue {
             let mut formatter = self.header.value.clone();
             formatter.with_context(&DownstreamContext {
-                request: &req,
+                request: req,
                 request_head_size: 0,
                 trace_id: None,
                 server_name: None,
@@ -379,33 +383,33 @@ impl HeaderValueModifier for HeaderValueOption {
         };
 
         let action = match self.append_action {
-            HeaderAppendAction::AppendIfExistsOrAdd => HeaderAction::Append(get_header_value(&req)),
+            HeaderAppendAction::AppendIfExistsOrAdd => HeaderAction::Append(get_header_value(request)),
             HeaderAppendAction::AppendIfAbsent => {
-                if !has_key_already {
-                    HeaderAction::Append(get_header_value(&req))
-                } else {
+                if has_key_already {
                     HeaderAction::Nop
+                } else {
+                    HeaderAction::Append(get_header_value(request))
                 }
             },
-            HeaderAppendAction::OverwriteIfExistsOrAdd => HeaderAction::Overwrite(get_header_value(&req)),
+            HeaderAppendAction::OverwriteIfExistsOrAdd => HeaderAction::Overwrite(get_header_value(request)),
             HeaderAppendAction::OverwriteIfExists => {
                 if has_key_already {
-                    HeaderAction::Overwrite(get_header_value(&req))
+                    HeaderAction::Overwrite(get_header_value(request))
                 } else {
                     HeaderAction::Nop
                 }
             },
         };
 
-        self.run_action(action, req.headers_mut(), self.keep_empty_value, &self.header.key)
+        self.run_action(action, request.headers_mut(), self.keep_empty_value, &self.header.key)
     }
 
-    fn apply_to_response<B>(&self, res: &mut Response<B>) -> bool {
-        let has_key_already = res.headers_mut().get(&self.header.key).is_some();
+    fn apply_to_response<B>(&self, response: &mut Response<B>) -> bool {
+        let has_key_already = response.headers_mut().get(&self.header.key).is_some();
 
         let get_header_value = |res: &Response<B>| -> HeaderValue {
             let mut formatter = self.header.value.clone();
-            formatter.with_context(&DownstreamResponseContext { response: &res, response_head_size: 0 });
+            formatter.with_context(&DownstreamResponseContext { response: res, response_head_size: 0 });
             formatter
                 .into_header_value()
                 .inspect_err(|e| {
@@ -415,35 +419,34 @@ impl HeaderValueModifier for HeaderValueOption {
         };
 
         let action = match self.append_action {
-            HeaderAppendAction::AppendIfExistsOrAdd => HeaderAction::Append(get_header_value(&res)),
+            HeaderAppendAction::AppendIfExistsOrAdd => HeaderAction::Append(get_header_value(response)),
             HeaderAppendAction::AppendIfAbsent => {
-                if !has_key_already {
-                    HeaderAction::Append(get_header_value(&res))
-                } else {
+                if has_key_already {
                     HeaderAction::Nop
+                } else {
+                    HeaderAction::Append(get_header_value(response))
                 }
             },
-            HeaderAppendAction::OverwriteIfExistsOrAdd => HeaderAction::Overwrite(get_header_value(&res)),
+            HeaderAppendAction::OverwriteIfExistsOrAdd => HeaderAction::Overwrite(get_header_value(response)),
             HeaderAppendAction::OverwriteIfExists => {
                 if has_key_already {
-                    HeaderAction::Overwrite(get_header_value(&res))
+                    HeaderAction::Overwrite(get_header_value(response))
                 } else {
                     HeaderAction::Nop
                 }
             },
         };
 
-        self.run_action(action, res.headers_mut(), self.keep_empty_value, &self.header.key)
+        self.run_action(action, response.headers_mut(), self.keep_empty_value, &self.header.key)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use http::Request;
     use orion_configuration::config::network_filters::http_connection_manager::header_modifier::HeaderKeyValue;
     use orion_format::header_formatter::HeaderFormatter;
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use std::net::Ipv4Addr;
 
     use http::header::{COOKIE, LOCATION, USER_AGENT};
 

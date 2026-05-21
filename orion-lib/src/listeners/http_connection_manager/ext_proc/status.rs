@@ -2,13 +2,12 @@ use crate::{listeners::http_connection_manager::ext_proc::kind::MessageKind, Ori
 
 use orion_data_plane_api::envoy_data_plane_api::envoy::service::ext_proc::v3::HeaderMutation;
 
-#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum ProcessingStatus {
     RequestReady(ReadyStatus),
     ResponseReady(ReadyStatus),
     HaltedOnError,
-    EndWithDirectResponse(http::Response<OrionResponseBody>),
+    EndWithDirectResponse(Box<http::Response<OrionResponseBody>>),
 }
 
 impl ProcessingStatus {

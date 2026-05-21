@@ -22,11 +22,8 @@
  * connections are done. It's a bit more code, but worth in the long run.
  */
 
-use std::{collections::VecDeque, sync::Arc, task::Poll, time::Duration};
-
-use futures::future::BoxFuture;
 use parking_lot::Mutex;
-use tokio::sync::mpsc;
+use std::{collections::VecDeque, task::Poll, time::Duration};
 
 use crate::clusters::health::{
     checkers::tests::{deref, TestFixture},
@@ -94,9 +91,16 @@ impl MockTcpStream {
     }
 
     fn read_pending(&mut self, buf: &mut tokio::io::ReadBuf<'_>) {
+        // Calculate how many bytes we can actually copy
         let consumed = buf.remaining().min(self.buffer.len());
-        buf.put_slice(&self.buffer[..consumed]);
-        self.buffer.drain(0..consumed);
+        if consumed > 0 {
+            // Safely access the slice and put it into the buffer
+            if let Some(data) = self.buffer.get(..consumed) {
+                buf.put_slice(data);
+                // English comment: Use the same validated 'consumed' value for draining
+                self.buffer.drain(..consumed);
+            }
+        }
     }
 }
 

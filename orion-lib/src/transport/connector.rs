@@ -204,7 +204,7 @@ impl LocalConnectorWithDNSResolver {
             let stream = if let Some(connection_timeout) = connection_timeout {
                 fast_timeout(connection_timeout, sock.connect(addr))
                     .await // Result<Result<TcpStream, io::Error>>, Elapsed>
-                    .map_err(|_| UpstreamError::ConnectTimeout(elapsed()))
+                    .map_err(|_e| UpstreamError::ConnectTimeout(elapsed()))
                     .map_err(|e| {
                         WithContext::new(e)
                             .with_context_data(TcpErrorContext {
@@ -288,8 +288,8 @@ impl InternalConnector {
         let (client_stream, server_stream) = tokio::io::duplex(64 * 1024);
         let downstream_metadata = downstream_metadata.unwrap_or_else(|| {
             Arc::new(DownstreamConnectionMetadata::FromSocket {
-                peer_address: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 0),
-                local_address: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 0),
+                peer_address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+                local_address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
             })
         });
         let internal_conn = InternalConnection {
@@ -353,7 +353,8 @@ impl Service<Uri> for UnifiedConnector {
         }
     }
 
-    fn call(&mut self, uri: Uri) -> Self::Future {
+    fn call(&mut self, req: Uri) -> Self::Future {
+        let uri = req;
         match self {
             UnifiedConnector::Socket(c) => {
                 let fut = c.call(uri);

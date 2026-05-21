@@ -70,8 +70,12 @@ pub struct LogConfig {
     pub log_file: Option<String>,
 }
 
-fn const_value<const N: usize>() -> NonZeroUsize {
-    unsafe { NonZeroUsize::new_unchecked(N) }
+pub fn nonzero_usize<const N: usize>() -> NonZeroUsize {
+    const {
+        // Evaluates at compile time, causing a build failure if N is 0.
+        // Note: Option::expect is const starting from Rust 1.83.
+        NonZeroUsize::new(N).expect("N must be strictly greater than 0")
+    }
 }
 
 impl PartialEq for LogConfig {
@@ -85,13 +89,13 @@ impl Eq for LogConfig {}
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct AccessLogConfig {
-    #[serde(default = "const_value::<1>")]
+    #[serde(default = "nonzero_usize::<1>")]
     pub num_instances: NonZeroUsize,
-    #[serde(default = "const_value::<1024>")]
+    #[serde(default = "nonzero_usize::<1024>")]
     pub queue_length: NonZeroUsize,
     pub log_rotation: Option<RollingFrequencyConfig>,
     pub log_max_size: Option<u64>,
-    #[serde(default = "const_value::<10>")]
+    #[serde(default = "nonzero_usize::<10>")]
     pub max_log_files: NonZeroUsize,
     pub blocking: bool,
 }
@@ -99,11 +103,11 @@ pub struct AccessLogConfig {
 impl Default for AccessLogConfig {
     fn default() -> Self {
         Self {
-            num_instances: const_value::<1>(),
-            queue_length: const_value::<1024>(),
+            num_instances: nonzero_usize::<1>(),
+            queue_length: nonzero_usize::<1024>(),
             log_rotation: None,
             log_max_size: None,
-            max_log_files: const_value::<10>(),
+            max_log_files: nonzero_usize::<10>(),
             blocking: false,
         }
     }

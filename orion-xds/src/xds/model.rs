@@ -45,7 +45,7 @@ pub type ResourceVersion = String;
 
 #[derive(Debug)]
 pub enum XdsResourceUpdate {
-    Update(ResourceId, XdsResourcePayload, ResourceVersion),
+    Update(ResourceId, Box<XdsResourcePayload>, ResourceVersion),
     Remove(ResourceId, TypeUrl),
 }
 
@@ -60,7 +60,7 @@ impl XdsResourceUpdate {
 #[derive(Debug)]
 pub enum XdsResourcePayload {
     Listener(ResourceId, Listener),
-    Cluster(ResourceId, Cluster),
+    Cluster(ResourceId, Box<Cluster>),
     Endpoints(ResourceId, ClusterLoadAssignment),
     RouteConfiguration(ResourceId, RouteConfiguration),
     Secret(ResourceId, Secret),
@@ -79,7 +79,7 @@ impl TryFrom<(Resource, TypeUrl)> for XdsResourcePayload {
             },
             TypeUrl::Cluster => {
                 let decoded = EnvoyCluster::decode(res.value.as_slice())?.try_into()?;
-                Ok(XdsResourcePayload::Cluster(resource_id, decoded))
+                Ok(XdsResourcePayload::Cluster(resource_id, Box::new(decoded)))
             },
             TypeUrl::RouteConfiguration => {
                 let decoded = EnvoyRouteConfiguration::decode(res.value.as_slice())?.try_into()?;

@@ -15,255 +15,344 @@
 //
 //
 
-use ahash::RandomState;
-use std::collections::HashMap;
-
-//use ::http::{header, StatusCode};
-use axum::extract::State;
-use orion_metrics::{
-    metrics::{
-        clusters, http, listeners,
-        server::{self, update_server_metrics},
-        tcp, tls, user,
-    },
-    sharded::ShardedU64,
-};
-use prometheus::{Encoder, IntCounterVec, IntGaugeVec, Opts, Registry, TextEncoder};
-use smallvec::SmallVec;
-
-use crate::admin::AdminState;
-use ::http::{header::HeaderMap, StatusCode};
-use opentelemetry::KeyValue;
 use std::hash::Hash;
+use std::io::{self, Write};
+use std::sync::OnceLock;
+use std::{borrow::Cow, collections::HashMap};
+
+use ::http::{header::HeaderMap, StatusCode};
+use axum::extract::State;
+use opentelemetry::KeyValue;
 use tracing::debug;
 
-/// Populates a Prometheus `IntCounterVec` by reading from a `ShardedU64`.
-fn populate_counter_vec<S: Eq + Hash>(metric_source: &ShardedU64<S>, prom_metric: &IntCounterVec, label_keys: &[&str]) {
+use crate::admin::AdminState;
+use orion_metrics::{
+    metrics::{
+        clusters, custom, filters, http, listeners,
+        server::{self, update_server_metrics},
+        tcp, tls, user, Metric,
+    },
+    sharded::{Gauge, ShardedHistogram, ShardedU64},
+};
+
+/// Escapes special characters in label values according to Prometheus specifications.
+fn escape_label_value(val: &str) -> Cow<'_, str> {
+    if val.contains(['\\', '"', '\n']) {
+        Cow::Owned(val.replace('\\', "\\\\").replace('\n', "\\n").replace('"', "\\\""))
+    } else {
+        Cow::Borrowed(val)
+    }
+}
+
+fn write_metric_labels(out: &mut impl Write, labels: &[KeyValue]) -> io::Result<()> {
+    if labels.is_empty() {
+        return Ok(());
+    }
+    write!(out, "{{")?;
+    for (i, kv) in labels.iter().enumerate() {
+        if i > 0 {
+            write!(out, ",")?;
+        }
+        let val = kv.value.as_str();
+        let escaped_val = escape_label_value(val.as_ref());
+        write!(out, "{}=\"{}\"", kv.key.as_str(), escaped_val)?;
+    }
+    write!(out, "}}")?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_metric_labels_with_extra(
+    out: &mut impl Write,
+    labels: &[KeyValue],
+    extra_key: &str,
+    extra_val: &str,
+) -> io::Result<()> {
+    write!(out, "{{")?;
+    let mut first = true;
+    for kv in labels {
+        if !first {
+            write!(out, ",")?;
+        }
+        first = false;
+        let val = kv.value.as_str();
+        let escaped_val = escape_label_value(val.as_ref());
+        write!(out, "{}=\"{}\"", kv.key.as_str(), escaped_val)?;
+    }
+    if !first {
+        write!(out, ",")?;
+    }
+    let escaped_extra_val = escape_label_value(extra_val);
+    write!(out, "{extra_key}=\"{escaped_extra_val}\"")?;
+    write!(out, "}}")?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn format_metric<S: Eq + Hash>(
+    out: &mut impl Write,
+    prefix: &str,
+    name: &str,
+    desc: &str,
+    metric_type: &str,
+    metric_source: &ShardedU64<S>,
+) -> io::Result<()> {
     let data = metric_source.load_all();
-    for (key_values, value) in data {
-        let mut cow_values = smallvec::SmallVec::<[std::borrow::Cow<'_, str>; 4]>::new();
-        for k in label_keys {
-            let val = key_values
-                .iter()
-                .find(|kv| kv.key.as_str() == *k)
-                .map(|kv| kv.value.as_str())
-                .unwrap_or(std::borrow::Cow::Borrowed(""));
-            cow_values.push(val);
-        }
-        let label_values: smallvec::SmallVec<[&str; 4]> = cow_values.iter().map(|cow| cow.as_ref()).collect();
-
-        prom_metric.with_label_values(&label_values).inc_by(value);
+    if data.is_empty() {
+        return Ok(());
     }
+
+    let full_name = format!("{prefix}_{name}");
+    writeln!(out, "# HELP {full_name} {desc}")?;
+    writeln!(out, "# TYPE {full_name} {metric_type}")?;
+
+    for (labels, value) in data {
+        write!(out, "{full_name}")?;
+        write_metric_labels(out, &labels)?;
+        writeln!(out, " {value}")?;
+    }
+    Ok(())
 }
 
-/// Populates a Prometheus `IntGaugeVec` by reading from a `ShardedU64`.
-fn populate_gauge_vec<S: Eq + Hash>(metric_source: &ShardedU64<S>, prom_metric: &IntGaugeVec, label_keys: &[&str]) {
+#[allow(clippy::too_many_arguments)]
+fn format_gauge(
+    out: &mut impl Write,
+    prefix: &str,
+    name: &str,
+    desc: &str,
+    metric_type: &str,
+    metric_source: &Gauge,
+) -> io::Result<()> {
     let data = metric_source.load_all();
-    for (key_values, value) in data {
-        let mut cow_values = smallvec::SmallVec::<[std::borrow::Cow<'_, str>; 4]>::new();
-        for k in label_keys {
-            let val = key_values
-                .iter()
-                .find(|kv| kv.key.as_str() == *k)
-                .map(|kv| kv.value.as_str())
-                .unwrap_or(std::borrow::Cow::Borrowed(""));
-            cow_values.push(val);
-        }
-        let label_values: smallvec::SmallVec<[&str; 4]> = cow_values.iter().map(|cow| cow.as_ref()).collect();
-
-        prom_metric.with_label_values(&label_values).set(value as i64);
+    if data.is_empty() {
+        return Ok(());
     }
+
+    let full_name = format!("{prefix}_{name}");
+    writeln!(out, "# HELP {full_name} {desc}")?;
+    writeln!(out, "# TYPE {full_name} {metric_type}")?;
+
+    for (labels, value) in data {
+        write!(out, "{full_name}")?;
+        write_metric_labels(out, &labels)?;
+        writeln!(out, " {value}")?;
+    }
+    Ok(())
 }
 
-/// Extracts all unique, sorted label keys from a given counter's data.
-fn get_label_keys(data: &HashMap<Vec<KeyValue>, u64, RandomState>) -> SmallVec<[&str; 4]> {
-    let mut sorted_keys = SmallVec::new();
-    for kvs in data.keys() {
-        for kv in kvs {
-            let k = kv.key.as_str();
-            if !sorted_keys.contains(&k) {
-                sorted_keys.push(k);
-            }
+fn format_histogram<S: Eq + Hash + Clone + Copy>(
+    out: &mut impl Write,
+    prefix: &str,
+    name: &str,
+    desc: &str,
+    metric_source: &ShardedHistogram<S>,
+) -> io::Result<()> {
+    let count_data = metric_source.count().load_all();
+    if count_data.is_empty() {
+        return Ok(());
+    }
+
+    let full_name = format!("{prefix}_{name}");
+
+    writeln!(out, "# HELP {full_name} {desc}")?;
+    writeln!(out, "# TYPE {full_name} histogram")?;
+
+    for (&bound, count) in metric_source.buckets().iter().zip(metric_source.counts().iter()) {
+        let bound_str = if bound == u64::MAX { "+Inf".to_owned() } else { bound.to_string() };
+        let bucket_data = count.load_all();
+        for (labels, value) in bucket_data {
+            write!(out, "{full_name}_bucket")?;
+            write_metric_labels_with_extra(out, &labels, "le", &bound_str)?;
+            writeln!(out, " {value}")?;
         }
     }
-    sorted_keys.sort_unstable();
-    sorted_keys
+
+    let sum_data = metric_source.sum().load_all();
+    for (labels, value) in sum_data {
+        write!(out, "{full_name}_sum")?;
+        write_metric_labels(out, &labels)?;
+        writeln!(out, " {value}")?;
+    }
+
+    for (labels, value) in count_data {
+        write!(out, "{full_name}_count")?;
+        write_metric_labels(out, &labels)?;
+        writeln!(out, " {value}")?;
+    }
+    Ok(())
 }
 
-/// A macro to process and register a metric if its source is initialized.
-macro_rules! process_metric {
-    ($registry:expr, $source:expr, $metric_type:ty, $populate_fn:ident) => {
-        if let Some(counter) = $source.get() {
-            let data = counter.value.load_all();
-            if !data.is_empty() {
-                let label_keys = get_label_keys(&data);
-                let prom_metric = <$metric_type>::new(
-                    Opts::new(format!("{}_{}", counter.prefix, counter.name), counter.descr),
-                    &label_keys,
-                )
-                .unwrap();
-                $registry.register(Box::new(prom_metric.clone())).unwrap();
-                $populate_fn(&counter.value, &prom_metric, &label_keys);
-            }
-        }
-    };
+fn process_metric_as_counter<S: Eq + Hash>(
+    out: &mut impl Write,
+    source: &OnceLock<Metric<ShardedU64<S>>>,
+) -> io::Result<()> {
+    if let Some(metric) = source.get() {
+        format_metric(out, metric.prefix, metric.name, metric.descr, "counter", &metric.value)?;
+    }
+    Ok(())
 }
 
-macro_rules! process_histogram {
-    ($registry:expr, $source:expr) => {
-        if let Some(metric) = $source.get() {
-            let count_data = metric.value.count().load_all();
-            if !count_data.is_empty() {
-                let label_keys = get_label_keys(&count_data);
+fn process_metric_as_gauge<S: Eq + Hash>(
+    out: &mut impl Write,
+    source: &OnceLock<Metric<ShardedU64<S>>>,
+) -> io::Result<()> {
+    if let Some(metric) = source.get() {
+        format_metric(out, metric.prefix, metric.name, metric.descr, "gauge", &metric.value)?;
+    }
+    Ok(())
+}
 
-                let count_metric = IntCounterVec::new(
-                    Opts::new(format!("{}_{}_count", metric.prefix, metric.name), metric.descr),
-                    &label_keys,
-                )
-                .unwrap();
-                $registry.register(Box::new(count_metric.clone())).unwrap();
-                populate_counter_vec(metric.value.count(), &count_metric, &label_keys);
+fn process_gauge(out: &mut impl Write, source: &OnceLock<Metric<Gauge>>) -> io::Result<()> {
+    if let Some(metric) = source.get() {
+        format_gauge(out, metric.prefix, metric.name, metric.descr, "gauge", &metric.value)?;
+    }
+    Ok(())
+}
 
-                let sum_metric = IntCounterVec::new(
-                    Opts::new(format!("{}_{}_sum", metric.prefix, metric.name), metric.descr),
-                    &label_keys,
-                )
-                .unwrap();
-                $registry.register(Box::new(sum_metric.clone())).unwrap();
-                populate_counter_vec(metric.value.sum(), &sum_metric, &label_keys);
+fn process_histogram<S: Eq + Hash + Clone + Copy>(
+    out: &mut impl Write,
+    source: &OnceLock<Metric<ShardedHistogram<S>>>,
+) -> io::Result<()> {
+    if let Some(metric) = source.get() {
+        format_histogram(out, metric.prefix, metric.name, metric.descr, &metric.value)?;
+    }
+    Ok(())
+}
 
-                let mut bucket_label_keys = label_keys.clone();
-                bucket_label_keys.push("le");
-                let bucket_metric = IntCounterVec::new(
-                    Opts::new(format!("{}_{}_bucket", metric.prefix, metric.name), metric.descr),
-                    &bucket_label_keys,
-                )
-                .unwrap();
-                $registry.register(Box::new(bucket_metric.clone())).unwrap();
+fn build_prometheus_output() -> io::Result<String> {
+    debug!(target: "prometheus", "prometheus_handler: running");
+    let mut out: Vec<u8> = Vec::with_capacity(16384);
 
-                for (i, &bound) in metric.value.buckets().iter().enumerate() {
-                    let bound_str = if bound == u64::MAX { "+Inf".to_string() } else { bound.to_string() };
-                    let bucket_data = metric.value.counts()[i].load_all();
-                    for (key_values, value) in bucket_data {
-                        let mut cow_values = smallvec::SmallVec::<[std::borrow::Cow<'_, str>; 4]>::new();
-                        for k in &label_keys {
-                            let val = key_values
-                                .iter()
-                                .find(|kv| kv.key.as_str() == *k)
-                                .map(|kv| kv.value.as_str())
-                                .unwrap_or(std::borrow::Cow::Borrowed(""));
-                            cow_values.push(val);
-                        }
-                        cow_values.push(std::borrow::Cow::Owned(bound_str.clone()));
-                        let label_values: smallvec::SmallVec<[&str; 4]> =
-                            cow_values.iter().map(|cow| cow.as_ref()).collect();
-                        bucket_metric.with_label_values(&label_values).inc_by(value);
-                    }
-                }
-            }
+    // listeners metrics
+    process_metric_as_counter(&mut out, &listeners::DOWNSTREAM_CX_TOTAL)?;
+    process_metric_as_counter(&mut out, &listeners::DOWNSTREAM_CX_DESTROY)?;
+    process_metric_as_gauge(&mut out, &listeners::DOWNSTREAM_CX_ACTIVE)?;
+    process_metric_as_counter(&mut out, &listeners::NO_FILTER_CHAIN_MATCH)?;
+    process_histogram(&mut out, &listeners::DOWNSTREAM_CX_LENGTH_MS)?;
+
+    // clusters metrics
+    process_metric_as_counter(&mut out, &clusters::UPSTREAM_RQ_TOTAL)?;
+    process_metric_as_gauge(&mut out, &clusters::UPSTREAM_RQ_ACTIVE)?;
+    process_metric_as_counter(&mut out, &clusters::UPSTREAM_RQ_TIMEOUT)?;
+    process_metric_as_counter(&mut out, &clusters::UPSTREAM_RQ_PER_TRY_TIMEOUT)?;
+    process_metric_as_counter(&mut out, &clusters::UPSTREAM_RQ_RETRY)?;
+
+    process_metric_as_counter(&mut out, &clusters::UPSTREAM_CX_TOTAL)?;
+    process_metric_as_counter(&mut out, &clusters::UPSTREAM_CX_IDLE_TIMEOUT)?;
+    process_metric_as_counter(&mut out, &clusters::UPSTREAM_CX_CONNECT_FAIL)?;
+    process_metric_as_counter(&mut out, &clusters::UPSTREAM_CX_CONNECT_TIMEOUT)?;
+    process_metric_as_counter(&mut out, &clusters::UPSTREAM_CX_DESTROY)?;
+    process_metric_as_gauge(&mut out, &clusters::UPSTREAM_CX_ACTIVE)?;
+
+    // http metrics
+    process_metric_as_counter(&mut out, &http::DOWNSTREAM_CX_TOTAL)?;
+    process_metric_as_counter(&mut out, &http::DOWNSTREAM_CX_SSL_TOTAL)?;
+    process_metric_as_gauge(&mut out, &http::DOWNSTREAM_CX_SSL_ACTIVE)?;
+    process_metric_as_counter(&mut out, &http::DOWNSTREAM_CX_DESTROY)?;
+    process_metric_as_gauge(&mut out, &http::DOWNSTREAM_CX_ACTIVE)?;
+    process_metric_as_counter(&mut out, &http::DOWNSTREAM_RQ_1XX)?;
+    process_metric_as_counter(&mut out, &http::DOWNSTREAM_RQ_2XX)?;
+    process_metric_as_counter(&mut out, &http::DOWNSTREAM_RQ_3XX)?;
+    process_metric_as_counter(&mut out, &http::DOWNSTREAM_RQ_4XX)?;
+    process_metric_as_counter(&mut out, &http::DOWNSTREAM_RQ_5XX)?;
+    process_metric_as_counter(&mut out, &http::DOWNSTREAM_RQ_TOTAL)?;
+    process_metric_as_gauge(&mut out, &http::DOWNSTREAM_RQ_ACTIVE)?;
+    process_metric_as_counter(&mut out, &http::DOWNSTREAM_CX_RX_BYTES_TOTAL)?;
+    process_metric_as_counter(&mut out, &http::DOWNSTREAM_CX_TX_BYTES_TOTAL)?;
+    process_histogram(&mut out, &http::DOWNSTREAM_CX_LENGTH_MS)?;
+
+    // server metrics
+    process_gauge(&mut out, &server::UPTIME)?;
+    process_gauge(&mut out, &server::CONCURRENCY)?;
+    process_gauge(&mut out, &server::MEMORY_HEAP_SIZE)?;
+    process_gauge(&mut out, &server::MEMORY_PHYSICAL_SIZE)?;
+    process_gauge(&mut out, &server::MEMORY_ALLOCATED)?;
+
+    // tcp metrics
+    process_metric_as_counter(&mut out, &tcp::DOWNSTREAM_CX_TOTAL)?;
+    process_metric_as_counter(&mut out, &tcp::DOWNSTREAM_CX_DESTROY)?;
+    process_metric_as_gauge(&mut out, &tcp::DOWNSTREAM_CX_ACTIVE)?;
+    process_histogram(&mut out, &tcp::DOWNSTREAM_CX_LENGTH_MS)?;
+    process_metric_as_counter(&mut out, &tcp::CX_RX_BYTES_RECEIVED)?;
+    process_metric_as_counter(&mut out, &tcp::CX_TX_BYTES_SENT)?;
+
+    // tls
+    process_metric_as_counter(&mut out, &tls::HANDSHAKES)?;
+
+    // websocket
+    process_metric_as_counter(&mut out, &http::DOWNSTREAM_CX_WS_UPGRADES_TOTAL)?;
+    process_metric_as_gauge(&mut out, &http::DOWNSTREAM_CX_WS_UPGRADES_ACTIVE)?;
+    process_metric_as_counter(&mut out, &http::DOWNSTREAM_RQ_WS_ON_NON_WS_ROUTE)?;
+
+    // user/agentrun
+    process_metric_as_counter(&mut out, &user::INVOCATIONS)?;
+    process_metric_as_counter(&mut out, &user::THROTTLES)?;
+    process_metric_as_counter(&mut out, &user::SYSTEM_ERRORS)?;
+    process_metric_as_counter(&mut out, &user::USER_ERRORS)?;
+    process_metric_as_counter(&mut out, &user::TOTAL_ERRORS)?;
+    process_metric_as_counter(&mut out, &user::BYTES_TX)?;
+    process_metric_as_counter(&mut out, &user::BYTES_RX)?;
+    process_metric_as_counter(&mut out, &user::INBOUND_STREAMING_BYTES_PROCESSED)?;
+    process_metric_as_counter(&mut out, &user::OUTBOUND_STREAMING_BYTES_PROCESSED)?;
+    process_metric_as_counter(&mut out, &user::HTTP_1XX_RESPONSES)?;
+    process_metric_as_counter(&mut out, &user::HTTP_2XX_RESPONSES)?;
+    process_metric_as_counter(&mut out, &user::HTTP_3XX_RESPONSES)?;
+    process_metric_as_counter(&mut out, &user::HTTP_4XX_RESPONSES)?;
+    process_metric_as_counter(&mut out, &user::HTTP_5XX_RESPONSES)?;
+    process_histogram(&mut out, &user::LATENCY)?;
+
+    // filters
+    process_metric_as_counter(&mut out, &filters::CONNECTION_RATE_LIMIT)?;
+    process_metric_as_counter(&mut out, &filters::LOCAL_RATE_LIMIT)?;
+    process_metric_as_counter(&mut out, &filters::USER_RATE_LIMIT)?;
+
+    // dynamic metrics
+    if let Some(custom_metrics) = custom::CUSTOM_METRICS.get() {
+        for counter in custom_metrics.counters() {
+            format_metric(
+                &mut out,
+                counter.metric.prefix,
+                counter.metric.name,
+                counter.metric.descr,
+                "counter",
+                &counter.metric.value,
+            )?;
         }
-    };
+        for histogram in custom_metrics.histograms() {
+            format_histogram(
+                &mut out,
+                histogram.metric.prefix,
+                histogram.metric.name,
+                histogram.metric.descr,
+                &histogram.metric.value,
+            )?;
+        }
+        for gauge in custom_metrics.gauges() {
+            format_gauge(
+                &mut out,
+                gauge.metric.prefix,
+                gauge.metric.name,
+                gauge.metric.descr,
+                "gauge",
+                &gauge.metric.value,
+            )?;
+        }
+    }
+
+    String::from_utf8(out).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
 
 pub(crate) async fn prometheus_handler(
     State(_): State<AdminState>,
 ) -> Result<(HeaderMap, String), (StatusCode, String)> {
-    let registry = Registry::new();
-
     debug!(target: "prometheus", "prometheus_handler: running");
-    update_server_metrics();
+    update_server_metrics(&HashMap::new());
 
-    // listeners metrics
-    process_metric!(registry, &listeners::DOWNSTREAM_CX_TOTAL, IntCounterVec, populate_counter_vec);
-    process_metric!(registry, &listeners::DOWNSTREAM_CX_DESTROY, IntCounterVec, populate_counter_vec);
-    process_metric!(registry, &listeners::DOWNSTREAM_CX_ACTIVE, IntGaugeVec, populate_gauge_vec);
-    process_metric!(registry, &listeners::NO_FILTER_CHAIN_MATCH, IntCounterVec, populate_counter_vec);
-    process_histogram!(registry, &listeners::DOWNSTREAM_CX_LENGTH_MS);
-
-    // clusters metrics
-    process_metric!(registry, &clusters::UPSTREAM_RQ_TOTAL, IntCounterVec, populate_counter_vec);
-    process_metric!(registry, &clusters::UPSTREAM_RQ_ACTIVE, IntGaugeVec, populate_gauge_vec);
-    process_metric!(registry, &clusters::UPSTREAM_RQ_TIMEOUT, IntCounterVec, populate_counter_vec);
-    process_metric!(registry, &clusters::UPSTREAM_RQ_PER_TRY_TIMEOUT, IntCounterVec, populate_counter_vec);
-    process_metric!(registry, &clusters::UPSTREAM_RQ_RETRY, IntCounterVec, populate_counter_vec);
-
-    process_metric!(registry, &clusters::UPSTREAM_CX_TOTAL, IntCounterVec, populate_counter_vec);
-    process_metric!(registry, &clusters::UPSTREAM_CX_IDLE_TIMEOUT, IntCounterVec, populate_counter_vec);
-    process_metric!(registry, &clusters::UPSTREAM_CX_CONNECT_FAIL, IntCounterVec, populate_counter_vec);
-    process_metric!(registry, &clusters::UPSTREAM_CX_CONNECT_TIMEOUT, IntCounterVec, populate_counter_vec);
-    process_metric!(registry, &clusters::UPSTREAM_CX_DESTROY, IntCounterVec, populate_counter_vec);
-    process_metric!(registry, &clusters::UPSTREAM_CX_ACTIVE, IntGaugeVec, populate_gauge_vec);
-
-    // http metrics
-    process_metric!(registry, &http::DOWNSTREAM_CX_TOTAL, IntCounterVec, populate_counter_vec);
-    process_metric!(registry, &http::DOWNSTREAM_CX_SSL_TOTAL, IntCounterVec, populate_counter_vec);
-    process_metric!(registry, &http::DOWNSTREAM_CX_SSL_ACTIVE, IntGaugeVec, populate_gauge_vec);
-    process_metric!(registry, &http::DOWNSTREAM_CX_DESTROY, IntCounterVec, populate_counter_vec);
-    process_metric!(registry, &http::DOWNSTREAM_CX_ACTIVE, IntGaugeVec, populate_gauge_vec);
-    process_metric!(registry, &http::DOWNSTREAM_RQ_1XX, IntCounterVec, populate_counter_vec);
-    process_metric!(registry, &http::DOWNSTREAM_RQ_2XX, IntCounterVec, populate_counter_vec);
-    process_metric!(registry, &http::DOWNSTREAM_RQ_3XX, IntCounterVec, populate_counter_vec);
-    process_metric!(registry, &http::DOWNSTREAM_RQ_4XX, IntCounterVec, populate_counter_vec);
-    process_metric!(registry, &http::DOWNSTREAM_RQ_5XX, IntCounterVec, populate_counter_vec);
-    process_metric!(registry, &http::DOWNSTREAM_RQ_TOTAL, IntCounterVec, populate_counter_vec);
-    process_metric!(registry, &http::DOWNSTREAM_RQ_ACTIVE, IntGaugeVec, populate_gauge_vec);
-    process_metric!(registry, &http::DOWNSTREAM_CX_RX_BYTES_TOTAL, IntCounterVec, populate_counter_vec);
-    process_metric!(registry, &http::DOWNSTREAM_CX_TX_BYTES_TOTAL, IntCounterVec, populate_counter_vec);
-    process_histogram!(registry, &http::DOWNSTREAM_CX_LENGTH_MS);
-
-    // server metrics
-    process_metric!(registry, &server::UPTIME, IntGaugeVec, populate_gauge_vec);
-    process_metric!(registry, &server::CONCURRENCY, IntGaugeVec, populate_gauge_vec);
-    process_metric!(registry, &server::MEMORY_HEAP_SIZE, IntGaugeVec, populate_gauge_vec);
-    process_metric!(registry, &server::MEMORY_PHYSICAL_SIZE, IntGaugeVec, populate_gauge_vec);
-    process_metric!(registry, &server::MEMORY_ALLOCATED, IntGaugeVec, populate_gauge_vec);
-
-    // tcp metrics
-    process_metric!(registry, &tcp::DOWNSTREAM_CX_TOTAL, IntCounterVec, populate_counter_vec);
-    process_metric!(registry, &tcp::DOWNSTREAM_CX_DESTROY, IntCounterVec, populate_counter_vec);
-    process_metric!(registry, &tcp::DOWNSTREAM_CX_ACTIVE, IntGaugeVec, populate_gauge_vec);
-    process_histogram!(registry, &tcp::DOWNSTREAM_CX_LENGTH_MS);
-    process_metric!(registry, &tcp::CX_RX_BYTES_RECEIVED, IntGaugeVec, populate_gauge_vec);
-    process_metric!(registry, &tcp::CX_TX_BYTES_SENT, IntGaugeVec, populate_gauge_vec);
-
-    // tls
-    process_metric!(registry, &tls::HANDSHAKES, IntCounterVec, populate_counter_vec);
-
-    // websocket
-    process_metric!(registry, http::DOWNSTREAM_CX_WS_UPGRADES_TOTAL, IntCounterVec, populate_counter_vec);
-    process_metric!(registry, http::DOWNSTREAM_CX_WS_UPGRADES_ACTIVE, IntCounterVec, populate_counter_vec);
-    process_metric!(registry, http::DOWNSTREAM_RQ_WS_ON_NON_WS_ROUTE, IntCounterVec, populate_counter_vec);
-
-    // user/agentrun
-    process_metric!(registry, &user::INVOCATIONS, IntCounterVec, populate_counter_vec);
-    process_metric!(registry, &user::THROTTLES, IntCounterVec, populate_counter_vec);
-    process_metric!(registry, &user::SYSTEM_ERRORS, IntCounterVec, populate_counter_vec);
-    process_metric!(registry, &user::USER_ERRORS, IntCounterVec, populate_counter_vec);
-    process_metric!(registry, &user::TOTAL_ERRORS, IntCounterVec, populate_counter_vec);
-    process_metric!(registry, &user::BYTES_TX, IntCounterVec, populate_counter_vec);
-    process_metric!(registry, &user::BYTES_RX, IntCounterVec, populate_counter_vec);
-    process_metric!(registry, &user::INBOUND_STREAMING_BYTES_PROCESSED, IntCounterVec, populate_counter_vec);
-    process_metric!(registry, &user::OUTBOUND_STREAMING_BYTES_PROCESSED, IntCounterVec, populate_counter_vec);
-    process_histogram!(registry, &user::LATENCY);
-
-    // Encode and return
-
-    let encoder = TextEncoder::new();
-    let mut buffer = vec![];
-
-    encoder
-        .encode(&registry.gather(), &mut buffer)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to encode metrics: {e}")))?;
-
-    let body = String::from_utf8(buffer)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Metrics not valid UTF-8: {e}")))?;
+    let out = build_prometheus_output().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let mut headers = HeaderMap::new();
-    let content_type = encoder
-        .format_type()
-        .parse()
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to parse content type: {e}")))?;
-    headers.insert(::http::header::CONTENT_TYPE, content_type);
+    #[allow(clippy::unwrap_used)]
+    headers.insert(::http::header::CONTENT_TYPE, "text/plain; version=0.0.4".parse().unwrap());
 
-    Ok((headers, body))
+    Ok((headers, out))
 }

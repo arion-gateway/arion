@@ -38,6 +38,7 @@ use super::checker::{IntervalWaiter, ProtocolChecker, WaitInterval};
 
 const DEFAULT_MAX_PAYLOAD_BUFFER_SIZE: usize = 0x10_0000; // 1 MB
 
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_tcp_health_checker(
     endpoint: EndpointId,
     cluster_config: ClusterHealthCheck,
@@ -72,6 +73,7 @@ impl TcpClient for TcpChannelConnector {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_tcp_health_checker_impl<T, W, const MAX_PAYLOAD_BUFFER_SIZE: usize>(
     endpoint: EndpointId,
     cluster_config: ClusterHealthCheck,
@@ -209,32 +211,80 @@ where
     }
 
     async fn recv_at_most(&mut self, bytes_to_read: usize) -> Result<(), Error> {
-        if self.buffer.len() >= MAX_PAYLOAD_BUFFER_SIZE || bytes_to_read == 0 {
+        let prev_size = self.buffer.len();
+
+        if prev_size >= MAX_PAYLOAD_BUFFER_SIZE || bytes_to_read == 0 {
             return Err("payload buffer too big".into());
         }
 
-        let prev_size = self.buffer.len();
-        let new_size = MAX_PAYLOAD_BUFFER_SIZE.min(prev_size + bytes_to_read);
+        let available_space = MAX_PAYLOAD_BUFFER_SIZE - prev_size;
+        let to_read = bytes_to_read.min(available_space);
 
-        self.buffer.resize(new_size, 0);
+        // 1. Ensure the Vec has enough capacity without changing its 'length'.
+        // reserve() might reallocate if needed, but doesn't write any bytes.
+        self.buffer.reserve(to_read);
 
-        let received = self.stream.read(&mut self.buffer[prev_size..]).await?;
+        // 2. UNSAFE: Create a slice that points to the uninitialized memory
+        // area after the current end of the buffer.
+        // SAFETY: the buffer has been reserved, so it's safe to write up to 'to_read' bytes starting from 'prev_size'.
+        #[allow(clippy::multiple_unsafe_ops_per_block)]
+        let received = unsafe {
+            // Get a pointer to the start of the uninitialized area
+            let ptr = self.buffer.as_mut_ptr().add(prev_size);
+
+            // Build a mutable slice of raw memory.
+            // WARNING: We must NOT read from this slice before writing to it,
+            // as reading uninitialized memory is Undefined Behavior.
+            let slice = std::slice::from_raw_parts_mut(ptr, to_read);
+
+            // Read directly into that raw memory
+            self.stream.read(slice).await?
+        };
 
         if received == 0 {
             return Err("end of stream".into());
         }
 
-        self.buffer.resize(prev_size + received, 0);
+        // SAFETY: 3. Now that we know 'received' bytes are valid data,
+        // we can safely update the Vec's length.
+        unsafe { self.buffer.set_len(prev_size + received) }
 
         Ok(())
     }
 
     async fn recv_exact(&mut self, bytes_to_read: usize) -> Result<(), Error> {
+        if bytes_to_read == 0 {
+            return Ok(());
+        }
+
         let prev_size = self.buffer.len();
-        self.buffer.resize(prev_size + bytes_to_read, 0);
 
-        self.stream.read_exact(&mut self.buffer[prev_size..]).await?;
+        // 1. Ensure capacity without zeroing the memory.
+        // This is O(1) if capacity is already sufficient.
+        self.buffer.reserve(bytes_to_read);
 
-        Ok(())
+        // 2. UNSAFE: Create a mutable slice from uninitialized memory.
+        // We must ensure the read_exact succeeds before we 'trust' these bytes.
+        // SAFETY: The buffer has been reserved, so it's safe to write up to 'bytes_to_read' bytes starting from 'prev_size'.
+        #[allow(clippy::multiple_unsafe_ops_per_block)]
+        let read_result = unsafe {
+            let ptr = self.buffer.as_mut_ptr().add(prev_size);
+            let slice = std::slice::from_raw_parts_mut(ptr, bytes_to_read);
+            self.stream.read_exact(slice).await
+        };
+
+        match read_result {
+            Ok(_) => {
+                // 3. UNSAFE: Successfully read exact bytes, update the length.
+                // SAFETY: We have just read 'bytes_to_read' bytes into the uninitialized area, so it's now valid data.
+                unsafe { self.buffer.set_len(prev_size + bytes_to_read) }
+                Ok(())
+            },
+            Err(e) => {
+                // If read_exact fails, the buffer length remains prev_size,
+                // naturally discarding the uninitialized memory area.
+                Err(e.into())
+            },
+        }
     }
 }

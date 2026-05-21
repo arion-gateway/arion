@@ -18,7 +18,8 @@ use orion_e2e_tests::config_builder::{
     RouteConfigBuilder, UpstreamTlsBuilder, VirtualHostBuilder,
 };
 use orion_e2e_tests::{
-    OrionInstance, PreConfiguredResponse, SpawnOptions, TestCerts, TestClient, TlsBackendConfig, TlsTestBackend,
+    cleanup_config_file, OrionInstance, PreConfiguredResponse, SpawnOptions, TestCerts, TestClient, TlsBackendConfig,
+    TlsTestBackend,
 };
 
 fn http_listener(name: &str, cluster_name: &str) -> ListenerBuilder {
@@ -75,7 +76,7 @@ async fn test_mtls_upstream_proxy_presents_cert() {
     assert_eq!(captured_request.path(), "/mtls-upstream");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -115,7 +116,7 @@ async fn test_mtls_upstream_no_client_cert_rejected() {
     );
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -161,7 +162,7 @@ async fn test_mtls_upstream_wrong_client_ca_rejected() {
     );
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -205,7 +206,7 @@ async fn test_mtls_upstream_full_validation() {
     response.assert_body("Full mTLS validation OK!");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -252,7 +253,7 @@ async fn test_mtls_upstream_multiple_requests() {
     }
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -299,7 +300,7 @@ async fn test_mtls_upstream_post_with_body() {
     assert_eq!(req.body_str(), Some(body));
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -335,5 +336,5 @@ async fn test_mtls_upstream_optional_client_cert() {
     response.assert_body("optional mTLS OK");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }

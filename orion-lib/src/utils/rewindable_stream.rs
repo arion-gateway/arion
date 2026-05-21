@@ -59,16 +59,16 @@ where
 
     pub fn get_ref(&self) -> &R {
         match self {
-            RewindableHeadAsyncStream::HeadBufferingReadOnlyMode { inner, .. } => inner.as_ref(),
-            RewindableHeadAsyncStream::FullReplayMode { inner, .. } => inner.as_ref(),
+            RewindableHeadAsyncStream::HeadBufferingReadOnlyMode { inner, .. }
+            | RewindableHeadAsyncStream::FullReplayMode { inner, .. } => inner.as_ref(),
         }
     }
 
     #[allow(dead_code)]
     pub fn get_mut(&mut self) -> &mut R {
         match self {
-            RewindableHeadAsyncStream::HeadBufferingReadOnlyMode { inner, .. } => inner.as_mut(),
-            RewindableHeadAsyncStream::FullReplayMode { inner, .. } => inner.as_mut(),
+            RewindableHeadAsyncStream::HeadBufferingReadOnlyMode { inner, .. }
+            | RewindableHeadAsyncStream::FullReplayMode { inner, .. } => inner.as_mut(),
         }
     }
 }
@@ -83,21 +83,33 @@ where
                 let initial_len = buf.filled().len();
                 match Pin::new(inner).poll_read(cx, buf) {
                     Poll::Ready(Ok(())) => {
-                        let bytes_read = &buf.filled()[initial_len..];
-                        buffer.extend_from_slice(bytes_read);
+                        // Use get() to safely access the newly filled portion of the buffer
+                        if let Some(bytes_read) = buf.filled().get(initial_len..) {
+                            buffer.extend_from_slice(bytes_read);
+                        }
                         Poll::Ready(Ok(()))
                     },
                     other => other,
                 }
             },
             Self::FullReplayMode { inner, replay_buffer, read_pos } => {
-                if *read_pos < replay_buffer.len() {
-                    let remaining_buffer = &replay_buffer[*read_pos..];
-                    let to_copy = std::cmp::min(remaining_buffer.len(), buf.remaining());
-                    buf.put_slice(&remaining_buffer[..to_copy]);
-                    *read_pos += to_copy;
-                    return Poll::Ready(Ok(()));
+                let current_pos = *read_pos;
+
+                // Safely check if we have data left in the replay buffer
+                if let Some(remaining_buffer) = replay_buffer.get(current_pos..) {
+                    if !remaining_buffer.is_empty() {
+                        let to_copy = std::cmp::min(remaining_buffer.len(), buf.remaining());
+
+                        // Further: ensure we only slice what we actually need
+                        if let Some(data_to_put) = remaining_buffer.get(..to_copy) {
+                            buf.put_slice(data_to_put);
+                            *read_pos += to_copy;
+                            return Poll::Ready(Ok(()));
+                        }
+                    }
                 }
+
+                // Replay buffer exhausted, proceed to read from the inner stream
                 Pin::new(inner).poll_read(cx, buf)
             },
         }
@@ -108,14 +120,14 @@ impl<R> AsyncWrite for RewindableHeadAsyncStream<R>
 where
     R: AsyncReadWriteInstrumented + ?Sized,
 {
-    fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, write_buf: &[u8]) -> Poll<std::io::Result<usize>> {
+    fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<std::io::Result<usize>> {
         match &mut *self {
             Self::HeadBufferingReadOnlyMode { .. } => Poll::Ready(Err(std::io::Error::other(
                 "RewindableHeadAsyncStream: write operations are not supported in HeadBufferingReadOnlyMode",
             ))),
             Self::FullReplayMode { inner, replay_buffer, read_pos } => {
                 if *read_pos >= replay_buffer.len() {
-                    Pin::new(inner).poll_write(cx, write_buf)
+                    Pin::new(inner).poll_write(cx, buf)
                 } else {
                     Poll::Ready(Err(std::io::Error::other(
                         "RewindableHeadAsyncStream: write operations are not supported while replaying buffered data",

@@ -17,6 +17,10 @@
 
 pub mod http_connection_manager;
 pub use http_connection_manager::HttpConnectionManager;
+pub mod network_connection_limit;
+pub use network_connection_limit::ConnectionLimit;
+pub mod network_global_rate_limit;
+pub use network_global_rate_limit::NetworkGlobalRateLimit;
 pub mod network_rbac;
 pub use network_rbac::NetworkRbac;
 pub mod tcp_proxy;

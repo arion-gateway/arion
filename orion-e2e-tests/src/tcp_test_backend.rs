@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use pingora::prelude::fast_timeout::fast_timeout;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -56,16 +57,16 @@ pub struct TcpTestBackend {
 impl TcpTestBackend {
     pub async fn start() -> Result<Self> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
-        Self::start_with_listener(listener).await
+        Self::start_with_listener(listener)
     }
 
     pub async fn start_on_port(port: u16) -> Result<Self> {
         let addr = SocketAddr::from(([127, 0, 0, 1], port));
         let listener = TcpListener::bind(addr).await?;
-        Self::start_with_listener(listener).await
+        Self::start_with_listener(listener)
     }
 
-    async fn start_with_listener(listener: TcpListener) -> Result<Self> {
+    fn start_with_listener(listener: TcpListener) -> Result<Self> {
         let addr = listener.local_addr()?;
 
         info!(?addr, "Starting TCP test backend");
@@ -117,14 +118,16 @@ impl TcpTestBackend {
                                     debug!(?peer_addr, "Closing connection after send");
                                 } else {
                                     let mut buf = [0u8; READ_BUFFER_SIZE];
-                                    match tokio::time::timeout(
+                                    match fast_timeout(
                                         current_behavior.read_timeout,
                                         stream.read(&mut buf),
                                     )
                                     .await
                                     {
                                         Ok(Ok(n)) if n > 0 => {
-                                            received_data.extend_from_slice(&buf[..n]);
+                                            if let Some(slice) = buf.get(..n) {
+                                                received_data.extend_from_slice(slice);
+                                            }
                                             debug!(?peer_addr, bytes = n, "Read data from connection");
                                         }
                                         Ok(Ok(_)) => {
@@ -190,7 +193,7 @@ impl TcpTestBackend {
 
     #[allow(clippy::disallowed_methods)]
     pub async fn await_connection_with_timeout(&mut self, timeout: Duration) -> Result<CapturedTcpConnection> {
-        match tokio::time::timeout(timeout, self.connection_rx.recv()).await {
+        match fast_timeout(timeout, self.connection_rx.recv()).await {
             Ok(Some(conn)) => Ok(conn),
             Ok(None) | Err(_) => Err(Error::NoConnectionReceived(timeout)),
         }
@@ -208,7 +211,7 @@ impl TcpTestBackend {
             if remaining.is_zero() {
                 return Err(Error::NoConnectionReceived(timeout));
             }
-            match tokio::time::timeout(remaining, self.connection_rx.recv()).await {
+            match fast_timeout(remaining, self.connection_rx.recv()).await {
                 Ok(Some(_)) => received += 1,
                 Ok(None) | Err(_) => return Err(Error::NoConnectionReceived(timeout)),
             }

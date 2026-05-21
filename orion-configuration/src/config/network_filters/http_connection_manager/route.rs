@@ -17,7 +17,7 @@
 
 use super::{header_matcher::HeaderMatcher, RetryPolicy};
 use crate::config::{
-    cluster::ClusterSpecifier,
+    cluster::{ClusterSpecifier, RoutingPriority},
     common::*,
     core::{CaseSensitive, DataSource, StringMatcher},
 };
@@ -91,13 +91,14 @@ impl PathRewriteSpecifier {
         route_match_result: &RouteMatchResult,
     ) -> Result<Option<PathAndQuery>, InvalidUri> {
         let old_path = path_and_query.map(PathAndQuery::path).unwrap_or_default();
-        let old_query = path_and_query.map(PathAndQuery::query).unwrap_or_default();
+        let old_query = path_and_query.and_then(|pq| pq.query());
+
         let new_path = match self {
-            //full overwrite, doesn't care what original was
+            // Full overwrite, doesn't care what original was
             PathRewriteSpecifier::Path(p) => p.path().into(),
-            // apply a regex tot the original
+
+            // Apply a regex to the original
             PathRewriteSpecifier::Regex(regex) => {
-                //we need to run the regex even if the original is empty because it could match against '^$' (^ = start-of-string, $ = end-of-string)
                 let replacement = regex.pattern.replace_all(old_path, regex.substitution.as_str());
                 if let Cow::Borrowed(_) = replacement {
                     return Ok(None);
@@ -105,21 +106,30 @@ impl PathRewriteSpecifier {
                     replacement
                 }
             },
+
             PathRewriteSpecifier::Prefix(prefix) => {
                 if let Some(matched_range) = route_match_result.matched_range() {
-                    let orig_without_prefix = &old_path[matched_range.end..];
+                    // Use get() to safely handle range bounds and avoid panics on non-char boundaries
+                    let orig_without_prefix = old_path.get(matched_range.end..).unwrap_or("");
                     format!("{prefix}{orig_without_prefix}").into()
                 } else {
                     return Ok(None);
                 }
             },
         };
-        if let Some(old_query) = old_query {
-            if !new_path.contains('?') {
-                return Some(PathAndQuery::from_str(&format!("{new_path}?{old_query}"))).transpose();
+
+        // Construct the final path with the original query string if present
+        let final_uri = if let Some(q) = old_query {
+            if new_path.contains('?') {
+                new_path.into_owned()
+            } else {
+                format!("{new_path}?{q}")
             }
-        }
-        Some(PathAndQuery::from_str(&new_path)).transpose()
+        } else {
+            new_path.into_owned()
+        };
+
+        PathAndQuery::from_str(&final_uri).map(Some)
     }
 }
 
@@ -237,6 +247,8 @@ pub struct RouteAction {
     pub upgrade_config: Option<UpgradeConfig>,
     #[serde(skip_serializing_if = "Vec::is_empty", default = "Default::default")]
     pub hash_policy: Vec<HashPolicy>,
+    #[serde(skip_serializing_if = "is_default_priority", default)]
+    pub priority: RoutingPriority,
 }
 
 const DEFAULT_CLUSTER_NOT_FOUND_STATUSCODE: StatusCode = StatusCode::SERVICE_UNAVAILABLE;
@@ -257,6 +269,11 @@ const fn default_timeout_deser() -> Option<Duration> {
 #[allow(clippy::ref_option)]
 fn is_default_timeout(timeout: &Option<Duration>) -> bool {
     *timeout == default_timeout_deser()
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_default_priority(priority: &RoutingPriority) -> bool {
+    *priority == RoutingPriority::Default
 }
 
 #[derive(Clone, Debug, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -469,13 +486,15 @@ impl PathMatcher {
             PathSpecifier::Exact(s) => case_matcher.equals(s).then_some(s.len()),
             PathSpecifier::Prefix(p) => case_matcher.starts_with(p).then_some(p.len()),
             PathSpecifier::PathSeparatedPrefix(psp) => {
-                if case_matcher.equals(&psp[..psp.len() - 1]) {
-                    Some(psp.len() - 1)
-                } else if case_matcher.starts_with(psp) {
-                    Some(psp.len())
-                } else {
-                    None
+                // Use strip_suffix to safely get the prefix without the trailing slash
+                // it returns None if the suffix is not present, avoiding manual len() - 1
+                if let Some(without_slash) = psp.strip_suffix('/') {
+                    if case_matcher.equals(without_slash) {
+                        return PathMatcherResult { inner: Some(without_slash.len()) };
+                    }
                 }
+
+                case_matcher.starts_with(psp).then(|| psp.len())
             },
             PathSpecifier::Regex(r) => r.matches_full(path).then_some(path.len()),
         };
@@ -516,10 +535,8 @@ impl Hash for PathSpecifier {
 
 #[cfg(test)]
 mod tests {
-
     use super::*;
-    use crate::config::core::{StringMatcher, StringMatcherPattern};
-    use http::Request;
+    use crate::config::core::StringMatcherPattern;
 
     #[test]
     fn test_rewrite_uri_by_path_match_range() {
@@ -647,8 +664,8 @@ mod envoy_conversions {
     use super::{
         Action, AuthorityRedirect, Connect, DirectResponseAction, DirectResponseBody, HashPolicy, PathMatcher,
         PathRewriteSpecifier, PathSpecifier, PolicySpecifier, QueryParameterMatchSpecifier, QueryParameterMatcher,
-        RedirectAction, RedirectResponseCode, RegexMatchAndSubstitute, RouteAction, RouteMatch, UpgradeConfig,
-        Websocket, DEFAULT_TIMEOUT,
+        RedirectAction, RedirectResponseCode, RegexMatchAndSubstitute, RouteAction, RouteMatch, RoutingPriority,
+        UpgradeConfig, Websocket, DEFAULT_TIMEOUT,
     };
     use crate::config::{
         common::*,
@@ -748,7 +765,7 @@ mod envoy_conversions {
                 })?
                 .into();
 
-            let port_redirect = u16::try_from(port_redirect).map(NonZeroU16::new).map_err(|_| {
+            let port_redirect = u16::try_from(port_redirect).map(NonZeroU16::new).map_err(|_e| {
                 GenericError::from_msg("{port_redirect} is not a valid port").with_node("port_redirect")
             })?;
             let host_redirect = host_redirect.is_used().then_some(host_redirect);
@@ -827,7 +844,7 @@ mod envoy_conversions {
         fn try_from(value: EnvoyDirectResponseAction) -> Result<Self, Self::Error> {
             let EnvoyDirectResponseAction { status, body, body_format } = value;
             unsupported_field!(body_format)?;
-            let status_u16: u16 = status.try_into().map_err(|_| GenericError::from_msg("invalid status code"))?;
+            let status_u16: u16 = status.try_into().map_err(|_e| GenericError::from_msg("invalid status code"))?;
             let status = RustType::<StatusCode>::try_from(status_u16).with_node("status")?.into_inner();
             let body = if let Some(source) = body.map(DataSource::try_from).transpose().with_node("body")? {
                 let data = source
@@ -903,7 +920,7 @@ mod envoy_conversions {
                 // retry_policy,
                 retry_policy_typed_config,
                 request_mirror_policies,
-                priority,
+                // priority,
                 rate_limits,
                 include_vh_rate_limits,
                 // hash_policy,
@@ -951,6 +968,11 @@ mod envoy_conversions {
             let retry_policy = retry_policy.map(RetryPolicy::try_from).transpose().with_node("retry_policy")?;
             let upgrade_config = upgrade_configs.try_into().with_node("upgrade_configs").ok();
             let hash_policy = convert_vec!(hash_policy)?;
+            let priority = match priority {
+                0 => RoutingPriority::Default,
+                1 => RoutingPriority::High,
+                _ => return Err(GenericError::from_msg(format!("invalid priority value: {priority}"))),
+            };
             Ok(Self {
                 cluster_not_found_response_code,
                 timeout,
@@ -959,6 +981,7 @@ mod envoy_conversions {
                 retry_policy,
                 upgrade_config,
                 hash_policy,
+                priority,
             })
         }
     }

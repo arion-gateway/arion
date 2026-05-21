@@ -95,7 +95,7 @@ pub struct ClientCert {
 
 impl From<CertificateSecret> for ClientCert {
     fn from(secret: CertificateSecret) -> Self {
-        let CertificateSecret { name: _, key, certs, config: _ } = secret;
+        let CertificateSecret { key, certs, .. } = secret;
         ClientCert { key, certs }
     }
 }
@@ -148,7 +148,7 @@ impl TryFrom<TransportSecret> for ClientCert {
 impl TryFrom<CertificateSecret> for ServerCert {
     type Error = crate::Error;
     fn try_from(secret: CertificateSecret) -> Result<Self> {
-        let CertificateSecret { name, key, certs, config: _ } = secret;
+        let CertificateSecret { name, key, certs, .. } = secret;
         if let Some(name) = name {
             Ok(ServerCert { name, key: Arc::new(key.clone_key()), certs })
         } else {
@@ -241,7 +241,7 @@ impl TlsConfigurator<ClientConfig, WantsToBuildClient> {
                     .with_sni(sni)
                     .with_trust_chain_verification(trust_chain_verification)
                 } else {
-                    let msg = format!("Secret name doesn't match {secret_id} {validation_context_secret_id:?}",);
+                    let msg = format!("Secret name doesn't match {secret_id} {validation_context_secret_id:?}");
                     warn!("{msg}");
                     return Err(msg.into());
                 }
@@ -292,7 +292,7 @@ impl TlsConfigurator<ServerConfig, WantsToBuildServer> {
                         .with_certificates(server_ids_and_certificates)
                         .with_client_authentication(require_client_cert)
                 } else {
-                    let msg = format!("Can't find secret {secret_id} {validation_context_secret_id:?}",);
+                    let msg = format!("Can't find secret {secret_id} {validation_context_secret_id:?}");
                     debug!("{msg}");
                     return Err(msg.into());
                 }
@@ -497,7 +497,7 @@ impl RelaxedResolvesServerCertUsingSni {
         let test_name_str = if is_wildcard { format!("dummy.{base_domain}") } else { name.clone() };
 
         let server_name = rustls::pki_types::ServerName::try_from(test_name_str)
-            .map_err(|_| rustls::Error::General("Bad Server/DNS name".into()))?;
+            .map_err(|_e| rustls::Error::General("Bad Server/DNS name".into()))?;
 
         // 3. Sanity check: verify the certificate actually covers the domain/wildcard
         ck.end_entity_cert()
@@ -522,7 +522,7 @@ impl RelaxedResolvesServerCertUsingSni {
             cert_id, ck.key, ck.ocsp
         );
         if is_wildcard {
-            self.by_wildcard.insert(base_domain.to_string(), ck);
+            self.by_wildcard.insert(base_domain.to_owned(), ck);
         } else {
             self.by_name.insert(name.clone(), ck);
         }

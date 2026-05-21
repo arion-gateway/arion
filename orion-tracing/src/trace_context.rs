@@ -220,6 +220,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::unnecessary_literal_unwrap)]
     fn test_spawn_child_with_trace_id_parent() {
         let trace_id = Some(0x1234567890abcdef);
         let context = TraceContext::new(trace_id);

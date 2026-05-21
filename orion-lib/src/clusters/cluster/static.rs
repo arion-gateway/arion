@@ -18,6 +18,7 @@
 use super::{ClusterOps, ClusterType};
 use crate::{
     clusters::{
+        circuit_breaker::ClusterCircuitBreaker,
         clusters_manager::{RoutingContext, RoutingRequirement},
         load_assignment::{ClusterLoadAssignment, ClusterLoadAssignmentBuilder},
         GrpcService,
@@ -36,14 +37,23 @@ pub struct StaticClusterBuilder {
     pub load_assignment: ClusterLoadAssignmentBuilder,
     pub transport_socket: UpstreamTransportSocketConfigurator,
     pub health_check: Option<HealthCheck>,
-    pub config: orion_configuration::config::cluster::Cluster,
+    pub config: Box<orion_configuration::config::cluster::Cluster>,
+    pub circuit_breaker: ClusterCircuitBreaker,
 }
 
 impl StaticClusterBuilder {
     pub fn build(self) -> Result<ClusterType> {
-        let StaticClusterBuilder { name, load_assignment, transport_socket, health_check, config } = self;
+        let StaticClusterBuilder { name, load_assignment, transport_socket, health_check, config, circuit_breaker } =
+            self;
         let load_assignment = load_assignment.build()?;
-        Ok(ClusterType::Static(StaticCluster { name, load_assignment, transport_socket, health_check, config }))
+        Ok(ClusterType::Static(StaticCluster {
+            name,
+            load_assignment,
+            transport_socket,
+            health_check,
+            config,
+            circuit_breaker,
+        }))
     }
 }
 
@@ -53,7 +63,8 @@ pub struct StaticCluster {
     pub load_assignment: ClusterLoadAssignment,
     pub(super) transport_socket: UpstreamTransportSocketConfigurator,
     pub health_check: Option<HealthCheck>,
-    pub config: orion_configuration::config::cluster::Cluster,
+    pub config: Box<orion_configuration::config::cluster::Cluster>,
+    pub circuit_breaker: ClusterCircuitBreaker,
 }
 
 impl ClusterOps for StaticCluster {
@@ -78,7 +89,7 @@ impl ClusterOps for StaticCluster {
     }
 
     fn change_tls_context(&mut self, secret_id: &str, secret: TransportSecret) -> Result<()> {
-        self.transport_socket.update_secret(secret_id, secret)?;
+        self.transport_socket.update_secret(secret_id, &secret)?;
         let mut load_assignment = self.load_assignment.clone();
         load_assignment.transport_socket = self.transport_socket.clone();
         let load_assignment = load_assignment.rebuild()?;
@@ -105,5 +116,9 @@ impl ClusterOps for StaticCluster {
 
     fn get_routing_requirements(&self) -> RoutingRequirement {
         self.load_assignment.get_routing_requirements()
+    }
+
+    fn circuit_breaker(&self) -> &ClusterCircuitBreaker {
+        &self.circuit_breaker
     }
 }

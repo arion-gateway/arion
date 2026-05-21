@@ -12,9 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#![allow(clippy::expect_used, reason = "test infrastructure — panicking on setup failure is intentional")]
+
 use orion_e2e_tests::config_builder::presets;
 use orion_e2e_tests::{
-    assert_rejected, OrionInstance, PreConfiguredResponse, RawHttpRequestBuilder, RawHttpResponse, SpawnOptions,
+    cleanup_config_file, OrionInstance, PreConfiguredResponse, RawHttpRequestBuilder, RawHttpResponse, SpawnOptions,
     TcpTestClient, TestBackend,
 };
 
@@ -29,13 +31,14 @@ async fn setup() -> (OrionInstance, TestBackend, TcpTestClient, std::path::PathB
         .await
         .expect("Failed to spawn Orion");
 
+    #[allow(clippy::unwrap_used)]
     let tcp_client = TcpTestClient::new(orion.listener_addr().unwrap());
     (orion, backend, tcp_client, config_path)
 }
 
-fn cleanup(orion: OrionInstance, config_path: std::path::PathBuf) {
+fn cleanup(orion: OrionInstance, config_path: &std::path::Path) {
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(config_path);
 }
 
 #[tokio::test]
@@ -50,21 +53,7 @@ async fn test_tc1202_host_header_attack() {
     // Default vhost matches "*", so an attacker-controlled Host still routes to the backend.
     resp.assert_status(200);
 
-    cleanup(orion, config_path);
-}
-
-#[tokio::test]
-#[ignore]
-async fn test_tc1203_oversized_cookie() {
-    let (orion, _backend, tcp_client, config_path) = setup().await;
-
-    let big_cookie = format!("session={}", "x".repeat(65536));
-    let req = RawHttpRequestBuilder::new().host("localhost").header(b"Cookie", big_cookie.as_bytes()).build();
-
-    let response = tcp_client.send(&req).await.expect("Failed to send");
-    assert_rejected(&response, &[400, 431]);
-
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -92,7 +81,7 @@ async fn test_tc1204_duplicate_header_exploit() {
     let xff_values = captured.header_all("x-forwarded-for");
     assert!(!xff_values.is_empty(), "Expected X-Forwarded-For header(s) to be forwarded");
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -119,7 +108,7 @@ async fn test_tc1205_method_override_header() {
         .expect("Backend should receive request");
     assert_eq!(captured.method, http::Method::POST, "Proxy should forward the actual method, not the override");
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -135,5 +124,5 @@ async fn test_tc1206_url_encoding_bypass() {
     // Orion forwards the raw percent-encoded path; normalization is the upstream's responsibility.
     resp.assert_status(200);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }

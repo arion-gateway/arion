@@ -33,12 +33,14 @@ use orion_data_plane_api::envoy_data_plane_api::{
                 Route as EnvoyRoute, RouteAction, RouteMatch, WeightedCluster,
             },
         },
+        extensions::filters::http::local_ratelimit::v3::LocalRateLimit as EnvoyLocalRateLimit,
         r#type::{
             matcher::v3::{string_matcher::MatchPattern, RegexMatcher, StringMatcher},
             v3::Int64Range,
         },
     },
-    google::protobuf::{BoolValue, Duration as ProtoDuration, UInt32Value},
+    google::protobuf::{Any, BoolValue, UInt32Value},
+    prost::Message,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -312,7 +314,7 @@ impl RouteBuilder {
         let cluster_weights: Vec<ClusterWeight> = clusters
             .iter()
             .map(|(name, weight)| ClusterWeight {
-                name: (*name).to_string(),
+                name: (*name).to_owned(),
                 weight: Some(UInt32Value { value: *weight }),
                 ..Default::default()
             })
@@ -378,8 +380,7 @@ impl RouteBuilder {
     #[must_use]
     pub fn timeout(mut self, timeout: Duration) -> Self {
         if let Some(Action::Route(ref mut route_action)) = self.proto.action {
-            route_action.timeout =
-                Some(ProtoDuration { seconds: timeout.as_secs() as i64, nanos: timeout.subsec_nanos() as i32 });
+            route_action.timeout = Some(super::duration_to_proto(timeout));
         }
         self
     }
@@ -459,6 +460,17 @@ impl RouteBuilder {
     #[must_use]
     pub fn remove_response_header(mut self, name: impl Into<String>) -> Self {
         self.proto.response_headers_to_remove.push(name.into());
+        self
+    }
+
+    #[must_use]
+    pub fn local_rate_limit_override(mut self, config: impl Into<EnvoyLocalRateLimit>) -> Self {
+        let limit_proto: EnvoyLocalRateLimit = config.into();
+        let any = Any {
+            type_url: "type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit".into(),
+            value: limit_proto.encode_to_vec(),
+        };
+        self.proto.typed_per_filter_config.insert("envoy.filters.http.local_ratelimit".into(), any);
         self
     }
 

@@ -159,47 +159,82 @@ impl ProxyProtocolReader {
     where
         I: AsyncRead + Unpin,
     {
+        // Use get_mut to safely access the initial prefix range
+        let initial_buf =
+            buffer.get_mut(..V1_PREFIX_LEN).ok_or_else(|| Error::new("V1_PREFIX_LEN is out of bounds"))?;
+
         stream
-            .read_exact(&mut buffer[..V1_PREFIX_LEN])
+            .read_exact(initial_buf)
             .await
             .with_context_msg(format!("Failed to read initial bytes from peer {peer_address}"))?;
 
-        if &buffer[..V1_PREFIX_LEN] == v1::PROTOCOL_PREFIX.as_bytes() {
+        // Safe comparison using get()
+        if buffer.get(..V1_PREFIX_LEN) == Some(v1::PROTOCOL_PREFIX.as_bytes()) {
             let mut end_found = false;
-            for i in V1_PREFIX_LEN..V1_MAX_LENGTH {
-                buffer[i] =
-                    stream.read_u8().await.with_context_msg("Problem reading V1 proxy protocol header bytes")?;
-                if [buffer[i - 1], buffer[i]] == V1_TERMINATOR {
+            let max_v1 = V1_MAX_LENGTH.min(READ_BUFFER_LEN);
+
+            for i in V1_PREFIX_LEN..max_v1 {
+                // Safe byte write with get_mut
+                let byte = stream.read_u8().await.with_context_msg("Problem reading V1 header bytes")?;
+                if let Some(slot) = buffer.get_mut(i) {
+                    *slot = byte;
+                }
+
+                // Safe look-back: check the current and previous byte without panicking
+                let current_two_bytes = buffer.get(i.saturating_sub(1)..=i);
+                if current_two_bytes == Some(V1_TERMINATOR) {
                     end_found = true;
                     break;
                 }
             }
+
             if !end_found {
-                return Err(Error::new("Invalid proxy protocol V1 header: terminator not found"));
+                return Err(Error::new("Invalid V1 header: terminator not found or header too long"));
             }
             Ok(DetectedHeader::V1)
         } else {
-            stream
-                .read_exact(&mut buffer[V1_PREFIX_LEN..V2_MINIMUM_LEN])
-                .await
-                .with_context_msg(format!("Problem reading additional header bytes from peer {peer_address}"))?;
+            // Safe access for V2 minimum requirements
+            let v2_min_range = V1_PREFIX_LEN..V2_MINIMUM_LEN;
+            let v2_min_buf = buffer
+                .get_mut(v2_min_range)
+                .ok_or_else(|| Error::new("V2_MINIMUM_LEN is out of bounds for the current buffer"))?;
 
-            if &buffer[..V2_PREFIX_LEN] == v2::PROTOCOL_PREFIX {
-                let length = u16::from_be_bytes([buffer[V2_LENGTH_INDEX], buffer[V2_LENGTH_INDEX + 1]]) as usize;
+            stream
+                .read_exact(v2_min_buf)
+                .await
+                .with_context_msg(format!("Problem reading V2 bytes from {peer_address}"))?;
+
+            if buffer.get(..V2_PREFIX_LEN) == Some(v2::PROTOCOL_PREFIX) {
+                // Extract length using safe get() and array conversion
+                let b1 = *buffer.get(V2_LENGTH_INDEX).ok_or_else(|| Error::new("Invalid V2 length index"))?;
+                let b2 = *buffer.get(V2_LENGTH_INDEX + 1).ok_or_else(|| Error::new("Invalid V2 length index + 1"))?;
+
+                let length = u16::from_be_bytes([b1, b2]) as usize;
                 let full_length = V2_MINIMUM_LEN + length;
+
                 let extra_buffer = if full_length > READ_BUFFER_LEN {
                     let mut dynamic_buffer = Vec::with_capacity(full_length);
-                    dynamic_buffer.extend_from_slice(&buffer[..V2_MINIMUM_LEN]);
-                    stream
-                        .read_exact(&mut dynamic_buffer[V2_MINIMUM_LEN..full_length])
-                        .await
-                        .with_context_msg("Problem reading V2 proxy protocol header into extended buffer")?;
+
+                    // Safe extension: get() ensures we only copy what exists
+                    let head = buffer.get(..V2_MINIMUM_LEN).ok_or_else(|| Error::new("Buffer truncated"))?;
+                    dynamic_buffer.extend_from_slice(head);
+
+                    // Ensure length is set for read_exact
+                    dynamic_buffer.resize(full_length, 0);
+
+                    let tail_buf = dynamic_buffer
+                        .get_mut(V2_MINIMUM_LEN..full_length)
+                        .ok_or_else(|| Error::new("Dynamic buffer range invalid"))?;
+
+                    stream.read_exact(tail_buf).await.with_context_msg("Problem reading V2 into extended buffer")?;
                     Some(dynamic_buffer)
                 } else {
-                    stream
-                        .read_exact(&mut buffer[V2_MINIMUM_LEN..full_length])
-                        .await
-                        .with_context_msg("Problem reading V2 proxy protocol header into buffer")?;
+                    // Safe read into the remaining part of the fixed buffer
+                    let tail_buf = buffer
+                        .get_mut(V2_MINIMUM_LEN..full_length)
+                        .ok_or_else(|| Error::new("V2 full length exceeds fixed buffer capacity"))?;
+
+                    stream.read_exact(tail_buf).await.with_context_msg("Problem reading V2 into fixed buffer")?;
                     None
                 };
                 Ok(DetectedHeader::V2 { extra_buffer })
@@ -300,12 +335,12 @@ pub struct ProxyProtocolConfigurator {
 }
 
 impl ProxyProtocolConfigurator {
-    pub fn update_secret(&mut self, secret_id: &str, secret: crate::secrets::TransportSecret) -> Result<()> {
+    pub fn update_secret(&mut self, secret_id: &str, secret: &crate::secrets::TransportSecret) -> Result<()> {
         if let Some(inner_tls_configurator) = &self.inner_tls_configurator {
             let updated_tls = TlsConfigurator::<ClientConfig, WantsToBuildClient>::update(
                 inner_tls_configurator.clone(),
                 secret_id,
-                &secret,
+                secret,
             )?;
             self.inner_tls_configurator = Some(updated_tls);
         }
@@ -400,12 +435,9 @@ impl TryFrom<(UpstreamProxyProtocolConfig, &SecretManager)> for ProxyProtocolCon
 
 #[cfg(test)]
 mod tests {
-    use crate::utils::instrumented_stream::InstrumentedStream;
-
     use super::*;
-    use orion_configuration::config::transport::{PassTlvMatchType, ProxyProtocolPassThroughTlvs, TlvEntry};
-    use std::net::{Ipv4Addr, SocketAddr};
-    use tokio::io::AsyncWriteExt;
+    use crate::utils::instrumented_stream::InstrumentedStream;
+    use std::net::Ipv4Addr;
 
     #[tokio::test]
     #[allow(clippy::ref_option)]
@@ -446,7 +478,7 @@ mod tests {
                 assert_eq!(proxy_local_address, local_addr);
                 assert_eq!(protocol, ppp::v2::Protocol::Stream);
             },
-            _ => unreachable!("Expected FromProxyProtocol metadata"),
+            DownstreamConnectionMetadata::FromSocket { .. } => unreachable!("Expected FromProxyProtocol metadata"),
         }
     }
 
@@ -498,7 +530,7 @@ mod tests {
                 assert_eq!(proxy_local_address, local_addr);
                 assert_eq!(protocol, ppp::v2::Protocol::Stream);
             },
-            _ => unreachable!("Expected FromProxyProtocol metadata"),
+            DownstreamConnectionMetadata::FromSocket { .. } => unreachable!("Expected FromProxyProtocol metadata"),
         }
     }
 
@@ -589,7 +621,7 @@ mod tests {
                 assert_eq!(tlv_data.get(&TlvType::Custom(0x02)), Some(&b"custom_type_2".to_vec()));
                 assert_eq!(tlv_data.get(&TlvType::Custom(0x03)), None);
             },
-            _ => unreachable!("Expected FromProxyProtocol metadata"),
+            DownstreamConnectionMetadata::FromSocket { .. } => unreachable!("Expected FromProxyProtocol metadata"),
         }
     }
 }

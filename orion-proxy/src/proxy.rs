@@ -23,7 +23,8 @@ use crate::{
 };
 use futures::future::join_all;
 use orion_configuration::config::{
-    bootstrap::Node, embeddings::EmbeddingsService, log::AccessLogConfig, runtime::Affinity, Bootstrap,
+    bootstrap::Node, embeddings::EmbeddingsService, log::AccessLogConfig, metrics::MetricsConfig, runtime::Affinity,
+    Bootstrap,
 };
 
 #[cfg(feature = "tracing")]
@@ -44,7 +45,7 @@ use orion_lib::{
     Result, SecretManager,
 };
 #[cfg(feature = "metrics")]
-use orion_metrics::{metrics::init_global_metrics, wait_for_metrics_setup, Metrics, VecMetrics};
+use orion_metrics::{metrics::init_global_metrics, wait_for_metrics_setup, OtelExporterConfig};
 
 use parking_lot::RwLock;
 use std::{
@@ -56,13 +57,14 @@ use tracing::{debug, error, info, warn};
 
 pub fn run_orion(
     bootstrap: Bootstrap,
+    metrics: Option<MetricsConfig>,
     access_log_config: Option<AccessLogConfig>,
     embeddings_services: Vec<EmbeddingsService>,
 ) {
     debug!("Starting on thread {:?}", std::thread::current().name());
 
     // launch the runtimes...
-    if let Err(e) = launch_runtimes(bootstrap, access_log_config, embeddings_services) {
+    if let Err(e) = launch_runtimes(bootstrap, metrics, access_log_config, embeddings_services) {
         error!("Failed to launch runtimes: {e:?}");
         std::process::exit(1);
     }
@@ -83,7 +85,7 @@ fn calculate_num_threads_per_runtime(num_cpus: usize, num_runtimes: usize) -> Re
         );
     }
 
-    if num_cpus % num_runtimes != 0 {
+    if !num_cpus.is_multiple_of(num_runtimes) {
         return Err(format!(
             "The number of CPUs ({num_cpus}) is not a multiple of the number of runtimes ({num_runtimes})",
         )
@@ -107,13 +109,15 @@ struct ServiceInfo {
     #[cfg(feature = "tracing")]
     tracing: HashMap<TracingKey, TracingConfig>,
     #[cfg(feature = "metrics")]
-    metrics: Vec<Metrics>,
+    otel_exporters: Vec<OtelExporterConfig>,
 }
 
 type SenderGuards = Vec<ConfigurationSenders>;
 
+#[allow(clippy::needless_pass_by_value)]
 fn launch_runtimes(
     bootstrap: Bootstrap,
+    #[allow(unused_variables)] metrics_config: Option<MetricsConfig>,
     _access_log_config: Option<AccessLogConfig>,
     embeddings_services: Vec<EmbeddingsService>,
 ) -> Result<SenderGuards> {
@@ -136,9 +140,7 @@ fn launch_runtimes(
     //
 
     #[cfg(feature = "metrics")]
-    let metrics = VecMetrics::from(&bootstrap).0;
-    #[cfg(feature = "metrics")]
-    let are_metrics_empty = metrics.is_empty();
+    let otel_exporters = OtelExporterConfig::extract_from_bootstrap(&bootstrap);
 
     #[cfg(feature = "tracing")]
     let tracing = bootstrap
@@ -186,7 +188,7 @@ fn launch_runtimes(
         #[cfg(feature = "tracing")]
         tracing,
         #[cfg(feature = "metrics")]
-        metrics: metrics.clone(),
+        otel_exporters: otel_exporters.clone(),
     };
 
     info!("Launching Service runtime with {} threads", rt_config.num_service_threads.get());
@@ -199,7 +201,7 @@ fn launch_runtimes(
     )?;
 
     #[cfg(feature = "metrics")]
-    if !are_metrics_empty {
+    if !otel_exporters.is_empty() {
         info!("Waiting for metrics setup to complete...");
         wait_for_metrics_setup();
     }
@@ -211,15 +213,18 @@ fn launch_runtimes(
     let num_threads_per_runtime = calculate_num_threads_per_runtime(num_cpus, num_runtimes)
         .with_context_msg("failed to calculate number of threads to use per runtime")?;
 
-    // initialize global metrics...
     #[cfg(feature = "metrics")]
-    init_global_metrics(&metrics, num_threads_per_runtime * num_runtimes);
+    init_global_metrics(
+        &otel_exporters,
+        metrics_config.as_ref().unwrap_or(&MetricsConfig::default()),
+        num_threads_per_runtime * num_runtimes,
+    );
 
     info!("Launching {num_runtimes} worker runtime(s) with {num_threads_per_runtime} thread(s) each");
 
     let proxy_handles = {
         (0..num_runtimes)
-            .zip(config_receivers.into_iter())
+            .zip(config_receivers)
             .map(|(id, config_receivers)| {
                 spawn_proxy_runtime_from_thread(
                     "proxy",
@@ -227,7 +232,7 @@ fn launch_runtimes(
                     rt_config.affinity_strategy.clone().map(|affinity| (RuntimeId(id), affinity)),
                     config_receivers,
                     #[cfg(feature = "metrics")]
-                    metrics.clone(),
+                    otel_exporters.clone(),
                 )
             })
             .collect::<Result<Vec<_>>>()?
@@ -243,7 +248,7 @@ fn launch_runtimes(
 
     #[cfg(feature = "instrumentation")]
     {
-        orion_lib::instrumentation::dump_instrumentation_counters();
+        orion_lib::instrumentation::dump_instrumentation_counters()
     }
 
     Ok(sender_guards)
@@ -256,13 +261,13 @@ fn spawn_proxy_runtime_from_thread(
     num_threads: usize,
     affinity_info: Option<(RuntimeId, Affinity)>,
     configuration_receivers: ConfigurationReceivers,
-    #[cfg(feature = "metrics")] metrics: Vec<Metrics>,
+    #[cfg(feature = "metrics")] otel_exporters: Vec<OtelExporterConfig>,
 ) -> Result<RuntimeHandle> {
     let thread_name = build_thread_name(thread_name, affinity_info.as_ref());
 
     let handle: JoinHandle<Result<()>> = thread::Builder::new().name(thread_name.clone()).spawn(move || {
         #[cfg(feature = "metrics")]
-        let rt = runtime::build_tokio_runtime(&thread_name, num_threads, affinity_info, metrics);
+        let rt = runtime::build_tokio_runtime(&thread_name, num_threads, affinity_info, otel_exporters);
         #[cfg(not(feature = "metrics"))]
         let rt = runtime::build_tokio_runtime(&thread_name, num_threads, affinity_info);
 
@@ -338,14 +343,14 @@ async fn spawn_services(info: ServiceInfo) -> Result<()> {
         #[cfg(feature = "tracing")]
         tracing,
         #[cfg(feature = "metrics")]
-        metrics,
+            otel_exporters: exporters,
     } = info;
     let mut set: JoinSet<Result<()>> = JoinSet::new();
 
     // spawn XSD configuration service...
     let configuration_senders_clone = configuration_senders.clone();
     let bootstrap_clone = bootstrap.clone();
-    let secret_manager_clone = secret_manager.clone();
+    let secret_manager_clone = Arc::clone(&secret_manager);
     set.spawn(async move {
         // ADS cluster must be in the registry before connect() can resolve it.
         // Static MCP TDS listeners may already have queued registrations; MCP
@@ -377,16 +382,18 @@ async fn spawn_services(info: ServiceInfo) -> Result<()> {
             let handles = start_access_loggers(
                 conf.num_instances.get(),
                 conf.queue_length.get(),
-                conf.log_rotation.map(|x| x.0).clone(),
-                conf.log_max_size.clone(),
+                conf.log_rotation.map(|x| x.0),
+                conf.log_max_size,
                 conf.max_log_files.get(),
                 conf.blocking,
             );
 
             info!("Access loggers started with {} instances", conf.num_instances);
 
-            for (target, access_log_config) in
-                listeners.iter().map(|l| l.all_access_log_configs()).flatten().collect::<Vec<_>>()
+            for (target, access_log_config) in listeners
+                .iter()
+                .flat_map(orion_configuration::config::Listener::all_access_log_configs)
+                .collect::<Vec<_>>()
             {
                 _ = update_configuration(target.into(), access_log_config).await;
             }
@@ -406,10 +413,10 @@ async fn spawn_services(info: ServiceInfo) -> Result<()> {
 
     // spawn metrics exporter...
     #[cfg(feature = "metrics")]
-    if metrics.is_empty() {
+    if exporters.is_empty() {
         info!("OTEL metrics: stats_sink not configured (skipped)");
     } else {
-        orion_metrics::otel_launch_exporter(&metrics).await?;
+        orion_metrics::otel_launch_exporter(&exporters).await?;
     }
 
     // spawn tracing exporters...
@@ -450,9 +457,7 @@ async fn push_initial_listeners(
 ) -> Result<()> {
     let listeners_tx: Vec<_> = configuration_senders
         .into_iter()
-        .map(|ConfigurationSenders { listener_configuration_sender, route_configuration_sender: _ }| {
-            listener_configuration_sender
-        })
+        .map(|ConfigurationSenders { listener_configuration_sender, .. }| listener_configuration_sender)
         .collect();
 
     for (listener, listener_conf) in listeners.iter().zip(bootstrap.static_resources.listeners) {

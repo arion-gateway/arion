@@ -15,7 +15,9 @@
 //
 //
 
-use super::{RequestHandler, TransactionHandler};
+use super::{RequestHandler, TransactionContext};
+#[cfg(feature = "metrics")]
+use crate::metrics;
 use crate::{
     body::response_flags::ResponseFlags, event_error::EventFailure,
     listeners::synthetic_http_response::SyntheticHttpResponse, transport::HttpChannels,
@@ -80,8 +82,9 @@ pub fn is_websocket_enabled_by_hcm(hcm_enabled_upgrades: &[UpgradeType]) -> bool
     hcm_enabled_upgrades.iter().any(|upgrade| matches!(upgrade, UpgradeType::Websocket))
 }
 
+#[allow(clippy::too_many_lines)]
 pub async fn handle_websocket_upgrade(
-    trans_handler: &TransactionHandler,
+    trans_handler: &TransactionContext,
     mut request: Request<OrionRequestBody>,
     svc_channel: &HttpChannels,
     #[cfg(feature = "metrics")] listener_name: &'static str,
@@ -90,18 +93,7 @@ pub async fn handle_websocket_upgrade(
     match version {
         Version::HTTP_11 => {
             #[cfg(feature = "metrics")]
-            let user_id = {
-                use orion_interner::StringInterner;
-                let uid = crate::metrics::get_user_header_name()
-                    .and_then(|user_id_header_name| {
-                        request.headers().get(user_id_header_name).map(|value| value.to_str())
-                    })
-                    .transpose()
-                    .ok()
-                    .flatten()
-                    .map(|s| s.to_static_str());
-                uid
-            };
+            let user_partition_key = trans_handler.user_partition_key;
 
             let request_upgrade = hyper::upgrade::on(&mut request);
             match svc_channel.to_response(trans_handler, request, RequestContext::default()).await {
@@ -133,12 +125,16 @@ pub async fn handle_websocket_upgrade(
                                 let mut upstream = InstrumentedStream::new(TokioIo::new(response_upgraded));
 
                                 #[allow(unused_variables)]
+                                #[allow(clippy::let_unit_value)]
                                 let shard_id = get_shard_id!();
 
-                                let _ = copy_bidirectional(&mut downstream, &mut upstream).await.map_err(|err| {
-                                    error!("Upgrade failure, bidi copy failed for websocket {:?}", err);
-                                    err
-                                });
+                                let _ = copy_bidirectional(&mut downstream, &mut upstream)
+                                    .await
+                                    .map_err(|err| {
+                                        error!("Upgrade failure, bidi copy failed for websocket {:?}", err);
+                                        err
+                                    })
+                                    .ok();
 
                                 #[allow(unused_variables)]
                                 let bytes_received_down = downstream.metrics().bytes_read();
@@ -181,20 +177,52 @@ pub async fn handle_websocket_upgrade(
                                 );
 
                                 #[cfg(feature = "metrics")]
-                                if let Some(user_id) = user_id {
+                                if let Some(partition_key) = user_partition_key {
                                     with_metric!(
                                         user::INBOUND_STREAMING_BYTES_PROCESSED,
                                         add,
                                         bytes_received_down,
                                         shard_id,
-                                        &[KeyValue::new("user_id", user_id)]
+                                        &[KeyValue::new(
+                                            metrics::USER_KEY.attribute_name().unwrap_or("user"),
+                                            partition_key
+                                        )]
                                     );
                                     with_metric!(
                                         user::OUTBOUND_STREAMING_BYTES_PROCESSED,
                                         add,
                                         bytes_sent_down,
                                         shard_id,
-                                        &[KeyValue::new("user_id", user_id)]
+                                        &[KeyValue::new(
+                                            metrics::USER_KEY.attribute_name().unwrap_or("user"),
+                                            partition_key
+                                        )]
+                                    );
+                                    with_metric!(
+                                        user::BYTES_RX,
+                                        add,
+                                        bytes_received_down,
+                                        shard_id,
+                                        &[
+                                            KeyValue::new(
+                                                metrics::USER_KEY.attribute_name().unwrap_or("user"),
+                                                partition_key
+                                            ),
+                                            KeyValue::new("listener", listener_name)
+                                        ]
+                                    );
+                                    with_metric!(
+                                        user::BYTES_TX,
+                                        add,
+                                        bytes_sent_down,
+                                        shard_id,
+                                        &[
+                                            KeyValue::new(
+                                                metrics::USER_KEY.attribute_name().unwrap_or("user"),
+                                                partition_key
+                                            ),
+                                            KeyValue::new("listener", listener_name)
+                                        ]
                                     );
                                 }
                             },

@@ -16,10 +16,11 @@
 //
 
 use http::StatusCode;
+use orion_interner::InternedStr;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LocalRateLimit {
     #[serde(
         with = "http_serde_ext::status_code",
@@ -27,6 +28,7 @@ pub struct LocalRateLimit {
         default = "default_statuscode_deser"
     )]
     pub status: StatusCode,
+    pub stat_prefix: InternedStr,
     pub token_bucket: Option<TokenBucket>,
 }
 
@@ -100,9 +102,7 @@ mod envoy_conversions {
                 rate_limits,
                 max_dynamic_descriptors
             )?;
-            if stat_prefix.is_used() {
-                tracing::warn!("stat_prefix used in local_rate_limit, this field will be ignored.");
-            }
+
             //note(hayley): envoy sets status codes <400 to 429 here.
             // we might want to do some validation too
             //
@@ -128,9 +128,10 @@ mod envoy_conversions {
                 return Ok(Self {
                     status,
                     token_bucket: Some(TokenBucket { max_tokens, tokens_per_fill, fill_interval }),
+                    stat_prefix: stat_prefix.into(),
                 });
             }
-            Ok(Self { status, token_bucket: None })
+            Ok(Self { status, token_bucket: None, stat_prefix: stat_prefix.into() })
         }
     }
 }

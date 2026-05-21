@@ -20,7 +20,6 @@ use super::{
     model::{RejectedConfig, ResourceId, ResourceVersion, TypeUrl, XdsError, XdsResourcePayload, XdsResourceUpdate},
     request::{DeltaDiscoveryRequestBuilder, StatusBuilder},
 };
-use core::result::Result::{Err, Ok};
 
 use orion_configuration::config::bootstrap::Node;
 use orion_data_plane_api::envoy_data_plane_api::{
@@ -70,7 +69,7 @@ where
 
     fn subscribe_resource_name_by_typeurl(mut self, resource_id: ResourceId, type_url: TypeUrl) -> Self {
         let configured_type_url = C::type_url();
-        if configured_type_url.is_none() || configured_type_url.is_some_and(|type_is_set| type_is_set == type_url) {
+        if configured_type_url.is_none_or(|type_is_set| type_is_set == type_url) {
             self.initial_subscriptions.entry(type_url).or_default().insert(resource_id);
         } else {
             self.error = Some("can only subscribe by type_url when using a compatible typed binding".to_owned());
@@ -380,7 +379,7 @@ impl<C: bindings::TypedXdsBinding> DeltaClientBackgroundWorker<C> {
                             .with_nounce(nonce.clone())
                             .with_error_detail(Some(StatusBuilder::unspecified_error().with_message(error_msg).build()))
                             .build();
-                        let _ = acknowledgments_tx.send(upstream_response).await;
+                        let _ = acknowledgments_tx.send(upstream_response).await.ok();
                     }
                 }
             },
@@ -472,7 +471,7 @@ impl<C: bindings::TypedXdsBinding> DeltaClientBackgroundWorker<C> {
                     decoding_errors.push(RejectedConfig::from((resource_id.clone(), decoding_error)));
                     warn!(error_msg);
                 }
-                decoded.ok().map(|value| XdsResourceUpdate::Update(resource_id, value, resource_version))
+                decoded.ok().map(|value| XdsResourceUpdate::Update(resource_id, Box::new(value), resource_version))
             })
             .collect();
         if decoding_errors.is_empty() {

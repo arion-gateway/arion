@@ -39,6 +39,7 @@ use webpki::types::ServerName;
 
 use crate::{
     clusters::{
+        circuit_breaker::ClusterCircuitBreaker,
         clusters_manager::{MetadataKey, RoutingContext, RoutingRequirement},
         health::HealthStatus,
     },
@@ -71,24 +72,32 @@ pub struct OriginalDstClusterBuilder {
     pub transport_socket: UpstreamTransportSocketConfigurator,
     pub connect_timeout: Option<Duration>,
     pub server_name: Option<ServerName<'static>>,
-    pub config: orion_configuration::config::cluster::Cluster,
+    pub config: Box<orion_configuration::config::cluster::Cluster>,
+    pub circuit_breaker: ClusterCircuitBreaker,
 }
 
 impl OriginalDstClusterBuilder {
     pub fn build(self) -> ClusterType {
-        let OriginalDstClusterBuilder { name, bind_device, transport_socket, connect_timeout, server_name, config } =
-            self;
+        let OriginalDstClusterBuilder {
+            name,
+            bind_device,
+            transport_socket,
+            connect_timeout,
+            server_name,
+            config,
+            circuit_breaker,
+        } = self;
         let (routing_requirements, upstream_port_override) =
             if let ClusterDiscoveryType::OriginalDst(ref original_dst_config) = config.discovery_settings {
                 let routing_req = match &original_dst_config.routing_method {
                     OriginalDstRoutingMethod::HttpHeader { http_header_name } => {
-                        let header_name = http_header_name.to_owned().unwrap_or_else(|| X_ENVOY_ORIGINAL_DST_HOST);
+                        let header_name = http_header_name.to_owned().unwrap_or(X_ENVOY_ORIGINAL_DST_HOST);
                         debug!("ORIGINAL_DST cluster {name} routing by header {header_name}");
                         RoutingRequirement::Header(header_name)
                     },
                     OriginalDstRoutingMethod::MetadataKey(meta) => {
                         debug!("ORIGINAL_DST cluster {name} routing by metadata {}", meta.key);
-                        RoutingRequirement::MetadataKey(MetadataKey(meta.key.to_owned()))
+                        RoutingRequirement::MetadataKey(MetadataKey(meta.key.clone()))
                     },
                     OriginalDstRoutingMethod::Default => RoutingRequirement::Authority,
                 };
@@ -114,6 +123,7 @@ impl OriginalDstClusterBuilder {
             routing_requirements,
             upstream_port_override,
             config,
+            circuit_breaker,
         })
     }
 }
@@ -138,7 +148,8 @@ pub struct OriginalDstCluster {
     endpoints: LruCache<EndpointAddress, Endpoint>,
     routing_requirements: RoutingRequirement,
     upstream_port_override: Option<u16>,
-    pub config: orion_configuration::config::cluster::Cluster,
+    pub config: Box<orion_configuration::config::cluster::Cluster>,
+    pub circuit_breaker: ClusterCircuitBreaker,
 }
 
 impl ClusterOps for OriginalDstCluster {
@@ -212,6 +223,10 @@ impl ClusterOps for OriginalDstCluster {
     fn get_routing_requirements(&self) -> RoutingRequirement {
         self.routing_requirements.clone()
     }
+
+    fn circuit_breaker(&self) -> &ClusterCircuitBreaker {
+        &self.circuit_breaker
+    }
 }
 
 impl OriginalDstCluster {
@@ -270,7 +285,7 @@ impl OriginalDstCluster {
 
     #[inline]
     fn get_http_connection_by_dynamic_dest(&mut self, dynamic_dest: &DynamicDest) -> Result<HttpChannel> {
-        let authority = Authority::try_from(dynamic_dest.0.as_str()).map_err(|_| {
+        let authority = Authority::try_from(dynamic_dest.0.as_str()).map_err(|_e| {
             format!(
                 "Invalid Authority in dynamic_dest metadata ({}) for ORIGINAL_DST cluster {}",
                 dynamic_dest.0, self.name
@@ -282,7 +297,7 @@ impl OriginalDstCluster {
     #[inline]
     fn get_http_connection_by_header(&mut self, header_value: &HeaderValue) -> Result<HttpChannel> {
         let authority = Authority::try_from(header_value.as_bytes())
-            .map_err(|_| format!("Invalid authority in header for ORIGINAL_DST cluster {}", self.name))?;
+            .map_err(|_e| format!("Invalid authority in header for ORIGINAL_DST cluster {}", self.name))?;
         self.get_http_connection_by_authority(&authority)
     }
 
@@ -371,10 +386,7 @@ impl Endpoint {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    use std::{collections::HashMap, time::Duration};
-
-    use super::LruCache;
+    use std::collections::HashMap;
 
     struct LruMapFixture {
         map: LruCache<usize, &'static str>,
@@ -495,8 +507,7 @@ mod tests {
 
     use crate::secrets::SecretManager;
     use orion_configuration::config::cluster::{
-        http_protocol_options::Codec, Cluster as ClusterConfig, ClusterDiscoveryType, LbPolicy, OriginalDstConfig,
-        StandardLbPolicy,
+        http_protocol_options::Codec, Cluster as ClusterConfig, LbPolicy, OriginalDstConfig, StandardLbPolicy,
     };
     use std::str::FromStr;
 
@@ -519,12 +530,13 @@ mod tests {
             http_protocol_options: HttpProtocolOptions::default(),
             health_check: None,
             connect_timeout: None,
+            circuit_breakers: None,
         }
     }
 
     fn build_original_dst_cluster(config: ClusterConfig) -> OriginalDstCluster {
         let secrets_man = SecretManager::new();
-        let partial = super::super::PartialClusterType::try_from((config, &secrets_man)).unwrap();
+        let partial = super::super::PartialClusterType::try_from((Box::new(config), &secrets_man)).unwrap();
         match partial.build().unwrap() {
             ClusterType::OnDemand(cluster) => cluster,
             _ => unreachable!("expected OriginalDstCluster config"),
@@ -556,10 +568,11 @@ mod tests {
         assert_eq!(channel.upstream_authority.as_str(), "localhost:50001");
 
         let http_no_dest = cluster.get_http_connection(RoutingContext::None);
-        assert!(http_no_dest.is_err());
+        http_no_dest.unwrap_err();
     }
 
     #[test]
+    #[allow(clippy::indexing_slicing)]
     fn test_get_tcp_connection() {
         let config = create_test_cluster_config("test-cluster", OriginalDstRoutingMethod::Default, Some(50002), None);
         let mut cluster = build_original_dst_cluster(config);
@@ -572,7 +585,7 @@ mod tests {
         assert_eq!(endpoints[0].0.as_str(), "localhost:50002");
 
         let tcp_no_dest = cluster.get_tcp_connection(RoutingContext::None);
-        assert!(tcp_no_dest.is_err());
+        tcp_no_dest.unwrap_err();
     }
 
     #[test]
@@ -596,6 +609,6 @@ mod tests {
         }
 
         let grpc_no_dest = cluster.get_grpc_connection(RoutingContext::None);
-        assert!(grpc_no_dest.is_err());
+        grpc_no_dest.unwrap_err();
     }
 }

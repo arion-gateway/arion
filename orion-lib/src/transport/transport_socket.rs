@@ -43,11 +43,11 @@ impl UpstreamTransportSocketConfigurator {
         }
     }
 
-    pub fn update_secret(&mut self, secret_id: &str, secret: TransportSecret) -> Result<()> {
+    pub fn update_secret(&mut self, secret_id: &str, secret: &TransportSecret) -> Result<()> {
         match self {
             UpstreamTransportSocketConfigurator::Tls(tls_conf) => {
                 let updated_tls =
-                    TlsConfigurator::<ClientConfig, WantsToBuildClient>::update(tls_conf.clone(), secret_id, &secret)?;
+                    TlsConfigurator::<ClientConfig, WantsToBuildClient>::update(tls_conf.clone(), secret_id, secret)?;
                 *tls_conf = updated_tls;
                 Ok(())
             },

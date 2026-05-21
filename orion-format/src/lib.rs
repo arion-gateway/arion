@@ -107,6 +107,7 @@ struct LogFormatterConf {
 
 #[derive(Debug, Serialize, Deserialize, Hash)]
 #[allow(clippy::unsafe_derive_deserialize)]
+#[allow(clippy::derived_hash_with_manual_eq)]
 pub struct LogFormatter {
     conf: Arc<LogFormatterConf>,
     format: Vec<StringType>,
@@ -166,13 +167,13 @@ impl LogFormatter {
 
     pub fn with_context<C: Context>(&mut self, ctx: &C) -> &Self {
         for (idx, template) in self.conf.templates.iter().enumerate() {
-            unsafe {
-                if let Template::Placeholder(op, _) = template {
-                    if matches!(self.format.get_unchecked(idx), StringType::None) {
-                        let result = ctx.eval_part(op);
-                        if !matches!(result, StringType::None) {
-                            *self.format.get_unchecked_mut(idx) = result;
-                        }
+            if let Template::Placeholder(op, _) = template {
+                // SAFETY: `idx` is guaranteed to be valid for `format` vector by construction.
+                if matches!(unsafe { self.format.get_unchecked(idx) }, StringType::None) {
+                    let result = ctx.eval_part(op);
+                    if !matches!(result, StringType::None) {
+                        // SAFETY: `idx` is guaranteed to be valid for `format` vector, by construction.
+                        unsafe { *self.format.get_unchecked_mut(idx) = result };
                     }
                 }
             }
@@ -244,7 +245,7 @@ impl Display for FormattedMessage {
             match out {
                 StringType::Smol(s) => f.write_str(s.as_ref())?,
                 StringType::Bytes(v) => f.write_str(&String::from_utf8_lossy(v))?,
-                StringType::Array(v) => f.write_str(&v)?,
+                StringType::Array(v) => f.write_str(v)?,
                 StringType::None => {
                     if !self.omit_empty_values {
                         f.write_str("-")?
@@ -268,8 +269,8 @@ mod tests {
 
     use crate::{
         context::{
-            DownstreamContext, DownstreamResponseContext, FinishContext, InitContext, UpstreamContext,
-            UpstreamRequestContext,
+            DownstreamContext, DownstreamResponseContext, FinishContext, InitContext, SocketAddrContext,
+            UpstreamContext, UpstreamRequestContext,
         },
         types::ResponseFlags,
     };
@@ -299,7 +300,7 @@ mod tests {
             request_head_size: 0,
             trace_id: None,
             server_name: None,
-            socket_address: Default::default(),
+            socket_address: SocketAddrContext::default(),
         });
         let actual = format!("{}", &formatter.into_message());
         assert_eq!(actual, expected);
@@ -319,7 +320,7 @@ mod tests {
             request_head_size: 0,
             trace_id: None,
             server_name: None,
-            socket_address: Default::default(),
+            socket_address: SocketAddrContext::default(),
         });
         let actual = format!("{}", &formatter.into_message());
         assert_eq!(actual, expected);
@@ -337,7 +338,7 @@ mod tests {
             request_head_size: 0,
             trace_id: None,
             server_name: None,
-            socket_address: Default::default(),
+            socket_address: SocketAddrContext::default(),
         });
         let actual = format!("{}", &formatter.into_message());
         assert_eq!(actual, expected);
@@ -355,7 +356,7 @@ mod tests {
             request_head_size: 0,
             trace_id: None,
             server_name: None,
-            socket_address: Default::default(),
+            socket_address: SocketAddrContext::default(),
         });
         let actual = format!("{}", &formatter.into_message());
         assert_eq!(actual, expected);
@@ -384,7 +385,7 @@ mod tests {
             request_head_size: 0,
             trace_id: None,
             server_name: None,
-            socket_address: Default::default(),
+            socket_address: SocketAddrContext::default(),
         });
         let actual = format!("{}", &formatter.into_message());
         assert_eq!(actual, expected);
@@ -401,7 +402,7 @@ mod tests {
             request_head_size: 0,
             trace_id: None,
             server_name: None,
-            socket_address: Default::default(),
+            socket_address: SocketAddrContext::default(),
         });
         let actual = format!("{}", &formatter.into_message());
         assert_eq!(actual, expected);
@@ -418,7 +419,7 @@ mod tests {
             request_head_size: 0,
             trace_id: None,
             server_name: None,
-            socket_address: Default::default(),
+            socket_address: SocketAddrContext::default(),
         });
         let actual = format!("{}", &formatter.into_message());
         assert_eq!(actual, expected);
@@ -452,7 +453,7 @@ mod tests {
             request_head_size: 0,
             trace_id: None,
             server_name: None,
-            socket_address: Default::default(),
+            socket_address: SocketAddrContext::default(),
         });
         formatter.with_context(&UpstreamContext {
             authority: Some(req.uri().authority().unwrap()),
@@ -484,7 +485,7 @@ mod tests {
             request_head_size: 0,
             trace_id: None,
             server_name: None,
-            socket_address: Default::default(),
+            socket_address: SocketAddrContext::default(),
         });
         formatter.with_context(&UpstreamContext {
             authority: Some(req.uri().authority().unwrap()),

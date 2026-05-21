@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use pingora::prelude::fast_timeout::fast_timeout;
 use std::time::Duration;
 use std::{convert::Infallible, net::SocketAddr};
 
@@ -151,27 +152,26 @@ impl TestClient {
         }
 
         // change body to vec<Bytes> and use StreamBody (http_body_utils) to send multi-chunk in case vec.len>1
-        let body = if !body.is_empty() {
-            if body.len() > 1 {
-                fn frame_mapper(chunk: Bytes) -> std::result::Result<Frame<Bytes>, Infallible> {
-                    Ok(Frame::data(chunk))
-                }
-                let stream = futures_util::stream::iter(
-                    body.into_iter().map(frame_mapper as fn(Bytes) -> std::result::Result<Frame<Bytes>, Infallible>),
-                );
-                http_body_util::Either::Left(StreamBody::new(stream))
-            } else {
-                http_body_util::Either::Right(Full::new(body[0].clone()))
-            }
-        } else {
+        let body = if body.is_empty() {
             http_body_util::Either::Right(Full::new(Bytes::new()))
+        } else if body.len() > 1 {
+            #[allow(clippy::unnecessary_wraps, reason = "StreamBody requires Result items")]
+            fn frame_mapper(chunk: Bytes) -> std::result::Result<Frame<Bytes>, Infallible> {
+                Ok(Frame::data(chunk))
+            }
+            let stream = futures_util::stream::iter(
+                body.into_iter().map(frame_mapper as fn(Bytes) -> std::result::Result<Frame<Bytes>, Infallible>),
+            );
+            http_body_util::Either::Left(StreamBody::new(stream))
+        } else {
+            http_body_util::Either::Right(Full::new(body.into_iter().next().unwrap_or_default()))
         };
 
         let request = builder.body(body).map_err(|e| Error::Http(format!("Failed to build request: {e}")))?;
 
-        let response = tokio::time::timeout(self.timeout, self.client.request(request))
+        let response = fast_timeout(self.timeout, self.client.request(request))
             .await
-            .map_err(|_| Error::RequestTimeout(self.timeout))?
+            .map_err(|_e| Error::RequestTimeout(self.timeout))?
             .map_err(Error::Hyper)?;
 
         self.convert_response(response).await
@@ -197,9 +197,9 @@ impl TestClient {
             .body(http_body_util::Either::Right(Full::new(request.body)))
             .map_err(|e| Error::Http(format!("Failed to build request: {e}")))?;
 
-        let response = tokio::time::timeout(self.timeout, self.client.request(http_request))
+        let response = fast_timeout(self.timeout, self.client.request(http_request))
             .await
-            .map_err(|_| Error::RequestTimeout(self.timeout))?
+            .map_err(|_e| Error::RequestTimeout(self.timeout))?
             .map_err(Error::Hyper)?;
 
         self.convert_response(response).await

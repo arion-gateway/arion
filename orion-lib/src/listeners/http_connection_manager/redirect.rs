@@ -15,7 +15,7 @@
 //
 //
 
-use super::{RequestHandler, TransactionHandler};
+use super::{RequestHandler, TransactionContext};
 
 #[cfg(feature = "access-log")]
 use orion_format::context::UpstreamContext;
@@ -40,14 +40,14 @@ use std::str::FromStr;
 impl<'a> RequestHandler<Request<OrionRequestBody>, (&'a RouteMatchResult, &'a str)> for &RedirectAction {
     async fn to_response(
         self,
-        _trans_handler: &TransactionHandler,
+        #[allow(unused_variables)] trans_context: &TransactionContext,
         request: Request<OrionRequestBody>,
-        (route_match_result, _route_name): (&'a RouteMatchResult, &'a str),
+        #[allow(unused_variables)] (route_match_result, route_name): (&'a RouteMatchResult, &'a str),
     ) -> Result<Response<OrionResponseBody>> {
         #[cfg(feature = "access-log")]
         with_access_log!(
-            &mut _trans_handler.trans_ctx.lock().loggers,
-            UpstreamContext { authority: None, cluster_name: None, route_name: _route_name }
+            &mut trans_context.trans_ctx.lock().loggers,
+            UpstreamContext { authority: None, cluster_name: None, route_name }
         );
 
         let (parts, _) = request.into_parts();
@@ -101,7 +101,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (&'a RouteMatchResult, &'a st
         // if this replacement yields a query, it will always overwrite the existing query
         let path_and_query = if let Some(prs) = self.path_rewrite_specifier.as_ref() {
             if let Some(replacement) = prs
-                .apply(orig_path_and_query.as_ref(), &route_match_result)
+                .apply(orig_path_and_query.as_ref(), route_match_result)
                 .with_context_msg("invalid path or query following replacement")?
             {
                 Some(replacement)

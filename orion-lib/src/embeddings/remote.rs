@@ -26,7 +26,7 @@ use crate::body::response_flags::BodyKind;
 use crate::body::timeout_body::TimeoutBody;
 use crate::clusters::clusters_manager;
 use crate::clusters::clusters_manager::RoutingContext;
-use crate::listeners::http_connection_manager::{RequestHandler, TransactionHandler};
+use crate::listeners::http_connection_manager::{RequestHandler, TransactionContext};
 use crate::{OrionRequestBody, RequestContext};
 
 use super::{normalise_in_place, Embedding, EmbeddingError, EmbeddingsProvider};
@@ -81,9 +81,9 @@ impl RemoteEmbeddingsProvider {
             .body(body)
             .map_err(|e| EmbeddingError::Provider(format!("request: {e}")))?;
 
-        let request_context = RequestContext { route_timeout: self.timeout, retry_policy: None };
+        let request_context = RequestContext { route_timeout: self.timeout, retry_policy: None, ..Default::default() };
         let response = (&channels)
-            .to_response(&TransactionHandler::default(), request, request_context)
+            .to_response(&TransactionContext::default(), request, request_context)
             .await
             .map_err(|e| EmbeddingError::Provider(format!("upstream call failed: {e}")))?;
 

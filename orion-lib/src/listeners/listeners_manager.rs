@@ -94,7 +94,7 @@ impl ListenersManager {
                             }
                         }
                         ListenerConfigurationChange::Removed(listener_name) => {
-                            let _ = self.stop_listener(&listener_name);
+                            let _ = self.stop_listener(&listener_name).ok();
                         },
                         ListenerConfigurationChange::TlsContextChanged((secret_id, secret)) => {
                             info!("Got tls secret update {secret_id}");
@@ -115,8 +115,12 @@ impl ListenersManager {
                 Some(route_configuration_change) = self.route_configuration_channel.recv() => {
                     // routes could be CachedWatch instead, as they are evaluated lazily
                     let res = tx_route_updates.send(route_configuration_change);
-                    if let Err(e) = res{
-                        warn!("Internal problem when updating a route: {e}");
+                    if let Err(tokio::sync::broadcast::error::SendError(change)) = res {
+                        warn!("No listeners subscribed to route updates, dropping update");
+                        match change {
+                            RouteConfigurationChange::Added(_, Some(notify)) | RouteConfigurationChange::Removed(_, Some(notify)) => notify.notify_one(),
+                            _ => {}
+                        }
                     }
                 },
                 else => {
@@ -194,11 +198,12 @@ mod tests {
             filter_chains: HashMap::default(),
             with_tls_inspector: false,
             proxy_protocol_config: None,
+            listener_local_rate_limit_config: None,
             tcp_backlog_size: 128,
             access_log: vec![],
         };
         man.start_listener(l1, l1_info.clone()).unwrap();
-        assert!(routeb_tx1.send(RouteConfigurationChange::Removed("n/a".into(), None)).is_ok());
+        routeb_tx1.send(RouteConfigurationChange::Removed("n/a".into(), None)).unwrap();
         tokio::task::yield_now().await;
 
         let (routeb_tx2, routeb_rx) = broadcast::channel(chan);
@@ -206,11 +211,11 @@ mod tests {
         let l2 = Listener::test_listener(name, routeb_rx, secb_rx);
         let l2_info = l1_info;
         man.start_listener(l2, l2_info).unwrap();
-        assert!(routeb_tx2.send(RouteConfigurationChange::Removed("n/a".into(), None)).is_ok());
+        routeb_tx2.send(RouteConfigurationChange::Removed("n/a".into(), None)).unwrap();
         tokio::task::yield_now().await;
 
         // This should fail because the old listener exited already dropping the rx
-        assert!(routeb_tx1.send(RouteConfigurationChange::Removed("n/a".into(), None)).is_err());
+        routeb_tx1.send(RouteConfigurationChange::Removed("n/a".into(), None)).unwrap_err();
         // Yield once more just in case more logs can be seen
         tokio::task::yield_now().await;
     }
@@ -236,6 +241,7 @@ mod tests {
             filter_chains: HashMap::default(),
             with_tls_inspector: false,
             proxy_protocol_config: None,
+            listener_local_rate_limit_config: None,
             tcp_backlog_size: 128,
             access_log: vec![],
         };

@@ -21,11 +21,11 @@ use crate::{
         instrumented_body::InstrumentedBody, poly_body::PolyBody, response_flags::ResponseFlags,
         timeout_body::TimeoutBody,
     },
-    clusters::retry_policy::RetryCondition,
+    clusters::{decrement_retries, retry_policy::RetryCondition, try_increment_retries, RoutingPriority},
     event_error::{EventKind, TryInferFrom, UpstreamError},
     instrument_block, instrument_function,
     listeners::{
-        http_connection_manager::{http_modifiers::strip_trailers_headers, RequestHandler, TransactionHandler},
+        http_connection_manager::{http_modifiers::strip_trailers_headers, RequestHandler, TransactionContext},
         synthetic_http_response::SyntheticHttpResponse,
     },
     secrets::{TlsConfigurator, WantsToBuildClient},
@@ -49,6 +49,8 @@ use orion_configuration::config::{
     network_filters::http_connection_manager::RetryPolicy,
 };
 use orion_format::types::{ResponseFlagsLong, ResponseFlagsShort};
+#[cfg(feature = "metrics")]
+use orion_metrics::metrics::custom::CUSTOM_METRICS;
 
 use crate::with_metric;
 use hyperlocal::UnixConnector;
@@ -59,9 +61,8 @@ use {crate::get_shard_id, opentelemetry::KeyValue, orion_metrics::metrics::clust
 use pingora_timeout::fast_timeout::fast_timeout;
 use pretty_duration::pretty_duration;
 use rustls::ClientConfig;
-use scopeguard::defer;
 use smol_str::ToSmolStr;
-use std::{io::ErrorKind, mem, result::Result as StdResult, sync::Arc, time::Duration};
+use std::{io, mem, sync::Arc, time::Duration};
 use tracing::debug;
 use webpki::types::ServerName;
 
@@ -69,6 +70,7 @@ use webpki::types::ServerName;
 use {
     hyper_util::client::legacy::pool::{EventHandler, PoolEvent},
     hyper_util::client::legacy::PoolKey,
+    scopeguard::defer,
     std::any::Any,
 };
 const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -208,8 +210,8 @@ impl HttpChannelBuilder {
         #[cfg(feature = "metrics")]
         {
             let cluster_name = self.cluster_name.unwrap_or_default();
-            client_builder.pool_event_handler(EventHandler::new(update_upstream_stats, cluster_name));
-        }
+            client_builder.pool_event_handler(EventHandler::new(update_upstream_stats, cluster_name))
+        };
 
         client_builder
     }
@@ -397,16 +399,17 @@ fn update_upstream_stats(event: PoolEvent, tag: &dyn Any, keys: &[&PoolKey]) {
 impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &HttpChannels {
     async fn to_response(
         self,
-        trans_handler: &TransactionHandler,
+        trans_context: &TransactionContext,
         request: Request<OrionRequestBody>,
-        ctx: RequestContext<'a>,
+        arg: RequestContext<'a>,
     ) -> Result<Response<OrionResponseBody>> {
+        let ctx = arg;
         match self {
-            HttpChannels::Single(channel) => channel.to_response(trans_handler, request, ctx).await,
+            HttpChannels::Single(channel) => channel.to_response(trans_context, request, ctx).await,
             HttpChannels::MultiWithFailover { channel, failover_channels } => {
-                let RequestContext { route_timeout, .. } = ctx;
+                let RequestContext { route_timeout, priority, .. } = ctx;
                 let (parts, mut body) = request.into_parts();
-                let free_body = std::mem::replace(&mut body.inner, TimeoutBody::<PolyBody>::default());
+                let free_body = std::mem::take(&mut body.inner);
                 let InstrumentedBody { body_kind, body_bytes, ref stream_metrics, ref on_complete, .. } = body;
 
                 let body_timeout = free_body.timeout;
@@ -421,13 +424,13 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
                         inner: TimeoutBody::new(body_timeout, replay_body.clone().into()),
                         body_kind,
                         body_bytes,
-                        stream_metrics: stream_metrics.clone(),
-                        on_complete: on_complete.clone(),
+                        stream_metrics: Clone::clone(stream_metrics),
+                        on_complete: Clone::clone(on_complete),
                     };
                     let rebuilt_req = Request::from_parts(parts.clone(), cloned_body);
-                    let attempt_ctx = RequestContext { route_timeout, retry_policy: None };
+                    let attempt_ctx = RequestContext { route_timeout, retry_policy: None, priority };
 
-                    match channel.to_response(trans_handler, rebuilt_req, attempt_ctx).await {
+                    match channel.to_response(trans_context, rebuilt_req, attempt_ctx).await {
                         Ok(response) => {
                             if response.status().is_server_error() && (attempt + 1) < total_attempts {
                                 debug!(
@@ -469,11 +472,13 @@ pub struct Retries {
 impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &HttpChannel {
     async fn to_response(
         self,
-        _trans_handler: &TransactionHandler,
+        #[allow(unused_variables)] trans_context: &TransactionContext,
         request: Request<OrionRequestBody>,
-        ctx: RequestContext<'a>,
+        arg: RequestContext<'a>,
     ) -> Result<Response<OrionResponseBody>> {
-        instrument_function!(_trans_handler.clock, |nanos| {
+        let ctx = arg;
+        instrument_function!(trans_context.clock, |nanos| {
+            #[allow(clippy::cast_possible_truncation)]
             crate::instrumentation::metrics::REQUEST_TO_RESPONSE_TIME.observe(nanos as usize)
         });
 
@@ -482,17 +487,30 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
         let shard_id = get_shard_id!();
 
         with_metric!(clusters::UPSTREAM_RQ_ACTIVE, add, 1, shard_id, &[KeyValue::new("cluster", self.cluster_name)]);
+
+        #[cfg(feature = "metrics")]
         defer! {
             with_metric!(clusters::UPSTREAM_RQ_ACTIVE, sub, 1, shard_id, &[KeyValue::new("cluster", self.cluster_name)]);
         }
 
-        let RequestContext { route_timeout, retry_policy } = ctx;
+        #[cfg(feature = "metrics")]
+        if let Some(custom_metrics) = CUSTOM_METRICS.get() {
+            use crate::metrics;
+            use orion_metrics::metrics::custom::MetricsHook;
+
+            let attr = metrics::extract_custom_partition_key(request.headers(), metrics::CUSTOM_KEY.source())
+                .map(|id| KeyValue::new(metrics::CUSTOM_KEY.attribute_name().unwrap_or("custom"), id));
+            custom_metrics.with_headers(MetricsHook::UpstreamRequest, request.headers(), attr.as_slice());
+        }
+
+        let RequestContext { route_timeout, retry_policy, priority } = ctx;
 
         let mut retries = Retries::default();
         let start_time = std::time::Instant::now();
         let result = instrument_block!(
-            _trans_handler.clock,
+            trans_context.clock,
             |nanos| {
+                #[allow(clippy::cast_possible_truncation)]
                 crate::instrumentation::metrics::SEND_REQUEST_WAIT_RESPONSE.observe(nanos as usize);
             },
             {
@@ -500,9 +518,10 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
                     request,
                     route_timeout,
                     retry_policy,
+                    priority,
                     Some(&mut retries),
                     #[cfg(feature = "instrumentation")]
-                    &_trans_handler.clock,
+                    &trans_context.clock,
                 )
                 .await
             }
@@ -515,7 +534,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
         with_metric!(
             clusters::UPSTREAM_RQ_RETRY,
             add,
-            retries.requests as u64,
+            u64::from(retries.requests),
             shard_id,
             &[KeyValue::new("cluster", self.cluster_name)]
         );
@@ -523,7 +542,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
         with_metric!(
             clusters::UPSTREAM_RQ_PER_TRY_TIMEOUT,
             add,
-            retries.timeouts as u64,
+            u64::from(retries.timeouts),
             shard_id,
             &[KeyValue::new("cluster", self.cluster_name)]
         );
@@ -533,11 +552,13 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
 }
 
 impl HttpChannel {
+    #[allow(clippy::too_many_arguments)]
     pub async fn send_request(
         &self,
         mut request: Request<OrionRequestBody>,
         timeout: Option<Duration>,
         retry_policy: Option<&RetryPolicy>,
+        priority: RoutingPriority,
         output: Option<&mut Retries>,
         #[cfg(feature = "instrumentation")] clock: &quanta::Clock,
     ) -> Result<Response<Incoming>> {
@@ -545,30 +566,17 @@ impl HttpChannel {
             HttpChannelClient::Plain(sender) => {
                 let client = sender.get_or_build();
                 let req = maybe_normalize_uri(request, false)?;
-                if let Some(t) = timeout {
-                    fast_timeout(
-                        t,
-                        self.send_with_policy(
-                            req,
-                            retry_policy,
-                            client,
-                            output,
-                            #[cfg(feature = "instrumentation")]
-                            clock,
-                        ),
-                    )
-                    .await?
-                } else {
-                    self.send_with_policy(
-                        req,
-                        retry_policy,
-                        client,
-                        output,
-                        #[cfg(feature = "instrumentation")]
-                        clock,
-                    )
-                    .await
-                }
+                self.send_with_policy(
+                    req,
+                    timeout,
+                    retry_policy,
+                    priority,
+                    client,
+                    output,
+                    #[cfg(feature = "instrumentation")]
+                    clock,
+                )
+                .await
             },
             HttpChannelClient::Tls(context) => {
                 let ClientContext { configured_upstream_http_version, client: sender } = context;
@@ -578,59 +586,32 @@ impl HttpChannel {
                 //FIXME(hayley): apply http protocol translation for plaintext too
                 let req = maybe_change_http_protocol_version(req, configured_version)?;
 
-                if let Some(t) = timeout {
-                    fast_timeout(
-                        t,
-                        self.send_with_policy(
-                            req,
-                            retry_policy,
-                            client,
-                            output,
-                            #[cfg(feature = "instrumentation")]
-                            clock,
-                        ),
-                    )
-                    .await?
-                } else {
-                    self.send_with_policy(
-                        req,
-                        retry_policy,
-                        client,
-                        output,
-                        #[cfg(feature = "instrumentation")]
-                        clock,
-                    )
-                    .await
-                }
+                self.send_with_policy(
+                    req,
+                    timeout,
+                    retry_policy,
+                    priority,
+                    client,
+                    output,
+                    #[cfg(feature = "instrumentation")]
+                    clock,
+                )
+                .await
             },
             HttpChannelClient::Unix(uri, sender) => {
                 let client = sender;
                 *request.uri_mut() = uri.clone();
-
-                if let Some(t) = timeout {
-                    fast_timeout(
-                        t,
-                        self.send_with_policy(
-                            request,
-                            retry_policy,
-                            client,
-                            output,
-                            #[cfg(feature = "instrumentation")]
-                            clock,
-                        ),
-                    )
-                    .await?
-                } else {
-                    self.send_with_policy(
-                        request,
-                        retry_policy,
-                        client,
-                        output,
-                        #[cfg(feature = "instrumentation")]
-                        clock,
-                    )
-                    .await
-                }
+                self.send_with_policy(
+                    request,
+                    timeout,
+                    retry_policy,
+                    priority,
+                    client,
+                    output,
+                    #[cfg(feature = "instrumentation")]
+                    clock,
+                )
+                .await
             },
         }
     }
@@ -638,10 +619,13 @@ impl HttpChannel {
     /// Send the request and return the Result, either the Response or an Error,
     /// along with the time spent for possible retransmissions. Note: the returned
     /// duration does not include the time spent receiving the Body of the Response.
+    #[allow(clippy::too_many_arguments)]
     async fn send_with_policy<C>(
         &self,
         mut req: Request<OrionRequestBody>,
+        timeout: Option<Duration>,
         retry_policy: Option<&RetryPolicy>,
+        priority: RoutingPriority,
         sender: &Client<C, OrionRequestBody>,
         output: Option<&mut Retries>,
         #[cfg(feature = "instrumentation")] clock: &quanta::Clock,
@@ -653,34 +637,46 @@ impl HttpChannel {
             strip_trailers_headers(self.http_version, req.headers_mut());
         }
 
-        match retry_policy {
-            Some(policy) if policy.is_retriable(&req) => {
-                self.send_with_retry(
-                    req,
-                    policy,
-                    sender,
-                    output,
-                    #[cfg(feature = "instrumentation")]
-                    clock,
-                )
-                .await
-            },
-            _ => {
-                instrument_block!(
-                    clock,
-                    |nanos| {
-                        crate::instrumentation::metrics::SEND_REQUEST.observe(nanos as usize);
-                    },
-                    { sender.request(req).await.map_err(Error::from) }
-                )
-            },
+        let fut = async {
+            match retry_policy {
+                Some(policy) if policy.is_retriable(&req) => {
+                    self.send_with_retry(
+                        req,
+                        policy,
+                        priority,
+                        sender,
+                        output,
+                        #[cfg(feature = "instrumentation")]
+                        clock,
+                    )
+                    .await
+                },
+                _ => {
+                    instrument_block!(
+                        clock,
+                        |nanos| {
+                            #[allow(clippy::cast_possible_truncation)]
+                            crate::instrumentation::metrics::SEND_REQUEST.observe(nanos as usize);
+                        },
+                        { sender.request(req).await.map_err(Error::from) }
+                    )
+                },
+            }
+        };
+
+        if let Some(t) = timeout {
+            fast_timeout(t, fut).await?
+        } else {
+            fut.await
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn send_with_retry<C>(
         &self,
         req: Request<OrionRequestBody>,
         retry_policy: &RetryPolicy,
+        priority: RoutingPriority,
         sender: &Client<C, OrionRequestBody>,
         mut output: Option<&mut Retries>,
         #[cfg(feature = "instrumentation")] clock: &quanta::Clock,
@@ -689,16 +685,26 @@ impl HttpChannel {
         C: Connect + Clone + Send + Sync + 'static,
     {
         instrument_function!(clock, |nanos| {
+            #[allow(clippy::cast_possible_truncation)]
             crate::instrumentation::metrics::SEND_REQUEST_WITH_RETRY.observe(nanos as usize)
         });
 
         let (parts, mut body) = req.into_parts();
-        let free_body = std::mem::replace(&mut body.inner, TimeoutBody::<PolyBody>::default());
+        let free_body = std::mem::take(&mut body.inner);
         let InstrumentedBody { body_kind, body_bytes, ref stream_metrics, ref on_complete, .. } = body;
 
-        let body = free_body.collect().await?;
-        let body = http_body_util::Full::new(body.to_bytes());
-        let mut last_error: Option<Error> = None;
+        let collected_bytes = if http_body::Body::size_hint(&free_body).exact() == Some(0) {
+            bytes::Bytes::new()
+        } else {
+            free_body.collect().await?.to_bytes()
+        };
+
+        let body = http_body_util::Full::new(collected_bytes);
+
+        let max_retries = retry_policy.num_retries() as usize;
+        let mut parts_opt = Some(parts);
+        let mut retry_acquired = false;
+        let mut last_result: Option<Result<Response<Incoming>>> = None;
 
         for (index, back_off) in retry_policy.exponential_back_off().iter().enumerate() {
             let back_off = back_off.unwrap_or(Duration::from_secs(1));
@@ -707,15 +713,20 @@ impl HttpChannel {
                 inner: TimeoutBody::new(None, body.clone().into()),
                 body_kind,
                 body_bytes,
-                stream_metrics: stream_metrics.clone(),
-                on_complete: on_complete.clone(),
+                stream_metrics: Clone::clone(stream_metrics),
+                on_complete: Clone::clone(on_complete),
             };
 
-            let cloned_req: Request<OrionRequestBody> = Request::from_parts(parts.clone(), cloned_body);
+            // avoid to clone parts on the last attempt
+            #[allow(clippy::unwrap_used)]
+            let current_parts =
+                if index == max_retries { parts_opt.take().unwrap() } else { parts_opt.as_ref().unwrap().clone() };
+
+            let cloned_req: Request<OrionRequestBody> = Request::from_parts(current_parts, cloned_body);
 
             // actually send the request and wait for the response...
-            let result: StdResult<Response<Incoming>, Error> = if let Some(t) = retry_policy.per_try_timeout() {
-                match fast_timeout(t, sender.request(cloned_req)).await.map_err(|_| UpstreamError::PerTryTimeout) {
+            let result: Result<Response<Incoming>> = if let Some(t) = retry_policy.per_try_timeout() {
+                match fast_timeout(t, sender.request(cloned_req)).await.map_err(|_e| UpstreamError::PerTryTimeout) {
                     Ok(result) => result.map_err(Into::into),
                     Err(err) => Err(err.into()),
                 }
@@ -729,7 +740,10 @@ impl HttpChannel {
             };
 
             if condition.is_per_try_timeout() {
-                output.as_mut().map(|output| output.timeouts += 1);
+                if let Some(retries) = output.as_deref_mut() {
+                    // Increment the timeout counter
+                    retries.timeouts += 1;
+                }
             }
 
             // check for a possible retry...
@@ -737,10 +751,34 @@ impl HttpChannel {
                 return result;
             }
 
-            output.as_mut().map(|output| output.requests += 1);
+            if let Some(output) = output.as_deref_mut() {
+                output.requests += 1;
+            }
 
             // take an exponential back off break and retry...
             if index < retry_policy.num_retries() as usize {
+                if !retry_acquired && try_increment_retries(self.cluster_name, priority).is_err() {
+                    debug!(
+                        "retry_policy: circuit breaker denied retry #{}/{} for cluster {}",
+                        index + 1,
+                        retry_policy.num_retries(),
+                        self.cluster_name
+                    );
+                    #[cfg(feature = "metrics")]
+                    {
+                        let shard_id = get_shard_id!();
+                        with_metric!(
+                            clusters::UPSTREAM_RQ_RETRY_OVERFLOW,
+                            add,
+                            1,
+                            shard_id,
+                            &[KeyValue::new("cluster", self.cluster_name)]
+                        );
+                    };
+                    return result;
+                }
+                retry_acquired = true;
+
                 debug!(
                     "retry_policy: retrying request #{}/{} in {}...",
                     index + 1,
@@ -751,21 +789,28 @@ impl HttpChannel {
                 pingora_timeout::sleep(back_off).await;
             }
 
-            last_error = result.err();
+            last_result = Some(result);
         }
 
-        match last_error {
-            Some(err) => Err(err),
-            None => Err(std::io::Error::new(ErrorKind::InvalidData, "invalid retry_policy configuration").into()),
+        if retry_acquired {
+            decrement_retries(self.cluster_name, priority);
+        }
+
+        match last_result {
+            Some(result) => result,
+            None => {
+                Err(io::Error::new(io::ErrorKind::InvalidData, "retry loop completed without producing a result")
+                    .into())
+            },
         }
     }
 
     fn map_upstream_result(
-        result: std::result::Result<Response<Incoming>, Error>,
+        result: Result<Response<Incoming>>,
         elapsed: Duration,
         route_timeout: Option<Duration>,
         version: http::Version,
-    ) -> StdResult<hyper::Response<OrionResponseBody>, Error> {
+    ) -> Result<hyper::Response<OrionResponseBody>> {
         match (result, elapsed) {
             (Ok(response), elapsed) => {
                 // calculate the remaining timeout (relative to the route timeout) for receiving
@@ -822,9 +867,8 @@ impl HttpChannel {
 
     pub fn is_https(&self) -> bool {
         match &self.channel_client {
-            HttpChannelClient::Plain(_) => false,
             HttpChannelClient::Tls(_) => true,
-            HttpChannelClient::Unix(_, _) => false,
+            HttpChannelClient::Plain(_) | HttpChannelClient::Unix(_, _) => false,
         }
     }
 
@@ -868,9 +912,10 @@ fn maybe_update_host(mut request: Request<OrionRequestBody>, version: Codec) -> 
             headers.remove(http::header::HOST);
         },
         (Version::HTTP_2, Codec::Http1) => {
-            if let Some(authority) = request.uri().authority().cloned() {
+            let authority_val = request.uri().authority().and_then(|a| HeaderValue::try_from(a.as_str()).ok());
+            if let Some(val) = authority_val {
                 debug!("Swapping authority/host (http2 -> http1)");
-                request.headers_mut().append(http::header::HOST, HeaderValue::from_str(authority.as_str())?);
+                request.headers_mut().append(http::header::HOST, val);
             }
         },
         (Version::HTTP_11, Codec::Http1) | (Version::HTTP_2, Codec::Http2) => {},
@@ -897,7 +942,7 @@ fn maybe_normalize_uri(
                 parts.scheme = if is_tls { Some(http::uri::Scheme::HTTPS) } else { Some(http::uri::Scheme::HTTP) };
             }
             parts.authority = Some(authority);
-            let new = Uri::from_parts(parts).map_err(|_| format!("Can't normalize uri: {uri}"))?;
+            let new = Uri::from_parts(parts).map_err(|_e| format!("Can't normalize uri: {uri}"))?;
             *uri = new;
         }
     }

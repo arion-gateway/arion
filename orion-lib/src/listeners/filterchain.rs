@@ -21,7 +21,13 @@ use super::{
 };
 use crate::{
     extensions_context::MetadataContext,
-    listeners::metadata::{DownstreamConnectionMetadata, DownstreamMetadata},
+    listeners::{
+        metadata::{DownstreamConnectionMetadata, DownstreamMetadata},
+        rate_limiter::{
+            connection_limit::{ConnectionGuard, NetworkConnectionLimit},
+            global_rate_limiter::NetworkGlobalRateLimit,
+        },
+    },
     secrets::{TlsConfigurator, WantsToBuildServer},
     transport::AsyncReadWriteInstrumented,
     AsyncInstrumentedStream, ConversionContext, Error, Result,
@@ -35,6 +41,7 @@ use orion_configuration::config::{
     network_filters::{
         http_connection_manager::CodecType,
         network_rbac::{NetworkContext, NetworkRbac},
+        ConnectionLimit as ConnectionLimitConfig, NetworkGlobalRateLimit as NetworkGlobalRateLimitConfig,
     },
 };
 
@@ -69,11 +76,13 @@ pub struct Filterchain {
     pub name: SmolStr,
     pub rbac_filters: Vec<NetworkRbac>,
     pub tls_configurator: Option<TlsConfigurator<ServerConfig, WantsToBuildServer>>,
+    pub network_global_rate_limit: Option<NetworkGlobalRateLimit>,
+    pub network_connection_limit: Option<NetworkConnectionLimit>,
 }
 
 #[derive(Debug, Clone)]
 pub enum MainFilterBuilder {
-    Http(HttpConnectionManagerBuilder),
+    Http(Box<HttpConnectionManagerBuilder>),
     Tcp(TcpProxyBuilder),
 }
 
@@ -82,9 +91,9 @@ impl TryFrom<ConversionContext<'_, MainFilter>> for MainFilterBuilder {
     fn try_from(ctx: ConversionContext<MainFilter>) -> Result<Self> {
         let ConversionContext { envoy_object: main_filter, secret_manager } = ctx;
         match main_filter {
-            MainFilter::Http(http) => {
-                Ok(Self::Http(HttpConnectionManagerBuilder::try_from(ConversionContext::new((http, secret_manager)))?))
-            },
+            MainFilter::Http(http) => Ok(Self::Http(Box::new(HttpConnectionManagerBuilder::try_from(
+                ConversionContext::new((http, secret_manager)),
+            )?))),
             MainFilter::Tcp(tcp) => Ok(Self::Tcp(tcp.into())),
         }
     }
@@ -97,6 +106,8 @@ pub struct FilterchainBuilder {
     listener_name: Option<&'static str>,
     main_filter: MainFilterBuilder,
     rbac_filters: Vec<NetworkRbac>,
+    network_global_rate_limit: Option<NetworkGlobalRateLimitConfig>,
+    network_connection_limit: Option<ConnectionLimitConfig>,
     tls_configurator: Option<TlsConfigurator<ServerConfig, WantsToBuildServer>>,
 }
 
@@ -108,10 +119,17 @@ impl FilterchainBuilder {
     pub fn build(self) -> Result<FilterchainType> {
         let listener_name = self.listener_name.ok_or("listener name is not set")?;
         let filterchain_name = self.name;
+        let network_global_rate_limit =
+            self.network_global_rate_limit.map(NetworkGlobalRateLimit::try_from).transpose()?;
+        let network_connection_limit = self
+            .network_connection_limit
+            .map(|cl| NetworkConnectionLimit::from((listener_name, self.filterchain_id, cl)));
         let config = Filterchain {
             name: filterchain_name,
             tls_configurator: self.tls_configurator,
             rbac_filters: self.rbac_filters,
+            network_global_rate_limit,
+            network_connection_limit,
         };
         let handler = match self.main_filter {
             MainFilterBuilder::Http(http_connection_manager) => ConnectionHandler::Http(Arc::new(
@@ -121,7 +139,7 @@ impl FilterchainBuilder {
                     .build()?,
             )),
             MainFilterBuilder::Tcp(tcp_proxy) => ConnectionHandler::Tcp(
-                tcp_proxy.with_listener_name(listener_name).with_filterchain_id(self.filterchain_id).build()?,
+                tcp_proxy.with_listener_name(listener_name).with_filterchain_id(self.filterchain_id).build(),
             ),
         };
         Ok(FilterchainType { config, handler })
@@ -135,6 +153,8 @@ impl TryFrom<ConversionContext<'_, FilterChainConfig>> for FilterchainBuilder {
         let main_filter = ConversionContext::new((filter_chain.terminal_filter, secret_manager)).try_into()?;
         let tls_config = filter_chain.tls_config;
         let rbac_filters = filter_chain.rbac;
+        let network_global_rate_limit = filter_chain.network_global_rate_limit;
+        let network_connection_limit = filter_chain.network_connection_limit;
         let tls_configurator =
             tls_config.map(|tls_config| TlsConfigurator::try_from((tls_config, secret_manager))).transpose()?;
         Ok(FilterchainBuilder {
@@ -143,6 +163,8 @@ impl TryFrom<ConversionContext<'_, FilterChainConfig>> for FilterchainBuilder {
             listener_name: None,
             main_filter,
             rbac_filters,
+            network_global_rate_limit,
+            network_connection_limit,
             tls_configurator,
         })
     }
@@ -171,13 +193,27 @@ impl FilterchainType {
         Some(stream)
     }
 
+    pub async fn apply_connection_limit(&self) -> Result<Option<ConnectionGuard>> {
+        let Some(limiter) = &self.config.network_connection_limit else {
+            return Ok(None);
+        };
+        limiter.check().await.map(Some)
+    }
+
+    pub async fn apply_network_rate_limit(&self, sni: Option<&SmolStr>) -> Result<()> {
+        let Some(rate_limit) = &self.config.network_global_rate_limit else {
+            return Ok(());
+        };
+        rate_limit.check(sni).await
+    }
+
     #[allow(clippy::used_underscore_binding)]
     pub async fn start_filterchain(
         &self,
         stream: AsyncInstrumentedStream,
         metadata: DownstreamMetadata,
         listener_name: &'static str,
-        start_instant: std::time::Instant,
+        #[allow(unused_variables)] start_instant: std::time::Instant,
     ) -> Result<()> {
         #[cfg(feature = "metrics")]
         let shard_id = get_shard_id!();
@@ -189,8 +225,9 @@ impl FilterchainType {
                 defer! {
                     with_metric!(http::DOWNSTREAM_CX_DESTROY, add, 1, shard_id, &[KeyValue::new("listener", listener_name)]);
                     with_metric!(http::DOWNSTREAM_CX_ACTIVE, sub, 1, shard_id, &[KeyValue::new("listener", listener_name)]);
-                    let _ms = u64::try_from(start_instant.elapsed().as_millis()).unwrap_or(u64::MAX);
-                    with_histogram!(http::DOWNSTREAM_CX_LENGTH_MS, record, _ms, shard_id, &[KeyValue::new("listener", listener_name)]);
+                    with_histogram!(http::DOWNSTREAM_CX_LENGTH_MS, record,
+                        u64::try_from(start_instant.elapsed().as_millis()).unwrap_or(u64::MAX),
+                        shard_id, &[KeyValue::new("listener", listener_name)]);
                 }
 
                 let req_handler = http_connection_manager.request_handler();
@@ -228,7 +265,7 @@ impl FilterchainType {
 
                 debug!("{listener_name} tried to negotiate {codec_type:?}, got {selected_codec:?}");
                 let mut hyper_server = HyperServerBuilder::new(TokioExecutor::new());
-                let metrics = stream.shared_metrics();
+                let stream_metrics = stream.shared_metrics();
                 let stream = TokioIo::new(stream);
                 //todo(hayley): we should be applying listener http settings here
                 hyper_server = match selected_codec {
@@ -240,8 +277,10 @@ impl FilterchainType {
                     .serve_connection_with_upgrades(
                         stream,
                         hyper::service::service_fn(move |mut req: Request<hyper::body::Incoming>| {
-                            req.extensions_mut()
-                                .insert(MetadataContext { downstream: metadata.clone(), metrics: metrics.clone() });
+                            req.extensions_mut().insert(MetadataContext {
+                                downstream: metadata.clone(),
+                                stream_metrics: Arc::clone(&stream_metrics),
+                            });
                             req_handler.call(req).map_err(orion_error::Error::into_inner)
                         }),
                     )
@@ -255,8 +294,9 @@ impl FilterchainType {
                 defer! {
                     with_metric!(tcp::DOWNSTREAM_CX_DESTROY, add, 1, shard_id, &[KeyValue::new("listener", listener_name)]);
                     with_metric!(tcp::DOWNSTREAM_CX_ACTIVE, sub, 1, shard_id, &[KeyValue::new("listener", listener_name)]);
-                    let _ms = u64::try_from(start_instant.elapsed().as_millis()).unwrap_or(u64::MAX);
-                    with_histogram!(tcp::DOWNSTREAM_CX_LENGTH_MS, record, _ms, shard_id, &[KeyValue::new("listener", listener_name)]);
+                    with_histogram!(tcp::DOWNSTREAM_CX_LENGTH_MS, record,
+                        u64::try_from(start_instant.elapsed().as_millis()).unwrap_or(u64::MAX),
+                        shard_id, &[KeyValue::new("listener", listener_name)]);
                 }
 
                 let listener_name = tcp_proxy.listener_name;

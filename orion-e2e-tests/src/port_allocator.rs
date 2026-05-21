@@ -50,10 +50,10 @@ impl PortBlock {
     pub fn reserve() -> Result<Self> {
         let lock_dir = std::env::temp_dir().join("orion-port-locks");
         fs::create_dir_all(&lock_dir)
-            .map_err(|e| Error::PortAllocationFailed(format!("Failed to create lock directory: {}", e)))?;
+            .map_err(|e| Error::PortAllocationFailed(format!("Failed to create lock directory: {e}")))?;
 
         for block_id in 0..NUM_BLOCKS {
-            let lock_path = lock_dir.join(format!("block_{}.lock", block_id));
+            let lock_path = lock_dir.join(format!("block_{block_id}.lock"));
 
             match OpenOptions::new().write(true).create_new(true).open(&lock_path) {
                 Ok(_file) => {
@@ -61,11 +61,9 @@ impl PortBlock {
                     tracing::debug!(block_id, start_port, "Reserved port block");
                     return Ok(Self { block_id, start_port, next_offset: AtomicU16::new(0), lock_file: lock_path });
                 },
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    continue;
-                },
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {},
                 Err(e) => {
-                    return Err(Error::PortAllocationFailed(format!("Lock file error: {}", e)));
+                    return Err(Error::PortAllocationFailed(format!("Lock file error: {e}")));
                 },
             }
         }

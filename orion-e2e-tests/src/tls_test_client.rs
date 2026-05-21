@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use pingora::prelude::fast_timeout::fast_timeout;
 use std::io::BufReader;
 use std::net::SocketAddr;
 use std::path::Path;
@@ -32,6 +33,7 @@ use crate::{Error, RequestBuilder, Result, TestResponse};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 
+#[derive(Default)]
 pub struct TlsClientConfig {
     pub root_ca: Option<RootCertStore>,
     pub client_cert: Option<Vec<CertificateDer<'static>>>,
@@ -39,19 +41,6 @@ pub struct TlsClientConfig {
     pub skip_verification: bool,
     pub tls_min_version: Option<&'static rustls::SupportedProtocolVersion>,
     pub tls_max_version: Option<&'static rustls::SupportedProtocolVersion>,
-}
-
-impl Default for TlsClientConfig {
-    fn default() -> Self {
-        Self {
-            root_ca: None,
-            client_cert: None,
-            client_key: None,
-            skip_verification: false,
-            tls_min_version: None,
-            tls_max_version: None,
-        }
-    }
 }
 
 impl TlsClientConfig {
@@ -101,6 +90,25 @@ impl TlsClientConfig {
             store.add(cert).map_err(|e| Error::Config(format!("Failed to add root certificate: {e}")))?;
         }
         Ok(store)
+    }
+
+    pub async fn handshake_on<S>(
+        &self,
+        stream: S,
+        server_name: impl Into<String>,
+    ) -> Result<tokio_rustls::client::TlsStream<S>>
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    {
+        let config = Arc::new(self.build_client_config()?);
+        let server_name_str = server_name.into();
+        let name = ServerName::try_from(server_name_str.clone())
+            .map_err(|_e| Error::Config(format!("Invalid server name: {server_name_str}")))?
+            .to_owned();
+        TlsConnector::from(config)
+            .connect(name, stream)
+            .await
+            .map_err(|e| Error::Http(format!("TLS handshake failed: {e}")))
     }
 
     fn build_client_config(&self) -> Result<rustls::ClientConfig> {
@@ -188,10 +196,10 @@ pub struct TlsTestClient {
 }
 
 impl TlsTestClient {
-    pub fn new(addr: SocketAddr, server_name: impl Into<String>, config: TlsClientConfig) -> Result<Self> {
+    pub fn new(addr: SocketAddr, server_name: impl Into<String>, config: &TlsClientConfig) -> Result<Self> {
         let server_name_str = server_name.into();
         let server_name = ServerName::try_from(server_name_str.clone())
-            .map_err(|_| Error::Config(format!("Invalid server name: {server_name_str}")))?
+            .map_err(|_e| Error::Config(format!("Invalid server name: {server_name_str}")))?
             .to_owned();
         let tls_config = Arc::new(config.build_client_config()?);
         Ok(Self { addr, server_name, tls_config, timeout: DEFAULT_TIMEOUT, default_headers: vec![] })
@@ -252,9 +260,9 @@ impl TlsTestClient {
                 .map_err(|e| Error::Http(format!("Failed to build request: {e}")))?,
         };
 
-        tokio::time::timeout(self.timeout, self.send_tls_request(request))
+        fast_timeout(self.timeout, self.send_tls_request(request))
             .await
-            .map_err(|_| Error::RequestTimeout(self.timeout))?
+            .map_err(|_e| Error::RequestTimeout(self.timeout))?
     }
 
     #[allow(clippy::disallowed_methods)]
@@ -279,9 +287,9 @@ impl TlsTestClient {
             .body(Full::new(request.body_bytes().clone()))
             .map_err(|e| Error::Http(format!("Failed to build request: {e}")))?;
 
-        tokio::time::timeout(self.timeout, self.send_tls_request(http_request))
+        fast_timeout(self.timeout, self.send_tls_request(http_request))
             .await
-            .map_err(|_| Error::RequestTimeout(self.timeout))?
+            .map_err(|_e| Error::RequestTimeout(self.timeout))?
     }
 
     async fn send_tls_request(&self, request: Request<Full<Bytes>>) -> Result<TestResponse> {
@@ -417,7 +425,7 @@ impl TlsTestClientBuilder {
         config.tls_min_version = self.tls_min_version;
         config.tls_max_version = self.tls_max_version;
 
-        let mut client = TlsTestClient::new(self.addr, server_name, config)?;
+        let mut client = TlsTestClient::new(self.addr, server_name, &config)?;
         client.timeout = self.timeout;
         client.default_headers = self.default_headers;
 

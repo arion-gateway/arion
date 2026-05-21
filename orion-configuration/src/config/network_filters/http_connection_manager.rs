@@ -153,7 +153,7 @@ impl<'de> Deserialize<'de> for MatchHost {
 impl MatchHost {
     pub fn try_from_smol_str(value: SmolStr) -> Result<Self, GenericError> {
         let _ = HeaderValue::from_str(&value)
-            .map_err(|_| GenericError::from_msg(format!("failed to parse \"{value}\" as a headervalue")))?;
+            .map_err(|_e| GenericError::from_msg(format!("failed to parse \"{value}\" as a headervalue")))?;
 
         if value == "*" {
             return Ok(Self::Wildcard);
@@ -405,9 +405,7 @@ pub enum ConfigSourceSpecifier {
 
 #[cfg(test)]
 mod tests {
-
     use super::*;
-    use std::str::FromStr;
 
     #[inline]
     fn request_uri(uri: &str) -> http::Request<()> {
@@ -415,36 +413,33 @@ mod tests {
     }
 
     #[test]
-    fn match_host_exact() -> Result<(), GenericError> {
-        assert_eq!(MatchHost::from_str("www.example.com")?, MatchHost::Exact("www.example.com".into()));
+    fn match_host_exact() {
+        assert_eq!(MatchHost::from_str("www.example.com").unwrap(), MatchHost::Exact("www.example.com".into()));
 
         assert_eq!(
-            MatchHost::from_str("www.example.com")?.eval_lpm_host("www.example.com"),
+            MatchHost::from_str("www.example.com").unwrap().eval_lpm_host("www.example.com"),
             Some(MatchHostScoreLPM::Exact("www.example.com".len()))
         );
 
-        assert_eq!(MatchHost::from_str("another.example.com")?.eval_lpm_host("www.example.com"), None);
+        assert_eq!(MatchHost::from_str("another.example.com").unwrap().eval_lpm_host("www.example.com"), None);
 
         assert_eq!(
-            MatchHost::from_str("localhost")?.eval_lpm_host("localhost"),
+            MatchHost::from_str("localhost").unwrap().eval_lpm_host("localhost"),
             Some(MatchHostScoreLPM::Exact("localhost".len()))
         );
-        assert_eq!(MatchHost::from_str("localhost")?.eval_lpm_host("another"), None);
-        Ok(())
+        assert_eq!(MatchHost::from_str("localhost").unwrap().eval_lpm_host("another"), None);
     }
 
     #[test]
-    fn match_host_suffix() -> Result<(), GenericError> {
-        assert_eq!(MatchHost::from_str("*.example.com")?, MatchHost::Suffix(".example.com".into()));
+    fn match_host_suffix() {
+        assert_eq!(MatchHost::from_str("*.example.com").unwrap(), MatchHost::Suffix(".example.com".into()));
 
         assert_eq!(
-            MatchHost::from_str("*.example.com")?.eval_lpm_host("www.example.com"),
+            MatchHost::from_str("*.example.com").unwrap().eval_lpm_host("www.example.com"),
             Some(MatchHostScoreLPM::Suffix(12))
         );
 
-        assert_eq!(MatchHost::from_str("*.example.com")?.eval_lpm_host("example.com"), None);
-
-        Ok(())
+        assert_eq!(MatchHost::from_str("*.example.com").unwrap().eval_lpm_host("example.com"), None);
     }
 
     #[test]
@@ -530,13 +525,13 @@ mod tests {
 
     #[test]
     fn test_bad_rules() {
-        assert!("*asdf*".parse::<MatchHost>().is_err());
-        assert!("*.example.*.com".parse::<MatchHost>().is_err());
-        assert!("**".parse::<MatchHost>().is_err());
-        assert!("asdf*asdf".parse::<MatchHost>().is_err());
-        assert!("*asdf*".parse::<MatchHost>().is_err());
-        assert!("*asdf*asdf".parse::<MatchHost>().is_err());
-        assert!("asdf*asdf*".parse::<MatchHost>().is_err());
+        "*asdf*".parse::<MatchHost>().unwrap_err();
+        "*.example.*.com".parse::<MatchHost>().unwrap_err();
+        "**".parse::<MatchHost>().unwrap_err();
+        "asdf*asdf".parse::<MatchHost>().unwrap_err();
+        "*asdf*".parse::<MatchHost>().unwrap_err();
+        "*asdf*asdf".parse::<MatchHost>().unwrap_err();
+        "asdf*asdf*".parse::<MatchHost>().unwrap_err();
     }
 
     #[test]
@@ -761,7 +756,7 @@ mod envoy_conversions {
             let request_timeout = request_timeout
                 .map(RustType::<Duration>::try_from)
                 .transpose()
-                .map_err(|_| GenericError::from_msg("failed to convert into Duration"))
+                .map_err(|_e| GenericError::from_msg("failed to convert into Duration"))
                 .with_node("request_timeout")?
                 .map(RustType::into_inner);
             let enabled_upgrades = upgrade_configs
@@ -822,7 +817,7 @@ mod envoy_conversions {
             let tracing = tracing
                 .map(TryInto::try_into)
                 .transpose()
-                .map_err(|_| GenericError::from_msg("failed to convert tracing object"))?;
+                .map_err(|_e| GenericError::from_msg("failed to convert tracing object"))?;
 
             Ok(Self {
                 codec_type,
@@ -1107,7 +1102,7 @@ mod envoy_conversions {
             let per_try_timeout = per_try_timeout
                 .map(RustType::<Duration>::try_from)
                 .transpose()
-                .map_err(|_| GenericError::from_msg("failed to convert into Duration").with_node("per_try_timeout"))?
+                .map_err(|_e| GenericError::from_msg("failed to convert into Duration").with_node("per_try_timeout"))?
                 .map(RustType::into_inner);
             let retriable_status_codes = retriable_status_codes
                 .into_iter()
@@ -1146,7 +1141,7 @@ mod envoy_conversions {
             let max_interval = max_interval
                 .map(RustType::<Duration>::try_from)
                 .transpose()
-                .map_err(|_| GenericError::from_msg("failed to convert into Duration"))
+                .map_err(|_e| GenericError::from_msg("failed to convert into Duration"))
                 .with_node("max_interval")?
                 .map(RustType::into_inner)
                 .unwrap_or(base_interval * 10);

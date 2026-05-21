@@ -12,13 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#![allow(clippy::expect_used, reason = "test infrastructure — panicking on setup failure is intentional")]
+
 use http::StatusCode;
 use orion_e2e_tests::config_builder::{
     presets, BootstrapBuilder, ClusterBuilder, DownstreamTlsBuilder, FilterChainBuilder, HcmBuilder, ListenerBuilder,
     RouteConfigBuilder, VirtualHostBuilder,
 };
 use orion_e2e_tests::{
-    OrionInstance, PreConfiguredResponse, SpawnOptions, TestBackend, TestCerts, TlsTestClientBuilder,
+    cleanup_config_file, OrionInstance, PreConfiguredResponse, SpawnOptions, TestBackend, TestCerts,
+    TlsTestClientBuilder,
 };
 
 fn sni_filter_chain(
@@ -98,7 +101,7 @@ async fn test_sni_routing_two_domains() {
     assert_eq!(req.path(), "/athlone");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -142,7 +145,7 @@ async fn test_sni_routing_different_certs() {
 
     let response = client_dublin.get("/dublin").await.expect("Failed to send dublin request");
     response.assert_status(StatusCode::OK);
-    let _ = backend.await_request().await;
+    assert!(backend.await_request().await.is_ok(), "backend should have received a request");
 
     let client_athlone = TlsTestClientBuilder::new(addr)
         .server_name("athlone.beefcake.example.com")
@@ -154,7 +157,7 @@ async fn test_sni_routing_different_certs() {
     response.assert_status(StatusCode::OK);
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -198,11 +201,11 @@ async fn test_sni_routing_multiple_names_per_chain() {
         response.assert_status(StatusCode::OK);
         response.assert_body("multi-sni OK");
 
-        let _ = backend.await_request().await;
+        assert!(backend.await_request().await.is_ok(), "backend should have received a request");
     }
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -256,7 +259,7 @@ async fn test_sni_routing_default_chain() {
     let response = client_known.get("/known").await.expect("Failed to send known request");
     response.assert_status(StatusCode::OK);
     response.assert_body("specific");
-    let _ = backend_specific.await_request().await;
+    assert!(backend_specific.await_request().await.is_ok(), "backend should have received a request");
 
     let client_unknown = TlsTestClientBuilder::new(addr)
         .server_name("unknown.beefcake.example.com")
@@ -267,10 +270,10 @@ async fn test_sni_routing_default_chain() {
     let response = client_unknown.get("/unknown").await.expect("Failed to send unknown request");
     response.assert_status(StatusCode::OK);
     response.assert_body("default");
-    let _ = backend_default.await_request().await;
+    assert!(backend_default.await_request().await.is_ok(), "backend should have received a request");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -334,7 +337,7 @@ async fn test_sni_routing_post_with_body() {
     assert_eq!(req2.body_str(), Some(body2));
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -390,7 +393,7 @@ async fn test_sni_routing_mismatched_sni() {
     let response = client_matching.get("/test").await.expect("Failed to send matching SNI request");
     response.assert_status(StatusCode::OK);
     response.assert_body("specific");
-    let _ = backend_specific.await_request().await;
+    assert!(backend_specific.await_request().await.is_ok(), "backend should have received a request");
 
     // Test 2: Non-matching SNI should fall back to default chain
     // Client sends SNI "unknown.example.com" which doesn't match any filter chain
@@ -406,8 +409,8 @@ async fn test_sni_routing_mismatched_sni() {
     let response = client_mismatched.get("/test").await.expect("Failed to send mismatched SNI request");
     response.assert_status(StatusCode::OK);
     response.assert_body("default");
-    let _ = backend_default.await_request().await;
+    assert!(backend_default.await_request().await.is_ok(), "backend should have received a request");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }

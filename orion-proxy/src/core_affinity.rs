@@ -73,10 +73,10 @@ pub fn get_core_ids() -> Result<Vec<CoreId>> {
 
 /// Set the current set of cores available to the caller thread.
 #[inline]
-pub fn set_cores_for_current(_cores: &[CoreId]) -> Result<()> {
+pub fn set_cores_for_current(#[allow(unused_variables)] cores: &[CoreId]) -> Result<()> {
     #[cfg(target_os = "linux")]
     {
-        affinity::set_thread_affinity(_cores.iter().map(|x| **x).collect::<Vec<usize>>())
+        affinity::set_thread_affinity(cores.iter().map(|x| **x).collect::<Vec<usize>>())
             .map_err(|err| format!("set_cores_for_current: {err}").into())
     }
 
@@ -101,12 +101,8 @@ fn group_by_numa(cores: Vec<CoreId>, cpuinfo: &str) -> Result<Vec<Vec<CoreId>>> 
             .lines()
             .filter(|l| l.starts_with(needle))
             .filter_map(|s| {
-                let xs = s.split(':').collect::<Vec<_>>();
-                if xs.len() == 2 {
-                    xs[1].trim().parse::<usize>().ok()
-                } else {
-                    None
-                }
+                let (_, value) = s.split_once(':')?;
+                value.trim().parse::<usize>().ok()
             })
             .collect::<Vec<_>>()
     };
@@ -231,13 +227,13 @@ mod tests {
     #[test]
     fn test_group_by_numa_no_cpuinfo() {
         let cores = core_ids![0, 1, 2, 3];
-        assert!(group_by_numa(cores, "").is_err());
+        group_by_numa(cores, "").unwrap_err();
     }
 
     #[test]
     fn test_group_by_numa_bad_cpuinfo() {
         let cores = core_ids![0, 1, 2, 3];
-        assert!(group_by_numa(cores, "deadbeef").is_err());
+        group_by_numa(cores, "deadbeef").unwrap_err();
     }
 
     #[test]
@@ -463,7 +459,7 @@ clflush size    : 64
 cache_alignment : 64
 address sizes   : 39 bits physical, 48 bits virtual
 power management:";
-        assert!(group_by_numa(cores, cpuinfo).is_err());
+        group_by_numa(cores, cpuinfo).unwrap_err();
     }
 
     #[test]
@@ -605,7 +601,7 @@ power management:";
             run_strategy(RuntimeId(0), 4, cores_affinity.clone(), avail.clone()).unwrap(),
             core_ids![0, 1, 2, 3]
         );
-        assert!(run_strategy(RuntimeId(1), 4, cores_affinity.clone(), avail.clone()).is_err());
+        run_strategy(RuntimeId(1), 4, cores_affinity.clone(), avail.clone()).unwrap_err();
     }
 
     #[test]
@@ -622,11 +618,11 @@ power management:";
         assert_eq!(run_strategy(RuntimeId(6), 1, cores_affinity.clone(), avail.clone()).unwrap(), core_ids![2]);
         assert_eq!(run_strategy(RuntimeId(7), 1, cores_affinity.clone(), avail.clone()).unwrap(), core_ids![5]);
         assert_eq!(run_strategy(RuntimeId(8), 1, cores_affinity.clone(), avail.clone()).unwrap(), core_ids![8]);
-        assert!(run_strategy(RuntimeId(9), 1, cores_affinity.clone(), avail.clone()).is_err());
+        run_strategy(RuntimeId(9), 1, cores_affinity.clone(), avail.clone()).unwrap_err();
 
         assert_eq!(run_strategy(RuntimeId(0), 3, cores_affinity.clone(), avail.clone()).unwrap(), core_ids![0, 1, 2]);
         assert_eq!(run_strategy(RuntimeId(1), 3, cores_affinity.clone(), avail.clone()).unwrap(), core_ids![3, 4, 5]);
         assert_eq!(run_strategy(RuntimeId(2), 3, cores_affinity.clone(), avail.clone()).unwrap(), core_ids![6, 7, 8]);
-        assert!(run_strategy(RuntimeId(3), 3, cores_affinity.clone(), avail.clone()).is_err());
+        run_strategy(RuntimeId(3), 3, cores_affinity.clone(), avail.clone()).unwrap_err();
     }
 }

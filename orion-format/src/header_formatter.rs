@@ -28,7 +28,7 @@ impl HeaderFormatter {
     #[inline]
     pub fn into_header_value(self) -> Result<HeaderValue, InvalidHeaderValue> {
         let fmt = self.fmt.into_message();
-        let value = format!("{}", fmt);
+        let value = format!("{fmt}");
         HeaderValue::from_str(&value)
     }
 
@@ -42,7 +42,7 @@ impl HeaderFormatter {
 mod tests {
     use http::Request;
 
-    use crate::context::DownstreamContext;
+    use crate::context::{DownstreamContext, SocketAddrContext};
 
     use super::*;
 
@@ -61,7 +61,7 @@ mod tests {
             request_head_size: 0,
             trace_id: None,
             server_name: None,
-            socket_address: Default::default(),
+            socket_address: SocketAddrContext::default(),
         });
 
         let header_value = formatter.into_header_value().expect("Failed to create header value");
@@ -79,7 +79,7 @@ mod tests {
             request_head_size: 0,
             trace_id: None,
             server_name: None,
-            socket_address: Default::default(),
+            socket_address: SocketAddrContext::default(),
         });
 
         let header_value = formatter.into_header_value().expect("Failed to create header value");
@@ -91,7 +91,7 @@ mod tests {
         let mut req = build_request();
         req.headers_mut().append("X-Request-Id", HeaderValue::from_static("123"));
 
-        println!("REQ: {:?}", req);
+        println!("REQ: {req:?}");
         let source = HeaderFormatter::try_new("%REQ(X-REQUEST-ID)%").unwrap();
         let mut formatter = source.clone();
 
@@ -100,7 +100,7 @@ mod tests {
             request_head_size: 0,
             trace_id: None,
             server_name: None,
-            socket_address: Default::default(),
+            socket_address: SocketAddrContext::default(),
         });
 
         let header_value = formatter.into_header_value().expect("Failed to create header value");

@@ -12,7 +12,7 @@ use tracing::error;
 
 use crate::{
     body::timeout_body::TimeoutBody,
-    clusters::{clusters_manager, RoutingContext},
+    clusters::{clusters_manager, RoutingContext, RoutingPriority},
     listeners::http_connection_manager::jwt_authn::{error::JwkError, Kid, ValidationKey},
     OrionRequestBody,
 };
@@ -70,6 +70,7 @@ pub async fn fetch_remote_jwks(
             request,
             Some(remote.http_uri.timeout),
             remote.retry_policy.as_ref(),
+            RoutingPriority::Default,
             None,
             #[cfg(feature = "instrumentation")]
             &clock,
@@ -84,7 +85,7 @@ pub async fn fetch_remote_jwks(
     let timeout_body = TimeoutBody::new(Some(remote.http_uri.timeout.saturating_sub(start_time.elapsed())), body);
     let bytes = timeout_body.collect().await?.to_bytes();
 
-    parse_jwks(&bytes, &provider_config).inspect_err(|err| {
+    parse_jwks(&bytes, provider_config).inspect_err(|err| {
         error!(target: "jwt", "{provider_name}: failed to parse JWKS. Reason: {}", err);
     })
 }

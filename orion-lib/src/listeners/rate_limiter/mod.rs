@@ -15,72 +15,7 @@
 //
 //
 
-mod token_bucket;
-use std::sync::Arc;
-
-use http::{status::StatusCode, Request};
-use tracing::warn;
-
-use token_bucket::TokenBucket;
-
-use orion_configuration::config::network_filters::http_connection_manager::http_filters::local_rate_limit::LocalRateLimit as LocalRateLimitConfig;
-
-use crate::{body::response_flags::ResponseFlags, event_error::EventFailure};
-use orion_format::types::ResponseFlags as FmtResponseFlags;
-
-use crate::{
-    listeners::{http_filters::FilterDecision, synthetic_http_response::SyntheticHttpResponse},
-    runtime_config,
-};
-
-#[derive(Debug, Clone)]
-pub struct LocalRateLimitInner {
-    pub status: StatusCode,
-    pub token_bucket: Option<TokenBucket>,
-}
-
-#[derive(Debug, Clone)]
-pub struct LocalRateLimit {
-    pub inner: Arc<LocalRateLimitInner>, // shared across sessions...
-}
-
-impl LocalRateLimit {
-    pub fn run<B>(&self, req: &Request<B>) -> FilterDecision {
-        if let Some(token_bucket) = &self.inner.token_bucket {
-            if !token_bucket.consume(1) {
-                let status = self.inner.status;
-                return FilterDecision::DirectResponse(
-                    SyntheticHttpResponse::custom_error(
-                        status,
-                        None,
-                        EventFailure::RateLimited.into(),
-                        ResponseFlags(FmtResponseFlags::RATE_LIMITED),
-                    )
-                    .into_response(req.version()),
-                );
-            }
-        }
-        FilterDecision::Continue
-    }
-}
-
-impl From<LocalRateLimitConfig> for LocalRateLimit {
-    fn from(rate_limit: LocalRateLimitConfig) -> Self {
-        let status = rate_limit.status;
-        if let Some(token_bucket) = rate_limit.token_bucket {
-            let max_tokens = token_bucket.max_tokens;
-            let tokens_per_fill = token_bucket.tokens_per_fill;
-            let fill_interval = token_bucket.fill_interval;
-            let adjusted_fill_interval = fill_interval.checked_mul(runtime_config().num_runtimes.into());
-            let fill_interval = if let Some(value) = adjusted_fill_interval {
-                value
-            } else {
-                warn!("failed to adjust fill interval to number of configured runtimes (overflow)");
-                fill_interval
-            };
-            let token_bucket = TokenBucket::new(max_tokens, tokens_per_fill, fill_interval);
-            return Self { inner: Arc::new(LocalRateLimitInner { status, token_bucket: Some(token_bucket) }) };
-        }
-        Self { inner: Arc::new(LocalRateLimitInner { status, token_bucket: None }) }
-    }
-}
+pub mod connection_limit;
+pub mod global_rate_limiter;
+pub mod local_rate_limiter;
+pub(crate) mod token_bucket;

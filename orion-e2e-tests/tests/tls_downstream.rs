@@ -15,7 +15,8 @@
 use http::StatusCode;
 use orion_e2e_tests::config_builder::{presets, BootstrapBuilder, ClusterBuilder, DownstreamTlsBuilder, TlsVersion};
 use orion_e2e_tests::{
-    OrionInstance, PreConfiguredResponse, SpawnOptions, TestBackend, TestCerts, TlsTestClientBuilder,
+    cleanup_config_file, OrionInstance, PreConfiguredResponse, SpawnOptions, TestBackend, TestCerts,
+    TlsTestClientBuilder,
 };
 
 #[tokio::test]
@@ -56,7 +57,7 @@ async fn test_downstream_tls_termination_file_cert() {
     assert_eq!(captured_request.path(), "/hello");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -92,7 +93,7 @@ async fn test_downstream_tls_1_2_only() {
     response.assert_body("TLS 1.2 OK");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -128,7 +129,7 @@ async fn test_downstream_tls_1_3_only() {
     response.assert_body("TLS 1.3 OK");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -163,7 +164,7 @@ async fn test_downstream_tls_wrong_ca_fails() {
     assert!(result.is_err(), "Expected TLS handshake to fail with wrong CA");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -203,7 +204,7 @@ async fn test_downstream_tls_multiple_requests() {
     }
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -244,7 +245,7 @@ async fn test_downstream_tls_post_with_body() {
     assert_eq!(req.body_str(), Some(body));
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -283,7 +284,7 @@ async fn test_downstream_tls_version_range() {
     response.assert_body("version range OK");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -319,7 +320,7 @@ async fn test_downstream_tls_skip_verification_client() {
     response.assert_body("insecure OK");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -355,7 +356,7 @@ async fn test_downstream_tls_1_2_only_rejects_1_3_client() {
     assert!(result.is_err(), "Expected TLS handshake to fail due to version mismatch");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -391,7 +392,7 @@ async fn test_downstream_tls_1_3_only_rejects_1_2_client() {
     assert!(result.is_err(), "Expected TLS handshake to fail due to version mismatch");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -426,5 +427,5 @@ async fn test_downstream_tls_sni_mismatch() {
     assert!(result.is_err(), "Expected TLS handshake to fail due to SNI/hostname mismatch");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }

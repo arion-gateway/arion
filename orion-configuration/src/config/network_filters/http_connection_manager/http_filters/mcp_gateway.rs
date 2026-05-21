@@ -102,7 +102,7 @@ pub enum UpstreamBackend {
         transport: McpBackendTransportUpstream,
         url: String,
     },
-    FunctionGraph {},
+    FunctionGraph,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
@@ -260,9 +260,8 @@ mod envoy_conversions {
             let OrionTool { name, description, input_schema, output_schema, upstream_backend, rbac, embedding } = orion;
             let backend = required!(upstream_backend)?.try_into()?;
 
-            match backend {
-                UpstreamBackend::FunctionGraph { .. } => unimplemented!("FunctionGraph backend is not supported yet"),
-                _ => (),
+            if let UpstreamBackend::FunctionGraph = backend {
+                unimplemented!("FunctionGraph backend is not supported yet")
             }
 
             let validate_schema_fn = |schema, name| -> Result<Map<String, Value>, GenericError> {
@@ -283,12 +282,12 @@ mod envoy_conversions {
             };
 
             let input_schema = match backend {
-                UpstreamBackend::Rest { .. } | UpstreamBackend::FunctionGraph { .. } => {
+                UpstreamBackend::Rest { .. } | UpstreamBackend::FunctionGraph => {
                     validate_schema_fn(input_schema, "input")?
                 },
                 UpstreamBackend::McpServer { .. } => {
                     // input_schema is ignored for MCP backends
-                    if let Some(_) = input_schema {
+                    if input_schema.is_some() {
                         warn!("input_schema is ignored for MCP backends");
                     }
                     Map::new()
@@ -296,12 +295,12 @@ mod envoy_conversions {
             };
 
             let output_schema = match backend {
-                UpstreamBackend::Rest { .. } | UpstreamBackend::FunctionGraph { .. } => {
+                UpstreamBackend::Rest { .. } | UpstreamBackend::FunctionGraph => {
                     validate_schema_fn(output_schema, "output")?
                 },
                 UpstreamBackend::McpServer { .. } => {
                     // output_schema is ignored for MCP backends
-                    if let Some(_) = output_schema {
+                    if output_schema.is_some() {
                         warn!("output_schema is ignored for MCP backends");
                     }
                     Map::new()
@@ -329,7 +328,7 @@ mod envoy_conversions {
                 OrionUpstreamBackend::RestBackend(be) => {
                     let cluster = be.cluster;
                     let cluster = required!(cluster)?;
-                    let template_ds: Option<DataSource> = be.body_template.map(|ds| ds.try_into()).transpose()?;
+                    let template_ds: Option<DataSource> = be.body_template.map(TryInto::try_into).transpose()?;
                     let template_bytes = template_ds.map(|t| t.to_bytes_blocking()).transpose()?;
                     let body_template = template_bytes.map(String::from_utf8).transpose()?;
                     Ok(UpstreamBackend::Rest {
@@ -446,6 +445,7 @@ mod envoy_conversions {
         use super::*;
 
         #[test]
+        #[allow(clippy::indexing_slicing)]
         fn test_tool_rbac_config_parsing() {
             use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::mcp::mcp_gateway::v3::{
                 permission, JwtClaimMatcher, Permission as OrionPermission, ToolRbac as OrionToolRbac,
@@ -457,14 +457,14 @@ mod envoy_conversions {
                 permissions: vec![
                     OrionPermission {
                         permission_type: Some(permission::PermissionType::JwtClaim(JwtClaimMatcher {
-                            field: "role".to_string(),
-                            value: "admin".to_string(),
+                            field: "role".to_owned(),
+                            value: "admin".to_owned(),
                         })),
                     },
                     OrionPermission {
                         permission_type: Some(permission::PermissionType::JwtClaim(JwtClaimMatcher {
-                            field: "department".to_string(),
-                            value: "engineering".to_string(),
+                            field: "department".to_owned(),
+                            value: "engineering".to_owned(),
                         })),
                     },
                 ],
@@ -482,7 +482,7 @@ mod envoy_conversions {
                     assert_eq!(field.as_str(), "role");
                     assert_eq!(value.as_str(), "admin");
                 },
-                _ => panic!("Expected JwtClaim permission"),
+                McpRbacPermission::JwtHeader { .. } => panic!("Expected JwtClaim permission"),
             }
 
             match &rbac.permissions[1] {
@@ -490,7 +490,7 @@ mod envoy_conversions {
                     assert_eq!(field.as_str(), "department");
                     assert_eq!(value.as_str(), "engineering");
                 },
-                _ => panic!("Expected JwtClaim permission"),
+                McpRbacPermission::JwtHeader { .. } => panic!("Expected JwtClaim permission"),
             }
         }
 
@@ -504,8 +504,8 @@ mod envoy_conversions {
                 action: 1, // DENY
                 permissions: vec![OrionPermission {
                     permission_type: Some(permission::PermissionType::JwtClaim(JwtClaimMatcher {
-                        field: "role".to_string(),
-                        value: "guest".to_string(),
+                        field: "role".to_owned(),
+                        value: "guest".to_owned(),
                     })),
                 }],
             };

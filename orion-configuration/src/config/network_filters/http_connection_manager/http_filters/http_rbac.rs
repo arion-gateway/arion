@@ -98,7 +98,7 @@ impl HttpRbac {
 mod rbac_tests {
     use super::*;
     use crate::config::core::{StringMatcher, StringMatcherPattern};
-    use http::{header::HOST, HeaderMap, HeaderValue, Request};
+    use http::{header::HOST, HeaderMap, HeaderValue};
     fn create_host_request(host: &str) -> Request<()> {
         let mut hm = HeaderMap::new();
         hm.insert(HOST, HeaderValue::from_str(host).unwrap());

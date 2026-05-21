@@ -266,7 +266,7 @@ impl TlsContextBuilder<WantsToBuildServer> {
         };
         let provider = get_crypto_key_provider()?;
 
-        if let [SecretHolder { name: _, server_cert: ServerCert { certs, key, name: _ } }] =
+        if let [SecretHolder { server_cert: ServerCert { certs, key, .. }, .. }] =
             self.state.server_ids_and_certificates.as_slice()
         {
             // If only a single certificate exists, do not install SNI resolver, just accept all
@@ -322,7 +322,7 @@ impl TlsContextBuilder<WantsToBuildServer> {
                     Ok(())
                 }
             })
-            .filter(|res| res.is_err())
+            .filter(std::result::Result::is_err)
             .count();
         if errors > 0 {
             Err(format!("Found {errors} errors in Tls context").into())
@@ -339,7 +339,7 @@ impl TlsContextBuilder<WantsToBuildServer> {
         if let Ok((_, cert)) = X509Certificate::from_der(der) {
             // Look for the SAN extension
             if let Ok(Some(san_ext)) = cert.subject_alternative_name() {
-                for name in san_ext.value.general_names.iter() {
+                for name in &san_ext.value.general_names {
                     // We only care about DNS names for SNI matching
                     if let GeneralName::DNSName(dns) = name {
                         sans.push(dns.to_string());

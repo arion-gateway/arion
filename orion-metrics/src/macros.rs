@@ -16,9 +16,9 @@
 //
 
 macro_rules! init_observable_counter {
-    ($counter: ident, $prefix: literal, $name: literal, $descr: literal) => {
+    ($counter: ident, $prefix: expr, $name: expr, $descr: literal) => {
         _ = $counter.set(Metric::new($prefix, $name, $descr, ShardedU64::new()));
-        _ = global::meter(concat!("orion.", $prefix))
+        _ = global::meter(const_format::concatcp!("orion.", $prefix))
             .u64_observable_counter($name)
             .with_description($descr)
             .with_callback(move |observer| {
@@ -32,9 +32,11 @@ macro_rules! init_observable_counter {
 }
 
 macro_rules! init_observable_histogram {
-    ($histogram: ident, $prefix: literal, $name: literal, $descr: literal, $buckets: expr) => {
-        let otel_histogram =
-            global::meter(concat!("orion.", $prefix)).u64_histogram($name).with_description($descr).build();
+    ($histogram: ident, $prefix: expr, $name: expr, $descr: literal, $buckets: expr) => {
+        let otel_histogram = global::meter(const_format::concatcp!("orion.", $prefix))
+            .u64_histogram($name)
+            .with_description($descr)
+            .build();
 
         _ = $histogram.set(Metric::new(
             $prefix,
@@ -46,13 +48,30 @@ macro_rules! init_observable_histogram {
 }
 
 macro_rules! init_observable_gauge {
-    ($counter: ident, $prefix: literal, $name: literal, $descr: literal) => {
+    ($counter: ident, $prefix: expr, $name: expr, $descr: literal) => {
         _ = $counter.set(Metric::new($prefix, $name, $descr, ShardedU64::new()));
-        _ = global::meter(concat!("orion.", $prefix))
+        _ = global::meter(const_format::concatcp!("orion.", $prefix))
             .u64_observable_gauge($name)
             .with_description($descr)
             .with_callback(move |observer| {
                 let values = $counter.get().unwrap().value.load_all();
+                values.iter().for_each(|(key, value)| {
+                    observer.observe(*value, key);
+                });
+            })
+            .build();
+    };
+}
+
+#[allow(unused_macros)]
+macro_rules! init_gauge {
+    ($gauge: ident, $prefix: expr, $name: expr, $descr: literal) => {
+        _ = $gauge.set(Metric::new($prefix, $name, $descr, crate::sharded::Gauge::new()));
+        _ = global::meter(const_format::concatcp!("orion.", $prefix))
+            .u64_observable_gauge($name)
+            .with_description($descr)
+            .with_callback(move |observer| {
+                let values = $gauge.get().unwrap().value.load_all();
                 values.iter().for_each(|(key, value)| {
                     observer.observe(*value, key);
                 });

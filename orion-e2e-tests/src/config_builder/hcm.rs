@@ -23,6 +23,7 @@ use orion_data_plane_api::envoy_data_plane_api::{
         extensions::filters::{
             http::{
                 ext_proc::v3::ExternalProcessor as EnvoyExternalProcessor,
+                local_ratelimit::v3::LocalRateLimit as EnvoyLocalRateLimit,
                 {rbac::v3::Rbac as HttpRbac, router::v3::Router},
             },
             network::http_connection_manager::v3::{
@@ -32,7 +33,8 @@ use orion_data_plane_api::envoy_data_plane_api::{
             },
         },
     },
-    google::protobuf::{Any, BoolValue, Duration as ProtoDuration},
+    google::protobuf::{Any, BoolValue},
+    orion::extensions::filters::http::user_rate_limit::v3::UserRateLimiter as OrionUserRateLimiter,
     prost::Message,
 };
 
@@ -106,15 +108,13 @@ impl HcmBuilder {
                 config_source_specifier: Some(ConfigSourceSpecifier::Ads(AggregatedConfigSource {})),
                 ..Default::default()
             }),
-            ..Default::default()
         }));
         self
     }
 
     #[must_use]
     pub fn request_timeout(mut self, timeout: Duration) -> Self {
-        self.proto.request_timeout =
-            Some(ProtoDuration { seconds: timeout.as_secs() as i64, nanos: timeout.subsec_nanos() as i32 });
+        self.proto.request_timeout = Some(super::duration_to_proto(timeout));
         self
     }
 
@@ -162,6 +162,36 @@ impl HcmBuilder {
         self.proto.http_filters.push(HttpFilter {
             name: "envoy.filters.http.rbac".into(),
             config_type: Some(HttpFilterConfigType::TypedConfig(rbac_any)),
+            ..Default::default()
+        });
+        self
+    }
+
+    #[must_use]
+    pub fn local_rate_limit(mut self, local_rl: impl Into<EnvoyLocalRateLimit>) -> Self {
+        let proto: EnvoyLocalRateLimit = local_rl.into();
+        let any = Any {
+            type_url: "type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit".into(),
+            value: proto.encode_to_vec(),
+        };
+        self.proto.http_filters.push(HttpFilter {
+            name: "envoy.filters.http.local_ratelimit".into(),
+            config_type: Some(HttpFilterConfigType::TypedConfig(any)),
+            ..Default::default()
+        });
+        self
+    }
+
+    #[must_use]
+    pub fn user_rate_limit(mut self, user_rl: impl Into<OrionUserRateLimiter>) -> Self {
+        let proto: OrionUserRateLimiter = user_rl.into();
+        let any = Any {
+            type_url: "type.googleapis.com/orion.extensions.filters.http.user_rate_limit.v3.UserRateLimiter".into(),
+            value: proto.encode_to_vec(),
+        };
+        self.proto.http_filters.push(HttpFilter {
+            name: "orion.filters.http.user_rate_limit".into(),
+            config_type: Some(HttpFilterConfigType::TypedConfig(any)),
             ..Default::default()
         });
         self

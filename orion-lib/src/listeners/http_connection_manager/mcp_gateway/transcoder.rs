@@ -41,7 +41,7 @@ pub struct RestTranscoder {
 }
 
 #[derive(Debug)]
-pub struct FunctionGraphTranscoder {}
+pub struct FunctionGraphTranscoder;
 
 pub trait Transcoder {
     fn encode(

@@ -12,11 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#![allow(clippy::expect_used, reason = "test infrastructure — panicking on setup failure is intentional")]
+
 use std::time::Duration;
 
 use orion_e2e_tests::config_builder::presets;
 use orion_e2e_tests::{
-    OrionInstance, PreConfiguredResponse, RawHttpResponse, SpawnOptions, TcpTestBackend, TcpTestClient, TestBackend,
+    cleanup_config_file, OrionInstance, PreConfiguredResponse, RawHttpResponse, SpawnOptions, TcpTestBackend,
+    TcpTestClient, TestBackend,
 };
 
 async fn setup() -> (OrionInstance, TestBackend, TcpTestClient, std::path::PathBuf) {
@@ -30,6 +33,7 @@ async fn setup() -> (OrionInstance, TestBackend, TcpTestClient, std::path::PathB
         .await
         .expect("Failed to spawn Orion");
 
+    #[allow(clippy::unwrap_used)]
     let tcp_client = TcpTestClient::new(orion.listener_addr().unwrap());
     (orion, backend, tcp_client, config_path)
 }
@@ -47,13 +51,14 @@ async fn setup_with_tcp_backend() -> (OrionInstance, TcpTestBackend, TcpTestClie
         .await
         .expect("Failed to spawn Orion");
 
+    #[allow(clippy::unwrap_used)]
     let tcp_client = TcpTestClient::new(orion.listener_addr().unwrap());
     (orion, backend, tcp_client, config_path)
 }
 
-fn cleanup(orion: OrionInstance, config_path: std::path::PathBuf) {
+fn cleanup(orion: OrionInstance, config_path: &std::path::Path) {
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(config_path);
 }
 
 #[tokio::test]
@@ -90,7 +95,7 @@ async fn test_tc0701_cl_te_smuggling() {
         assert!(!received.contains("/smuggled"), "Backend received smuggled request! Data: {received}");
     }
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -127,7 +132,7 @@ async fn test_tc0702_te_cl_smuggling() {
         assert!(!received.contains("/smuggled"), "Backend received smuggled request! Data: {received}");
     }
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -147,7 +152,7 @@ async fn test_tc0703_te_obfuscation() {
     // Orion trims whitespace around the TE value and treats it as chunked (correct per RFC 7230 §3.2.3).
     resp.assert_status(200);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }
 
 #[tokio::test]
@@ -166,5 +171,5 @@ async fn test_tc0704_te_case_obfuscation() {
     // RFC 7230 §3.2 requires case-insensitive field-value parsing; Orion accepts "ChUnKeD".
     resp.assert_status(200);
 
-    cleanup(orion, config_path);
+    cleanup(orion, &config_path);
 }

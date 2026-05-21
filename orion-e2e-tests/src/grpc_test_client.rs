@@ -26,7 +26,7 @@ pub struct GrpcTestClient {
 
 impl GrpcTestClient {
     pub async fn connect(addr: SocketAddr) -> Result<Self> {
-        let endpoint = format!("http://{}", addr);
+        let endpoint = format!("http://{addr}");
         let channel = Channel::from_shared(endpoint)
             .expect("valid endpoint")
             .connect()
@@ -37,7 +37,7 @@ impl GrpcTestClient {
     }
 
     pub async fn echo(&mut self, message: &str) -> Result<EchoResponse> {
-        let request = tonic::Request::new(EchoRequest { message: message.to_string() });
+        let request = tonic::Request::new(EchoRequest { message: message.to_owned() });
         let response = self.inner.echo(request).await.map_err(|e| crate::Error::Http(e.to_string()))?;
         Ok(response.into_inner())
     }

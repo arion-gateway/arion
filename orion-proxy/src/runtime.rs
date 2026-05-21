@@ -21,7 +21,7 @@ use orion_lib::runtime_config;
 use orion_lib::runtime_context::set_runtime_id;
 
 #[cfg(feature = "metrics")]
-use orion_metrics::{metrics::init_per_thread_metrics, Metrics};
+use orion_metrics::{metrics::init_per_thread_metrics, OtelExporterConfig};
 
 use std::{fmt::Display, ops::Deref};
 use tokio::runtime::{Builder, Runtime};
@@ -50,7 +50,7 @@ pub fn build_tokio_runtime(
     thread_name: &str,
     num_threads: usize,
     affinity_info: Option<(RuntimeId, Affinity)>,
-    #[cfg(feature = "metrics")] metrics: Vec<Metrics>,
+    #[cfg(feature = "metrics")] otel_exporters: Vec<OtelExporterConfig>,
 ) -> Runtime {
     let config = runtime_config();
 
@@ -87,7 +87,7 @@ pub fn build_tokio_runtime(
     #[cfg(feature = "metrics")]
     builder.on_thread_start(move || {
         set_runtime_id(runtime_id);
-        init_per_thread_metrics(&metrics);
+        init_per_thread_metrics(&otel_exporters);
     });
     #[cfg(not(feature = "metrics"))]
     builder.on_thread_start(move || {

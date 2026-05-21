@@ -41,6 +41,7 @@ use tokio::sync::mpsc;
 pub type ResourceId = String;
 pub type ResourceVersion = String;
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug)]
 pub enum XdsResourceUpdate {
     Update(ResourceId, XdsResourcePayload),
@@ -56,6 +57,7 @@ impl XdsResourceUpdate {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug)]
 pub enum XdsResourcePayload {
     Listener(ResourceId, Listener),

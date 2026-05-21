@@ -296,7 +296,7 @@ mod tests {
     use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::mcp::mcp_gateway::v3::{
         tool::UpstreamBackend as OrionUpstreamBackend, RestBackend as OrionRestBackend,
     };
-    use orion_xds::xds::client::{DeltaDiscoverySubscriptionManager, SubscriptionEvent};
+    use orion_xds::xds::client::SubscriptionEvent;
     use tokio::sync::mpsc;
 
     fn empty_registry() -> Arc<ToolsRegistry> {

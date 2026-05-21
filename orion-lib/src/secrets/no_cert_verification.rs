@@ -1,7 +1,7 @@
 use rustls::{pki_types::ServerName, SignatureScheme};
 
 #[derive(Debug)]
-pub struct NoCertificateVerification {}
+pub struct NoCertificateVerification;
 
 impl rustls::client::danger::ServerCertVerifier for NoCertificateVerification {
     fn verify_server_cert(

@@ -15,10 +15,13 @@
 //
 //
 
+use orion_configuration::config::metrics::MetricsConfig;
 use tracing::info;
 
-use crate::Metrics;
+use crate::OtelExporterConfig;
 pub mod clusters;
+pub mod custom;
+pub mod filters;
 pub mod http;
 pub mod listeners;
 pub mod mcp;
@@ -26,6 +29,16 @@ pub mod server;
 pub mod tcp;
 pub mod tls;
 pub mod user;
+
+pub const PREFIX_TCP: &str = "tcp";
+pub const PREFIX_HTTP: &str = "http";
+pub const PREFIX_CUSTOM: &str = "custom";
+pub const PREFIX_SERVER: &str = "server";
+pub const PREFIX_TLS: &str = "tls";
+pub const PREFIX_CLUSTER: &str = "cluster";
+pub const PREFIX_FILTER: &str = "filter";
+pub const PREFIX_USER: &str = "user";
+pub const PREFIX_LISTENERS: &str = "listeners";
 
 pub struct Metric<T> {
     pub prefix: &'static str,
@@ -43,20 +56,33 @@ impl<T> Metric<T> {
 
 // This function initializes per-thread metrics based on the provided configuration.
 // It must be called in the context of each thread that needs to collect metrics (e.g. Tokio threads)
-pub fn init_per_thread_metrics(_metrics: &[Metrics]) {
+pub fn init_per_thread_metrics(_metrics: &[OtelExporterConfig]) {
     info!("Initializing per-thread metrics...");
+}
+
+pub fn resolve_metric_name(
+    rename: &std::collections::HashMap<String, String>,
+    default_name: &'static str,
+) -> &'static str {
+    if let Some(new_name) = rename.get(default_name) {
+        orion_interner::StringInterner::to_static_str(new_name)
+    } else {
+        default_name
+    }
 }
 
 // This function initializes global metrics based on the provided configuration. Must be called once at application startup.
 //
-pub fn init_global_metrics(_metrics: &[Metrics], number_of_threads: usize) {
+pub fn init_global_metrics(_exporters_config: &[OtelExporterConfig], config: &MetricsConfig, number_of_threads: usize) {
     info!("Initializing global metrics...");
-    tcp::init_metrics();
-    tls::init_metrics();
-    http::init_metrics();
-    listeners::init_metrics();
-    clusters::init_metrics();
-    server::init_metrics(number_of_threads);
-    user::init_metrics();
+    tcp::init_metrics(&config.rename);
+    tls::init_metrics(&config.rename);
+    http::init_metrics(&config.rename);
+    listeners::init_metrics(&config.rename);
+    clusters::init_metrics(&config.rename);
+    filters::init_metrics(&config.rename);
+    server::init_metrics(number_of_threads, &config.rename);
+    user::init_metrics(&config.rename);
     mcp::init_metrics();
+    custom::init_metrics(&config.custom_metrics);
 }

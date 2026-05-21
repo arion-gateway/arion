@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use pingora::prelude::fast_timeout::fast_timeout;
 use std::net::SocketAddr;
 use std::time::Duration;
 
@@ -49,6 +50,26 @@ async fn test_dynamic_xds_config() {
     harness.orion_mut().wait_for_listener_at(listener_addr, Duration::from_secs(10)).await.expect("Listener not ready");
 
     let client = TestClient::new(listener_addr);
+
+    fast_timeout(Duration::from_secs(10), async {
+        loop {
+            if let Ok(response) = client.get("/test").await {
+                if response.status == StatusCode::OK {
+                    if let Some(body) = response.body_str() {
+                        if body == "Hello from xDS backend!" {
+                            break;
+                        }
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("Timeout waiting for initial RDS route");
+
+    while backend.try_recv_request().is_some() {}
+
     let response = client.get("/test").await.expect("Failed to send request");
 
     response.assert_status(StatusCode::OK);
@@ -63,8 +84,8 @@ async fn test_dynamic_xds_config() {
 #[tokio::test]
 #[ignore]
 async fn test_dynamic_config_update() {
-    let backend1 = TestBackend::start().await.expect("Failed to start backend1");
-    let backend2 = TestBackend::start().await.expect("Failed to start backend2");
+    let mut backend1 = TestBackend::start().await.expect("Failed to start backend1");
+    let mut backend2 = TestBackend::start().await.expect("Failed to start backend2");
 
     backend1.set_default_response(PreConfiguredResponse::with_body("Response from backend1")).await;
     backend2.set_default_response(PreConfiguredResponse::with_body("Response from backend2")).await;
@@ -98,6 +119,25 @@ async fn test_dynamic_config_update() {
 
     let client = TestClient::new(listener_addr);
 
+    fast_timeout(Duration::from_secs(10), async {
+        loop {
+            if let Ok(response) = client.get("/api/test").await {
+                if response.status == StatusCode::OK {
+                    if let Some(body) = response.body_str() {
+                        if body == "Response from backend1" {
+                            break;
+                        }
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("Timeout waiting for initial cluster1");
+
+    while backend1.try_recv_request().is_some() {}
+
     let response = client.get("/api/test").await.expect("Failed to send request to /api");
     response.assert_status(StatusCode::OK);
     response.assert_body("Response from backend1");
@@ -106,6 +146,23 @@ async fn test_dynamic_config_update() {
     response.assert_status(StatusCode::INTERNAL_SERVER_ERROR);
 
     harness.push_cluster(&cluster2).await.expect("Failed to push cluster2");
+
+    // Wait for cluster2 to become active — XDS cluster push is async and Orion may not
+    // have applied it yet by the time push_cluster returns.
+    fast_timeout(Duration::from_secs(10), async {
+        loop {
+            if let Ok(response) = client.get("/service/test").await {
+                if response.status == StatusCode::OK {
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("Timeout waiting for cluster2 to become available after XDS push");
+
+    while backend2.try_recv_request().is_some() {}
 
     let response = client.get("/service/test").await.expect("Failed to send request to /service after cluster add");
     response.assert_status(StatusCode::OK);

@@ -18,7 +18,7 @@
 use criterion::black_box;
 use http::{Request, Response, StatusCode};
 use orion_format::{
-    context::{Context, DownstreamContext, DownstreamResponseContext, FinishContext, InitContext},
+    context::{Context, DownstreamContext, DownstreamResponseContext, FinishContext, InitContext, SocketAddrContext},
     types::ResponseFlags,
     LogFormatter,
 };
@@ -67,7 +67,10 @@ fn main() -> Result<(), BoxError> {
     let fmt = LogFormatter::try_new(DEF_FMT, false)?;
     // let mut sink = std::io::sink();
 
-    println!("Running {TOTAL} log format...");
+    #[allow(clippy::print_stdout)]
+    {
+        println!("Running {TOTAL} log format...")
+    }
 
     let now = Instant::now();
 
@@ -79,7 +82,7 @@ fn main() -> Result<(), BoxError> {
                 request_head_size: 0,
                 trace_id: None,
                 server_name: None,
-                socket_address: Default::default(),
+                socket_address: SocketAddrContext::default(),
             },
             &DownstreamResponseContext { response: &response, response_head_size: 0 },
             &start,
@@ -90,10 +93,13 @@ fn main() -> Result<(), BoxError> {
 
     let dur = now.elapsed();
 
-    println!(
-        "LogFormat: {:.2} msg/sec - avg duration {:.2} nsec",
-        TOTAL as f64 / dur.as_secs_f64(),
-        (dur.as_secs_f64() * 1_000_000_000.0) / TOTAL as f64
-    );
+    #[allow(clippy::print_stdout)]
+    {
+        println!(
+            "LogFormat: {:.2} msg/sec - avg duration {:.2} nsec",
+            TOTAL as f64 / dur.as_secs_f64(),
+            (dur.as_secs_f64() * 1_000_000_000.0) / TOTAL as f64
+        )
+    }
     Ok(())
 }

@@ -154,7 +154,7 @@ impl ServerEventReceiver {
                     Ok(ServerEvent::ClientConnected { remote_addr, node_id }) => {
                         return Ok((remote_addr, node_id));
                     },
-                    Ok(_) => continue,
+                    Ok(_) => {},
                     Err(_) => return Err(XdsError::ConnectionTimeout),
                 }
             }

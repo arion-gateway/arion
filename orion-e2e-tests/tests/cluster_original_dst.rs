@@ -12,16 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Integration tests for ORIGINAL_DST clusters.
+//! Integration tests for `ORIGINAL_DST` clusters.
 //!
-//! ORIGINAL_DST clusters route requests to dynamically-determined destinations
+//! `ORIGINAL_DST` clusters route requests to dynamically-determined destinations
 //! based on the `x-envoy-original-dst-host` HTTP header (or a custom header).
 
 use std::time::Duration;
 
 use http::StatusCode;
 use orion_e2e_tests::config_builder::{presets, ClusterBuilder, RouteBuilder};
-use orion_e2e_tests::{OrionInstance, PreConfiguredResponse, RequestBuilder, SpawnOptions, TestBackend, TestClient};
+use orion_e2e_tests::{
+    cleanup_config_file, OrionInstance, PreConfiguredResponse, RequestBuilder, SpawnOptions, TestBackend, TestClient,
+};
 
 const DEFAULT_DST_HEADER: &str = "x-envoy-original-dst-host";
 
@@ -46,25 +48,21 @@ async fn test_original_dst_routes_to_header_destination() {
     let client = TestClient::new(orion.listener_addr().unwrap());
 
     for _ in 0..10 {
-        let response = client
-            .send(RequestBuilder::get("/test").header(DEFAULT_DST_HEADER, &dest_header(&backend1)))
-            .await
-            .unwrap();
+        let response =
+            client.send(RequestBuilder::get("/test").header(DEFAULT_DST_HEADER, dest_header(&backend1))).await.unwrap();
         response.assert_status(StatusCode::OK);
         response.assert_body("b1");
     }
 
     for _ in 0..10 {
-        let response = client
-            .send(RequestBuilder::get("/test").header(DEFAULT_DST_HEADER, &dest_header(&backend2)))
-            .await
-            .unwrap();
+        let response =
+            client.send(RequestBuilder::get("/test").header(DEFAULT_DST_HEADER, dest_header(&backend2))).await.unwrap();
         response.assert_status(StatusCode::OK);
         response.assert_body("b2");
     }
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -87,20 +85,20 @@ async fn test_original_dst_custom_header_name() {
 
     for _ in 0..10 {
         let response =
-            client.send(RequestBuilder::get("/test").header(CUSTOM_HEADER, &dest_header(&backend1))).await.unwrap();
+            client.send(RequestBuilder::get("/test").header(CUSTOM_HEADER, dest_header(&backend1))).await.unwrap();
         response.assert_status(StatusCode::OK);
         response.assert_body("b1");
     }
 
     for _ in 0..10 {
         let response =
-            client.send(RequestBuilder::get("/test").header(CUSTOM_HEADER, &dest_header(&backend2))).await.unwrap();
+            client.send(RequestBuilder::get("/test").header(CUSTOM_HEADER, dest_header(&backend2))).await.unwrap();
         response.assert_status(StatusCode::OK);
         response.assert_body("b2");
     }
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -126,7 +124,7 @@ async fn test_original_dst_port_override() {
     response.assert_body("overridden");
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -149,13 +147,13 @@ async fn test_original_dst_multiple_destinations() {
 
     for (backend, expected_body) in [(&backend1, "b1"), (&backend2, "b2"), (&backend3, "b3")] {
         let response =
-            client.send(RequestBuilder::get("/test").header(DEFAULT_DST_HEADER, &dest_header(backend))).await.unwrap();
+            client.send(RequestBuilder::get("/test").header(DEFAULT_DST_HEADER, dest_header(backend))).await.unwrap();
         response.assert_status(StatusCode::OK);
         response.assert_body(expected_body);
     }
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -182,7 +180,7 @@ async fn test_original_dst_missing_header_returns_error() {
     );
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -213,7 +211,7 @@ async fn test_original_dst_invalid_header_returns_error() {
     }
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -244,12 +242,11 @@ async fn test_original_dst_connect_timeout() {
 
     assert!(
         elapsed < Duration::from_millis(500),
-        "Request should have timed out quickly (~100ms), but took {:?}",
-        elapsed
+        "Request should have timed out quickly (~100ms), but took {elapsed:?}"
     );
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }
 
 #[tokio::test]
@@ -269,5 +266,5 @@ async fn test_original_dst_connection_refused() {
     response.assert_status(StatusCode::SERVICE_UNAVAILABLE);
 
     orion.shutdown();
-    let _ = std::fs::remove_file(&config_path);
+    cleanup_config_file(&config_path);
 }

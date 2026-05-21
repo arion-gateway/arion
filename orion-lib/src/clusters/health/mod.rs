@@ -43,11 +43,11 @@ impl EndpointHealth for HealthStatus {
         *self
     }
 
-    fn update_health(&mut self, health_status: Self) -> ValueUpdated {
-        if *self == health_status {
+    fn update_health(&mut self, health: Self) -> ValueUpdated {
+        if *self == health {
             ValueUpdated::NotUpdated
         } else {
-            *self = health_status;
+            *self = health;
             ValueUpdated::Updated
         }
     }

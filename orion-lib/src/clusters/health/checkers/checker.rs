@@ -48,6 +48,7 @@ where
     P: ProtocolChecker + Send + 'static,
     P::Response: Send,
 {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         endpoint: EndpointId,
         cluster_config: ClusterHealthCheck,
@@ -127,7 +128,8 @@ where
                     health: health_status.status().unwrap_or_default(),
                     changed: health_status_change.is_some(),
                 })
-                .await;
+                .await
+                .ok();
 
             if self
                 .interval_waiter

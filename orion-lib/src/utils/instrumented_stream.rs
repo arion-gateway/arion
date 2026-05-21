@@ -26,7 +26,9 @@ pub struct StreamMetrics {
     total_bytes_written: AtomicU64,
     txn_bytes_read_start: AtomicU64,
     txn_bytes_written_start: AtomicU64,
+    requests_counter: AtomicU64,
     error: AtomicOption<ErrorSource>,
+    #[allow(clippy::type_complexity)]
     drop_fn: AtomicOption<Box<dyn FnOnce(&StreamMetrics) + Send>>,
     txn_fn: AtomicOption<Box<dyn FnOnce(u64, u64) + Send>>,
 }
@@ -41,14 +43,16 @@ impl std::fmt::Debug for StreamMetrics {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let error = match self.error.as_ref(Ordering::Relaxed) {
             None => None,
-            Some(ErrorSource::Read(err)) => Some(err.to_string()),
-            Some(ErrorSource::Write(err)) => Some(err.to_string()),
+            Some(ErrorSource::Read(err) | ErrorSource::Write(err)) => Some(err.to_string()),
         };
         f.debug_struct("StreamMetrics")
             .field("total_bytes_read", &self.total_bytes_read)
             .field("total_bytes_written", &self.total_bytes_written)
             .field("txn_bytes_read_start", &self.txn_bytes_read_start)
             .field("txn_bytes_written_start", &self.txn_bytes_written_start)
+            .field("requests_counter", &self.requests_counter)
+            .field("drop_fn", &self.drop_fn.is_some(Ordering::Relaxed))
+            .field("txn_fn", &self.txn_fn.is_some(Ordering::Relaxed))
             .field("error", &error)
             .finish()
     }
@@ -69,6 +73,7 @@ impl StreamMetrics {
             total_bytes_written: AtomicU64::new(0),
             txn_bytes_read_start: AtomicU64::new(0),
             txn_bytes_written_start: AtomicU64::new(0),
+            requests_counter: AtomicU64::new(0),
             error: AtomicOption::none(),
             drop_fn: AtomicOption::none(),
             txn_fn: AtomicOption::none(),
@@ -105,12 +110,21 @@ impl StreamMetrics {
         self.total_bytes_written.load(Ordering::Relaxed)
     }
 
+    #[inline]
+    pub fn requests_counter(&self) -> u64 {
+        self.requests_counter.load(Ordering::Relaxed)
+    }
+
+    #[inline]
+    pub fn inc_requests(&self) -> u64 {
+        self.requests_counter.fetch_add(1, Ordering::Relaxed)
+    }
+
     pub fn error(&self) -> Option<&io::Error> {
         let err = self.error.as_ref(Ordering::Relaxed);
         match err {
             None => None,
-            Some(ErrorSource::Read(err)) => Some(err),
-            Some(ErrorSource::Write(err)) => Some(err),
+            Some(ErrorSource::Read(err) | ErrorSource::Write(err)) => Some(err),
         }
     }
 
@@ -260,7 +274,7 @@ impl<S> HasMetrics for InstrumentedStream<S> {
     }
 
     fn shared_metrics(&self) -> Arc<StreamMetrics> {
-        self.metrics.clone()
+        Arc::clone(&self.metrics)
     }
 }
 

@@ -14,13 +14,14 @@
 // limitations under the License.
 //
 //
-use super::{http_modifiers, upgrades as upgrade_utils, RequestHandler, TransactionHandler};
+use super::{http_modifiers, upgrades as upgrade_utils, RequestHandler, TransactionContext};
 use crate::event_error::{EventFailure, EventKind, TryInferFrom, UpstreamError};
 use crate::{
     body::response_flags::ResponseFlags,
     clusters::{
         balancers::hash_policy::HashState,
         clusters_manager::{self, RoutingContext},
+        decrement_requests, try_increment_requests,
     },
     listeners::{http_connection_manager::HttpConnectionManager, synthetic_http_response::SyntheticHttpResponse},
     Result,
@@ -29,16 +30,20 @@ use crate::{
 #[cfg(feature = "access-log")]
 use crate::with_access_log;
 
+#[cfg(feature = "metrics")]
+use crate::{clusters::CircuitBreakerDenial, get_shard_id, with_metric};
 use crate::{instrument_block, instrument_function, OrionRequestBody, OrionResponseBody, RequestContext};
-
 use http::{uri::Parts as UriParts, Uri};
 use hyper::{Request, Response};
+#[cfg(any(feature = "metrics", feature = "tracing"))]
+use opentelemetry::KeyValue;
 use orion_configuration::config::network_filters::http_connection_manager::{
     route::{RouteAction, RouteMatchResult},
     RetryPolicy,
 };
 use orion_error::Context;
-#[cfg(feature = "instrumentation")]
+#[cfg(feature = "metrics")]
+use orion_metrics::metrics::clusters;
 use scopeguard::defer;
 
 #[cfg(feature = "access-log")]
@@ -50,7 +55,6 @@ use {
     crate::tracing_attributes::set_attributes_from_request,
     crate::tracing_attributes::{UPSTREAM_ADDRESS, UPSTREAM_CLUSTER_NAME},
     opentelemetry::trace::Span,
-    opentelemetry::KeyValue,
     orion_tracing::http_tracer::{SpanKind, SpanName},
 };
 
@@ -71,11 +75,12 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
     #[allow(unused_variables)]
     async fn to_response(
         self,
-        trans_handler: &TransactionHandler,
-        downstream_request: Request<OrionRequestBody>,
+        trans_context: &TransactionContext,
+        request: Request<OrionRequestBody>,
         (route_context, connection_manager): (RouteContext<'a>, &HttpConnectionManager),
     ) -> Result<Response<OrionResponseBody>> {
-        instrument_function!(trans_handler.clock, |nanos| {
+        instrument_function!(trans_context.clock, |nanos| {
+            #[allow(clippy::cast_possible_truncation)]
             crate::instrumentation::metrics::TOTAL_ROUTE_ACTION.observe(nanos as usize)
         });
 
@@ -83,8 +88,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
         let RouteContext { route_name, retry_policy, remote_address, route_match, websocket_enabled_by_default } =
             route_context;
 
-        let Some(cluster_id) =
-            clusters_manager::resolve_cluster(&self.cluster_specifier, Some(downstream_request.headers()))
+        let Some(cluster_id) = clusters_manager::resolve_cluster(&self.cluster_specifier, Some(request.headers()))
         else {
             debug!("Failed to resolve cluster from specifier {:?}", self.cluster_specifier);
             return Ok(SyntheticHttpResponse::internal_server_error(
@@ -92,16 +96,46 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
                 ResponseFlags(FmtResponseFlags::NO_CLUSTER_FOUND),
                 "Failed to resolve cluster",
             )
-            .into_response(downstream_request.version()));
+            .into_response(request.version()));
         };
 
+        let priority = self.priority;
+        #[allow(unused_variables)]
+        if let Err(denial) = try_increment_requests(cluster_id, priority) {
+            debug!("Circuit breaker overflow for cluster {}", cluster_id);
+            #[cfg(feature = "metrics")]
+            {
+                let shard_id = get_shard_id!();
+                let attrs = &[KeyValue::new("cluster", cluster_id.to_owned())];
+                match denial {
+                    CircuitBreakerDenial::MaxConnections => {
+                        with_metric!(clusters::UPSTREAM_CX_OVERFLOW, add, 1, shard_id, attrs);
+                    },
+                    CircuitBreakerDenial::MaxRequests => {
+                        with_metric!(clusters::UPSTREAM_RQ_OVERFLOW, add, 1, shard_id, attrs);
+                    },
+                    CircuitBreakerDenial::MaxRetries => {},
+                }
+            }
+            return Ok(SyntheticHttpResponse::circuit_breaker_overflow(
+                EventKind::Failure(EventFailure::UpstreamOverflow),
+                ResponseFlags(FmtResponseFlags::UPSTREAM_OVERFLOW),
+            )
+            .into_circuit_breaker_response(request.version()));
+        }
+
+        defer! {
+            decrement_requests(cluster_id, priority);
+        }
+
         let routing_requirement = clusters_manager::get_cluster_routing_requirements(cluster_id);
-        let hash_state = HashState::new(self.hash_policy.as_slice(), &downstream_request, remote_address);
-        let routing_context = RoutingContext::try_from((&routing_requirement, &downstream_request, hash_state))?;
+        let hash_state = HashState::new(self.hash_policy.as_slice(), &request, remote_address);
+        let routing_context = RoutingContext::try_from((&routing_requirement, &request, hash_state))?;
 
         let maybe_channel = instrument_block!(
-            trans_handler.clock,
+            trans_context.clock,
             |nanos| {
+                #[allow(clippy::cast_possible_truncation)]
                 crate::instrumentation::metrics::LOAD_BALANCING_SRV.observe(nanos as usize);
             },
             { clusters_manager::get_http_connection(cluster_id, routing_context) }
@@ -111,7 +145,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
             Ok(svc_channel) => {
                 #[cfg(feature = "access-log")]
                 with_access_log!(
-                    &mut trans_handler.trans_ctx.lock().loggers,
+                    &mut trans_context.trans_ctx.lock().loggers,
                     UpstreamContext {
                         authority: Some(svc_channel.upstream_authority()),
                         cluster_name: Some(svc_channel.cluster_name()),
@@ -119,20 +153,20 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
                     }
                 );
 
-                let ver = downstream_request.version();
+                let ver = request.version();
 
                 let mut upstream_request: Request<OrionRequestBody> = {
-                    let (mut parts, body) = downstream_request.into_parts();
+                    let (mut parts, body) = request.into_parts();
                     let path_and_query_replacement = if let Some(rewrite) = &self.rewrite {
                         rewrite
-                            .apply(parts.uri.path_and_query(), &route_match)
+                            .apply(parts.uri.path_and_query(), route_match)
                             .with_context_msg("invalid path after rewrite")?
                     } else {
                         None
                     };
                     if path_and_query_replacement.is_some() {
                         parts.uri = {
-                            let UriParts { scheme, authority, path_and_query: _, .. } = parts.uri.into_parts();
+                            let UriParts { scheme, authority, .. } = parts.uri.into_parts();
                             let mut new_parts = UriParts::default();
                             new_parts.scheme = scheme;
                             new_parts.authority = authority;
@@ -146,7 +180,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
 
                 #[cfg(feature = "tracing")]
                 let mut client_span = connection_manager.http_tracer.try_create_span(
-                    trans_handler.trace_ctx.as_ref(),
+                    trans_context.trace_ctx.as_ref(),
                     &connection_manager.get_tracing_key(),
                     SpanKind::Client,
                     SpanName::Str::<()>(svc_channel.upstream_authority().as_str()),
@@ -166,13 +200,13 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
 
                 // ... store the span in the span_state
                 #[cfg(feature = "tracing")]
-                if let Some(ref span_state) = trans_handler.span_state {
+                if let Some(ref span_state) = trans_context.span_state {
                     *span_state.client_span.lock() = client_span;
                 }
 
                 #[cfg(feature = "access-log")]
                 with_access_log!(
-                    &mut trans_handler.trans_ctx.lock().loggers,
+                    &mut trans_context.trans_ctx.lock().loggers,
                     UpstreamRequestContext(&upstream_request)
                 );
 
@@ -196,7 +230,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
 
                 if should_upgrade_websocket {
                     return upgrade_utils::handle_websocket_upgrade(
-                        trans_handler,
+                        trans_context,
                         upstream_request,
                         &svc_channel,
                         #[cfg(feature = "metrics")]
@@ -212,9 +246,9 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
                 // send the request to the upstream service channel and wait for the response...
                 let resp = svc_channel
                     .to_response(
-                        trans_handler,
+                        trans_context,
                         upstream_request,
-                        RequestContext { route_timeout: self.timeout, retry_policy },
+                        RequestContext { route_timeout: self.timeout, retry_policy, priority },
                     )
                     .await;
                 match resp {
@@ -222,8 +256,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
                         let err = err.into_inner();
                         let event_error = UpstreamError::try_infer_from(&err);
                         let flags = event_error.clone().map(ResponseFlags::from).unwrap_or_default();
-                        let event_kind =
-                            event_error.map_or(EventFailure::ViaUpstream.into(), |e| EventKind::Upstream(e));
+                        let event_kind = event_error.map_or(EventFailure::ViaUpstream.into(), EventKind::Upstream);
                         debug!(
                             "HttpConnectionManager Error processing response {:?}: {}({})",
                             err,
@@ -240,7 +273,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
                 let err = err.into_inner();
                 let event_error = UpstreamError::try_infer_from(&err);
                 let flags = event_error.clone().map(ResponseFlags::from).unwrap_or_default();
-                let event_kind = event_error.map_or(EventFailure::ViaUpstream.into(), |e| EventKind::Upstream(e));
+                let event_kind = event_error.map_or(EventFailure::ViaUpstream.into(), EventKind::Upstream);
                 debug!(
                     "Failed to get an HTTP connection: {:?}: {}({})",
                     err,
@@ -252,7 +285,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
                     flags,
                     "Failed to connect to upstream cluster",
                 )
-                .into_response(downstream_request.version()))
+                .into_response(request.version()))
             },
         }
     }

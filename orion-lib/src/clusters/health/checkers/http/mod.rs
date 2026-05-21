@@ -43,12 +43,13 @@ use crate::{
         checkers::checker::HealthCheckerLoop, counter::HealthStatusCounter, EndpointHealthUpdate, EndpointId,
         HealthStatus,
     },
-    listeners::http_connection_manager::{RequestHandler, TransactionHandler},
+    listeners::http_connection_manager::{RequestHandler, TransactionContext},
     transport::HttpChannel,
     Error,
 };
 
 /// Spawns an HTTP health checker and returns its handle. Must be called from a Tokio runtime context.
+#[allow(clippy::too_many_arguments)]
 pub fn try_spawn_http_health_checker(
     endpoint: EndpointId,
     cluster_config: ClusterHealthCheck,
@@ -72,6 +73,7 @@ pub fn try_spawn_http_health_checker(
 
 /// Actual implementation of `spawn_http_health_checker()`, with `dependencies` containing the
 /// injected HTTP stack builder and interval waiter.
+#[allow(clippy::too_many_arguments)]
 fn try_spawn_http_health_checker_impl<H, W>(
     endpoint: EndpointId,
     cluster_config: ClusterHealthCheck,
@@ -135,7 +137,7 @@ where
 
     async fn check(&mut self) -> Result<Self::Response, Error> {
         let request = create_request(self.http_version, &self.method, &self.host, &self.uri)?;
-        self.client.to_response(&TransactionHandler::default(), request, RequestContext::default()).await
+        self.client.to_response(&TransactionContext::default(), request, RequestContext::default()).await
     }
 
     fn process_response(
@@ -182,5 +184,5 @@ fn create_request(
     let req = req.header("User-Agent", "orion/health-checks");
 
     let empty = TimeoutBody::new(None, Empty::<Bytes>::default().into());
-    Ok(req.body(InstrumentedBody::new(BodyKind::Request, empty, None, |_, _, _, _| {}))?)
+    req.body(InstrumentedBody::new(BodyKind::Request, empty, None, |_, _, _, _| {}))
 }

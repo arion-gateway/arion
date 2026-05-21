@@ -5,16 +5,14 @@ use crate::{
         timeout_body::TimeoutBodyError,
     },
     listeners::http_connection_manager::ext_proc::{
-        kind::{MessageKind, RequestMsg, ResponseMsg},
-        mutation::apply_header_mutations,
-        r#override::ModeSelector,
+        kind::MessageKind, mutation::apply_header_mutations, r#override::ModeSelector,
     },
 };
-use http::{Method, StatusCode, Version};
-use http_body_util::{BodyExt, Empty, StreamBody};
+use http::{Method, Version};
+use http_body_util::{Empty, StreamBody};
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::ext_proc::{
-    BodyProcessingMode, ExternalProcessor as ExternalProcessorConfig, GoogleGrpc, GrpcService, GrpcServiceSpecifier,
-    HeaderProcessingMode, ProcessingMode, RouteCacheAction, TrailerProcessingMode,
+    BodyProcessingMode, ExternalProcessor as ExternalProcessorConfig, GoogleGrpc, GrpcService, HeaderProcessingMode,
+    RouteCacheAction, TrailerProcessingMode,
 };
 use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::ext_proc::v3::{
     processing_mode, ProcessingMode as EnvoyProcessingMode,
@@ -31,28 +29,26 @@ use orion_data_plane_api::envoy_data_plane_api::{
             external_processor_server::{ExternalProcessor as ExternalProcessorService, ExternalProcessorServer},
             processing_request::Request as ProcessingRequestType,
             processing_response::Response as ProcessingResponseType,
-            BodyMutation, BodyResponse, CommonResponse, HeaderMutation, HeadersResponse, ProcessingRequest,
-            ProcessingResponse, StreamedBodyResponse, TrailersResponse,
+            BodyMutation, BodyResponse, CommonResponse, HeaderMutation, HeadersResponse, StreamedBodyResponse,
+            TrailersResponse,
         },
     },
     tonic::{
         async_trait,
         transport::{Error as TonicError, Server},
-        Request as TonicRequest, Response as TonicResponse, Status, Streaming,
+        Request as TonicRequest, Response as TonicResponse,
     },
 };
+use pingora::prelude::fast_timeout::fast_timeout;
 use std::{
     collections::VecDeque,
-    convert::Infallible,
     net::SocketAddr,
     ops::{Deref, DerefMut},
     str::FromStr,
-    time::Duration,
 };
 use tokio::{net::TcpListener, task::JoinHandle};
 use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
 
-use crate::OrionRequestBody;
 use tokio::select;
 use tokio::sync::mpsc::Sender;
 use tokio_util::sync::CancellationToken;
@@ -130,6 +126,8 @@ impl std::fmt::Debug for MockExternalProcessorState {
         f.debug_struct("MockExternalProcessorState")
             .field("responses", &self.responses)
             .field("token", &self.token)
+            .field("sender", &"Sender<OutState>")
+            .field("observability_mode", &self.observability_mode)
             .finish()
     }
 }
@@ -163,6 +161,7 @@ impl MockExternalProcessorState {
         self.responses.pop_front()
     }
 
+    #[allow(dead_code)]
     pub fn responses_len(&self) -> usize {
         self.responses.len()
     }
@@ -188,21 +187,18 @@ impl MockExternalProcessor {
 }
 
 pub fn processing_match(req: &ProcessingRequest, res: &ProcessingResponse) -> bool {
-    match (&req.request, &res.response) {
-        (Some(ProcessingRequestType::RequestHeaders(_)), Some(ProcessingResponseType::RequestHeaders(_)))
-        | (Some(ProcessingRequestType::RequestBody(_)), Some(ProcessingResponseType::RequestBody(_)))
-        | (Some(ProcessingRequestType::RequestTrailers(_)), Some(ProcessingResponseType::RequestTrailers(_)))
-        | (Some(ProcessingRequestType::ResponseHeaders(_)), Some(ProcessingResponseType::ResponseHeaders(_)))
-        | (Some(ProcessingRequestType::ResponseBody(_)), Some(ProcessingResponseType::ResponseBody(_)))
-        | (Some(ProcessingRequestType::ResponseTrailers(_)), Some(ProcessingResponseType::ResponseTrailers(_))) => true,
-
-        (Some(_), Some(ProcessingResponseType::ImmediateResponse(_))) => true,
+    matches!(
+        (&req.request, &res.response),
         (
             Some(ProcessingRequestType::RequestHeaders(_)),
-            Some(ProcessingResponseType::StreamedImmediateResponse(_)),
-        ) => true,
-        _ => false,
-    }
+            Some(ProcessingResponseType::RequestHeaders(_) | ProcessingResponseType::StreamedImmediateResponse(_))
+        ) | (Some(ProcessingRequestType::RequestBody(_)), Some(ProcessingResponseType::RequestBody(_)))
+            | (Some(ProcessingRequestType::RequestTrailers(_)), Some(ProcessingResponseType::RequestTrailers(_)))
+            | (Some(ProcessingRequestType::ResponseHeaders(_)), Some(ProcessingResponseType::ResponseHeaders(_)))
+            | (Some(ProcessingRequestType::ResponseBody(_)), Some(ProcessingResponseType::ResponseBody(_)))
+            | (Some(ProcessingRequestType::ResponseTrailers(_)), Some(ProcessingResponseType::ResponseTrailers(_)))
+            | (Some(_), Some(ProcessingResponseType::ImmediateResponse(_)))
+    )
 }
 
 #[async_trait]
@@ -223,13 +219,7 @@ impl ExternalProcessorService for MockExternalProcessor {
             loop {
                 select! {
                      result_msg = inbound.message() => {
-
-                        let processing_request = match result_msg {
-                                            Ok(Some(req)) => req,
-                                            Ok(None) => break, // Stream ended naturally
-                                            Err(_) => break,   // Error in stream
-                                      };
-
+                        let Ok(Some(processing_request)) = result_msg else { break }; // Ok(None) or Err(_) indicates stream end or error, we break the loop in both cases
                         let end_of_stream = processing_request.request.as_ref().map(|req| {
                             match req {
                                ProcessingRequestType::RequestHeaders(hdrs) | ProcessingRequestType::ResponseHeaders(hdrs) => {
@@ -248,13 +238,13 @@ impl ExternalProcessorService for MockExternalProcessor {
 
                         if let Some(processing_response) = state.get_next_response() {
                             if !processing_match(&processing_request, &processing_response) {
-                                let _ = tx.send(Err(Status::internal(format!("MockExternalProcessor: Received a processing request that does not match the expected response type. Request: {:#?}, Response: {:#?}", processing_request, processing_response)))).await;
+                                let _ = tx.send(Err(Status::internal(format!("MockExternalProcessor: Received a processing request that does not match the expected response type. Request: {processing_request:#?}, Response: {processing_response:#?}")))).await.ok();
                                 break;
                             }
 
                             if let Some(expected_end_of_stream) = processing_response.expected_end_of_stream() {
                                 if end_of_stream != Some(expected_end_of_stream) {
-                                    let _ = tx.send(Err(Status::internal(format!("MockExternalProcessor: Received a processing request with end_of_stream={:?} but expected end_of_stream={:?}. Request: {:#?}, Response: {:#?}", end_of_stream, expected_end_of_stream, processing_request, processing_response)))).await;
+                                    let _ = tx.send(Err(Status::internal(format!("MockExternalProcessor: Received a processing request with end_of_stream={end_of_stream:?} but expected end_of_stream={expected_end_of_stream:?}. Request: {processing_request:#?}, Response: {processing_response:#?}")))).await.ok();
                                     break;
                                 }
                             }
@@ -267,31 +257,29 @@ impl ExternalProcessorService for MockExternalProcessor {
                                 tokio::time::sleep(delay).await;
                             }
 
-                            if !state.is_observability_mode() {
-                                if tx.send(Ok(processing_response.into_inner())).await.is_err() {
+                            if !state.is_observability_mode()
+                                && tx.send(Ok(processing_response.into_inner())).await.is_err() {
                                     break;
                                 }
-                            }
                         } else {
-                            let _ = tx.send(Err(Status::internal("MockExternalProcessor: Received more processing requests than configured responses."))).await;
+                            let _ = tx.send(Err(Status::internal("MockExternalProcessor: Received more processing requests than configured responses."))).await.ok();
                             break;
                         }
                      }
-                     _ = state.token.cancelled() => {
+                     () = state.token.cancelled() => {
                          cancelled = true;
                          break;
                      }
                 }
             }
 
-            if !cancelled {
-                if !state.is_empty() {
-                    let _ = tx
-                        .send(Err(Status::internal(
-                            "MockExternalProcessor: Stream ended but there are still unprocessed responses.",
-                        )))
-                        .await;
-                }
+            if !cancelled && !state.is_empty() {
+                let _ = tx
+                    .send(Err(Status::internal(
+                        "MockExternalProcessor: Stream ended but there are still unprocessed responses.",
+                    )))
+                    .await
+                    .ok();
             }
 
             if let Some(ref sender) = state.sender {
@@ -346,14 +334,14 @@ impl<M: MessageKind> MockMessage<M> {
             header_map.insert(http::HeaderName::from_static(key), http::HeaderValue::from_static(value));
         }
         if let Some(mutation) = header_mutation.as_ref() {
-            apply_header_mutations(&mut header_map, mutation, None).unwrap();
+            apply_header_mutations(&mut header_map, (*mutation).clone(), None).unwrap();
         }
         header_map
     }
 
     fn apply_header_mutation_from_header_map(header_mutation: Option<&HeaderMutation>, headers: &mut http::HeaderMap) {
         if let Some(mutation) = header_mutation.as_ref() {
-            apply_header_mutations(headers, mutation, None).unwrap();
+            apply_header_mutations(headers, (*mutation).clone(), None).unwrap();
         }
     }
 
@@ -367,7 +355,7 @@ impl<M: MessageKind> MockMessage<M> {
 
         if let Some(chunk) = self.body.get(idx) {
             let b = *chunk;
-            body_replacement.or(Some(b.into())).unwrap()
+            body_replacement.unwrap_or(b.into())
         } else {
             body_replacement.unwrap()
         }
@@ -379,7 +367,7 @@ impl<M: MessageKind> MockMessage<M> {
             trailer_map.insert(http::HeaderName::from_static(key), http::HeaderValue::from_static(value));
         }
         if let Some(mutation) = trailer_mutation.as_ref() {
-            apply_header_mutations(&mut trailer_map, mutation, None).unwrap();
+            apply_header_mutations(&mut trailer_map, (*mutation).clone(), None).unwrap();
         }
         trailer_map
     }
@@ -523,8 +511,8 @@ fn create_trailer_mutation(trailers: Vec<(&str, &str)>) -> Option<HeaderMutation
 }
 
 #[inline]
-fn convert_trailers_to_envoy_header_map(trailers: Vec<(&str, &str)>) -> HeaderMap {
-    HeaderMap {
+fn convert_trailers_to_envoy_header_map(trailers: Vec<(&str, &str)>) -> ProstHeaderMap {
+    ProstHeaderMap {
         headers: trailers
             .into_iter()
             .map(|(key, value)| EnvoyHeaderValue { key: key.to_owned(), value: value.to_owned(), raw_value: vec![] })
@@ -545,7 +533,7 @@ fn create_immediate_response(
         headers: response_headers,
         body: response_body,
         grpc_status: None,
-        details: "immediate_response".to_string(),
+        details: "immediate_response".to_owned(),
     };
 
     ProcessingResponse {
@@ -847,13 +835,13 @@ fn generate_mock_external_processors_states<M: MessageKind + ModeSelector>(
                     state = state.with_observability(true);
                 }
                 if should_send_headers {
-                    state = state.add_response(header_response.clone().into());
+                    state = state.add_response(header_response.clone());
                 }
                 if should_send_body {
-                    state = state.add_response(body_response.clone().into());
+                    state = state.add_response(body_response.clone());
                 }
                 if should_send_trailers {
-                    state = state.add_response(trailer_response.into());
+                    state = state.add_response(trailer_response);
                 }
                 if !mock_ext_proc_state.contains(&state) {
                     mock_ext_proc_state.push(state);
@@ -869,7 +857,7 @@ fn assert_result<M>(
     test_case_num: i32,
     mock: &MockMessage<M>,
     headers: &http::HeaderMap,
-    body: Vec<Bytes>,
+    body: &[Bytes],
     trailers: &http::HeaderMap,
     mock_state: &MockExternalProcessorState,
     processing_mode: &ProcessingMode,
@@ -927,7 +915,9 @@ fn assert_result<M>(
                         }
                         if let Some(body_mutation) = body_mutation {
                             let body_mutation = should_send_body.then_some(body_mutation.mutation.as_ref()).flatten();
-                            expected_body[idx] = mock.apply_body_mutation(body_mutation, idx);
+                            if let Some(body) = expected_body.get_mut(idx) {
+                                *body = mock.apply_body_mutation(body_mutation, idx);
+                            }
                             idx += 1;
                         }
                     },
@@ -987,7 +977,7 @@ async fn test_request_combinatorial_processing() {
     for processing_mode in &processing_modes {
         for mock_request in &mock_requests {
             let mock_states = generate_mock_external_processors_states(status, mock_request, processing_mode, false);
-            for mock_state in mock_states.iter() {
+            for mock_state in &mock_states {
                 debug!(target: "ext_proc_tests", "test_request_combinatorial_modes_continue: ################ test case ##############: {test_case_num}");
                 debug!(target: "ext_proc_tests", "test_request_combinatorial_modes_continue: filter processing mode: {processing_mode:#?}");
                 debug!(target: "ext_proc_tests", "test_request_combinatorial_modes_continue: mock request: {mock_request:#?}");
@@ -998,14 +988,11 @@ async fn test_request_combinatorial_processing() {
                 config.failure_mode_allow = false;
                 let mut ext_proc = ExternalProcessor::from(config);
                 let mut request = build_request_from_mock(mock_request).await;
-                let result = tokio::time::timeout(Duration::from_secs(2), ext_proc.apply_request(&mut request)).await;
-                let result = match result {
-                    Ok(res) => res,
-                    Err(_) => {
-                        warn!(target: "ext_proc_tests", "test_request_combinatorial_modes_continue: ############ test {test_case_num} HANGS ############");
-                        timed_out_tests.push(test_case_num);
-                        continue;
-                    },
+                let result = fast_timeout(Duration::from_secs(2), ext_proc.apply_request(&mut request)).await;
+                let Ok(result) = result else {
+                    warn!(target: "ext_proc_tests", "test_request_combinatorial_modes_continue: ############ test {test_case_num} HANGS ############");
+                    timed_out_tests.push(test_case_num);
+                    continue;
                 };
                 server_handle.abort();
                 assert_matches!(result, FilterDecision::Continue);
@@ -1025,7 +1012,7 @@ async fn test_request_combinatorial_processing() {
                     test_case_num,
                     mock_request,
                     &request_headers,
-                    request_body,
+                    &request_body,
                     &request_trailers,
                     mock_state,
                     processing_mode,
@@ -1065,14 +1052,11 @@ async fn test_response_combinatorial_processing() {
                 config.failure_mode_allow = false;
                 let mut ext_proc = ExternalProcessor::from(config);
                 let mut response = build_response_from_mock(mock_response).await;
-                let result = tokio::time::timeout(Duration::from_secs(2), ext_proc.apply_response(&mut response)).await;
-                let result = match result {
-                    Ok(res) => res,
-                    Err(_) => {
-                        warn!(target: "ext_proc_tests", "test_response_combinatorial_modes_continue: ############ test {test_case_num} HANGS ############");
-                        timed_out_tests.push(test_case_num);
-                        continue;
-                    },
+                let result = fast_timeout(Duration::from_secs(2), ext_proc.apply_response(&mut response)).await;
+                let Ok(result) = result else {
+                    warn!(target: "ext_proc_tests", "test_response_combinatorial_modes_continue: ############ test {test_case_num} HANGS ############");
+                    timed_out_tests.push(test_case_num);
+                    continue;
                 };
                 server_handle.abort();
                 assert_matches!(result, FilterDecision::Continue);
@@ -1092,7 +1076,7 @@ async fn test_response_combinatorial_processing() {
                     test_case_num,
                     mock_response,
                     &response_headers,
-                    response_body,
+                    &response_body,
                     &response_trailers,
                     mock_state,
                     processing_mode,
@@ -1121,7 +1105,7 @@ async fn test_request_combinatorial_observability() {
     for processing_mode in &processing_modes {
         for mock_request in &mock_requests {
             let mock_states = generate_mock_external_processors_states(status, mock_request, processing_mode, true);
-            for mock_state in mock_states.iter() {
+            for mock_state in &mock_states {
                 debug!(target: "ext_proc_tests", "test_request_combinatorial_modes_observability: ################ test case ##############: {test_case_num}");
                 debug!(target: "ext_proc_tests", "test_request_combinatorial_modes_observability: filter processing mode: {processing_mode:#?}");
                 debug!(target: "ext_proc_tests", "test_request_combinatorial_modes_observability: mock request: {mock_request:#?}");
@@ -1132,14 +1116,11 @@ async fn test_request_combinatorial_observability() {
                 config.failure_mode_allow = false;
                 let mut ext_proc = ExternalProcessor::from(config);
                 let mut request = build_request_from_mock(mock_request).await;
-                let result = tokio::time::timeout(Duration::from_secs(2), ext_proc.apply_request(&mut request)).await;
-                let result = match result {
-                    Ok(res) => res,
-                    Err(_) => {
-                        warn!(target: "ext_proc_tests", "test_request_combinatorial_modes_observability: ############ test {test_case_num} HANGS ############");
-                        timed_out_tests.push(test_case_num);
-                        continue;
-                    },
+                let result = fast_timeout(Duration::from_secs(2), ext_proc.apply_request(&mut request)).await;
+                let Ok(result) = result else {
+                    warn!(target: "ext_proc_tests", "test_request_combinatorial_modes_observability: ############ test {test_case_num} HANGS ############");
+                    timed_out_tests.push(test_case_num);
+                    continue;
                 };
                 server_handle.abort();
                 assert_matches!(result, FilterDecision::Continue);
@@ -1159,7 +1140,7 @@ async fn test_request_combinatorial_observability() {
                     test_case_num,
                     mock_request,
                     &request_headers,
-                    request_body,
+                    &request_body,
                     &request_trailers,
                     mock_state,
                     processing_mode,
@@ -1199,14 +1180,11 @@ async fn test_response_combinatorial_observability() {
                 config.failure_mode_allow = false;
                 let mut ext_proc = ExternalProcessor::from(config);
                 let mut response = build_response_from_mock(mock_response).await;
-                let result = tokio::time::timeout(Duration::from_secs(2), ext_proc.apply_response(&mut response)).await;
-                let result = match result {
-                    Ok(res) => res,
-                    Err(_) => {
-                        warn!(target: "ext_proc_tests", "test_response_combinatorial_observability: ############ test {test_case_num} HANGS ############");
-                        timed_out_tests.push(test_case_num);
-                        continue;
-                    },
+                let result = fast_timeout(Duration::from_secs(2), ext_proc.apply_response(&mut response)).await;
+                let Ok(result) = result else {
+                    warn!(target: "ext_proc_tests", "test_response_combinatorial_observability: ############ test {test_case_num} HANGS ############");
+                    timed_out_tests.push(test_case_num);
+                    continue;
                 };
                 server_handle.abort();
                 assert_matches!(result, FilterDecision::Continue);
@@ -1226,7 +1204,7 @@ async fn test_response_combinatorial_observability() {
                     test_case_num,
                     mock_response,
                     &response_headers,
-                    response_body,
+                    &response_body,
                     &response_trailers,
                     mock_state,
                     processing_mode,
@@ -1277,20 +1255,21 @@ async fn test_request_header_skip_body_buffered_empty() {
 #[test_log::test]
 async fn test_request_header_mutation_in_buffered_body_response_with_trailers() {
     let mock_state = MockExternalProcessorState::new()
-        .add_response(
-            create_headers_response::<RequestMsg>(vec![], None, vec![], ResponseStatus::Continue as i32, None).into(),
-        )
-        .add_response(
-            create_body_response::<RequestMsg>(
-                vec![Some(("x-test-header", "ext-proc-header-value"))],
-                None,
-                vec![],
-                ResponseStatus::Continue as i32,
-                None,
-            )
-            .into(),
-        )
-        .add_response(create_trailers_response::<RequestMsg>(vec![]).into());
+        .add_response(create_headers_response::<RequestMsg>(
+            vec![],
+            None,
+            vec![],
+            ResponseStatus::Continue as i32,
+            None,
+        ))
+        .add_response(create_body_response::<RequestMsg>(
+            vec![Some(("x-test-header", "ext-proc-header-value"))],
+            None,
+            vec![],
+            ResponseStatus::Continue as i32,
+            None,
+        ))
+        .add_response(create_trailers_response::<RequestMsg>(vec![]));
     let (server_addr, _) = start_mock_server(mock_state).await;
     let processing_mode = ProcessingMode {
         request_header_mode: HeaderProcessingMode::Default,
@@ -1330,16 +1309,13 @@ async fn test_request_header_mutation_in_buffered_body_response_with_trailers() 
 #[tokio::test]
 #[test_log::test]
 async fn test_request_header_mutation() {
-    let mock_state = MockExternalProcessorState::new().add_response(
-        create_headers_response::<RequestMsg>(
-            vec![Some(("x-processed", "true")), Some(("x-custom-header", "custom-value"))],
-            None,
-            vec![],
-            ResponseStatus::Continue as i32,
-            None,
-        )
-        .into(),
-    );
+    let mock_state = MockExternalProcessorState::new().add_response(create_headers_response::<RequestMsg>(
+        vec![Some(("x-processed", "true")), Some(("x-custom-header", "custom-value"))],
+        None,
+        vec![],
+        ResponseStatus::Continue as i32,
+        None,
+    ));
     let (server_addr, _) = start_mock_server(mock_state).await;
     let processing_mode = ProcessingMode {
         request_header_mode: HeaderProcessingMode::Send,
@@ -1374,21 +1350,18 @@ async fn test_request_header_mutation() {
 #[tokio::test]
 #[test_log::test]
 async fn test_request_header_mutation_pseudo_headers() {
-    let mock_state = MockExternalProcessorState::new().add_response(
-        create_headers_response::<RequestMsg>(
-            vec![
-                Some((":method", "POST")),
-                Some((":path", "/ext-proc-html-path")),
-                Some((":scheme", "https")),
-                Some((":authority", "ext-proc.com")),
-            ],
-            None,
-            vec![],
-            ResponseStatus::Continue as i32,
-            None,
-        )
-        .into(),
-    );
+    let mock_state = MockExternalProcessorState::new().add_response(create_headers_response::<RequestMsg>(
+        vec![
+            Some((":method", "POST")),
+            Some((":path", "/ext-proc-html-path")),
+            Some((":scheme", "https")),
+            Some((":authority", "ext-proc.com")),
+        ],
+        None,
+        vec![],
+        ResponseStatus::Continue as i32,
+        None,
+    ));
     let (server_addr, _) = start_mock_server(mock_state).await;
     let processing_mode = ProcessingMode {
         request_header_mode: HeaderProcessingMode::Send,
@@ -1426,19 +1399,18 @@ async fn test_request_header_mutation_pseudo_headers() {
 #[test_log::test]
 async fn test_request_trailer_mutation() {
     let mock_state = MockExternalProcessorState::new()
-        .add_response(
-            create_headers_response::<RequestMsg>(vec![], None, vec![], ResponseStatus::Continue as i32, None).into(),
-        )
-        .add_response(
-            create_body_response::<RequestMsg>(vec![], None, vec![], ResponseStatus::Continue as i32, None).into(),
-        )
-        .add_response(
-            create_trailers_response::<RequestMsg>(vec![
-                Some(("x-processed", "true")),
-                Some(("x-custom-trailer", "modified-value")),
-            ])
-            .into(),
-        );
+        .add_response(create_headers_response::<RequestMsg>(
+            vec![],
+            None,
+            vec![],
+            ResponseStatus::Continue as i32,
+            None,
+        ))
+        .add_response(create_body_response::<RequestMsg>(vec![], None, vec![], ResponseStatus::Continue as i32, None))
+        .add_response(create_trailers_response::<RequestMsg>(vec![
+            Some(("x-processed", "true")),
+            Some(("x-custom-trailer", "modified-value")),
+        ]));
     let (server_addr, _) = start_mock_server(mock_state).await;
     let processing_mode = ProcessingMode {
         request_header_mode: HeaderProcessingMode::Send,
@@ -2512,7 +2484,10 @@ async fn test_request_multichunk_body_with_mutation() {
     let body_chunks =
         to_body_data_chunks(std::mem::take(&mut request.body_mut().inner.inner).collect().await.unwrap()).await;
 
-    assert_eq!(body_chunks, ["CHUNK1", "CHUNK2", "CHUNK3"].into_iter().map(|s| s.into()).collect::<Vec<Bytes>>());
+    assert_eq!(
+        body_chunks,
+        ["CHUNK1", "CHUNK2", "CHUNK3"].into_iter().map(std::convert::Into::into).collect::<Vec<Bytes>>()
+    );
 }
 
 #[tokio::test]
@@ -2553,7 +2528,10 @@ async fn test_request_multichunk_body_timeout_failure_mode_allow_true() {
 
     let body_chunks =
         to_body_data_chunks(std::mem::take(&mut request.body_mut().inner.inner).collect().await.unwrap()).await;
-    assert_eq!(body_chunks, ["chunk1", "chunk2", "chunk3"].into_iter().map(|s| s.into()).collect::<Vec<Bytes>>());
+    assert_eq!(
+        body_chunks,
+        ["chunk1", "chunk2", "chunk3"].into_iter().map(std::convert::Into::into).collect::<Vec<Bytes>>()
+    );
 }
 
 #[tokio::test]
@@ -3194,7 +3172,7 @@ async fn test_request_body_buffered_too_large() {
         FilterDecision::DirectResponse(response) => {
             assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
         },
-        _ => assert!(false, "Unexpected filter decision"),
+        _ => panic!("Unexpected filter decision"),
     }
 }
 
@@ -3368,20 +3346,24 @@ async fn test_request_multichunk_not_merged_body_streaming_mode() {
 
     let body_chunks =
         to_body_data_chunks(std::mem::take(&mut request.body_mut().inner.inner).collect().await.unwrap()).await;
-    assert_eq!(body_chunks, ["body data", "external processor"].into_iter().map(|s| s.into()).collect::<Vec<Bytes>>());
+    assert_eq!(
+        body_chunks,
+        ["body data", "external processor"].into_iter().map(std::convert::Into::into).collect::<Vec<Bytes>>()
+    );
 }
 
 use futures::task::noop_waker;
-use http_body::Body;
 use std::pin::Pin;
 use std::task::Context;
 
-async fn assert_body_frames<B: Body + Unpin>(
+#[allow(clippy::indexing_slicing)]
+async fn assert_body_frames<B>(
     mut body: B,
     expected_data: &[Bytes],
     expected_trailers: Option<http::HeaderMap>,
 ) -> Result<(), String>
 where
+    B: Body + Unpin,
     B: Body<Data = Bytes>,
     B::Error: Sized + Unpin + std::fmt::Debug,
 {
@@ -3410,7 +3392,7 @@ where
                         if frame.is_data() {
                             // Control 1: DATA Frame
                             if trailers_seen.is_some() {
-                                return Err(format!("Error: DATA received after TRAILERS. Data Index: {}", data_index));
+                                return Err(format!("Error: DATA received after TRAILERS. Data Index: {data_index}"));
                             }
 
                             // Optional: Verification of DATA content
@@ -3418,34 +3400,34 @@ where
 
                             if data_index < expected_data.len() {
                                 if data != expected_data[data_index] {
-                                    return Err(format!("Error: DATA content mismatch for chunk {}", data_index));
+                                    return Err(format!("Error: DATA content mismatch for chunk {data_index}"));
                                 }
                             } else {
                                 // Received more DATA than expected (malformed)
-                                return Err("Error: More DATA chunks than expected.".to_string());
+                                return Err("Error: More DATA chunks than expected.".to_owned());
                             }
 
                             data_index += 1;
                         } else if frame.is_trailers() {
                             // Control 2: TRAILERS Frame
                             if trailers_seen.is_some() {
-                                return Err("Error: Received a second Frame::trailers.".to_string());
+                                return Err("Error: Received a second Frame::trailers.".to_owned());
                             }
                             if data_index < expected_data.len() {
                                 // Trailer frame received before all expected data chunks were seen
-                                return Err("Error: TRAILERS received prematurely before all DATA.".to_string());
+                                return Err("Error: TRAILERS received prematurely before all DATA.".to_owned());
                             }
 
                             trailers_seen = Some(frame.into_trailers().unwrap());
                         } else {
                             // Unexpected frame type
-                            return Err(format!("DEBUG: Received unexpected Frame: {:?}", frame));
+                            return Err(format!("DEBUG: Received unexpected Frame: {frame:?}"));
                         }
                     },
 
                     Some(Err(e)) => {
                         // Error occurred while reading the body
-                        return Err(format!("Body Error: {:?}", e));
+                        return Err(format!("Body Error: {e:?}"));
                     },
                 }
             },
@@ -3469,7 +3451,7 @@ where
     if data_index == expected_data.len() {
         Ok(())
     } else {
-        Err("Body was not consumed completely.".to_string())
+        Err("Body was not consumed completely.".to_owned())
     }
 }
 
@@ -3577,7 +3559,10 @@ async fn test_request_multichunk_body_no_truncate_body() {
     let body_chunks =
         to_body_data_chunks(std::mem::take(&mut request.body_mut().inner.inner).collect().await.unwrap()).await;
 
-    assert_eq!(body_chunks, ["CHUNK1", "CHUNK2", "CHUNK3"].into_iter().map(|s| s.into()).collect::<Vec<Bytes>>());
+    assert_eq!(
+        body_chunks,
+        ["CHUNK1", "CHUNK2", "CHUNK3"].into_iter().map(std::convert::Into::into).collect::<Vec<Bytes>>()
+    );
 }
 
 #[tokio::test]
@@ -4151,7 +4136,7 @@ async fn test_response_body_buffered_too_large() {
         FilterDecision::DirectResponse(direct_response) => {
             assert_eq!(direct_response.status(), StatusCode::PAYLOAD_TOO_LARGE);
         },
-        _ => assert!(false, "Unexpected filter decision"),
+        _ => panic!("Unexpected filter decision"),
     }
 }
 
@@ -4307,7 +4292,10 @@ async fn test_response_multichunk_not_merged_body_streaming_mode() {
     assert_eq!(response.headers().get("x-stream-processed").unwrap(), "true");
 
     let body_chunks = to_body_data_chunks(response.body_mut().collect().await.unwrap()).await;
-    assert_eq!(body_chunks, ["body data", "external processor"].into_iter().map(|s| s.into()).collect::<Vec<Bytes>>());
+    assert_eq!(
+        body_chunks,
+        ["body data", "external processor"].into_iter().map(std::convert::Into::into).collect::<Vec<Bytes>>()
+    );
 }
 
 #[tokio::test]
@@ -4361,7 +4349,10 @@ async fn test_response_multichunk_body_with_mutation() {
 
     let body_chunks = to_body_data_chunks(response.body_mut().collect().await.unwrap()).await;
 
-    assert_eq!(body_chunks, ["CHUNK1", "CHUNK2", "CHUNK3"].into_iter().map(|s| s.into()).collect::<Vec<Bytes>>());
+    assert_eq!(
+        body_chunks,
+        ["CHUNK1", "CHUNK2", "CHUNK3"].into_iter().map(std::convert::Into::into).collect::<Vec<Bytes>>()
+    );
 }
 
 #[tokio::test]
@@ -4401,7 +4392,10 @@ async fn test_response_multichunk_body_timeout_failure_mode_allow_true() {
     assert_matches!(result, FilterDecision::Continue);
 
     let body_chunks = to_body_data_chunks(response.body_mut().collect().await.unwrap()).await;
-    assert_eq!(body_chunks, ["chunk1", "chunk2", "chunk3"].into_iter().map(|s| s.into()).collect::<Vec<Bytes>>());
+    assert_eq!(
+        body_chunks,
+        ["chunk1", "chunk2", "chunk3"].into_iter().map(std::convert::Into::into).collect::<Vec<Bytes>>()
+    );
 }
 
 #[tokio::test]
@@ -4507,7 +4501,10 @@ async fn test_response_multichunk_body_no_truncate_body() {
 
     let body_chunks = to_body_data_chunks(response.body_mut().collect().await.unwrap()).await;
 
-    assert_eq!(body_chunks, ["CHUNK1", "CHUNK2", "CHUNK3"].into_iter().map(|s| s.into()).collect::<Vec<Bytes>>());
+    assert_eq!(
+        body_chunks,
+        ["CHUNK1", "CHUNK2", "CHUNK3"].into_iter().map(std::convert::Into::into).collect::<Vec<Bytes>>()
+    );
 }
 
 #[tokio::test]
@@ -4553,7 +4550,7 @@ async fn test_request_trailer_timeout() {
     assert_matches!(result, FilterDecision::Continue);
 
     let body_result = std::mem::take(&mut request.body_mut().inner.inner).collect().await;
-    assert!(body_result.is_err());
+    body_result.unwrap_err();
 }
 
 #[tokio::test]
@@ -4647,7 +4644,7 @@ async fn test_response_trailer_timeout() {
 
     let (_, body) = response.into_parts();
     let body_result = body.collect().await;
-    assert!(body_result.is_err());
+    body_result.unwrap_err();
 }
 
 #[tokio::test]
@@ -5396,7 +5393,7 @@ async fn test_request_body_timeout_scenarios() {
     ];
 
     for (idx, (header_mode, body_mode)) in scenarios.into_iter().enumerate() {
-        println!("Testing Request Body Timeout Scenario {}: Header={:?}, Body={:?}", idx, header_mode, body_mode);
+        println!("Testing Request Body Timeout Scenario {idx}: Header={header_mode:?}, Body={body_mode:?}");
 
         let mut mock_state = MockExternalProcessorState::new();
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
@@ -5465,7 +5462,7 @@ async fn test_request_trailer_timeout_scenarios() {
     ];
 
     for (idx, (header_mode, body_mode)) in scenarios.into_iter().enumerate() {
-        println!("Testing Request Trailer Timeout Scenario {}: Header={:?}, Body={:?}", idx, header_mode, body_mode);
+        println!("Testing Request Trailer Timeout Scenario {idx}: Header={header_mode:?}, Body={body_mode:?}");
 
         let mut mock_state = MockExternalProcessorState::new();
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
@@ -5536,7 +5533,7 @@ async fn test_response_body_timeout_scenarios() {
     ];
 
     for (idx, (header_mode, body_mode)) in scenarios.into_iter().enumerate() {
-        println!("Testing Response Body Timeout Scenario {}: Header={:?}, Body={:?}", idx, header_mode, body_mode);
+        println!("Testing Response Body Timeout Scenario {idx}: Header={header_mode:?}, Body={body_mode:?}");
 
         let mut mock_state = MockExternalProcessorState::new();
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
@@ -5605,7 +5602,7 @@ async fn test_response_trailer_timeout_scenarios() {
     ];
 
     for (idx, (header_mode, body_mode)) in scenarios.into_iter().enumerate() {
-        println!("Testing Response Trailer Timeout Scenario {}: Header={:?}, Body={:?}", idx, header_mode, body_mode);
+        println!("Testing Response Trailer Timeout Scenario {idx}: Header={header_mode:?}, Body={body_mode:?}");
 
         let mut mock_state = MockExternalProcessorState::new();
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
@@ -6094,16 +6091,13 @@ async fn test_request_response_trailers_observability_mode() {
 #[tokio::test]
 #[test_log::test]
 async fn test_request_header_mutation_with_large_body() {
-    let mock_state = MockExternalProcessorState::new().add_response(
-        create_headers_response::<RequestMsg>(
-            vec![Some(("x-processed", "true")), Some(("x-custom-header", "custom-value"))],
-            None,
-            vec![],
-            ResponseStatus::Continue as i32,
-            None,
-        )
-        .into(),
-    );
+    let mock_state = MockExternalProcessorState::new().add_response(create_headers_response::<RequestMsg>(
+        vec![Some(("x-processed", "true")), Some(("x-custom-header", "custom-value"))],
+        None,
+        vec![],
+        ResponseStatus::Continue as i32,
+        None,
+    ));
     let (server_addr, _) = start_mock_server(mock_state).await;
     let processing_mode = ProcessingMode {
         request_header_mode: HeaderProcessingMode::Send,
@@ -6150,16 +6144,13 @@ async fn test_request_header_mutation_with_large_body() {
 #[tokio::test]
 #[test_log::test]
 async fn test_request_header_mutation_with_multichunk_large_body() {
-    let mock_state = MockExternalProcessorState::new().add_response(
-        create_headers_response::<RequestMsg>(
-            vec![Some(("x-processed", "true")), Some(("x-custom-header", "custom-value"))],
-            None,
-            vec![],
-            ResponseStatus::Continue as i32,
-            None,
-        )
-        .into(),
-    );
+    let mock_state = MockExternalProcessorState::new().add_response(create_headers_response::<RequestMsg>(
+        vec![Some(("x-processed", "true")), Some(("x-custom-header", "custom-value"))],
+        None,
+        vec![],
+        ResponseStatus::Continue as i32,
+        None,
+    ));
     let (server_addr, _) = start_mock_server(mock_state).await;
     let processing_mode = ProcessingMode {
         request_header_mode: HeaderProcessingMode::Send,
@@ -6220,22 +6211,23 @@ async fn test_request_mutation_with_streamed_10m_body_4k_chunks() {
     let mut mock_state = MockExternalProcessorState::new();
 
     // 1. Mock response for Request Headers
-    mock_state = mock_state.add_response(
-        create_headers_response::<RequestMsg>(vec![], None, vec![], ResponseStatus::Continue as i32, None).into(),
-    );
+    mock_state = mock_state.add_response(create_headers_response::<RequestMsg>(
+        vec![],
+        None,
+        vec![],
+        ResponseStatus::Continue as i32,
+        None,
+    ));
 
     // 2. Mock responses for Request Body chunks in Streamed mode
     for _ in 0..num_chunks {
-        mock_state = mock_state.add_response(
-            create_body_response::<RequestMsg>(
-                vec![],
-                Some(req_chunk_upper_bytes.clone()),
-                vec![],
-                ResponseStatus::Continue as i32,
-                None,
-            )
-            .into(),
-        );
+        mock_state = mock_state.add_response(create_body_response::<RequestMsg>(
+            vec![],
+            Some(req_chunk_upper_bytes.clone()),
+            vec![],
+            ResponseStatus::Continue as i32,
+            None,
+        ));
     }
 
     let (server_addr, _) = start_mock_server(mock_state).await;
@@ -6297,22 +6289,23 @@ async fn test_response_mutation_with_streamed_10m_body_4k_chunks() {
     let mut mock_state = MockExternalProcessorState::new();
 
     // 1. Mock response for Response Headers
-    mock_state = mock_state.add_response(
-        create_headers_response::<ResponseMsg>(vec![], None, vec![], ResponseStatus::Continue as i32, None).into(),
-    );
+    mock_state = mock_state.add_response(create_headers_response::<ResponseMsg>(
+        vec![],
+        None,
+        vec![],
+        ResponseStatus::Continue as i32,
+        None,
+    ));
 
     // 2. Mock responses for Response Body chunks in Streamed mode
     for _ in 0..num_chunks {
-        mock_state = mock_state.add_response(
-            create_body_response::<ResponseMsg>(
-                vec![],
-                Some(res_chunk_upper_bytes.clone()),
-                vec![],
-                ResponseStatus::Continue as i32,
-                None,
-            )
-            .into(),
-        );
+        mock_state = mock_state.add_response(create_body_response::<ResponseMsg>(
+            vec![],
+            Some(res_chunk_upper_bytes.clone()),
+            vec![],
+            ResponseStatus::Continue as i32,
+            None,
+        ));
     }
 
     let (server_addr, _) = start_mock_server(mock_state).await;
@@ -6376,41 +6369,43 @@ async fn test_request_and_response_mutation_with_streamed_10m_body_4k_chunks() {
     let mut mock_state = MockExternalProcessorState::new();
 
     // 1. Mock response for Request Headers
-    mock_state = mock_state.add_response(
-        create_headers_response::<RequestMsg>(vec![], None, vec![], ResponseStatus::Continue as i32, None).into(),
-    );
+    mock_state = mock_state.add_response(create_headers_response::<RequestMsg>(
+        vec![],
+        None,
+        vec![],
+        ResponseStatus::Continue as i32,
+        None,
+    ));
 
     // 2. Mock responses for Request Body chunks in Streamed mode
     for _ in 0..num_chunks {
-        mock_state = mock_state.add_response(
-            create_body_response::<RequestMsg>(
-                vec![],
-                Some(req_chunk_upper_bytes.clone()),
-                vec![],
-                ResponseStatus::Continue as i32,
-                None,
-            )
-            .into(),
-        );
+        mock_state = mock_state.add_response(create_body_response::<RequestMsg>(
+            vec![],
+            Some(req_chunk_upper_bytes.clone()),
+            vec![],
+            ResponseStatus::Continue as i32,
+            None,
+        ));
     }
 
     // 3. Mock response for Response Headers
-    mock_state = mock_state.add_response(
-        create_headers_response::<ResponseMsg>(vec![], None, vec![], ResponseStatus::Continue as i32, None).into(),
-    );
+    mock_state = mock_state.add_response(create_headers_response::<ResponseMsg>(
+        vec![],
+        None,
+        vec![],
+        ResponseStatus::Continue as i32,
+        None,
+    ));
 
     // 4. Mock responses for Response Body chunks in Streamed mode
     for _ in 0..num_chunks {
-        mock_state = mock_state.add_response(
-            create_body_response::<ResponseMsg>(
-                vec![],
-                Some(res_chunk_upper_bytes.clone()),
-                vec![],
-                ResponseStatus::Continue as i32,
-                None,
-            )
-            .into(),
-        );
+        mock_state = mock_state.add_response(create_body_response::<ResponseMsg>(
+            vec![],
+            Some(res_chunk_upper_bytes.clone()),
+            vec![],
+            ResponseStatus::Continue as i32,
+            None,
+        ));
     }
 
     let (server_addr, _) = start_mock_server(mock_state).await;
@@ -6484,16 +6479,17 @@ async fn test_request_and_response_mutation_with_streamed_10m_body_4k_chunks() {
 }
 
 use orion_configuration::config::core::{StringMatcher, StringMatcherPattern};
-use orion_configuration::config::network_filters::http_connection_manager::http_filters::ext_proc::{
-    HeaderForwardingRules, HeaderMutationRules, MutationPolicy,
-};
 use smol_str::SmolStr;
 
 #[tokio::test]
 async fn test_forward_rules_allowed_headers() {
-    let mock_state = MockExternalProcessorState::new().add_response(
-        create_headers_response::<RequestMsg>(vec![], None, vec![], ResponseStatus::Continue as i32, None).into(),
-    );
+    let mock_state = MockExternalProcessorState::new().add_response(create_headers_response::<RequestMsg>(
+        vec![],
+        None,
+        vec![],
+        ResponseStatus::Continue as i32,
+        None,
+    ));
     let (server_addr, _) = start_mock_server(mock_state).await;
     let processing_mode = ProcessingMode {
         request_header_mode: HeaderProcessingMode::Send,
@@ -6536,13 +6532,14 @@ async fn test_forward_rules_allowed_headers() {
 }
 
 #[tokio::test]
+#[allow(clippy::indexing_slicing)]
 async fn test_header_append_action_append_if_exists_or_add() {
     // We need to create a custom response to test AppendIfExistsOrAdd
     let mut header_mutation = HeaderMutation::default();
     header_mutation.set_headers.push(HeaderValueOption {
         header: Some(EnvoyHeaderValue {
-            key: "x-appended-header".to_string(),
-            value: "new-value".to_string(),
+            key: "x-appended-header".to_owned(),
+            value: "new-value".to_owned(),
             raw_value: vec![],
         }),
         append_action: HeaderAppendAction::AppendIfExistsOrAdd as i32,
@@ -6658,7 +6655,7 @@ async fn test_immediate_response_with_grpc_status() {
         grpc_status: Some(orion_data_plane_api::envoy_data_plane_api::envoy::service::ext_proc::v3::GrpcStatus {
             status: 14, // UNAVAILABLE
         }),
-        details: "grpc_error_details".to_string(),
+        details: "grpc_error_details".to_owned(),
     };
 
     let mock_state = MockExternalProcessorState::new().add_response(MockProcessingResponse::new(ProcessingResponse {
