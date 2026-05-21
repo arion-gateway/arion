@@ -557,6 +557,16 @@ impl TransactionContext {
                         self.shard_id(),
                         &[KeyValue::new("listener", listener_name)]
                     );
+                    #[cfg(feature = "metrics")]
+                    if let Some(user_partition_key) = self.user_partition_key {
+                        with_metric!(
+                            user::HTTP_1XX_RESPONSES,
+                            add,
+                            1,
+                            self.shard_id(),
+                            &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
+                        );
+                    }
                 },
                 200..300 => {
                     with_metric!(
@@ -566,6 +576,16 @@ impl TransactionContext {
                         self.shard_id(),
                         &[KeyValue::new("listener", listener_name)]
                     );
+                    #[cfg(feature = "metrics")]
+                    if let Some(user_partition_key) = self.user_partition_key {
+                        with_metric!(
+                            user::HTTP_2XX_RESPONSES,
+                            add,
+                            1,
+                            self.shard_id(),
+                            &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
+                        );
+                    }
                 },
                 300..400 => {
                     with_metric!(
@@ -575,6 +595,16 @@ impl TransactionContext {
                         self.shard_id(),
                         &[KeyValue::new("listener", listener_name)]
                     );
+                    #[cfg(feature = "metrics")]
+                    if let Some(user_partition_key) = self.user_partition_key {
+                        with_metric!(
+                            user::HTTP_3XX_RESPONSES,
+                            add,
+                            1,
+                            self.shard_id(),
+                            &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
+                        );
+                    }
                 },
                 400..500 => {
                     with_metric!(
@@ -596,6 +626,13 @@ impl TransactionContext {
                         );
                         with_metric!(
                             user::TOTAL_ERRORS,
+                            add,
+                            1,
+                            self.shard_id(),
+                            &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
+                        );
+                        with_metric!(
+                            user::HTTP_4XX_RESPONSES,
                             add,
                             1,
                             self.shard_id(),
@@ -624,6 +661,13 @@ impl TransactionContext {
 
                         with_metric!(
                             user::TOTAL_ERRORS,
+                            add,
+                            1,
+                            self.shard_id(),
+                            &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
+                        );
+                        with_metric!(
+                            user::HTTP_5XX_RESPONSES,
                             add,
                             1,
                             self.shard_id(),

@@ -294,6 +294,11 @@ fn build_prometheus_output() -> io::Result<String> {
     process_metric_as_counter(&mut out, &user::BYTES_RX)?;
     process_metric_as_counter(&mut out, &user::INBOUND_STREAMING_BYTES_PROCESSED)?;
     process_metric_as_counter(&mut out, &user::OUTBOUND_STREAMING_BYTES_PROCESSED)?;
+    process_metric_as_counter(&mut out, &user::HTTP_1XX_RESPONSES)?;
+    process_metric_as_counter(&mut out, &user::HTTP_2XX_RESPONSES)?;
+    process_metric_as_counter(&mut out, &user::HTTP_3XX_RESPONSES)?;
+    process_metric_as_counter(&mut out, &user::HTTP_4XX_RESPONSES)?;
+    process_metric_as_counter(&mut out, &user::HTTP_5XX_RESPONSES)?;
     process_histogram(&mut out, &user::LATENCY)?;
 
     // filters
