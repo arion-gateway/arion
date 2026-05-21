@@ -255,10 +255,25 @@ impl TryFrom<McpGatewayConfig> for McpGateway {
     type Error = ToolBuilderError;
 
     fn try_from(config: McpGatewayConfig) -> Result<Self, Self::Error> {
+        #[cfg(feature = "mcp-semantic-search")]
+        let embeddings_provider = match &config.semantic_search_tool {
+            Some(s) => Some(
+                crate::embeddings::resolve_service(&s.embeddings_service)
+                    .ok_or_else(|| ToolBuilderError::EmbeddingServiceNotFound(s.embeddings_service.clone()))?,
+            ),
+            None => None,
+        };
+        #[cfg(not(feature = "mcp-semantic-search"))]
+        if config.semantic_search_tool.is_some() {
+            return Err(ToolBuilderError::SemanticSearchFeatureNotCompiledIn);
+        }
+
         let tools = Arc::new(ToolsRegistry::with_config(
             config.tools.clone(),
             config.dynamic_mcp_servers.clone(),
             config.semantic_search_tool.clone(),
+            #[cfg(feature = "mcp-semantic-search")]
+            embeddings_provider,
         )?);
 
         let tds_registration = if let Some(tds) = &config.tds {
@@ -1048,7 +1063,15 @@ impl McpGateway {
             },
             ListToolsRequestMethod::VALUE => {
                 debug!(target: "mcp_gateway", "handle_rpc_json_request: 'tools/list'");
-                let tools = self.inner.tools.build_list_tools(&req_ext, session).await;
+                let tools = match self.inner.tools.build_list_tools(&req_ext, session).await {
+                    Ok(tools) => tools,
+                    Err(err) => {
+                        debug!(target: "mcp_gateway", "handle_rpc_json_request: 'tools/list' failed: {err:#}");
+                        return MessageResult::JsonRpcError(
+                            self.build_json_rpc_error(model::ErrorData::internal_error(err.to_string(), None)),
+                        );
+                    },
+                };
                 let response = model::JsonRpcResponse {
                     jsonrpc: model::JsonRpcVersion2_0,
                     id: self.request_id.clone(),
@@ -1151,6 +1174,10 @@ impl McpGateway {
                             },
                             CallToolError::ValidationError(e) => {
                                 model::ErrorData::internal_error(format!("Json schema validation error: {e}"), None)
+                            },
+                            #[cfg(feature = "mcp-semantic-search")]
+                            CallToolError::EmbeddingFailure(ref e) => {
+                                model::ErrorData::internal_error(format!("Embedding failure: {e}"), None)
                             },
                         };
 

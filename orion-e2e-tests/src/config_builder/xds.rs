@@ -28,7 +28,7 @@ use orion_data_plane_api::envoy_data_plane_api::{
 };
 use orion_xds::xds::model::TypeUrl;
 
-use crate::mcp_gateway::{
+use crate::config_builder::mcp_gateway::{
     dynamic_mcp_server_xds_resource, mcp_tool_xds_resource, MCP_DYNAMIC_SERVER_TYPE_URL, MCP_TOOL_TYPE_URL,
 };
 use pingora_timeout::timeout as fast_timeout;

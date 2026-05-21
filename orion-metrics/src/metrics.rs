@@ -21,6 +21,7 @@ use crate::Metrics;
 pub mod clusters;
 pub mod http;
 pub mod listeners;
+pub mod mcp;
 pub mod server;
 pub mod tcp;
 pub mod tls;
@@ -57,4 +58,5 @@ pub fn init_global_metrics(_metrics: &[Metrics], number_of_threads: usize) {
     clusters::init_metrics();
     server::init_metrics(number_of_threads);
     user::init_metrics();
+    mcp::init_metrics();
 }

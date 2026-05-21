@@ -9,9 +9,13 @@ End-to-end testing utilities for Orion Proxy.
 cargo build -p orion-proxy
 
 # Run e2e tests (ignored by default)
-# We reccomend using a single thread for e2e tests to avoid race conditions
+# We recommend using a single thread for e2e tests to avoid race conditions
 cargo test -p orion-e2e-tests -- --ignored --test-threads=1
 ```
+
+## Runnable Examples
+
+- [MCP Gateway local semantic search demo](examples/README.md)
 
 ## Architecture
 

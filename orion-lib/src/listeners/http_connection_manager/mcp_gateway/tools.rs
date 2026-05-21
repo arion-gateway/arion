@@ -1,3 +1,5 @@
+#[cfg(feature = "mcp-semantic-search")]
+use crate::embeddings;
 use crate::listeners::http_connection_manager::mcp_gateway::{
     mcp::{MessageResult, Session},
     rbac::{
@@ -9,12 +11,15 @@ use crate::listeners::http_connection_manager::mcp_gateway::{
         FunctionGraphTranscoder, RestTranscoder, Transcoder, TranscoderType,
     },
 };
+#[cfg(feature = "mcp-semantic-search")]
+use crate::with_metric;
 use atomic_time::AtomicInstant;
 use dashmap::DashMap;
 use http::{header::InvalidHeaderValue, HeaderValue};
 use jsonschema::Validator;
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::{
-    ClusterHeader, DynamicMcpServer, McpBackendTransportUpstream, McpSemanticSearch, McpTool, UpstreamBackend,
+    ClusterHeader, DynamicMcpServer, EmbeddingVector, McpBackendTransportUpstream, McpSemanticSearch, McpTool,
+    UpstreamBackend,
 };
 use rmcp::{
     model::{
@@ -26,13 +31,16 @@ use rmcp::{
     transport::StreamableHttpClientTransport,
     ServiceError, ServiceExt,
 };
+#[cfg(all(feature = "mcp-semantic-search", feature = "metrics"))]
+use {crate::get_shard_id, opentelemetry::KeyValue};
 
 use rmcp::model;
 use rmcp::model::{ListToolsResult, Tool};
 use rmcp::service::{RoleClient, RunningService};
+use scopeguard::defer;
 use serde_json::{json, Value};
 use smol_str::SmolStr;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 use tokio::sync::OnceCell;
@@ -59,6 +67,8 @@ pub struct ToolsRegistry {
     dynamic_mcp_servers: DashMap<SmolStr, Arc<DynamicMcpServerEntry>, ahash::RandomState>,
     semantic_search: Option<McpSemanticSearch>,
     bootstrapped: OnceCell<()>,
+    #[cfg(feature = "mcp-semantic-search")]
+    embeddings_provider: Option<Arc<dyn embeddings::EmbeddingsProvider>>,
 }
 
 #[derive(Debug, Clone)]
@@ -75,12 +85,15 @@ pub struct ToolEntry {
     pub input_schema_validator: Option<Validator>,
     pub output_schema_validator: Option<Validator>,
     pub rbac: Option<ToolRbac>,
+    #[cfg(feature = "mcp-semantic-search")]
+    pub embedding: arc_swap::ArcSwapOption<Vec<f32>>,
 }
 
 pub struct DynamicMcpServerEntry {
     pub conf: DynamicMcpServer,
     pub rbac: Option<ToolRbac>,
     pub expires_at: AtomicInstant,
+    refresh_in_progress: AtomicBool,
 }
 
 impl std::fmt::Debug for DynamicMcpServerEntry {
@@ -89,6 +102,7 @@ impl std::fmt::Debug for DynamicMcpServerEntry {
             .field("conf", &self.conf)
             .field("rbac", &self.rbac)
             .field("expires_at", &self.expires_at.load(Ordering::Relaxed))
+            .field("refresh_in_progress", &self.refresh_in_progress.load(Ordering::Relaxed))
             .finish()
     }
 }
@@ -96,7 +110,7 @@ impl std::fmt::Debug for DynamicMcpServerEntry {
 impl DynamicMcpServerEntry {
     fn new(conf: DynamicMcpServer) -> Self {
         let rbac = conf.rbac.as_ref().map(convert_config_rbac_to_runtime);
-        Self { conf, rbac, expires_at: AtomicInstant::new(Instant::now()) }
+        Self { conf, rbac, expires_at: AtomicInstant::new(Instant::now()), refresh_in_progress: AtomicBool::new(false) }
     }
 
     #[inline]
@@ -133,6 +147,9 @@ pub enum CallToolError {
     SerdeError(#[from] serde_json::Error),
     #[error("Validation error: {0}")]
     ValidationError(String),
+    #[cfg(feature = "mcp-semantic-search")]
+    #[error("Embedding failure: {0}")]
+    EmbeddingFailure(#[from] embeddings::EmbeddingError),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -159,6 +176,22 @@ pub enum ToolBuilderError {
     DuplicateDynamicServer(SmolStr),
     #[error("MCP server name '{0}' already registered on this runtime")]
     DuplicateServerName(SmolStr),
+    #[error(
+        "Tool '{tool}' has supplied embedding of dimension {got}, but embeddings service produces dimension {expected}"
+    )]
+    #[cfg(feature = "mcp-semantic-search")]
+    EmbeddingDimensionMismatch { tool: SmolStr, expected: usize, got: usize },
+    #[error("Embedding failure: {0}")]
+    #[cfg(feature = "mcp-semantic-search")]
+    EmbeddingFailure(#[from] embeddings::EmbeddingError),
+    #[error("Semantic search is configured but Orion was built without the `mcp-semantic-search` feature")]
+    SemanticSearchFeatureNotCompiledIn,
+    #[error("Embeddings service '{0}' is not configured")]
+    #[cfg(feature = "mcp-semantic-search")]
+    EmbeddingServiceNotFound(SmolStr),
+    #[error("Semantic search is configured but no embeddings provider is available")]
+    #[cfg(feature = "mcp-semantic-search")]
+    SemanticSearchWithoutEmbeddingsProvider,
 }
 
 impl ToolEntry {
@@ -190,15 +223,27 @@ impl ToolsRegistry {
         tools: Vec<McpTool>,
         dynamic_mcp_servers: Vec<DynamicMcpServer>,
         semantic_search: Option<McpSemanticSearch>,
+        #[cfg(feature = "mcp-semantic-search")] embeddings_provider: Option<Arc<dyn embeddings::EmbeddingsProvider>>,
     ) -> Result<Self, ToolBuilderError> {
+        // Reject inert semantic-search configs: a `semantic_search` block without an
+        // embeddings provider would silently fall back to keyword scoring everywhere.
+        #[cfg(feature = "mcp-semantic-search")]
+        if semantic_search.is_some() && embeddings_provider.is_none() {
+            return Err(ToolBuilderError::SemanticSearchWithoutEmbeddingsProvider);
+        }
         let registry = Self {
             tools: DashMap::with_hasher(ahash::RandomState::new()),
             dynamic_mcp_servers: DashMap::with_hasher(ahash::RandomState::new()),
             semantic_search,
             bootstrapped: OnceCell::new(),
+            #[cfg(feature = "mcp-semantic-search")]
+            embeddings_provider,
         };
 
         for tool_conf in tools {
+            #[cfg(feature = "mcp-semantic-search")]
+            registry.validate_supplied_embedding(&tool_conf)?;
+
             let entry = build_tool_entry(tool_conf, ToolSource::Provided)?;
             let name = entry.conf.name.clone();
             if registry.tools.insert(name.clone(), Arc::new(entry)).is_some() {
@@ -217,7 +262,33 @@ impl ToolsRegistry {
         Ok(registry)
     }
 
-    pub async fn bootstrap(&self) {
+    #[cfg(feature = "mcp-semantic-search")]
+    fn validate_supplied_embedding(&self, tool: &McpTool) -> Result<(), ToolBuilderError> {
+        let supplied = tool.embedding.as_slice();
+        if supplied.is_empty() {
+            return Ok(());
+        }
+        let Some(provider) = self.embeddings_provider.as_ref() else {
+            return Ok(());
+        };
+        if supplied.len() != provider.dimensions() {
+            return Err(ToolBuilderError::EmbeddingDimensionMismatch {
+                tool: tool.name.clone(),
+                expected: provider.dimensions(),
+                got: supplied.len(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Top-K parameter from the configured similarity block, or the default
+    /// (10) when no `semantic_search_tool` is configured.
+    #[cfg(feature = "mcp-semantic-search")]
+    fn similarity_top_k(&self) -> usize {
+        self.semantic_search.as_ref().map(|s| s.similarity.top_k).unwrap_or(10)
+    }
+
+    pub async fn bootstrap(&self) -> Result<(), CallToolError> {
         self.bootstrapped
             .get_or_init(|| async {
                 for server in self.dynamic_mcp_servers.iter() {
@@ -225,16 +296,108 @@ impl ToolsRegistry {
                 }
             })
             .await;
+        #[cfg(feature = "mcp-semantic-search")]
+        self.embed_unembedded_tools(None).await?;
+        Ok(())
     }
 
-    pub fn add_tool(&self, tool: McpTool) -> Result<(), ToolBuilderError> {
+    async fn ensure_tools_current(&self) -> Result<(), CallToolError> {
+        self.bootstrap().await?;
+        self.refresh_expired_dynamic_servers().await;
+        #[cfg(feature = "mcp-semantic-search")]
+        self.embed_unembedded_tools(None).await?;
+        Ok(())
+    }
+
+    #[cfg(feature = "mcp-semantic-search")]
+    async fn embed_unembedded_tools(&self, restrict_to: Option<&[SmolStr]>) -> Result<(), embeddings::EmbeddingError> {
+        let Some(provider) = self.embeddings_provider.as_ref() else {
+            return Ok(());
+        };
+
+        let mut names: Vec<SmolStr> = Vec::new();
+        let mut texts: Vec<String> = Vec::new();
+        for shard in self.tools.iter() {
+            let entry = shard.value();
+            if let Some(allowed) = restrict_to {
+                if !allowed.contains(&entry.conf.name) {
+                    continue;
+                }
+            }
+            if entry.embedding.load_full().is_some() {
+                continue;
+            }
+            names.push(entry.conf.name.clone());
+            texts.push(embeddings::build_search_text(
+                &entry.conf.name,
+                &entry.conf.description,
+                &entry.conf.input_schema,
+            ));
+        }
+
+        if texts.is_empty() {
+            return Ok(());
+        }
+
+        match provider.embed_batch(&texts).await {
+            Ok(vectors) => {
+                for (name, vec) in names.iter().zip(vectors) {
+                    if let Some(shard) = self.tools.get(name) {
+                        shard.value().embedding.store(Some(vec));
+                    }
+                }
+                debug!(target: "mcp_gateway", "Embedded {} tools via {}", names.len(), provider.description());
+                Ok(())
+            },
+            Err(err) => {
+                warn!(target: "mcp_gateway", "embed_batch failed for {} tools: {err}", names.len());
+                #[cfg(feature = "metrics")]
+                let shard_id = get_shard_id!();
+                with_metric!(
+                    orion_metrics::metrics::mcp::EMBEDDING_FAILURES_TOTAL,
+                    add,
+                    1,
+                    shard_id,
+                    &[KeyValue::new("provider", provider.description().to_owned())]
+                );
+                Err(err)
+            },
+        }
+    }
+
+    #[cfg(feature = "mcp-semantic-search")]
+    pub async fn embed_tool_if_unembedded(&self, name: &SmolStr) -> Result<(), embeddings::EmbeddingError> {
+        let names = [name.clone()];
+        self.embed_unembedded_tools(Some(&names)).await
+    }
+
+    pub async fn add_tool(&self, tool: McpTool) -> Result<(), ToolBuilderError> {
         let name = tool.name.clone();
         if let Some(existing) = self.tools.get(&name) {
             if !matches!(existing.source, ToolSource::Provided) {
                 return Err(ToolBuilderError::DuplicateTool(name));
             }
         }
+        #[cfg(feature = "mcp-semantic-search")]
+        self.validate_supplied_embedding(&tool)?;
         let entry = build_tool_entry(tool, ToolSource::Provided)?;
+        #[cfg(feature = "mcp-semantic-search")]
+        if self.semantic_search.is_some() && entry.embedding.load_full().is_none() {
+            let provider = self.embeddings_provider.as_ref().ok_or(embeddings::EmbeddingError::Unavailable)?;
+            let text =
+                embeddings::build_search_text(&entry.conf.name, &entry.conf.description, &entry.conf.input_schema);
+            let vectors = provider.embed_batch(&[text]).await?;
+            let vector = vectors
+                .into_iter()
+                .next()
+                .ok_or_else(|| embeddings::EmbeddingError::Provider("empty result".into()))?;
+            entry.embedding.store(Some(vector));
+        }
+        if let Some(existing) = self.tools.get(&name) {
+            if !matches!(existing.source, ToolSource::Provided) {
+                return Err(ToolBuilderError::DuplicateTool(name));
+            }
+        }
         self.tools.insert(name, Arc::new(entry));
         Ok(())
     }
@@ -270,9 +433,8 @@ impl ToolsRegistry {
         &self,
         req_ext: &http::Extensions,
         session: &Option<Arc<Session>>,
-    ) -> ListToolsResult {
-        self.bootstrap().await;
-        self.refresh_expired_dynamic_servers().await;
+    ) -> Result<ListToolsResult, CallToolError> {
+        self.ensure_tools_current().await?;
 
         let mut tools = Vec::with_capacity(self.tools.len() + 1);
 
@@ -304,57 +466,26 @@ impl ToolsRegistry {
             self.fill_list_tools(req_ext, session, &mut tools);
         }
 
-        ListToolsResult { tools, next_cursor: None, meta: None }
-    }
-
-    fn filter_by_vector_similarity(description: &str, prompt_words: Option<&[String]>) -> bool {
-        // TODO: Dummy vector similarity — select a tool if any prompt word
-        // appears in its description.
-        let Some(words) = prompt_words else {
-            return true;
-        };
-        let description_words = description.split_whitespace().map(str::to_lowercase).collect::<Vec<_>>();
-        words.iter().any(|word| description_words.contains(word))
+        Ok(ListToolsResult { tools, next_cursor: None, meta: None })
     }
 
     fn fill_list_tools(&self, req_ext: &http::Extensions, session: &Option<Arc<Session>>, tools: &mut Vec<Tool>) {
-        let Some(session) = session.as_ref() else {
-            debug!(target: "mcp_gateway", "build_list_tool_apis without session!");
-            return;
-        };
+        let session = session.as_ref();
 
-        session.active_tools.clear();
-
-        let prompt_words: Option<Vec<String>> = {
-            let prompt_guard = session.prompt.lock();
-            prompt_guard.as_ref().map(|p| p.split_whitespace().map(str::to_lowercase).collect())
-        };
-
-        let track_active = self.semantic_search.is_some() && prompt_words.is_some();
+        let restrict_to_active = self.semantic_search.is_some() && session.is_some_and(|s| !s.active_tools.is_empty());
 
         for entry in self.tools.iter() {
             let entry = entry.value();
             if !entry.rbac.as_ref().map_or(true, |rbac| rbac.is_permitted(req_ext)) {
                 continue;
             }
-            if !Self::filter_by_vector_similarity(&entry.conf.description, prompt_words.as_deref()) {
-                continue;
+            if restrict_to_active {
+                let session = session.expect("restrict_to_active implies session");
+                if !session.active_tools.contains(&entry.conf.name) {
+                    continue;
+                }
             }
-
-            let tool = Tool::new(
-                entry.conf.name.to_string(),
-                entry.conf.description.clone(),
-                Arc::new(entry.conf.input_schema.clone()),
-            );
-            tools.push(if !entry.conf.output_schema.is_empty() {
-                tool.with_raw_output_schema(Arc::new(entry.conf.output_schema.clone()))
-            } else {
-                tool
-            });
-
-            if track_active {
-                session.active_tools.insert(entry.conf.name.clone());
-            }
+            tools.push(tool_from_entry(entry));
         }
     }
 
@@ -368,8 +499,24 @@ impl ToolsRegistry {
             .collect();
 
         for entry in expired {
-            self.fetch_and_materialise(&entry).await;
+            self.refresh_if_idle(entry).await;
         }
+    }
+
+    async fn refresh_if_idle(&self, server: Arc<DynamicMcpServerEntry>) {
+        if server.refresh_in_progress.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+            debug!(target: "mcp_gateway", "Refresh already in progress for dynamic MCP server '{}'", server.conf.name);
+            return;
+        }
+        defer! {
+            server.refresh_in_progress.store(false, Ordering::Release);
+        }
+
+        if !server.is_expired(Instant::now()) {
+            return;
+        }
+
+        self.fetch_and_materialise(&server).await;
     }
 
     async fn fetch_and_materialise(&self, server: &DynamicMcpServerEntry) {
@@ -417,6 +564,7 @@ impl ToolsRegistry {
                         url: server.conf.url.clone(),
                     },
                     rbac: server.conf.rbac.clone(),
+                    embedding: EmbeddingVector::default(),
                 };
                 ToolEntry {
                     conf,
@@ -425,6 +573,8 @@ impl ToolsRegistry {
                     input_schema_validator: None,
                     output_schema_validator: None,
                     rbac: server.rbac.clone(),
+                    #[cfg(feature = "mcp-semantic-search")]
+                    embedding: arc_swap::ArcSwapOption::default(),
                 }
             })
             .collect();
@@ -478,17 +628,25 @@ impl ToolsRegistry {
             ));
         };
 
+        let Some(semantic_search) = &self.semantic_search else {
+            return Err(CallToolError::ValidationError("Semantic search not configured".into()));
+        };
+
+        self.ensure_tools_current().await?;
+
+        let ranked = self.rank_tools_for_query(req_ext, prompt).await;
+        session.active_tools.clear();
+        for entry in &ranked {
+            session.active_tools.insert(entry.conf.name.clone());
+        }
         {
             let mut session_prompt = session.prompt.lock();
             *session_prompt = Some(prompt.clone());
         }
 
-        let Some(semantic_search) = &self.semantic_search else {
-            return Err(CallToolError::ValidationError("Semantic search not configured".into()));
-        };
-
         if semantic_search.enable_assisted_discovery {
-            // Assisted discovery mode: send notification to trigger client re-list
+            // Assisted discovery mode: send notification to trigger client re-list. The follow-up
+            // tools/list will read `active_tools` via `fill_list_tools` and emit those names.
             let json_rpc_notification = JsonRpcNotification::<ServerNotification> {
                 jsonrpc: model::JsonRpcVersion2_0,
                 notification: ServerNotification::ToolListChangedNotification(ToolListChangedNotification::default()),
@@ -507,11 +665,10 @@ impl ToolsRegistry {
 
             Ok(MessageResult::JsonRpcNotificationResponse(json_rpc_notification, json_rpc_response))
         } else {
-            // Direct call mode: perform filtering and populate active_tools, then return tool list
-            let list_result = self.build_list_tools(req_ext, &Some(Arc::clone(session))).await;
-
-            let tools_json =
-                serde_json::to_value(&list_result.tools).unwrap_or_else(|_| serde_json::Value::Array(vec![]));
+            // Direct call mode: serialise the ranked tools straight into the call result so the
+            // client receives the discovered tools without a follow-up tools/list round-trip.
+            let tools: Vec<Tool> = ranked.iter().map(|e| tool_from_entry(e)).collect();
+            let tools_json = serde_json::to_value(&tools).unwrap_or_else(|_| serde_json::Value::Array(vec![]));
 
             let text_content = RawTextContent {
                 text: serde_json::to_string_pretty(&tools_json).unwrap_or_else(|_| "[]".to_string()),
@@ -526,6 +683,62 @@ impl ToolsRegistry {
 
             Ok(MessageResult::JsonRpcResponse(json_rpc_response))
         }
+    }
+
+    /// Score every RBAC-permitted tool against the user query and return the top-K
+    /// entries by descending similarity. Cosine ranking when both the query and the
+    /// tool have an embedding; word-overlap fallback otherwise. The fallback path
+    /// also covers builds where the `mcp-semantic-search` feature is off.
+    async fn rank_tools_for_query(&self, req_ext: &http::Extensions, user_query: &str) -> Vec<Arc<ToolEntry>> {
+        let kw_words: Vec<String> = user_query.split_whitespace().map(str::to_lowercase).collect();
+
+        #[cfg(feature = "mcp-semantic-search")]
+        let query_embedding: Option<embeddings::Embedding> = match self.embeddings_provider.as_ref() {
+            Some(provider) => match provider.embed_query(user_query).await {
+                Ok(v) => Some(v),
+                Err(err) => {
+                    warn!(target: "mcp_gateway", "embed_query failed: {err}; falling back to keyword scoring");
+                    None
+                },
+            },
+            None => None,
+        };
+
+        let mut scored: Vec<(f32, Arc<ToolEntry>)> = Vec::with_capacity(self.tools.len());
+        for entry in self.tools.iter() {
+            let entry = Arc::clone(entry.value());
+            if !entry.rbac.as_ref().map_or(true, |r| r.is_permitted(req_ext)) {
+                continue;
+            }
+            #[cfg(feature = "mcp-semantic-search")]
+            let score = match (&query_embedding, entry.embedding.load_full()) {
+                (Some(q), Some(v)) => match embeddings::cosine_similarity(q.as_slice(), v.as_slice()) {
+                    Ok(score) => score,
+                    Err(err) => {
+                        warn!(
+                            target: "mcp_gateway",
+                            "cosine similarity failed for tool '{}': {err}; falling back to keyword scoring",
+                            entry.conf.name
+                        );
+                        embeddings::keyword_overlap_score(&entry.conf.description, &kw_words)
+                    },
+                },
+                _ => embeddings::keyword_overlap_score(&entry.conf.description, &kw_words),
+            };
+            #[cfg(not(feature = "mcp-semantic-search"))]
+            let score = inline_keyword_overlap(&entry.conf.description, &kw_words);
+            scored.push((score, entry));
+        }
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+
+        #[cfg(feature = "mcp-semantic-search")]
+        let top_k = self.similarity_top_k();
+        #[cfg(not(feature = "mcp-semantic-search"))]
+        let top_k = 0_usize;
+        if top_k > 0 && scored.len() > top_k {
+            scored.truncate(top_k);
+        }
+        scored.into_iter().map(|(_, e)| e).collect()
     }
 
     pub async fn call(
@@ -669,7 +882,50 @@ fn build_tool_entry(tool_conf: McpTool, source: ToolSource) -> Result<ToolEntry,
         UpstreamBackend::FunctionGraph { .. } => TranscoderType::FunctionGraph(FunctionGraphTranscoder {}),
         UpstreamBackend::McpServer { .. } => TranscoderType::NoTranscoder,
     };
-    Ok(ToolEntry { conf: tool_conf, source, transcoder, rbac, input_schema_validator, output_schema_validator })
+    #[cfg(feature = "mcp-semantic-search")]
+    let embedding = {
+        let supplied = tool_conf.embedding.as_slice();
+        if supplied.is_empty() {
+            arc_swap::ArcSwapOption::default()
+        } else {
+            let mut v: Vec<f32> = supplied.to_vec();
+            embeddings::normalise_in_place(&mut v);
+            arc_swap::ArcSwapOption::from(Some(Arc::new(v)))
+        }
+    };
+    Ok(ToolEntry {
+        conf: tool_conf,
+        source,
+        transcoder,
+        rbac,
+        input_schema_validator,
+        output_schema_validator,
+        #[cfg(feature = "mcp-semantic-search")]
+        embedding,
+    })
+}
+
+fn tool_from_entry(entry: &ToolEntry) -> Tool {
+    let tool = Tool::new(
+        entry.conf.name.to_string(),
+        entry.conf.description.clone(),
+        Arc::new(entry.conf.input_schema.clone()),
+    );
+    if !entry.conf.output_schema.is_empty() {
+        tool.with_raw_output_schema(Arc::new(entry.conf.output_schema.clone()))
+    } else {
+        tool
+    }
+}
+
+#[cfg(not(feature = "mcp-semantic-search"))]
+fn inline_keyword_overlap(description: &str, query_words: &[String]) -> f32 {
+    if query_words.is_empty() {
+        return 0.0;
+    }
+    let desc_words: Vec<String> = description.split_whitespace().map(str::to_lowercase).collect();
+    let matches = query_words.iter().filter(|w| desc_words.contains(w)).count();
+    matches as f32 / query_words.len() as f32
 }
 
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::McpRbacPermission;
@@ -752,11 +1008,19 @@ mod tests {
                 body_template: None,
             },
             rbac: None,
+            embedding: EmbeddingVector::default(),
         }
     }
 
     fn registry_with_tool(tool: McpTool) -> ToolsRegistry {
-        ToolsRegistry::with_config(vec![tool], Vec::new(), None).unwrap()
+        ToolsRegistry::with_config(
+            vec![tool],
+            Vec::new(),
+            None,
+            #[cfg(feature = "mcp-semantic-search")]
+            None,
+        )
+        .unwrap()
     }
 
     #[test]
@@ -914,7 +1178,13 @@ mod tests {
     fn test_with_config_fails_with_invalid_input_schema() {
         let input_schema = serde_json::from_value(json!({ "type": "invalid_type" })).unwrap();
         let tool = create_test_tool_with_schemas(input_schema, serde_json::Map::new());
-        let result = ToolsRegistry::with_config(vec![tool], Vec::new(), None);
+        let result = ToolsRegistry::with_config(
+            vec![tool],
+            Vec::new(),
+            None,
+            #[cfg(feature = "mcp-semantic-search")]
+            None,
+        );
         assert!(matches!(result, Err(ToolBuilderError::InvalidInputSchema(_))));
     }
 
@@ -922,7 +1192,13 @@ mod tests {
     fn test_with_config_fails_with_invalid_output_schema() {
         let output_schema = serde_json::from_value(json!({ "type": "invalid_type" })).unwrap();
         let tool = create_test_tool_with_schemas(serde_json::Map::new(), output_schema);
-        let result = ToolsRegistry::with_config(vec![tool], Vec::new(), None);
+        let result = ToolsRegistry::with_config(
+            vec![tool],
+            Vec::new(),
+            None,
+            #[cfg(feature = "mcp-semantic-search")]
+            None,
+        );
         assert!(matches!(result, Err(ToolBuilderError::InvalidOutputSchema(_))));
     }
 
@@ -987,12 +1263,19 @@ mod tests {
         assert!(tool_entry.validate_against_input_schema(&invalid_args).is_err());
     }
 
-    #[test]
-    fn test_add_and_remove_provided_tool() {
-        let registry = ToolsRegistry::with_config(Vec::new(), Vec::new(), None).unwrap();
+    #[tokio::test]
+    async fn test_add_and_remove_provided_tool() {
+        let registry = ToolsRegistry::with_config(
+            Vec::new(),
+            Vec::new(),
+            None,
+            #[cfg(feature = "mcp-semantic-search")]
+            None,
+        )
+        .unwrap();
         let tool = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
 
-        registry.add_tool(tool).unwrap();
+        registry.add_tool(tool).await.unwrap();
         assert!(registry.get_tool_by_name("test_tool").is_some());
 
         assert!(registry.remove_tool("test_tool"));
@@ -1002,7 +1285,14 @@ mod tests {
 
     #[test]
     fn test_remove_tool_skips_dynamic_entries() {
-        let registry = ToolsRegistry::with_config(Vec::new(), Vec::new(), None).unwrap();
+        let registry = ToolsRegistry::with_config(
+            Vec::new(),
+            Vec::new(),
+            None,
+            #[cfg(feature = "mcp-semantic-search")]
+            None,
+        )
+        .unwrap();
 
         let dynamic_conf = McpTool {
             name: "srv__tool".into(),
@@ -1014,6 +1304,7 @@ mod tests {
                 url: "http://localhost/mcp".into(),
             },
             rbac: None,
+            embedding: EmbeddingVector::default(),
         };
         let entry = build_tool_entry(
             dynamic_conf,
@@ -1030,13 +1321,26 @@ mod tests {
     fn test_duplicate_provided_tool_names_rejected() {
         let tool_a = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
         let tool_b = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
-        let result = ToolsRegistry::with_config(vec![tool_a, tool_b], Vec::new(), None);
+        let result = ToolsRegistry::with_config(
+            vec![tool_a, tool_b],
+            Vec::new(),
+            None,
+            #[cfg(feature = "mcp-semantic-search")]
+            None,
+        );
         assert!(matches!(result, Err(ToolBuilderError::DuplicateTool(_))));
     }
 
-    #[test]
-    fn test_remove_dynamic_server_evicts_its_tools() {
-        let registry = ToolsRegistry::with_config(Vec::new(), Vec::new(), None).unwrap();
+    #[tokio::test]
+    async fn test_remove_dynamic_server_evicts_its_tools() {
+        let registry = ToolsRegistry::with_config(
+            Vec::new(),
+            Vec::new(),
+            None,
+            #[cfg(feature = "mcp-semantic-search")]
+            None,
+        )
+        .unwrap();
 
         // Pretend a server previously materialised two tools
         let server_conf = DynamicMcpServer {
@@ -1061,6 +1365,7 @@ mod tests {
                     url: "http://localhost/mcp".into(),
                 },
                 rbac: None,
+                embedding: EmbeddingVector::default(),
             };
             let entry = build_tool_entry(
                 conf,
@@ -1072,11 +1377,256 @@ mod tests {
 
         // And a provided tool that must be left alone
         let provided = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
-        registry.add_tool(provided).unwrap();
+        registry.add_tool(provided).await.unwrap();
 
         assert!(registry.remove_dynamic_server("srv"));
         assert!(registry.get_tool_by_name("srv__alpha").is_none());
         assert!(registry.get_tool_by_name("srv__beta").is_none());
         assert!(registry.get_tool_by_name("test_tool").is_some());
+    }
+
+    #[cfg(feature = "mcp-semantic-search")]
+    #[tokio::test]
+    async fn semantic_search_ranks_with_cosine_and_populates_active_tools() {
+        use orion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::{
+            McpSemanticSearch, SimilarityConfig,
+        };
+
+        #[derive(Debug)]
+        struct StubProvider;
+        #[async_trait::async_trait]
+        impl embeddings::EmbeddingsProvider for StubProvider {
+            fn dimensions(&self) -> usize {
+                3
+            }
+            fn description(&self) -> &str {
+                "stub"
+            }
+            async fn embed_query(&self, text: &str) -> Result<embeddings::Embedding, embeddings::EmbeddingError> {
+                let v = one_hot_for(text);
+                Ok(Arc::new(v))
+            }
+            async fn embed_batch(
+                &self,
+                texts: &[String],
+            ) -> Result<Vec<embeddings::Embedding>, embeddings::EmbeddingError> {
+                Ok(texts.iter().map(|t| Arc::new(one_hot_for(t))).collect())
+            }
+        }
+        fn one_hot_for(text: &str) -> Vec<f32> {
+            let lower = text.to_lowercase();
+            let mut v = vec![0.0_f32; 3];
+            if lower.contains("weather") {
+                v[0] = 1.0;
+            } else if lower.contains("user") {
+                v[1] = 1.0;
+            } else if lower.contains("admin") {
+                v[2] = 1.0;
+            } else {
+                v = vec![0.577, 0.577, 0.577];
+            }
+            v
+        }
+
+        let provider: Arc<dyn embeddings::EmbeddingsProvider> = Arc::new(StubProvider);
+        let semantic_search = Some(McpSemanticSearch {
+            enable_assisted_discovery: false,
+            embeddings_service: "stub".into(),
+            similarity: SimilarityConfig { top_k: 2 },
+        });
+
+        let mut tool_a = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
+        tool_a.name = "weather_get_forecast".into();
+        tool_a.description = "Get the weather forecast".into();
+        let mut tool_b = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
+        tool_b.name = "user_profile_get".into();
+        tool_b.description = "Get user profile".into();
+        let mut tool_c = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
+        tool_c.name = "admin_delete".into();
+        tool_c.description = "Admin delete operation".into();
+
+        let registry = ToolsRegistry::with_config(
+            vec![tool_a, tool_b, tool_c],
+            Vec::new(),
+            semantic_search,
+            Some(Arc::clone(&provider)),
+        )
+        .unwrap();
+
+        registry.bootstrap().await.unwrap();
+
+        for name in ["weather_get_forecast", "user_profile_get", "admin_delete"] {
+            let entry = registry.get_tool_by_name(name).unwrap();
+            assert!(entry.embedding.load_full().is_some(), "tool '{name}' was not embedded");
+        }
+
+        let req_ext = http::Extensions::new();
+        let ranked = registry.rank_tools_for_query(&req_ext, "what is the weather today").await;
+        assert_eq!(ranked.len(), 2, "top_k=2 should return exactly 2 tools");
+        assert_eq!(ranked[0].conf.name.as_str(), "weather_get_forecast", "weather tool should rank first");
+    }
+
+    #[cfg(feature = "mcp-semantic-search")]
+    #[test]
+    fn test_with_config_rejects_semantic_search_without_provider() {
+        use orion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::{
+            McpSemanticSearch, SimilarityConfig,
+        };
+
+        let semantic_search = Some(McpSemanticSearch {
+            enable_assisted_discovery: false,
+            embeddings_service: "missing".into(),
+            similarity: SimilarityConfig::default(),
+        });
+
+        let result = ToolsRegistry::with_config(Vec::new(), Vec::new(), semantic_search, None);
+        assert!(
+            matches!(result, Err(ToolBuilderError::SemanticSearchWithoutEmbeddingsProvider)),
+            "expected SemanticSearchWithoutEmbeddingsProvider, got {result:?}"
+        );
+    }
+
+    #[cfg(feature = "mcp-semantic-search")]
+    #[tokio::test]
+    async fn add_tool_does_not_insert_when_required_embedding_fails() {
+        use orion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::{
+            McpSemanticSearch, SimilarityConfig,
+        };
+
+        #[derive(Debug)]
+        struct FailingProvider;
+        #[async_trait::async_trait]
+        impl embeddings::EmbeddingsProvider for FailingProvider {
+            fn dimensions(&self) -> usize {
+                3
+            }
+            fn description(&self) -> &str {
+                "failing"
+            }
+            async fn embed_query(&self, _: &str) -> Result<embeddings::Embedding, embeddings::EmbeddingError> {
+                Err(embeddings::EmbeddingError::Provider("boom".into()))
+            }
+        }
+
+        let provider: Arc<dyn embeddings::EmbeddingsProvider> = Arc::new(FailingProvider);
+        let semantic_search = Some(McpSemanticSearch {
+            enable_assisted_discovery: false,
+            embeddings_service: "failing".into(),
+            similarity: SimilarityConfig::default(),
+        });
+        let registry = ToolsRegistry::with_config(Vec::new(), Vec::new(), semantic_search, Some(provider)).unwrap();
+        let mut tool = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
+        tool.name = "tds_tool".into();
+
+        let res = registry.add_tool(tool).await;
+        assert!(matches!(res, Err(ToolBuilderError::EmbeddingFailure(_))), "got {res:?}");
+        assert!(registry.get_tool_by_name("tds_tool").is_none());
+    }
+
+    #[cfg(feature = "mcp-semantic-search")]
+    #[tokio::test]
+    async fn embed_tool_if_unembedded_propagates_provider_failure() {
+        use orion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::{
+            McpSemanticSearch, SimilarityConfig,
+        };
+
+        #[derive(Debug)]
+        struct FailingProvider;
+        #[async_trait::async_trait]
+        impl embeddings::EmbeddingsProvider for FailingProvider {
+            fn dimensions(&self) -> usize {
+                3
+            }
+            fn description(&self) -> &str {
+                "failing"
+            }
+            async fn embed_query(&self, _: &str) -> Result<embeddings::Embedding, embeddings::EmbeddingError> {
+                Err(embeddings::EmbeddingError::Provider("boom".into()))
+            }
+            async fn embed_batch(
+                &self,
+                _: &[String],
+            ) -> Result<Vec<embeddings::Embedding>, embeddings::EmbeddingError> {
+                Err(embeddings::EmbeddingError::Provider("boom".into()))
+            }
+        }
+
+        let provider: Arc<dyn embeddings::EmbeddingsProvider> = Arc::new(FailingProvider);
+        let semantic_search = Some(McpSemanticSearch {
+            enable_assisted_discovery: false,
+            embeddings_service: "failing".into(),
+            similarity: SimilarityConfig::default(),
+        });
+        let mut tool = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
+        tool.name = "needs_embedding".into();
+
+        let registry =
+            ToolsRegistry::with_config(vec![tool], Vec::new(), semantic_search, Some(Arc::clone(&provider))).unwrap();
+
+        let res = registry.embed_tool_if_unembedded(&"needs_embedding".into()).await;
+        assert!(matches!(res, Err(embeddings::EmbeddingError::Provider(_))), "got {res:?}");
+    }
+
+    #[cfg(feature = "mcp-semantic-search")]
+    #[tokio::test]
+    async fn bootstrap_retries_after_failure_without_latching() {
+        use orion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::{
+            McpSemanticSearch, SimilarityConfig,
+        };
+
+        #[derive(Debug)]
+        struct FlakyProvider {
+            attempts: AtomicBool,
+        }
+        #[async_trait::async_trait]
+        impl embeddings::EmbeddingsProvider for FlakyProvider {
+            fn dimensions(&self) -> usize {
+                3
+            }
+            fn description(&self) -> &str {
+                "flaky"
+            }
+            async fn embed_query(&self, _: &str) -> Result<embeddings::Embedding, embeddings::EmbeddingError> {
+                Err(embeddings::EmbeddingError::Provider("never used".into()))
+            }
+            async fn embed_batch(
+                &self,
+                texts: &[String],
+            ) -> Result<Vec<embeddings::Embedding>, embeddings::EmbeddingError> {
+                // First call fails; flip the flag and succeed on the second.
+                if !self.attempts.swap(true, Ordering::Relaxed) {
+                    return Err(embeddings::EmbeddingError::Provider("first call fails".into()));
+                }
+                Ok(texts.iter().map(|_| Arc::new(vec![1.0_f32, 0.0, 0.0])).collect())
+            }
+        }
+
+        let provider: Arc<dyn embeddings::EmbeddingsProvider> =
+            Arc::new(FlakyProvider { attempts: AtomicBool::new(false) });
+        let semantic_search = Some(McpSemanticSearch {
+            enable_assisted_discovery: false,
+            embeddings_service: "flaky".into(),
+            similarity: SimilarityConfig::default(),
+        });
+        let mut tool = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
+        tool.name = "flaky_tool".into();
+
+        let registry =
+            ToolsRegistry::with_config(vec![tool], Vec::new(), semantic_search, Some(Arc::clone(&provider))).unwrap();
+
+        // First call: provider fails, bootstrap propagates the error, OnceCell
+        // for dynamic-server materialise latches but the embedding step does not.
+        assert!(registry.bootstrap().await.is_err(), "first bootstrap must surface provider failure");
+        assert!(
+            registry.get_tool_by_name("flaky_tool").unwrap().embedding.load_full().is_none(),
+            "tool must remain unembedded after a failed bootstrap"
+        );
+
+        // Second call: provider recovers, bootstrap succeeds and stores the embedding.
+        registry.bootstrap().await.expect("retry must succeed once provider recovers");
+        assert!(
+            registry.get_tool_by_name("flaky_tool").unwrap().embedding.load_full().is_some(),
+            "embedding should be stored after a successful retry"
+        );
     }
 }

@@ -22,7 +22,9 @@ use crate::{
     xds_configurator::XdsConfigurationHandler,
 };
 use futures::future::join_all;
-use orion_configuration::config::{bootstrap::Node, log::AccessLogConfig, runtime::Affinity, Bootstrap};
+use orion_configuration::config::{
+    bootstrap::Node, embeddings::EmbeddingsService, log::AccessLogConfig, runtime::Affinity, Bootstrap,
+};
 
 #[cfg(feature = "tracing")]
 use {
@@ -37,9 +39,9 @@ use orion_lib::access_log::{start_access_loggers, update_configuration};
 
 use orion_error::Context;
 use orion_lib::{
-    clusters::cluster::ClusterType, get_listeners_and_clusters, new_configuration_channel, runtime_config,
-    ConfigurationReceivers, ConfigurationSenders, ListenerConfigurationChange, PartialClusterType, Result,
-    SecretManager,
+    build_listener_factories, clusters::cluster::ClusterType, get_secrets_and_clusters, new_configuration_channel,
+    runtime_config, ConfigurationReceivers, ConfigurationSenders, ListenerConfigurationChange, PartialClusterType,
+    Result, SecretManager,
 };
 #[cfg(feature = "metrics")]
 use orion_metrics::{metrics::init_global_metrics, wait_for_metrics_setup, Metrics, VecMetrics};
@@ -52,11 +54,15 @@ use std::{
 
 use tracing::{debug, error, info, warn};
 
-pub fn run_orion(bootstrap: Bootstrap, access_log_config: Option<AccessLogConfig>) {
+pub fn run_orion(
+    bootstrap: Bootstrap,
+    access_log_config: Option<AccessLogConfig>,
+    embeddings_services: Vec<EmbeddingsService>,
+) {
     debug!("Starting on thread {:?}", std::thread::current().name());
 
     // launch the runtimes...
-    if let Err(e) = launch_runtimes(bootstrap, access_log_config) {
+    if let Err(e) = launch_runtimes(bootstrap, access_log_config, embeddings_services) {
         error!("Failed to launch runtimes: {e:?}");
         std::process::exit(1);
     }
@@ -106,7 +112,11 @@ struct ServiceInfo {
 
 type SenderGuards = Vec<ConfigurationSenders>;
 
-fn launch_runtimes(bootstrap: Bootstrap, _access_log_config: Option<AccessLogConfig>) -> Result<SenderGuards> {
+fn launch_runtimes(
+    bootstrap: Bootstrap,
+    _access_log_config: Option<AccessLogConfig>,
+    embeddings_services: Vec<EmbeddingsService>,
+) -> Result<SenderGuards> {
     let rt_config = runtime_config();
     let num_runtimes = rt_config.num_runtimes();
     let num_cpus = rt_config.num_cpus();
@@ -151,8 +161,11 @@ fn launch_runtimes(bootstrap: Bootstrap, _access_log_config: Option<AccessLogCon
     let ads_cluster_names: Vec<String> = bootstrap.get_ads_configs().iter().map(ToString::to_string).collect();
     let node = bootstrap.node.clone().unwrap_or_else(|| Node { id: "".into(), cluster_id: "".into() });
 
-    let (secret_manager, listener_factories, clusters) =
-        get_listeners_and_clusters(bootstrap.clone()).with_context_msg("Failed to get listeners and clusters")?;
+    let (secret_manager, clusters) =
+        get_secrets_and_clusters(&bootstrap).with_context_msg("Failed to get secrets and clusters")?;
+    start_embeddings_services(embeddings_services)?;
+    let listener_factories = build_listener_factories(bootstrap.static_resources.listeners.clone(), &secret_manager)
+        .with_context_msg("failed to build listener factories")?;
     let secret_manager = Arc::new(RwLock::new(secret_manager));
 
     if listener_factories.is_empty() && ads_cluster_names.is_empty() {
@@ -334,9 +347,9 @@ async fn spawn_services(info: ServiceInfo) -> Result<()> {
     let bootstrap_clone = bootstrap.clone();
     let secret_manager_clone = secret_manager.clone();
     set.spawn(async move {
-        // ADS cluster must be in the registry before connect() can resolve it,
-        // and the MCP handler singleton must exist before listener factories
-        // construct MCP filters that call subscribe_for_updates.
+        // ADS cluster must be in the registry before connect() can resolve it.
+        // Static MCP TDS listeners may already have queued registrations; MCP
+        // xDS handler initialization drains those registrations when ADS exists.
         let initial_clusters = register_initial_clusters(clusters)?;
 
         let xds_connect = XdsConfigurationHandler::connect(&node, ads_cluster_names).await?;
@@ -413,6 +426,21 @@ async fn spawn_services(info: ServiceInfo) -> Result<()> {
 
 fn register_initial_clusters(clusters: Vec<PartialClusterType>) -> Result<Vec<ClusterType>> {
     clusters.into_iter().map(orion_lib::clusters::add_cluster).collect::<Result<_>>()
+}
+
+fn start_embeddings_services(services: Vec<EmbeddingsService>) -> Result<()> {
+    #[cfg(feature = "mcp-semantic-search")]
+    {
+        orion_lib::embeddings::start_services(services).map_err(Into::into)
+    }
+    #[cfg(not(feature = "mcp-semantic-search"))]
+    {
+        if services.is_empty() {
+            Ok(())
+        } else {
+            Err("embeddings_services configured but Orion was built without the `mcp-semantic-search` feature".into())
+        }
+    }
 }
 
 async fn push_initial_listeners(

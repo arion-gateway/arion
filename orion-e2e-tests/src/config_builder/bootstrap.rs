@@ -32,6 +32,47 @@ pub struct XdsConfig {
     pub port: u16,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct LocalEmbeddingsServiceConfig {
+    name: String,
+    local: LocalEmbeddingsProviderConfig,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct LocalEmbeddingsProviderConfig {
+    model_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model_dir: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dimensions: Option<usize>,
+}
+
+impl LocalEmbeddingsServiceConfig {
+    #[must_use]
+    pub fn new(name: impl Into<String>, model_id: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            local: LocalEmbeddingsProviderConfig { model_id: model_id.into(), model_dir: None, dimensions: None },
+        }
+    }
+
+    #[must_use]
+    pub fn model_dir(mut self, model_dir: impl Into<String>) -> Self {
+        self.local.model_dir = Some(model_dir.into());
+        self
+    }
+
+    #[must_use]
+    pub fn dimensions(mut self, dimensions: usize) -> Self {
+        self.local.dimensions = Some(dimensions);
+        self
+    }
+
+    pub fn build_yaml(&self) -> Result<String> {
+        serde_yaml::to_string(self).map_err(Error::from)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct BootstrapBuilder {
     listeners: Vec<Listener>,
@@ -40,6 +81,7 @@ pub struct BootstrapBuilder {
     runtime_count: u32,
     log_level: String,
     xds_config: Option<XdsConfig>,
+    embeddings_services: Vec<String>,
 }
 
 impl Default for BootstrapBuilder {
@@ -58,6 +100,7 @@ impl BootstrapBuilder {
             runtime_count: 1,
             log_level: "info".into(),
             xds_config: None,
+            embeddings_services: Vec::new(),
         }
     }
 
@@ -118,6 +161,12 @@ impl BootstrapBuilder {
     }
 
     #[must_use]
+    pub fn embeddings_service(mut self, service: impl Into<String>) -> Self {
+        self.embeddings_services.push(service.into());
+        self
+    }
+
+    #[must_use]
     pub fn get_clusters(&self) -> &[Cluster] {
         &self.clusters
     }
@@ -152,14 +201,19 @@ impl BootstrapBuilder {
             return Err(Error::Config("At least one listener is required".into()));
         }
 
-        let bootstrap = self.build_bootstrap();
+        let bootstrap = self.build_bootstrap()?;
 
         serde_yaml::to_string(&bootstrap).map_err(Error::from)
     }
 
-    fn build_bootstrap(&self) -> OrionConfig {
+    fn build_bootstrap(&self) -> Result<OrionConfig> {
         let listeners: Vec<Value> = self.listeners.iter().filter_map(|l| proto_to_yaml_value(l).ok()).collect();
         let clusters: Vec<Value> = self.clusters.iter().filter_map(|c| proto_to_yaml_value(c).ok()).collect();
+        let embeddings_services = self
+            .embeddings_services
+            .iter()
+            .map(|service| serde_yaml::from_str(service))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
 
         let (xds_cluster, dynamic_resources) = if let Some(ref xds) = self.xds_config {
             let xds_cluster = build_xds_cluster(&xds.address, xds.port);
@@ -178,14 +232,15 @@ impl BootstrapBuilder {
             all_clusters.push(xds_cluster);
         }
 
-        OrionConfig {
+        Ok(OrionConfig {
             runtime: RuntimeConfig { num_cpus: self.runtime_cpus, num_runtimes: self.runtime_count },
             logging: LoggingConfig { log_level: self.log_level.clone() },
+            embeddings_services,
             envoy_bootstrap: EnvoyBootstrap {
                 dynamic_resources,
                 static_resources: StaticResources { listeners, clusters: all_clusters, secrets: vec![] },
             },
-        }
+        })
     }
 }
 
@@ -244,6 +299,8 @@ fn build_xds_cluster(address: &str, port: u16) -> Value {
 struct OrionConfig {
     runtime: RuntimeConfig,
     logging: LoggingConfig,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    embeddings_services: Vec<Value>,
     envoy_bootstrap: EnvoyBootstrap,
 }
 

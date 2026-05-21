@@ -6560,18 +6560,16 @@ async fn test_header_append_action_append_if_exists_or_add() {
                 trailers: None,
                 clear_route_cache: false,
             }),
-        }
+        },
     );
 
-    let mock_state = MockExternalProcessorState::new().add_response(MockProcessingResponse::new(
-        ProcessingResponse {
-            response: Some(response),
-            mode_override: None,
-            dynamic_metadata: None,
-            override_message_timeout: None,
-            request_drain: false,
-        },
-    ));
+    let mock_state = MockExternalProcessorState::new().add_response(MockProcessingResponse::new(ProcessingResponse {
+        response: Some(response),
+        mode_override: None,
+        dynamic_metadata: None,
+        override_message_timeout: None,
+        request_drain: false,
+    }));
 
     let (server_addr, _) = start_mock_server(mock_state).await;
     let processing_mode = ProcessingMode {
@@ -6607,27 +6605,23 @@ async fn test_header_append_action_append_if_exists_or_add() {
 
 #[tokio::test]
 async fn test_clear_route_cache() {
-    let response = ProcessingResponseType::RequestHeaders(
-        HeadersResponse {
-            response: Some(CommonResponse {
-                status: ResponseStatus::Continue as i32,
-                header_mutation: None,
-                body_mutation: None,
-                trailers: None,
-                clear_route_cache: true,
-            }),
-        }
-    );
+    let response = ProcessingResponseType::RequestHeaders(HeadersResponse {
+        response: Some(CommonResponse {
+            status: ResponseStatus::Continue as i32,
+            header_mutation: None,
+            body_mutation: None,
+            trailers: None,
+            clear_route_cache: true,
+        }),
+    });
 
-    let mock_state = MockExternalProcessorState::new().add_response(MockProcessingResponse::new(
-        ProcessingResponse {
-            response: Some(response),
-            mode_override: None,
-            dynamic_metadata: None,
-            override_message_timeout: None,
-            request_drain: false,
-        },
-    ));
+    let mock_state = MockExternalProcessorState::new().add_response(MockProcessingResponse::new(ProcessingResponse {
+        response: Some(response),
+        mode_override: None,
+        dynamic_metadata: None,
+        override_message_timeout: None,
+        request_drain: false,
+    }));
 
     let (server_addr, _) = start_mock_server(mock_state).await;
     let processing_mode = ProcessingMode {
@@ -6657,16 +6651,15 @@ async fn test_clear_route_cache() {
 
 #[tokio::test]
 async fn test_immediate_response_with_grpc_status() {
-    let immediate_response =
-        ImmediateResponse {
-            status: Some(EnvoyHttpStatus { code: 503 }),
-            headers: None,
-            body: "grpc error body".as_bytes().to_vec(),
-            grpc_status: Some(orion_data_plane_api::envoy_data_plane_api::envoy::service::ext_proc::v3::GrpcStatus {
-                status: 14, // UNAVAILABLE
-            }),
-            details: "grpc_error_details".to_string(),
-        };
+    let immediate_response = ImmediateResponse {
+        status: Some(EnvoyHttpStatus { code: 503 }),
+        headers: None,
+        body: "grpc error body".as_bytes().to_vec(),
+        grpc_status: Some(orion_data_plane_api::envoy_data_plane_api::envoy::service::ext_proc::v3::GrpcStatus {
+            status: 14, // UNAVAILABLE
+        }),
+        details: "grpc_error_details".to_string(),
+    };
 
     let mock_state = MockExternalProcessorState::new().add_response(MockProcessingResponse::new(ProcessingResponse {
         response: Some(ProcessingResponseType::ImmediateResponse(immediate_response)),
