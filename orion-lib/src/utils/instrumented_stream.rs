@@ -2,7 +2,7 @@ use std::{
     io,
     pin::Pin,
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
     task::{Context, Poll},
@@ -23,6 +23,35 @@ pub enum ErrorSource {
     Write(io::Error),
 }
 
+type Callback = Box<dyn FnOnce() + Send>;
+
+pub struct CallbackQueue {
+    has_pending: AtomicBool,
+    queue: Mutex<SmallVec<[Callback; 4]>>,
+}
+
+impl CallbackQueue {
+    pub fn new() -> Self {
+        Self { has_pending: AtomicBool::new(false), queue: Mutex::new(SmallVec::new()) }
+    }
+
+    pub fn push(&self, cb: Callback) {
+        let mut queue = self.queue.lock();
+        queue.push(cb);
+        self.has_pending.store(true, Ordering::Release);
+    }
+
+    pub fn drain(&self) -> Option<SmallVec<[Callback; 4]>> {
+        if self.has_pending.load(Ordering::Acquire) {
+            let mut queue = self.queue.lock();
+            let rc = queue.drain(..).collect();
+            self.has_pending.store(false, Ordering::Release);
+            return Some(rc);
+        }
+        None
+    }
+}
+
 pub struct StreamMetrics {
     total_bytes_read: AtomicU64,
     total_bytes_written: AtomicU64,
@@ -33,7 +62,7 @@ pub struct StreamMetrics {
     #[allow(clippy::type_complexity)]
     drop_fn: AtomicOption<Box<dyn FnOnce(&StreamMetrics) + Send>>,
     #[allow(clippy::type_complexity)]
-    flush_callbacks: Mutex<SmallVec<[Box<dyn FnOnce() + Send>; 4]>>,
+    flush_callbacks: CallbackQueue,
 }
 
 impl Default for StreamMetrics {
@@ -80,19 +109,21 @@ impl StreamMetrics {
             requests_counter: AtomicU64::new(0),
             error: AtomicOption::none(),
             drop_fn: AtomicOption::none(),
-            flush_callbacks: Mutex::new(SmallVec::new()),
+            flush_callbacks: CallbackQueue::new(),
         }
     }
 
+    #[inline]
     pub fn add_flush_callback(&self, cb: Box<dyn FnOnce() + Send>) {
-        let mut callbacks = self.flush_callbacks.lock();
-        callbacks.push(cb);
+        self.flush_callbacks.push(cb);
     }
 
+    #[inline]
     pub fn on_flush(&self) {
-        let mut callbacks = self.flush_callbacks.lock();
-        for cb in callbacks.drain(..) {
-            cb();
+        if let Some(callbacks) = self.flush_callbacks.drain() {
+            for cb in callbacks {
+                cb();
+            }
         }
     }
 
@@ -147,6 +178,7 @@ impl StreamMetrics {
         }
     }
 
+    #[inline]
     fn reset_txn(&self) {
         self.txn_bytes_read_start.store(self.bytes_read(), Ordering::Relaxed);
         self.txn_bytes_written_start.store(self.bytes_written(), Ordering::Relaxed);

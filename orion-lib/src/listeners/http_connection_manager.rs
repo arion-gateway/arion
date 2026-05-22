@@ -829,6 +829,7 @@ impl Service<PipelineRequest<Request<OrionRequestBody>>> for HttpPipelineSvc {
                                     let body_error_cb = body_error.clone();
 
                                     stream_metrics.add_flush_callback(Box::new(move || {
+                                        #[allow(unused_mut)]
                                         let mut trans_ctx = trans_handler_cb.trans_state.lock();
                                         #[allow(unused_variables)]
                                         let ctx_bytes = trans_ctx.bytes;
@@ -1623,6 +1624,7 @@ where
 
                                 let stream_metrics_cb = Arc::clone(&stream_metrics_clone);
                                 stream_metrics_clone.add_flush_callback(Box::new(move || {
+                                    #[allow(unused_mut)]
                                     let mut trans_state = trans_handler_cb.trans_state.lock();
                                     #[allow(unused_variables)]
                                     let ctx_bytes = trans_state.bytes;
@@ -1953,6 +1955,7 @@ fn instrument_early_failure_response(
                         let body_error_cb = body_error.clone();
 
                         stream_metrics.add_flush_callback(Box::new(move || {
+                            #[allow(unused_mut)]
                             let mut log_ctx = trans_handler_cb.trans_state.lock();
                             #[allow(unused_variables)]
                             let ctx_bytes = log_ctx.bytes;
