@@ -824,6 +824,7 @@ impl Service<PipelineRequest<Request<OrionRequestBody>>> for HttpPipelineSvc {
                                 if trans_handler.trans_phase.is_complete() {
                                     let sm_arc = Arc::clone(&sm_for_cb2);
                                     let trans_handler_cb = Arc::clone(&trans_handler);
+                                    #[cfg(feature = "access-log")]
                                     let initial_event_cb = initial_event.clone();
                                     let body_error_cb = body_error.clone();
 
@@ -1693,6 +1694,7 @@ fn eval_http_init_context<R>(
     #[allow(unused_variables)] metadata: Option<&DownstreamMetadata>,
 ) {
     #[cfg(feature = "tracing")]
+    #[allow(unused_variables)]
     let trace_id =
         trans_handler.trace_ctx.as_ref().and_then(|t| t.map_child(orion_tracing::trace_info::TraceInfo::trace_id));
 
@@ -1875,6 +1877,7 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_lines)]
 #[allow(unused_variables)]
 fn instrument_early_failure_response(
     response: Response<crate::OrionResponseBody>,
@@ -1945,6 +1948,7 @@ fn instrument_early_failure_response(
                     if trans_handler.trans_phase.is_complete() {
                         let sm_arc = sm_for_cb2.clone().unwrap();
                         let trans_handler_cb = Arc::clone(&trans_handler);
+                        #[cfg(feature = "access-log")]
                         let initial_event_cb = initial_event.clone();
                         let body_error_cb = body_error.clone();
 
