@@ -145,7 +145,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
             Ok(svc_channel) => {
                 #[cfg(feature = "access-log")]
                 with_access_log!(
-                    &mut trans_context.trans_ctx.lock().loggers,
+                    &mut trans_context.trans_state.lock().loggers,
                     UpstreamContext {
                         authority: Some(svc_channel.upstream_authority()),
                         cluster_name: Some(svc_channel.cluster_name()),
@@ -206,7 +206,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
 
                 #[cfg(feature = "access-log")]
                 with_access_log!(
-                    &mut trans_context.trans_ctx.lock().loggers,
+                    &mut trans_context.trans_state.lock().loggers,
                     UpstreamRequestContext(&upstream_request)
                 );
 

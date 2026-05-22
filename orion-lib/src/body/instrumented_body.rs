@@ -31,12 +31,11 @@ mod metrics_enabled {
         event_error::{DownstreamError, EventKind, TryInferFrom, UpstreamError},
         utils::instrumented_stream::StreamMetrics,
     };
-    use atomicoption::AtomicOption;
     use bytes::Buf;
     use pin_project::{pin_project, pinned_drop};
-    use std::sync::{atomic::Ordering, Arc};
+    use std::sync::Arc;
 
-    type MetricsClosure = Box<dyn FnOnce(u64, &StreamMetrics, Option<EventKind>, ResponseFlags) + Send + 'static>;
+    type MetricsClosure = Box<dyn FnOnce(u64, &StreamMetrics, Option<EventKind>, ResponseFlags) + Send + Sync + 'static>;
 
     #[pin_project(PinnedDrop)]
     pub struct InstrumentedBody<B> {
@@ -45,16 +44,18 @@ mod metrics_enabled {
         pub body_kind: BodyKind,
         pub body_bytes: u64,
         pub stream_metrics: Option<Arc<StreamMetrics>>,
-        pub on_complete: Arc<AtomicOption<MetricsClosure>>,
+        pub on_complete: Option<Arc<MetricsClosure>>,
     }
 
     #[pinned_drop]
     impl<B> PinnedDrop for InstrumentedBody<B> {
         fn drop(self: std::pin::Pin<&mut Self>) {
             let this = self.project();
-            if let Some(closure) = this.on_complete.take(Ordering::Acquire) {
-                if let Some(metrics) = this.stream_metrics.as_ref() {
-                    closure(*this.body_bytes, metrics.as_ref(), None, ResponseFlags::default());
+            if let Some(arc_closure) = this.on_complete.take() {
+                if let Ok(closure) = Arc::try_unwrap(arc_closure) {
+                    if let Some(metrics) = this.stream_metrics.as_ref() {
+                        closure(*this.body_bytes, metrics.as_ref(), None, ResponseFlags::default());
+                    }
                 }
             }
         }
@@ -72,14 +73,14 @@ mod metrics_enabled {
     impl<B: Default> InstrumentedBody<B> {
         pub fn new<F>(body_kind: BodyKind, inner: B, stream_metrics: Option<Arc<StreamMetrics>>, on_complete: F) -> Self
         where
-            F: FnOnce(u64, &StreamMetrics, Option<EventKind>, ResponseFlags) + Send + 'static,
+            F: FnOnce(u64, &StreamMetrics, Option<EventKind>, ResponseFlags) + Send + Sync + 'static,
         {
             Self {
                 inner,
                 body_kind,
                 body_bytes: 0,
                 stream_metrics,
-                on_complete: Arc::new(AtomicOption::some(Box::new(on_complete))),
+                on_complete: Some(Arc::new(Box::new(on_complete))),
             }
         }
 
@@ -90,12 +91,13 @@ mod metrics_enabled {
         {
             let free_body = std::mem::take(&mut self.inner);
             let stream_metrics = std::mem::take(&mut self.stream_metrics);
+            let on_complete = self.on_complete.take();
             InstrumentedBody {
                 inner: free_body.into(),
                 body_kind: self.body_kind,
                 body_bytes: self.body_bytes,
                 stream_metrics,
-                on_complete: Arc::clone(&self.on_complete),
+                on_complete,
             }
         }
 
@@ -106,12 +108,13 @@ mod metrics_enabled {
         {
             let free_body = std::mem::take(&mut self.inner);
             let stream_metrics = std::mem::take(&mut self.stream_metrics);
+            let on_complete = self.on_complete.take();
             InstrumentedBody {
                 inner: f(free_body),
                 body_kind: self.body_kind,
                 body_bytes: self.body_bytes,
                 stream_metrics,
-                on_complete: Arc::clone(&self.on_complete),
+                on_complete,
             }
         }
 
@@ -143,22 +146,28 @@ mod metrics_enabled {
                     }
                 },
                 Poll::Ready(None) => {
-                    if let Some(closure) = this.on_complete.take(Ordering::Acquire) {
-                        if let Some(metrics) = this.stream_metrics.as_ref() {
-                            closure(*this.body_bytes, metrics.as_ref(), None, ResponseFlags::default());
-                        }
-                    }
+                    // Do nothing here, let the Drop implementation handle the success case.
+                    // This ensures that the closure is called after hyper has potentially
+                    // written the final bytes to the socket and drops the body.
                 },
                 Poll::Ready(Some(Err(err))) => {
-                    if let Some(closure) = this.on_complete.take(Ordering::Acquire) {
-                        if let Some(metrics) = this.stream_metrics.as_ref() {
-                            let event_error: Option<EventKind> = match *this.body_kind {
-                                BodyKind::Request => DownstreamError::try_infer_from(err).map(Into::into),
-                                BodyKind::Response => UpstreamError::try_infer_from(err).map(Into::into),
-                            };
+                    if let Some(arc_closure) = this.on_complete.take() {
+                        match Arc::try_unwrap(arc_closure) {
+                            Ok(closure) => {
+                                if let Some(metrics) = this.stream_metrics.as_ref() {
+                                    let event_error: Option<EventKind> = match *this.body_kind {
+                                        BodyKind::Request => DownstreamError::try_infer_from(err).map(Into::into),
+                                        BodyKind::Response => UpstreamError::try_infer_from(err).map(Into::into),
+                                    };
 
-                            let flags = ResponseFlags::from((err, *this.body_kind));
-                            closure(*this.body_bytes, metrics.as_ref(), event_error, flags);
+                                    let flags = ResponseFlags::from((err, *this.body_kind));
+                                    closure(*this.body_bytes, metrics.as_ref(), event_error, flags);
+                                }
+                            }
+                            Err(arc) => {
+                                // Not the last clone, put it back!
+                                *this.on_complete = Some(arc);
+                            }
                         }
                     }
                 },

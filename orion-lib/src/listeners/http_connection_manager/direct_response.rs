@@ -38,7 +38,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, &'a str> for &DirectResponseA
         let route_name = arg;
         #[cfg(feature = "access-log")]
         with_access_log!(
-            &mut trans_context.trans_ctx.lock().loggers,
+            &mut trans_context.trans_state.lock().loggers,
             UpstreamContext { authority: None, cluster_name: None, route_name }
         );
 
