@@ -20,7 +20,6 @@ use super::{
     tcp_proxy::{TcpProxy, TcpProxyBuilder},
 };
 use crate::{
-    extensions_context::MetadataContext,
     listeners::{
         metadata::{DownstreamConnectionMetadata, DownstreamMetadata},
         rate_limiter::{
@@ -32,8 +31,6 @@ use crate::{
     transport::AsyncReadWriteInstrumented,
     AsyncInstrumentedStream, ConversionContext, Error, Result,
 };
-use futures::TryFutureExt;
-use hyper::{service::Service, Request};
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto::Builder as HyperServerBuilder;
 use orion_configuration::config::{
@@ -230,7 +227,7 @@ impl FilterchainType {
                         shard_id, &[KeyValue::new("listener", listener_name)]);
                 }
 
-                let req_handler = http_connection_manager.request_handler();
+                let trans_svc = http_connection_manager.transaction_context_svc();
                 // codec type as given in the listener, not alpn
                 let codec_type = http_connection_manager.codec_type;
                 let tls_configurator = config
@@ -273,17 +270,13 @@ impl FilterchainType {
                     CodecType::Http2 => hyper_server.http2_only(),
                     CodecType::Auto => hyper_server,
                 };
+                let metadata_svc = crate::listeners::http_connection_manager::MetadataSvc::new(
+                    metadata.clone(),
+                    Arc::clone(&stream_metrics),
+                    trans_svc,
+                );
                 hyper_server
-                    .serve_connection_with_upgrades(
-                        stream,
-                        hyper::service::service_fn(move |mut req: Request<hyper::body::Incoming>| {
-                            req.extensions_mut().insert(MetadataContext {
-                                downstream: metadata.clone(),
-                                stream_metrics: Arc::clone(&stream_metrics),
-                            });
-                            req_handler.call(req).map_err(orion_error::Error::into_inner)
-                        }),
-                    )
+                    .serve_connection_with_upgrades(stream, metadata_svc)
                     .await
                     .inspect_err(|err| debug!("{listener_name} : HTTP connection error: {err}"))
                     .map_err(Error::from)
