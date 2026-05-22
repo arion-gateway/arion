@@ -46,7 +46,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (&'a RouteMatchResult, &'a st
     ) -> Result<Response<OrionResponseBody>> {
         #[cfg(feature = "access-log")]
         with_access_log!(
-            &mut trans_context.trans_ctx.lock().loggers,
+            &mut trans_context.trans_state.lock().loggers,
             UpstreamContext { authority: None, cluster_name: None, route_name }
         );
 

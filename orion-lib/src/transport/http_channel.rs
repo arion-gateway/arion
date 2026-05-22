@@ -408,12 +408,13 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
             HttpChannels::Single(channel) => channel.to_response(trans_context, request, ctx).await,
             HttpChannels::MultiWithFailover { channel, failover_channels } => {
                 let RequestContext { route_timeout, priority, .. } = ctx;
-                let (parts, mut body) = request.into_parts();
-                let free_body = std::mem::take(&mut body.inner);
-                let InstrumentedBody { body_kind, body_bytes, ref stream_metrics, ref on_complete, .. } = body;
+                let (parts, body) = request.into_parts();
+                let body_kind = body.body_kind;
+                let stream_metrics = Clone::clone(&body.stream_metrics);
+                let on_complete = Clone::clone(&body.on_complete);
 
-                let body_timeout = free_body.timeout;
-                let collected = free_body.collect().await.map_err(Error::from)?;
+                let body_timeout = body.inner.timeout;
+                let collected = body.collect().await.map_err(Error::from)?;
                 let replay_body = http_body_util::Full::new(collected.to_bytes());
 
                 let mut last_error: Option<Error> = None;
@@ -423,9 +424,9 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
                     let cloned_body = InstrumentedBody {
                         inner: TimeoutBody::new(body_timeout, replay_body.clone().into()),
                         body_kind,
-                        body_bytes,
-                        stream_metrics: Clone::clone(stream_metrics),
-                        on_complete: Clone::clone(on_complete),
+                        body_bytes: 0,
+                        stream_metrics: Clone::clone(&stream_metrics),
+                        on_complete: Clone::clone(&on_complete),
                     };
                     let rebuilt_req = Request::from_parts(parts.clone(), cloned_body);
                     let attempt_ctx = RequestContext { route_timeout, retry_policy: None, priority };
@@ -689,14 +690,15 @@ impl HttpChannel {
             crate::instrumentation::metrics::SEND_REQUEST_WITH_RETRY.observe(nanos as usize)
         });
 
-        let (parts, mut body) = req.into_parts();
-        let free_body = std::mem::take(&mut body.inner);
-        let InstrumentedBody { body_kind, body_bytes, ref stream_metrics, ref on_complete, .. } = body;
+        let (parts, body) = req.into_parts();
+        let body_kind = body.body_kind;
+        let stream_metrics = Clone::clone(&body.stream_metrics);
+        let on_complete = Clone::clone(&body.on_complete);
 
-        let collected_bytes = if http_body::Body::size_hint(&free_body).exact() == Some(0) {
+        let collected_bytes = if http_body::Body::size_hint(&body).exact() == Some(0) {
             bytes::Bytes::new()
         } else {
-            free_body.collect().await?.to_bytes()
+            body.collect().await.map_err(Error::from)?.to_bytes()
         };
 
         let body = http_body_util::Full::new(collected_bytes);
@@ -712,9 +714,9 @@ impl HttpChannel {
             let cloned_body = InstrumentedBody {
                 inner: TimeoutBody::new(None, body.clone().into()),
                 body_kind,
-                body_bytes,
-                stream_metrics: Clone::clone(stream_metrics),
-                on_complete: Clone::clone(on_complete),
+                body_bytes: 0,
+                stream_metrics: Clone::clone(&stream_metrics),
+                on_complete: Clone::clone(&on_complete),
             };
 
             // avoid to clone parts on the last attempt
