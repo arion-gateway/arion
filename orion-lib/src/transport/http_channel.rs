@@ -410,8 +410,8 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
                 let RequestContext { route_timeout, priority, .. } = ctx;
                 let (parts, body) = request.into_parts();
                 let body_kind = body.body_kind;
-                let stream_metrics = body.stream_metrics.clone();
-                let on_complete = body.on_complete.clone();
+                let stream_metrics = Clone::clone(&body.stream_metrics);
+                let on_complete = Clone::clone(&body.on_complete);
 
                 let body_timeout = body.inner.timeout;
                 let collected = body.collect().await.map_err(Error::from)?;
@@ -425,8 +425,8 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
                         inner: TimeoutBody::new(body_timeout, replay_body.clone().into()),
                         body_kind,
                         body_bytes: 0,
-                        stream_metrics: stream_metrics.clone(),
-                        on_complete: on_complete.clone(),
+                        stream_metrics: Clone::clone(&stream_metrics),
+                        on_complete: Clone::clone(&on_complete),
                     };
                     let rebuilt_req = Request::from_parts(parts.clone(), cloned_body);
                     let attempt_ctx = RequestContext { route_timeout, retry_policy: None, priority };
@@ -692,8 +692,8 @@ impl HttpChannel {
 
         let (parts, body) = req.into_parts();
         let body_kind = body.body_kind;
-        let stream_metrics = body.stream_metrics.clone();
-        let on_complete = body.on_complete.clone();
+        let stream_metrics = Clone::clone(&body.stream_metrics);
+        let on_complete = Clone::clone(&body.on_complete);
 
         let collected_bytes = if http_body::Body::size_hint(&body).exact() == Some(0) {
             bytes::Bytes::new()
@@ -715,8 +715,8 @@ impl HttpChannel {
                 inner: TimeoutBody::new(None, body.clone().into()),
                 body_kind,
                 body_bytes: 0,
-                stream_metrics: stream_metrics.clone(),
-                on_complete: on_complete.clone(),
+                stream_metrics: Clone::clone(&stream_metrics),
+                on_complete: Clone::clone(&on_complete),
             };
 
             // avoid to clone parts on the last attempt

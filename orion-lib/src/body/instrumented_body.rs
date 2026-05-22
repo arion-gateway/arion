@@ -35,7 +35,8 @@ mod metrics_enabled {
     use pin_project::{pin_project, pinned_drop};
     use std::sync::Arc;
 
-    type MetricsClosure = Box<dyn FnOnce(u64, &StreamMetrics, Option<EventKind>, ResponseFlags) + Send + Sync + 'static>;
+    type MetricsClosure =
+        Box<dyn FnOnce(u64, &StreamMetrics, Option<EventKind>, ResponseFlags) + Send + Sync + 'static>;
 
     #[pin_project(PinnedDrop)]
     pub struct InstrumentedBody<B> {
@@ -75,13 +76,7 @@ mod metrics_enabled {
         where
             F: FnOnce(u64, &StreamMetrics, Option<EventKind>, ResponseFlags) + Send + Sync + 'static,
         {
-            Self {
-                inner,
-                body_kind,
-                body_bytes: 0,
-                stream_metrics,
-                on_complete: Some(Arc::new(Box::new(on_complete))),
-            }
+            Self { inner, body_kind, body_bytes: 0, stream_metrics, on_complete: Some(Arc::new(Box::new(on_complete))) }
         }
 
         #[inline]
@@ -145,11 +140,6 @@ mod metrics_enabled {
                         *this.body_bytes += data.remaining() as u64;
                     }
                 },
-                Poll::Ready(None) => {
-                    // Do nothing here, let the Drop implementation handle the success case.
-                    // This ensures that the closure is called after hyper has potentially
-                    // written the final bytes to the socket and drops the body.
-                },
                 Poll::Ready(Some(Err(err))) => {
                     if let Some(arc_closure) = this.on_complete.take() {
                         match Arc::try_unwrap(arc_closure) {
@@ -163,15 +153,19 @@ mod metrics_enabled {
                                     let flags = ResponseFlags::from((err, *this.body_kind));
                                     closure(*this.body_bytes, metrics.as_ref(), event_error, flags);
                                 }
-                            }
+                            },
                             Err(arc) => {
                                 // Not the last clone, put it back!
                                 *this.on_complete = Some(arc);
-                            }
+                            },
                         }
                     }
                 },
-                Poll::Pending => {},
+                Poll::Pending | Poll::Ready(None) => {
+                    // Do nothing here, let the Drop implementation handle the success case.
+                    // This ensures that the closure is called after hyper has potentially
+                    // written the final bytes to the socket and drops the body.
+                },
             }
             poll
         }

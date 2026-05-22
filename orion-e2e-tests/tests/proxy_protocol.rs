@@ -39,6 +39,7 @@ fn claimed_dst() -> SocketAddr {
     CLAIMED_DST.parse().unwrap()
 }
 
+#[allow(clippy::expect_used)]
 async fn http_get_raw<S>(stream: &mut S, path: &str, host: &str) -> u16
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,

@@ -54,8 +54,9 @@ impl std::fmt::Debug for StreamMetrics {
             .field("txn_bytes_read_start", &self.txn_bytes_read_start)
             .field("txn_bytes_written_start", &self.txn_bytes_written_start)
             .field("requests_counter", &self.requests_counter)
-            .field("drop_fn", &self.drop_fn.is_some(Ordering::Relaxed))
             .field("error", &error)
+            .field("drop_fn", &self.drop_fn.is_some(Ordering::Relaxed))
+            .field("flush_callbacks", &"...")
             .finish()
     }
 }
