@@ -3010,6 +3010,7 @@ dependencies = [
  "orion-xds",
  "pingora",
  "pingora-timeout 0.3.0",
+ "ppp",
  "prost 0.14.3",
  "rustls",
  "rustls-pemfile",
