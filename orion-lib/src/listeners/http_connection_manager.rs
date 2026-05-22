@@ -1404,6 +1404,7 @@ where
             false
         };
 
+        #[allow(unused_mut)]
         let (mut request, request_id) = self.manager.request_id_handler.apply_policy(
             req_meta.request,
             access_log_enabled,
@@ -1678,14 +1679,16 @@ where
 
 
 fn eval_http_init_context<R>(
-    request: &Request<R>,
-    trans_handler: &TransactionContext,
-    metadata: Option<&DownstreamMetadata>,
+    #[allow(unused_variables)] request: &Request<R>,
+    #[allow(unused_variables)] trans_handler: &TransactionContext,
+    #[allow(unused_variables)] metadata: Option<&DownstreamMetadata>,
 ) {
     #[cfg(feature = "tracing")]
     let trace_id =
         trans_handler.trace_ctx.as_ref().and_then(|t| t.map_child(orion_tracing::trace_info::TraceInfo::trace_id));
+
     #[cfg(not(feature = "tracing"))]
+    #[allow(unused_variables)]
     let trace_id: Option<u128> = None;
 
     #[cfg(feature = "access-log")]

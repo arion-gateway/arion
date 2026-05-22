@@ -18,7 +18,7 @@
 use super::connector::{ConnectUsing, UnifiedConnector};
 use crate::{
     body::{
-        instrumented_body::InstrumentedBody, poly_body::PolyBody, response_flags::{BodyKind, ResponseFlags},
+        instrumented_body::InstrumentedBody, poly_body::PolyBody, response_flags::ResponseFlags,
         timeout_body::TimeoutBody,
     },
     clusters::{decrement_retries, retry_policy::RetryCondition, try_increment_retries, RoutingPriority},
