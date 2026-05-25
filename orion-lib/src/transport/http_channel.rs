@@ -548,6 +548,18 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
             &[KeyValue::new("cluster", self.cluster_name)]
         );
 
+        if let Err(ref err) = result {
+            if let Some(UpstreamError::RouteTimeout) = UpstreamError::try_infer_from(err.as_ref()) {
+                with_metric!(
+                    clusters::UPSTREAM_RQ_TIMEOUT,
+                    add,
+                    1,
+                    shard_id,
+                    &[KeyValue::new("cluster", self.cluster_name)]
+                );
+            }
+        }
+
         HttpChannel::map_upstream_result(result, start_time.elapsed(), route_timeout, version)
     }
 }
@@ -666,7 +678,7 @@ impl HttpChannel {
         };
 
         if let Some(t) = timeout {
-            fast_timeout(t, fut).await?
+            fast_timeout(t, fut).await.map_err(|_e| Error::from(UpstreamError::RouteTimeout))?
         } else {
             fut.await
         }
