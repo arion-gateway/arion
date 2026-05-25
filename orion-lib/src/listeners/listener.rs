@@ -661,7 +661,7 @@ impl Listener {
             with_metric!(listeners::DOWNSTREAM_CX_DESTROY, add, 1, shard_id, &[KeyValue::new("listener", listener_name)]);
             with_metric!(listeners::DOWNSTREAM_CX_ACTIVE, sub, 1, shard_id, &[KeyValue::new("listener", listener_name)]);
             if ssl.load(Ordering::Relaxed) {
-                with_metric!(http::DOWNSTREAM_CX_SSL_ACTIVE, add, 1, shard_id, &[KeyValue::new("listener", listener_name)]);
+                with_metric!(http::DOWNSTREAM_CX_SSL_ACTIVE, sub, 1, shard_id, &[KeyValue::new("listener", listener_name)]);
             }
             with_histogram!(listeners::DOWNSTREAM_CX_LENGTH_MS, record,
                 u64::try_from(start_instant.elapsed().as_millis()).unwrap_or(u64::MAX),
