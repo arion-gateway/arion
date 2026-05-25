@@ -6,7 +6,7 @@ End-to-end testing utilities for Orion Proxy.
 
 ```bash
 # Build the proxy binary first
-cargo build -p orion-proxy
+cargo build --all-features -p orion-proxy
 
 # Run e2e tests (ignored by default)
 # We reccomend using a single thread for e2e tests to avoid race conditions
