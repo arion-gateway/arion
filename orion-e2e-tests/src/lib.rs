@@ -60,3 +60,20 @@ pub fn cleanup_config_file(path: &std::path::Path) {
         tracing::warn!(?e, ?path, "Failed to remove config file");
     }
 }
+
+pub fn parse_metric_value(prometheus_output: &str, metric_name: &str) -> Option<f64> {
+    for line in prometheus_output.lines() {
+        if line.starts_with('#') {
+            continue;
+        }
+        if line.starts_with(metric_name) {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if let Some(val_str) = parts.last() {
+                if let Ok(val) = val_str.parse::<f64>() {
+                    return Some(val);
+                }
+            }
+        }
+    }
+    None
+}
