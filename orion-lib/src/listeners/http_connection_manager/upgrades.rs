@@ -148,20 +148,6 @@ pub async fn handle_websocket_upgrade(
                                 debug!(target: "websocket", "downstream_rx: {bytes_received_down}, downstream_tx: {bytes_sent_down}, upstream_rx: {bytes_received_up}, upstream_tx: {bytes_sent_up}");
 
                                 with_metric!(
-                                    tcp::CX_RX_BYTES_RECEIVED,
-                                    add,
-                                    bytes_received_down,
-                                    shard_id,
-                                    &[KeyValue::new("listener", listener_name)]
-                                );
-                                with_metric!(
-                                    tcp::CX_TX_BYTES_SENT,
-                                    add,
-                                    bytes_sent_down,
-                                    shard_id,
-                                    &[KeyValue::new("listener", listener_name)]
-                                );
-                                with_metric!(
                                     clusters::UPSTREAM_CX_RX_BYTES_TOTAL,
                                     add,
                                     bytes_received_up,

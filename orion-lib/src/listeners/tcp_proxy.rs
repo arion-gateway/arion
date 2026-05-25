@@ -182,22 +182,6 @@ impl TcpProxy {
                         }
 
                         with_metric!(
-                            tcp::CX_RX_BYTES_RECEIVED,
-                            add,
-                            bytes_received_down,
-                            shard_id,
-                            &[KeyValue::new("listener", metadata.listener_name)]
-                        );
-
-                        with_metric!(
-                            tcp::CX_TX_BYTES_SENT,
-                            add,
-                            bytes_sent_down,
-                            shard_id,
-                            &[KeyValue::new("listener", metadata.listener_name)]
-                        );
-
-                        with_metric!(
                             clusters::UPSTREAM_CX_RX_BYTES_TOTAL,
                             add,
                             bytes_received_up,
