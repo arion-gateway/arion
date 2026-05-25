@@ -40,6 +40,7 @@ pub struct BootstrapBuilder {
     runtime_count: u32,
     log_level: String,
     xds_config: Option<XdsConfig>,
+    admin_config: Option<Admin>,
 }
 
 impl Default for BootstrapBuilder {
@@ -58,6 +59,7 @@ impl BootstrapBuilder {
             runtime_count: 1,
             log_level: "info".into(),
             xds_config: None,
+            admin_config: None,
         }
     }
 
@@ -114,6 +116,19 @@ impl BootstrapBuilder {
     #[must_use]
     pub fn xds(mut self, address: impl Into<String>, port: u16) -> Self {
         self.xds_config = Some(XdsConfig { address: address.into(), port });
+        self
+    }
+
+    #[must_use]
+    pub fn admin(mut self, address: impl Into<String>, port: u16) -> Self {
+        self.admin_config = Some(Admin {
+            address: Address {
+                socket_address: SocketAddress {
+                    address: address.into(),
+                    port_value: port,
+                },
+            },
+        });
         self
     }
 
@@ -182,6 +197,7 @@ impl BootstrapBuilder {
             runtime: RuntimeConfig { num_cpus: self.runtime_cpus, num_runtimes: self.runtime_count },
             logging: LoggingConfig { log_level: self.log_level.clone() },
             envoy_bootstrap: EnvoyBootstrap {
+                admin: self.admin_config.clone(),
                 dynamic_resources,
                 static_resources: StaticResources { listeners, clusters: all_clusters, secrets: vec![] },
             },
@@ -261,8 +277,28 @@ struct LoggingConfig {
 #[derive(Debug, Serialize, Deserialize)]
 struct EnvoyBootstrap {
     #[serde(skip_serializing_if = "Option::is_none")]
+    admin: Option<Admin>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     dynamic_resources: Option<DynamicResources>,
     static_resources: StaticResources,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Admin {
+    address: Address,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Address {
+    socket_address: SocketAddress,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SocketAddress {
+    address: String,
+    port_value: u16,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
