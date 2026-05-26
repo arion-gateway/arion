@@ -221,8 +221,19 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
                     Ok(maybe_upgrade) => maybe_upgrade,
                     Err(upgrade_error) => {
                         debug!("Failed to upgrade to websockets {upgrade_error}");
-                        return Ok(SyntheticHttpResponse::bad_request(EventFailure::UpgradeFailed.into())
-                            .into_response(ver));
+                        match upgrade_error {
+                            upgrade_utils::UpgradeError::UnsupportedProtocol(_) => {
+                                return Ok(SyntheticHttpResponse::forbidden(
+                                    EventFailure::UpgradeFailed.into(),
+                                    "Unsupported upgrade protocol",
+                                )
+                                .into_response(ver));
+                            }
+                            _ => {
+                                return Ok(SyntheticHttpResponse::bad_request(EventFailure::UpgradeFailed.into())
+                                    .into_response(ver));
+                            }
+                        }
                     },
                 };
 
