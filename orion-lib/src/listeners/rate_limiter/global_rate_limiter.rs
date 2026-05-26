@@ -329,6 +329,7 @@ mod tests {
     fn make_filter(uri: impl Into<String>, domain: Option<&str>, failure_mode_deny: bool) -> NetworkGlobalRateLimit {
         let channel = Channel::from_shared(uri.into()).unwrap().connect_lazy();
         NetworkGlobalRateLimit {
+            stat_prefix: "test".into(),
             domain: domain.map(SmolStr::new),
             failure_mode_deny,
             rls_client: RlsClient::GoogleGrpc(RateLimitServiceClient::new(channel)),

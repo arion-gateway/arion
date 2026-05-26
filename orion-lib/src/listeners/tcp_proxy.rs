@@ -44,7 +44,7 @@ use orion_configuration::config::{
 use {
     crate::get_shard_id,
     opentelemetry::KeyValue,
-    orion_metrics::metrics::{clusters, tcp, user},
+    orion_metrics::metrics::{clusters, user},
 };
 
 use std::{fmt, net::SocketAddr};
