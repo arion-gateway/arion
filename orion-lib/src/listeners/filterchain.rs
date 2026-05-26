@@ -46,7 +46,7 @@ use orion_configuration::config::{
 use {crate::get_shard_id, opentelemetry::KeyValue};
 
 #[cfg(feature = "metrics")]
-use orion_metrics::metrics::{http, tcp, tls, filters};
+use orion_metrics::metrics::{filters, http, tcp, tls};
 
 use crate::{with_histogram, with_metric};
 
@@ -197,7 +197,11 @@ impl FilterchainType {
         limiter.check().await.map(Some)
     }
 
-    pub async fn apply_network_rate_limit(&self, sni: Option<&SmolStr>, listener_name: &'static str) -> Result<()> {
+    pub async fn apply_network_rate_limit(
+        &self,
+        sni: Option<&SmolStr>,
+        #[allow(unused_variables)] listener_name: &'static str,
+    ) -> Result<()> {
         let Some(rate_limit) = &self.config.network_global_rate_limit else {
             return Ok(());
         };
@@ -216,7 +220,7 @@ impl FilterchainType {
                     ]
                 );
                 Ok(())
-            }
+            },
             Err(e) => {
                 #[cfg(feature = "metrics")]
                 with_metric!(
@@ -231,7 +235,7 @@ impl FilterchainType {
                     ]
                 );
                 Err(e)
-            }
+            },
         }
     }
 

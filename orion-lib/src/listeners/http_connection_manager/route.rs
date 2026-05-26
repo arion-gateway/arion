@@ -217,25 +217,26 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
                 };
 
                 // Check if this is a valid WebSocket upgrade request (called only once)
-                let is_ws_upgrade_request = match upgrade_utils::is_valid_websocket_upgrade_request(upstream_request.headers()) {
-                    Ok(maybe_upgrade) => maybe_upgrade,
-                    Err(upgrade_error) => {
-                        debug!("Failed to upgrade to websockets {upgrade_error}");
-                        match upgrade_error {
-                            upgrade_utils::UpgradeError::UnsupportedProtocol(_) => {
-                                return Ok(SyntheticHttpResponse::forbidden(
-                                    EventFailure::UpgradeFailed.into(),
-                                    "Unsupported upgrade protocol",
-                                )
-                                .into_response(ver));
-                            }
-                            _ => {
-                                return Ok(SyntheticHttpResponse::bad_request(EventFailure::UpgradeFailed.into())
+                let is_ws_upgrade_request =
+                    match upgrade_utils::is_valid_websocket_upgrade_request(upstream_request.headers()) {
+                        Ok(maybe_upgrade) => maybe_upgrade,
+                        Err(upgrade_error) => {
+                            debug!("Failed to upgrade to websockets {upgrade_error}");
+                            match upgrade_error {
+                                upgrade_utils::UpgradeError::UnsupportedProtocol(_) => {
+                                    return Ok(SyntheticHttpResponse::forbidden(
+                                        EventFailure::UpgradeFailed.into(),
+                                        "Unsupported upgrade protocol",
+                                    )
                                     .into_response(ver));
+                                },
+                                _ => {
+                                    return Ok(SyntheticHttpResponse::bad_request(EventFailure::UpgradeFailed.into())
+                                        .into_response(ver));
+                                },
                             }
-                        }
-                    },
-                };
+                        },
+                    };
 
                 if is_ws_upgrade_request {
                     if websocket_enabled {
@@ -247,18 +248,18 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
                             connection_manager.listener_name,
                         )
                         .await;
-                    } else {
-                        #[cfg(feature = "metrics")]
-                        with_metric!(
-                            http_metrics::DOWNSTREAM_RQ_WS_ON_NON_WS_ROUTE,
-                            add,
-                            1,
-                            trans_context.shard_id(),
-                            &[KeyValue::new("listener", connection_manager.listener_name)]
-                        );
-                        return Ok(SyntheticHttpResponse::bad_request(EventFailure::UpgradeFailed.into())
-                            .into_response(ver));
                     }
+                    #[cfg(feature = "metrics")]
+                    with_metric!(
+                        http_metrics::DOWNSTREAM_RQ_WS_ON_NON_WS_ROUTE,
+                        add,
+                        1,
+                        trans_context.shard_id(),
+                        &[KeyValue::new("listener", connection_manager.listener_name)]
+                    );
+                    return Ok(
+                        SyntheticHttpResponse::bad_request(EventFailure::UpgradeFailed.into()).into_response(ver)
+                    );
                 }
 
                 if let Some(direct_response) = http_modifiers::apply_preflight_functions(&mut upstream_request) {

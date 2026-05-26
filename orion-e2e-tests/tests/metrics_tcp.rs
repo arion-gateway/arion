@@ -64,7 +64,7 @@ async fn test_tcp_proxy_metrics() {
     let initial_metrics = initial_metrics_resp.body_str().unwrap();
 
     let cx_total = parse_metric_value(initial_metrics, "tcp_downstream_cx_total").unwrap_or(0.0);
-    assert_eq!(cx_total, 0.0, "Initial TCP connections should be 0");
+    assert_eq!(cx_total, 0.0_f64, "Initial TCP connections should be 0");
 
     // 2. Open a TCP connection and keep it open to verify active connection metric
     {

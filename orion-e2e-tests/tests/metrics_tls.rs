@@ -31,7 +31,7 @@ async fn test_tls_handshake_metric() {
     let port_block = PortBlock::reserve().expect("Failed to reserve port block");
     let admin_port = port_block.allocate().expect("Failed to allocate admin port");
     let http_port = port_block.allocate().expect("Failed to allocate http port");
-    
+
     let admin_addr = SocketAddr::from(([127, 0, 0, 1], admin_port));
     let http_addr = SocketAddr::from(([127, 0, 0, 1], http_port));
 
@@ -82,7 +82,7 @@ async fn test_tls_handshake_metric() {
     let initial_metrics = initial_metrics_resp.body_str().unwrap();
 
     let initial_handshakes = parse_metric_value(initial_metrics, "tls_handshake").unwrap_or(0.0);
-    assert_eq!(initial_handshakes, 0.0, "Initial TLS handshakes should be 0");
+    assert_eq!(initial_handshakes, 0.0_f64, "Initial TLS handshakes should be 0");
 
     // 2. Send a cleartext HTTP request to the HTTP listener
     let cleartext_client = TestClient::new(http_addr).with_header("connection", "close");

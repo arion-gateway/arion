@@ -23,6 +23,7 @@ bytes.workspace       = true
 orion-data-plane-api.workspace = true
 orion-xds.workspace = true
 orion-configuration.workspace = true
+smallvec.workspace = true
 prost.workspace = true
 tonic.workspace = true
 tonic-health.workspace = true

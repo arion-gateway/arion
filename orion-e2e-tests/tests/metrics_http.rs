@@ -54,7 +54,7 @@ async fn test_http_basic_metrics() {
     let initial_metrics = initial_metrics_resp.body_str().unwrap();
 
     let cx_total = parse_metric_value(initial_metrics, "http_downstream_cx_total").unwrap_or(0.0);
-    assert_eq!(cx_total, 0.0, "Initial downstream connections should be 0");
+    assert_eq!(cx_total, 0.0_f64, "Initial downstream connections should be 0");
 
     let mut total_expected_rx = 0;
     let mut total_expected_tx = 0;

@@ -114,10 +114,10 @@ async fn test_custom_metrics() {
 
     let metrics_config = MetricsConfig {
         user_key: None,
-        custom_key: Some(PartitionKey {
+        custom_keys: smallvec::smallvec![PartitionKey {
             source: SourceHeaderName::HeaderName(HeaderName::from_static("x-tenant-id")),
             attribute_name: Some("tenant".to_string()),
-        }),
+        }],
         rename: std::collections::HashMap::new(),
         custom_metrics,
     };
@@ -288,6 +288,120 @@ async fn test_custom_metrics() {
     );
     // Ensure it doesn't have the tenant label
     assert!(parse_custom_metric_value(metrics, "custom_custom_req_counter", &[("color", "purple"), ("tenant", "tenant-req")]).is_none());
+
+    orion.shutdown();
+    cleanup_config_file(&config_path);
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_custom_metrics_multiple_keys() {
+    let port_block = PortBlock::reserve().expect("Failed to reserve port block");
+    let admin_port = port_block.allocate().expect("Failed to allocate admin port");
+    let admin_addr = SocketAddr::from(([127, 0, 0, 1], admin_port));
+
+    let backend = TestBackend::start().await.expect("Failed to start test backend");
+    let backend_addr = backend.addr();
+    backend.set_default_response(PreConfiguredResponse::with_body("OK")).await;
+
+    // Configure custom metrics with a counter
+    let custom_metrics = CustomMetrics {
+        incoming_request: vec![
+            CustomMetric::Counter {
+                name: "custom_multi_key_counter".to_string(),
+                description: "A custom counter with multiple keys".to_string(),
+                header_name: HeaderName::from_static("x-req-color"),
+                attribute_name: Some("color".to_string()),
+            },
+        ],
+        upstream_request: vec![],
+        incoming_response: vec![],
+        downstream_response: vec![],
+    };
+
+    // Configure TWO custom partition keys
+    let metrics_config = MetricsConfig {
+        user_key: None,
+        custom_keys: smallvec::smallvec![
+            PartitionKey {
+                source: SourceHeaderName::HeaderName(HeaderName::from_static("x-tenant-id")),
+                attribute_name: Some("tenant".to_string()),
+            },
+            PartitionKey {
+                source: SourceHeaderName::HeaderName(HeaderName::from_static("x-environment")),
+                attribute_name: Some("env".to_string()),
+            },
+        ],
+        rename: std::collections::HashMap::new(),
+        custom_metrics,
+    };
+
+    let bootstrap = presets::simple_proxy("backend", backend_addr)
+        .admin("127.0.0.1", admin_port)
+        .metrics(metrics_config);
+    let config_path = bootstrap.build_to_temp().expect("Failed to build config");
+
+    let orion = OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default())
+        .await
+        .expect("Failed to spawn Orion");
+
+    let admin_client = TestClient::new(admin_addr);
+    let listener_addr = orion.listener_addr().unwrap();
+
+    // Send requests with both tenant and environment headers
+    let req1 = b"GET /ok HTTP/1.1\r\n\
+Host: localhost\r\n\
+x-tenant-id: tenant-1\r\n\
+x-environment: production\r\n\
+x-req-color: red\r\n\
+Connection: close\r\n\r\n";
+    {
+        let mut stream = TcpStream::connect(listener_addr).await.expect("Failed to connect");
+        stream.write_all(req1).await.expect("Failed to write");
+        let mut resp = Vec::new();
+        stream.read_to_end(&mut resp).await.expect("Failed to read");
+        let resp_str = String::from_utf8_lossy(&resp);
+        println!("REQ1 RESPONSE: {}", resp_str);
+        assert!(resp_str.contains("200 OK"));
+    }
+
+    let req2 = b"GET /ok HTTP/1.1\r\n\
+Host: localhost\r\n\
+x-tenant-id: tenant-2\r\n\
+x-environment: staging\r\n\
+x-req-color: blue\r\n\
+Connection: close\r\n\r\n";
+    {
+        let mut stream = TcpStream::connect(listener_addr).await.expect("Failed to connect");
+        stream.write_all(req2).await.expect("Failed to write");
+        let mut resp = Vec::new();
+        stream.read_to_end(&mut resp).await.expect("Failed to read");
+        assert!(String::from_utf8_lossy(&resp).contains("200 OK"));
+    }
+
+    // Verify metrics
+    let metrics_resp = admin_client.get("/stats/prometheus").await.expect("Failed to get metrics");
+    metrics_resp.assert_status(StatusCode::OK);
+    let metrics = metrics_resp.body_str().unwrap();
+
+    // Verify that the counter has both tenant and env labels
+    assert_eq!(
+        parse_custom_metric_value(
+            metrics,
+            "custom_custom_multi_key_counter",
+            &[("color", "red"), ("tenant", "tenant-1"), ("env", "production")]
+        ),
+        Some(1.0)
+    );
+
+    assert_eq!(
+        parse_custom_metric_value(
+            metrics,
+            "custom_custom_multi_key_counter",
+            &[("color", "blue"), ("tenant", "tenant-2"), ("env", "staging")]
+        ),
+        Some(1.0)
+    );
 
     orion.shutdown();
     cleanup_config_file(&config_path);

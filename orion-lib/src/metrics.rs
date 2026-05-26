@@ -83,7 +83,7 @@ where
 }
 
 pub static USER_KEY: PartitionKey<SourceHeaderNameOrSni> = PartitionKey::new();
-pub static CUSTOM_KEY: PartitionKey<SourceHeaderName> = PartitionKey::new();
+pub static CUSTOM_KEYS: [PartitionKey<SourceHeaderName>; 2] = [PartitionKey::new(), PartitionKey::new()];
 
 #[inline]
 /// Return the user partition key, extracting it from either headers or sni, if one is present.

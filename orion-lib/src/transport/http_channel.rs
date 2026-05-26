@@ -65,6 +65,8 @@ use smol_str::ToSmolStr;
 use std::{io, mem, sync::Arc, time::Duration};
 use tracing::debug;
 use webpki::types::ServerName;
+#[cfg(feature = "metrics")]
+use smallvec::SmallVec;
 
 #[cfg(feature = "metrics")]
 use {
@@ -499,9 +501,15 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
             use crate::metrics;
             use orion_metrics::metrics::custom::MetricsHook;
 
-            let attr = metrics::extract_custom_partition_key(request.headers(), metrics::CUSTOM_KEY.source())
-                .map(|id| KeyValue::new(metrics::CUSTOM_KEY.attribute_name().unwrap_or("custom"), id));
-            custom_metrics.with_headers(MetricsHook::UpstreamRequest, request.headers(), attr.as_slice());
+            let mut attrs = SmallVec::<[KeyValue; 2]>::new();
+            for key in &metrics::CUSTOM_KEYS {
+                if let Some(source) = key.source() {
+                    if let Some(id) = metrics::extract_custom_partition_key(request.headers(), Some(source)) {
+                        attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom").to_string(), id));
+                    }
+                }
+            }
+            custom_metrics.with_headers(MetricsHook::UpstreamRequest, request.headers(), attrs.as_slice());
         }
 
         let RequestContext { route_timeout, retry_policy, priority } = ctx;

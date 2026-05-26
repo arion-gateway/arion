@@ -360,6 +360,7 @@ impl Service<Uri> for UnifiedConnector {
         let uri = req;
         match self {
             UnifiedConnector::Socket(c) => {
+                #[allow(unused_variables)]
                 let cluster_name = c.cluster_name;
                 let fut = c.call(uri);
                 Box::pin(async move {

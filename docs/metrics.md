@@ -376,24 +376,28 @@ Each metric requires specifying its type (`!Counter`, `!Histogram`, or `!Gauge`)
 *   **`attribute_name`**: (Optional) The name of the attribute (or label) to be attached to the metric. If omitted, it defaults to the `header_name` with hyphens (`-`) replaced by underscores (`_`).
 *   **`buckets`**: (Required for Histograms only) An array defining the bucket boundaries for the histogram. It accepts numeric values and `+inf` (or `MAX`, `max`) for the maximum limit.
 
-You can also define a `custom_key` under the `metrics` configuration to partition all custom metrics by a specific request header, independently from the `user_key`.
+You can also define one or more custom partition keys under the `metrics` configuration (using the `custom_keys` field, or its alias `custom_key`) to partition all custom metrics by specific request/response headers, independently from the `user_key`.
 
-> **Design note — `user_key` vs `custom_key` extraction strategy**
+Orion supports specifying a list of **custom partition keys**. When multiple keys are configured, Orion will extract the values from all specified headers and attach them as separate, independent labels (attributes) to every custom metric. This allows for multi-dimensional partitioning of your custom metrics (for example, partitioning a custom request counter by both `tenant` and `env` simultaneously).
+
+> **Design note — `user_key` vs `custom_keys` extraction strategy**
 >
 > The `user_partition_key` (configured via `user_key`) is extracted **once** at request ingress and stored in the `TransactionContext`. It represents the stable identity of the transaction and is reused at every subsequent stage without re-parsing headers.
 >
-> The `custom_partition_key` (configured via `custom_key`) is instead evaluated **at each hook point** (`incoming_request`, `upstream_request`, `incoming_response`, `downstream_response`). This is intentional: custom metrics hooks are designed to observe the exact state of headers at each specific stage of the pipeline, so the partition key is read fresh each time, allowing it to reflect any header mutation introduced by filters or the upstream.
+> The `custom_partition_keys` (configured via `custom_keys`) are instead evaluated **at each hook point** (`incoming_request`, `upstream_request`, `incoming_response`, `downstream_response`). This is intentional: custom metrics hooks are designed to observe the exact state of headers at each specific stage of the pipeline, so the partition keys are read fresh each time, allowing them to reflect any header mutation introduced by filters or the upstream.
 
 #### Example Configuration
 
 ```yaml
 metrics:
   user_key:
-    header_name: "x-user-id"
+    source: !HeaderName x-user-id
     attribute_name: "user"
-  custom_key:
-    header_name: "x-tenant-id"
-    attribute_name: "tenant"
+  custom_keys:
+    - source: !HeaderName x-tenant-id
+      attribute_name: "tenant"
+    - source: !HeaderName x-environment
+      attribute_name: "env"
   custom_metrics:
     incoming_request:
       - !Counter

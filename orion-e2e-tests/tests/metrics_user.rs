@@ -14,6 +14,7 @@
 
 use std::net::SocketAddr;
 use http::{HeaderName, StatusCode};
+use smallvec::SmallVec;
 use tokio::net::TcpStream;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -60,7 +61,7 @@ async fn test_user_metrics_header() {
             source: SourceHeaderNameOrSni::HeaderName(HeaderName::from_static("x-user-id")),
             attribute_name: Some("user".to_string()),
         }),
-        custom_key: None,
+        custom_keys: SmallVec::new(),
         rename: std::collections::HashMap::new(),
         custom_metrics: Default::default(),
     };
@@ -212,6 +213,7 @@ async fn test_user_metrics_header() {
 #[tokio::test]
 #[ignore]
 async fn test_user_metrics_sni() {
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     let port_block = PortBlock::reserve().expect("Failed to reserve port block");
     let admin_port = port_block.allocate().expect("Failed to allocate admin port");
     let admin_addr = SocketAddr::from(([127, 0, 0, 1], admin_port));
@@ -245,7 +247,7 @@ async fn test_user_metrics_sni() {
             source: SourceHeaderNameOrSni::Sni,
             attribute_name: Some("user".to_string()),
         }),
-        custom_key: None,
+        custom_keys: SmallVec::new(),
         rename: std::collections::HashMap::new(),
         custom_metrics: Default::default(),
     };
@@ -409,7 +411,7 @@ async fn test_user_metrics_websocket() {
             source: SourceHeaderNameOrSni::HeaderName(HeaderName::from_static("x-user-id")),
             attribute_name: Some("user".to_string()),
         }),
-        custom_key: None,
+        custom_keys: SmallVec::new(),
         rename: std::collections::HashMap::new(),
         custom_metrics: Default::default(),
     };

@@ -79,7 +79,7 @@ pub fn is_valid_websocket_upgrade_request(headers: &HeaderMap) -> std::result::R
             let is_websocket = is_websocket_upgrade(upgrade_header);
             match (is_upgrade, is_websocket) {
                 (true, true) => Ok(true),
-                (true, false) => Err(UpgradeError::UnsupportedProtocol(upgrade_header.to_string())),
+                (true, false) => Err(UpgradeError::UnsupportedProtocol(upgrade_header.to_owned())),
                 (false, _) => Ok(false),
             }
         },
