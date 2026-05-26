@@ -53,6 +53,7 @@ enum RlsClient {
 
 #[derive(Debug, Clone)]
 pub struct NetworkGlobalRateLimit {
+    pub stat_prefix: SmolStr,
     domain: Option<SmolStr>,
     failure_mode_deny: bool,
     rls_client: RlsClient,
@@ -89,7 +90,13 @@ impl TryFrom<NetworkGlobalRateLimitConfig> for NetworkGlobalRateLimit {
             })
             .collect();
 
-        Ok(Self { domain: config.domain, failure_mode_deny: config.failure_mode_deny, rls_client, descriptors })
+        Ok(Self {
+            stat_prefix: config.stat_prefix.to_string().into(),
+            domain: config.domain,
+            failure_mode_deny: config.failure_mode_deny,
+            rls_client,
+            descriptors,
+        })
     }
 }
 

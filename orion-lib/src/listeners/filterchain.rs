@@ -46,7 +46,7 @@ use orion_configuration::config::{
 use {crate::get_shard_id, opentelemetry::KeyValue};
 
 #[cfg(feature = "metrics")]
-use orion_metrics::metrics::{http, tcp, tls};
+use orion_metrics::metrics::{http, tcp, tls, filters};
 
 use crate::{with_histogram, with_metric};
 
@@ -197,11 +197,42 @@ impl FilterchainType {
         limiter.check().await.map(Some)
     }
 
-    pub async fn apply_network_rate_limit(&self, sni: Option<&SmolStr>) -> Result<()> {
+    pub async fn apply_network_rate_limit(&self, sni: Option<&SmolStr>, listener_name: &'static str) -> Result<()> {
         let Some(rate_limit) = &self.config.network_global_rate_limit else {
             return Ok(());
         };
-        rate_limit.check(sni).await
+        match rate_limit.check(sni).await {
+            Ok(()) => {
+                #[cfg(feature = "metrics")]
+                with_metric!(
+                    filters::CONNECTION_RATE_LIMIT,
+                    add,
+                    1,
+                    get_shard_id!(),
+                    &[
+                        KeyValue::new("listener", listener_name),
+                        KeyValue::new("filter", rate_limit.stat_prefix.to_string()),
+                        KeyValue::new("result", filters::EVENT_OK)
+                    ]
+                );
+                Ok(())
+            }
+            Err(e) => {
+                #[cfg(feature = "metrics")]
+                with_metric!(
+                    filters::CONNECTION_RATE_LIMIT,
+                    add,
+                    1,
+                    get_shard_id!(),
+                    &[
+                        KeyValue::new("listener", listener_name),
+                        KeyValue::new("filter", rate_limit.stat_prefix.to_string()),
+                        KeyValue::new("result", filters::EVENT_RATE_LIMITED)
+                    ]
+                );
+                Err(e)
+            }
+        }
     }
 
     #[allow(clippy::used_underscore_binding)]
