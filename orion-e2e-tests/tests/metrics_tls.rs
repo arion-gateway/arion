@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use std::net::SocketAddr;
+use std::time::Duration;
 use http::StatusCode;
 
 use orion_e2e_tests::config_builder::{
@@ -66,9 +67,12 @@ async fn test_tls_handshake_metric() {
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
 
     // Spawn Orion tracking the "https" listener address
-    let orion = OrionInstance::spawn_auto_port(&config_path, "https", SpawnOptions::default())
+    let mut orion = OrionInstance::spawn_auto_port(&config_path, "https", SpawnOptions::default())
         .await
         .expect("Failed to spawn Orion");
+
+    // Wait for the cleartext HTTP listener to be ready
+    orion.wait_for_listener_at(http_addr, Duration::from_secs(10)).await.expect("HTTP listener not ready");
 
     let admin_client = TestClient::new(admin_addr);
 
