@@ -12,17 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use http::StatusCode;
 use std::net::SocketAddr;
 use std::time::Duration;
-use http::StatusCode;
 
 use orion_e2e_tests::config_builder::{
-    presets, BootstrapBuilder, ClusterBuilder, DownstreamTlsBuilder, FilterChainBuilder, HcmBuilder,
-    ListenerBuilder, RouteConfigBuilder, VirtualHostBuilder,
+    presets, BootstrapBuilder, ClusterBuilder, DownstreamTlsBuilder, FilterChainBuilder, HcmBuilder, ListenerBuilder,
+    RouteConfigBuilder, VirtualHostBuilder,
 };
 use orion_e2e_tests::{
     cleanup_config_file, parse_metric_value, OrionInstance, PortBlock, PreConfiguredResponse, SpawnOptions,
-    TestBackend, TestClient, TestCerts, TlsTestClientBuilder,
+    TestBackend, TestCerts, TestClient, TlsTestClientBuilder,
 };
 
 #[tokio::test]
@@ -46,16 +46,14 @@ async fn test_tls_handshake_metric() {
     let tls = DownstreamTlsBuilder::new().cert_files(&cert_path, &key_path);
 
     // Build the HTTP listener manually with a valid route config
-    let http_listener = ListenerBuilder::new("http")
-        .port(http_port)
-        .filter_chain(
-            FilterChainBuilder::new("main").hcm(
-                HcmBuilder::new().http1().route_config(
-                    RouteConfigBuilder::new("routes")
-                        .virtual_host(VirtualHostBuilder::new("default").route(presets::default_route("backend"))),
-                )
-            )
-        );
+    let http_listener = ListenerBuilder::new("http").port(http_port).filter_chain(
+        FilterChainBuilder::new("main").hcm(
+            HcmBuilder::new().http1().route_config(
+                RouteConfigBuilder::new("routes")
+                    .virtual_host(VirtualHostBuilder::new("default").route(presets::default_route("backend"))),
+            ),
+        ),
+    );
 
     // Configure both an HTTPS listener and a cleartext HTTP listener
     let bootstrap = BootstrapBuilder::new()
@@ -81,8 +79,8 @@ async fn test_tls_handshake_metric() {
     initial_metrics_resp.assert_status(StatusCode::OK);
     let initial_metrics = initial_metrics_resp.body_str().unwrap();
 
-    let initial_handshakes = parse_metric_value(initial_metrics, "tls_handshake").unwrap_or(0.0);
-    assert_eq!(initial_handshakes, 0.0_f64, "Initial TLS handshakes should be 0");
+    let initial_handshakes = parse_metric_value(initial_metrics, "tls_handshake").unwrap_or(0);
+    assert_eq!(initial_handshakes, 0, "Initial TLS handshakes should be 0");
 
     // 2. Send a cleartext HTTP request to the HTTP listener
     let cleartext_client = TestClient::new(http_addr).with_header("connection", "close");
@@ -95,8 +93,8 @@ async fn test_tls_handshake_metric() {
     mid_metrics_resp.assert_status(StatusCode::OK);
     let mid_metrics = mid_metrics_resp.body_str().unwrap();
 
-    let mid_handshakes = parse_metric_value(mid_metrics, "tls_handshake").unwrap_or(0.0);
-    assert_eq!(mid_handshakes, 0.0, "Cleartext HTTP request should not increment TLS handshakes");
+    let mid_handshakes = parse_metric_value(mid_metrics, "tls_handshake").unwrap_or(0);
+    assert_eq!(mid_handshakes, 0, "Cleartext HTTP request should not increment TLS handshakes");
 
     // 4. Perform TLS handshake by sending an HTTPS request
     let tls_client = TlsTestClientBuilder::new(orion.listener_addr().unwrap())
@@ -115,7 +113,7 @@ async fn test_tls_handshake_metric() {
     let final_metrics = final_metrics_resp.body_str().unwrap();
 
     let handshakes = parse_metric_value(final_metrics, "tls_handshake").expect("Missing tls_handshake metric");
-    assert_eq!(handshakes, 1.0, "Expected exactly 1 TLS handshake after HTTPS request");
+    assert_eq!(handshakes, 1, "Expected exactly 1 TLS handshake after HTTPS request");
 
     orion.shutdown();
     cleanup_config_file(&config_path);

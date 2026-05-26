@@ -3,7 +3,7 @@ use http::HeaderMap;
 use orion_configuration::config::metrics::{PartitionKeySource, SourceHeaderName, SourceHeaderNameOrSni};
 use orion_interner::StringInterner;
 use smol_str::SmolStr;
-use std::sync::atomic::Ordering;
+use std::sync::{atomic::Ordering, OnceLock};
 
 #[macro_export]
 macro_rules! with_metric {
@@ -83,7 +83,7 @@ where
 }
 
 pub static USER_KEY: PartitionKey<SourceHeaderNameOrSni> = PartitionKey::new();
-pub static CUSTOM_KEYS: [PartitionKey<SourceHeaderName>; 2] = [PartitionKey::new(), PartitionKey::new()];
+pub static CUSTOM_KEYS: OnceLock<Vec<PartitionKey<SourceHeaderName>>> = std::sync::OnceLock::new();
 
 #[inline]
 /// Return the user partition key, extracting it from either headers or sni, if one is present.

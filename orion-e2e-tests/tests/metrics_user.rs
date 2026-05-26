@@ -12,23 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::net::SocketAddr;
 use http::{HeaderName, StatusCode};
 use smallvec::SmallVec;
-use tokio::net::TcpStream;
+use std::net::SocketAddr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
 
-use orion_configuration::config::metrics::{MetricsConfig, PartitionKey, SourceHeaderNameOrSni};
+use orion_configuration::config::metrics::{CustomMetrics, MetricsConfig, PartitionKey, SourceHeaderNameOrSni};
 use orion_e2e_tests::config_builder::{
-    presets, BootstrapBuilder, ClusterBuilder, FilterChainBuilder, HcmBuilder,
-    ListenerBuilder, RouteConfigBuilder, VirtualHostBuilder, DownstreamTlsBuilder,
+    presets, BootstrapBuilder, ClusterBuilder, DownstreamTlsBuilder, FilterChainBuilder, HcmBuilder, ListenerBuilder,
+    RouteConfigBuilder, VirtualHostBuilder,
 };
 use orion_e2e_tests::{
-    cleanup_config_file, OrionInstance, PortBlock, PreConfiguredResponse, SpawnOptions, TestBackend, TestClient, TestCerts, TlsClientConfig,
+    cleanup_config_file, OrionInstance, PortBlock, PreConfiguredResponse, SpawnOptions, TestBackend, TestCerts,
+    TestClient, TlsClientConfig,
 };
 
-fn parse_user_metric_value(prometheus_output: &str, metric_name: &str, user_id: &str) -> Option<f64> {
-    let target = format!("{}{{user=\"{}\"}}", metric_name, user_id);
+fn parse_user_metric_value(prometheus_output: &str, metric_name: &str, user_id: &str) -> Option<u64> {
+    let target = format!("{metric_name}{{user=\"{user_id}\"}}");
     for line in prometheus_output.lines() {
         if line.starts_with('#') {
             continue;
@@ -36,7 +37,7 @@ fn parse_user_metric_value(prometheus_output: &str, metric_name: &str, user_id: 
         if line.starts_with(&target) {
             let parts: Vec<&str> = line.split_whitespace().collect();
             if let Some(val_str) = parts.last() {
-                if let Ok(val) = val_str.parse::<f64>() {
+                if let Ok(val) = val_str.parse::<u64>() {
                     return Some(val);
                 }
             }
@@ -47,6 +48,7 @@ fn parse_user_metric_value(prometheus_output: &str, metric_name: &str, user_id: 
 
 #[tokio::test]
 #[ignore]
+#[allow(clippy::too_many_lines)]
 async fn test_user_metrics_header() {
     let port_block = PortBlock::reserve().expect("Failed to reserve port block");
     let admin_port = port_block.allocate().expect("Failed to allocate admin port");
@@ -59,16 +61,15 @@ async fn test_user_metrics_header() {
     let metrics_config = MetricsConfig {
         user_key: Some(PartitionKey {
             source: SourceHeaderNameOrSni::HeaderName(HeaderName::from_static("x-user-id")),
-            attribute_name: Some("user".to_string()),
+            attribute_name: Some("user".into()),
         }),
         custom_keys: SmallVec::new(),
         rename: std::collections::HashMap::new(),
-        custom_metrics: Default::default(),
+        custom_metrics: CustomMetrics::default(),
     };
 
-    let bootstrap = presets::simple_proxy("backend", backend_addr)
-        .admin("127.0.0.1", admin_port)
-        .metrics(metrics_config);
+    let bootstrap =
+        presets::simple_proxy("backend", backend_addr).admin("127.0.0.1", admin_port).metrics(metrics_config);
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
 
     let orion = OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default())
@@ -92,7 +93,7 @@ async fn test_user_metrics_header() {
         let mut resp = Vec::new();
         stream.read_to_end(&mut resp).await.expect("Failed to read");
         user1_expected_rx += resp.len();
-        assert!(String::from_utf8_lossy(&resp).contains("200 OK"));
+        assert!(String::from_utf8_lossy(&resp).contains("200 OK"))
     }
 
     // 2. One 3xx request
@@ -105,7 +106,7 @@ async fn test_user_metrics_header() {
         let mut resp = Vec::new();
         stream.read_to_end(&mut resp).await.expect("Failed to read");
         user1_expected_rx += resp.len();
-        assert!(String::from_utf8_lossy(&resp).contains("302 Found"));
+        assert!(String::from_utf8_lossy(&resp).contains("302 Found"))
     }
 
     // 3. Two 4xx requests (user errors)
@@ -118,7 +119,7 @@ async fn test_user_metrics_header() {
         let mut resp = Vec::new();
         stream.read_to_end(&mut resp).await.expect("Failed to read");
         user1_expected_rx += resp.len();
-        assert!(String::from_utf8_lossy(&resp).contains("404 Not Found"));
+        assert!(String::from_utf8_lossy(&resp).contains("404 Not Found"))
     }
 
     // 4. One 5xx request (system error)
@@ -131,12 +132,14 @@ async fn test_user_metrics_header() {
         let mut resp = Vec::new();
         stream.read_to_end(&mut resp).await.expect("Failed to read");
         user1_expected_rx += resp.len();
-        assert!(String::from_utf8_lossy(&resp).contains("500 Internal Server Error"));
+        assert!(String::from_utf8_lossy(&resp).contains("500 Internal Server Error"))
     }
 
     // 5. Two 429 requests (throttles)
     for _ in 0..2 {
-        backend.enqueue_response(PreConfiguredResponse::with_status(StatusCode::TOO_MANY_REQUESTS).body("Throttled")).await;
+        backend
+            .enqueue_response(PreConfiguredResponse::with_status(StatusCode::TOO_MANY_REQUESTS).body("Throttled"))
+            .await;
         let req = b"GET /throttled HTTP/1.1\r\nHost: localhost\r\nx-user-id: user-1\r\nConnection: close\r\n\r\n";
         user1_expected_tx += req.len();
         let mut stream = TcpStream::connect(listener_addr).await.expect("Failed to connect");
@@ -144,7 +147,7 @@ async fn test_user_metrics_header() {
         let mut resp = Vec::new();
         stream.read_to_end(&mut resp).await.expect("Failed to read");
         user1_expected_rx += resp.len();
-        assert!(String::from_utf8_lossy(&resp).contains("429 Too Many Requests"));
+        assert!(String::from_utf8_lossy(&resp).contains("429 Too Many Requests"))
     }
 
     let mut user2_expected_tx = 0;
@@ -161,7 +164,7 @@ async fn test_user_metrics_header() {
         let mut resp = Vec::new();
         stream.read_to_end(&mut resp).await.expect("Failed to read");
         user2_expected_rx += resp.len();
-        assert!(String::from_utf8_lossy(&resp).contains("200 OK"));
+        assert!(String::from_utf8_lossy(&resp).contains("200 OK"))
     }
     backend.enqueue_response(PreConfiguredResponse::with_status(StatusCode::BAD_REQUEST).body("Bad Request")).await;
     {
@@ -172,7 +175,7 @@ async fn test_user_metrics_header() {
         let mut resp = Vec::new();
         stream.read_to_end(&mut resp).await.expect("Failed to read");
         user2_expected_rx += resp.len();
-        assert!(String::from_utf8_lossy(&resp).contains("400 Bad Request"));
+        assert!(String::from_utf8_lossy(&resp).contains("400 Bad Request"))
     }
 
     // --- VERIFY METRICS ---
@@ -182,29 +185,29 @@ async fn test_user_metrics_header() {
 
     // Assertions for USER 1 (aggregated values)
     // 2 (2xx) + 1 (3xx) + 2 (4xx) + 1 (5xx) = 6 invocations (429 is throttled and doesn't count as invocation)
-    assert_eq!(parse_user_metric_value(metrics, "user_invocations", "user-1"), Some(6.0));
-    assert_eq!(parse_user_metric_value(metrics, "user_throttles", "user-1"), Some(2.0));
-    assert_eq!(parse_user_metric_value(metrics, "user_http_2xx_response", "user-1"), Some(2.0));
-    assert_eq!(parse_user_metric_value(metrics, "user_http_3xx_response", "user-1"), Some(1.0));
-    assert_eq!(parse_user_metric_value(metrics, "user_http_4xx_response", "user-1"), Some(4.0)); // 2 (404) + 2 (429) = 4
-    assert_eq!(parse_user_metric_value(metrics, "user_http_5xx_response", "user-1"), Some(1.0));
-    assert_eq!(parse_user_metric_value(metrics, "user_user_errors", "user-1"), Some(4.0)); // 2 (404) + 2 (429) = 4
-    assert_eq!(parse_user_metric_value(metrics, "user_system_errors", "user-1"), Some(1.0));
-    assert_eq!(parse_user_metric_value(metrics, "user_total_errors", "user-1"), Some(5.0)); // 4 (user) + 1 (system) = 5
-    assert_eq!(parse_user_metric_value(metrics, "user_latency_count", "user-1"), Some(8.0)); // All 8 requests
-    assert_eq!(parse_user_metric_value(metrics, "user_bytes_tx", "user-1"), Some(user1_expected_tx as f64));
-    assert_eq!(parse_user_metric_value(metrics, "user_bytes_rx", "user-1"), Some(user1_expected_rx as f64));
+    assert_eq!(parse_user_metric_value(metrics, "user_invocations", "user-1"), Some(6));
+    assert_eq!(parse_user_metric_value(metrics, "user_throttles", "user-1"), Some(2));
+    assert_eq!(parse_user_metric_value(metrics, "user_http_2xx_response", "user-1"), Some(2));
+    assert_eq!(parse_user_metric_value(metrics, "user_http_3xx_response", "user-1"), Some(1));
+    assert_eq!(parse_user_metric_value(metrics, "user_http_4xx_response", "user-1"), Some(4)); // 2 (404) + 2 (429) = 4
+    assert_eq!(parse_user_metric_value(metrics, "user_http_5xx_response", "user-1"), Some(1));
+    assert_eq!(parse_user_metric_value(metrics, "user_user_errors", "user-1"), Some(4)); // 2 (404) + 2 (429) = 4
+    assert_eq!(parse_user_metric_value(metrics, "user_system_errors", "user-1"), Some(1));
+    assert_eq!(parse_user_metric_value(metrics, "user_total_errors", "user-1"), Some(5)); // 4 (user) + 1 (system) = 5
+    assert_eq!(parse_user_metric_value(metrics, "user_latency_count", "user-1"), Some(8)); // All 8 requests
+    assert_eq!(parse_user_metric_value(metrics, "user_bytes_tx", "user-1"), Some(user1_expected_tx as u64));
+    assert_eq!(parse_user_metric_value(metrics, "user_bytes_rx", "user-1"), Some(user1_expected_rx as u64));
 
     // Assertions for USER 2 (separate partition)
-    assert_eq!(parse_user_metric_value(metrics, "user_invocations", "user-2"), Some(2.0));
+    assert_eq!(parse_user_metric_value(metrics, "user_invocations", "user-2"), Some(2));
     assert_eq!(parse_user_metric_value(metrics, "user_throttles", "user-2"), None);
-    assert_eq!(parse_user_metric_value(metrics, "user_http_2xx_response", "user-2"), Some(1.0));
-    assert_eq!(parse_user_metric_value(metrics, "user_http_4xx_response", "user-2"), Some(1.0));
-    assert_eq!(parse_user_metric_value(metrics, "user_user_errors", "user-2"), Some(1.0));
-    assert_eq!(parse_user_metric_value(metrics, "user_total_errors", "user-2"), Some(1.0));
-    assert_eq!(parse_user_metric_value(metrics, "user_latency_count", "user-2"), Some(2.0));
-    assert_eq!(parse_user_metric_value(metrics, "user_bytes_tx", "user-2"), Some(user2_expected_tx as f64));
-    assert_eq!(parse_user_metric_value(metrics, "user_bytes_rx", "user-2"), Some(user2_expected_rx as f64));
+    assert_eq!(parse_user_metric_value(metrics, "user_http_2xx_response", "user-2"), Some(1));
+    assert_eq!(parse_user_metric_value(metrics, "user_http_4xx_response", "user-2"), Some(1));
+    assert_eq!(parse_user_metric_value(metrics, "user_user_errors", "user-2"), Some(1));
+    assert_eq!(parse_user_metric_value(metrics, "user_total_errors", "user-2"), Some(1));
+    assert_eq!(parse_user_metric_value(metrics, "user_latency_count", "user-2"), Some(2));
+    assert_eq!(parse_user_metric_value(metrics, "user_bytes_tx", "user-2"), Some(user2_expected_tx as u64));
+    assert_eq!(parse_user_metric_value(metrics, "user_bytes_rx", "user-2"), Some(user2_expected_rx as u64));
 
     orion.shutdown();
     cleanup_config_file(&config_path);
@@ -212,8 +215,10 @@ async fn test_user_metrics_header() {
 
 #[tokio::test]
 #[ignore]
+#[allow(clippy::indexing_slicing)]
+#[allow(clippy::too_many_lines)]
 async fn test_user_metrics_sni() {
-    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default().ok();
     let port_block = PortBlock::reserve().expect("Failed to reserve port block");
     let admin_port = port_block.allocate().expect("Failed to allocate admin port");
     let admin_addr = SocketAddr::from(([127, 0, 0, 1], admin_port));
@@ -229,27 +234,21 @@ async fn test_user_metrics_sni() {
     let tls = DownstreamTlsBuilder::new().cert_files(&cert_path, &key_path);
 
     // Build the listener manually and call with_tls_inspector()
-    let listener = ListenerBuilder::new("https")
-        .port(0)
-        .with_tls_inspector()
-        .filter_chain(
-            FilterChainBuilder::new("main")
-                .downstream_tls(tls)
-                .hcm(HcmBuilder::new().http1().route_config(
-                    RouteConfigBuilder::new("routes")
-                        .virtual_host(VirtualHostBuilder::new("default").route(presets::default_route("backend"))),
-                ))
-        );
+    let listener = ListenerBuilder::new("https").port(0).with_tls_inspector().filter_chain(
+        FilterChainBuilder::new("main").downstream_tls(tls).hcm(
+            HcmBuilder::new().http1().route_config(
+                RouteConfigBuilder::new("routes")
+                    .virtual_host(VirtualHostBuilder::new("default").route(presets::default_route("backend"))),
+            ),
+        ),
+    );
 
     // Configure user key extraction from SNI
     let metrics_config = MetricsConfig {
-        user_key: Some(PartitionKey {
-            source: SourceHeaderNameOrSni::Sni,
-            attribute_name: Some("user".to_string()),
-        }),
+        user_key: Some(PartitionKey { source: SourceHeaderNameOrSni::Sni, attribute_name: Some("user".into()) }),
         custom_keys: SmallVec::new(),
         rename: std::collections::HashMap::new(),
-        custom_metrics: Default::default(),
+        custom_metrics: CustomMetrics::default(),
     };
 
     let bootstrap = BootstrapBuilder::new()
@@ -284,7 +283,7 @@ async fn test_user_metrics_sni() {
         let mut buf = [0u8; 1024];
         let n = tls_stream.read(&mut buf).await.unwrap();
         expected_rx += n;
-        assert!(String::from_utf8_lossy(&buf[..n]).contains("200 OK"));
+        assert!(String::from_utf8_lossy(&buf[..n]).contains("200 OK"))
     }
 
     // 2. One 3xx request
@@ -298,7 +297,7 @@ async fn test_user_metrics_sni() {
         let mut buf = [0u8; 1024];
         let n = tls_stream.read(&mut buf).await.unwrap();
         expected_rx += n;
-        assert!(String::from_utf8_lossy(&buf[..n]).contains("302 Found"));
+        assert!(String::from_utf8_lossy(&buf[..n]).contains("302 Found"))
     }
 
     // 3. Two 4xx requests
@@ -312,7 +311,7 @@ async fn test_user_metrics_sni() {
         let mut buf = [0u8; 1024];
         let n = tls_stream.read(&mut buf).await.unwrap();
         expected_rx += n;
-        assert!(String::from_utf8_lossy(&buf[..n]).contains("404 Not Found"));
+        assert!(String::from_utf8_lossy(&buf[..n]).contains("404 Not Found"))
     }
 
     // 4. One 5xx request
@@ -326,12 +325,14 @@ async fn test_user_metrics_sni() {
         let mut buf = [0u8; 1024];
         let n = tls_stream.read(&mut buf).await.unwrap();
         expected_rx += n;
-        assert!(String::from_utf8_lossy(&buf[..n]).contains("500 Internal Server Error"));
+        assert!(String::from_utf8_lossy(&buf[..n]).contains("500 Internal Server Error"))
     }
 
     // 5. Two 429 requests
     for _ in 0..2 {
-        backend.enqueue_response(PreConfiguredResponse::with_status(StatusCode::TOO_MANY_REQUESTS).body("Throttled")).await;
+        backend
+            .enqueue_response(PreConfiguredResponse::with_status(StatusCode::TOO_MANY_REQUESTS).body("Throttled"))
+            .await;
         let tcp_stream = TcpStream::connect(listener_addr).await.unwrap();
         let mut tls_stream = config.handshake_on(tcp_stream, sni_name).await.unwrap();
         let req_bytes = b"GET /throttled HTTP/1.1\r\nHost: dublin.beefcake.example.com\r\nConnection: close\r\n\r\n";
@@ -340,7 +341,7 @@ async fn test_user_metrics_sni() {
         let mut buf = [0u8; 1024];
         let n = tls_stream.read(&mut buf).await.unwrap();
         expected_rx += n;
-        assert!(String::from_utf8_lossy(&buf[..n]).contains("429 Too Many Requests"));
+        assert!(String::from_utf8_lossy(&buf[..n]).contains("429 Too Many Requests"))
     }
 
     // --- VERIFY METRICS ---
@@ -350,18 +351,18 @@ async fn test_user_metrics_sni() {
 
     // Assertions for SNI USER (aggregated values)
     // 2 (2xx) + 1 (3xx) + 2 (4xx) + 1 (5xx) = 6 invocations (429 is throttled and doesn't count as invocation)
-    assert_eq!(parse_user_metric_value(metrics, "user_invocations", sni_name), Some(6.0));
-    assert_eq!(parse_user_metric_value(metrics, "user_throttles", sni_name), Some(2.0));
-    assert_eq!(parse_user_metric_value(metrics, "user_http_2xx_response", sni_name), Some(2.0));
-    assert_eq!(parse_user_metric_value(metrics, "user_http_3xx_response", sni_name), Some(1.0));
-    assert_eq!(parse_user_metric_value(metrics, "user_http_4xx_response", sni_name), Some(4.0)); // 2 (404) + 2 (429) = 4
-    assert_eq!(parse_user_metric_value(metrics, "user_http_5xx_response", sni_name), Some(1.0));
-    assert_eq!(parse_user_metric_value(metrics, "user_user_errors", sni_name), Some(4.0)); // 2 (404) + 2 (429) = 4
-    assert_eq!(parse_user_metric_value(metrics, "user_system_errors", sni_name), Some(1.0));
-    assert_eq!(parse_user_metric_value(metrics, "user_total_errors", sni_name), Some(5.0)); // 4 (user) + 1 (system) = 5
-    assert_eq!(parse_user_metric_value(metrics, "user_latency_count", sni_name), Some(8.0)); // All 8 requests
-    assert!(parse_user_metric_value(metrics, "user_bytes_tx", sni_name).unwrap() > expected_tx as f64);
-    assert!(parse_user_metric_value(metrics, "user_bytes_rx", sni_name).unwrap() > expected_rx as f64);
+    assert_eq!(parse_user_metric_value(metrics, "user_invocations", sni_name), Some(6));
+    assert_eq!(parse_user_metric_value(metrics, "user_throttles", sni_name), Some(2));
+    assert_eq!(parse_user_metric_value(metrics, "user_http_2xx_response", sni_name), Some(2));
+    assert_eq!(parse_user_metric_value(metrics, "user_http_3xx_response", sni_name), Some(1));
+    assert_eq!(parse_user_metric_value(metrics, "user_http_4xx_response", sni_name), Some(4)); // 2 (404) + 2 (429) = 4
+    assert_eq!(parse_user_metric_value(metrics, "user_http_5xx_response", sni_name), Some(1));
+    assert_eq!(parse_user_metric_value(metrics, "user_user_errors", sni_name), Some(4)); // 2 (404) + 2 (429) = 4
+    assert_eq!(parse_user_metric_value(metrics, "user_system_errors", sni_name), Some(1));
+    assert_eq!(parse_user_metric_value(metrics, "user_total_errors", sni_name), Some(5)); // 4 (user) + 1 (system) = 5
+    assert_eq!(parse_user_metric_value(metrics, "user_latency_count", sni_name), Some(8)); // All 8 requests
+    assert!(parse_user_metric_value(metrics, "user_bytes_tx", sni_name).unwrap() > expected_tx as u64);
+    assert!(parse_user_metric_value(metrics, "user_bytes_rx", sni_name).unwrap() > expected_rx as u64);
 
     orion.shutdown();
     cleanup_config_file(&config_path);
@@ -369,6 +370,7 @@ async fn test_user_metrics_sni() {
 
 #[tokio::test]
 #[ignore]
+#[allow(clippy::indexing_slicing)]
 async fn test_user_metrics_websocket() {
     let port_block = PortBlock::reserve().expect("Failed to reserve port block");
     let admin_port = port_block.allocate().expect("Failed to allocate admin port");
@@ -409,11 +411,11 @@ async fn test_user_metrics_websocket() {
     let metrics_config = MetricsConfig {
         user_key: Some(PartitionKey {
             source: SourceHeaderNameOrSni::HeaderName(HeaderName::from_static("x-user-id")),
-            attribute_name: Some("user".to_string()),
+            attribute_name: Some("user".into()),
         }),
         custom_keys: SmallVec::new(),
         rename: std::collections::HashMap::new(),
-        custom_metrics: Default::default(),
+        custom_metrics: CustomMetrics::default(),
     };
 
     let hcm = HcmBuilder::new().http1().upgrade_websocket().route_config(
@@ -421,9 +423,7 @@ async fn test_user_metrics_websocket() {
             .virtual_host(VirtualHostBuilder::new("default").route(presets::default_route("backend"))),
     );
 
-    let listener_builder = ListenerBuilder::new("http").port(0).filter_chain(
-        FilterChainBuilder::new("main").hcm(hcm)
-    );
+    let listener_builder = ListenerBuilder::new("http").port(0).filter_chain(FilterChainBuilder::new("main").hcm(hcm));
 
     let bootstrap = BootstrapBuilder::new()
         .listener(listener_builder)
@@ -448,8 +448,7 @@ async fn test_user_metrics_websocket() {
          Connection: Upgrade\r\n\
          Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
          Sec-WebSocket-Version: 13\r\n\
-         x-user-id: {}\r\n\r\n",
-        user_name
+         x-user-id: {user_name}\r\n\r\n",
     );
 
     {
@@ -471,7 +470,7 @@ async fn test_user_metrics_websocket() {
         assert_eq!(&echo_buf, data);
 
         // Wait a short moment for the async task to process the upgrade and update metrics
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await
     }
 
     // Check metrics
@@ -484,8 +483,8 @@ async fn test_user_metrics_websocket() {
     let outbound_streaming = parse_user_metric_value(metrics, "user_outbound_streaming_bytes_processed", user_name)
         .expect("Missing user_outbound_streaming_bytes_processed");
 
-    assert_eq!(inbound_streaming, 10.0);
-    assert_eq!(outbound_streaming, 10.0);
+    assert_eq!(inbound_streaming, 10);
+    assert_eq!(outbound_streaming, 10);
 
     orion.shutdown();
     cleanup_config_file(&config_path);

@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::net::SocketAddr;
 use http::{HeaderName, StatusCode};
-use tokio::net::TcpStream;
+use std::net::SocketAddr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
 
 use orion_configuration::config::metrics::{
     CustomMetric, CustomMetrics, MetricsConfig, PartitionKey, SourceHeaderName,
@@ -33,7 +33,7 @@ fn parse_custom_metric_value(prometheus_output: &str, metric_name: &str, labels:
         if line.starts_with(metric_name) {
             let mut matches = true;
             for (name, val) in labels {
-                let pattern = format!("{}=\"{}\"", name, val);
+                let pattern = format!("{name}=\"{val}\"");
                 if !line.contains(&pattern) {
                     matches = false;
                     break;
@@ -52,10 +52,10 @@ fn parse_custom_metric_value(prometheus_output: &str, metric_name: &str, labels:
     None
 }
 
-
-
 #[tokio::test]
 #[ignore]
+#[allow(clippy::indexing_slicing)]
+#[allow(clippy::too_many_lines)]
 async fn test_custom_metrics() {
     let port_block = PortBlock::reserve().expect("Failed to reserve port block");
     let admin_port = port_block.allocate().expect("Failed to allocate admin port");
@@ -68,44 +68,44 @@ async fn test_custom_metrics() {
     let custom_metrics = CustomMetrics {
         incoming_request: vec![
             CustomMetric::Counter {
-                name: "custom_req_counter".to_string(),
-                description: "A custom request counter".to_string(),
+                name: "custom_req_counter".into(),
+                description: "A custom request counter".into(),
                 header_name: HeaderName::from_static("x-req-color"),
-                attribute_name: Some("color".to_string()),
+                attribute_name: Some("color".into()),
             },
             CustomMetric::Gauge {
-                name: "custom_req_gauge".to_string(),
-                description: "A custom request gauge".to_string(),
+                name: "custom_req_gauge".into(),
+                description: "A custom request gauge".into(),
                 header_name: HeaderName::from_static("x-req-gauge-val"),
-                attribute_name: Some("gauge_attr".to_string()),
+                attribute_name: Some("gauge_attr".into()),
             },
             CustomMetric::Histogram {
-                name: "custom_req_histogram".to_string(),
-                description: "A custom request histogram".to_string(),
+                name: "custom_req_histogram".into(),
+                description: "A custom request histogram".into(),
                 header_name: HeaderName::from_static("x-req-hist-val"),
-                attribute_name: Some("hist_attr".to_string()),
+                attribute_name: Some("hist_attr".into()),
                 buckets: vec![10, 50, 100],
             },
         ],
         upstream_request: vec![],
         incoming_response: vec![
             CustomMetric::Counter {
-                name: "custom_resp_counter".to_string(),
-                description: "A custom response counter".to_string(),
+                name: "custom_resp_counter".into(),
+                description: "A custom response counter".into(),
                 header_name: HeaderName::from_static("x-resp-color"),
-                attribute_name: Some("color".to_string()),
+                attribute_name: Some("color".into()),
             },
             CustomMetric::Gauge {
-                name: "custom_resp_gauge".to_string(),
-                description: "A custom response gauge".to_string(),
+                name: "custom_resp_gauge".into(),
+                description: "A custom response gauge".into(),
                 header_name: HeaderName::from_static("x-resp-gauge-val"),
-                attribute_name: Some("gauge_attr".to_string()),
+                attribute_name: Some("gauge_attr".into()),
             },
             CustomMetric::Histogram {
-                name: "custom_resp_histogram".to_string(),
-                description: "A custom response histogram".to_string(),
+                name: "custom_resp_histogram".into(),
+                description: "A custom response histogram".into(),
                 header_name: HeaderName::from_static("x-resp-hist-val"),
-                attribute_name: Some("hist_attr".to_string()),
+                attribute_name: Some("hist_attr".into()),
                 buckets: vec![10, 50, 100],
             },
         ],
@@ -116,15 +116,14 @@ async fn test_custom_metrics() {
         user_key: None,
         custom_keys: smallvec::smallvec![PartitionKey {
             source: SourceHeaderName::HeaderName(HeaderName::from_static("x-tenant-id")),
-            attribute_name: Some("tenant".to_string()),
+            attribute_name: Some("tenant".into()),
         }],
         rename: std::collections::HashMap::new(),
         custom_metrics,
     };
 
-    let bootstrap = presets::simple_proxy("backend", backend_addr)
-        .admin("127.0.0.1", admin_port)
-        .metrics(metrics_config);
+    let bootstrap =
+        presets::simple_proxy("backend", backend_addr).admin("127.0.0.1", admin_port).metrics(metrics_config);
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
 
     let orion = OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default())
@@ -138,9 +137,9 @@ async fn test_custom_metrics() {
     backend.set_default_response(PreConfiguredResponse::with_body("Hello!")).await;
 
     // Send requests with different colors, gauges, and histogram values
-    let req_colors = vec!["red", "red", "green", "blue"];
-    let req_gauges = vec!["10", "42", "42", "42"];
-    let req_hists = vec!["5", "25", "75", "150"];
+    let req_colors = ["red", "red", "green", "blue"];
+    let req_gauges = ["10", "42", "42", "42"];
+    let req_hists = ["5", "25", "75", "150"];
 
     for i in 0..4 {
         let color = req_colors[i];
@@ -151,11 +150,10 @@ async fn test_custom_metrics() {
             "GET /ok HTTP/1.1\r\n\
              Host: localhost\r\n\
              x-tenant-id: tenant-req\r\n\
-             x-req-color: {}\r\n\
-             x-req-gauge-val: {}\r\n\
-             x-req-hist-val: {}\r\n\
-             Connection: close\r\n\r\n",
-            color, gauge, hist
+             x-req-color: {color}\r\n\
+             x-req-gauge-val: {gauge}\r\n\
+             x-req-hist-val: {hist}\r\n\
+             Connection: close\r\n\r\n"
         );
         let mut stream = TcpStream::connect(listener_addr).await.expect("Failed to connect");
         stream.write_all(req.as_bytes()).await.expect("Failed to write");
@@ -166,22 +164,24 @@ async fn test_custom_metrics() {
 
     // --- 2. Test Response-Hook Metrics ---
     // For response hooks, the custom metrics and partition keys are extracted from response headers.
-    let resp_colors = vec!["yellow", "yellow", "orange", "orange"];
-    let resp_gauges = vec!["20", "84", "84", "84"];
-    let resp_hists = vec!["8", "45", "90", "120"];
+    let resp_colors = ["yellow", "yellow", "orange", "orange"];
+    let resp_gauges = ["20", "84", "84", "84"];
+    let resp_hists = ["8", "45", "90", "120"];
 
     for i in 0..4 {
         let color = resp_colors[i];
         let gauge = resp_gauges[i];
         let hist = resp_hists[i];
 
-        backend.enqueue_response(
-            PreConfiguredResponse::with_body("Hello with headers!")
-                .header("x-tenant-id", "tenant-resp")
-                .header("x-resp-color", color)
-                .header("x-resp-gauge-val", gauge)
-                .header("x-resp-hist-val", hist)
-        ).await;
+        backend
+            .enqueue_response(
+                PreConfiguredResponse::with_body("Hello with headers!")
+                    .header("x-tenant-id", "tenant-resp")
+                    .header("x-resp-color", color)
+                    .header("x-resp-gauge-val", gauge)
+                    .header("x-resp-hist-val", hist),
+            )
+            .await;
 
         let req = b"GET /ok HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
         let mut stream = TcpStream::connect(listener_addr).await.expect("Failed to connect");
@@ -199,7 +199,7 @@ async fn test_custom_metrics() {
         stream.write_all(req).await.expect("Failed to write");
         let mut resp = Vec::new();
         stream.read_to_end(&mut resp).await.expect("Failed to read");
-        assert!(String::from_utf8_lossy(&resp).contains("200 OK"));
+        assert!(String::from_utf8_lossy(&resp).contains("200 OK"))
     }
 
     // Edge Case B: Missing partition key header (should record metric without tenant label)
@@ -209,7 +209,7 @@ async fn test_custom_metrics() {
         stream.write_all(req).await.expect("Failed to write");
         let mut resp = Vec::new();
         stream.read_to_end(&mut resp).await.expect("Failed to read");
-        assert!(String::from_utf8_lossy(&resp).contains("200 OK"));
+        assert!(String::from_utf8_lossy(&resp).contains("200 OK"))
     }
 
     // Edge Case C: Invalid numeric values for Gauge and Histogram (should be ignored without panic)
@@ -219,7 +219,7 @@ async fn test_custom_metrics() {
         stream.write_all(req).await.expect("Failed to write");
         let mut resp = Vec::new();
         stream.read_to_end(&mut resp).await.expect("Failed to read");
-        assert!(String::from_utf8_lossy(&resp).contains("200 OK"));
+        assert!(String::from_utf8_lossy(&resp).contains("200 OK"))
     }
 
     // --- VERIFY METRICS ---
@@ -234,7 +234,11 @@ async fn test_custom_metrics() {
         Some(2.0)
     );
     assert_eq!(
-        parse_custom_metric_value(metrics, "custom_custom_req_counter", &[("color", "green"), ("tenant", "tenant-req")]),
+        parse_custom_metric_value(
+            metrics,
+            "custom_custom_req_counter",
+            &[("color", "green"), ("tenant", "tenant-req")]
+        ),
         Some(1.0)
     );
     assert_eq!(
@@ -242,10 +246,7 @@ async fn test_custom_metrics() {
         Some(1.0)
     );
     // Gauge (last valid value should be 42, invalid "abc" should be ignored)
-    assert_eq!(
-        parse_custom_metric_value(metrics, "custom_custom_req_gauge", &[("tenant", "tenant-req")]),
-        Some(42.0)
-    );
+    assert_eq!(parse_custom_metric_value(metrics, "custom_custom_req_gauge", &[("tenant", "tenant-req")]), Some(42.0));
     // Histogram (invalid "xyz" should be ignored, count remains 4 and sum remains 255)
     assert_eq!(
         parse_custom_metric_value(metrics, "custom_custom_req_histogram_count", &[("tenant", "tenant-req")]),
@@ -259,11 +260,19 @@ async fn test_custom_metrics() {
     // B. Verify Response-Hook Metrics (tenant="tenant-resp")
     // Counter
     assert_eq!(
-        parse_custom_metric_value(metrics, "custom_custom_resp_counter", &[("color", "yellow"), ("tenant", "tenant-resp")]),
+        parse_custom_metric_value(
+            metrics,
+            "custom_custom_resp_counter",
+            &[("color", "yellow"), ("tenant", "tenant-resp")]
+        ),
         Some(2.0)
     );
     assert_eq!(
-        parse_custom_metric_value(metrics, "custom_custom_resp_counter", &[("color", "orange"), ("tenant", "tenant-resp")]),
+        parse_custom_metric_value(
+            metrics,
+            "custom_custom_resp_counter",
+            &[("color", "orange"), ("tenant", "tenant-resp")]
+        ),
         Some(2.0)
     );
     // Gauge
@@ -282,12 +291,14 @@ async fn test_custom_metrics() {
     );
 
     // C. Verify Edge Case B (Missing partition key header: recorded with color="purple" but without tenant label)
-    assert_eq!(
-        parse_custom_metric_value(metrics, "custom_custom_req_counter", &[("color", "purple")]),
-        Some(1.0)
-    );
+    assert_eq!(parse_custom_metric_value(metrics, "custom_custom_req_counter", &[("color", "purple")]), Some(1.0));
     // Ensure it doesn't have the tenant label
-    assert!(parse_custom_metric_value(metrics, "custom_custom_req_counter", &[("color", "purple"), ("tenant", "tenant-req")]).is_none());
+    assert!(parse_custom_metric_value(
+        metrics,
+        "custom_custom_req_counter",
+        &[("color", "purple"), ("tenant", "tenant-req")]
+    )
+    .is_none());
 
     orion.shutdown();
     cleanup_config_file(&config_path);
@@ -306,14 +317,12 @@ async fn test_custom_metrics_multiple_keys() {
 
     // Configure custom metrics with a counter
     let custom_metrics = CustomMetrics {
-        incoming_request: vec![
-            CustomMetric::Counter {
-                name: "custom_multi_key_counter".to_string(),
-                description: "A custom counter with multiple keys".to_string(),
-                header_name: HeaderName::from_static("x-req-color"),
-                attribute_name: Some("color".to_string()),
-            },
-        ],
+        incoming_request: vec![CustomMetric::Counter {
+            name: "custom_multi_key_counter".into(),
+            description: "A custom counter with multiple keys".into(),
+            header_name: HeaderName::from_static("x-req-color"),
+            attribute_name: Some("color".into()),
+        }],
         upstream_request: vec![],
         incoming_response: vec![],
         downstream_response: vec![],
@@ -325,20 +334,19 @@ async fn test_custom_metrics_multiple_keys() {
         custom_keys: smallvec::smallvec![
             PartitionKey {
                 source: SourceHeaderName::HeaderName(HeaderName::from_static("x-tenant-id")),
-                attribute_name: Some("tenant".to_string()),
+                attribute_name: Some("tenant".into()),
             },
             PartitionKey {
                 source: SourceHeaderName::HeaderName(HeaderName::from_static("x-environment")),
-                attribute_name: Some("env".to_string()),
+                attribute_name: Some("env".into()),
             },
         ],
         rename: std::collections::HashMap::new(),
         custom_metrics,
     };
 
-    let bootstrap = presets::simple_proxy("backend", backend_addr)
-        .admin("127.0.0.1", admin_port)
-        .metrics(metrics_config);
+    let bootstrap =
+        presets::simple_proxy("backend", backend_addr).admin("127.0.0.1", admin_port).metrics(metrics_config);
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
 
     let orion = OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default())
@@ -361,8 +369,8 @@ Connection: close\r\n\r\n";
         let mut resp = Vec::new();
         stream.read_to_end(&mut resp).await.expect("Failed to read");
         let resp_str = String::from_utf8_lossy(&resp);
-        println!("REQ1 RESPONSE: {}", resp_str);
-        assert!(resp_str.contains("200 OK"));
+        println!("REQ1 RESPONSE: {resp_str}");
+        assert!(resp_str.contains("200 OK"))
     }
 
     let req2 = b"GET /ok HTTP/1.1\r\n\
@@ -376,7 +384,7 @@ Connection: close\r\n\r\n";
         stream.write_all(req2).await.expect("Failed to write");
         let mut resp = Vec::new();
         stream.read_to_end(&mut resp).await.expect("Failed to read");
-        assert!(String::from_utf8_lossy(&resp).contains("200 OK"));
+        assert!(String::from_utf8_lossy(&resp).contains("200 OK"))
     }
 
     // Verify metrics

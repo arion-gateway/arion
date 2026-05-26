@@ -219,6 +219,7 @@ fn process_histogram<S: Eq + Hash + Clone + Copy>(
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 fn build_prometheus_output() -> io::Result<String> {
     debug!(target: "prometheus", "prometheus_handler: running");
     let mut out: Vec<u8> = Vec::with_capacity(16384);

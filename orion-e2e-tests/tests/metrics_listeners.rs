@@ -12,15 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::net::SocketAddr;
 use http::StatusCode;
+use std::net::SocketAddr;
 
 use orion_e2e_tests::config_builder::{
-    presets, BootstrapBuilder, ClusterBuilder, EndpointBuilder, FilterChainBuilder, HcmBuilder,
-    ListenerBuilder, RouteConfigBuilder, VirtualHostBuilder,
+    presets, BootstrapBuilder, ClusterBuilder, EndpointBuilder, FilterChainBuilder, HcmBuilder, ListenerBuilder,
+    RouteConfigBuilder, VirtualHostBuilder,
 };
 use orion_e2e_tests::{
-    cleanup_config_file, parse_metric_value, OrionInstance, PortBlock, PreConfiguredResponse, SpawnOptions, TestBackend, TestClient,
+    cleanup_config_file, parse_metric_value, OrionInstance, PortBlock, PreConfiguredResponse, SpawnOptions,
+    TestBackend, TestClient,
 };
 
 #[tokio::test]
@@ -34,8 +35,7 @@ async fn test_listener_connection_metrics() {
     let backend_addr = backend.addr();
     backend.set_default_response(PreConfiguredResponse::with_body("Hello from backend!")).await;
 
-    let bootstrap = presets::simple_proxy("backend", backend_addr)
-        .admin("127.0.0.1", admin_port);
+    let bootstrap = presets::simple_proxy("backend", backend_addr).admin("127.0.0.1", admin_port);
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
 
     let orion = OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default())
@@ -50,8 +50,8 @@ async fn test_listener_connection_metrics() {
     initial_metrics_resp.assert_status(StatusCode::OK);
     let initial_metrics = initial_metrics_resp.body_str().unwrap();
 
-    let cx_total = parse_metric_value(initial_metrics, "listeners_downstream_cx_total").unwrap_or(0.0);
-    assert_eq!(cx_total, 0.0);
+    let cx_total = parse_metric_value(initial_metrics, "listeners_downstream_cx_total").unwrap_or(0);
+    assert_eq!(cx_total, 0);
 
     // 2. Send multiple requests to trigger connection metrics multiple times
     let num_requests = 3;
@@ -69,12 +69,13 @@ async fn test_listener_connection_metrics() {
     let cx_total = parse_metric_value(metrics, "listeners_downstream_cx_total").expect("Missing cx_total metric");
     let cx_destroy = parse_metric_value(metrics, "listeners_downstream_cx_destroy").expect("Missing cx_destroy metric");
     let cx_active = parse_metric_value(metrics, "listeners_downstream_cx_active").expect("Missing cx_active metric");
-    let cx_length_count = parse_metric_value(metrics, "listeners_downstream_cx_length_ms_count").expect("Missing cx_length_ms_count metric");
+    let cx_length_count = parse_metric_value(metrics, "listeners_downstream_cx_length_ms_count")
+        .expect("Missing cx_length_ms_count metric");
 
-    assert_eq!(cx_total, num_requests as f64, "Expected exactly {num_requests} downstream connections");
-    assert_eq!(cx_destroy, num_requests as f64, "Expected exactly {num_requests} destroyed downstream connections");
-    assert_eq!(cx_active, 0.0, "Expected 0 active downstream connections");
-    assert_eq!(cx_length_count, num_requests as f64, "Expected exactly {num_requests} recorded connection lengths");
+    assert_eq!(cx_total, num_requests, "Expected exactly {num_requests} downstream connections");
+    assert_eq!(cx_destroy, num_requests, "Expected exactly {num_requests} destroyed downstream connections");
+    assert_eq!(cx_active, 0, "Expected 0 active downstream connections");
+    assert_eq!(cx_length_count, num_requests, "Expected exactly {num_requests} recorded connection lengths");
 
     orion.shutdown();
     cleanup_config_file(&config_path);
@@ -95,21 +96,16 @@ async fn test_listener_no_filter_chain_match_metric() {
     // Since the actual listener port will be dynamically allocated (not 12345),
     // any incoming connection will fail to match the filter chain.
     let listener = ListenerBuilder::new("http").port(0).filter_chain(
-        FilterChainBuilder::new("main")
-            .destination_port(12345)
-            .hcm(
-                HcmBuilder::new().route_config(
-                    RouteConfigBuilder::new("routes")
-                        .virtual_host(VirtualHostBuilder::new("default").route(presets::default_route("backend"))),
-                ),
+        FilterChainBuilder::new("main").destination_port(12345).hcm(
+            HcmBuilder::new().route_config(
+                RouteConfigBuilder::new("routes")
+                    .virtual_host(VirtualHostBuilder::new("default").route(presets::default_route("backend"))),
             ),
+        ),
     );
 
     let cluster = ClusterBuilder::new("backend").endpoint(EndpointBuilder::from_socket_addr(backend_addr));
-    let bootstrap = BootstrapBuilder::new()
-        .listener(listener)
-        .cluster(cluster)
-        .admin("127.0.0.1", admin_port);
+    let bootstrap = BootstrapBuilder::new().listener(listener).cluster(cluster).admin("127.0.0.1", admin_port);
 
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
 
@@ -123,7 +119,7 @@ async fn test_listener_no_filter_chain_match_metric() {
     // Send multiple requests. They should fail or be rejected because there is no filter chain match.
     let num_requests = 3;
     for _ in 0..num_requests {
-        let _ = client.get("/hello").await;
+        let _ = client.get("/hello").await.ok();
     }
 
     // Check metrics
@@ -131,8 +127,9 @@ async fn test_listener_no_filter_chain_match_metric() {
     metrics_resp.assert_status(StatusCode::OK);
     let metrics = metrics_resp.body_str().unwrap();
 
-    let no_match = parse_metric_value(metrics, "listeners_no_filter_chain_match").expect("Missing no_filter_chain_match metric");
-    assert_eq!(no_match, num_requests as f64, "Expected exactly {num_requests} connections with no filter chain match");
+    let no_match =
+        parse_metric_value(metrics, "listeners_no_filter_chain_match").expect("Missing no_filter_chain_match metric");
+    assert_eq!(no_match, num_requests, "Expected exactly {num_requests} connections with no filter chain match");
 
     orion.shutdown();
     cleanup_config_file(&config_path);
@@ -149,8 +146,7 @@ async fn test_listener_active_connection_metric() {
     let backend_addr = backend.addr();
     backend.set_default_response(PreConfiguredResponse::with_body("Hello from backend!")).await;
 
-    let bootstrap = presets::simple_proxy("backend", backend_addr)
-        .admin("127.0.0.1", admin_port);
+    let bootstrap = presets::simple_proxy("backend", backend_addr).admin("127.0.0.1", admin_port);
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
 
     let orion = OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default())
@@ -173,31 +169,32 @@ async fn test_listener_active_connection_metric() {
         metrics_resp.assert_status(StatusCode::OK);
         let metrics = metrics_resp.body_str().unwrap();
 
-        let cx_active = parse_metric_value(metrics, "listeners_downstream_cx_active").expect("Missing cx_active metric");
-        assert_eq!(cx_active, 1.0, "Expected exactly 1 active downstream connection");
+        let cx_active =
+            parse_metric_value(metrics, "listeners_downstream_cx_active").expect("Missing cx_active metric");
+        assert_eq!(cx_active, 1, "Expected exactly 1 active downstream connection")
     } // client is dropped here, which closes the keep-alive connection
 
     // Poll metrics until active connections drop to 0
-    let mut cx_active = 1.0;
+    let mut cx_active = 1;
     for _ in 0..20 {
         let metrics_resp = admin_client.get("/stats/prometheus").await.expect("Failed to get metrics");
         metrics_resp.assert_status(StatusCode::OK);
         let metrics = metrics_resp.body_str().unwrap();
 
-        cx_active = parse_metric_value(metrics, "listeners_downstream_cx_active").unwrap_or(0.0);
-        if cx_active == 0.0 {
+        cx_active = parse_metric_value(metrics, "listeners_downstream_cx_active").unwrap_or(0);
+        if cx_active == 0 {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
 
-    assert_eq!(cx_active, 0.0, "Expected active connections to drop to 0 after client is dropped");
+    assert_eq!(cx_active, 0, "Expected active connections to drop to 0 after client is dropped");
 
     // Also verify that cx_destroy is now 1.0
     let metrics_resp = admin_client.get("/stats/prometheus").await.expect("Failed to get metrics");
     let metrics = metrics_resp.body_str().unwrap();
     let cx_destroy = parse_metric_value(metrics, "listeners_downstream_cx_destroy").expect("Missing cx_destroy metric");
-    assert_eq!(cx_destroy, 1.0, "Expected exactly 1 destroyed connection");
+    assert_eq!(cx_destroy, 1, "Expected exactly 1 destroyed connection");
 
     orion.shutdown();
     cleanup_config_file(&config_path);
@@ -214,8 +211,7 @@ async fn test_listener_concurrent_connections_metric() {
     let backend_addr = backend.addr();
     backend.set_default_response(PreConfiguredResponse::with_body("Hello from backend!")).await;
 
-    let bootstrap = presets::simple_proxy("backend", backend_addr)
-        .admin("127.0.0.1", admin_port);
+    let bootstrap = presets::simple_proxy("backend", backend_addr).admin("127.0.0.1", admin_port);
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
 
     let orion = OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default())
@@ -245,31 +241,32 @@ async fn test_listener_concurrent_connections_metric() {
         metrics_resp.assert_status(StatusCode::OK);
         let metrics = metrics_resp.body_str().unwrap();
 
-        let cx_active = parse_metric_value(metrics, "listeners_downstream_cx_active").expect("Missing cx_active metric");
-        assert_eq!(cx_active, 3.0, "Expected exactly 3 active downstream connections");
+        let cx_active =
+            parse_metric_value(metrics, "listeners_downstream_cx_active").expect("Missing cx_active metric");
+        assert_eq!(cx_active, 3, "Expected exactly 3 active downstream connections")
     } // All 3 clients are dropped here, closing all 3 connections
 
     // Poll metrics until active connections drop to 0
-    let mut cx_active = 3.0;
+    let mut cx_active = 3;
     for _ in 0..20 {
         let metrics_resp = admin_client.get("/stats/prometheus").await.expect("Failed to get metrics");
         metrics_resp.assert_status(StatusCode::OK);
         let metrics = metrics_resp.body_str().unwrap();
 
-        cx_active = parse_metric_value(metrics, "listeners_downstream_cx_active").unwrap_or(0.0);
-        if cx_active == 0.0 {
+        cx_active = parse_metric_value(metrics, "listeners_downstream_cx_active").unwrap_or(0);
+        if cx_active == 0 {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
 
-    assert_eq!(cx_active, 0.0, "Expected active connections to drop to 0 after all clients are dropped");
+    assert_eq!(cx_active, 0, "Expected active connections to drop to 0 after all clients are dropped");
 
-    // Verify that cx_destroy is now 3.0
+    // Verify that cx_destroy is now 3
     let metrics_resp = admin_client.get("/stats/prometheus").await.expect("Failed to get metrics");
     let metrics = metrics_resp.body_str().unwrap();
     let cx_destroy = parse_metric_value(metrics, "listeners_downstream_cx_destroy").expect("Missing cx_destroy metric");
-    assert_eq!(cx_destroy, 3.0, "Expected exactly 3 destroyed connections");
+    assert_eq!(cx_destroy, 3, "Expected exactly 3 destroyed connections");
 
     orion.shutdown();
     cleanup_config_file(&config_path);

@@ -125,12 +125,7 @@ impl BootstrapBuilder {
     #[must_use]
     pub fn admin(mut self, address: impl Into<String>, port: u16) -> Self {
         self.admin_config = Some(Admin {
-            address: Address {
-                socket_address: SocketAddress {
-                    address: address.into(),
-                    port_value: port,
-                },
-            },
+            address: Address { socket_address: SocketAddress { address: address.into(), port_value: port } },
         });
         self
     }
@@ -210,7 +205,7 @@ impl BootstrapBuilder {
                 dynamic_resources,
                 static_resources: StaticResources { listeners, clusters: all_clusters, secrets: vec![] },
             },
-            metrics: self.metrics.clone()
+            metrics: self.metrics.clone(),
         }
     }
 }
@@ -271,7 +266,7 @@ struct OrionConfig {
     runtime: RuntimeConfig,
     logging: LoggingConfig,
     envoy_bootstrap: EnvoyBootstrap,
-    metrics: MetricsConfig
+    metrics: MetricsConfig,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

@@ -42,14 +42,16 @@ pub fn run() -> Result<()> {
 
     // Set the header_names and attribute_names from which to extract the custom keys
     if let Some(metrics_config) = metrics.as_ref() {
-        for (i, key) in metrics_config.custom_keys.iter().enumerate() {
-            if i < 2 {
-                metrics::CUSTOM_KEYS[i].set_source(key.source.clone());
-                if let Some(attribute_name) = &key.attribute_name {
-                    metrics::CUSTOM_KEYS[i].set_attribute_name(attribute_name.clone());
-                }
+        let mut custom_keys = Vec::with_capacity(metrics_config.custom_keys.len());
+        for key in &metrics_config.custom_keys {
+            let pk = metrics::PartitionKey::new();
+            pk.set_source(key.source.clone());
+            if let Some(attribute_name) = &key.attribute_name {
+                pk.set_attribute_name(attribute_name.clone());
             }
+            custom_keys.push(pk);
         }
+        let _ = metrics::CUSTOM_KEYS.set(custom_keys).ok();
     }
 
     // Set the attribute key value used to partition user metrics.

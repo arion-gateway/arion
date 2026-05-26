@@ -71,8 +71,8 @@ pub enum UpgradeError {
 pub fn is_valid_websocket_upgrade_request(headers: &HeaderMap) -> std::result::Result<bool, UpgradeError> {
     match (headers.get(header::CONNECTION), headers.get(header::UPGRADE)) {
         (Some(connection_header), Some(upgrade_header)) => {
-            let connection_header = is_valid_header(connection_header)
-                .map_err(|e| UpgradeError::ConnectionNotAscii(e.to_string()))?;
+            let connection_header =
+                is_valid_header(connection_header).map_err(|e| UpgradeError::ConnectionNotAscii(e.to_string()))?;
             let upgrade_header =
                 is_valid_header(upgrade_header).map_err(|e| UpgradeError::UpgradeNotAscii(e.to_string()))?;
             let is_upgrade = is_upgrade_connection(connection_header);

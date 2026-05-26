@@ -61,12 +61,12 @@ use {crate::get_shard_id, opentelemetry::KeyValue, orion_metrics::metrics::clust
 use pingora_timeout::fast_timeout::fast_timeout;
 use pretty_duration::pretty_duration;
 use rustls::ClientConfig;
+#[cfg(feature = "metrics")]
+use smallvec::SmallVec;
 use smol_str::ToSmolStr;
 use std::{io, mem, sync::Arc, time::Duration};
 use tracing::debug;
 use webpki::types::ServerName;
-#[cfg(feature = "metrics")]
-use smallvec::SmallVec;
 
 #[cfg(feature = "metrics")]
 use {
@@ -502,10 +502,12 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
             use orion_metrics::metrics::custom::MetricsHook;
 
             let mut attrs = SmallVec::<[KeyValue; 2]>::new();
-            for key in &metrics::CUSTOM_KEYS {
-                if let Some(source) = key.source() {
-                    if let Some(id) = metrics::extract_custom_partition_key(request.headers(), Some(source)) {
-                        attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom").to_string(), id));
+            if let Some(custom_keys) = metrics::CUSTOM_KEYS.get() {
+                for key in custom_keys {
+                    if let Some(source) = key.source() {
+                        if let Some(id) = metrics::extract_custom_partition_key(request.headers(), Some(source)) {
+                            attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
+                        }
                     }
                 }
             }

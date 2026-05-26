@@ -1247,14 +1247,22 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
                     #[cfg(feature = "metrics")]
                     if let Some(custom_metrics) = CUSTOM_METRICS.get() {
                         let mut attrs = SmallVec::<[KeyValue; 2]>::new();
-                        for key in &metrics::CUSTOM_KEYS {
-                            if let Some(source) = key.source() {
-                                if let Some(id) = metrics::extract_custom_partition_key(response.headers(), Some(source)) {
-                                    attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
+                        if let Some(custom_keys) = metrics::CUSTOM_KEYS.get() {
+                            for key in custom_keys {
+                                if let Some(source) = key.source() {
+                                    if let Some(id) =
+                                        metrics::extract_custom_partition_key(response.headers(), Some(source))
+                                    {
+                                        attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
+                                    }
                                 }
                             }
                         }
-                        custom_metrics.with_headers(MetricsHook::IncomingResponse, response.headers(), attrs.as_slice());
+                        custom_metrics.with_headers(
+                            MetricsHook::IncomingResponse,
+                            response.headers(),
+                            attrs.as_slice(),
+                        );
                     }
 
                     apply_mutations_on_response(
@@ -1557,10 +1565,12 @@ where
         #[cfg(feature = "metrics")]
         if let Some(custom_metrics) = CUSTOM_METRICS.get() {
             let mut attrs = SmallVec::<[KeyValue; 2]>::new();
-            for key in &metrics::CUSTOM_KEYS {
-                if let Some(source) = key.source() {
-                    if let Some(id) = metrics::extract_custom_partition_key(request.headers(), Some(source)) {
-                        attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
+            if let Some(custom_keys) = metrics::CUSTOM_KEYS.get() {
+                for key in custom_keys {
+                    if let Some(source) = key.source() {
+                        if let Some(id) = metrics::extract_custom_partition_key(request.headers(), Some(source)) {
+                            attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
+                        }
                     }
                 }
             }
@@ -1692,10 +1702,14 @@ where
             if let Ok(response) = &response {
                 if let Some(custom_metrics) = CUSTOM_METRICS.get() {
                     let mut attrs = SmallVec::<[KeyValue; 2]>::new();
-                    for key in &metrics::CUSTOM_KEYS {
-                        if let Some(source) = key.source() {
-                            if let Some(id) = metrics::extract_custom_partition_key(response.headers(), Some(source)) {
-                                attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
+                    if let Some(custom_keys) = metrics::CUSTOM_KEYS.get() {
+                        for key in custom_keys {
+                            if let Some(source) = key.source() {
+                                if let Some(id) =
+                                    metrics::extract_custom_partition_key(response.headers(), Some(source))
+                                {
+                                    attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
+                                }
                             }
                         }
                     }

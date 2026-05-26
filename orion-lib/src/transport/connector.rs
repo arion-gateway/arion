@@ -371,28 +371,25 @@ impl Service<Uri> for UnifiedConnector {
                     #[cfg(feature = "metrics")]
                     {
                         let shard_id = get_shard_id!();
-                        let cluster_name_str = cluster_name.to_string();
                         instrumented.metrics().with_drop_fn(Box::new(move |metrics| {
                             with_metric!(
                                 clusters::UPSTREAM_CX_RX_BYTES_TOTAL,
                                 add,
                                 metrics.bytes_read(),
                                 shard_id,
-                                &[KeyValue::new("cluster", cluster_name_str.clone())]
+                                &[KeyValue::new("cluster", cluster_name)]
                             );
                             with_metric!(
                                 clusters::UPSTREAM_CX_TX_BYTES_TOTAL,
                                 add,
                                 metrics.bytes_written(),
                                 shard_id,
-                                &[KeyValue::new("cluster", cluster_name_str)]
+                                &[KeyValue::new("cluster", cluster_name)]
                             );
-                        }));
+                        }))
                     }
 
-                    Ok(HttpConnection::new(TokioIo::new(
-                        Box::new(instrumented) as AsyncInstrumentedStream
-                    )))
+                    Ok(HttpConnection::new(TokioIo::new(Box::new(instrumented) as AsyncInstrumentedStream)))
                 })
             },
             UnifiedConnector::Internal(c) => {

@@ -12,19 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use http::StatusCode;
 use std::net::SocketAddr;
 use std::time::Duration;
-use http::StatusCode;
-use tokio::net::TcpStream;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
 
 use orion_e2e_tests::config_builder::{
-    presets, BootstrapBuilder, ClusterBuilder, DownstreamTlsBuilder, FilterChainBuilder, HcmBuilder,
-    ListenerBuilder, RouteConfigBuilder, VirtualHostBuilder, RouteBuilder,
+    presets, BootstrapBuilder, ClusterBuilder, DownstreamTlsBuilder, FilterChainBuilder, HcmBuilder, ListenerBuilder,
+    RouteBuilder, RouteConfigBuilder, VirtualHostBuilder,
 };
 use orion_e2e_tests::{
-    cleanup_config_file, parse_metric_value, OrionInstance, PortBlock, PreConfiguredResponse, SpawnOptions,
-    TestBackend, TestClient, TestCerts, TlsClientConfig, RawHttpRequestBuilder,
+    cleanup_config_file, parse_metric_value, OrionInstance, PortBlock, PreConfiguredResponse, RawHttpRequestBuilder,
+    SpawnOptions, TestBackend, TestCerts, TestClient, TlsClientConfig,
 };
 
 #[tokio::test]
@@ -38,8 +38,7 @@ async fn test_http_basic_metrics() {
     let backend_addr = backend.addr();
 
     // Configure simple proxy with the admin interface enabled
-    let bootstrap = presets::simple_proxy("backend", backend_addr)
-        .admin("127.0.0.1", admin_port);
+    let bootstrap = presets::simple_proxy("backend", backend_addr).admin("127.0.0.1", admin_port);
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
 
     let orion = OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default())
@@ -53,8 +52,8 @@ async fn test_http_basic_metrics() {
     initial_metrics_resp.assert_status(StatusCode::OK);
     let initial_metrics = initial_metrics_resp.body_str().unwrap();
 
-    let cx_total = parse_metric_value(initial_metrics, "http_downstream_cx_total").unwrap_or(0.0);
-    assert_eq!(cx_total, 0.0_f64, "Initial downstream connections should be 0");
+    let cx_total = parse_metric_value(initial_metrics, "http_downstream_cx_total").unwrap_or(0);
+    assert_eq!(cx_total, 0, "Initial downstream connections should be 0");
 
     let mut total_expected_rx = 0;
     let mut total_expected_tx = 0;
@@ -71,7 +70,7 @@ async fn test_http_basic_metrics() {
         let mut resp = Vec::new();
         stream.read_to_end(&mut resp).await.expect("Failed to read");
         total_expected_tx += resp.len();
-        assert!(String::from_utf8_lossy(&resp).contains("200 OK"));
+        assert!(String::from_utf8_lossy(&resp).contains("200 OK"))
     }
 
     // 3. Send 3xx request (backend returns 302 Found)
@@ -84,7 +83,7 @@ async fn test_http_basic_metrics() {
         let mut resp = Vec::new();
         stream.read_to_end(&mut resp).await.expect("Failed to read");
         total_expected_tx += resp.len();
-        assert!(String::from_utf8_lossy(&resp).contains("302 Found"));
+        assert!(String::from_utf8_lossy(&resp).contains("302 Found"))
     }
 
     // 4. Send 4xx request (backend returns 404 Not Found)
@@ -97,7 +96,7 @@ async fn test_http_basic_metrics() {
         let mut resp = Vec::new();
         stream.read_to_end(&mut resp).await.expect("Failed to read");
         total_expected_tx += resp.len();
-        assert!(String::from_utf8_lossy(&resp).contains("404 Not Found"));
+        assert!(String::from_utf8_lossy(&resp).contains("404 Not Found"))
     }
 
     // 5. Send 5xx request (backend returns 500 Internal Server Error)
@@ -110,7 +109,7 @@ async fn test_http_basic_metrics() {
         let mut resp = Vec::new();
         stream.read_to_end(&mut resp).await.expect("Failed to read");
         total_expected_tx += resp.len();
-        assert!(String::from_utf8_lossy(&resp).contains("500 Internal Server Error"));
+        assert!(String::from_utf8_lossy(&resp).contains("500 Internal Server Error"))
     }
 
     // 6. Check metrics after requests
@@ -122,7 +121,8 @@ async fn test_http_basic_metrics() {
     let cx_total = parse_metric_value(metrics, "http_downstream_cx_total").expect("Missing cx_total metric");
     let cx_destroy = parse_metric_value(metrics, "http_downstream_cx_destroy").expect("Missing cx_destroy metric");
     let cx_active = parse_metric_value(metrics, "http_downstream_cx_active").expect("Missing cx_active metric");
-    let cx_length_count = parse_metric_value(metrics, "http_downstream_cx_length_ms_count").expect("Missing cx_length_ms_count metric");
+    let cx_length_count =
+        parse_metric_value(metrics, "http_downstream_cx_length_ms_count").expect("Missing cx_length_ms_count metric");
 
     // Request metrics
     let rq_total = parse_metric_value(metrics, "http_downstream_rq_total").expect("Missing rq_total metric");
@@ -136,21 +136,21 @@ async fn test_http_basic_metrics() {
     let tx_bytes = parse_metric_value(metrics, "http_downstream_cx_tx_bytes_total").expect("Missing tx_bytes metric");
 
     // Assert connection metrics
-    assert_eq!(cx_total, 4.0, "Expected exactly 4 downstream HTTP connections");
-    assert_eq!(cx_destroy, 4.0, "Expected exactly 4 destroyed downstream HTTP connections");
-    assert_eq!(cx_active, 0.0, "Expected 0 active downstream HTTP connections");
-    assert_eq!(cx_length_count, 4.0, "Expected exactly 4 recorded connection lengths");
+    assert_eq!(cx_total, 4, "Expected exactly 4 downstream HTTP connections");
+    assert_eq!(cx_destroy, 4, "Expected exactly 4 destroyed downstream HTTP connections");
+    assert_eq!(cx_active, 0, "Expected 0 active downstream HTTP connections");
+    assert_eq!(cx_length_count, 4, "Expected exactly 4 recorded connection lengths");
 
     // Assert request metrics
-    assert_eq!(rq_total, 4.0, "Expected exactly 4 downstream HTTP requests");
-    assert_eq!(rq_2xx, 1.0, "Expected exactly 1 2xx response");
-    assert_eq!(rq_3xx, 1.0, "Expected exactly 1 3xx response");
-    assert_eq!(rq_4xx, 1.0, "Expected exactly 1 4xx response");
-    assert_eq!(rq_5xx, 1.0, "Expected exactly 1 5xx response");
+    assert_eq!(rq_total, 4, "Expected exactly 4 downstream HTTP requests");
+    assert_eq!(rq_2xx, 1, "Expected exactly 1 2xx response");
+    assert_eq!(rq_3xx, 1, "Expected exactly 1 3xx response");
+    assert_eq!(rq_4xx, 1, "Expected exactly 1 4xx response");
+    assert_eq!(rq_5xx, 1, "Expected exactly 1 5xx response");
 
     // Assert byte metrics with exact mathematical deduction
-    assert_eq!(rx_bytes, total_expected_rx as f64, "Expected exact downstream rx bytes");
-    assert_eq!(tx_bytes, total_expected_tx as f64, "Expected exact downstream tx bytes");
+    assert_eq!(rx_bytes, total_expected_rx as u64, "Expected exact downstream rx bytes");
+    assert_eq!(tx_bytes, total_expected_tx as u64, "Expected exact downstream tx bytes");
 
     orion.shutdown();
     cleanup_config_file(&config_path);
@@ -158,6 +158,7 @@ async fn test_http_basic_metrics() {
 
 #[tokio::test]
 #[ignore]
+#[allow(clippy::indexing_slicing)]
 async fn test_http_tls_metrics() {
     let port_block = PortBlock::reserve().expect("Failed to reserve port block");
     let admin_port = port_block.allocate().expect("Failed to allocate admin port");
@@ -174,17 +175,14 @@ async fn test_http_tls_metrics() {
     let tls = DownstreamTlsBuilder::new().cert_files(&cert_path, &key_path);
 
     // Build the listener manually and call with_tls_inspector()
-    let listener = ListenerBuilder::new("https")
-        .port(0)
-        .with_tls_inspector()
-        .filter_chain(
-            FilterChainBuilder::new("main")
-                .downstream_tls(tls)
-                .hcm(HcmBuilder::new().http1().route_config(
-                    RouteConfigBuilder::new("routes")
-                        .virtual_host(VirtualHostBuilder::new("default").route(presets::default_route("backend"))),
-                ))
-        );
+    let listener = ListenerBuilder::new("https").port(0).with_tls_inspector().filter_chain(
+        FilterChainBuilder::new("main").downstream_tls(tls).hcm(
+            HcmBuilder::new().http1().route_config(
+                RouteConfigBuilder::new("routes")
+                    .virtual_host(VirtualHostBuilder::new("default").route(presets::default_route("backend"))),
+            ),
+        ),
+    );
 
     let bootstrap = BootstrapBuilder::new()
         .listener(listener)
@@ -219,31 +217,32 @@ async fn test_http_tls_metrics() {
         metrics_resp.assert_status(StatusCode::OK);
         let metrics = metrics_resp.body_str().unwrap();
 
-        let ssl_active = parse_metric_value(metrics, "http_downstream_cx_ssl_active").expect("Missing ssl_active metric");
-        assert_eq!(ssl_active, 1.0, "Expected exactly 1 active downstream TLS connection");
+        let ssl_active =
+            parse_metric_value(metrics, "http_downstream_cx_ssl_active").expect("Missing ssl_active metric");
+        assert_eq!(ssl_active, 1, "Expected exactly 1 active downstream TLS connection")
     } // tls_stream is dropped here, closing the connection
 
     // Poll until active TLS connection drops to 0
-    let mut ssl_active = 1.0;
+    let mut ssl_active = 1;
     for _ in 0..20 {
         let metrics_resp = admin_client.get("/stats/prometheus").await.expect("Failed to get metrics");
         metrics_resp.assert_status(StatusCode::OK);
         let metrics = metrics_resp.body_str().unwrap();
 
-        ssl_active = parse_metric_value(metrics, "http_downstream_cx_ssl_active").unwrap_or(0.0);
-        if ssl_active == 0.0 {
+        ssl_active = parse_metric_value(metrics, "http_downstream_cx_ssl_active").unwrap_or(0);
+        if ssl_active == 0 {
             break;
         }
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(50)).await
     }
 
-    assert_eq!(ssl_active, 0.0, "Expected active TLS connections to drop to 0");
+    assert_eq!(ssl_active, 0, "Expected active TLS connections to drop to 0");
 
     // Check total TLS connections
     let metrics_resp = admin_client.get("/stats/prometheus").await.expect("Failed to get metrics");
     let metrics = metrics_resp.body_str().unwrap();
     let ssl_total = parse_metric_value(metrics, "http_downstream_cx_ssl_total").expect("Missing ssl_total metric");
-    assert_eq!(ssl_total, 1.0, "Expected exactly 1 total downstream TLS connection");
+    assert_eq!(ssl_total, 1, "Expected exactly 1 total downstream TLS connection");
 
     orion.shutdown();
     cleanup_config_file(&config_path);
@@ -251,6 +250,7 @@ async fn test_http_tls_metrics() {
 
 #[tokio::test]
 #[ignore]
+#[allow(clippy::indexing_slicing)]
 async fn test_http_websocket_upgrade_metrics() {
     let port_block = PortBlock::reserve().expect("Failed to reserve port block");
     let admin_port = port_block.allocate().expect("Failed to allocate admin port");
@@ -261,16 +261,14 @@ async fn test_http_websocket_upgrade_metrics() {
 
     // Create an HCM with websocket upgrades enabled, but disabled on the /no-ws route
     let hcm = HcmBuilder::new().http1().upgrade_websocket().route_config(
-        RouteConfigBuilder::new("routes")
-            .virtual_host(VirtualHostBuilder::new("default")
+        RouteConfigBuilder::new("routes").virtual_host(
+            VirtualHostBuilder::new("default")
                 .route(RouteBuilder::new().match_prefix("/no-ws").cluster("backend").disable_websocket_upgrade())
-                .route(presets::default_route("backend"))
-            ),
+                .route(presets::default_route("backend")),
+        ),
     );
 
-    let listener = ListenerBuilder::new("http").port(0).filter_chain(
-        FilterChainBuilder::new("main").hcm(hcm)
-    );
+    let listener = ListenerBuilder::new("http").port(0).filter_chain(FilterChainBuilder::new("main").hcm(hcm));
 
     let bootstrap = BootstrapBuilder::new()
         .listener(listener)
@@ -286,12 +284,14 @@ async fn test_http_websocket_upgrade_metrics() {
     let admin_client = TestClient::new(admin_addr);
 
     // 1. Test successful WebSocket Upgrade using a raw TcpStream to keep the connection open
-    backend.enqueue_response(
-        PreConfiguredResponse::with_status(StatusCode::SWITCHING_PROTOCOLS)
-            .header("Connection", "Upgrade")
-            .header("Upgrade", "websocket")
-            .header("Sec-WebSocket-Accept", "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=")
-    ).await;
+    backend
+        .enqueue_response(
+            PreConfiguredResponse::with_status(StatusCode::SWITCHING_PROTOCOLS)
+                .header("Connection", "Upgrade")
+                .header("Upgrade", "websocket")
+                .header("Sec-WebSocket-Accept", "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="),
+        )
+        .await;
 
     let req = RawHttpRequestBuilder::new()
         .host("localhost")
@@ -318,28 +318,30 @@ async fn test_http_websocket_upgrade_metrics() {
         metrics_resp.assert_status(StatusCode::OK);
         let metrics = metrics_resp.body_str().unwrap();
 
-        let ws_total = parse_metric_value(metrics, "http_downstream_cx_ws_upgrades_total").expect("Missing ws_upgrades_total metric");
-        let ws_active = parse_metric_value(metrics, "http_downstream_cx_ws_upgrades_active").expect("Missing ws_upgrades_active metric");
+        let ws_total = parse_metric_value(metrics, "http_downstream_cx_ws_upgrades_total")
+            .expect("Missing ws_upgrades_total metric");
+        let ws_active = parse_metric_value(metrics, "http_downstream_cx_ws_upgrades_active")
+            .expect("Missing ws_upgrades_active metric");
 
-        assert_eq!(ws_total, 1.0, "Expected exactly 1 total websocket upgrade");
-        assert_eq!(ws_active, 1.0, "Expected exactly 1 active websocket upgrade");
+        assert_eq!(ws_total, 1, "Expected exactly 1 total websocket upgrade");
+        assert_eq!(ws_active, 1, "Expected exactly 1 active websocket upgrade")
     } // stream is dropped here, closing the connection
 
     // Poll until active websocket connection drops to 0
-    let mut ws_active = 1.0;
+    let mut ws_active = 1;
     for _ in 0..20 {
         let metrics_resp = admin_client.get("/stats/prometheus").await.expect("Failed to get metrics");
         metrics_resp.assert_status(StatusCode::OK);
         let metrics = metrics_resp.body_str().unwrap();
 
-        ws_active = parse_metric_value(metrics, "http_downstream_cx_ws_upgrades_active").unwrap_or(0.0);
-        if ws_active == 0.0 {
+        ws_active = parse_metric_value(metrics, "http_downstream_cx_ws_upgrades_active").unwrap_or(0);
+        if ws_active == 0 {
             break;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    assert_eq!(ws_active, 0.0, "Expected active websocket connections to drop to 0");
+    assert_eq!(ws_active, 0, "Expected active websocket connections to drop to 0");
 
     // 2. Test upgrade request rejected by a non-upgrade route (/no-ws)
     let req_rejected = RawHttpRequestBuilder::new()
@@ -358,8 +360,8 @@ async fn test_http_websocket_upgrade_metrics() {
         let mut buf = [0u8; 1024];
         let n = stream.read(&mut buf).await.expect("Failed to read");
         let response_str = String::from_utf8_lossy(&buf[..n]);
-        println!("Rejected upgrade response: {}", response_str);
-        assert!(response_str.contains("400 Bad Request"));
+        println!("Rejected upgrade response: {response_str}");
+        assert!(response_str.contains("400 Bad Request"))
     }
 
     // Check that DOWNSTREAM_RQ_WS_ON_NON_WS_ROUTE is incremented
@@ -367,8 +369,9 @@ async fn test_http_websocket_upgrade_metrics() {
     metrics_resp.assert_status(StatusCode::OK);
     let metrics = metrics_resp.body_str().unwrap();
 
-    let ws_on_non_ws = parse_metric_value(metrics, "http_downstream_rq_ws_on_non_ws_route").expect("Missing ws_on_non_ws_route metric");
-    assert_eq!(ws_on_non_ws, 1.0, "Expected exactly 1 upgrade request on non-upgrade route");
+    let ws_on_non_ws = parse_metric_value(metrics, "http_downstream_rq_ws_on_non_ws_route")
+        .expect("Missing ws_on_non_ws_route metric");
+    assert_eq!(ws_on_non_ws, 1, "Expected exactly 1 upgrade request on non-upgrade route");
 
     orion.shutdown();
     cleanup_config_file(&config_path);

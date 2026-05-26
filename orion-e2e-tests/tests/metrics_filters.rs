@@ -12,20 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use http::StatusCode;
 use std::net::SocketAddr;
 use std::time::Duration;
-use http::StatusCode;
-use tokio::net::TcpStream;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
 
 use orion_e2e_tests::config_builder::{
-    presets, BootstrapBuilder, ClusterBuilder, FilterChainBuilder, HcmBuilder,
-    ListenerBuilder, RouteConfigBuilder, VirtualHostBuilder, LocalRateLimitBuilder, UserRateLimiterBuilder, NetworkGlobalRateLimitBuilder,
-    EndpointBuilder,
+    presets, BootstrapBuilder, ClusterBuilder, EndpointBuilder, FilterChainBuilder, HcmBuilder, ListenerBuilder,
+    LocalRateLimitBuilder, NetworkGlobalRateLimitBuilder, RouteConfigBuilder, UserRateLimiterBuilder,
+    VirtualHostBuilder,
 };
 use orion_e2e_tests::{
-    cleanup_config_file, OrionInstance, PortBlock, PreConfiguredResponse, SpawnOptions, TestBackend, TestClient, RequestBuilder,
-    RlsTestServerBuilder, rls_responses, TcpTestClient,
+    cleanup_config_file, rls_responses, OrionInstance, PortBlock, PreConfiguredResponse, RequestBuilder,
+    RlsTestServerBuilder, SpawnOptions, TcpTestClient, TestBackend, TestClient,
 };
 
 fn parse_filter_metric_value(prometheus_output: &str, metric_name: &str, labels: &[(&str, &str)]) -> Option<f64> {
@@ -69,17 +69,14 @@ async fn test_filter_connection_rate_limit_metrics() {
     // Connection rate limit: max 1 token, fill 1 token per 10 seconds
     let bootstrap = BootstrapBuilder::new()
         .listener(
-            ListenerBuilder::new("http")
-                .port(0)
-                .listener_local_rate_limit("conn_rate_limit", 1, 1, 10)
-                .filter_chain(
-                    FilterChainBuilder::new("main").hcm(
-                        HcmBuilder::new().http1().route_config(
-                            RouteConfigBuilder::new("routes")
-                                .virtual_host(VirtualHostBuilder::new("default").route(presets::default_route("backend"))),
-                        ),
+            ListenerBuilder::new("http").port(0).listener_local_rate_limit("conn_rate_limit", 1, 1, 10).filter_chain(
+                FilterChainBuilder::new("main").hcm(
+                    HcmBuilder::new().http1().route_config(
+                        RouteConfigBuilder::new("routes")
+                            .virtual_host(VirtualHostBuilder::new("default").route(presets::default_route("backend"))),
                     ),
                 ),
+            ),
         )
         .cluster(ClusterBuilder::with_endpoint("backend", backend_addr))
         .admin("127.0.0.1", admin_port);
@@ -100,7 +97,7 @@ async fn test_filter_connection_rate_limit_metrics() {
         stream.write_all(req).await.expect("Failed to write");
         let mut resp = Vec::new();
         stream.read_to_end(&mut resp).await.expect("Failed to read");
-        assert!(String::from_utf8_lossy(&resp).contains("200 OK"));
+        assert!(String::from_utf8_lossy(&resp).contains("200 OK"))
     }
 
     // 2. Second connection (should be rejected at connection level immediately)
@@ -109,9 +106,9 @@ async fn test_filter_connection_rate_limit_metrics() {
         let mut stream = TcpStream::connect(listener_addr).await.expect("Failed to connect");
         stream.write_all(req).await.expect("Failed to write");
         let mut resp = Vec::new();
-        let _ = stream.read_to_end(&mut resp).await;
+        let _ = stream.read_to_end(&mut resp).await.ok();
         // Connection is closed immediately, so response should be empty or connection reset
-        assert!(resp.is_empty());
+        assert!(resp.is_empty())
     }
 
     // 3. Verify metrics
@@ -120,11 +117,19 @@ async fn test_filter_connection_rate_limit_metrics() {
     let metrics = metrics_resp.body_str().unwrap();
 
     assert_eq!(
-        parse_filter_metric_value(metrics, "filter_connection_rate_limit", &[("filter", "conn_rate_limit"), ("result", "ok")]),
+        parse_filter_metric_value(
+            metrics,
+            "filter_connection_rate_limit",
+            &[("filter", "conn_rate_limit"), ("result", "ok")]
+        ),
         Some(1.0)
     );
     assert_eq!(
-        parse_filter_metric_value(metrics, "filter_connection_rate_limit", &[("filter", "conn_rate_limit"), ("result", "rate_limited")]),
+        parse_filter_metric_value(
+            metrics,
+            "filter_connection_rate_limit",
+            &[("filter", "conn_rate_limit"), ("result", "rate_limited")]
+        ),
         Some(1.0)
     );
 
@@ -144,26 +149,19 @@ async fn test_filter_local_rate_limit_metrics() {
     backend.set_default_response(PreConfiguredResponse::with_body("OK")).await;
 
     // HCM local rate limit: max 1 token, fill 1 token per 10 seconds
-    let local_rate_limit = LocalRateLimitBuilder::new()
-        .stat_prefix("hcm_rate_limit")
-        .status_code(429)
-        .token_bucket(1, 1, 10);
+    let local_rate_limit =
+        LocalRateLimitBuilder::new().stat_prefix("hcm_rate_limit").status_code(429).token_bucket(1, 1, 10);
 
     let bootstrap = BootstrapBuilder::new()
         .listener(
-            ListenerBuilder::new("http")
-                .port(0)
-                .filter_chain(
-                    FilterChainBuilder::new("main").hcm(
-                        HcmBuilder::new()
-                            .http1()
-                            .local_rate_limit(local_rate_limit)
-                            .route_config(
-                                RouteConfigBuilder::new("routes")
-                                    .virtual_host(VirtualHostBuilder::new("default").route(presets::default_route("backend"))),
-                            ),
+            ListenerBuilder::new("http").port(0).filter_chain(
+                FilterChainBuilder::new("main").hcm(
+                    HcmBuilder::new().http1().local_rate_limit(local_rate_limit).route_config(
+                        RouteConfigBuilder::new("routes")
+                            .virtual_host(VirtualHostBuilder::new("default").route(presets::default_route("backend"))),
                     ),
                 ),
+            ),
         )
         .cluster(ClusterBuilder::with_endpoint("backend", backend_addr))
         .admin("127.0.0.1", admin_port);
@@ -191,11 +189,19 @@ async fn test_filter_local_rate_limit_metrics() {
     let metrics = metrics_resp.body_str().unwrap();
 
     assert_eq!(
-        parse_filter_metric_value(metrics, "filter_local_rate_limit", &[("filter", "hcm_rate_limit"), ("result", "ok")]),
+        parse_filter_metric_value(
+            metrics,
+            "filter_local_rate_limit",
+            &[("filter", "hcm_rate_limit"), ("result", "ok")]
+        ),
         Some(1.0)
     );
     assert_eq!(
-        parse_filter_metric_value(metrics, "filter_local_rate_limit", &[("filter", "hcm_rate_limit"), ("result", "rate_limited")]),
+        parse_filter_metric_value(
+            metrics,
+            "filter_local_rate_limit",
+            &[("filter", "hcm_rate_limit"), ("result", "rate_limited")]
+        ),
         Some(1.0)
     );
 
@@ -223,19 +229,14 @@ async fn test_filter_user_rate_limit_metrics() {
 
     let bootstrap = BootstrapBuilder::new()
         .listener(
-            ListenerBuilder::new("http")
-                .port(0)
-                .filter_chain(
-                    FilterChainBuilder::new("main").hcm(
-                        HcmBuilder::new()
-                            .http1()
-                            .user_rate_limit(user_rate_limiter)
-                            .route_config(
-                                RouteConfigBuilder::new("routes")
-                                    .virtual_host(VirtualHostBuilder::new("default").route(presets::default_route("backend"))),
-                            ),
+            ListenerBuilder::new("http").port(0).filter_chain(
+                FilterChainBuilder::new("main").hcm(
+                    HcmBuilder::new().http1().user_rate_limit(user_rate_limiter).route_config(
+                        RouteConfigBuilder::new("routes")
+                            .virtual_host(VirtualHostBuilder::new("default").route(presets::default_route("backend"))),
                     ),
                 ),
+            ),
         )
         .cluster(ClusterBuilder::with_endpoint("backend", backend_addr))
         .admin("127.0.0.1", admin_port);
@@ -267,15 +268,27 @@ async fn test_filter_user_rate_limit_metrics() {
     let metrics = metrics_resp.body_str().unwrap();
 
     assert_eq!(
-        parse_filter_metric_value(metrics, "filter_user_rate_limit", &[("filter", "user_rate_limiter"), ("user", "alice"), ("result", "ok")]),
+        parse_filter_metric_value(
+            metrics,
+            "filter_user_rate_limit",
+            &[("filter", "user_rate_limiter"), ("user", "alice"), ("result", "ok")]
+        ),
         Some(1.0)
     );
     assert_eq!(
-        parse_filter_metric_value(metrics, "filter_user_rate_limit", &[("filter", "user_rate_limiter"), ("user", "alice"), ("result", "rate_limited")]),
+        parse_filter_metric_value(
+            metrics,
+            "filter_user_rate_limit",
+            &[("filter", "user_rate_limiter"), ("user", "alice"), ("result", "rate_limited")]
+        ),
         Some(1.0)
     );
     assert_eq!(
-        parse_filter_metric_value(metrics, "filter_user_rate_limit", &[("filter", "user_rate_limiter"), ("result", "not_applicable")]),
+        parse_filter_metric_value(
+            metrics,
+            "filter_user_rate_limit",
+            &[("filter", "user_rate_limiter"), ("result", "not_applicable")]
+        ),
         Some(1.0)
     );
 
@@ -309,18 +322,14 @@ async fn test_filter_global_rate_limit_metrics() {
 
     let bootstrap = BootstrapBuilder::new()
         .listener(
-            ListenerBuilder::new("http")
-                .port(0)
-                .filter_chain(
-                    FilterChainBuilder::new("main")
-                        .network_global_rate_limit(rl)
-                        .hcm(
-                            HcmBuilder::new().http1().route_config(
-                                RouteConfigBuilder::new("routes")
-                                    .virtual_host(VirtualHostBuilder::new("vh").route(presets::default_route("backend"))),
-                            ),
-                        ),
+            ListenerBuilder::new("http").port(0).filter_chain(
+                FilterChainBuilder::new("main").network_global_rate_limit(rl).hcm(
+                    HcmBuilder::new().http1().route_config(
+                        RouteConfigBuilder::new("routes")
+                            .virtual_host(VirtualHostBuilder::new("vh").route(presets::default_route("backend"))),
+                    ),
                 ),
+            ),
         )
         .cluster(ClusterBuilder::new("backend").endpoint(EndpointBuilder::from_socket_addr(backend.addr())))
         .cluster(ClusterBuilder::new("rls_cluster").http2().endpoint(EndpointBuilder::from_socket_addr(rls.addr())))
@@ -342,14 +351,14 @@ async fn test_filter_global_rate_limit_metrics() {
         stream.write_all(req).await.expect("Failed to write");
         let mut resp = Vec::new();
         stream.read_to_end(&mut resp).await.expect("Failed to read");
-        assert!(String::from_utf8_lossy(&resp).contains("200 OK"));
+        assert!(String::from_utf8_lossy(&resp).contains("200 OK"))
     }
 
     // 2. Second connection (should be over limit and dropped)
     {
         let tcp = TcpTestClient::new(listener_addr);
         let result = tcp.receive_on_connect_with_timeout(Duration::from_millis(500)).await;
-        assert!(result.is_err() || result.unwrap().is_empty(), "connection should be dropped");
+        assert!(result.is_err() || result.unwrap().is_empty(), "connection should be dropped")
     }
 
     // 3. Verify metrics
@@ -358,11 +367,19 @@ async fn test_filter_global_rate_limit_metrics() {
     let metrics = metrics_resp.body_str().unwrap();
 
     assert_eq!(
-        parse_filter_metric_value(metrics, "filter_connection_rate_limit", &[("filter", "global_limit"), ("result", "ok")]),
+        parse_filter_metric_value(
+            metrics,
+            "filter_connection_rate_limit",
+            &[("filter", "global_limit"), ("result", "ok")]
+        ),
         Some(1.0)
     );
     assert_eq!(
-        parse_filter_metric_value(metrics, "filter_connection_rate_limit", &[("filter", "global_limit"), ("result", "rate_limited")]),
+        parse_filter_metric_value(
+            metrics,
+            "filter_connection_rate_limit",
+            &[("filter", "global_limit"), ("result", "rate_limited")]
+        ),
         Some(1.0)
     );
 
