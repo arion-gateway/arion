@@ -23,6 +23,7 @@ use crate::{Error, Result};
 use super::cluster::Cluster;
 use super::listener::Listener;
 use super::serialize::proto_to_yaml_value;
+use orion_configuration::config::metrics::MetricsConfig;
 
 static CONFIG_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -41,6 +42,7 @@ pub struct BootstrapBuilder {
     log_level: String,
     xds_config: Option<XdsConfig>,
     admin_config: Option<Admin>,
+    metrics: MetricsConfig,
 }
 
 impl Default for BootstrapBuilder {
@@ -60,6 +62,7 @@ impl BootstrapBuilder {
             log_level: "info".into(),
             xds_config: None,
             admin_config: None,
+            metrics: MetricsConfig::default(),
         }
     }
 
@@ -133,6 +136,12 @@ impl BootstrapBuilder {
     }
 
     #[must_use]
+    pub fn metrics(mut self, metrics: MetricsConfig) -> Self {
+        self.metrics = metrics;
+        self
+    }
+
+    #[must_use]
     pub fn get_clusters(&self) -> &[Cluster] {
         &self.clusters
     }
@@ -201,6 +210,7 @@ impl BootstrapBuilder {
                 dynamic_resources,
                 static_resources: StaticResources { listeners, clusters: all_clusters, secrets: vec![] },
             },
+            metrics: self.metrics.clone()
         }
     }
 }
@@ -261,6 +271,7 @@ struct OrionConfig {
     runtime: RuntimeConfig,
     logging: LoggingConfig,
     envoy_bootstrap: EnvoyBootstrap,
+    metrics: MetricsConfig
 }
 
 #[derive(Debug, Serialize, Deserialize)]

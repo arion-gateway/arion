@@ -34,7 +34,7 @@ async fn test_tcp_proxy_metrics() {
     let admin_addr = SocketAddr::from(([127, 0, 0, 1], admin_port));
 
     // Start a TCP backend that echoes back "hello" on connect
-    let mut backend = TcpTestBackend::start().await.expect("Failed to start TCP backend");
+    let backend = TcpTestBackend::start().await.expect("Failed to start TCP backend");
     backend.set_send_on_connect(b"hello").await;
 
     // Configure Orion as a TCP proxy
@@ -69,7 +69,7 @@ async fn test_tcp_proxy_metrics() {
     // 2. Open a TCP connection and keep it open to verify active connection metric
     {
         let mut stream = TcpStream::connect(orion.listener_addr().unwrap()).await.expect("Failed to connect");
-        
+
         // Read the "hello" sent on connect by the backend
         let mut buf = [0u8; 5];
         stream.read_exact(&mut buf).await.expect("Failed to read");
@@ -90,7 +90,7 @@ async fn test_tcp_proxy_metrics() {
     // 3. Open a second TCP connection to verify that the byte counters accumulate correctly
     {
         let mut stream = TcpStream::connect(orion.listener_addr().unwrap()).await.expect("Failed to connect");
-        
+
         // Read the "hello" sent on connect by the backend
         let mut buf = [0u8; 5];
         stream.read_exact(&mut buf).await.expect("Failed to read");

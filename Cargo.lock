@@ -3006,6 +3006,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "orion-configuration",
  "orion-data-plane-api",
  "orion-xds",
  "pingora",
