@@ -134,15 +134,21 @@ async fn test_cluster_active_request_metric() {
         client.get("/hello").await
     });
 
-    // Sleep briefly to let Orion route the request and have it active
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    // Poll metrics until active requests becomes 1.0 (timeout of 2 seconds)
+    let mut rq_active = 0.0;
+    let start_time = tokio::time::Instant::now();
+    while start_time.elapsed() < Duration::from_secs(2) {
+        let metrics_resp = admin_client.get("/stats/prometheus").await.expect("Failed to get metrics");
+        metrics_resp.assert_status(StatusCode::OK);
+        let metrics = metrics_resp.body_str().unwrap();
 
-    // Check metrics: active requests should be 1.0
-    let metrics_resp = admin_client.get("/stats/prometheus").await.expect("Failed to get metrics");
-    metrics_resp.assert_status(StatusCode::OK);
-    let metrics = metrics_resp.body_str().unwrap();
+        rq_active = parse_metric_value(metrics, "cluster_upstream_rq_active").unwrap_or(0.0);
+        if rq_active == 1.0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 
-    let rq_active = parse_metric_value(metrics, "cluster_upstream_rq_active").expect("Missing rq_active metric");
     assert_eq!(rq_active, 1.0, "Expected exactly 1 active upstream request");
 
     // Wait for the request to complete
