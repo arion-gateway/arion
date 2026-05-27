@@ -506,27 +506,21 @@ impl ExternalProcessor {
 
         #[cfg(feature = "metrics")]
         if let Some(custom_metrics) = CUSTOM_METRICS.get() {
+            use crate::metrics;
             use opentelemetry::KeyValue;
             use orion_metrics::metrics::custom::MetricsHook;
-            use crate::metrics;
 
             let mut attrs = smallvec::SmallVec::<[KeyValue; 2]>::new();
             if let Some(custom_keys) = metrics::CUSTOM_KEYS.get() {
                 for key in custom_keys {
                     if let Some(source) = key.source() {
-                        if let Some(id) =
-                            metrics::extract_custom_partition_key(request.headers(), Some(source))
-                        {
+                        if let Some(id) = metrics::extract_custom_partition_key(request.headers(), Some(source)) {
                             attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
                         }
                     }
                 }
             }
-            custom_metrics.with_headers(
-                MetricsHook::ExtProcRequest,
-                request.headers(),
-                attrs.as_slice(),
-            );
+            custom_metrics.with_headers(MetricsHook::ExtProcRequest, request.headers(), attrs.as_slice());
         }
 
         debug!(target: "ext_proc", "apply_request completed: {res:?}!");
@@ -737,27 +731,21 @@ impl ExternalProcessor {
 
         #[cfg(feature = "metrics")]
         if let Some(custom_metrics) = CUSTOM_METRICS.get() {
+            use crate::metrics;
             use opentelemetry::KeyValue;
             use orion_metrics::metrics::custom::MetricsHook;
-            use crate::metrics;
 
             let mut attrs = smallvec::SmallVec::<[KeyValue; 2]>::new();
             if let Some(custom_keys) = metrics::CUSTOM_KEYS.get() {
                 for key in custom_keys {
                     if let Some(source) = key.source() {
-                        if let Some(id) =
-                            metrics::extract_custom_partition_key(response.headers(), Some(source))
-                        {
+                        if let Some(id) = metrics::extract_custom_partition_key(response.headers(), Some(source)) {
                             attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
                         }
                     }
                 }
             }
-            custom_metrics.with_headers(
-                MetricsHook::ExtProcResponse,
-                response.headers(),
-                attrs.as_slice(),
-            );
+            custom_metrics.with_headers(MetricsHook::ExtProcResponse, response.headers(), attrs.as_slice());
         }
 
         debug!(target: "ext_proc", "apply_response completed: {res:?}!");

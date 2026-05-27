@@ -104,10 +104,5 @@ pub fn extract_user_partition_key(
 pub fn extract_custom_partition_key(headers: &HeaderMap, source: Option<&SourceHeaderName>) -> Option<&'static str> {
     // Extracts the custom partition key from headers based on the provided source name.
     let SourceHeaderName::HeaderName(keym) = source?;
-    headers
-        .get(keym)?
-        .to_str()
-        .ok()?
-        .to_static_str()
-        .into()
+    headers.get(keym)?.to_str().ok()?.to_static_str().into()
 }
