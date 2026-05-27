@@ -647,8 +647,8 @@ async fn test_header_manipulation_route_level_when_configured_over_xds() {
 
     harness.push_cluster(&cluster).await.unwrap();
     harness.push_listener(&listener).await.unwrap();
-    harness.push_route_config(&route_config).await.unwrap();
     harness.orion_mut().wait_for_listener_at(listener_addr, Duration::from_secs(10)).await.unwrap();
+    harness.push_route_config(&route_config).await.unwrap();
 
     let client = TestClient::new(listener_addr);
 

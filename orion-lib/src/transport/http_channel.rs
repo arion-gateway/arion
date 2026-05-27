@@ -61,6 +61,8 @@ use {crate::get_shard_id, opentelemetry::KeyValue, orion_metrics::metrics::clust
 use pingora_timeout::fast_timeout::fast_timeout;
 use pretty_duration::pretty_duration;
 use rustls::ClientConfig;
+#[cfg(feature = "metrics")]
+use smallvec::SmallVec;
 use smol_str::ToSmolStr;
 use std::{io, mem, sync::Arc, time::Duration};
 use tracing::debug;
@@ -499,9 +501,17 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
             use crate::metrics;
             use orion_metrics::metrics::custom::MetricsHook;
 
-            let attr = metrics::extract_custom_partition_key(request.headers(), metrics::CUSTOM_KEY.source())
-                .map(|id| KeyValue::new(metrics::CUSTOM_KEY.attribute_name().unwrap_or("custom"), id));
-            custom_metrics.with_headers(MetricsHook::UpstreamRequest, request.headers(), attr.as_slice());
+            let mut attrs = SmallVec::<[KeyValue; 2]>::new();
+            if let Some(custom_keys) = metrics::CUSTOM_KEYS.get() {
+                for key in custom_keys {
+                    if let Some(source) = key.source() {
+                        if let Some(id) = metrics::extract_custom_partition_key(request.headers(), Some(source)) {
+                            attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
+                        }
+                    }
+                }
+            }
+            custom_metrics.with_headers(MetricsHook::UpstreamRequest, request.headers(), attrs.as_slice());
         }
 
         let RequestContext { route_timeout, retry_policy, priority } = ctx;
@@ -547,6 +557,18 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
             shard_id,
             &[KeyValue::new("cluster", self.cluster_name)]
         );
+
+        if let Err(ref err) = result {
+            if let Some(UpstreamError::RouteTimeout) = UpstreamError::try_infer_from(err.as_ref()) {
+                with_metric!(
+                    clusters::UPSTREAM_RQ_TIMEOUT,
+                    add,
+                    1,
+                    shard_id,
+                    &[KeyValue::new("cluster", self.cluster_name)]
+                );
+            }
+        }
 
         HttpChannel::map_upstream_result(result, start_time.elapsed(), route_timeout, version)
     }
@@ -666,7 +688,7 @@ impl HttpChannel {
         };
 
         if let Some(t) = timeout {
-            fast_timeout(t, fut).await?
+            fast_timeout(t, fut).await.map_err(|_e| Error::from(UpstreamError::RouteTimeout))?
         } else {
             fut.await
         }

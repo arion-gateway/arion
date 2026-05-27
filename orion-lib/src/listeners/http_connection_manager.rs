@@ -1246,10 +1246,23 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
 
                     #[cfg(feature = "metrics")]
                     if let Some(custom_metrics) = CUSTOM_METRICS.get() {
-                        let attr =
-                            metrics::extract_custom_partition_key(response.headers(), metrics::CUSTOM_KEY.source())
-                                .map(|id| KeyValue::new(metrics::CUSTOM_KEY.attribute_name().unwrap_or("custom"), id));
-                        custom_metrics.with_headers(MetricsHook::IncomingResponse, response.headers(), attr.as_slice());
+                        let mut attrs = SmallVec::<[KeyValue; 2]>::new();
+                        if let Some(custom_keys) = metrics::CUSTOM_KEYS.get() {
+                            for key in custom_keys {
+                                if let Some(source) = key.source() {
+                                    if let Some(id) =
+                                        metrics::extract_custom_partition_key(response.headers(), Some(source))
+                                    {
+                                        attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
+                                    }
+                                }
+                            }
+                        }
+                        custom_metrics.with_headers(
+                            MetricsHook::IncomingResponse,
+                            response.headers(),
+                            attrs.as_slice(),
+                        );
                     }
 
                     apply_mutations_on_response(
@@ -1551,9 +1564,17 @@ where
 
         #[cfg(feature = "metrics")]
         if let Some(custom_metrics) = CUSTOM_METRICS.get() {
-            let attr = metrics::extract_custom_partition_key(request.headers(), metrics::CUSTOM_KEY.source())
-                .map(|id| KeyValue::new(metrics::CUSTOM_KEY.attribute_name().unwrap_or("custom"), id));
-            custom_metrics.with_headers(MetricsHook::IncomingRequest, request.headers(), attr.as_slice());
+            let mut attrs = SmallVec::<[KeyValue; 2]>::new();
+            if let Some(custom_keys) = metrics::CUSTOM_KEYS.get() {
+                for key in custom_keys {
+                    if let Some(source) = key.source() {
+                        if let Some(id) = metrics::extract_custom_partition_key(request.headers(), Some(source)) {
+                            attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
+                        }
+                    }
+                }
+            }
+            custom_metrics.with_headers(MetricsHook::IncomingRequest, request.headers(), attrs.as_slice());
         }
 
         let inner = self.inner.clone();
@@ -1680,9 +1701,19 @@ where
             #[cfg(feature = "metrics")]
             if let Ok(response) = &response {
                 if let Some(custom_metrics) = CUSTOM_METRICS.get() {
-                    let attr = metrics::extract_custom_partition_key(response.headers(), metrics::CUSTOM_KEY.source())
-                        .map(|id| KeyValue::new(metrics::CUSTOM_KEY.attribute_name().unwrap_or("custom"), id));
-                    custom_metrics.with_headers(MetricsHook::DownstreamResponse, response.headers(), attr.as_slice());
+                    let mut attrs = SmallVec::<[KeyValue; 2]>::new();
+                    if let Some(custom_keys) = metrics::CUSTOM_KEYS.get() {
+                        for key in custom_keys {
+                            if let Some(source) = key.source() {
+                                if let Some(id) =
+                                    metrics::extract_custom_partition_key(response.headers(), Some(source))
+                                {
+                                    attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
+                                }
+                            }
+                        }
+                    }
+                    custom_metrics.with_headers(MetricsHook::DownstreamResponse, response.headers(), attrs.as_slice());
                 }
             }
             response

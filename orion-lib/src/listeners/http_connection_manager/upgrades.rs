@@ -38,7 +38,7 @@ use tokio::io::copy_bidirectional;
 use tracing::{debug, error};
 
 #[cfg(feature = "metrics")]
-use orion_metrics::metrics::{clusters, http as http_metrics, tcp, user};
+use orion_metrics::metrics::{clusters, http as http_metrics, user};
 
 const UPGRADE: &str = "upgrade";
 const WEBSOCKET: &str = "websocket";
@@ -58,18 +58,28 @@ pub fn is_valid_header(header_value: &HeaderValue) -> std::result::Result<&str, 
     header_value.to_str()
 }
 
-pub fn is_valid_websocket_upgrade_request(headers: &HeaderMap) -> std::result::Result<bool, String> {
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum UpgradeError {
+    #[error("Connection header value is not USASCII: {0}")]
+    ConnectionNotAscii(String),
+    #[error("Upgrade header value is not USASCII: {0}")]
+    UpgradeNotAscii(String),
+    #[error("Upgrade header value is not valid: {0}")]
+    UnsupportedProtocol(String),
+}
+
+pub fn is_valid_websocket_upgrade_request(headers: &HeaderMap) -> std::result::Result<bool, UpgradeError> {
     match (headers.get(header::CONNECTION), headers.get(header::UPGRADE)) {
         (Some(connection_header), Some(upgrade_header)) => {
-            let connection_header = is_valid_header(connection_header)
-                .map_err(|e| format!("Connection header value is not USASCII {e}"))?;
+            let connection_header =
+                is_valid_header(connection_header).map_err(|e| UpgradeError::ConnectionNotAscii(e.to_string()))?;
             let upgrade_header =
-                is_valid_header(upgrade_header).map_err(|e| format!("Upgrade header value is not USASCII {e}"))?;
+                is_valid_header(upgrade_header).map_err(|e| UpgradeError::UpgradeNotAscii(e.to_string()))?;
             let is_upgrade = is_upgrade_connection(connection_header);
             let is_websocket = is_websocket_upgrade(upgrade_header);
             match (is_upgrade, is_websocket) {
                 (true, true) => Ok(true),
-                (true, false) => Err(format!("Upgrade header value is not valid: {upgrade_header}")),
+                (true, false) => Err(UpgradeError::UnsupportedProtocol(upgrade_header.to_owned())),
                 (false, _) => Ok(false),
             }
         },
@@ -147,20 +157,6 @@ pub async fn handle_websocket_upgrade(
 
                                 debug!(target: "websocket", "downstream_rx: {bytes_received_down}, downstream_tx: {bytes_sent_down}, upstream_rx: {bytes_received_up}, upstream_tx: {bytes_sent_up}");
 
-                                with_metric!(
-                                    tcp::CX_RX_BYTES_RECEIVED,
-                                    add,
-                                    bytes_received_down,
-                                    shard_id,
-                                    &[KeyValue::new("listener", listener_name)]
-                                );
-                                with_metric!(
-                                    tcp::CX_TX_BYTES_SENT,
-                                    add,
-                                    bytes_sent_down,
-                                    shard_id,
-                                    &[KeyValue::new("listener", listener_name)]
-                                );
                                 with_metric!(
                                     clusters::UPSTREAM_CX_RX_BYTES_TOTAL,
                                     add,
@@ -289,7 +285,7 @@ mod tests {
         header_map.insert("upgrade", "websocketsdklkd".parse().unwrap());
 
         if let Err(e) = is_valid_websocket_upgrade_request(&header_map) {
-            assert!(e.starts_with("Upgrade header value is not valid"));
+            assert!(matches!(e, UpgradeError::UnsupportedProtocol(_)));
         } else {
             unreachable!();
         }
@@ -299,7 +295,7 @@ mod tests {
         header_map.insert("upgrade", "websocket".parse().unwrap());
 
         if let Err(e) = is_valid_websocket_upgrade_request(&header_map) {
-            assert!(e.starts_with("Connection header value is not USASCII"));
+            assert!(matches!(e, UpgradeError::ConnectionNotAscii(_)));
         } else {
             unreachable!();
         }
@@ -309,7 +305,7 @@ mod tests {
         header_map.insert("upgrade", "无效的".parse().unwrap());
 
         if let Err(e) = is_valid_websocket_upgrade_request(&header_map) {
-            assert!(e.starts_with("Upgrade header value is not USASCII"));
+            assert!(matches!(e, UpgradeError::UpgradeNotAscii(_)));
         } else {
             unreachable!();
         }

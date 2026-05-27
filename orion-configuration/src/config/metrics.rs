@@ -21,6 +21,7 @@ use orion_data_plane_api::envoy_data_plane_api::{
     prost::Message,
 };
 use serde::{Deserialize, Deserializer, Serialize};
+use smallvec::SmallVec;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum StatsSink {
@@ -133,9 +134,13 @@ pub struct CustomMetrics {
     #[serde(default)]
     pub incoming_request: Vec<CustomMetric>,
     #[serde(default)]
+    pub ext_proc_request: Vec<CustomMetric>,
+    #[serde(default)]
     pub upstream_request: Vec<CustomMetric>,
     #[serde(default)]
     pub incoming_response: Vec<CustomMetric>,
+    #[serde(default)]
+    pub ext_proc_response: Vec<CustomMetric>,
     #[serde(default)]
     pub downstream_response: Vec<CustomMetric>,
 }
@@ -145,7 +150,7 @@ pub struct MetricsConfig {
     #[serde(default)]
     pub user_key: Option<PartitionKey<SourceHeaderNameOrSni>>, // for user metrics (invocations, throttles, etc.)
     #[serde(default)]
-    pub custom_key: Option<PartitionKey<SourceHeaderName>>, // for custom metrics (might use a different partition key)
+    pub custom_keys: SmallVec<[PartitionKey<SourceHeaderName>; 2]>, // for custom metrics (might use different partition keys)
     #[serde(default)]
     pub rename: std::collections::HashMap<String, String>,
     #[serde(default)]

@@ -198,6 +198,13 @@ impl HcmBuilder {
     }
 
     #[must_use]
+    pub fn upgrade_websocket(mut self) -> Self {
+        use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::network::http_connection_manager::v3::http_connection_manager::UpgradeConfig;
+        self.proto.upgrade_configs.push(UpgradeConfig { upgrade_type: "websocket".into(), ..Default::default() });
+        self
+    }
+
+    #[must_use]
     pub fn build(mut self) -> EnvoyHcm {
         self.add_router_filter();
         self.proto

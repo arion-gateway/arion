@@ -219,6 +219,7 @@ fn process_histogram<S: Eq + Hash + Clone + Copy>(
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 fn build_prometheus_output() -> io::Result<String> {
     debug!(target: "prometheus", "prometheus_handler: running");
     let mut out: Vec<u8> = Vec::with_capacity(16384);
@@ -238,11 +239,16 @@ fn build_prometheus_output() -> io::Result<String> {
     process_metric_as_counter(&mut out, &clusters::UPSTREAM_RQ_RETRY)?;
 
     process_metric_as_counter(&mut out, &clusters::UPSTREAM_CX_TOTAL)?;
+    process_metric_as_gauge(&mut out, &clusters::UPSTREAM_CX_ACTIVE)?;
+    process_metric_as_counter(&mut out, &clusters::UPSTREAM_CX_DESTROY)?;
     process_metric_as_counter(&mut out, &clusters::UPSTREAM_CX_IDLE_TIMEOUT)?;
     process_metric_as_counter(&mut out, &clusters::UPSTREAM_CX_CONNECT_FAIL)?;
     process_metric_as_counter(&mut out, &clusters::UPSTREAM_CX_CONNECT_TIMEOUT)?;
-    process_metric_as_counter(&mut out, &clusters::UPSTREAM_CX_DESTROY)?;
-    process_metric_as_gauge(&mut out, &clusters::UPSTREAM_CX_ACTIVE)?;
+    process_metric_as_counter(&mut out, &clusters::UPSTREAM_CX_RX_BYTES_TOTAL)?;
+    process_metric_as_counter(&mut out, &clusters::UPSTREAM_CX_TX_BYTES_TOTAL)?;
+    process_metric_as_counter(&mut out, &clusters::UPSTREAM_CX_OVERFLOW)?;
+    process_metric_as_counter(&mut out, &clusters::UPSTREAM_RQ_OVERFLOW)?;
+    process_metric_as_counter(&mut out, &clusters::UPSTREAM_RQ_RETRY_OVERFLOW)?;
 
     // http metrics
     process_metric_as_counter(&mut out, &http::DOWNSTREAM_CX_TOTAL)?;

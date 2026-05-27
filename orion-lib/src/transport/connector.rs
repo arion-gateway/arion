@@ -45,6 +45,9 @@ use crate::{
     utils::instrumented_stream::InstrumentedStream,
 };
 
+#[cfg(feature = "metrics")]
+use {crate::get_shard_id, crate::with_metric, opentelemetry::KeyValue, orion_metrics::metrics::clusters};
+
 use super::{bind_device::BindDevice, resolve};
 
 #[derive(Debug, thiserror::Error)]
@@ -357,13 +360,36 @@ impl Service<Uri> for UnifiedConnector {
         let uri = req;
         match self {
             UnifiedConnector::Socket(c) => {
+                #[allow(unused_variables)]
+                let cluster_name = c.cluster_name;
                 let fut = c.call(uri);
                 Box::pin(async move {
                     let stream = fut.await?;
                     let tcp_stream = stream.into_inner();
-                    Ok(HttpConnection::new(TokioIo::new(
-                        Box::new(InstrumentedStream::new(tcp_stream)) as AsyncInstrumentedStream
-                    )))
+                    let instrumented = InstrumentedStream::new(tcp_stream);
+
+                    #[cfg(feature = "metrics")]
+                    {
+                        let shard_id = get_shard_id!();
+                        instrumented.metrics().with_drop_fn(Box::new(move |metrics| {
+                            with_metric!(
+                                clusters::UPSTREAM_CX_RX_BYTES_TOTAL,
+                                add,
+                                metrics.bytes_read(),
+                                shard_id,
+                                &[KeyValue::new("cluster", cluster_name)]
+                            );
+                            with_metric!(
+                                clusters::UPSTREAM_CX_TX_BYTES_TOTAL,
+                                add,
+                                metrics.bytes_written(),
+                                shard_id,
+                                &[KeyValue::new("cluster", cluster_name)]
+                            );
+                        }))
+                    }
+
+                    Ok(HttpConnection::new(TokioIo::new(Box::new(instrumented) as AsyncInstrumentedStream)))
                 })
             },
             UnifiedConnector::Internal(c) => {

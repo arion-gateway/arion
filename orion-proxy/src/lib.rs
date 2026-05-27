@@ -40,11 +40,18 @@ pub fn run() -> Result<()> {
         metrics::USER_KEY.set_source(source);
     }
 
-    // Set the header_name from which to extract the custom key
-    if let Some(source) =
-        metrics.as_ref().and_then(|metrics| metrics.custom_key.as_ref()).map(|key| &key.source).cloned()
-    {
-        metrics::CUSTOM_KEY.set_source(source);
+    // Set the header_names and attribute_names from which to extract the custom keys
+    if let Some(metrics_config) = metrics.as_ref() {
+        let mut custom_keys = Vec::with_capacity(metrics_config.custom_keys.len());
+        for key in &metrics_config.custom_keys {
+            let pk = metrics::PartitionKey::new();
+            pk.set_source(key.source.clone());
+            if let Some(attribute_name) = &key.attribute_name {
+                pk.set_attribute_name(attribute_name.clone());
+            }
+            custom_keys.push(pk);
+        }
+        let _ = metrics::CUSTOM_KEYS.set(custom_keys).ok();
     }
 
     // Set the attribute key value used to partition user metrics.
@@ -55,16 +62,6 @@ pub fn run() -> Result<()> {
         .cloned()
     {
         metrics::USER_KEY.set_attribute_name(attribute_name);
-    }
-
-    // Set the attribute key value used to partition custom metrics.
-    if let Some(attribute_name) = metrics
-        .as_ref()
-        .and_then(|metrics| metrics.custom_key.as_ref())
-        .and_then(|key| key.attribute_name.as_ref())
-        .cloned()
-    {
-        metrics::CUSTOM_KEY.set_attribute_name(attribute_name);
     }
 
     tracing_manager.update(logging)?;

@@ -2962,6 +2962,7 @@ dependencies = [
  "serde_path_to_error",
  "serde_regex",
  "serde_yaml",
+ "smallvec",
  "smol_str",
  "tempfile",
  "thiserror 2.0.18",
@@ -3006,6 +3007,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "orion-configuration",
  "orion-data-plane-api",
  "orion-xds",
  "pingora",
@@ -3017,6 +3019,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "smallvec",
  "test-log",
  "thiserror 2.0.18",
  "tokio",
@@ -4777,6 +4780,9 @@ name = "smallvec"
 version = "1.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "smol_str"

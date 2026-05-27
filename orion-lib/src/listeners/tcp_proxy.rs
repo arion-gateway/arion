@@ -44,7 +44,7 @@ use orion_configuration::config::{
 use {
     crate::get_shard_id,
     opentelemetry::KeyValue,
-    orion_metrics::metrics::{clusters, tcp, user},
+    orion_metrics::metrics::{clusters, user},
 };
 
 use std::{fmt, net::SocketAddr};
@@ -180,22 +180,6 @@ impl TcpProxy {
                             maybe_response_code_details = Some(ResponseCodeDetails::from(e));
                             response_flags.insert(ResponseFlags::UPSTREAM_CONNECTION_FAILURE);
                         }
-
-                        with_metric!(
-                            tcp::CX_RX_BYTES_RECEIVED,
-                            add,
-                            bytes_received_down,
-                            shard_id,
-                            &[KeyValue::new("listener", metadata.listener_name)]
-                        );
-
-                        with_metric!(
-                            tcp::CX_TX_BYTES_SENT,
-                            add,
-                            bytes_sent_down,
-                            shard_id,
-                            &[KeyValue::new("listener", metadata.listener_name)]
-                        );
 
                         with_metric!(
                             clusters::UPSTREAM_CX_RX_BYTES_TOTAL,

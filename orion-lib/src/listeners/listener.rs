@@ -661,7 +661,7 @@ impl Listener {
             with_metric!(listeners::DOWNSTREAM_CX_DESTROY, add, 1, shard_id, &[KeyValue::new("listener", listener_name)]);
             with_metric!(listeners::DOWNSTREAM_CX_ACTIVE, sub, 1, shard_id, &[KeyValue::new("listener", listener_name)]);
             if ssl.load(Ordering::Relaxed) {
-                with_metric!(http::DOWNSTREAM_CX_SSL_ACTIVE, add, 1, shard_id, &[KeyValue::new("listener", listener_name)]);
+                with_metric!(http::DOWNSTREAM_CX_SSL_ACTIVE, sub, 1, shard_id, &[KeyValue::new("listener", listener_name)]);
             }
             with_histogram!(listeners::DOWNSTREAM_CX_LENGTH_MS, record,
                 u64::try_from(start_instant.elapsed().as_millis()).unwrap_or(u64::MAX),
@@ -744,7 +744,7 @@ impl Listener {
             // when we are done processing the connection the guard is dropped
             // and the internal counter is decremented
             let _cx_guard = filterchain.apply_connection_limit().await?;
-            filterchain.apply_network_rate_limit(sni.as_ref()).await?;
+            filterchain.apply_network_rate_limit(sni.as_ref(), listener_name).await?;
             if let Some(stream) = filterchain.apply_rbac(stream, &connection_metadata, sni.as_deref()) {
                 return filterchain
                     .start_filterchain(
