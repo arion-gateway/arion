@@ -14,6 +14,8 @@ use crate::event_error::EventFailure;
 use crate::listeners::http_connection_manager::ext_proc::kind::{MessageType, RequestMsg, ResponseMsg};
 use crate::{OrionRequestBody, OrionResponseBody};
 use http_body_util::{BodyExt, Collected, LengthLimitError, Limited};
+#[cfg(feature = "metrics")]
+use orion_metrics::metrics::custom::CUSTOM_METRICS;
 
 use crate::listeners::http_connection_manager::ext_proc::mutation::{
     apply_request_header_mutations, apply_response_header_mutations,
@@ -502,6 +504,31 @@ impl ExternalProcessor {
             ),
         };
 
+        #[cfg(feature = "metrics")]
+        if let Some(custom_metrics) = CUSTOM_METRICS.get() {
+            use opentelemetry::KeyValue;
+            use orion_metrics::metrics::custom::MetricsHook;
+            use crate::metrics;
+
+            let mut attrs = smallvec::SmallVec::<[KeyValue; 2]>::new();
+            if let Some(custom_keys) = metrics::CUSTOM_KEYS.get() {
+                for key in custom_keys {
+                    if let Some(source) = key.source() {
+                        if let Some(id) =
+                            metrics::extract_custom_partition_key(request.headers(), Some(source))
+                        {
+                            attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
+                        }
+                    }
+                }
+            }
+            custom_metrics.with_headers(
+                MetricsHook::ExtProcRequest,
+                request.headers(),
+                attrs.as_slice(),
+            );
+        }
+
         debug!(target: "ext_proc", "apply_request completed: {res:?}!");
         request.body_mut().inner.inner.prefetch_frames().await;
         res
@@ -707,6 +734,31 @@ impl ExternalProcessor {
                 None,
             ),
         };
+
+        #[cfg(feature = "metrics")]
+        if let Some(custom_metrics) = CUSTOM_METRICS.get() {
+            use opentelemetry::KeyValue;
+            use orion_metrics::metrics::custom::MetricsHook;
+            use crate::metrics;
+
+            let mut attrs = smallvec::SmallVec::<[KeyValue; 2]>::new();
+            if let Some(custom_keys) = metrics::CUSTOM_KEYS.get() {
+                for key in custom_keys {
+                    if let Some(source) = key.source() {
+                        if let Some(id) =
+                            metrics::extract_custom_partition_key(response.headers(), Some(source))
+                        {
+                            attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
+                        }
+                    }
+                }
+            }
+            custom_metrics.with_headers(
+                MetricsHook::ExtProcResponse,
+                response.headers(),
+                attrs.as_slice(),
+            );
+        }
 
         debug!(target: "ext_proc", "apply_response completed: {res:?}!");
 

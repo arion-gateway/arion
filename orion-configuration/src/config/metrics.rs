@@ -134,9 +134,13 @@ pub struct CustomMetrics {
     #[serde(default)]
     pub incoming_request: Vec<CustomMetric>,
     #[serde(default)]
+    pub ext_proc_request: Vec<CustomMetric>,
+    #[serde(default)]
     pub upstream_request: Vec<CustomMetric>,
     #[serde(default)]
     pub incoming_response: Vec<CustomMetric>,
+    #[serde(default)]
+    pub ext_proc_response: Vec<CustomMetric>,
     #[serde(default)]
     pub downstream_response: Vec<CustomMetric>,
 }

@@ -109,6 +109,8 @@ async fn test_custom_metrics() {
                 buckets: vec![10, 50, 100],
             },
         ],
+        ext_proc_request: vec![],
+        ext_proc_response: vec![],
         downstream_response: vec![],
     };
 
@@ -326,6 +328,8 @@ async fn test_custom_metrics_multiple_keys() {
         upstream_request: vec![],
         incoming_response: vec![],
         downstream_response: vec![],
+        ext_proc_request: vec![],
+        ext_proc_response: vec![],
     };
 
     // Configure TWO custom partition keys
