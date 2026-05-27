@@ -61,7 +61,7 @@ impl AccessLogger {
                         let update_required = match loggers {
                             None => true,
                             Some(v) => {
-                                v.len() != new_conf.len() || v.iter().zip(new_conf.iter()).any(|(l, n)| l.config() != n)
+                                v.len() != new_conf.len() || v.iter().zip(new_conf.iter()).any(|(l, n)| l.sink() != n)
                             },
                         };
                         if update_required {

@@ -15,7 +15,7 @@
 //
 //
 
-use super::access_log::{AccessLog, AccessLogConf};
+use super::access_log::{AccessLog, AccessLogSink};
 
 use super::{
     network_filters::{HttpConnectionManager, NetworkRbac, TcpProxy},
@@ -80,23 +80,23 @@ impl Listener {
     //
     // return all AccessLogConfs for the listener, indexed by either listener name or specific filterchain_id ...
     //
-    pub fn all_access_log_configs(&self) -> Vec<(AccessLogTarget, Vec<AccessLogConf>)> {
-        let listener_logs: Vec<(AccessLogTarget, Vec<AccessLogConf>)> = vec![(
+    pub fn all_access_log_configs(&self) -> Vec<(AccessLogTarget, Vec<AccessLogSink>)> {
+        let listener_logs: Vec<(AccessLogTarget, Vec<AccessLogSink>)> = vec![(
             AccessLogTarget::Listener(self.name.clone()),
-            self.access_log.iter().map(|al| al.get_config().clone()).collect::<Vec<_>>(),
+            self.access_log.iter().map(|al| al.get_sink().clone()).collect::<Vec<_>>(),
         )];
 
-        let filter_chains_logs: Vec<(AccessLogTarget, Vec<AccessLogConf>)> = self
+        let filter_chains_logs: Vec<(AccessLogTarget, Vec<AccessLogSink>)> = self
             .filter_chains
             .values()
             .map(|filter_chain| match &filter_chain.terminal_filter {
                 MainFilter::Http(http_connection_manager) => (
                     AccessLogTarget::ListenerFilterChain(self.name.clone(), filter_chain.id),
-                    http_connection_manager.access_log.iter().map(AccessLog::get_config).cloned().collect::<Vec<_>>(),
+                    http_connection_manager.access_log.iter().map(AccessLog::get_sink).cloned().collect::<Vec<_>>(),
                 ),
                 MainFilter::Tcp(tcp_proxy) => (
                     AccessLogTarget::ListenerFilterChain(self.name.clone(), filter_chain.id),
-                    tcp_proxy.access_log.iter().map(AccessLog::get_config).cloned().collect::<Vec<_>>(),
+                    tcp_proxy.access_log.iter().map(AccessLog::get_sink).cloned().collect::<Vec<_>>(),
                 ),
             })
             .collect();

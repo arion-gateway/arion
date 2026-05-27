@@ -84,7 +84,7 @@ pub enum AccessLogType {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-pub enum AccessLogConf {
+pub enum AccessLogSink {
     File(String),
     Stderr,
     Stdout,
@@ -92,17 +92,17 @@ pub enum AccessLogConf {
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct AccessLog {
-    config: AccessLogConf,
+    sink: AccessLogSink,
     logger: LogFormatter,
 }
 
 impl AccessLog {
-    pub fn new(config: AccessLogConf, logger: LogFormatter) -> Self {
-        AccessLog { config, logger }
+    pub fn new(sink: AccessLogSink, logger: LogFormatter) -> Self {
+        AccessLog { sink, logger }
     }
 
-    pub fn get_config(&self) -> &AccessLogConf {
-        &self.config
+    pub fn get_sink(&self) -> &AccessLogSink {
+        &self.sink
     }
 
     pub fn get_logger(&self) -> &LogFormatter {
@@ -240,9 +240,9 @@ impl TryFrom<EnvoyAccessLog> for AccessLog {
             (AccessLogType::File, Some(f)) if f.is_empty() => {
                 Err(GenericError::from_msg("Error: empty path for file logger"))
             },
-            (AccessLogType::File, Some(f)) => Ok(AccessLogConf::File(f)),
-            (AccessLogType::Stderr, _) => Ok(AccessLogConf::Stderr),
-            (AccessLogType::Stdout, _) => Ok(AccessLogConf::Stdout),
+            (AccessLogType::File, Some(f)) => Ok(AccessLogSink::File(f)),
+            (AccessLogType::Stderr, _) => Ok(AccessLogSink::Stderr),
+            (AccessLogType::Stdout, _) => Ok(AccessLogSink::Stdout),
         }?;
 
         let logger = match fmt.flatten() {
@@ -254,7 +254,7 @@ impl TryFrom<EnvoyAccessLog> for AccessLog {
         }
         .map_err(|e| GenericError::from_msg(format!("Error: failed to create log formatter: {e}")))?;
 
-        Ok(AccessLog { config, logger })
+        Ok(AccessLog { sink: config, logger })
     }
 }
 
