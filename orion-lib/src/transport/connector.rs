@@ -29,7 +29,7 @@ use http::uri::Authority;
 use hyper::Uri;
 use hyper_util::rt::TokioIo;
 use orion_configuration::config::core::Address;
-use orion_error::{Context, WithContext};
+use orion_error::{Context, ContextualError};
 use orion_format::types::ResponseFlags;
 use orion_interner::StringInterner;
 use pingora_timeout::fast_timeout::fast_timeout;
@@ -131,7 +131,7 @@ impl LocalConnectorWithDNSResolver {
     #[allow(clippy::too_many_lines)]
     pub fn connect(
         &self,
-    ) -> impl Future<Output = std::result::Result<(TcpStream, &'static str), WithContext<ConnectError>>> + 'static {
+    ) -> impl Future<Output = std::result::Result<(TcpStream, &'static str), ContextualError<ConnectError>>> + 'static {
         let addr = self.addr.clone();
         let device = self.bind_device.clone();
         let cluster_name = self.cluster_name;
@@ -141,7 +141,7 @@ impl LocalConnectorWithDNSResolver {
             let host = addr.host();
             let port = addr
                 .port_u16()
-                .ok_or(WithContext::new(io::Error::new(
+                .ok_or(ContextualError::new(io::Error::new(
                     io::ErrorKind::AddrNotAvailable,
                     format!("Port has to be set {addr:?}"),
                 )))
@@ -157,7 +157,7 @@ impl LocalConnectorWithDNSResolver {
                 })?;
 
             let addr = resolve(host, port).await.map_err(|e| {
-                WithContext::new(e)
+                ContextualError::new(e)
                     .with_context_data(TcpErrorContext {
                         upstream_addr: SocketAddr::from(([0, 0, 0, 0], port)),
                         response_flags: ResponseFlags::DNS_RESOLUTION_FAILED,
@@ -168,7 +168,7 @@ impl LocalConnectorWithDNSResolver {
 
             let sock = match addr {
                 std::net::SocketAddr::V4(_) => TcpSocket::new_v4().map_err(|e| {
-                    WithContext::new(e)
+                    ContextualError::new(e)
                         .with_context_data(TcpErrorContext {
                             upstream_addr: addr,
                             response_flags: ResponseFlags::NO_HEALTHY_UPSTREAM
@@ -178,7 +178,7 @@ impl LocalConnectorWithDNSResolver {
                         .map_into()
                 })?,
                 std::net::SocketAddr::V6(_) => TcpSocket::new_v4().map_err(|e| {
-                    WithContext::new(e)
+                    ContextualError::new(e)
                         .with_context_data(TcpErrorContext {
                             upstream_addr: addr,
                             response_flags: ResponseFlags::NO_HEALTHY_UPSTREAM
@@ -194,7 +194,7 @@ impl LocalConnectorWithDNSResolver {
                 // e.g. with an uncategorized error on connect
                 debug!("Binding socket to: {:?}", device);
                 super::bind_device::bind_device(&sock, &device).map_err(|e| {
-                    WithContext::new(e)
+                    ContextualError::new(e)
                         .with_context_data(TcpErrorContext {
                             upstream_addr: addr,
                             response_flags: ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
@@ -209,7 +209,7 @@ impl LocalConnectorWithDNSResolver {
                     .await // Result<Result<TcpStream, io::Error>>, Elapsed>
                     .map_err(|_e| UpstreamError::ConnectTimeout(elapsed()))
                     .map_err(|e| {
-                        WithContext::new(e)
+                        ContextualError::new(e)
                             .with_context_data(TcpErrorContext {
                                 upstream_addr: addr,
                                 response_flags: ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
@@ -219,7 +219,7 @@ impl LocalConnectorWithDNSResolver {
                     })? // Result<TcpStream, io::Error>
                     .map_err(|orig| UpstreamError::Io(io::Error::new(orig.kind(), orig.to_string())))
                     .map_err(|e| {
-                        WithContext::new(e)
+                        ContextualError::new(e)
                             .with_context_data(TcpErrorContext {
                                 upstream_addr: addr,
                                 response_flags: ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
@@ -232,7 +232,7 @@ impl LocalConnectorWithDNSResolver {
                     .await
                     .map_err(|orig| UpstreamError::Io(io::Error::new(orig.kind(), orig.to_string())))
                     .map_err(|e| {
-                        WithContext::new(e)
+                        ContextualError::new(e)
                             .with_context_data(TcpErrorContext {
                                 upstream_addr: addr,
                                 response_flags: ResponseFlags::UPSTREAM_CONNECTION_FAILURE,
@@ -252,7 +252,7 @@ impl LocalConnectorWithDNSResolver {
 
 impl Service<Uri> for LocalConnectorWithDNSResolver {
     type Response = TokioIo<TcpStream>;
-    type Error = WithContext<ConnectError>;
+    type Error = ContextualError<ConnectError>;
 
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
@@ -278,7 +278,7 @@ impl InternalConnector {
     pub async fn connect(
         &self,
         downstream_metadata: Option<Arc<DownstreamConnectionMetadata>>,
-    ) -> std::result::Result<(AsyncInstrumentedStream, &'static str), WithContext<io::Error>> {
+    ) -> std::result::Result<(AsyncInstrumentedStream, &'static str), ContextualError<io::Error>> {
         debug!("Connecting to internal listener '{}' from cluster '{}'", self.listener_name, self.cluster_name);
 
         let sender = internal_registry::get_connection_sender_for_listener(self.listener_name).ok_or_else(|| {
@@ -286,7 +286,7 @@ impl InternalConnector {
                 io::ErrorKind::ConnectionRefused,
                 format!("Internal listener '{}' not found or not ready", self.listener_name),
             );
-            WithContext::new(err)
+            ContextualError::new(err)
         })?;
         let (client_stream, server_stream) = tokio::io::duplex(64 * 1024);
         let downstream_metadata = downstream_metadata.unwrap_or_else(|| {
@@ -305,7 +305,7 @@ impl InternalConnector {
                 io::ErrorKind::ConnectionRefused,
                 format!("Failed to send connection to internal listener '{}': {}", self.listener_name, e),
             );
-            return Err(WithContext::new(err));
+            return Err(ContextualError::new(err));
         }
         debug!("Successfully connected to internal listener '{}'", self.listener_name);
 
@@ -346,7 +346,7 @@ impl From<(&ConnectUsing, &'static str)> for UnifiedConnector {
 
 impl Service<Uri> for UnifiedConnector {
     type Response = HttpConnection;
-    type Error = WithContext<ConnectError>;
+    type Error = ContextualError<ConnectError>;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
     fn poll_ready(&mut self, cx: &mut task::Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -399,7 +399,7 @@ impl Service<Uri> for UnifiedConnector {
                 Box::pin(async move {
                     let (stream, _cluster_name) = connector.connect(None).await.map_err(|e| {
                         let (io_err, _info) = e.into_inner();
-                        WithContext::new(ConnectError::Io(io_err))
+                        ContextualError::new(ConnectError::Io(io_err))
                     })?;
                     debug!("Internal connection established, using is_http2={}", is_http2);
                     if is_http2 {
