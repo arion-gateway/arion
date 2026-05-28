@@ -17,19 +17,29 @@ use std::time::Duration;
 use orion_data_plane_api::envoy_data_plane_api::{
     envoy::{
         config::{
-            core::v3::{config_source::ConfigSourceSpecifier, AggregatedConfigSource, ConfigSource},
+            accesslog::v3::{access_log::ConfigType as AccessLogConfigType, AccessLog as EnvoyAccessLog},
+            core::v3::{
+                config_source::ConfigSourceSpecifier,
+                substitution_format_string::Format as SubstitutionFormat,
+                AggregatedConfigSource, ConfigSource, SubstitutionFormatString,
+            },
             route::v3::RouteConfiguration,
         },
-        extensions::filters::{
-            http::{
-                ext_proc::v3::ExternalProcessor as EnvoyExternalProcessor,
-                local_ratelimit::v3::LocalRateLimit as EnvoyLocalRateLimit,
-                {rbac::v3::Rbac as HttpRbac, router::v3::Router},
+        extensions::{
+            access_loggers::file::v3::{
+                file_access_log::AccessLogFormat as FileAccessLogFormat, FileAccessLog as EnvoyFileAccessLog,
             },
-            network::http_connection_manager::v3::{
-                http_connection_manager::{CodecType as ProtoCodecType, RouteSpecifier},
-                http_filter::ConfigType as HttpFilterConfigType,
-                HttpConnectionManager as EnvoyHcm, HttpFilter, Rds,
+            filters::{
+                http::{
+                    ext_proc::v3::ExternalProcessor as EnvoyExternalProcessor,
+                    local_ratelimit::v3::LocalRateLimit as EnvoyLocalRateLimit,
+                    {rbac::v3::Rbac as HttpRbac, router::v3::Router},
+                },
+                network::http_connection_manager::v3::{
+                    http_connection_manager::{CodecType as ProtoCodecType, RouteSpecifier},
+                    http_filter::ConfigType as HttpFilterConfigType,
+                    HttpConnectionManager as EnvoyHcm, HttpFilter, Rds,
+                },
             },
         },
     },
@@ -202,6 +212,31 @@ impl HcmBuilder {
         use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::network::http_connection_manager::v3::http_connection_manager::UpgradeConfig;
         self.proto.upgrade_configs.push(UpgradeConfig { upgrade_type: "websocket".into(), ..Default::default() });
         self
+    }
+
+    #[must_use]
+    #[allow(deprecated)]
+    pub fn access_log_file(self, path: impl Into<String>, text_format: impl Into<String>) -> Self {
+        let file_access_log = EnvoyFileAccessLog {
+            path: path.into(),
+            access_log_format: Some(FileAccessLogFormat::LogFormat(SubstitutionFormatString {
+                format: Some(SubstitutionFormat::TextFormat(text_format.into())),
+                ..Default::default()
+            })),
+        };
+
+        let typed_config = Any {
+            type_url: "type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog".into(),
+            value: file_access_log.encode_to_vec(),
+        };
+
+        let access_log = EnvoyAccessLog {
+            name: "envoy.access_loggers.file".into(),
+            config_type: Some(AccessLogConfigType::TypedConfig(typed_config)),
+            ..Default::default()
+        };
+
+        self.with_proto(move |proto| proto.access_log.push(access_log))
     }
 
     #[must_use]
