@@ -148,7 +148,7 @@ fn process_xff_headers<T>(request: &mut Request<T>, downstream_addr: SocketAddr,
     }
 }
 
-fn is_internal_ip(ip: IpAddr) -> bool {
+pub(crate) fn is_internal_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(ipv4) => ipv4.is_private() || ipv4.is_loopback(),
         IpAddr::V6(ipv6) => {
@@ -367,6 +367,8 @@ impl HeaderValueModifier for HeaderValueOption {
 
         let get_header_value = |req: &Request<B>| -> HeaderValue {
             let mut formatter = self.header.value.clone();
+            // Resolves dynamic variables in header values (e.g., %DOWNSTREAM_PEER_ADDRESS%).
+            // request_head_size is set to 0 as a placeholder to avoid expensive and unnecessary calculations.
             formatter.with_context(&DownstreamContext {
                 request: req,
                 request_head_size: 0,
