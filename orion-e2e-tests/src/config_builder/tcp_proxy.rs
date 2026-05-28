@@ -15,10 +15,7 @@
 use orion_data_plane_api::envoy_data_plane_api::{
     envoy::{
         config::accesslog::v3::{access_log::ConfigType as AccessLogConfigType, AccessLog as EnvoyAccessLog},
-        config::core::v3::{
-            substitution_format_string::Format as SubstitutionFormat,
-            SubstitutionFormatString,
-        },
+        config::core::v3::{substitution_format_string::Format as SubstitutionFormat, SubstitutionFormatString},
         extensions::{
             access_loggers::file::v3::{
                 file_access_log::AccessLogFormat as FileAccessLogFormat, FileAccessLog as EnvoyFileAccessLog,
@@ -40,11 +37,7 @@ pub struct TcpProxyBuilder {
 impl TcpProxyBuilder {
     #[must_use]
     pub fn new(stat_prefix: impl Into<String>) -> Self {
-        Self {
-            stat_prefix: stat_prefix.into(),
-            cluster: String::new(),
-            access_logs: Vec::new(),
-        }
+        Self { stat_prefix: stat_prefix.into(), cluster: String::new(), access_logs: Vec::new() }
     }
 
     #[must_use]

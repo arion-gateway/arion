@@ -223,10 +223,8 @@ impl TraceInfo {
                 }
             }
             if parts.len() >= 2 && parts.len() <= 4 {
-                let trace_id =
-                    u128::from_str_radix(parts[0], 16).map_err(|_e| TraceError::InvalidFormat)?;
-                let span_id =
-                    Some(u64::from_str_radix(parts[1], 16).map_err(|_e| TraceError::InvalidFormat)?);
+                let trace_id = u128::from_str_radix(parts[0], 16).map_err(|_e| TraceError::InvalidFormat)?;
+                let span_id = Some(u64::from_str_radix(parts[1], 16).map_err(|_e| TraceError::InvalidFormat)?);
                 let sampled = if parts.len() >= 3 {
                     match parts[2] {
                         "1" | "d" => true,

@@ -105,8 +105,9 @@ impl RequestIdManager {
         };
 
         // 2. Determine if the ID must be propagated...
-        let should_propagate_header =
-            (incoming_request_id.is_some() && (is_internal || self.preserve_external_request_id)) || self.generate_request_id;
+        let should_propagate_header = (incoming_request_id.is_some()
+            && (is_internal || self.preserve_external_request_id))
+            || self.generate_request_id;
 
         // 3. Apply the changes to the request...
         if should_propagate_header {

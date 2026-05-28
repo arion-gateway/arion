@@ -22,12 +22,11 @@ use tokio::net::TcpStream;
 
 use orion_configuration::config::log::AccessLogConfig;
 use orion_e2e_tests::config_builder::{
-    BootstrapBuilder, ClusterBuilder, EndpointBuilder, FilterChainBuilder, HcmBuilder, ListenerBuilder,
-    RouteBuilder, RouteConfigBuilder, VirtualHostBuilder,
+    BootstrapBuilder, ClusterBuilder, EndpointBuilder, FilterChainBuilder, HcmBuilder, ListenerBuilder, RouteBuilder,
+    RouteConfigBuilder, VirtualHostBuilder,
 };
 use orion_e2e_tests::{
-    cleanup_config_file, OrionInstance, PreConfiguredResponse, SpawnOptions, TestBackend,
-    RawHttpRequestBuilder,
+    cleanup_config_file, OrionInstance, PreConfiguredResponse, RawHttpRequestBuilder, SpawnOptions, TestBackend,
 };
 
 /// All access-log operators supported at the HCM (transaction) level.
@@ -123,7 +122,8 @@ async fn send_request(addr: std::net::SocketAddr, raw_request: &[u8]) -> (usize,
     assert!(resp_str.contains("200 OK"), "Unexpected response: {resp_str}");
 
     // Find the end of the headers section (\r\n\r\n)
-    let headers_len = resp.windows(4)
+    let headers_len = resp
+        .windows(4)
         .position(|w| w == b"\r\n\r\n")
         .map(|pos| pos + 4) // Include the \r\n\r\n
         .expect("Failed to find end of headers in response");
@@ -189,9 +189,8 @@ fn validate_common_fields(parsed: &HashMap<String, String>) {
     assert!(!dl_addr.is_empty() && dl_addr != "-");
     assert!(dl_addr.contains(':'), "DOWNSTREAM_LOCAL_ADDRESS should contain port");
 
-    let dl_wo = parsed
-        .get("DOWNSTREAM_LOCAL_ADDRESS_WITHOUT_PORT")
-        .expect("DOWNSTREAM_LOCAL_ADDRESS_WITHOUT_PORT missing");
+    let dl_wo =
+        parsed.get("DOWNSTREAM_LOCAL_ADDRESS_WITHOUT_PORT").expect("DOWNSTREAM_LOCAL_ADDRESS_WITHOUT_PORT missing");
     assert!(!dl_wo.is_empty() && dl_wo != "-");
     assert!(!dl_wo.contains(':'), "DOWNSTREAM_LOCAL_ADDRESS_WITHOUT_PORT should not contain port");
 
@@ -202,9 +201,8 @@ fn validate_common_fields(parsed: &HashMap<String, String>) {
     let dr_addr = parsed.get("DOWNSTREAM_REMOTE_ADDRESS").expect("DOWNSTREAM_REMOTE_ADDRESS missing");
     assert!(!dr_addr.is_empty() && dr_addr != "-");
 
-    let dr_wo = parsed
-        .get("DOWNSTREAM_REMOTE_ADDRESS_WITHOUT_PORT")
-        .expect("DOWNSTREAM_REMOTE_ADDRESS_WITHOUT_PORT missing");
+    let dr_wo =
+        parsed.get("DOWNSTREAM_REMOTE_ADDRESS_WITHOUT_PORT").expect("DOWNSTREAM_REMOTE_ADDRESS_WITHOUT_PORT missing");
     assert!(!dr_wo.is_empty() && dr_wo != "-");
     assert!(!dr_wo.contains(':'), "DOWNSTREAM_REMOTE_ADDRESS_WITHOUT_PORT should not contain port");
 
@@ -271,27 +269,19 @@ async fn test_access_log_hcm_all_operators() {
 
     let cluster = ClusterBuilder::new("backend").endpoint(EndpointBuilder::from_socket_addr(backend_addr));
 
-    let hcm = HcmBuilder::new()
-        .http1()
-        .access_log_file(log_path.to_str().unwrap(), HCM_LOG_FORMAT)
-        .route_config(
-            RouteConfigBuilder::new("routes")
-                .virtual_host(VirtualHostBuilder::new("default").route(
-                    RouteBuilder::new().name("hello-route").match_prefix("/").cluster("backend"),
-                )),
-        );
+    let hcm = HcmBuilder::new().http1().access_log_file(log_path.to_str().unwrap(), HCM_LOG_FORMAT).route_config(
+        RouteConfigBuilder::new("routes").virtual_host(
+            VirtualHostBuilder::new("default")
+                .route(RouteBuilder::new().name("hello-route").match_prefix("/").cluster("backend")),
+        ),
+    );
 
-    let listener = ListenerBuilder::new("http")
-        .port(0)
-        .filter_chain(FilterChainBuilder::new("main").hcm(hcm));
+    let listener = ListenerBuilder::new("http").port(0).filter_chain(FilterChainBuilder::new("main").hcm(hcm));
 
     let bootstrap = BootstrapBuilder::new()
         .listener(listener)
         .cluster(cluster)
-        .access_log(AccessLogConfig {
-            blocking: true,
-            ..AccessLogConfig::default()
-        });
+        .access_log(AccessLogConfig { blocking: true, ..AccessLogConfig::default() });
 
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
 
@@ -334,16 +324,12 @@ async fn test_access_log_hcm_all_operators() {
     let log_lines: Vec<&str> = log_content.lines().collect();
     assert_eq!(log_lines.len(), 2, "Expected exactly 2 log lines, got {}", log_lines.len());
 
-    let parsed_lines: Vec<HashMap<String, String>> =
-        log_lines.iter().map(|line| parse_log_line(line)).collect();
+    let parsed_lines: Vec<HashMap<String, String>> = log_lines.iter().map(|line| parse_log_line(line)).collect();
 
     // ── Validate origin-form line (REQ(:SCHEME) should be "-") ──
     let origin_line = find_line_by_path(&parsed_lines, "/hello");
     assert_eq!(origin_line.get("REQ(:PATH)").map(|s| s.as_str()), Some("/hello"));
-    assert_eq!(
-        origin_line.get("REQ(X-ENVOY-ORIGINAL-PATH?:PATH)").map(|s| s.as_str()),
-        Some("/hello")
-    );
+    assert_eq!(origin_line.get("REQ(X-ENVOY-ORIGINAL-PATH?:PATH)").map(|s| s.as_str()), Some("/hello"));
     assert_eq!(origin_line.get("REQ(:SCHEME)").map(|s| s.as_str()), Some("-"));
     assert_eq!(origin_line.get("REQ(:AUTHORITY)").map(|s| s.as_str()), Some("localhost"));
 
@@ -378,10 +364,7 @@ async fn test_access_log_hcm_all_operators() {
     // ── Validate absolute-form line (REQ(:SCHEME) should be "http") ──
     let abs_line = find_line_by_path(&parsed_lines, "/hello-abs");
     assert_eq!(abs_line.get("REQ(:PATH)").map(|s| s.as_str()), Some("/hello-abs"));
-    assert_eq!(
-        abs_line.get("REQ(X-ENVOY-ORIGINAL-PATH?:PATH)").map(|s| s.as_str()),
-        Some("/hello-abs")
-    );
+    assert_eq!(abs_line.get("REQ(X-ENVOY-ORIGINAL-PATH?:PATH)").map(|s| s.as_str()), Some("/hello-abs"));
     assert_eq!(abs_line.get("REQ(:SCHEME)").map(|s| s.as_str()), Some("http"));
     assert_eq!(abs_line.get("REQ(:AUTHORITY)").map(|s| s.as_str()), Some("localhost"));
 
@@ -432,30 +415,22 @@ async fn test_access_log_hcm_upstream_down() {
     let log_path = log_dir.join(format!("orion-test-access-log-hcm-down-{}.txt", std::process::id()));
 
     // Point the cluster to an inactive port (e.g., 127.0.0.1:1)
-    let cluster = ClusterBuilder::new("backend")
-        .endpoint(EndpointBuilder::from_socket_addr("127.0.0.1:1".parse().unwrap()));
+    let cluster =
+        ClusterBuilder::new("backend").endpoint(EndpointBuilder::from_socket_addr("127.0.0.1:1".parse().unwrap()));
 
-    let hcm = HcmBuilder::new()
-        .http1()
-        .access_log_file(log_path.to_str().unwrap(), HCM_LOG_FORMAT)
-        .route_config(
-            RouteConfigBuilder::new("routes")
-                .virtual_host(VirtualHostBuilder::new("default").route(
-                    RouteBuilder::new().name("hello-route").match_prefix("/").cluster("backend"),
-                )),
-        );
+    let hcm = HcmBuilder::new().http1().access_log_file(log_path.to_str().unwrap(), HCM_LOG_FORMAT).route_config(
+        RouteConfigBuilder::new("routes").virtual_host(
+            VirtualHostBuilder::new("default")
+                .route(RouteBuilder::new().name("hello-route").match_prefix("/").cluster("backend")),
+        ),
+    );
 
-    let listener = ListenerBuilder::new("http")
-        .port(0)
-        .filter_chain(FilterChainBuilder::new("main").hcm(hcm));
+    let listener = ListenerBuilder::new("http").port(0).filter_chain(FilterChainBuilder::new("main").hcm(hcm));
 
     let bootstrap = BootstrapBuilder::new()
         .listener(listener)
         .cluster(cluster)
-        .access_log(AccessLogConfig {
-            blocking: true,
-            ..AccessLogConfig::default()
-        });
+        .access_log(AccessLogConfig { blocking: true, ..AccessLogConfig::default() });
 
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
 
@@ -544,8 +519,7 @@ async fn test_access_log_hcm_original_path_header() {
 
     backend
         .set_default_response(
-            PreConfiguredResponse::with_body("OK")
-                .header("x-custom-response-header", "resp-custom-value"),
+            PreConfiguredResponse::with_body("OK").header("x-custom-response-header", "resp-custom-value"),
         )
         .await;
 
@@ -554,27 +528,19 @@ async fn test_access_log_hcm_original_path_header() {
 
     let cluster = ClusterBuilder::new("backend").endpoint(EndpointBuilder::from_socket_addr(backend_addr));
 
-    let hcm = HcmBuilder::new()
-        .http1()
-        .access_log_file(log_path.to_str().unwrap(), HCM_LOG_FORMAT)
-        .route_config(
-            RouteConfigBuilder::new("routes")
-                .virtual_host(VirtualHostBuilder::new("default").route(
-                    RouteBuilder::new().name("hello-route").match_prefix("/").cluster("backend"),
-                )),
-        );
+    let hcm = HcmBuilder::new().http1().access_log_file(log_path.to_str().unwrap(), HCM_LOG_FORMAT).route_config(
+        RouteConfigBuilder::new("routes").virtual_host(
+            VirtualHostBuilder::new("default")
+                .route(RouteBuilder::new().name("hello-route").match_prefix("/").cluster("backend")),
+        ),
+    );
 
-    let listener = ListenerBuilder::new("http")
-        .port(0)
-        .filter_chain(FilterChainBuilder::new("main").hcm(hcm));
+    let listener = ListenerBuilder::new("http").port(0).filter_chain(FilterChainBuilder::new("main").hcm(hcm));
 
     let bootstrap = BootstrapBuilder::new()
         .listener(listener)
         .cluster(cluster)
-        .access_log(AccessLogConfig {
-            blocking: true,
-            ..AccessLogConfig::default()
-        });
+        .access_log(AccessLogConfig { blocking: true, ..AccessLogConfig::default() });
 
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
 
@@ -611,10 +577,7 @@ async fn test_access_log_hcm_original_path_header() {
     assert_eq!(parsed.get("REQ(:PATH)").map(|s| s.as_str()), Some("/rewritten-path"));
 
     // REQ(X-ENVOY-ORIGINAL-PATH?:PATH) should return the header value, not the path
-    assert_eq!(
-        parsed.get("REQ(X-ENVOY-ORIGINAL-PATH?:PATH)").map(|s| s.as_str()),
-        Some("/original-path")
-    );
+    assert_eq!(parsed.get("REQ(X-ENVOY-ORIGINAL-PATH?:PATH)").map(|s| s.as_str()), Some("/original-path"));
 
     orion.shutdown();
     cleanup_config_file(&config_path);
@@ -628,9 +591,7 @@ async fn test_access_log_hcm_backend_500() {
     let backend_addr = backend.addr();
 
     backend
-        .set_default_response(
-            PreConfiguredResponse::with_status(StatusCode::INTERNAL_SERVER_ERROR).body("Boom"),
-        )
+        .set_default_response(PreConfiguredResponse::with_status(StatusCode::INTERNAL_SERVER_ERROR).body("Boom"))
         .await;
 
     let log_dir = std::env::temp_dir();
@@ -638,27 +599,19 @@ async fn test_access_log_hcm_backend_500() {
 
     let cluster = ClusterBuilder::new("backend").endpoint(EndpointBuilder::from_socket_addr(backend_addr));
 
-    let hcm = HcmBuilder::new()
-        .http1()
-        .access_log_file(log_path.to_str().unwrap(), HCM_LOG_FORMAT)
-        .route_config(
-            RouteConfigBuilder::new("routes")
-                .virtual_host(VirtualHostBuilder::new("default").route(
-                    RouteBuilder::new().name("hello-route").match_prefix("/").cluster("backend"),
-                )),
-        );
+    let hcm = HcmBuilder::new().http1().access_log_file(log_path.to_str().unwrap(), HCM_LOG_FORMAT).route_config(
+        RouteConfigBuilder::new("routes").virtual_host(
+            VirtualHostBuilder::new("default")
+                .route(RouteBuilder::new().name("hello-route").match_prefix("/").cluster("backend")),
+        ),
+    );
 
-    let listener = ListenerBuilder::new("http")
-        .port(0)
-        .filter_chain(FilterChainBuilder::new("main").hcm(hcm));
+    let listener = ListenerBuilder::new("http").port(0).filter_chain(FilterChainBuilder::new("main").hcm(hcm));
 
     let bootstrap = BootstrapBuilder::new()
         .listener(listener)
         .cluster(cluster)
-        .access_log(AccessLogConfig {
-            blocking: true,
-            ..AccessLogConfig::default()
-        });
+        .access_log(AccessLogConfig { blocking: true, ..AccessLogConfig::default() });
 
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
 
@@ -698,16 +651,10 @@ async fn test_access_log_hcm_backend_500() {
 
     // RESPONSE_FLAGS: no transport error, so may be "-"
     let flags = parsed.get("RESPONSE_FLAGS").expect("RESPONSE_FLAGS missing");
-    assert!(
-        flags != "UF" && flags != "UH",
-        "RESPONSE_FLAGS should not be UF/UH for a backend 500: got {flags}"
-    );
+    assert!(flags != "UF" && flags != "UH", "RESPONSE_FLAGS should not be UF/UH for a backend 500: got {flags}");
 
     // UPSTREAM_TRANSPORT_FAILURE_REASON should be "-" (no transport failure)
-    assert_eq!(
-        parsed.get("UPSTREAM_TRANSPORT_FAILURE_REASON").map(|s| s.as_str()),
-        Some("-")
-    );
+    assert_eq!(parsed.get("UPSTREAM_TRANSPORT_FAILURE_REASON").map(|s| s.as_str()), Some("-"));
 
     // REQ(:PATH) should be logged correctly
     assert_eq!(parsed.get("REQ(:PATH)").map(|s| s.as_str()), Some("/five-hundred"));
@@ -726,37 +673,26 @@ async fn test_access_log_hcm_multiple_connections() {
     let backend = TestBackend::start().await.expect("Failed to start test backend");
     let backend_addr = backend.addr();
 
-    backend
-        .set_default_response(PreConfiguredResponse::with_body("OK"))
-        .await;
+    backend.set_default_response(PreConfiguredResponse::with_body("OK")).await;
 
     let log_dir = std::env::temp_dir();
-    let log_path =
-        log_dir.join(format!("orion-test-access-log-hcm-multi-{}.txt", std::process::id()));
+    let log_path = log_dir.join(format!("orion-test-access-log-hcm-multi-{}.txt", std::process::id()));
 
     let cluster = ClusterBuilder::new("backend").endpoint(EndpointBuilder::from_socket_addr(backend_addr));
 
-    let hcm = HcmBuilder::new()
-        .http1()
-        .access_log_file(log_path.to_str().unwrap(), HCM_LOG_FORMAT)
-        .route_config(
-            RouteConfigBuilder::new("routes")
-                .virtual_host(VirtualHostBuilder::new("default").route(
-                    RouteBuilder::new().name("hello-route").match_prefix("/").cluster("backend"),
-                )),
-        );
+    let hcm = HcmBuilder::new().http1().access_log_file(log_path.to_str().unwrap(), HCM_LOG_FORMAT).route_config(
+        RouteConfigBuilder::new("routes").virtual_host(
+            VirtualHostBuilder::new("default")
+                .route(RouteBuilder::new().name("hello-route").match_prefix("/").cluster("backend")),
+        ),
+    );
 
-    let listener = ListenerBuilder::new("http")
-        .port(0)
-        .filter_chain(FilterChainBuilder::new("main").hcm(hcm));
+    let listener = ListenerBuilder::new("http").port(0).filter_chain(FilterChainBuilder::new("main").hcm(hcm));
 
     let bootstrap = BootstrapBuilder::new()
         .listener(listener)
         .cluster(cluster)
-        .access_log(AccessLogConfig {
-            blocking: true,
-            ..AccessLogConfig::default()
-        });
+        .access_log(AccessLogConfig { blocking: true, ..AccessLogConfig::default() });
 
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
 
@@ -790,12 +726,10 @@ async fn test_access_log_hcm_multiple_connections() {
     // Each connection should produce exactly one log line
     assert_eq!(log_lines.len(), 3, "Expected 3 log lines, got {}", log_lines.len());
 
-    let parsed_lines: Vec<HashMap<String, String>> =
-        log_lines.iter().map(|line| parse_log_line(line)).collect();
+    let parsed_lines: Vec<HashMap<String, String>> = log_lines.iter().map(|line| parse_log_line(line)).collect();
 
     // Verify each path is present and distinct connection IDs
-    let mut paths: Vec<&str> =
-        parsed_lines.iter().filter_map(|l| l.get("REQ(:PATH)").map(|s| s.as_str())).collect();
+    let mut paths: Vec<&str> = parsed_lines.iter().filter_map(|l| l.get("REQ(:PATH)").map(|s| s.as_str())).collect();
     paths.sort();
     assert_eq!(paths, vec!["/first", "/second", "/third"]);
 

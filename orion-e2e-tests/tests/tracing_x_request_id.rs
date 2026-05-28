@@ -63,11 +63,9 @@ async fn setup(
             ),
         );
 
-    let listener =
-        ListenerBuilder::new("http").port(0).filter_chain(FilterChainBuilder::new("main").hcm(hcm));
+    let listener = ListenerBuilder::new("http").port(0).filter_chain(FilterChainBuilder::new("main").hcm(hcm));
 
-    let bootstrap =
-        orion_e2e_tests::config_builder::BootstrapBuilder::new().listener(listener).cluster(cluster);
+    let bootstrap = orion_e2e_tests::config_builder::BootstrapBuilder::new().listener(listener).cluster(cluster);
 
     let config_path = bootstrap.build_to_temp().unwrap();
 

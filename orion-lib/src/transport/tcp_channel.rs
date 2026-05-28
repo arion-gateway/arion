@@ -15,8 +15,8 @@
 //
 //
 
-use std::{net::SocketAddr, sync::Arc};
 use orion_error::Context;
+use std::{net::SocketAddr, sync::Arc};
 
 use super::{
     connector::{ConnectUsing, UnifiedConnector},
@@ -68,10 +68,8 @@ impl TcpChannelConnector {
 
             let (mut base_stream, cluster_name, upstream_local_addr, upstream_peer_addr) = match connector {
                 UnifiedConnector::Socket(socket_connector) => {
-                    let (tcp_stream, cluster_name) = socket_connector
-                        .connect()
-                        .await
-                        .map_err(|e| e.with_context_msg("TCP connection failed"))?;
+                    let (tcp_stream, cluster_name) =
+                        socket_connector.connect().await.map_err(|e| e.with_context_msg("TCP connection failed"))?;
 
                     let upstream_local_addr = tcp_stream.local_addr().ok();
                     let upstream_peer_addr = tcp_stream.peer_addr().ok();

@@ -53,11 +53,9 @@ async fn setup_with_sampling(
             ),
         );
 
-    let listener =
-        ListenerBuilder::new("http").port(0).filter_chain(FilterChainBuilder::new("main").hcm(hcm));
+    let listener = ListenerBuilder::new("http").port(0).filter_chain(FilterChainBuilder::new("main").hcm(hcm));
 
-    let bootstrap =
-        orion_e2e_tests::config_builder::BootstrapBuilder::new().listener(listener).cluster(cluster);
+    let bootstrap = orion_e2e_tests::config_builder::BootstrapBuilder::new().listener(listener).cluster(cluster);
 
     let config_path = bootstrap.build_to_temp().unwrap();
 
@@ -75,13 +73,9 @@ async fn setup_with_sampling(
 #[tokio::test]
 #[ignore]
 async fn test_client_trace_id_sampling_100_triggers_tracing() {
-    let (orion, client, mut backend, config_path) =
-        setup_with_sampling(Some(100), Some(100), Some(100)).await;
+    let (orion, client, mut backend, config_path) = setup_with_sampling(Some(100), Some(100), Some(100)).await;
 
-    let resp = client
-        .send(RequestBuilder::get("/test").header("x-client-trace-id", CLIENT_TRACE_ID))
-        .await
-        .unwrap();
+    let resp = client.send(RequestBuilder::get("/test").header("x-client-trace-id", CLIENT_TRACE_ID)).await.unwrap();
     resp.assert_status(StatusCode::OK);
 
     // Tracing should be active: X-Request-ID should be generated and returned
@@ -138,20 +132,15 @@ async fn test_client_trace_id_sampling_0_no_tracing() {
             ),
         );
 
-    let listener =
-        ListenerBuilder::new("http").port(0).filter_chain(FilterChainBuilder::new("main").hcm(hcm));
+    let listener = ListenerBuilder::new("http").port(0).filter_chain(FilterChainBuilder::new("main").hcm(hcm));
 
-    let bootstrap =
-        orion_e2e_tests::config_builder::BootstrapBuilder::new().listener(listener).cluster(cluster);
+    let bootstrap = orion_e2e_tests::config_builder::BootstrapBuilder::new().listener(listener).cluster(cluster);
 
     let config_path = bootstrap.build_to_temp().unwrap();
     let orion = OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default()).await.unwrap();
     let client = TestClient::new(orion.listener_addr().unwrap());
 
-    let resp = client
-        .send(RequestBuilder::get("/test").header("x-client-trace-id", CLIENT_TRACE_ID))
-        .await
-        .unwrap();
+    let resp = client.send(RequestBuilder::get("/test").header("x-client-trace-id", CLIENT_TRACE_ID)).await.unwrap();
     resp.assert_status(StatusCode::OK);
 
     // X-Client-Trace-Id should be propagated regardless
@@ -174,8 +163,7 @@ async fn test_client_trace_id_sampling_0_no_tracing() {
 #[tokio::test]
 #[ignore]
 async fn test_client_trace_id_with_traceparent() {
-    let (orion, client, mut backend, config_path) =
-        setup_with_sampling(Some(100), Some(100), Some(100)).await;
+    let (orion, client, mut backend, config_path) = setup_with_sampling(Some(100), Some(100), Some(100)).await;
 
     // VALID_TRACEPARENT = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
     // trace_id = 4bf92f3577b34da6a3ce929d0e0e4736, span_id = 00f067aa0ba902b7
@@ -221,8 +209,7 @@ async fn test_client_trace_id_with_traceparent() {
 #[tokio::test]
 #[ignore]
 async fn test_client_trace_id_with_b3() {
-    let (orion, client, mut backend, config_path) =
-        setup_with_sampling(Some(100), Some(100), Some(100)).await;
+    let (orion, client, mut backend, config_path) = setup_with_sampling(Some(100), Some(100), Some(100)).await;
 
     let resp = client
         .send(
@@ -252,8 +239,7 @@ async fn test_client_trace_id_with_b3() {
 #[tokio::test]
 #[ignore]
 async fn test_client_trace_id_with_uber() {
-    let (orion, client, mut backend, config_path) =
-        setup_with_sampling(Some(100), Some(100), Some(100)).await;
+    let (orion, client, mut backend, config_path) = setup_with_sampling(Some(100), Some(100), Some(100)).await;
 
     let resp = client
         .send(
@@ -302,20 +288,16 @@ async fn test_client_trace_id_invalid_no_tracing() {
             ),
         );
 
-    let listener =
-        ListenerBuilder::new("http").port(0).filter_chain(FilterChainBuilder::new("main").hcm(hcm));
+    let listener = ListenerBuilder::new("http").port(0).filter_chain(FilterChainBuilder::new("main").hcm(hcm));
 
-    let bootstrap =
-        orion_e2e_tests::config_builder::BootstrapBuilder::new().listener(listener).cluster(cluster);
+    let bootstrap = orion_e2e_tests::config_builder::BootstrapBuilder::new().listener(listener).cluster(cluster);
 
     let config_path = bootstrap.build_to_temp().unwrap();
     let orion = OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default()).await.unwrap();
     let client = TestClient::new(orion.listener_addr().unwrap());
 
-    let resp = client
-        .send(RequestBuilder::get("/test").header("x-client-trace-id", INVALID_CLIENT_TRACE_ID))
-        .await
-        .unwrap();
+    let resp =
+        client.send(RequestBuilder::get("/test").header("x-client-trace-id", INVALID_CLIENT_TRACE_ID)).await.unwrap();
     resp.assert_status(StatusCode::OK);
 
     let cap = backend.await_request().await.unwrap();
@@ -335,13 +317,9 @@ async fn test_client_trace_id_invalid_no_tracing() {
 #[tokio::test]
 #[ignore]
 async fn test_traceparent_alone_triggers_tracing() {
-    let (orion, client, mut backend, config_path) =
-        setup_with_sampling(Some(100), Some(100), Some(100)).await;
+    let (orion, client, mut backend, config_path) = setup_with_sampling(Some(100), Some(100), Some(100)).await;
 
-    let resp = client
-        .send(RequestBuilder::get("/test").header("traceparent", VALID_TRACEPARENT))
-        .await
-        .unwrap();
+    let resp = client.send(RequestBuilder::get("/test").header("traceparent", VALID_TRACEPARENT)).await.unwrap();
     resp.assert_status(StatusCode::OK);
 
     let cap = backend.await_request().await.unwrap();

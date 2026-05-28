@@ -56,8 +56,7 @@ async fn setup(
 #[tokio::test]
 #[ignore]
 async fn test_sampling_overall_blocks_client() {
-    let (orion, client, mut backend, config_path) =
-        setup(Some(100), Some(100), Some(0)).await;
+    let (orion, client, mut backend, config_path) = setup(Some(100), Some(100), Some(0)).await;
 
     let resp = client
         .send(RequestBuilder::get("/test").header("x-client-trace-id", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"))
@@ -78,8 +77,7 @@ async fn test_sampling_overall_blocks_client() {
 #[tokio::test]
 #[ignore]
 async fn test_sampling_client_blocks_overall() {
-    let (orion, client, mut backend, config_path) =
-        setup(Some(0), Some(100), Some(100)).await;
+    let (orion, client, mut backend, config_path) = setup(Some(0), Some(100), Some(100)).await;
 
     let resp = client
         .send(RequestBuilder::get("/test").header("x-client-trace-id", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"))
@@ -102,16 +100,12 @@ async fn test_sampling_client_blocks_overall() {
 #[tokio::test]
 #[ignore]
 async fn test_sampling_random_50_triggers_eventually() {
-    let (orion, client, mut backend, config_path) =
-        setup(Some(0), Some(50), Some(100)).await;
+    let (orion, client, mut backend, config_path) = setup(Some(0), Some(50), Some(100)).await;
 
     let mut found = false;
     for _ in 0..30 {
         let request_id = uuid::Uuid::new_v4().to_string();
-        let resp = client
-            .send(RequestBuilder::get("/test").header("x-request-id", &request_id))
-            .await
-            .unwrap();
+        let resp = client.send(RequestBuilder::get("/test").header("x-request-id", &request_id)).await.unwrap();
         resp.assert_status(StatusCode::OK);
 
         let cap = backend.await_request().await.unwrap();

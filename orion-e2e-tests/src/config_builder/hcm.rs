@@ -19,8 +19,7 @@ use orion_data_plane_api::envoy_data_plane_api::{
         config::{
             accesslog::v3::{access_log::ConfigType as AccessLogConfigType, AccessLog as EnvoyAccessLog},
             core::v3::{
-                config_source::ConfigSourceSpecifier,
-                substitution_format_string::Format as SubstitutionFormat,
+                config_source::ConfigSourceSpecifier, substitution_format_string::Format as SubstitutionFormat,
                 AggregatedConfigSource, ConfigSource, SubstitutionFormatString,
             },
             route::v3::RouteConfiguration,

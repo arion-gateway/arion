@@ -19,10 +19,9 @@ use orion_data_plane_api::envoy_data_plane_api::{
         config::{
             accesslog::v3::{access_log::ConfigType as AccessLogConfigType, AccessLog as EnvoyAccessLog},
             core::v3::{
-                address::Address as AddressType,
-                socket_address::PortSpecifier,
-                substitution_format_string::Format as SubstitutionFormat,
-                Address, SocketAddress, SubstitutionFormatString,
+                address::Address as AddressType, socket_address::PortSpecifier,
+                substitution_format_string::Format as SubstitutionFormat, Address, SocketAddress,
+                SubstitutionFormatString,
             },
             listener::v3::{
                 listener::{InternalListenerConfig, ListenerSpecifier},

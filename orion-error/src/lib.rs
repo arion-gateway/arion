@@ -211,7 +211,7 @@ impl Error {
                     } else {
                         break;
                     }
-                }
+                },
                 ErrorImpl::Error(_) => break,
             }
         }

@@ -131,7 +131,8 @@ impl LocalConnectorWithDNSResolver {
     #[allow(clippy::too_many_lines)]
     pub fn connect(
         &self,
-    ) -> impl Future<Output = std::result::Result<(TcpStream, &'static str), ContextualError<ConnectError>>> + 'static {
+    ) -> impl Future<Output = std::result::Result<(TcpStream, &'static str), ContextualError<ConnectError>>> + 'static
+    {
         let addr = self.addr.clone();
         let device = self.bind_device.clone();
         let cluster_name = self.cluster_name;

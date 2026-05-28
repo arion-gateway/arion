@@ -29,16 +29,12 @@ async fn setup_no_tracing() -> (OrionInstance, TestClient, TestBackend, std::pat
     let cluster = presets::static_cluster("backend", backend_addr);
 
     // HCM WITHOUT .tracing() — no tracing config at all
-    let hcm = HcmBuilder::new()
-        .http1()
-        .generate_request_id(true)
-        .always_set_request_id_in_response(true)
-        .route_config(
-            orion_e2e_tests::config_builder::RouteConfigBuilder::new("routes").virtual_host(
-                orion_e2e_tests::config_builder::VirtualHostBuilder::new("default")
-                    .route(presets::default_route("backend")),
-            ),
-        );
+    let hcm = HcmBuilder::new().http1().generate_request_id(true).always_set_request_id_in_response(true).route_config(
+        orion_e2e_tests::config_builder::RouteConfigBuilder::new("routes").virtual_host(
+            orion_e2e_tests::config_builder::VirtualHostBuilder::new("default")
+                .route(presets::default_route("backend")),
+        ),
+    );
     let listener = ListenerBuilder::new("http").port(0).filter_chain(FilterChainBuilder::new("main").hcm(hcm));
     let bootstrap = orion_e2e_tests::config_builder::BootstrapBuilder::new().listener(listener).cluster(cluster);
     let config_path = bootstrap.build_to_temp().unwrap();

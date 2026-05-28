@@ -103,17 +103,13 @@ async fn test_access_log_tcp_proxy_all_operators() {
         .cluster("backend")
         .access_log_file(log_path.to_str().unwrap(), TCP_LOG_FORMAT);
 
-    let listener = ListenerBuilder::new("tcp")
-        .port(0)
-        .filter_chain(FilterChainBuilder::new("main").tcp_proxy(tcp_proxy));
+    let listener =
+        ListenerBuilder::new("tcp").port(0).filter_chain(FilterChainBuilder::new("main").tcp_proxy(tcp_proxy));
 
     let bootstrap = BootstrapBuilder::new()
         .listener(listener)
         .cluster(cluster)
-        .access_log(AccessLogConfig {
-            blocking: true,
-            ..AccessLogConfig::default()
-        });
+        .access_log(AccessLogConfig { blocking: true, ..AccessLogConfig::default() });
 
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
 
@@ -126,7 +122,7 @@ async fn test_access_log_tcp_proxy_all_operators() {
     // Connect to Orion, read backend's greeting, send client message, and close connection
     {
         let mut stream = TcpStream::connect(listener_addr).await.expect("Failed to connect");
-        
+
         let mut buf = [0u8; 128];
         let n = stream.read(&mut buf).await.expect("Failed to read greeting");
         assert_eq!(&buf[..n], b"Hello from backend!");
@@ -160,7 +156,10 @@ async fn test_access_log_tcp_proxy_all_operators() {
 
     // UPSTREAM_REMOTE_ADDRESS / PORT / WITHOUT_PORT
     assert_eq!(parsed.get("UPSTREAM_REMOTE_ADDRESS").map(|s| s.as_str()), Some(backend_addr.to_string().as_str()));
-    assert_eq!(parsed.get("UPSTREAM_REMOTE_ADDRESS_WITHOUT_PORT").map(|s| s.as_str()), Some(backend_addr.ip().to_string().as_str()));
+    assert_eq!(
+        parsed.get("UPSTREAM_REMOTE_ADDRESS_WITHOUT_PORT").map(|s| s.as_str()),
+        Some(backend_addr.ip().to_string().as_str())
+    );
     assert_eq!(parsed.get("UPSTREAM_REMOTE_PORT").map(|s| s.as_str()), Some(backend_addr.port().to_string().as_str()));
 
     // UPSTREAM_LOCAL_ADDRESS / PORT / WITHOUT_PORT
@@ -168,7 +167,8 @@ async fn test_access_log_tcp_proxy_all_operators() {
     assert!(!upstream_local.is_empty() && upstream_local != "-");
     assert!(upstream_local.contains(':'));
 
-    let upstream_local_wo = parsed.get("UPSTREAM_LOCAL_ADDRESS_WITHOUT_PORT").expect("UPSTREAM_LOCAL_ADDRESS_WITHOUT_PORT missing");
+    let upstream_local_wo =
+        parsed.get("UPSTREAM_LOCAL_ADDRESS_WITHOUT_PORT").expect("UPSTREAM_LOCAL_ADDRESS_WITHOUT_PORT missing");
     assert!(!upstream_local_wo.is_empty() && upstream_local_wo != "-");
     assert!(!upstream_local_wo.contains(':'));
 
@@ -179,16 +179,21 @@ async fn test_access_log_tcp_proxy_all_operators() {
     let dl_addr = parsed.get("DOWNSTREAM_LOCAL_ADDRESS").expect("DOWNSTREAM_LOCAL_ADDRESS missing");
     assert_eq!(dl_addr.as_str(), listener_addr.to_string().as_str());
 
-    let dl_wo = parsed.get("DOWNSTREAM_LOCAL_ADDRESS_WITHOUT_PORT").expect("DOWNSTREAM_LOCAL_ADDRESS_WITHOUT_PORT missing");
+    let dl_wo =
+        parsed.get("DOWNSTREAM_LOCAL_ADDRESS_WITHOUT_PORT").expect("DOWNSTREAM_LOCAL_ADDRESS_WITHOUT_PORT missing");
     assert_eq!(dl_wo.as_str(), listener_addr.ip().to_string().as_str());
 
-    assert_eq!(parsed.get("DOWNSTREAM_LOCAL_PORT").map(|s| s.as_str()), Some(listener_addr.port().to_string().as_str()));
+    assert_eq!(
+        parsed.get("DOWNSTREAM_LOCAL_PORT").map(|s| s.as_str()),
+        Some(listener_addr.port().to_string().as_str())
+    );
 
     // DOWNSTREAM_REMOTE_ADDRESS / PORT / WITHOUT_PORT
     let dr_addr = parsed.get("DOWNSTREAM_REMOTE_ADDRESS").expect("DOWNSTREAM_REMOTE_ADDRESS missing");
     assert!(!dr_addr.is_empty() && dr_addr != "-");
 
-    let dr_wo = parsed.get("DOWNSTREAM_REMOTE_ADDRESS_WITHOUT_PORT").expect("DOWNSTREAM_REMOTE_ADDRESS_WITHOUT_PORT missing");
+    let dr_wo =
+        parsed.get("DOWNSTREAM_REMOTE_ADDRESS_WITHOUT_PORT").expect("DOWNSTREAM_REMOTE_ADDRESS_WITHOUT_PORT missing");
     assert!(!dr_wo.contains(':'));
 
     let dr_port = parsed.get("DOWNSTREAM_REMOTE_PORT").expect("DOWNSTREAM_REMOTE_PORT missing");
@@ -244,32 +249,27 @@ async fn test_access_log_tcp_proxy_upstream_down() {
     let log_path = log_dir.join(format!("orion-test-access-log-tcp-down-{}.txt", std::process::id()));
 
     // Point the cluster to an inactive port (e.g., 127.0.0.1:1)
-    let cluster = ClusterBuilder::new("backend").endpoint(EndpointBuilder::from_socket_addr("127.0.0.1:1".parse().unwrap()));
+    let cluster =
+        ClusterBuilder::new("backend").endpoint(EndpointBuilder::from_socket_addr("127.0.0.1:1".parse().unwrap()));
 
     let tcp_proxy = TcpProxyBuilder::new("tcp_proxy")
         .cluster("backend")
         .access_log_file(log_path.to_str().unwrap(), TCP_LOG_FORMAT);
 
-    let listener = ListenerBuilder::new("tcp")
-        .port(0)
-        .filter_chain(FilterChainBuilder::new("main").tcp_proxy(tcp_proxy));
+    let listener =
+        ListenerBuilder::new("tcp").port(0).filter_chain(FilterChainBuilder::new("main").tcp_proxy(tcp_proxy));
 
     let bootstrap = BootstrapBuilder::new()
         .listener(listener)
         .cluster(cluster)
-        .access_log(AccessLogConfig {
-            blocking: true,
-            ..AccessLogConfig::default()
-        });
+        .access_log(AccessLogConfig { blocking: true, ..AccessLogConfig::default() });
 
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
 
     let mut options = SpawnOptions::default().with_verbose();
     options.log_level = Some("debug".to_string());
 
-    let orion = OrionInstance::spawn_auto_port(&config_path, "tcp", options)
-        .await
-        .expect("Failed to spawn Orion");
+    let orion = OrionInstance::spawn_auto_port(&config_path, "tcp", options).await.expect("Failed to spawn Orion");
 
     let listener_addr = orion.listener_addr().expect("Missing listener address");
 
@@ -280,14 +280,14 @@ async fn test_access_log_tcp_proxy_upstream_down() {
         let _ = stream.write_all(b"Hello?").await;
         let mut buf = [0u8; 128];
         // Expect connection to be closed by Orion
-            let n = stream.read(&mut buf).await.unwrap_or(0);
-            assert_eq!(n, 0, "Connection should be closed by Orion");
-        }
+        let n = stream.read(&mut buf).await.unwrap_or(0);
+        assert_eq!(n, 0, "Connection should be closed by Orion");
+    }
 
-        // Wait briefly for the access log to be written and Orion to flush debug logs
-        tokio::time::sleep(Duration::from_secs(2)).await;
+    // Wait briefly for the access log to be written and Orion to flush debug logs
+    tokio::time::sleep(Duration::from_secs(2)).await;
 
-        let log_content = read_log_file(&log_path, Duration::from_secs(5)).await;
+    let log_content = read_log_file(&log_path, Duration::from_secs(5)).await;
     let log_line = log_content.lines().next().expect("No log line found");
     println!("DEBUG LOG LINE: {}", log_line);
     let parsed = parse_log_line(log_line);
@@ -298,10 +298,14 @@ async fn test_access_log_tcp_proxy_upstream_down() {
     assert!(flags == "UF" || flags == "UH", "Expected UF or UH response flags, got: {flags}");
 
     let flags_long = parsed.get("RESPONSE_FLAGS_LONG").expect("RESPONSE_FLAGS_LONG missing");
-    assert!(flags_long == "UpstreamConnectionFailure" || flags_long == "NoHealthyUpstream", "Expected UpstreamConnectionFailure or NoHealthyUpstream, got: {flags_long}");
+    assert!(
+        flags_long == "UpstreamConnectionFailure" || flags_long == "NoHealthyUpstream",
+        "Expected UpstreamConnectionFailure or NoHealthyUpstream, got: {flags_long}"
+    );
 
     // Expect UPSTREAM_TRANSPORT_FAILURE_REASON to contain connection failure details
-    let failure_reason = parsed.get("UPSTREAM_TRANSPORT_FAILURE_REASON").expect("UPSTREAM_TRANSPORT_FAILURE_REASON missing");
+    let failure_reason =
+        parsed.get("UPSTREAM_TRANSPORT_FAILURE_REASON").expect("UPSTREAM_TRANSPORT_FAILURE_REASON missing");
     println!("DEBUG FAILURE REASON: {}", failure_reason);
     assert_ne!(failure_reason.as_str(), "-", "UPSTREAM_TRANSPORT_FAILURE_REASON should be populated");
 

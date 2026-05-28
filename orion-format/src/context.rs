@@ -28,7 +28,7 @@ use crate::{
 use arrayvec::ArrayString;
 use chrono::{DateTime, Datelike, Timelike, Utc};
 use http::{uri::Authority, Request, Response};
-use orion_http_header::{X_ENVOY_ORIGINAL_PATH};
+use orion_http_header::X_ENVOY_ORIGINAL_PATH;
 use orion_interner::StringInterner;
 use smol_str::ToSmolStr;
 use smol_str::{format_smolstr, SmolStr, SmolStrBuilder};

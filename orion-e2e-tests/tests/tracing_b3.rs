@@ -48,11 +48,9 @@ async fn setup_tracing() -> (OrionInstance, TestClient, TestBackend, std::path::
             ),
         );
 
-    let listener =
-        ListenerBuilder::new("http").port(0).filter_chain(FilterChainBuilder::new("main").hcm(hcm));
+    let listener = ListenerBuilder::new("http").port(0).filter_chain(FilterChainBuilder::new("main").hcm(hcm));
 
-    let bootstrap =
-        orion_e2e_tests::config_builder::BootstrapBuilder::new().listener(listener).cluster(cluster);
+    let bootstrap = orion_e2e_tests::config_builder::BootstrapBuilder::new().listener(listener).cluster(cluster);
 
     let config_path = bootstrap.build_to_temp().unwrap();
 
@@ -71,10 +69,7 @@ async fn test_b3_single_basic() {
     let (orion, client, mut backend, config_path) = setup_tracing().await;
 
     let b3_in = format!("{}-{}-1", TRACE_ID_128, SPAN_ID);
-    let resp = client
-        .send(RequestBuilder::get("/test").header("b3", &b3_in))
-        .await
-        .unwrap();
+    let resp = client.send(RequestBuilder::get("/test").header("b3", &b3_in)).await.unwrap();
     resp.assert_status(StatusCode::OK);
 
     // Tracing is active: X-Request-ID should be generated
@@ -106,10 +101,7 @@ async fn test_b3_single_with_parent() {
     let (orion, client, mut backend, config_path) = setup_tracing().await;
 
     let b3_in = format!("{}-{}-1-{}", TRACE_ID_128, SPAN_ID, PARENT_SPAN_ID);
-    let resp = client
-        .send(RequestBuilder::get("/test").header("b3", &b3_in))
-        .await
-        .unwrap();
+    let resp = client.send(RequestBuilder::get("/test").header("b3", &b3_in)).await.unwrap();
     resp.assert_status(StatusCode::OK);
 
     let cap = backend.await_request().await.unwrap();
@@ -134,10 +126,7 @@ async fn test_b3_single_with_parent() {
 async fn test_b3_single_deny() {
     let (orion, client, mut backend, config_path) = setup_tracing().await;
 
-    let resp = client
-        .send(RequestBuilder::get("/test").header("b3", "0"))
-        .await
-        .unwrap();
+    let resp = client.send(RequestBuilder::get("/test").header("b3", "0")).await.unwrap();
     resp.assert_status(StatusCode::OK);
 
     let cap = backend.await_request().await.unwrap();
@@ -158,10 +147,7 @@ async fn test_b3_single_deny_with_ids() {
     let (orion, client, mut backend, config_path) = setup_tracing().await;
 
     let b3_in = format!("{}-{}-0", TRACE_ID_128, SPAN_ID);
-    let resp = client
-        .send(RequestBuilder::get("/test").header("b3", &b3_in))
-        .await
-        .unwrap();
+    let resp = client.send(RequestBuilder::get("/test").header("b3", &b3_in)).await.unwrap();
     resp.assert_status(StatusCode::OK);
 
     let cap = backend.await_request().await.unwrap();
@@ -184,10 +170,7 @@ async fn test_b3_single_debug() {
     let (orion, client, mut backend, config_path) = setup_tracing().await;
 
     let b3_in = format!("{}-{}-d", TRACE_ID_128, SPAN_ID);
-    let resp = client
-        .send(RequestBuilder::get("/test").header("b3", &b3_in))
-        .await
-        .unwrap();
+    let resp = client.send(RequestBuilder::get("/test").header("b3", &b3_in)).await.unwrap();
     resp.assert_status(StatusCode::OK);
 
     // Debug => tracing should be active
@@ -215,10 +198,7 @@ async fn test_b3_single_defer() {
 
     // 2 fields only: trace-span, no sampling state
     let b3_in = format!("{}-{}", TRACE_ID_128, SPAN_ID);
-    let resp = client
-        .send(RequestBuilder::get("/test").header("b3", &b3_in))
-        .await
-        .unwrap();
+    let resp = client.send(RequestBuilder::get("/test").header("b3", &b3_in)).await.unwrap();
     resp.assert_status(StatusCode::OK);
 
     // Tracing should be active (defer→accept)
@@ -331,10 +311,7 @@ async fn test_b3_multi_deny() {
 async fn test_b3_multi_sampling_only_deny() {
     let (orion, client, mut backend, config_path) = setup_tracing().await;
 
-    let resp = client
-        .send(RequestBuilder::get("/test").header("x-b3-sampled", "0"))
-        .await
-        .unwrap();
+    let resp = client.send(RequestBuilder::get("/test").header("x-b3-sampled", "0")).await.unwrap();
     resp.assert_status(StatusCode::OK);
 
     let cap = backend.await_request().await.unwrap();
@@ -393,11 +370,7 @@ async fn test_b3_multi_defer() {
 
     // trace/span IDs present, but no x-b3-sampled → defer
     let resp = client
-        .send(
-            RequestBuilder::get("/test")
-                .header("x-b3-traceid", TRACE_ID_128)
-                .header("x-b3-spanid", SPAN_ID),
-        )
+        .send(RequestBuilder::get("/test").header("x-b3-traceid", TRACE_ID_128).header("x-b3-spanid", SPAN_ID))
         .await
         .unwrap();
     resp.assert_status(StatusCode::OK);
@@ -466,8 +439,7 @@ async fn test_b3_http2() {
             ),
         );
 
-    let listener =
-        ListenerBuilder::new("http").port(0).filter_chain(FilterChainBuilder::new("main").hcm(hcm));
+    let listener = ListenerBuilder::new("http").port(0).filter_chain(FilterChainBuilder::new("main").hcm(hcm));
     let bootstrap = orion_e2e_tests::config_builder::BootstrapBuilder::new().listener(listener).cluster(cluster);
     let config_path = bootstrap.build_to_temp().unwrap();
     let orion = OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default()).await.unwrap();
@@ -475,10 +447,7 @@ async fn test_b3_http2() {
     let mut backend = backend;
 
     let b3_in = format!("{}-{}-1", TRACE_ID_128, SPAN_ID);
-    let resp = client
-        .send(RequestBuilder::get("/test").header("b3", &b3_in))
-        .await
-        .unwrap();
+    let resp = client.send(RequestBuilder::get("/test").header("b3", &b3_in)).await.unwrap();
     resp.assert_status(StatusCode::OK);
 
     assert!(resp.header("x-request-id").is_some());

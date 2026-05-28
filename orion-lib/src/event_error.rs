@@ -13,7 +13,11 @@ use crate::{body::response_flags::ResponseFlags, clusters::retry_policy::RetryCo
 #[derive(Debug, thiserror::Error)]
 pub enum UpstreamError {
     #[error("I/O Error: {0:?}")]
-    Io(#[source] #[from] io::Error),
+    Io(
+        #[source]
+        #[from]
+        io::Error,
+    ),
     #[error("ConnectTimeout")]
     ConnectTimeout(#[from] Elapsed),
     #[error("PerTryTimeout)")]
@@ -34,7 +38,11 @@ pub enum UpstreamError {
 #[derive(Debug, thiserror::Error)]
 pub enum DownstreamError {
     #[error("I/O Error: {0:?}")]
-    Io(#[source] #[from] io::Error),
+    Io(
+        #[source]
+        #[from]
+        io::Error,
+    ),
     #[error("Reset")]
     Reset,
 }

@@ -93,10 +93,7 @@ async fn test_access_log_listener_all_operators() {
     let bootstrap = BootstrapBuilder::new()
         .listener(listener)
         .cluster(cluster)
-        .access_log(AccessLogConfig {
-            blocking: true,
-            ..AccessLogConfig::default()
-        });
+        .access_log(AccessLogConfig { blocking: true, ..AccessLogConfig::default() });
 
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
 
@@ -135,9 +132,8 @@ async fn test_access_log_listener_all_operators() {
     let dl_addr = parsed.get("DOWNSTREAM_LOCAL_ADDRESS").expect("DOWNSTREAM_LOCAL_ADDRESS missing");
     assert_eq!(dl_addr.as_str(), listener_addr.to_string().as_str());
 
-    let dl_wo = parsed
-        .get("DOWNSTREAM_LOCAL_ADDRESS_WITHOUT_PORT")
-        .expect("DOWNSTREAM_LOCAL_ADDRESS_WITHOUT_PORT missing");
+    let dl_wo =
+        parsed.get("DOWNSTREAM_LOCAL_ADDRESS_WITHOUT_PORT").expect("DOWNSTREAM_LOCAL_ADDRESS_WITHOUT_PORT missing");
     assert_eq!(dl_wo.as_str(), listener_addr.ip().to_string().as_str());
 
     assert_eq!(
@@ -148,9 +144,8 @@ async fn test_access_log_listener_all_operators() {
     let dr_addr = parsed.get("DOWNSTREAM_REMOTE_ADDRESS").expect("DOWNSTREAM_REMOTE_ADDRESS missing");
     assert!(!dr_addr.is_empty() && dr_addr != "-");
 
-    let dr_wo = parsed
-        .get("DOWNSTREAM_REMOTE_ADDRESS_WITHOUT_PORT")
-        .expect("DOWNSTREAM_REMOTE_ADDRESS_WITHOUT_PORT missing");
+    let dr_wo =
+        parsed.get("DOWNSTREAM_REMOTE_ADDRESS_WITHOUT_PORT").expect("DOWNSTREAM_REMOTE_ADDRESS_WITHOUT_PORT missing");
     assert!(!dr_wo.contains(':'));
 
     let dr_port = parsed.get("DOWNSTREAM_REMOTE_PORT").expect("DOWNSTREAM_REMOTE_PORT missing");
@@ -194,8 +189,8 @@ async fn test_access_log_listener_upstream_down() {
     let log_path = log_dir.join(format!("orion-test-access-log-listener-down-{}.txt", std::process::id()));
 
     // Point the cluster to an inactive port
-    let cluster = ClusterBuilder::new("backend")
-        .endpoint(EndpointBuilder::from_socket_addr("127.0.0.1:1".parse().unwrap()));
+    let cluster =
+        ClusterBuilder::new("backend").endpoint(EndpointBuilder::from_socket_addr("127.0.0.1:1".parse().unwrap()));
 
     let tcp_proxy = TcpProxyBuilder::new("tcp_proxy").cluster("backend");
 
@@ -207,10 +202,7 @@ async fn test_access_log_listener_upstream_down() {
     let bootstrap = BootstrapBuilder::new()
         .listener(listener)
         .cluster(cluster)
-        .access_log(AccessLogConfig {
-            blocking: true,
-            ..AccessLogConfig::default()
-        });
+        .access_log(AccessLogConfig { blocking: true, ..AccessLogConfig::default() });
 
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
 
