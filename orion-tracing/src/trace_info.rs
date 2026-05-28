@@ -278,12 +278,23 @@ impl TraceInfo {
                     .transpose()?;
 
                 // Parse Sampled (optional)
-                let sampled =
-                    headers.get(X_B3_SAMPLED).and_then(|v| v.to_str().ok()).map_or(Ok(false), |s| match s {
+                // Per spec, if X-B3-Flags is 1 (debug), it implies sampled=true.
+                // If both are absent (defer), the receiver should decide (default to true).
+                let has_debug = headers
+                    .get(X_ENVOY_FORCE_TRACE) // or X-B3-Flags
+                    .or_else(|| headers.get(http::HeaderName::from_static("x-b3-flags")))
+                    .and_then(|v| v.to_str().ok())
+                    .map_or(false, |v| v == "1");
+
+                let sampled = if has_debug {
+                    true
+                } else {
+                    headers.get(X_B3_SAMPLED).and_then(|v| v.to_str().ok()).map_or(Ok(true), |s| match s {
                         "1" => Ok(true),
                         "0" => Ok(false),
                         _ => Err(TraceError::InvalidFormat), // Invalid sampled value
-                    })?;
+                    })?
+                };
 
                 // Return the successfully parsed context
                 return Ok(Some(TraceInfo { trace_id, parent_id, span_id, provider: TraceProvider::B3Multi, sampled }));

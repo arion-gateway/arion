@@ -383,3 +383,109 @@ async fn test_b3_single_precedence_over_multi() {
     orion.shutdown();
     cleanup_config_file(&config_path);
 }
+
+// ─── B3 multi-header: defer (no x-b3-sampled) ───
+// Per spec: absence of sampling state means "defer" — the receiver decides.
+#[tokio::test]
+#[ignore]
+async fn test_b3_multi_defer() {
+    let (orion, client, mut backend, config_path) = setup_tracing().await;
+
+    // trace/span IDs present, but no x-b3-sampled → defer
+    let resp = client
+        .send(
+            RequestBuilder::get("/test")
+                .header("x-b3-traceid", TRACE_ID_128)
+                .header("x-b3-spanid", SPAN_ID),
+        )
+        .await
+        .unwrap();
+    resp.assert_status(StatusCode::OK);
+
+    // Tracing should be active (defer → accept)
+    assert!(resp.header("x-request-id").is_some());
+
+    let cap = backend.await_request().await.unwrap();
+    assert_eq!(cap.header("x-b3-traceid"), Some(TRACE_ID_128));
+    // Should have made a sampling decision (sampled=1)
+    assert_eq!(cap.header("x-b3-sampled"), Some("1"));
+
+    orion.shutdown();
+    cleanup_config_file(&config_path);
+}
+
+// ─── B3 multi-header: Debug flag (X-B3-Flags: 1) ───
+// Per spec: debug implies an accept decision, is encoded as X-B3-Flags: 1.
+#[tokio::test]
+#[ignore]
+async fn test_b3_multi_debug() {
+    let (orion, client, mut backend, config_path) = setup_tracing().await;
+
+    let resp = client
+        .send(
+            RequestBuilder::get("/test")
+                .header("x-b3-traceid", TRACE_ID_128)
+                .header("x-b3-spanid", SPAN_ID)
+                .header("x-b3-flags", "1"),
+        )
+        .await
+        .unwrap();
+    resp.assert_status(StatusCode::OK);
+
+    // Debug → tracing should be active
+    assert!(resp.header("x-request-id").is_some());
+
+    let cap = backend.await_request().await.unwrap();
+    assert_eq!(cap.header("x-b3-traceid"), Some(TRACE_ID_128));
+    // Debug flag should be propagated
+    assert_eq!(cap.header("x-b3-flags"), Some("1"));
+
+    orion.shutdown();
+    cleanup_config_file(&config_path);
+}
+
+// ─── B3 with HTTP/2 codec ───
+// Verify tracing works when the HCM is configured for HTTP/2 downstream.
+#[tokio::test]
+#[ignore]
+async fn test_b3_http2() {
+    let backend = TestBackend::start().await.unwrap();
+    backend.set_default_response(PreConfiguredResponse::with_body("OK")).await;
+    let backend_addr = backend.addr();
+    let cluster = presets::static_cluster("backend", backend_addr);
+
+    let hcm = HcmBuilder::new()
+        .http2()
+        .generate_request_id(true)
+        .always_set_request_id_in_response(true)
+        .tracing(Some(100), Some(100), Some(100))
+        .route_config(
+            orion_e2e_tests::config_builder::RouteConfigBuilder::new("routes").virtual_host(
+                orion_e2e_tests::config_builder::VirtualHostBuilder::new("default")
+                    .route(presets::default_route("backend")),
+            ),
+        );
+
+    let listener =
+        ListenerBuilder::new("http").port(0).filter_chain(FilterChainBuilder::new("main").hcm(hcm));
+    let bootstrap = orion_e2e_tests::config_builder::BootstrapBuilder::new().listener(listener).cluster(cluster);
+    let config_path = bootstrap.build_to_temp().unwrap();
+    let orion = OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default()).await.unwrap();
+    let client = TestClient::new(orion.listener_addr().unwrap());
+    let mut backend = backend;
+
+    let b3_in = format!("{}-{}-1", TRACE_ID_128, SPAN_ID);
+    let resp = client
+        .send(RequestBuilder::get("/test").header("b3", &b3_in))
+        .await
+        .unwrap();
+    resp.assert_status(StatusCode::OK);
+
+    assert!(resp.header("x-request-id").is_some());
+
+    let cap = backend.await_request().await.unwrap();
+    assert!(cap.header("b3").is_some(), "b3 should be propagated with HTTP/2 codec");
+
+    orion.shutdown();
+    cleanup_config_file(&config_path);
+}
