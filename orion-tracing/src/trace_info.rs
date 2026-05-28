@@ -282,7 +282,7 @@ impl TraceInfo {
                     .get(X_ENVOY_FORCE_TRACE) // or X-B3-Flags
                     .or_else(|| headers.get(http::HeaderName::from_static("x-b3-flags")))
                     .and_then(|v| v.to_str().ok())
-                    .map_or(false, |v| v == "1");
+                    == Some("1");
 
                 let sampled = if has_debug {
                     true

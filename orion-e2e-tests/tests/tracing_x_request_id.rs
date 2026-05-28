@@ -177,6 +177,7 @@ async fn test_x_request_id_gen_false_preserve_true_always_true() {
 // with X-Request-ID: preserved (is_internal=true), not in response
 #[tokio::test]
 #[ignore]
+#[allow(clippy::expect_used)]
 async fn test_x_request_id_gen_true_preserve_false_always_false() {
     let (orion, client, mut backend, config_path) = setup(true, false, false).await;
 
@@ -185,7 +186,7 @@ async fn test_x_request_id_gen_true_preserve_false_always_false() {
     assert!(resp.header("x-request-id").is_none());
     let cap = backend.await_request().await.unwrap();
     let id1 = cap.header("x-request-id").expect("should have generated x-request-id");
-    assert!(uuid::Uuid::parse_str(id1).is_ok());
+    uuid::Uuid::parse_str(id1).unwrap();
 
     let resp = client.send(RequestBuilder::get("/test2").header("x-request-id", KNOWN_REQUEST_ID)).await.unwrap();
     resp.assert_status(StatusCode::OK);
@@ -208,7 +209,7 @@ async fn test_x_request_id_gen_true_preserve_false_always_true() {
     let resp = client.get("/test1").await.unwrap();
     resp.assert_status(StatusCode::OK);
     let resp_id1 = resp.header("x-request-id").expect("should have x-request-id in response");
-    assert!(uuid::Uuid::parse_str(resp_id1).is_ok());
+    uuid::Uuid::parse_str(resp_id1).unwrap();
     let cap = backend.await_request().await.unwrap();
     let up_id1 = cap.header("x-request-id").expect("should have generated x-request-id");
     assert_eq!(resp_id1, up_id1);
@@ -236,7 +237,7 @@ async fn test_x_request_id_gen_true_preserve_true_always_false() {
     assert!(resp.header("x-request-id").is_none());
     let cap = backend.await_request().await.unwrap();
     let id1 = cap.header("x-request-id").expect("should have generated x-request-id");
-    assert!(uuid::Uuid::parse_str(id1).is_ok());
+    uuid::Uuid::parse_str(id1).unwrap();
 
     let resp = client.send(RequestBuilder::get("/test2").header("x-request-id", KNOWN_REQUEST_ID)).await.unwrap();
     resp.assert_status(StatusCode::OK);
@@ -259,7 +260,7 @@ async fn test_x_request_id_gen_true_preserve_true_always_true() {
     let resp = client.get("/test1").await.unwrap();
     resp.assert_status(StatusCode::OK);
     let resp_id1 = resp.header("x-request-id").expect("should have x-request-id in response");
-    assert!(uuid::Uuid::parse_str(resp_id1).is_ok());
+    uuid::Uuid::parse_str(resp_id1).unwrap();
     let cap = backend.await_request().await.unwrap();
     let up_id1 = cap.header("x-request-id").expect("should have generated x-request-id");
     assert_eq!(resp_id1, up_id1);

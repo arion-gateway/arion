@@ -198,21 +198,16 @@ impl Error {
 
     pub fn get_context_data<T: 'static>(&self) -> Option<&T> {
         let mut current = &self.0;
-        loop {
-            match current {
-                ErrorImpl::Context(info, next) => {
-                    if let Some(val) = info.any.as_ref().and_then(|v| v.downcast_ref::<T>()) {
-                        return Some(val);
-                    }
-                    // Try to downcast the inner BoxedErr to WithContext<E> or ErrorImpl
-                    // Since BoxedErr is a dyn ErrorTrait, we can try to downcast it to ErrorImpl
-                    if let Some(next_impl) = next.downcast_ref::<ErrorImpl>() {
-                        current = next_impl;
-                    } else {
-                        break;
-                    }
-                },
-                ErrorImpl::Error(_) => break,
+        while let ErrorImpl::Context(info, next) = current {
+            if let Some(val) = info.any.as_ref().and_then(|v| v.downcast_ref::<T>()) {
+                return Some(val);
+            }
+            // Try to downcast the inner BoxedErr to WithContext<E> or ErrorImpl
+            // Since BoxedErr is a dyn ErrorTrait, we can try to downcast it to ErrorImpl
+            if let Some(next_impl) = next.downcast_ref::<ErrorImpl>() {
+                current = next_impl;
+            } else {
+                break;
             }
         }
         None

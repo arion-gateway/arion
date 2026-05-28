@@ -32,7 +32,6 @@ use orion_http_header::X_ENVOY_ORIGINAL_PATH;
 use orion_interner::StringInterner;
 use smol_str::ToSmolStr;
 use smol_str::{format_smolstr, SmolStr, SmolStrBuilder};
-use uuid::Uuid;
 
 pub trait Context {
     fn eval_part(&self, op: &Operator) -> StringType;

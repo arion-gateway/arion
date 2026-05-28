@@ -14,7 +14,7 @@
 
 //! E2E tests for behavior when tracing is NOT configured on the HCM.
 //!
-//! All tests run against localhost (is_internal=true).
+//! All tests run against localhost (`is_internal=true`).
 
 use http::StatusCode;
 use orion_e2e_tests::config_builder::{presets, FilterChainBuilder, HcmBuilder, ListenerBuilder};

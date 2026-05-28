@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#![allow(clippy::expect_used, clippy::similar_names, clippy::too_many_lines, clippy::let_underscore_must_use)]
+
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -83,7 +85,7 @@ fn parse_log_line(line: &str) -> HashMap<String, String> {
     let line = line.strip_prefix("||").unwrap_or(line);
     for segment in line.split("||") {
         if let Some((k, v)) = segment.split_once('=') {
-            map.insert(k.to_string(), v.to_string());
+            map.insert(k.to_owned(), v.to_owned());
         }
     }
     map
@@ -106,10 +108,11 @@ async fn read_log_file(path: &std::path::Path, timeout: Duration) -> String {
 }
 
 /// Find a parsed log line by its REQ(:PATH) value.
+#[allow(clippy::indexing_slicing)]
 fn find_line_by_path<'a>(lines: &'a [HashMap<String, String>], path: &str) -> &'a HashMap<String, String> {
     lines
         .iter()
-        .find(|l| l.get("REQ(:PATH)").map(|s| s.as_str()) == Some(path))
+        .find(|l| l.get("REQ(:PATH)").map(String::as_str) == Some(path))
         .unwrap_or_else(|| panic!("no log line found with path={path}"))
 }
 
@@ -132,21 +135,22 @@ async fn send_request(addr: std::net::SocketAddr, raw_request: &[u8]) -> (usize,
 }
 
 /// Common validations that apply to any HCM log line (regardless of origin-form vs absolute-form).
+#[allow(clippy::expect_used)]
 fn validate_common_fields(parsed: &HashMap<String, String>) {
     // START_TIME: non-empty
     let start_time = parsed.get("START_TIME").expect("START_TIME missing");
     assert!(!start_time.is_empty(), "START_TIME should not be empty");
 
     // PROTOCOL
-    assert_eq!(parsed.get("PROTOCOL").map(|s| s.as_str()), Some("HTTP/1.1"));
+    assert_eq!(parsed.get("PROTOCOL").map(String::as_str), Some("HTTP/1.1"));
 
     // UPSTREAM_PROTOCOL
     let upstream_proto = parsed.get("UPSTREAM_PROTOCOL").expect("UPSTREAM_PROTOCOL missing");
     assert!(!upstream_proto.is_empty(), "UPSTREAM_PROTOCOL should not be empty");
 
     // RESPONSE_CODE / RESP(:STATUS)
-    assert_eq!(parsed.get("RESPONSE_CODE").map(|s| s.as_str()), Some("200"));
-    assert_eq!(parsed.get("RESP(:STATUS)").map(|s| s.as_str()), Some("200"));
+    assert_eq!(parsed.get("RESPONSE_CODE").map(String::as_str), Some("200"));
+    assert_eq!(parsed.get("RESP(:STATUS)").map(String::as_str), Some("200"));
 
     // RESPONSE_FLAGS / RESPONSE_FLAGS_LONG (can be "-" on success)
     let flags = parsed.get("RESPONSE_FLAGS").expect("RESPONSE_FLAGS missing");
@@ -155,22 +159,22 @@ fn validate_common_fields(parsed: &HashMap<String, String>) {
     assert!(!flags_long.is_empty(), "RESPONSE_FLAGS_LONG should not be empty");
 
     // REQ(:METHOD)
-    assert_eq!(parsed.get("REQ(:METHOD)").map(|s| s.as_str()), Some("GET"));
+    assert_eq!(parsed.get("REQ(:METHOD)").map(String::as_str), Some("GET"));
 
     // REQ(X-Custom-Request-Header)
-    assert_eq!(parsed.get("REQ(X-Custom-Request-Header)").map(|s| s.as_str()), Some("req-custom-value"));
+    assert_eq!(parsed.get("REQ(X-Custom-Request-Header)").map(String::as_str), Some("req-custom-value"));
 
     // RESP(X-Custom-Response-Header)
-    assert_eq!(parsed.get("RESP(X-Custom-Response-Header)").map(|s| s.as_str()), Some("resp-custom-value"));
+    assert_eq!(parsed.get("RESP(X-Custom-Response-Header)").map(String::as_str), Some("resp-custom-value"));
 
     // UPSTREAM_CLUSTER / UPSTREAM_CLUSTER_RAW
-    assert_eq!(parsed.get("UPSTREAM_CLUSTER").map(|s| s.as_str()), Some("backend"));
-    assert_eq!(parsed.get("UPSTREAM_CLUSTER_RAW").map(|s| s.as_str()), Some("backend"));
+    assert_eq!(parsed.get("UPSTREAM_CLUSTER").map(String::as_str), Some("backend"));
+    assert_eq!(parsed.get("UPSTREAM_CLUSTER_RAW").map(String::as_str), Some("backend"));
 
     // UPSTREAM_HOST / UPSTREAM_HOST_NAME
     let upstream_host = parsed.get("UPSTREAM_HOST").expect("UPSTREAM_HOST missing");
     assert!(!upstream_host.is_empty() && upstream_host != "-");
-    assert_eq!(parsed.get("UPSTREAM_HOST_NAME").map(|s| s.as_str()), Some(upstream_host.as_str()));
+    assert_eq!(parsed.get("UPSTREAM_HOST_NAME").map(String::as_str), Some(upstream_host.as_str()));
 
     // UPSTREAM_HOST_NAME_WITHOUT_PORT
     let host_wo_port = parsed.get("UPSTREAM_HOST_NAME_WITHOUT_PORT").expect("UPSTREAM_HOST_NAME_WITHOUT_PORT missing");
@@ -179,10 +183,10 @@ fn validate_common_fields(parsed: &HashMap<String, String>) {
 
     // UPSTREAM_REMOTE_ADDRESS: not available at HCM level (upstream TCP details
     // are tracked only at the TcpProxy connection level)
-    assert_eq!(parsed.get("UPSTREAM_REMOTE_ADDRESS").map(|s| s.as_str()), Some("-"));
+    assert_eq!(parsed.get("UPSTREAM_REMOTE_ADDRESS").map(String::as_str), Some("-"));
 
     // ROUTE_NAME
-    assert_eq!(parsed.get("ROUTE_NAME").map(|s| s.as_str()), Some("hello-route"));
+    assert_eq!(parsed.get("ROUTE_NAME").map(String::as_str), Some("hello-route"));
 
     // ── ADDRESS VALIDATIONS ──
     let dl_addr = parsed.get("DOWNSTREAM_LOCAL_ADDRESS").expect("DOWNSTREAM_LOCAL_ADDRESS missing");
@@ -245,10 +249,10 @@ fn validate_common_fields(parsed: &HashMap<String, String>) {
     assert!(unique_id.len() == 36 || unique_id.len() == 32, "UNIQUE_ID should be a valid ID: {unique_id}");
 
     // ── OPTIONAL/ABSENT FIELDS (expected "-") ──
-    assert_eq!(parsed.get("UPSTREAM_TRANSPORT_FAILURE_REASON").map(|s| s.as_str()), Some("-"));
-    assert_eq!(parsed.get("REQUESTED_SERVER_NAME").map(|s| s.as_str()), Some("-"));
-    assert_eq!(parsed.get("RESPONSE_CODE_DETAILS").map(|s| s.as_str()), Some("via_upstream"));
-    assert_eq!(parsed.get("CONNECTION_TERMINATION_DETAILS").map(|s| s.as_str()), Some("-"));
+    assert_eq!(parsed.get("UPSTREAM_TRANSPORT_FAILURE_REASON").map(String::as_str), Some("-"));
+    assert_eq!(parsed.get("REQUESTED_SERVER_NAME").map(String::as_str), Some("-"));
+    assert_eq!(parsed.get("RESPONSE_CODE_DETAILS").map(String::as_str), Some("via_upstream"));
+    assert_eq!(parsed.get("CONNECTION_TERMINATION_DETAILS").map(String::as_str), Some("-"));
 }
 
 #[tokio::test]
@@ -328,10 +332,10 @@ async fn test_access_log_hcm_all_operators() {
 
     // ── Validate origin-form line (REQ(:SCHEME) should be "-") ──
     let origin_line = find_line_by_path(&parsed_lines, "/hello");
-    assert_eq!(origin_line.get("REQ(:PATH)").map(|s| s.as_str()), Some("/hello"));
-    assert_eq!(origin_line.get("REQ(X-ENVOY-ORIGINAL-PATH?:PATH)").map(|s| s.as_str()), Some("/hello"));
-    assert_eq!(origin_line.get("REQ(:SCHEME)").map(|s| s.as_str()), Some("-"));
-    assert_eq!(origin_line.get("REQ(:AUTHORITY)").map(|s| s.as_str()), Some("localhost"));
+    assert_eq!(origin_line.get("REQ(:PATH)").map(String::as_str), Some("/hello"));
+    assert_eq!(origin_line.get("REQ(X-ENVOY-ORIGINAL-PATH?:PATH)").map(String::as_str), Some("/hello"));
+    assert_eq!(origin_line.get("REQ(:SCHEME)").map(String::as_str), Some("-"));
+    assert_eq!(origin_line.get("REQ(:AUTHORITY)").map(String::as_str), Some("localhost"));
 
     // Downstream wire bytes for origin-form
     assert_eq!(
@@ -363,10 +367,10 @@ async fn test_access_log_hcm_all_operators() {
 
     // ── Validate absolute-form line (REQ(:SCHEME) should be "http") ──
     let abs_line = find_line_by_path(&parsed_lines, "/hello-abs");
-    assert_eq!(abs_line.get("REQ(:PATH)").map(|s| s.as_str()), Some("/hello-abs"));
-    assert_eq!(abs_line.get("REQ(X-ENVOY-ORIGINAL-PATH?:PATH)").map(|s| s.as_str()), Some("/hello-abs"));
-    assert_eq!(abs_line.get("REQ(:SCHEME)").map(|s| s.as_str()), Some("http"));
-    assert_eq!(abs_line.get("REQ(:AUTHORITY)").map(|s| s.as_str()), Some("localhost"));
+    assert_eq!(abs_line.get("REQ(:PATH)").map(String::as_str), Some("/hello-abs"));
+    assert_eq!(abs_line.get("REQ(X-ENVOY-ORIGINAL-PATH?:PATH)").map(String::as_str), Some("/hello-abs"));
+    assert_eq!(abs_line.get("REQ(:SCHEME)").map(String::as_str), Some("http"));
+    assert_eq!(abs_line.get("REQ(:AUTHORITY)").map(String::as_str), Some("localhost"));
 
     // Downstream wire bytes for absolute-form
     assert_eq!(
@@ -456,8 +460,8 @@ async fn test_access_log_hcm_upstream_down() {
         let mut resp = Vec::new();
         stream.read_to_end(&mut resp).await.expect("Failed to read");
         let resp_str = String::from_utf8_lossy(&resp);
-        assert!(resp_str.contains("503"), "Expected 503, got: {resp_str}");
-    }
+        assert!(resp_str.contains("503"), "Expected 503, got: {resp_str}")
+    };
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -467,8 +471,8 @@ async fn test_access_log_hcm_upstream_down() {
 
     // ── ERROR VALIDATIONS ──
     // RESPONSE_CODE and RESP(:STATUS) should be 503
-    assert_eq!(parsed.get("RESPONSE_CODE").map(|s| s.as_str()), Some("503"));
-    assert_eq!(parsed.get("RESP(:STATUS)").map(|s| s.as_str()), Some("503"));
+    assert_eq!(parsed.get("RESPONSE_CODE").map(String::as_str), Some("503"));
+    assert_eq!(parsed.get("RESP(:STATUS)").map(String::as_str), Some("503"));
 
     // RESPONSE_FLAGS should indicate upstream connection failure
     let flags = parsed.get("RESPONSE_FLAGS").expect("RESPONSE_FLAGS missing");
@@ -500,10 +504,10 @@ async fn test_access_log_hcm_upstream_down() {
     parsed.get("BYTES_SENT").and_then(|s| s.parse::<u64>().ok()).expect("BYTES_SENT should be a valid u64");
 
     // REQUESTED_SERVER_NAME: plaintext => "-"
-    assert_eq!(parsed.get("REQUESTED_SERVER_NAME").map(|s| s.as_str()), Some("-"));
+    assert_eq!(parsed.get("REQUESTED_SERVER_NAME").map(String::as_str), Some("-"));
 
     // UPSTREAM_CLUSTER should still be "backend"
-    assert_eq!(parsed.get("UPSTREAM_CLUSTER").map(|s| s.as_str()), Some("backend"));
+    assert_eq!(parsed.get("UPSTREAM_CLUSTER").map(String::as_str), Some("backend"));
 
     // ── CLEANUP ──
     orion.shutdown();
@@ -564,8 +568,8 @@ async fn test_access_log_hcm_original_path_header() {
         stream.write_all(&req).await.expect("Failed to write");
         let mut resp = Vec::new();
         stream.read_to_end(&mut resp).await.expect("Failed to read");
-        assert!(String::from_utf8_lossy(&resp).contains("200 OK"));
-    }
+        assert!(String::from_utf8_lossy(&resp).contains("200 OK"))
+    };
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -574,10 +578,10 @@ async fn test_access_log_hcm_original_path_header() {
     let parsed = parse_log_line(log_line);
 
     // REQ(:PATH) should be the actual request path
-    assert_eq!(parsed.get("REQ(:PATH)").map(|s| s.as_str()), Some("/rewritten-path"));
+    assert_eq!(parsed.get("REQ(:PATH)").map(String::as_str), Some("/rewritten-path"));
 
     // REQ(X-ENVOY-ORIGINAL-PATH?:PATH) should return the header value, not the path
-    assert_eq!(parsed.get("REQ(X-ENVOY-ORIGINAL-PATH?:PATH)").map(|s| s.as_str()), Some("/original-path"));
+    assert_eq!(parsed.get("REQ(X-ENVOY-ORIGINAL-PATH?:PATH)").map(String::as_str), Some("/original-path"));
 
     orion.shutdown();
     cleanup_config_file(&config_path);
@@ -633,8 +637,8 @@ async fn test_access_log_hcm_backend_500() {
         stream.write_all(&req).await.expect("Failed to write");
         let mut resp = Vec::new();
         stream.read_to_end(&mut resp).await.expect("Failed to read");
-        assert!(String::from_utf8_lossy(&resp).contains("500"));
-    }
+        assert!(String::from_utf8_lossy(&resp).contains("500"))
+    };
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -643,24 +647,24 @@ async fn test_access_log_hcm_backend_500() {
     let parsed = parse_log_line(log_line);
 
     // Status 500
-    assert_eq!(parsed.get("RESPONSE_CODE").map(|s| s.as_str()), Some("500"));
-    assert_eq!(parsed.get("RESP(:STATUS)").map(|s| s.as_str()), Some("500"));
+    assert_eq!(parsed.get("RESPONSE_CODE").map(String::as_str), Some("500"));
+    assert_eq!(parsed.get("RESP(:STATUS)").map(String::as_str), Some("500"));
 
     // RESPONSE_CODE_DETAILS should be "via_upstream" (the upstream responded)
-    assert_eq!(parsed.get("RESPONSE_CODE_DETAILS").map(|s| s.as_str()), Some("via_upstream"));
+    assert_eq!(parsed.get("RESPONSE_CODE_DETAILS").map(String::as_str), Some("via_upstream"));
 
     // RESPONSE_FLAGS: no transport error, so may be "-"
     let flags = parsed.get("RESPONSE_FLAGS").expect("RESPONSE_FLAGS missing");
     assert!(flags != "UF" && flags != "UH", "RESPONSE_FLAGS should not be UF/UH for a backend 500: got {flags}");
 
     // UPSTREAM_TRANSPORT_FAILURE_REASON should be "-" (no transport failure)
-    assert_eq!(parsed.get("UPSTREAM_TRANSPORT_FAILURE_REASON").map(|s| s.as_str()), Some("-"));
+    assert_eq!(parsed.get("UPSTREAM_TRANSPORT_FAILURE_REASON").map(String::as_str), Some("-"));
 
     // REQ(:PATH) should be logged correctly
-    assert_eq!(parsed.get("REQ(:PATH)").map(|s| s.as_str()), Some("/five-hundred"));
+    assert_eq!(parsed.get("REQ(:PATH)").map(String::as_str), Some("/five-hundred"));
 
     // PROTOCOL should still be HTTP/1.1
-    assert_eq!(parsed.get("PROTOCOL").map(|s| s.as_str()), Some("HTTP/1.1"));
+    assert_eq!(parsed.get("PROTOCOL").map(String::as_str), Some("HTTP/1.1"));
 
     orion.shutdown();
     cleanup_config_file(&config_path);
@@ -729,8 +733,8 @@ async fn test_access_log_hcm_multiple_connections() {
     let parsed_lines: Vec<HashMap<String, String>> = log_lines.iter().map(|line| parse_log_line(line)).collect();
 
     // Verify each path is present and distinct connection IDs
-    let mut paths: Vec<&str> = parsed_lines.iter().filter_map(|l| l.get("REQ(:PATH)").map(|s| s.as_str())).collect();
-    paths.sort();
+    let mut paths: Vec<&str> = parsed_lines.iter().filter_map(|l| l.get("REQ(:PATH)").map(String::as_str)).collect();
+    paths.sort_unstable();
     assert_eq!(paths, vec!["/first", "/second", "/third"]);
 
     // Connection IDs should all be 64-char hex

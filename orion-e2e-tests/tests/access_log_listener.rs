@@ -9,8 +9,9 @@
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// See the License for the_license.
+
+#![allow(clippy::expect_used, clippy::similar_names, clippy::too_many_lines, clippy::let_underscore_must_use)]
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -47,7 +48,7 @@ fn parse_log_line(line: &str) -> HashMap<String, String> {
     let line = line.strip_prefix("||").unwrap_or(line);
     for segment in line.split("||") {
         if let Some((k, v)) = segment.split_once('=') {
-            map.insert(k.to_string(), v.to_string());
+            map.insert(k.to_owned(), v.to_owned());
         }
     }
     map
@@ -71,6 +72,7 @@ async fn read_log_file(path: &std::path::Path, timeout: Duration) -> String {
 
 #[tokio::test]
 #[ignore]
+#[allow(clippy::indexing_slicing)]
 async fn test_access_log_listener_all_operators() {
     let mut backend = TcpTestBackend::start().await.expect("Failed to start TCP backend");
     let backend_addr = backend.addr();
@@ -112,8 +114,8 @@ async fn test_access_log_listener_all_operators() {
         assert_eq!(&buf[..n], b"Hello from backend!");
 
         stream.write_all(b"Hello from client!").await.expect("Failed to write client message");
-        stream.flush().await.expect("Failed to flush");
-    }
+        stream.flush().await.expect("Failed to flush")
+    };
 
     let captured = backend.await_connection().await.expect("Failed to capture connection");
     assert_eq!(captured.received_data, b"Hello from client!");
@@ -137,7 +139,7 @@ async fn test_access_log_listener_all_operators() {
     assert_eq!(dl_wo.as_str(), listener_addr.ip().to_string().as_str());
 
     assert_eq!(
-        parsed.get("DOWNSTREAM_LOCAL_PORT").map(|s| s.as_str()),
+        parsed.get("DOWNSTREAM_LOCAL_PORT").map(std::string::String::as_str),
         Some(listener_addr.port().to_string().as_str())
     );
 
@@ -174,7 +176,7 @@ async fn test_access_log_listener_all_operators() {
     assert!(conn_id.chars().all(|c| c.is_ascii_hexdigit()));
 
     // ── OPTIONAL/ABSENT FIELDS (expected "-") ──
-    assert_eq!(parsed.get("CONNECTION_TERMINATION_DETAILS").map(|s| s.as_str()), Some("-"));
+    assert_eq!(parsed.get("CONNECTION_TERMINATION_DETAILS").map(std::string::String::as_str), Some("-"));
 
     // ── CLEANUP ──
     orion.shutdown();
@@ -215,11 +217,11 @@ async fn test_access_log_listener_upstream_down() {
     // Connect to Orion. The upstream is down, so Orion will close the connection.
     {
         let mut stream = TcpStream::connect(listener_addr).await.expect("Failed to connect");
-        let _ = stream.write_all(b"Hello?").await;
+        let _ = stream.write_all(b"Hello?").await.ok();
         let mut buf = [0u8; 128];
         let n = stream.read(&mut buf).await.unwrap_or(0);
-        assert_eq!(n, 0, "Connection should be closed by Orion");
-    }
+        assert_eq!(n, 0, "Connection should be closed by Orion")
+    };
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 

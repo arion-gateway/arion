@@ -15,7 +15,7 @@
 //! E2E tests for X-Client-Trace-Id header propagation and its interaction with
 //! existing trace contexts (traceparent, b3, uber-trace-id).
 //!
-//! All tests run against localhost (is_internal=true).
+//! All tests run against localhost (`is_internal=true`).
 
 use http::StatusCode;
 use orion_e2e_tests::config_builder::{presets, FilterChainBuilder, HcmBuilder, ListenerBuilder};
@@ -72,6 +72,7 @@ async fn setup_with_sampling(
 // traceparent created (W3C root span).
 #[tokio::test]
 #[ignore]
+#[allow(clippy::indexing_slicing)]
 async fn test_client_trace_id_sampling_100_triggers_tracing() {
     let (orion, client, mut backend, config_path) = setup_with_sampling(Some(100), Some(100), Some(100)).await;
 
@@ -80,7 +81,7 @@ async fn test_client_trace_id_sampling_100_triggers_tracing() {
 
     // Tracing should be active: X-Request-ID should be generated and returned
     let req_id = resp.header("x-request-id").expect("x-request-id should be generated when tracing is active");
-    assert!(uuid::Uuid::parse_str(req_id).is_ok());
+    uuid::Uuid::parse_str(req_id).unwrap();
 
     let cap = backend.await_request().await.unwrap();
     // X-Client-Trace-Id should be propagated
@@ -162,6 +163,7 @@ async fn test_client_trace_id_sampling_0_no_tracing() {
 // X-Client-Trace-Id is still propagated but does NOT override the trace context.
 #[tokio::test]
 #[ignore]
+#[allow(clippy::indexing_slicing)]
 async fn test_client_trace_id_with_traceparent() {
     let (orion, client, mut backend, config_path) = setup_with_sampling(Some(100), Some(100), Some(100)).await;
 

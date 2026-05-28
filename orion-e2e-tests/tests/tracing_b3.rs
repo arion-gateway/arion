@@ -16,7 +16,7 @@
 //!
 //! Based on the [B3 Propagation specification](https://github.com/openzipkin/b3-propagation).
 //!
-//! All tests run against localhost (is_internal=true).
+//! All tests run against localhost (`is_internal=true`).
 
 use http::StatusCode;
 use orion_e2e_tests::config_builder::{presets, FilterChainBuilder, HcmBuilder, ListenerBuilder};
@@ -65,10 +65,11 @@ async fn setup_tracing() -> (OrionInstance, TestClient, TestBackend, std::path::
 // The most common B3 encoding. Server should spawn a child span and propagate.
 #[tokio::test]
 #[ignore]
+#[allow(clippy::indexing_slicing)]
 async fn test_b3_single_basic() {
     let (orion, client, mut backend, config_path) = setup_tracing().await;
 
-    let b3_in = format!("{}-{}-1", TRACE_ID_128, SPAN_ID);
+    let b3_in = format!("{TRACE_ID_128}-{SPAN_ID}-1");
     let resp = client.send(RequestBuilder::get("/test").header("b3", &b3_in)).await.unwrap();
     resp.assert_status(StatusCode::OK);
 
@@ -79,7 +80,7 @@ async fn test_b3_single_basic() {
 
     // B3 child span should be propagated
     let b3_out = cap.header("b3").expect("b3 should be propagated");
-    println!("DEBUG: b3_out = {}", b3_out);
+    println!("DEBUG: b3_out = {b3_out}");
     let parts: Vec<&str> = b3_out.split('-').collect();
     assert_eq!(parts.len(), 4, "B3 child should have 4 fields (trace-span-sampled-parent)");
     assert_eq!(parts[0], TRACE_ID_128, "trace ID should be preserved");
@@ -97,10 +98,11 @@ async fn test_b3_single_basic() {
 // span ID and set the incoming span ID as the new parent.
 #[tokio::test]
 #[ignore]
+#[allow(clippy::indexing_slicing)]
 async fn test_b3_single_with_parent() {
     let (orion, client, mut backend, config_path) = setup_tracing().await;
 
-    let b3_in = format!("{}-{}-1-{}", TRACE_ID_128, SPAN_ID, PARENT_SPAN_ID);
+    let b3_in = format!("{TRACE_ID_128}-{SPAN_ID}-1-{PARENT_SPAN_ID}");
     let resp = client.send(RequestBuilder::get("/test").header("b3", &b3_in)).await.unwrap();
     resp.assert_status(StatusCode::OK);
 
@@ -143,10 +145,11 @@ async fn test_b3_single_deny() {
 // even with a deny (sampled=0) decision.
 #[tokio::test]
 #[ignore]
+#[allow(clippy::indexing_slicing)]
 async fn test_b3_single_deny_with_ids() {
     let (orion, client, mut backend, config_path) = setup_tracing().await;
 
-    let b3_in = format!("{}-{}-0", TRACE_ID_128, SPAN_ID);
+    let b3_in = format!("{TRACE_ID_128}-{SPAN_ID}-0");
     let resp = client.send(RequestBuilder::get("/test").header("b3", &b3_in)).await.unwrap();
     resp.assert_status(StatusCode::OK);
 
@@ -169,7 +172,7 @@ async fn test_b3_single_deny_with_ids() {
 async fn test_b3_single_debug() {
     let (orion, client, mut backend, config_path) = setup_tracing().await;
 
-    let b3_in = format!("{}-{}-d", TRACE_ID_128, SPAN_ID);
+    let b3_in = format!("{TRACE_ID_128}-{SPAN_ID}-d");
     let resp = client.send(RequestBuilder::get("/test").header("b3", &b3_in)).await.unwrap();
     resp.assert_status(StatusCode::OK);
 
@@ -193,11 +196,12 @@ async fn test_b3_single_debug() {
 // Orion should accept and spawn a child span.
 #[tokio::test]
 #[ignore]
+#[allow(clippy::indexing_slicing)]
 async fn test_b3_single_defer() {
     let (orion, client, mut backend, config_path) = setup_tracing().await;
 
     // 2 fields only: trace-span, no sampling state
-    let b3_in = format!("{}-{}", TRACE_ID_128, SPAN_ID);
+    let b3_in = format!("{TRACE_ID_128}-{SPAN_ID}");
     let resp = client.send(RequestBuilder::get("/test").header("b3", &b3_in)).await.unwrap();
     resp.assert_status(StatusCode::OK);
 
@@ -336,7 +340,7 @@ async fn test_b3_single_precedence_over_multi() {
 
     // Send BOTH single and multi-header with different trace IDs.
     // Single-header should win.
-    let b3_single = format!("{}-{}-1", TRACE_ID_128, SPAN_ID);
+    let b3_single = format!("{TRACE_ID_128}-{SPAN_ID}-1");
     let multi_trace_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab"; // different
 
     let resp = client
@@ -446,7 +450,7 @@ async fn test_b3_http2() {
     let client = TestClient::new(orion.listener_addr().unwrap());
     let mut backend = backend;
 
-    let b3_in = format!("{}-{}-1", TRACE_ID_128, SPAN_ID);
+    let b3_in = format!("{TRACE_ID_128}-{SPAN_ID}-1");
     let resp = client.send(RequestBuilder::get("/test").header("b3", &b3_in)).await.unwrap();
     resp.assert_status(StatusCode::OK);
 

@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! E2E tests for sampling rate interactions (client_sampling, random_sampling, overall_sampling).
+//! E2E tests for sampling rate interactions (`client_sampling`, `random_sampling`, `overall_sampling`).
 //!
-//! All tests run against localhost (is_internal=true).
+//! All tests run against localhost (`is_internal=true`).
 
 use http::StatusCode;
 use orion_e2e_tests::config_builder::{presets, FilterChainBuilder, HcmBuilder, ListenerBuilder};

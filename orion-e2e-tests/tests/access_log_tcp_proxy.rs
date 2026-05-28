@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#![allow(clippy::expect_used, clippy::similar_names, clippy::too_many_lines, clippy::let_underscore_must_use)]
+
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -24,7 +26,7 @@ use orion_e2e_tests::config_builder::{
 };
 use orion_e2e_tests::{cleanup_config_file, OrionInstance, SpawnOptions, TcpTestBackend};
 
-/// All access-log operators supported at the TCPProxy (connection) level.
+/// All access-log operators supported at the `TCPProxy` (connection) level.
 const TCP_LOG_FORMAT: &str = "\
 ||START_TIME=%START_TIME%\
 ||BYTES_RECEIVED=%BYTES_RECEIVED%\
@@ -61,7 +63,7 @@ fn parse_log_line(line: &str) -> HashMap<String, String> {
     let line = line.strip_prefix("||").unwrap_or(line);
     for segment in line.split("||") {
         if let Some((k, v)) = segment.split_once('=') {
-            map.insert(k.to_string(), v.to_string());
+            map.insert(k.to_owned(), v.to_owned());
         }
     }
     map
@@ -85,6 +87,7 @@ async fn read_log_file(path: &std::path::Path, timeout: Duration) -> String {
 
 #[tokio::test]
 #[ignore]
+#[allow(clippy::indexing_slicing)]
 async fn test_access_log_tcp_proxy_all_operators() {
     let mut backend = TcpTestBackend::start().await.expect("Failed to start TCP backend");
     let backend_addr = backend.addr();
@@ -128,8 +131,8 @@ async fn test_access_log_tcp_proxy_all_operators() {
         assert_eq!(&buf[..n], b"Hello from backend!");
 
         stream.write_all(b"Hello from client!").await.expect("Failed to write client message");
-        stream.flush().await.expect("Failed to flush");
-    }
+        stream.flush().await.expect("Failed to flush")
+    };
 
     // Wait for backend to capture the connection and close
     let captured = backend.await_connection().await.expect("Failed to capture connection");
@@ -147,20 +150,20 @@ async fn test_access_log_tcp_proxy_all_operators() {
     assert!(!start_time.is_empty(), "START_TIME should not be empty");
 
     // UPSTREAM_CLUSTER / RAW
-    assert_eq!(parsed.get("UPSTREAM_CLUSTER").map(|s| s.as_str()), Some("backend"));
-    assert_eq!(parsed.get("UPSTREAM_CLUSTER_RAW").map(|s| s.as_str()), Some("backend"));
+    assert_eq!(parsed.get("UPSTREAM_CLUSTER").map(String::as_str), Some("backend"));
+    assert_eq!(parsed.get("UPSTREAM_CLUSTER_RAW").map(String::as_str), Some("backend"));
 
     // UPSTREAM_HOST
     let upstream_host = parsed.get("UPSTREAM_HOST").expect("UPSTREAM_HOST missing");
     assert_eq!(upstream_host.as_str(), backend_addr.to_string().as_str());
 
     // UPSTREAM_REMOTE_ADDRESS / PORT / WITHOUT_PORT
-    assert_eq!(parsed.get("UPSTREAM_REMOTE_ADDRESS").map(|s| s.as_str()), Some(backend_addr.to_string().as_str()));
+    assert_eq!(parsed.get("UPSTREAM_REMOTE_ADDRESS").map(String::as_str), Some(backend_addr.to_string().as_str()));
     assert_eq!(
-        parsed.get("UPSTREAM_REMOTE_ADDRESS_WITHOUT_PORT").map(|s| s.as_str()),
+        parsed.get("UPSTREAM_REMOTE_ADDRESS_WITHOUT_PORT").map(String::as_str),
         Some(backend_addr.ip().to_string().as_str())
     );
-    assert_eq!(parsed.get("UPSTREAM_REMOTE_PORT").map(|s| s.as_str()), Some(backend_addr.port().to_string().as_str()));
+    assert_eq!(parsed.get("UPSTREAM_REMOTE_PORT").map(String::as_str), Some(backend_addr.port().to_string().as_str()));
 
     // UPSTREAM_LOCAL_ADDRESS / PORT / WITHOUT_PORT
     let upstream_local = parsed.get("UPSTREAM_LOCAL_ADDRESS").expect("UPSTREAM_LOCAL_ADDRESS missing");
@@ -184,7 +187,7 @@ async fn test_access_log_tcp_proxy_all_operators() {
     assert_eq!(dl_wo.as_str(), listener_addr.ip().to_string().as_str());
 
     assert_eq!(
-        parsed.get("DOWNSTREAM_LOCAL_PORT").map(|s| s.as_str()),
+        parsed.get("DOWNSTREAM_LOCAL_PORT").map(String::as_str),
         Some(listener_addr.port().to_string().as_str())
     );
 
@@ -229,11 +232,11 @@ async fn test_access_log_tcp_proxy_all_operators() {
     assert!(upstream_conn_id.chars().all(|c| c.is_ascii_hexdigit()));
 
     // ── OPTIONAL/ABSENT FIELDS (expected "-") ──
-    assert_eq!(parsed.get("UPSTREAM_TRANSPORT_FAILURE_REASON").map(|s| s.as_str()), Some("-"));
-    assert_eq!(parsed.get("RESPONSE_FLAGS").map(|s| s.as_str()), Some("-"));
-    assert_eq!(parsed.get("RESPONSE_FLAGS_LONG").map(|s| s.as_str()), Some("-"));
-    assert_eq!(parsed.get("RESPONSE_CODE_DETAILS").map(|s| s.as_str()), Some("-"));
-    assert_eq!(parsed.get("CONNECTION_TERMINATION_DETAILS").map(|s| s.as_str()), Some("-"));
+    assert_eq!(parsed.get("UPSTREAM_TRANSPORT_FAILURE_REASON").map(String::as_str), Some("-"));
+    assert_eq!(parsed.get("RESPONSE_FLAGS").map(String::as_str), Some("-"));
+    assert_eq!(parsed.get("RESPONSE_FLAGS_LONG").map(String::as_str), Some("-"));
+    assert_eq!(parsed.get("RESPONSE_CODE_DETAILS").map(String::as_str), Some("-"));
+    assert_eq!(parsed.get("CONNECTION_TERMINATION_DETAILS").map(String::as_str), Some("-"));
 
     // ── CLEANUP ──
     orion.shutdown();
@@ -267,7 +270,7 @@ async fn test_access_log_tcp_proxy_upstream_down() {
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
 
     let mut options = SpawnOptions::default().with_verbose();
-    options.log_level = Some("debug".to_string());
+    options.log_level = Some("debug".to_owned());
 
     let orion = OrionInstance::spawn_auto_port(&config_path, "tcp", options).await.expect("Failed to spawn Orion");
 
@@ -281,15 +284,15 @@ async fn test_access_log_tcp_proxy_upstream_down() {
         let mut buf = [0u8; 128];
         // Expect connection to be closed by Orion
         let n = stream.read(&mut buf).await.unwrap_or(0);
-        assert_eq!(n, 0, "Connection should be closed by Orion");
-    }
+        assert_eq!(n, 0, "Connection should be closed by Orion")
+    };
 
     // Wait briefly for the access log to be written and Orion to flush debug logs
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     let log_content = read_log_file(&log_path, Duration::from_secs(5)).await;
     let log_line = log_content.lines().next().expect("No log line found");
-    println!("DEBUG LOG LINE: {}", log_line);
+    println!("DEBUG LOG LINE: {log_line}");
     let parsed = parse_log_line(log_line);
 
     // ── ERROR VALIDATIONS ──
@@ -306,7 +309,7 @@ async fn test_access_log_tcp_proxy_upstream_down() {
     // Expect UPSTREAM_TRANSPORT_FAILURE_REASON to contain connection failure details
     let failure_reason =
         parsed.get("UPSTREAM_TRANSPORT_FAILURE_REASON").expect("UPSTREAM_TRANSPORT_FAILURE_REASON missing");
-    println!("DEBUG FAILURE REASON: {}", failure_reason);
+    println!("DEBUG FAILURE REASON: {failure_reason}");
     assert_ne!(failure_reason.as_str(), "-", "UPSTREAM_TRANSPORT_FAILURE_REASON should be populated");
 
     // ── CLEANUP ──

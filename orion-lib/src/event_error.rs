@@ -266,34 +266,6 @@ impl Clone for UpstreamError {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::transport::connector::ConnectError;
-    use orion_error::ContextualError;
-
-    #[test]
-    fn test_error_chain_debug() {
-        let io_err = io::Error::new(io::ErrorKind::ConnectionRefused, "Connection refused");
-        let upstream_err = UpstreamError::Io(io_err);
-        let connect_err = ConnectError::Event(upstream_err);
-        let with_ctx = ContextualError::new(connect_err);
-        let err: orion_error::Error = with_ctx.into();
-
-        println!("DEBUG TEST: err = {:?}", err);
-        println!("DEBUG TEST: err.inner() = {:?}", err.inner());
-
-        let mut temp_err: Option<&dyn std::error::Error> = Some(err.inner());
-        while let Some(e) = temp_err {
-            println!("DEBUG TEST: cause = {}, type = {:?}", e, e.source().map(|_| "has_source"));
-            temp_err = e.source();
-        }
-
-        let found = find_error_in_chain::<io::Error>(err.inner());
-        assert!(found.is_some(), "Should find std::io::Error in chain!");
-    }
-}
-
 impl Clone for DownstreamError {
     fn clone(&self) -> Self {
         match self {
@@ -395,5 +367,33 @@ impl<'a> TryInferFrom<&'a (dyn std::error::Error + 'static)> for UpstreamError {
 
         // the rest of the errors are remapped to Reset
         Some(UpstreamError::Reset)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::transport::connector::ConnectError;
+    use orion_error::ContextualError;
+
+    #[test]
+    fn test_error_chain_debug() {
+        let io_err = io::Error::new(io::ErrorKind::ConnectionRefused, "Connection refused");
+        let upstream_err = UpstreamError::Io(io_err);
+        let connect_err = ConnectError::Event(upstream_err);
+        let with_ctx = ContextualError::new(connect_err);
+        let err: orion_error::Error = with_ctx.into();
+
+        println!("DEBUG TEST: err = {err:?}");
+        println!("DEBUG TEST: err.inner() = {:?}", err.inner());
+
+        let mut temp_err: Option<&dyn std::error::Error> = Some(err.inner());
+        while let Some(e) = temp_err {
+            println!("DEBUG TEST: cause = {}, type = {:?}", e, e.source().map(|_| "has_source"));
+            temp_err = e.source();
+        }
+
+        let found = find_error_in_chain::<io::Error>(err.inner());
+        assert!(found.is_some(), "Should find std::io::Error in chain!");
     }
 }

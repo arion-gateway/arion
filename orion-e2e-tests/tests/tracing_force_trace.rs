@@ -15,7 +15,7 @@
 //! E2E tests for X-Envoy-Force-Trace header.
 //!
 //! When present, this header forces tracing regardless of sampling rates.
-//! All tests run against localhost (is_internal=true).
+//! All tests run against localhost (`is_internal=true`).
 
 use http::StatusCode;
 use orion_e2e_tests::config_builder::{presets, FilterChainBuilder, HcmBuilder, ListenerBuilder};
@@ -63,7 +63,7 @@ async fn test_force_trace_no_context() {
     resp.assert_status(StatusCode::OK);
 
     let req_id = resp.header("x-request-id").expect("force-trace should generate x-request-id");
-    assert!(uuid::Uuid::parse_str(req_id).is_ok());
+    uuid::Uuid::parse_str(req_id).unwrap();
 
     let cap = backend.await_request().await.unwrap();
     assert_eq!(cap.header("x-request-id"), Some(req_id));
@@ -125,7 +125,7 @@ async fn test_force_trace_overrides_0_sampling() {
 #[tokio::test]
 #[ignore]
 async fn test_force_trace_alone_0_sampling() {
-    let (orion, client, ibackend, config_path) = setup(Some(0), Some(0), Some(0)).await;
+    let (orion, client, _ibackend, config_path) = setup(Some(0), Some(0), Some(0)).await;
 
     let resp = client.send(RequestBuilder::get("/test").header("x-envoy-force-trace", "")).await.unwrap();
     resp.assert_status(StatusCode::OK);

@@ -158,9 +158,9 @@ impl HcmBuilder {
         overall_sampling: Option<u32>,
     ) -> Self {
         self.proto.tracing = Some(EnvoyTracing {
-            client_sampling: client_sampling.map(|v| Percent { value: v as f64 }),
-            random_sampling: random_sampling.map(|v| Percent { value: v as f64 }),
-            overall_sampling: overall_sampling.map(|v| Percent { value: v as f64 }),
+            client_sampling: client_sampling.map(|v| Percent { value: f64::from(v) }),
+            random_sampling: random_sampling.map(|v| Percent { value: f64::from(v) }),
+            overall_sampling: overall_sampling.map(|v| Percent { value: f64::from(v) }),
             ..Default::default()
         });
         self

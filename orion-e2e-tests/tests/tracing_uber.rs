@@ -14,7 +14,7 @@
 
 //! E2E tests for Jaeger uber-trace-id propagation.
 //!
-//! All tests run against localhost (is_internal=true).
+//! All tests run against localhost (`is_internal=true`).
 
 use http::StatusCode;
 use orion_e2e_tests::config_builder::{presets, FilterChainBuilder, HcmBuilder, ListenerBuilder};
@@ -53,10 +53,11 @@ async fn setup() -> (OrionInstance, TestClient, TestBackend, std::path::PathBuf)
 // ─── Basic uber-trace-id (sampled=1, no parent) ───
 #[tokio::test]
 #[ignore]
+#[allow(clippy::indexing_slicing)]
 async fn test_uber_basic() {
     let (orion, client, mut backend, config_path) = setup().await;
 
-    let uber_in = format!("{}:{}:0:1", TRACE_ID, SPAN_ID);
+    let uber_in = format!("{TRACE_ID}:{SPAN_ID}:0:1");
     let resp = client.send(RequestBuilder::get("/test").header("uber-trace-id", &uber_in)).await.unwrap();
     resp.assert_status(StatusCode::OK);
     assert!(resp.header("x-request-id").is_some());
@@ -80,7 +81,7 @@ async fn test_uber_basic() {
 async fn test_uber_not_sampled() {
     let (orion, client, mut backend, config_path) = setup().await;
 
-    let uber_in = format!("{}:{}:0:0", TRACE_ID, SPAN_ID);
+    let uber_in = format!("{TRACE_ID}:{SPAN_ID}:0:0");
     let resp = client.send(RequestBuilder::get("/test").header("uber-trace-id", &uber_in)).await.unwrap();
     resp.assert_status(StatusCode::OK);
 
@@ -112,11 +113,12 @@ async fn test_uber_invalid() {
 // ─── uber-trace-id with parent span ───
 #[tokio::test]
 #[ignore]
+#[allow(clippy::indexing_slicing)]
 async fn test_uber_with_parent() {
     let (orion, client, mut backend, config_path) = setup().await;
 
     // trace_id:span_id:parent_span_id:sampled
-    let uber_in = format!("{}:{}:05e3ac9a4f6e3b90:1", TRACE_ID, SPAN_ID);
+    let uber_in = format!("{TRACE_ID}:{SPAN_ID}:05e3ac9a4f6e3b90:1");
     let resp = client.send(RequestBuilder::get("/test").header("uber-trace-id", &uber_in)).await.unwrap();
     resp.assert_status(StatusCode::OK);
 

@@ -14,7 +14,7 @@
 
 //! E2E tests for W3C traceparent propagation.
 //!
-//! All tests run against localhost (is_internal=true).
+//! All tests run against localhost (`is_internal=true`).
 
 use http::StatusCode;
 use orion_e2e_tests::config_builder::{presets, FilterChainBuilder, HcmBuilder, ListenerBuilder};
@@ -53,10 +53,11 @@ async fn setup() -> (OrionInstance, TestClient, TestBackend, std::path::PathBuf)
 // ─── Basic traceparent (sampled=01) ───
 #[tokio::test]
 #[ignore]
+#[allow(clippy::indexing_slicing)]
 async fn test_traceparent_basic() {
     let (orion, client, mut backend, config_path) = setup().await;
 
-    let tp_in = format!("00-{}-{}-01", TRACE_ID, SPAN_ID);
+    let tp_in = format!("00-{TRACE_ID}-{SPAN_ID}-01");
     let resp = client.send(RequestBuilder::get("/test").header("traceparent", &tp_in)).await.unwrap();
     resp.assert_status(StatusCode::OK);
     assert!(resp.header("x-request-id").is_some());
@@ -80,7 +81,7 @@ async fn test_traceparent_basic() {
 async fn test_traceparent_not_sampled() {
     let (orion, client, mut backend, config_path) = setup().await;
 
-    let tp_in = format!("00-{}-{}-00", TRACE_ID, SPAN_ID);
+    let tp_in = format!("00-{TRACE_ID}-{SPAN_ID}-00");
     let resp = client.send(RequestBuilder::get("/test").header("traceparent", &tp_in)).await.unwrap();
     resp.assert_status(StatusCode::OK);
 
@@ -118,14 +119,14 @@ async fn test_traceparent_invalid() {
 async fn test_traceparent_precedence_over_b3() {
     let (orion, client, mut backend, config_path) = setup().await;
 
-    let tp_in = format!("00-{}-{}-01", TRACE_ID, SPAN_ID);
+    let tp_in = format!("00-{TRACE_ID}-{SPAN_ID}-01");
     let other_trace_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab";
 
     let resp = client
         .send(
             RequestBuilder::get("/test")
                 .header("traceparent", &tp_in)
-                .header("b3", &format!("{}-0000000000000001-1", other_trace_id)),
+                .header("b3", format!("{other_trace_id}-0000000000000001-1")),
         )
         .await
         .unwrap();
@@ -133,7 +134,7 @@ async fn test_traceparent_precedence_over_b3() {
 
     let cap = backend.await_request().await.unwrap();
     let tp_out = cap.header("traceparent").expect("traceparent should take precedence");
-    assert!(tp_out.starts_with(&format!("00-{}", TRACE_ID)), "traceparent trace_id should win over b3");
+    assert!(tp_out.starts_with(&format!("00-{TRACE_ID}")), "traceparent trace_id should win over b3");
 
     orion.shutdown();
     cleanup_config_file(&config_path);
@@ -145,7 +146,7 @@ async fn test_traceparent_precedence_over_b3() {
 async fn test_traceparent_precedence_over_uber() {
     let (orion, client, mut backend, config_path) = setup().await;
 
-    let tp_in = format!("00-{}-{}-01", TRACE_ID, SPAN_ID);
+    let tp_in = format!("00-{TRACE_ID}-{SPAN_ID}-01");
 
     let resp = client
         .send(
@@ -159,7 +160,7 @@ async fn test_traceparent_precedence_over_uber() {
 
     let cap = backend.await_request().await.unwrap();
     let tp_out = cap.header("traceparent").expect("traceparent should take precedence");
-    assert!(tp_out.starts_with(&format!("00-{}", TRACE_ID)), "traceparent trace_id should win over uber");
+    assert!(tp_out.starts_with(&format!("00-{TRACE_ID}")), "traceparent trace_id should win over uber");
 
     orion.shutdown();
     cleanup_config_file(&config_path);
