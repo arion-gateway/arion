@@ -116,7 +116,7 @@ access_log:
 | UPSTREAM_LOCAL_ADDRESS                 |   -    | ❌  |    ✅   | 
 | UPSTREAM_LOCAL_ADDRESS_WITHOUT_PORT    |   -    | ❌  |    ✅   | 
 | UPSTREAM_LOCAL_PORT                    |   -    | ❌  |    ✅   | 
-| UPSTREAM_REMOTE_ADDRESS                |   -    | ✅  |    ✅   | 
+| UPSTREAM_REMOTE_ADDRESS                |   -    | ❌  |    ✅   |
 | UPSTREAM_REMOTE_ADDRESS_WITHOUT_PORT   |   -    | ❌  |    ✅   | 
 | UPSTREAM_REMOTE_PORT                   |   -    | ❌  |    ✅   | 
 | DOWNSTREAM_LOCAL_ADDRESS               |   ✅   | ✅  |    ✅   | 
