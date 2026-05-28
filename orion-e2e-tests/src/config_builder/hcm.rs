@@ -36,7 +36,7 @@ use orion_data_plane_api::envoy_data_plane_api::{
                     {rbac::v3::Rbac as HttpRbac, router::v3::Router},
                 },
                 network::http_connection_manager::v3::{
-                    http_connection_manager::{CodecType as ProtoCodecType, RouteSpecifier},
+                    http_connection_manager::{CodecType as ProtoCodecType, RouteSpecifier, Tracing as EnvoyTracing},
                     http_filter::ConfigType as HttpFilterConfigType,
                     HttpConnectionManager as EnvoyHcm, HttpFilter, Rds,
                 },
@@ -47,6 +47,8 @@ use orion_data_plane_api::envoy_data_plane_api::{
     orion::extensions::filters::http::user_rate_limit::v3::UserRateLimiter as OrionUserRateLimiter,
     prost::Message,
 };
+
+use orion_data_plane_api::envoy_data_plane_api::envoy::r#type::v3::Percent;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum CodecType {
@@ -143,6 +145,25 @@ impl HcmBuilder {
     #[must_use]
     pub fn always_set_request_id_in_response(mut self, always_set: bool) -> Self {
         self.proto.always_set_request_id_in_response = always_set;
+        self
+    }
+
+    /// Enable tracing on this HCM with the given sampling rates (0-100).
+    ///
+    /// `None` means 100% sampling (the Envoy default when unset).
+    #[must_use]
+    pub fn tracing(
+        mut self,
+        client_sampling: Option<u32>,
+        random_sampling: Option<u32>,
+        overall_sampling: Option<u32>,
+    ) -> Self {
+        self.proto.tracing = Some(EnvoyTracing {
+            client_sampling: client_sampling.map(|v| Percent { value: v as f64 }),
+            random_sampling: random_sampling.map(|v| Percent { value: v as f64 }),
+            overall_sampling: overall_sampling.map(|v| Percent { value: v as f64 }),
+            ..Default::default()
+        });
         self
     }
 

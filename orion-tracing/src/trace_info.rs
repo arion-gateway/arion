@@ -211,25 +211,36 @@ impl TraceInfo {
 
         // Check for B3 header
         //
+        // Format per spec: b3={TraceId}-{SpanId}-{SamplingState}-{ParentSpanId}
+        // Last two fields are optional. When sampling is absent ("defer"),
+        // the receiver should accept.
         if let Some(value) = headers.get(B3).and_then(|v| v.to_str().ok()) {
             let parts: Vec<&str> = value.split('-').collect();
-            if parts.len() >= 3 {
-                // let mut rng = rand::rng();
-                // B3 trace ID is the first part, parent ID is the second part
-                let trace_id = u128::from_str_radix(parts[0], 16).map_err(|_e| TraceError::InvalidFormat)?;
-                let span_id = Some(u64::from_str_radix(parts[1], 16).map_err(|_e| TraceError::InvalidFormat)?);
-                let sampled: bool = match parts[2] {
-                    "1" => Ok(true),
-                    "0" => Ok(false),
-                    _ => Err(TraceError::InvalidFormat), // Invalid sampled value
-                }?;
-
+            if parts.len() == 1 {
+                match parts[0] {
+                    "0" | "1" | "d" => return Ok(None),
+                    _ => return Err(TraceError::InvalidFormat),
+                }
+            }
+            if parts.len() >= 2 && parts.len() <= 4 {
+                let trace_id =
+                    u128::from_str_radix(parts[0], 16).map_err(|_e| TraceError::InvalidFormat)?;
+                let span_id =
+                    Some(u64::from_str_radix(parts[1], 16).map_err(|_e| TraceError::InvalidFormat)?);
+                let sampled = if parts.len() >= 3 {
+                    match parts[2] {
+                        "1" | "d" => true,
+                        "0" => false,
+                        _ => return Err(TraceError::InvalidFormat),
+                    }
+                } else {
+                    true // defer: receiver decides to accept
+                };
                 let parent_id = if parts.len() == 4 {
                     Some(u64::from_str_radix(parts[3], 16).map_err(|_e| TraceError::InvalidFormat)?)
                 } else {
                     None
                 };
-
                 return Ok(Some(TraceInfo { trace_id, span_id, parent_id, provider: TraceProvider::B3, sampled }));
             }
             return Err(TraceError::InvalidFormat);
