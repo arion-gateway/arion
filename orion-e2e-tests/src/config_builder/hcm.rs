@@ -141,6 +141,12 @@ impl HcmBuilder {
     }
 
     #[must_use]
+    pub fn always_set_request_id_in_response(mut self, always_set: bool) -> Self {
+        self.proto.always_set_request_id_in_response = always_set;
+        self
+    }
+
+    #[must_use]
     pub fn ext_proc(mut self, ext_proc: impl Into<EnvoyExternalProcessor>) -> Self {
         let proto: EnvoyExternalProcessor = ext_proc.into();
         let any = Any {
