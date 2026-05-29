@@ -28,11 +28,10 @@ use crate::{
 use arrayvec::ArrayString;
 use chrono::{DateTime, Datelike, Timelike, Utc};
 use http::{uri::Authority, Request, Response};
-use orion_http_header::{X_ENVOY_ORIGINAL_PATH, X_REQUEST_ID};
+use orion_http_header::X_ENVOY_ORIGINAL_PATH;
 use orion_interner::StringInterner;
 use smol_str::ToSmolStr;
 use smol_str::{format_smolstr, SmolStr, SmolStrBuilder};
-use uuid::Uuid;
 
 pub trait Context {
     fn eval_part(&self, op: &Operator) -> StringType;
@@ -444,17 +443,9 @@ impl<T> Context for UpstreamRequestContext<'_, T> {
         match op {
             Operator::UpstreamProtocol => StringType::Smol(SmolStr::new_static(self.0.version().to_static_str())),
             Operator::UniqueId => {
-                let uuid = self
-                    .0
-                    .headers()
-                    .get(X_REQUEST_ID)
-                    .and_then(|id| id.to_str().ok())
-                    .filter(|s| Uuid::parse_str(s).is_ok())
-                    .map(SmolStr::new);
-                match uuid {
-                    Some(value) => StringType::Smol(value),
-                    None => StringType::None,
-                }
+                let mut buffer = [0u8; 36];
+                let new_id_str = uuid::Uuid::new_v4().hyphenated().encode_lower(&mut buffer);
+                StringType::Smol(SmolStr::new(new_id_str))
             },
             _ => StringType::None,
         }

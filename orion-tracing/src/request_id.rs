@@ -43,21 +43,16 @@ impl AsRef<HeaderValue> for RequestId {
 
 impl RequestId {
     pub fn from_request<B>(request: &Request<B>) -> Option<Self> {
-        let value = request.headers().get(X_REQUEST_ID).filter(|v| {
-            v.to_str()
-                .and_then(|s| {
-                    Uuid::parse_str(s).map(|_| true).or_else(|_| {
-                        info!("Invalid UUID in X-Request-ID header: {}", v.to_str().unwrap_or("invalid"));
-                        Ok(false)
-                    })
-                })
-                .unwrap_or(false)
-        });
-        match value {
-            None => None,
-            Some(id) if id.is_empty() => None,
-            Some(id) => Some(RequestId::Propagate(id.to_owned())),
+        let value = request.headers().get(X_REQUEST_ID)?;
+        if value.is_empty() {
+            return None;
         }
+        if let Ok(s) = value.to_str() {
+            if Uuid::parse_str(s).is_err() {
+                info!("Non-UUID value in X-Request-ID header: {}", s);
+            }
+        }
+        Some(RequestId::Propagate(value.clone()))
     }
 
     pub fn to_value(&self) -> HeaderValue {
@@ -96,9 +91,10 @@ impl RequestIdManager {
         mut req: Request<B>,
         _access_log_enabled: bool,
         incoming_request_id: Option<&RequestId>,
+        is_internal: bool,
     ) -> (Request<B>, Option<RequestId>) {
         let (authoritative_id, is_generated) = match incoming_request_id.as_ref() {
-            Some(id) if self.preserve_external_request_id => (Some(id.to_value()), false),
+            Some(id) if is_internal || self.preserve_external_request_id => (Some(id.to_value()), false),
             _ if self.generate_request_id => (Some(Self::generate_new_id()), true),
             #[cfg(feature = "tracing")]
             _ => (Some(Self::generate_new_id()), true),
@@ -109,8 +105,9 @@ impl RequestIdManager {
         };
 
         // 2. Determine if the ID must be propagated...
-        let should_propagate_header =
-            (incoming_request_id.is_some() && self.preserve_external_request_id) || self.generate_request_id;
+        let should_propagate_header = (incoming_request_id.is_some()
+            && (is_internal || self.preserve_external_request_id))
+            || self.generate_request_id;
 
         // 3. Apply the changes to the request...
         if should_propagate_header {
@@ -136,8 +133,8 @@ impl RequestIdManager {
 
     #[inline]
     fn generate_new_id() -> HeaderValue {
-        let mut buffer = [0u8; 32];
-        let new_id_str = uuid::Uuid::new_v4().simple().encode_lower(&mut buffer);
+        let mut buffer = [0u8; 36];
+        let new_id_str = uuid::Uuid::new_v4().hyphenated().encode_lower(&mut buffer);
         HeaderValue::from_str(new_id_str).unwrap_or_else(|e| {
             info!("UUID string should be valid HeaderValue: {e}");
             // Fallback in case of an error, though this should not happen with valid UUIDs
@@ -175,7 +172,12 @@ mod tests {
     fn test_broken_request_id_from_request() {
         let request = Request::builder().header(X_REQUEST_ID, "123e4567-invalid-614174").body(()).unwrap();
         let request_id = RequestId::from_request(&request);
-        assert!(request_id.is_none());
+        assert!(request_id.is_some());
+        if let Some(RequestId::Propagate(id)) = request_id {
+            assert_eq!(id.to_str().unwrap(), "123e4567-invalid-614174");
+        } else {
+            panic!("Expected RequestId::Propagate, got {request_id:?}");
+        }
     }
 
     #[test]
@@ -189,32 +191,32 @@ mod tests {
     fn test_req_id_manager_apply_policy() {
         let access_log_enabled = false;
 
-        // generate = false, preserve = false, always_set = false
+        // generate = false, preserve = false, always_set = false, is_internal = false
         let manager = RequestIdManager::new(false, false, false);
         let request = Request::builder().body(()).unwrap();
-        let (modified_request, req_id) = manager.apply_policy(request, access_log_enabled, None);
+        let (modified_request, req_id) = manager.apply_policy(request, access_log_enabled, None, false);
         assert!(!modified_request.headers().contains_key(X_REQUEST_ID));
         #[cfg(feature = "tracing")]
         assert!(matches!(req_id, Some(RequestId::Internal(_))));
         #[cfg(not(feature = "tracing"))]
         assert!(req_id.is_none());
 
-        // generate = false, preserve = false, always_set = false
+        // generate = false, preserve = false, always_set = false, is_internal = false
         let manager = RequestIdManager::new(false, false, false);
         let request = Request::builder().header(X_REQUEST_ID, "123e4567-e89b-12d3-a456-426614174000").body(()).unwrap();
         let request_id = RequestId::from_request(&request);
-        let (modified_request, req_id) = manager.apply_policy(request, access_log_enabled, request_id.as_ref());
+        let (modified_request, req_id) = manager.apply_policy(request, access_log_enabled, request_id.as_ref(), false);
         assert!(!modified_request.headers().contains_key(X_REQUEST_ID));
         #[cfg(feature = "tracing")]
         assert!(matches!(req_id, Some(RequestId::Internal(_))));
         #[cfg(not(feature = "tracing"))]
         assert!(req_id.is_none());
 
-        // generate = true, preserve = false, always_set = false
+        // generate = true, preserve = false, always_set = false, is_internal = false
         let manager = RequestIdManager::new(true, false, false);
         let request = Request::builder().header(X_REQUEST_ID, "123e4567-e89b-12d3-a456-426614174000").body(()).unwrap();
         let request_id = RequestId::from_request(&request);
-        let (modified_request, req_id) = manager.apply_policy(request, access_log_enabled, request_id.as_ref());
+        let (modified_request, req_id) = manager.apply_policy(request, access_log_enabled, request_id.as_ref(), false);
         assert!(modified_request.headers().contains_key(X_REQUEST_ID));
         assert!(matches!(req_id, Some(RequestId::Propagate(_))));
         assert_ne!(
@@ -222,19 +224,31 @@ mod tests {
             Some(&HeaderValue::from_static("123e4567-e89b-12d3-a456-426614174000"))
         );
 
-        // generate = true, preserve = true, always_set = false
+        // generate = true, preserve = true, always_set = false, is_internal = false
         let manager = RequestIdManager::new(true, true, false);
         let request = Request::builder().body(()).unwrap();
         let request_id = RequestId::from_request(&request);
-        let (modified_request, req_id) = manager.apply_policy(request, access_log_enabled, request_id.as_ref());
+        let (modified_request, req_id) = manager.apply_policy(request, access_log_enabled, request_id.as_ref(), false);
         assert!(modified_request.headers().contains_key(X_REQUEST_ID));
         assert!(matches!(req_id, Some(RequestId::Propagate(_))));
 
-        // generate = true, preserve = true, always_set = false (with request already having X-Request-ID)
+        // generate = true, preserve = true, always_set = false (with request already having X-Request-ID), is_internal = false
         let manager = RequestIdManager::new(true, true, false);
         let request = Request::builder().header(X_REQUEST_ID, "123e4567-e89b-12d3-a456-426614174000").body(()).unwrap();
         let request_id = RequestId::from_request(&request);
-        let (modified_request, req_id) = manager.apply_policy(request, access_log_enabled, request_id.as_ref());
+        let (modified_request, req_id) = manager.apply_policy(request, access_log_enabled, request_id.as_ref(), false);
+        assert!(modified_request.headers().contains_key(X_REQUEST_ID));
+        assert!(matches!(req_id, Some(RequestId::Propagate(_))));
+        assert_eq!(
+            modified_request.headers().get(X_REQUEST_ID),
+            Some(&HeaderValue::from_static("123e4567-e89b-12d3-a456-426614174000"))
+        );
+
+        // generate = true, preserve = false, always_set = false, is_internal = true
+        let manager = RequestIdManager::new(true, false, false);
+        let request = Request::builder().header(X_REQUEST_ID, "123e4567-e89b-12d3-a456-426614174000").body(()).unwrap();
+        let request_id = RequestId::from_request(&request);
+        let (modified_request, req_id) = manager.apply_policy(request, access_log_enabled, request_id.as_ref(), true);
         assert!(modified_request.headers().contains_key(X_REQUEST_ID));
         assert!(matches!(req_id, Some(RequestId::Propagate(_))));
         assert_eq!(

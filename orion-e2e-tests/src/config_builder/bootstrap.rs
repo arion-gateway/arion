@@ -15,6 +15,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use orion_configuration::config::log::AccessLogConfig;
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
 
@@ -43,6 +44,7 @@ pub struct BootstrapBuilder {
     xds_config: Option<XdsConfig>,
     admin_config: Option<Admin>,
     metrics: MetricsConfig,
+    access_logging: Option<AccessLogConfig>,
 }
 
 impl Default for BootstrapBuilder {
@@ -63,6 +65,7 @@ impl BootstrapBuilder {
             xds_config: None,
             admin_config: None,
             metrics: MetricsConfig::default(),
+            access_logging: None,
         }
     }
 
@@ -137,6 +140,12 @@ impl BootstrapBuilder {
     }
 
     #[must_use]
+    pub fn access_log(mut self, access_logging: AccessLogConfig) -> Self {
+        self.access_logging = Some(access_logging);
+        self
+    }
+
+    #[must_use]
     pub fn get_clusters(&self) -> &[Cluster] {
         &self.clusters
     }
@@ -200,6 +209,7 @@ impl BootstrapBuilder {
         OrionConfig {
             runtime: RuntimeConfig { num_cpus: self.runtime_cpus, num_runtimes: self.runtime_count },
             logging: LoggingConfig { log_level: self.log_level.clone() },
+            access_logging: self.access_logging.clone(),
             envoy_bootstrap: EnvoyBootstrap {
                 admin: self.admin_config.clone(),
                 dynamic_resources,
@@ -265,6 +275,8 @@ fn build_xds_cluster(address: &str, port: u16) -> Value {
 struct OrionConfig {
     runtime: RuntimeConfig,
     logging: LoggingConfig,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    access_logging: Option<AccessLogConfig>,
     envoy_bootstrap: EnvoyBootstrap,
     metrics: MetricsConfig,
 }

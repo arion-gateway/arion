@@ -1428,11 +1428,14 @@ where
             false
         };
 
+        let is_internal = http_modifiers::is_internal_ip(downstream.connection.peer_address().ip());
+
         #[allow(unused_mut)]
         let (mut request, request_id) = self.manager.request_id_handler.apply_policy(
             incoming_request,
             access_log_enabled,
             incoming_request_id.as_ref(),
+            is_internal,
         );
 
         #[cfg(feature = "tracing")]

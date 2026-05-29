@@ -23,7 +23,7 @@ pub mod logger;
 mod pool;
 
 use logger::AccessLogger;
-use orion_configuration::config::access_log::{AccessLogConf, AccessLogTarget};
+use orion_configuration::config::access_log::{AccessLogSink, AccessLogTarget};
 use orion_format::FormattedMessage;
 use pool::LoggerPool;
 use smol_str::SmolStr;
@@ -94,7 +94,7 @@ impl Display for Target {
 ///   to all sinks configured for the given [`Target`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AccessLogMessage {
-    Configure(Target, Vec<AccessLogConf>),
+    Configure(Target, Vec<AccessLogSink>),
     Message(Target, Vec<FormattedMessage>),
 }
 
@@ -286,7 +286,7 @@ fn is_blocking() -> bool {
 /// that every logger applies the new [`AccessLogConf`] list. Returns
 /// `Ok(())` if all sends succeed, or [`LoggerError::SenderError`] on the
 /// first failure.
-pub async fn update_configuration(target: Target, init: Vec<AccessLogConf>) -> Result<(), LoggerError> {
+pub async fn update_configuration(target: Target, init: Vec<AccessLogSink>) -> Result<(), LoggerError> {
     let pool =
         SENDER_POOL.get().ok_or_else(|| LoggerError::InitializationError("Logger pool not initialized".into()))?;
     for (i, senders) in pool.senders.iter().enumerate() {
@@ -363,7 +363,7 @@ mod tests {
         // send a new configuration for the logger(s)
         update_configuration(
             Target::Listener("test".into()),
-            vec![AccessLogConf::File("test-access.log".into()), AccessLogConf::Stderr],
+            vec![AccessLogSink::File("test-access.log".into()), AccessLogSink::Stderr],
         )
         .await
         .unwrap();

@@ -17,19 +17,28 @@ use std::time::Duration;
 use orion_data_plane_api::envoy_data_plane_api::{
     envoy::{
         config::{
-            core::v3::{config_source::ConfigSourceSpecifier, AggregatedConfigSource, ConfigSource},
+            accesslog::v3::{access_log::ConfigType as AccessLogConfigType, AccessLog as EnvoyAccessLog},
+            core::v3::{
+                config_source::ConfigSourceSpecifier, substitution_format_string::Format as SubstitutionFormat,
+                AggregatedConfigSource, ConfigSource, SubstitutionFormatString,
+            },
             route::v3::RouteConfiguration,
         },
-        extensions::filters::{
-            http::{
-                ext_proc::v3::ExternalProcessor as EnvoyExternalProcessor,
-                local_ratelimit::v3::LocalRateLimit as EnvoyLocalRateLimit,
-                {rbac::v3::Rbac as HttpRbac, router::v3::Router},
+        extensions::{
+            access_loggers::file::v3::{
+                file_access_log::AccessLogFormat as FileAccessLogFormat, FileAccessLog as EnvoyFileAccessLog,
             },
-            network::http_connection_manager::v3::{
-                http_connection_manager::{CodecType as ProtoCodecType, RouteSpecifier},
-                http_filter::ConfigType as HttpFilterConfigType,
-                HttpConnectionManager as EnvoyHcm, HttpFilter, Rds,
+            filters::{
+                http::{
+                    ext_proc::v3::ExternalProcessor as EnvoyExternalProcessor,
+                    local_ratelimit::v3::LocalRateLimit as EnvoyLocalRateLimit,
+                    {rbac::v3::Rbac as HttpRbac, router::v3::Router},
+                },
+                network::http_connection_manager::v3::{
+                    http_connection_manager::{CodecType as ProtoCodecType, RouteSpecifier, Tracing as EnvoyTracing},
+                    http_filter::ConfigType as HttpFilterConfigType,
+                    HttpConnectionManager as EnvoyHcm, HttpFilter, Rds,
+                },
             },
         },
     },
@@ -37,6 +46,8 @@ use orion_data_plane_api::envoy_data_plane_api::{
     orion::extensions::filters::http::user_rate_limit::v3::UserRateLimiter as OrionUserRateLimiter,
     prost::Message,
 };
+
+use orion_data_plane_api::envoy_data_plane_api::envoy::r#type::v3::Percent;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum CodecType {
@@ -131,6 +142,31 @@ impl HcmBuilder {
     }
 
     #[must_use]
+    pub fn always_set_request_id_in_response(mut self, always_set: bool) -> Self {
+        self.proto.always_set_request_id_in_response = always_set;
+        self
+    }
+
+    /// Enable tracing on this HCM with the given sampling rates (0-100).
+    ///
+    /// `None` means 100% sampling (the Envoy default when unset).
+    #[must_use]
+    pub fn tracing(
+        mut self,
+        client_sampling: Option<u32>,
+        random_sampling: Option<u32>,
+        overall_sampling: Option<u32>,
+    ) -> Self {
+        self.proto.tracing = Some(EnvoyTracing {
+            client_sampling: client_sampling.map(|v| Percent { value: f64::from(v) }),
+            random_sampling: random_sampling.map(|v| Percent { value: f64::from(v) }),
+            overall_sampling: overall_sampling.map(|v| Percent { value: f64::from(v) }),
+            ..Default::default()
+        });
+        self
+    }
+
+    #[must_use]
     pub fn ext_proc(mut self, ext_proc: impl Into<EnvoyExternalProcessor>) -> Self {
         let proto: EnvoyExternalProcessor = ext_proc.into();
         let any = Any {
@@ -202,6 +238,31 @@ impl HcmBuilder {
         use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::network::http_connection_manager::v3::http_connection_manager::UpgradeConfig;
         self.proto.upgrade_configs.push(UpgradeConfig { upgrade_type: "websocket".into(), ..Default::default() });
         self
+    }
+
+    #[must_use]
+    #[allow(deprecated)]
+    pub fn access_log_file(self, path: impl Into<String>, text_format: impl Into<String>) -> Self {
+        let file_access_log = EnvoyFileAccessLog {
+            path: path.into(),
+            access_log_format: Some(FileAccessLogFormat::LogFormat(SubstitutionFormatString {
+                format: Some(SubstitutionFormat::TextFormat(text_format.into())),
+                ..Default::default()
+            })),
+        };
+
+        let typed_config = Any {
+            type_url: "type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog".into(),
+            value: file_access_log.encode_to_vec(),
+        };
+
+        let access_log = EnvoyAccessLog {
+            name: "envoy.access_loggers.file".into(),
+            config_type: Some(AccessLogConfigType::TypedConfig(typed_config)),
+            ..Default::default()
+        };
+
+        self.with_proto(move |proto| proto.access_log.push(access_log))
     }
 
     #[must_use]
