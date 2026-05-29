@@ -40,14 +40,21 @@ futures-util = "0.3.32"
 jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
 clap = { version = "4.5.51", features = ["derive"] }
 pingora = { version = "0.8.0", features = ["time"] }
+fastembed = { version = "4", optional = true, default-features = false, features = ["hf-hub-rustls-tls", "ort-download-binaries"] }
 
 [dev-dependencies]
 tracing-test.workspace = true
 
 [features]
 default = []
+fastembed-service = ["dep:fastembed"]
 mcp-tests = []
 mcp-semantic-search = []
+
+[[example]]
+name = "fastembed_embedding_service"
+path = "examples/fastembed_embedding_service.rs"
+required-features = ["fastembed-service"]
 
 [[test]]
 name = "mcp_gateway_semantic_search"
