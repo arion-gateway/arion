@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use http::{HeaderName, StatusCode};
+use pingora::prelude::fast_timeout::fast_timeout;
 use smallvec::SmallVec;
 use std::net::SocketAddr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -30,12 +31,10 @@ use orion_e2e_tests::{
 
 use std::collections::HashMap;
 
-fn parse_user_metric_value(
-    prometheus_output: &str,
-    metric_name: &str,
-    expected_attrs: &[(&str, &str)],
-) -> Option<u64> {
-    let prefix = format!("{}{{", metric_name);
+#[allow(clippy::indexing_slicing)]
+#[allow(clippy::string_slice)]
+fn parse_user_metric_value(prometheus_output: &str, metric_name: &str, expected_attrs: &[(&str, &str)]) -> Option<u64> {
+    let prefix = format!("{metric_name}{{");
     for line in prometheus_output.lines() {
         if line.starts_with('#') {
             continue;
@@ -52,7 +51,7 @@ fn parse_user_metric_value(
                         actual_attrs.insert(key, val);
                     }
                 }
-                
+
                 if actual_attrs.len() == expected_attrs.len() {
                     let mut all_match = true;
                     for &(k, v) in expected_attrs {
@@ -226,8 +225,16 @@ async fn test_user_metrics_header() {
     assert_eq!(parse_user_metric_value(metrics, "user_system_errors", &[("user", "user-1")]), Some(1));
     assert_eq!(parse_user_metric_value(metrics, "user_total_errors", &[("user", "user-1")]), Some(5)); // 4 (user) + 1 (system) = 5
     assert_eq!(parse_user_metric_value(metrics, "user_latency_count", &[("user", "user-1")]), Some(8)); // All 8 requests
-    assert_eq!(parse_user_metric_value(metrics, "user_bytes_tx", &[("user", "user-1"), ("listener", "http")]), Some(user1_expected_tx as u64));
-    assert_eq!(parse_user_metric_value(metrics, "user_bytes_rx", &[("user", "user-1"), ("listener", "http")]), Some(user1_expected_rx as u64));
+    assert_eq!(
+        parse_user_metric_value(metrics, "user_bytes_tx", &[("user", "user-1"), ("listener", "http")]),
+        Some(user1_expected_tx as u64)
+    );
+    assert_eq!(
+        parse_user_metric_value(metrics, "user_bytes_rx", &[("user", "user-1"), ("listener", "http")]),
+        Some(user1_expected_rx as u64)
+    );
+    assert_eq!(parse_user_metric_value(metrics, "user_connections", &[("user", "user-1")]), Some(8));
+    assert!(parse_user_metric_value(metrics, "user_connections_active", &[("user", "user-1")]).unwrap_or(0) == 0);
 
     // Assertions for USER 2 (separate partition)
     assert_eq!(parse_user_metric_value(metrics, "user_invocations", &[("user", "user-2")]), Some(2));
@@ -237,8 +244,16 @@ async fn test_user_metrics_header() {
     assert_eq!(parse_user_metric_value(metrics, "user_user_errors", &[("user", "user-2")]), Some(1));
     assert_eq!(parse_user_metric_value(metrics, "user_total_errors", &[("user", "user-2")]), Some(1));
     assert_eq!(parse_user_metric_value(metrics, "user_latency_count", &[("user", "user-2")]), Some(2));
-    assert_eq!(parse_user_metric_value(metrics, "user_bytes_tx", &[("user", "user-2"), ("listener", "http")]), Some(user2_expected_tx as u64));
-    assert_eq!(parse_user_metric_value(metrics, "user_bytes_rx", &[("user", "user-2"), ("listener", "http")]), Some(user2_expected_rx as u64));
+    assert_eq!(
+        parse_user_metric_value(metrics, "user_bytes_tx", &[("user", "user-2"), ("listener", "http")]),
+        Some(user2_expected_tx as u64)
+    );
+    assert_eq!(
+        parse_user_metric_value(metrics, "user_bytes_rx", &[("user", "user-2"), ("listener", "http")]),
+        Some(user2_expected_rx as u64)
+    );
+    assert_eq!(parse_user_metric_value(metrics, "user_connections", &[("user", "user-2")]), Some(2));
+    assert!(parse_user_metric_value(metrics, "user_connections_active", &[("user", "user-2")]).unwrap_or(0) == 0);
 
     orion.shutdown();
     cleanup_config_file(&config_path);
@@ -392,8 +407,16 @@ async fn test_user_metrics_sni() {
     assert_eq!(parse_user_metric_value(metrics, "user_system_errors", &[("user", sni_name)]), Some(1));
     assert_eq!(parse_user_metric_value(metrics, "user_total_errors", &[("user", sni_name)]), Some(5)); // 4 (user) + 1 (system) = 5
     assert_eq!(parse_user_metric_value(metrics, "user_latency_count", &[("user", sni_name)]), Some(8)); // All 8 requests
-    assert!(parse_user_metric_value(metrics, "user_bytes_tx", &[("user", sni_name), ("listener", "https")]).unwrap() > expected_tx as u64);
-    assert!(parse_user_metric_value(metrics, "user_bytes_rx", &[("user", sni_name), ("listener", "https")]).unwrap() > expected_rx as u64);
+    assert!(
+        parse_user_metric_value(metrics, "user_bytes_tx", &[("user", sni_name), ("listener", "https")]).unwrap()
+            > expected_tx as u64
+    );
+    assert!(
+        parse_user_metric_value(metrics, "user_bytes_rx", &[("user", sni_name), ("listener", "https")]).unwrap()
+            > expected_rx as u64
+    );
+    assert_eq!(parse_user_metric_value(metrics, "user_connections", &[("user", sni_name)]), Some(8));
+    assert!(parse_user_metric_value(metrics, "user_connections_active", &[("user", sni_name)]).unwrap_or(0) == 0);
 
     orion.shutdown();
     cleanup_config_file(&config_path);
@@ -509,13 +532,113 @@ async fn test_user_metrics_websocket() {
     metrics_resp.assert_status(StatusCode::OK);
     let metrics = metrics_resp.body_str().unwrap();
 
-    let inbound_streaming = parse_user_metric_value(metrics, "user_inbound_streaming_bytes_processed", &[("user", user_name)])
-        .expect("Missing user_inbound_streaming_bytes_processed");
-    let outbound_streaming = parse_user_metric_value(metrics, "user_outbound_streaming_bytes_processed", &[("user", user_name)])
-        .expect("Missing user_outbound_streaming_bytes_processed");
+    let inbound_streaming =
+        parse_user_metric_value(metrics, "user_inbound_streaming_bytes_processed", &[("user", user_name)])
+            .expect("Missing user_inbound_streaming_bytes_processed");
+    let outbound_streaming =
+        parse_user_metric_value(metrics, "user_outbound_streaming_bytes_processed", &[("user", user_name)])
+            .expect("Missing user_outbound_streaming_bytes_processed");
 
     assert_eq!(inbound_streaming, 10);
     assert_eq!(outbound_streaming, 10);
+    assert_eq!(parse_user_metric_value(metrics, "user_connections", &[("user", user_name)]), Some(1));
+    assert!(parse_user_metric_value(metrics, "user_connections_active", &[("user", user_name)]).unwrap_or(0) == 0);
+
+    orion.shutdown();
+    cleanup_config_file(&config_path);
+}
+
+/// Verifies that `user_new_connections` counts each new connection and that
+/// `user_connections` (active connections gauge) is incremented while a connection
+/// is alive and decremented to zero after the connection is closed.
+#[tokio::test]
+#[ignore]
+#[allow(clippy::indexing_slicing)]
+async fn test_user_connections_active_gauge() {
+    let port_block = PortBlock::reserve().expect("Failed to reserve port block");
+    let admin_port = port_block.allocate().expect("Failed to allocate admin port");
+    let admin_addr = SocketAddr::from(([127, 0, 0, 1], admin_port));
+
+    let backend = TestBackend::start().await.expect("Failed to start test backend");
+    let backend_addr = backend.addr();
+    backend.enqueue_response(PreConfiguredResponse::with_body("ok")).await;
+    backend.enqueue_response(PreConfiguredResponse::with_body("ok")).await;
+
+    let metrics_config = MetricsConfig {
+        user_key: Some(PartitionKey {
+            source: SourceHeaderNameOrSni::HeaderName(HeaderName::from_static("x-user-id")),
+            attribute_name: Some("user".into()),
+        }),
+        custom_keys: SmallVec::new(),
+        rename: std::collections::HashMap::new(),
+        custom_metrics: CustomMetrics::default(),
+    };
+
+    let bootstrap =
+        presets::simple_proxy("backend", backend_addr).admin("127.0.0.1", admin_port).metrics(metrics_config);
+    let config_path = bootstrap.build_to_temp().expect("Failed to build config");
+
+    let orion = OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default())
+        .await
+        .expect("Failed to spawn Orion");
+
+    let admin_client = TestClient::new(admin_addr);
+    let listener_addr = orion.listener_addr().unwrap();
+
+    // --- Open connection 1 and keep it alive ---
+    let req1 = b"GET /ok HTTP/1.1\r\nHost: localhost\r\nx-user-id: conn-user\r\n\r\n";
+    let mut stream1 = TcpStream::connect(listener_addr).await.expect("Failed to connect");
+    stream1.write_all(req1).await.expect("Failed to write");
+
+    // Read just enough to confirm the request was processed
+    let mut buf = [0u8; 1024];
+    let n = fast_timeout(std::time::Duration::from_secs(5), stream1.read(&mut buf))
+        .await
+        .expect("Timed out waiting for response")
+        .expect("Failed to read");
+    assert!(String::from_utf8_lossy(&buf[..n]).contains("200 OK"));
+
+    // While stream1 is still open, verify the active connections gauge is 1
+    let metrics_resp = admin_client.get("/stats/prometheus").await.expect("Failed to get metrics");
+    metrics_resp.assert_status(StatusCode::OK);
+    let metrics = metrics_resp.body_str().unwrap();
+    assert_eq!(parse_user_metric_value(metrics, "user_connections", &[("user", "conn-user")]), Some(1));
+    assert_eq!(parse_user_metric_value(metrics, "user_connections_active", &[("user", "conn-user")]), Some(1));
+
+    // --- Open connection 2 without reading yet ---
+    let req2 = b"GET /ok HTTP/1.1\r\nHost: localhost\r\nx-user-id: conn-user\r\n\r\n";
+    let mut stream2 = TcpStream::connect(listener_addr).await.expect("Failed to connect");
+    stream2.write_all(req2).await.expect("Failed to write");
+
+    // Give the server a moment to process
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    // Now both connections are alive — gauge should be 2
+    let metrics_resp = admin_client.get("/stats/prometheus").await.expect("Failed to get metrics");
+    metrics_resp.assert_status(StatusCode::OK);
+    let metrics = metrics_resp.body_str().unwrap();
+    assert_eq!(parse_user_metric_value(metrics, "user_connections", &[("user", "conn-user")]), Some(2));
+    assert_eq!(parse_user_metric_value(metrics, "user_connections_active", &[("user", "conn-user")]), Some(2));
+
+    // --- Close connection 1, gauge should drop to 1 ---
+    drop(stream1);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let metrics_resp = admin_client.get("/stats/prometheus").await.expect("Failed to get metrics");
+    metrics_resp.assert_status(StatusCode::OK);
+    let metrics = metrics_resp.body_str().unwrap();
+    assert_eq!(parse_user_metric_value(metrics, "user_connections_active", &[("user", "conn-user")]), Some(1));
+
+    // --- Close connection 2, gauge should drop to 0 ---
+    drop(stream2);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let metrics_resp = admin_client.get("/stats/prometheus").await.expect("Failed to get metrics");
+    metrics_resp.assert_status(StatusCode::OK);
+    let metrics = metrics_resp.body_str().unwrap();
+    assert_eq!(parse_user_metric_value(metrics, "user_connections_active", &[("user", "conn-user")]), Some(0));
+    // The counter is monotonic — it should still be 2, not go back to 0
+    assert_eq!(parse_user_metric_value(metrics, "user_connections", &[("user", "conn-user")]), Some(2));
 
     orion.shutdown();
     cleanup_config_file(&config_path);
