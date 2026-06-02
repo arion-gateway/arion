@@ -290,7 +290,7 @@ fn build_prometheus_output() -> io::Result<String> {
     process_metric_as_gauge(&mut out, &http::DOWNSTREAM_CX_WS_UPGRADES_ACTIVE)?;
     process_metric_as_counter(&mut out, &http::DOWNSTREAM_RQ_WS_ON_NON_WS_ROUTE)?;
 
-    // user/agentrun
+    // user
     process_metric_as_counter(&mut out, &user::INVOCATIONS)?;
     process_metric_as_counter(&mut out, &user::THROTTLES)?;
     process_metric_as_counter(&mut out, &user::SYSTEM_ERRORS)?;
@@ -300,6 +300,8 @@ fn build_prometheus_output() -> io::Result<String> {
     process_metric_as_counter(&mut out, &user::BYTES_RX)?;
     process_metric_as_counter(&mut out, &user::INBOUND_STREAMING_BYTES_PROCESSED)?;
     process_metric_as_counter(&mut out, &user::OUTBOUND_STREAMING_BYTES_PROCESSED)?;
+    process_metric_as_counter(&mut out, &user::CONNECTIONS)?;
+    process_metric_as_counter(&mut out, &user::CONNECTIONS_ACTIVE)?;
     process_metric_as_counter(&mut out, &user::HTTP_1XX_RESPONSES)?;
     process_metric_as_counter(&mut out, &user::HTTP_2XX_RESPONSES)?;
     process_metric_as_counter(&mut out, &user::HTTP_3XX_RESPONSES)?;

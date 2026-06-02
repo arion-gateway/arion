@@ -9,10 +9,17 @@ use std::{
 };
 
 use atomicoption::AtomicOption;
+#[cfg(feature = "metrics")]
+use opentelemetry::KeyValue;
+#[cfg(feature = "metrics")]
+use orion_metrics::metrics::user;
 use parking_lot::Mutex;
 use pin_project::pin_project;
 use smallvec::SmallVec;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+
+#[cfg(feature = "metrics")]
+use crate::{get_shard_id, metrics, with_metric};
 
 use crate::{transport::AsyncReadWriteInstrumented, utils::rewindable_stream::RewindableHeadAsyncStream};
 
@@ -63,6 +70,7 @@ pub struct StreamMetrics {
     drop_fn: AtomicOption<Box<dyn FnOnce(&StreamMetrics) + Send>>,
     #[allow(clippy::type_complexity)]
     flush_callbacks: CallbackQueue,
+    user_partition_key: AtomicOption<&'static str>,
 }
 
 impl Default for StreamMetrics {
@@ -77,6 +85,7 @@ impl std::fmt::Debug for StreamMetrics {
             None => None,
             Some(ErrorSource::Read(err) | ErrorSource::Write(err)) => Some(err.to_string()),
         };
+        let user_partition_key = self.user_partition_key.as_ref(Ordering::Relaxed).map(|s| *s);
         f.debug_struct("StreamMetrics")
             .field("total_bytes_read", &self.total_bytes_read)
             .field("total_bytes_written", &self.total_bytes_written)
@@ -86,6 +95,7 @@ impl std::fmt::Debug for StreamMetrics {
             .field("error", &error)
             .field("drop_fn", &self.drop_fn.is_some(Ordering::Relaxed))
             .field("flush_callbacks", &"...")
+            .field("user_partition_key", &user_partition_key)
             .finish()
     }
 }
@@ -95,6 +105,17 @@ impl Drop for StreamMetrics {
         self.on_flush();
         if let Some(log_fn) = self.drop_fn.take(Ordering::Acquire) {
             log_fn(self);
+        }
+
+        #[cfg(feature = "metrics")]
+        if let Some(user_partition_key) = self.user_partition_key.as_ref(Ordering::Relaxed) {
+            with_metric!(
+                user::CONNECTIONS_ACTIVE,
+                sub,
+                1,
+                get_shard_id!(),
+                &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), *user_partition_key)]
+            );
         }
     }
 }
@@ -110,6 +131,7 @@ impl StreamMetrics {
             error: AtomicOption::none(),
             drop_fn: AtomicOption::none(),
             flush_callbacks: CallbackQueue::new(),
+            user_partition_key: AtomicOption::none(),
         }
     }
 
@@ -168,6 +190,11 @@ impl StreamMetrics {
     #[inline]
     pub fn inc_requests(&self) -> u64 {
         self.requests_counter.fetch_add(1, Ordering::Relaxed)
+    }
+
+    #[inline]
+    pub fn set_user_partition_key(&self, key: &'static str) {
+        self.user_partition_key.store(Ordering::Release, key);
     }
 
     pub fn error(&self) -> Option<&io::Error> {

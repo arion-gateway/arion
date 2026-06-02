@@ -16,6 +16,8 @@ pub static BYTES_RX: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 pub static INBOUND_STREAMING_BYTES_PROCESSED: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 pub static OUTBOUND_STREAMING_BYTES_PROCESSED: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 pub static LATENCY: OnceLock<Metric<ShardedHistogram<ThreadId>>> = OnceLock::new();
+pub static CONNECTIONS: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
+pub static CONNECTIONS_ACTIVE: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 
 pub static HTTP_1XX_RESPONSES: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 pub static HTTP_2XX_RESPONSES: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
@@ -117,5 +119,17 @@ pub(crate) fn init_metrics(rename: &std::collections::HashMap<String, String>) {
         crate::metrics::PREFIX_USER,
         crate::metrics::resolve_metric_name(rename, "http_5xx_response"),
         "Total number of API calls that resulted in a 5xx HTTP response"
+    );
+    init_observable_counter!(
+        CONNECTIONS,
+        crate::metrics::PREFIX_USER,
+        crate::metrics::resolve_metric_name(rename, "connections"),
+        "Number of total connections established"
+    );
+    init_observable_gauge!(
+        CONNECTIONS_ACTIVE,
+        crate::metrics::PREFIX_USER,
+        crate::metrics::resolve_metric_name(rename, "connections_active"),
+        "Number of active connections"
     );
 }

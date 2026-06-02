@@ -747,7 +747,7 @@ impl Service<PipelineRequest<Request<OrionRequestBody>>> for HttpPipelineSvc {
     fn call(&self, req: PipelineRequest<Request<OrionRequestBody>>) -> Self::Future {
         let manager = Arc::clone(&self.manager);
         Box::pin(async move {
-            let PipelineRequest { mut request, trans_ctx: trans_handler, route_conf, downstream, stream_metrics } = req;
+            let PipelineRequest { mut request, trans_ctx, route_conf, downstream, stream_metrics } = req;
 
             #[allow(unused_variables)]
             let listener_name = manager.listener_name;
@@ -756,13 +756,35 @@ impl Service<PipelineRequest<Request<OrionRequestBody>>> for HttpPipelineSvc {
             let downstream_addr = downstream.connection.peer_address();
             let stream_metrics_clone = Arc::clone(&stream_metrics);
 
-            stream_metrics.inc_requests();
+            // check if this is the first request on the stream, and if so, record it in the metrics.
+            if stream_metrics.inc_requests() == 0 {
+                #[cfg(feature = "metrics")]
+                if let Some(user_partition_key) = trans_ctx.user_partition_key {
+                    with_metric!(
+                        user::CONNECTIONS,
+                        add,
+                        1,
+                        trans_ctx.shard_id,
+                        &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
+                    );
+                    with_metric!(
+                        user::CONNECTIONS_ACTIVE,
+                        add,
+                        1,
+                        trans_ctx.shard_id,
+                        &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
+                    );
+
+                    // store the user_partition_key to decrement CONNECTIONS_ACTIVE later, when the stream is closed.
+                    stream_metrics.set_user_partition_key(user_partition_key);
+                }
+            }
 
             // apply the request header modifiers
             http_modifiers::apply_prerouting_functions(&mut request, downstream_addr, manager.xff_settings);
 
             // process request, get the response..
-            let result = route_conf.to_response(&trans_handler, request, Arc::clone(&manager)).await;
+            let result = route_conf.to_response(&trans_ctx, request, Arc::clone(&manager)).await;
 
             // calculate the time to first byte..
             #[cfg(any(feature = "access-log", feature = "metrics"))]
@@ -772,7 +794,7 @@ impl Service<PipelineRequest<Request<OrionRequestBody>>> for HttpPipelineSvc {
                 // set the request id on the response...
                 manager
                     .request_id_handler
-                    .apply_to(&mut response, trans_handler.request_id.as_ref().and_then(|x| x.propagate_ref()));
+                    .apply_to(&mut response, trans_ctx.request_id.as_ref().and_then(|x| x.propagate_ref()));
 
                 #[cfg(feature = "access-log")]
                 let (initial_flags, initial_event) = {
@@ -785,7 +807,7 @@ impl Service<PipelineRequest<Request<OrionRequestBody>>> for HttpPipelineSvc {
                     use crate::with_access_log;
 
                     with_access_log!(
-                        &mut trans_handler.trans_state.lock().loggers,
+                        &mut trans_ctx.trans_state.lock().loggers,
                         DownstreamResponseContext {
                             response: &response,
                             response_head_size: response_head_size(&response)
@@ -808,10 +830,9 @@ impl Service<PipelineRequest<Request<OrionRequestBody>>> for HttpPipelineSvc {
                         move |body_bytes, stream_metrics, body_error, body_flags| {
                             #[cfg(any(feature = "access-log", feature = "metrics"))]
                             {
-                                let mut trans_state = trans_handler.trans_state.lock();
+                                let mut trans_state = trans_ctx.trans_state.lock();
                                 #[allow(unused_variables)]
-                                let duration =
-                                    first_byte_instant.saturating_duration_since(trans_handler.start_instant);
+                                let duration = first_byte_instant.saturating_duration_since(trans_ctx.start_instant);
                                 #[allow(unused_variables)]
                                 let tx_duration = Instant::now().saturating_duration_since(first_byte_instant);
 
@@ -821,16 +842,16 @@ impl Service<PipelineRequest<Request<OrionRequestBody>>> for HttpPipelineSvc {
                                     HttpResponseDurationContext { duration, tx_duration }
                                 );
 
-                                if trans_handler.trans_phase.is_complete() {
+                                if trans_ctx.trans_phase.is_complete() {
                                     let sm_arc = Arc::clone(&sm_for_cb2);
-                                    let trans_handler_cb = Arc::clone(&trans_handler);
+                                    let trans_ctx_cb = Arc::clone(&trans_ctx);
                                     #[cfg(feature = "access-log")]
                                     let initial_event_cb = initial_event.clone();
                                     let body_error_cb = body_error.clone();
 
                                     stream_metrics.add_flush_callback(Box::new(move || {
                                         #[allow(unused_mut)]
-                                        let mut trans_ctx = trans_handler_cb.trans_state.lock();
+                                        let mut trans_ctx = trans_ctx_cb.trans_state.lock();
                                         #[allow(unused_variables)]
                                         let ctx_bytes = trans_ctx.bytes;
                                         #[allow(unused_variables)]
@@ -840,13 +861,13 @@ impl Service<PipelineRequest<Request<OrionRequestBody>>> for HttpPipelineSvc {
                                         eval_http_finish_context(FinishContextParams {
                                             stream_metrics: &sm_arc,
                                             listener_name,
-                                            user_partition_key: trans_handler_cb.user_partition_key,
+                                            user_partition_key: trans_ctx_cb.user_partition_key,
                                             filterchain_id,
                                             bytes_received: ctx_bytes,
                                             bytes_sent: body_bytes,
-                                            trans_start_time: trans_handler_cb.start_instant,
+                                            trans_start_time: trans_ctx_cb.start_instant,
                                             #[cfg(feature = "metrics")]
-                                            m_ctx: MetricsFinishContext { shard_id: trans_handler_cb.shard_id() },
+                                            m_ctx: MetricsFinishContext { shard_id: trans_ctx_cb.shard_id() },
                                             #[cfg(feature = "access-log")]
                                             al_ctx: AccessLogFinishContext {
                                                 event: EventInfo {
@@ -869,8 +890,8 @@ impl Service<PipelineRequest<Request<OrionRequestBody>>> for HttpPipelineSvc {
                             }
 
                             #[cfg(feature = "tracing")]
-                            if trans_handler.trans_phase.is_complete() {
-                                if let Some(span) = trans_handler.span_state.as_ref() {
+                            if trans_ctx.trans_phase.is_complete() {
+                                if let Some(span) = trans_ctx.span_state.as_ref() {
                                     span.end();
                                 }
                             }
@@ -1147,9 +1168,9 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
                             let next_idx = current_idx + 1;
 
                             tokio::spawn(async move {
-                                let trans_handler = TransactionContext::default();
+                                let trans_ctx = TransactionContext::default();
                                 _ = async_exec
-                                    .to_response(&trans_handler, *req, (conn_manager, next_idx, filter_value))
+                                    .to_response(&trans_ctx, *req, (conn_manager, next_idx, filter_value))
                                     .await;
                             });
 
@@ -1619,7 +1640,7 @@ where
             let sm_for_cb = Arc::clone(&stream_metrics);
             let request = request.map(|body| {
                 #[cfg(any(feature = "access-log", feature = "tracing", feature = "metrics"))]
-                let trans_handler = Arc::clone(&trans_ctx);
+                let trans_ctx = Arc::clone(&trans_ctx);
                 let body = TimeoutBody::new(req_timeout, PolyBody::from(body));
 
                 #[allow(unused_variables)]
@@ -1632,9 +1653,9 @@ where
                     move |body_bytes, _stream_metrics, body_error, body_flags| {
                         #[cfg(any(feature = "access-log", feature = "metrics"))]
                         {
-                            let mut trans_state = trans_handler.trans_state.lock();
+                            let mut trans_state = trans_ctx.trans_state.lock();
                             #[allow(unused_variables)]
-                            let duration = trans_handler.start_instant.elapsed();
+                            let duration = trans_ctx.start_instant.elapsed();
 
                             #[cfg(feature = "access-log")]
                             with_access_log!(
@@ -1642,14 +1663,14 @@ where
                                 HttpRequestDurationContext { duration, tx_duration: duration }
                             );
 
-                            if trans_handler.trans_phase.is_complete() {
-                                let trans_handler_cb = Arc::clone(&trans_handler);
+                            if trans_ctx.trans_phase.is_complete() {
+                                let trans_ctx_cb = Arc::clone(&trans_ctx);
                                 let body_error_cb = body_error.clone();
 
                                 let stream_metrics_cb = Arc::clone(&stream_metrics_clone);
                                 stream_metrics_clone.add_flush_callback(Box::new(move || {
                                     #[allow(unused_mut)]
-                                    let mut trans_state = trans_handler_cb.trans_state.lock();
+                                    let mut trans_state = trans_ctx_cb.trans_state.lock();
                                     #[allow(unused_variables)]
                                     let ctx_bytes = trans_state.bytes;
                                     #[allow(unused_variables)]
@@ -1660,13 +1681,13 @@ where
                                     eval_http_finish_context(FinishContextParams {
                                         stream_metrics: &stream_metrics_cb,
                                         listener_name,
-                                        user_partition_key: trans_handler_cb.user_partition_key,
+                                        user_partition_key: trans_ctx_cb.user_partition_key,
                                         filterchain_id,
                                         bytes_received: body_bytes,
                                         bytes_sent: ctx_bytes,
-                                        trans_start_time: trans_handler_cb.start_instant,
+                                        trans_start_time: trans_ctx_cb.start_instant,
                                         #[cfg(feature = "metrics")]
-                                        m_ctx: MetricsFinishContext { shard_id: trans_handler_cb.shard_id() },
+                                        m_ctx: MetricsFinishContext { shard_id: trans_ctx_cb.shard_id() },
                                         #[cfg(feature = "access-log")]
                                         al_ctx: AccessLogFinishContext {
                                             event: EventInfo {
@@ -1689,8 +1710,8 @@ where
                         }
 
                         #[cfg(feature = "tracing")]
-                        if trans_handler.trans_phase.is_complete() {
-                            if let Some(span) = trans_handler.span_state.as_ref() {
+                        if trans_ctx.trans_phase.is_complete() {
+                            if let Some(span) = trans_ctx.span_state.as_ref() {
                                 span.end();
                             }
                         }
@@ -1726,13 +1747,13 @@ where
 
 fn eval_http_init_context<R>(
     #[allow(unused_variables)] request: &Request<R>,
-    #[allow(unused_variables)] trans_handler: &TransactionContext,
+    #[allow(unused_variables)] trans_ctx: &TransactionContext,
     #[allow(unused_variables)] metadata: Option<&DownstreamMetadata>,
 ) {
     #[cfg(feature = "tracing")]
     #[allow(unused_variables)]
     let trace_id =
-        trans_handler.trace_ctx.as_ref().and_then(|t| t.map_child(orion_tracing::trace_info::TraceInfo::trace_id));
+        trans_ctx.trace_ctx.as_ref().and_then(|t| t.map_child(orion_tracing::trace_info::TraceInfo::trace_id));
 
     #[cfg(not(feature = "tracing"))]
     #[allow(unused_variables)]
@@ -1747,7 +1768,7 @@ fn eval_http_init_context<R>(
 
         #[cfg(feature = "access-log")]
         with_access_log!(
-            &mut trans_handler.trans_state.lock().loggers,
+            &mut trans_ctx.trans_state.lock().loggers,
             InitHttpContext {
                 start_time: std::time::SystemTime::now(),
                 downstream_request: request,
@@ -1917,7 +1938,7 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
 #[allow(unused_variables)]
 fn instrument_early_failure_response(
     response: Response<crate::OrionResponseBody>,
-    trans_handler: &Arc<TransactionContext>,
+    trans_ctx: &Arc<TransactionContext>,
     stream_metrics: Option<&Arc<StreamMetrics>>,
     listener_name: &'static str,
     user_partition_key: Option<&'static str>,
@@ -1926,16 +1947,10 @@ fn instrument_early_failure_response(
     #[cfg(feature = "access-log")]
     let first_byte_instant = Instant::now();
 
-    with_metric!(
-        http::DOWNSTREAM_RQ_4XX,
-        add,
-        1,
-        trans_handler.shard_id(),
-        &[KeyValue::new("listener", listener_name)]
-    );
+    with_metric!(http::DOWNSTREAM_RQ_4XX, add, 1, trans_ctx.shard_id(), &[KeyValue::new("listener", listener_name)]);
 
     #[cfg(feature = "tracing")]
-    if let Some(state) = trans_handler.span_state.as_ref() {
+    if let Some(state) = trans_ctx.span_state.as_ref() {
         if let Some(ref mut span) = *state.server_span.lock() {
             span.set_attribute(KeyValue::new(HTTP_RESPONSE_STATUS_CODE, 400));
         }
@@ -1943,7 +1958,7 @@ fn instrument_early_failure_response(
 
     #[cfg(feature = "access-log")]
     with_access_log!(
-        &mut trans_handler.trans_state.lock().loggers,
+        &mut trans_ctx.trans_state.lock().loggers,
         DownstreamResponseContext { response: &response, response_head_size: response_head_size(&response) }
     );
 
@@ -1954,7 +1969,7 @@ fn instrument_early_failure_response(
     };
 
     #[cfg(any(feature = "access-log", feature = "tracing", feature = "metrics"))]
-    let trans_handler = Arc::clone(trans_handler);
+    let trans_ctx = Arc::clone(trans_ctx);
 
     let sm_for_cb = stream_metrics.cloned();
     response.map(|body| {
@@ -1967,30 +1982,30 @@ fn instrument_early_failure_response(
             move |body_bytes, stream_metrics, body_error, body_flags| {
                 #[cfg(any(feature = "access-log", feature = "metrics"))]
                 {
-                    let mut log_ctx = trans_handler.trans_state.lock();
+                    let mut log_ctx = trans_ctx.trans_state.lock();
 
                     #[cfg(feature = "access-log")]
                     {
                         use crate::with_access_log;
 
                         #[allow(unused_variables)]
-                        let duration = first_byte_instant.saturating_duration_since(trans_handler.start_instant);
+                        let duration = first_byte_instant.saturating_duration_since(trans_ctx.start_instant);
                         #[allow(unused_variables)]
                         let tx_duration = Instant::now().saturating_duration_since(first_byte_instant);
 
                         with_access_log!(&mut log_ctx.loggers, HttpResponseDurationContext { duration, tx_duration })
                     }
 
-                    if trans_handler.trans_phase.is_complete() {
+                    if trans_ctx.trans_phase.is_complete() {
                         let sm_arc = sm_for_cb2.clone().unwrap();
-                        let trans_handler_cb = Arc::clone(&trans_handler);
+                        let trans_ctx_cb = Arc::clone(&trans_ctx);
                         #[cfg(feature = "access-log")]
                         let initial_event_cb = initial_event.clone();
                         let body_error_cb = body_error.clone();
 
                         stream_metrics.add_flush_callback(Box::new(move || {
                             #[allow(unused_mut)]
-                            let mut log_ctx = trans_handler_cb.trans_state.lock();
+                            let mut log_ctx = trans_ctx_cb.trans_state.lock();
                             #[allow(unused_variables)]
                             let ctx_bytes = log_ctx.bytes;
                             #[allow(unused_variables)]
@@ -2001,13 +2016,13 @@ fn instrument_early_failure_response(
                             eval_http_finish_context(FinishContextParams {
                                 stream_metrics: &sm_arc,
                                 listener_name,
-                                user_partition_key: trans_handler_cb.user_partition_key,
+                                user_partition_key: trans_ctx_cb.user_partition_key,
                                 filterchain_id,
                                 bytes_received: ctx_bytes,
                                 bytes_sent: body_bytes,
-                                trans_start_time: trans_handler_cb.start_instant,
+                                trans_start_time: trans_ctx_cb.start_instant,
                                 #[cfg(feature = "metrics")]
-                                m_ctx: MetricsFinishContext { shard_id: trans_handler_cb.shard_id() },
+                                m_ctx: MetricsFinishContext { shard_id: trans_ctx_cb.shard_id() },
                                 #[cfg(feature = "access-log")]
                                 al_ctx: AccessLogFinishContext {
                                     event: EventInfo {
@@ -2030,8 +2045,8 @@ fn instrument_early_failure_response(
                 }
 
                 #[cfg(feature = "tracing")]
-                if trans_handler.trans_phase.is_complete() {
-                    if let Some(span) = trans_handler.span_state.as_ref() {
+                if trans_ctx.trans_phase.is_complete() {
+                    if let Some(span) = trans_ctx.span_state.as_ref() {
                         span.end();
                     }
                 }
@@ -2049,7 +2064,7 @@ const MAX_URI_LENGTH: usize = 2048;
 #[allow(clippy::too_many_arguments)]
 fn reject_request_if_invalid(
     request: &Request<Incoming>,
-    trans_handler: &Arc<TransactionContext>,
+    trans_ctx: &Arc<TransactionContext>,
     stream_metrics: Option<&Arc<StreamMetrics>>,
     listener_name: &'static str,
     user_partition_key: Option<&'static str>,
@@ -2107,7 +2122,7 @@ fn reject_request_if_invalid(
     response.map(|r| {
         instrument_early_failure_response(
             r,
-            trans_handler,
+            trans_ctx,
             stream_metrics,
             listener_name,
             user_partition_key,
@@ -2119,7 +2134,7 @@ fn reject_request_if_invalid(
 #[allow(clippy::too_many_arguments)]
 fn handle_route_conf_not_found(
     version: ::http::Version,
-    trans_handler: &Arc<TransactionContext>,
+    trans_ctx: &Arc<TransactionContext>,
     stream_metrics: Option<&Arc<StreamMetrics>>,
     listener_name: &'static str,
     user_partition_key: Option<&'static str>,
@@ -2134,7 +2149,7 @@ fn handle_route_conf_not_found(
 
     instrument_early_failure_response(
         response,
-        trans_handler,
+        trans_ctx,
         stream_metrics,
         listener_name,
         user_partition_key,
