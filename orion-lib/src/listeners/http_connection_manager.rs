@@ -1889,7 +1889,7 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
             shard_id,
             &[
                 KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key),
-                //KeyValue::new("listener", params.listener_name)
+                KeyValue::new("listener", params.listener_name)
             ]
         );
         with_metric!(
@@ -1899,7 +1899,7 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
             shard_id,
             &[
                 KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key),
-                //KeyValue::new("listener", params.listener_name)
+                KeyValue::new("listener", params.listener_name)
             ]
         );
     }

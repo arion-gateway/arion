@@ -28,17 +28,48 @@ use orion_e2e_tests::{
     TestClient, TlsClientConfig,
 };
 
-fn parse_user_metric_value(prometheus_output: &str, metric_name: &str, user_id: &str) -> Option<u64> {
-    let target = format!("{metric_name}{{user=\"{user_id}\"}}");
+use std::collections::HashMap;
+
+fn parse_user_metric_value(
+    prometheus_output: &str,
+    metric_name: &str,
+    expected_attrs: &[(&str, &str)],
+) -> Option<u64> {
+    let prefix = format!("{}{{", metric_name);
     for line in prometheus_output.lines() {
         if line.starts_with('#') {
             continue;
         }
-        if line.starts_with(&target) {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if let Some(val_str) = parts.last() {
-                if let Ok(val) = val_str.parse::<u64>() {
-                    return Some(val);
+        if line.starts_with(&prefix) {
+            if let Some(brace_end) = line.find('}') {
+                let attrs_str = &line[prefix.len()..brace_end];
+                let mut actual_attrs = HashMap::new();
+                for attr_pair in attrs_str.split(',') {
+                    let parts: Vec<&str> = attr_pair.splitn(2, '=').collect();
+                    if parts.len() == 2 {
+                        let key = parts[0].trim();
+                        let val = parts[1].trim().trim_matches('"');
+                        actual_attrs.insert(key, val);
+                    }
+                }
+                
+                if actual_attrs.len() == expected_attrs.len() {
+                    let mut all_match = true;
+                    for &(k, v) in expected_attrs {
+                        if actual_attrs.get(k) != Some(&v) {
+                            all_match = false;
+                            break;
+                        }
+                    }
+                    if all_match {
+                        let after_brace = &line[brace_end + 1..];
+                        let parts: Vec<&str> = after_brace.split_whitespace().collect();
+                        if let Some(val_str) = parts.last() {
+                            if let Ok(val) = val_str.parse::<u64>() {
+                                return Some(val);
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -185,29 +216,29 @@ async fn test_user_metrics_header() {
 
     // Assertions for USER 1 (aggregated values)
     // 2 (2xx) + 1 (3xx) + 2 (4xx) + 1 (5xx) = 6 invocations (429 is throttled and doesn't count as invocation)
-    assert_eq!(parse_user_metric_value(metrics, "user_invocations", "user-1"), Some(6));
-    assert_eq!(parse_user_metric_value(metrics, "user_throttles", "user-1"), Some(2));
-    assert_eq!(parse_user_metric_value(metrics, "user_http_2xx_response", "user-1"), Some(2));
-    assert_eq!(parse_user_metric_value(metrics, "user_http_3xx_response", "user-1"), Some(1));
-    assert_eq!(parse_user_metric_value(metrics, "user_http_4xx_response", "user-1"), Some(4)); // 2 (404) + 2 (429) = 4
-    assert_eq!(parse_user_metric_value(metrics, "user_http_5xx_response", "user-1"), Some(1));
-    assert_eq!(parse_user_metric_value(metrics, "user_user_errors", "user-1"), Some(4)); // 2 (404) + 2 (429) = 4
-    assert_eq!(parse_user_metric_value(metrics, "user_system_errors", "user-1"), Some(1));
-    assert_eq!(parse_user_metric_value(metrics, "user_total_errors", "user-1"), Some(5)); // 4 (user) + 1 (system) = 5
-    assert_eq!(parse_user_metric_value(metrics, "user_latency_count", "user-1"), Some(8)); // All 8 requests
-    assert_eq!(parse_user_metric_value(metrics, "user_bytes_tx", "user-1"), Some(user1_expected_tx as u64));
-    assert_eq!(parse_user_metric_value(metrics, "user_bytes_rx", "user-1"), Some(user1_expected_rx as u64));
+    assert_eq!(parse_user_metric_value(metrics, "user_invocations", &[("user", "user-1")]), Some(6));
+    assert_eq!(parse_user_metric_value(metrics, "user_throttles", &[("user", "user-1")]), Some(2));
+    assert_eq!(parse_user_metric_value(metrics, "user_http_2xx_response", &[("user", "user-1")]), Some(2));
+    assert_eq!(parse_user_metric_value(metrics, "user_http_3xx_response", &[("user", "user-1")]), Some(1));
+    assert_eq!(parse_user_metric_value(metrics, "user_http_4xx_response", &[("user", "user-1")]), Some(4)); // 2 (404) + 2 (429) = 4
+    assert_eq!(parse_user_metric_value(metrics, "user_http_5xx_response", &[("user", "user-1")]), Some(1));
+    assert_eq!(parse_user_metric_value(metrics, "user_user_errors", &[("user", "user-1")]), Some(4)); // 2 (404) + 2 (429) = 4
+    assert_eq!(parse_user_metric_value(metrics, "user_system_errors", &[("user", "user-1")]), Some(1));
+    assert_eq!(parse_user_metric_value(metrics, "user_total_errors", &[("user", "user-1")]), Some(5)); // 4 (user) + 1 (system) = 5
+    assert_eq!(parse_user_metric_value(metrics, "user_latency_count", &[("user", "user-1")]), Some(8)); // All 8 requests
+    assert_eq!(parse_user_metric_value(metrics, "user_bytes_tx", &[("user", "user-1"), ("listener", "http")]), Some(user1_expected_tx as u64));
+    assert_eq!(parse_user_metric_value(metrics, "user_bytes_rx", &[("user", "user-1"), ("listener", "http")]), Some(user1_expected_rx as u64));
 
     // Assertions for USER 2 (separate partition)
-    assert_eq!(parse_user_metric_value(metrics, "user_invocations", "user-2"), Some(2));
-    assert_eq!(parse_user_metric_value(metrics, "user_throttles", "user-2"), None);
-    assert_eq!(parse_user_metric_value(metrics, "user_http_2xx_response", "user-2"), Some(1));
-    assert_eq!(parse_user_metric_value(metrics, "user_http_4xx_response", "user-2"), Some(1));
-    assert_eq!(parse_user_metric_value(metrics, "user_user_errors", "user-2"), Some(1));
-    assert_eq!(parse_user_metric_value(metrics, "user_total_errors", "user-2"), Some(1));
-    assert_eq!(parse_user_metric_value(metrics, "user_latency_count", "user-2"), Some(2));
-    assert_eq!(parse_user_metric_value(metrics, "user_bytes_tx", "user-2"), Some(user2_expected_tx as u64));
-    assert_eq!(parse_user_metric_value(metrics, "user_bytes_rx", "user-2"), Some(user2_expected_rx as u64));
+    assert_eq!(parse_user_metric_value(metrics, "user_invocations", &[("user", "user-2")]), Some(2));
+    assert_eq!(parse_user_metric_value(metrics, "user_throttles", &[("user", "user-2")]), None);
+    assert_eq!(parse_user_metric_value(metrics, "user_http_2xx_response", &[("user", "user-2")]), Some(1));
+    assert_eq!(parse_user_metric_value(metrics, "user_http_4xx_response", &[("user", "user-2")]), Some(1));
+    assert_eq!(parse_user_metric_value(metrics, "user_user_errors", &[("user", "user-2")]), Some(1));
+    assert_eq!(parse_user_metric_value(metrics, "user_total_errors", &[("user", "user-2")]), Some(1));
+    assert_eq!(parse_user_metric_value(metrics, "user_latency_count", &[("user", "user-2")]), Some(2));
+    assert_eq!(parse_user_metric_value(metrics, "user_bytes_tx", &[("user", "user-2"), ("listener", "http")]), Some(user2_expected_tx as u64));
+    assert_eq!(parse_user_metric_value(metrics, "user_bytes_rx", &[("user", "user-2"), ("listener", "http")]), Some(user2_expected_rx as u64));
 
     orion.shutdown();
     cleanup_config_file(&config_path);
@@ -351,18 +382,18 @@ async fn test_user_metrics_sni() {
 
     // Assertions for SNI USER (aggregated values)
     // 2 (2xx) + 1 (3xx) + 2 (4xx) + 1 (5xx) = 6 invocations (429 is throttled and doesn't count as invocation)
-    assert_eq!(parse_user_metric_value(metrics, "user_invocations", sni_name), Some(6));
-    assert_eq!(parse_user_metric_value(metrics, "user_throttles", sni_name), Some(2));
-    assert_eq!(parse_user_metric_value(metrics, "user_http_2xx_response", sni_name), Some(2));
-    assert_eq!(parse_user_metric_value(metrics, "user_http_3xx_response", sni_name), Some(1));
-    assert_eq!(parse_user_metric_value(metrics, "user_http_4xx_response", sni_name), Some(4)); // 2 (404) + 2 (429) = 4
-    assert_eq!(parse_user_metric_value(metrics, "user_http_5xx_response", sni_name), Some(1));
-    assert_eq!(parse_user_metric_value(metrics, "user_user_errors", sni_name), Some(4)); // 2 (404) + 2 (429) = 4
-    assert_eq!(parse_user_metric_value(metrics, "user_system_errors", sni_name), Some(1));
-    assert_eq!(parse_user_metric_value(metrics, "user_total_errors", sni_name), Some(5)); // 4 (user) + 1 (system) = 5
-    assert_eq!(parse_user_metric_value(metrics, "user_latency_count", sni_name), Some(8)); // All 8 requests
-    assert!(parse_user_metric_value(metrics, "user_bytes_tx", sni_name).unwrap() > expected_tx as u64);
-    assert!(parse_user_metric_value(metrics, "user_bytes_rx", sni_name).unwrap() > expected_rx as u64);
+    assert_eq!(parse_user_metric_value(metrics, "user_invocations", &[("user", sni_name)]), Some(6));
+    assert_eq!(parse_user_metric_value(metrics, "user_throttles", &[("user", sni_name)]), Some(2));
+    assert_eq!(parse_user_metric_value(metrics, "user_http_2xx_response", &[("user", sni_name)]), Some(2));
+    assert_eq!(parse_user_metric_value(metrics, "user_http_3xx_response", &[("user", sni_name)]), Some(1));
+    assert_eq!(parse_user_metric_value(metrics, "user_http_4xx_response", &[("user", sni_name)]), Some(4)); // 2 (404) + 2 (429) = 4
+    assert_eq!(parse_user_metric_value(metrics, "user_http_5xx_response", &[("user", sni_name)]), Some(1));
+    assert_eq!(parse_user_metric_value(metrics, "user_user_errors", &[("user", sni_name)]), Some(4)); // 2 (404) + 2 (429) = 4
+    assert_eq!(parse_user_metric_value(metrics, "user_system_errors", &[("user", sni_name)]), Some(1));
+    assert_eq!(parse_user_metric_value(metrics, "user_total_errors", &[("user", sni_name)]), Some(5)); // 4 (user) + 1 (system) = 5
+    assert_eq!(parse_user_metric_value(metrics, "user_latency_count", &[("user", sni_name)]), Some(8)); // All 8 requests
+    assert!(parse_user_metric_value(metrics, "user_bytes_tx", &[("user", sni_name), ("listener", "https")]).unwrap() > expected_tx as u64);
+    assert!(parse_user_metric_value(metrics, "user_bytes_rx", &[("user", sni_name), ("listener", "https")]).unwrap() > expected_rx as u64);
 
     orion.shutdown();
     cleanup_config_file(&config_path);
@@ -478,9 +509,9 @@ async fn test_user_metrics_websocket() {
     metrics_resp.assert_status(StatusCode::OK);
     let metrics = metrics_resp.body_str().unwrap();
 
-    let inbound_streaming = parse_user_metric_value(metrics, "user_inbound_streaming_bytes_processed", user_name)
+    let inbound_streaming = parse_user_metric_value(metrics, "user_inbound_streaming_bytes_processed", &[("user", user_name)])
         .expect("Missing user_inbound_streaming_bytes_processed");
-    let outbound_streaming = parse_user_metric_value(metrics, "user_outbound_streaming_bytes_processed", user_name)
+    let outbound_streaming = parse_user_metric_value(metrics, "user_outbound_streaming_bytes_processed", &[("user", user_name)])
         .expect("Missing user_outbound_streaming_bytes_processed");
 
     assert_eq!(inbound_streaming, 10);
