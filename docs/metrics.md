@@ -341,6 +341,13 @@ metrics:
 | `bytes_rx` | Counter | ✅ | Total number of bytes received in API calls (tcp,http,websockets) | `<attribute_name>`,listener |
 | `inbound_streaming_bytes_processed` | Counter | ✅ | Total number of bytes processed in inbound streaming API calls (websocket only) | `<attribute_name>` |
 | `outbound_streaming_bytes_processed` | Counter | ✅ | Total number of bytes processed in outbound streaming API calls (websocket only) | `<attribute_name>` |
+| `http_1xx_response` | Counter | ✅ | Total number of API calls that resulted in a 1xx HTTP response | `<attribute_name>` |
+| `http_2xx_response` | Counter | ✅ | Total number of API calls that resulted in a 2xx HTTP response | `<attribute_name>` |
+| `http_3xx_response` | Counter | ✅ | Total number of API calls that resulted in a 3xx HTTP response | `<attribute_name>` |
+| `http_4xx_response` | Counter | ✅ | Total number of API calls that resulted in a 4xx HTTP response | `<attribute_name>` |
+| `http_5xx_response` | Counter | ✅ | Total number of API calls that resulted in a 5xx HTTP response | `<attribute_name>` |
+| `connections` | Counter | ✅ | Number of total connections established | `<attribute_name>` |
+| `connections_active` | Gauge | ✅ | Number of active connections | `<attribute_name>` |
 
 ### Renaming Built-in Metrics
 
