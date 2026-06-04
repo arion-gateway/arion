@@ -81,6 +81,7 @@ pub enum HttpVersion {
 pub struct ClusterBuilder {
     proto: EnvoyCluster,
     http_version: HttpVersion,
+    idle_timeout: Option<Duration>,
 }
 
 impl ClusterBuilder {
@@ -100,6 +101,7 @@ impl ClusterBuilder {
                 ..Default::default()
             },
             http_version: HttpVersion::default(),
+            idle_timeout: None,
         }
     }
 
@@ -331,6 +333,12 @@ impl ClusterBuilder {
     }
 
     #[must_use]
+    pub fn idle_timeout(mut self, timeout: Duration) -> Self {
+        self.idle_timeout = Some(timeout);
+        self
+    }
+
+    #[must_use]
     pub fn upstream_tls(mut self, tls: impl Into<UpstreamTls>) -> Self {
         let tls_proto = tls.into();
         let transport_socket = TransportSocket {
@@ -428,6 +436,7 @@ impl ClusterBuilder {
     }
 
     fn apply_http_protocol_options(&mut self) {
+        use orion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::HttpProtocolOptions as CoreHttpProtocolOptions;
         use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::upstreams::http::v3::{
             http_protocol_options::{
                 explicit_http_config::ProtocolConfig, ExplicitHttpConfig, UpstreamProtocolOptions,
@@ -443,8 +452,16 @@ impl ClusterBuilder {
         let explicit_config =
             UpstreamProtocolOptions::ExplicitHttpConfig(ExplicitHttpConfig { protocol_config: Some(protocol_config) });
 
-        let http_options =
-            HttpProtocolOptions { upstream_protocol_options: Some(explicit_config), ..Default::default() };
+        let common_http_protocol_options = self.idle_timeout.map(|timeout| CoreHttpProtocolOptions {
+            idle_timeout: Some(super::duration_to_proto(timeout)),
+            ..Default::default()
+        });
+
+        let http_options = HttpProtocolOptions {
+            upstream_protocol_options: Some(explicit_config),
+            common_http_protocol_options,
+            ..Default::default()
+        };
 
         let any = Any {
             type_url: "type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions".to_owned(),

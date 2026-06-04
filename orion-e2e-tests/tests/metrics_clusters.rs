@@ -329,3 +329,60 @@ async fn test_cluster_retry_metric() {
     orion.shutdown();
     cleanup_config_file(&config_path);
 }
+
+#[tokio::test]
+#[ignore]
+async fn test_cluster_idle_timeout_metric() {
+    let port_block = PortBlock::reserve().expect("Failed to reserve port block");
+    let admin_port = port_block.allocate().expect("Failed to allocate admin port");
+    let admin_addr = SocketAddr::from(([127, 0, 0, 1], admin_port));
+
+    let backend = TestBackend::start().await.expect("Failed to start test backend");
+    let backend_addr = backend.addr();
+    backend.set_default_response(PreConfiguredResponse::with_body("Hello from backend!")).await;
+
+    // Configure a cluster with a short idle timeout of 2 seconds
+    let cluster = ClusterBuilder::new("backend")
+        .endpoint(EndpointBuilder::from_socket_addr(backend_addr))
+        .idle_timeout(Duration::from_secs(2));
+
+    let listener = ListenerBuilder::new("http").port(0).filter_chain(
+        FilterChainBuilder::new("main").hcm(
+            HcmBuilder::new().route_config(
+                RouteConfigBuilder::new("routes")
+                    .virtual_host(VirtualHostBuilder::new("default").route(presets::default_route("backend"))),
+            ),
+        ),
+    );
+
+    let bootstrap = BootstrapBuilder::new().listener(listener).cluster(cluster).admin("127.0.0.1", admin_port);
+
+    let config_path = bootstrap.build_to_temp().expect("Failed to build config");
+
+    let orion = OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default())
+        .await
+        .expect("Failed to spawn Orion");
+
+    let client = TestClient::new(orion.listener_addr().unwrap());
+    let admin_client = TestClient::new(admin_addr);
+
+    // Send a request and verify it succeeds
+    let response = client.get("/hello").await.expect("Failed to send request");
+    response.assert_status(StatusCode::OK);
+    response.assert_body("Hello from backend!");
+
+    // Wait longer than the idle timeout for the upstream connection to become idle and close
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    // Check metrics
+    let metrics_resp = admin_client.get("/stats/prometheus").await.expect("Failed to get metrics");
+    metrics_resp.assert_status(StatusCode::OK);
+    let metrics = metrics_resp.body_str().unwrap();
+
+    let cx_idle_timeout = parse_metric_value(metrics, "cluster_upstream_cx_idle_timeout")
+        .expect("Missing cx_idle_timeout metric");
+    assert_eq!(cx_idle_timeout, 1, "Expected exactly 1 upstream connection idle timeout");
+
+    orion.shutdown();
+    cleanup_config_file(&config_path);
+}
