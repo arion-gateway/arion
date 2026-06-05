@@ -1,0 +1,266 @@
+runtime:
+  num_cpus: 1
+  num_runtimes: 1
+  num_service_threads: 2
+  event_interval: 31          # estimated optimal value
+  global_queue_interval: null   # default
+  max_io_events_per_tick: null  # default
+access_logging:
+  num_instances: 1
+  queue_length: 64
+  max_log_files: 5
+  blocking: true
+  log_rotation: daily
+logging:
+  log_level: "info"
+metrics:
+  user_key:
+     source: Sni
+  #  attribute_name: "user"
+  #user_key:
+  #  source: !HeaderName x-user-id
+  #  attribute_name: "user"
+  user_metrics:
+    invocations: "xxx_invocations"
+  custom_key:
+    source: !HeaderName x-user-id
+    attribute_name: "metric-partition"
+  custom_metrics:
+    #incoming_request:
+    upstream_request:
+      - !Counter
+        name: "custom_request_counter"
+        description: "Counts requests based on a custom header"
+        header_name: "x-custom-counter"
+        attribute_name: "counter_value"
+      - !Gauge
+        name: "custom_request_value"
+        description: "Value of a custom header"
+        header_name: "x-custom-value"
+        attribute_name: "value"
+      - !Histogram
+        name: "custom_request_size"
+        description: "Records request sizes from a custom header"
+        header_name: "x-custom-size"
+        buckets: [10, 50, 100, 500, 1000, +inf]
+envoy_bootstrap:
+  admin:
+    address:
+      socketAddress:
+        address: "0.0.0.0"
+        portValue: 9901
+  stats_flush_interval: 5s
+  stats_sinks:
+    - name: envoy.stat_sinks.metrics_service
+      typed_config:
+          "@type": type.googleapis.com/envoy.extensions.stat_sinks.open_telemetry.v3.SinkConfig
+          grpc_service:
+              google_grpc:
+                  target_uri: "http://192.168.86.27:4317" # open-telemetry collector address
+  static_resources:
+    secrets:
+      - name: tls_server
+        tls_certificate:
+          certificate_chain:
+            inline_string: |
+              -----BEGIN CERTIFICATE-----
+              MIIDSjCCAjKgAwIBAgIUS1EBpOwygQxZwV553+SMYnLZ1QMwDQYJKoZIhvcNAQEL
+              BQAwGzEZMBcGA1UEAwwQZG9tYWluLTEuZXhhbXBsZTAeFw0yNjAzMDkwOTQzMDda
+              Fw0yNzAzMDkwOTQzMDdaMBsxGTAXBgNVBAMMEGRvbWFpbi0xLmV4YW1wbGUwggEi
+              MA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQCbbJ5Wfd17yFjqHYBhF2y2278b
+              THc5CFSSdc89jdHPpntpKQFg1M7ckS9GudJSwg6pUomI49/Te1DeHM9RPGIjOzDe
+              PkgbIS8qPlTOK/C/x/yHMgiIIBzooxVd6yxvmQNLmhwu7nd5R3OCsWdrheLUDrTO
+              T2tFHnzLlTDTPanXvuVjj4uXtE2O7r5GU/KgsmGVDHyQJL20CzzWjOWrvAzIRv9f
+              vA5OtusnNGIHoRDI1xoqiyVaPoUb6UXND2wuUK3LFzPFqHPQfENzXYJ7xCJ/Ezs2
+              KVEDWnkXZRIpNyLMW5tbM4lgHvjIRCH76xLxAsUhNRj7+PJq+qPqoZWnAOsFAgMB
+              AAGjgYUwgYIwHQYDVR0OBBYEFFzZ3XPDjyAcluDpEzj6u+J+D+N+MB8GA1UdIwQY
+              MBaAFFzZ3XPDjyAcluDpEzj6u+J+D+N+MA8GA1UdEwEB/wQFMAMBAf8wLwYDVR0R
+              BCgwJoIQZG9tYWluLTEuZXhhbXBsZYISKi5kb21haW4tMS5leGFtcGxlMA0GCSqG
+              SIb3DQEBCwUAA4IBAQAQHpqNPF+Vo7FevUANjBT0emqKLrqaUgjwMO4RlZViduNW
+              rvzc3N7YsWa2F/qlxHnkcM4cMrthpfoK0UcB9KJ9MbuFaEos80Ht21aOx2qaxeBq
+              3oZm45mf6JJ/Sje2wqmhG8gTXy5+ymn+oJEaT/ShrhCfqFUhOfS1xjeuqOT90IsF
+              MIzB3vaYyIpxJ+y/Cf8LCVh6lzsB9brKDbBLlBABX08NToQ7wvAd/PJZ3ltHHMUB
+              gA0AdgW0bkobZvlmBFvGmGIMv4MN/0WWO0SyUyFFCGxvl+KcpPrEES1qlIVRT7R7
+              ZIrWQYJUoP9+25gkK1JOgu1He/WHDqe6k20n8uwT
+              -----END CERTIFICATE-----
+          private_key:
+            inline_string: |
+              -----BEGIN PRIVATE KEY-----
+              MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCbbJ5Wfd17yFjq
+              HYBhF2y2278bTHc5CFSSdc89jdHPpntpKQFg1M7ckS9GudJSwg6pUomI49/Te1De
+              HM9RPGIjOzDePkgbIS8qPlTOK/C/x/yHMgiIIBzooxVd6yxvmQNLmhwu7nd5R3OC
+              sWdrheLUDrTOT2tFHnzLlTDTPanXvuVjj4uXtE2O7r5GU/KgsmGVDHyQJL20CzzW
+              jOWrvAzIRv9fvA5OtusnNGIHoRDI1xoqiyVaPoUb6UXND2wuUK3LFzPFqHPQfENz
+              XYJ7xCJ/Ezs2KVEDWnkXZRIpNyLMW5tbM4lgHvjIRCH76xLxAsUhNRj7+PJq+qPq
+              oZWnAOsFAgMBAAECggEACBP96cxqa9HWrzpfzwwO4jUrKmHPy4bPkHovjok1t7d1
+              MBrJv8znwIaKQMCNOjBsXygTTmpbmowNALJaIySCjEa6DD8L898GaslpEnstrOYZ
+              zbQPxfV3Uy8Qv/wmZ9l51p7YqqbJzmOkkQ0j7S59At0N0DBICMRkI5eqPTx1/KjS
+              VyNc24061Eez9qTMd/547J2qza2cSVNcOQZZoQOF7y2zDTMS+kPeQLgz3bugZqZT
+              Zm9mVn7/2MOmN1OhhawiT3X5JKjzWyTuDPtnKNqfVDqy9e++cVQP+EnGdHUqh+UC
+              fMypTIonStFtunQvArmk4FhYIR/NNkWNVd7S2lheeQKBgQDO4ILlzV8Tj2Dcgjer
+              sM3omFVpTAhShaFiN7ZESDrprqbc4BkLdo/ucNCR+y9OLWxDpiGRi+puV7S1CAMm
+              v138fyqH/nJ0lvZ/EUo2zAWVlCKFDj2P8snaJvhFNeP6dx6fHuYE4UvLWTNdybr1
+              uognO4GdEfPdli4xXP7JKzbOCQKBgQDAVG/8PrSSIvzjQwxHeo9FSsH6m5SKE0Cb
+              x6lRkILtDDza8Fx7k2CclNYLFqW4cLYyZQMjV8g8SXnXjLYUJVb9T0kC1hqB6e3+
+              aP5Cl5RMjswFaqAP+RjbMBnsQRVXttgPSHxVE1/OkgPkdzAPd1OyeNcEFJA1FiB7
+              ikxfFNP0HQKBgQC6NEIdbViiVm8sitho5N6w+EwIVrM286hqqxKXKxw7sUPnkp14
+              P+MVDt3sR1Yw25mS2jlks7byUmcIeom7mouR9TPm7BNA9ZAwlvNhlwl/tLHNaR/o
+              LPOaM3FLelIU4prhRgJrag26njMpu6VX/+kExv7GzZ3eWIqDS9zYXNkbYQKBgH7G
+              abasopv9YhJvfKWVHOFA4NJPQT8uZ5UHrA0uo46bVXW/oEZ4o+MynFBc0kncScy4
+              FrRyRXOvvxedEdv/rPJ2E5tCA+EEkLL1BDxi7Ab2zXb4jJ9aw86fS0cWs3nI9WxF
+              jGcLyUhBqT0sb0qSjmIDE0AGSfQkLK8iPyshcIDlAoGAGWV5HauYwaxh/Uvkyk3S
+              8sLvXrzeJ1Tg2FSqmH3OFEj57Jgiss5R8ihW6UB9ItyEkOnomcMt4koveUhE25dK
+              BbvYEcQXtUKga6I8TaZFIhjTlbDMDp7xoWRW/VUnwReUz8GBHalbFDrtg1LcuklD
+              AnvUmygczbPvEjMXv8EeshI=
+              -----END PRIVATE KEY-----
+      - name: tls_server_2
+        tls_certificate:
+          certificate_chain:
+            inline_string: |
+              -----BEGIN CERTIFICATE-----
+              MIIDSjCCAjKgAwIBAgIUap24mKU2piXK6Q6siKfswA0vDD8wDQYJKoZIhvcNAQEL
+              BQAwGzEZMBcGA1UEAwwQZG9tYWluLTIuZXhhbXBsZTAeFw0yNjAzMDkwOTQzNDZa
+              Fw0yNzAzMDkwOTQzNDZaMBsxGTAXBgNVBAMMEGRvbWFpbi0yLmV4YW1wbGUwggEi
+              MA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDpJlD9LcFedN6rcs+1JDfToMS8
+              fjYGnQhkcsPRA4Mozx7seOcmjm7CI+mODo4Y+A+tsmyTvbAEKYSQk+SjMW8wnYtl
+              pdA6HTxR0FaobgY4uvyOtFKL4p+RVyfaWXLz8iFd1KAFwBF7unkxefMyYEyT+NLb
+              hsUlgUsSO2IlSHMklYz7cQrQgFbscLTkFM7Ijm8y2EIV1yQUmyc4IpGCHP+ZXkuU
+              CBKP7xDCizUSPskTMcyVDCaGJXx00xgrj4G3s+rKdgqSkJzpPrcq3HjWUM5lLKaM
+              p4zESRi4AYXoUIZhl9Uglps/Tq+nLEHQa5DwFlMe498TmZKvGFDB9dwgw2tDAgMB
+              AAGjgYUwgYIwHQYDVR0OBBYEFDM3JxD1yAkeV/1OLtNJfy4B1+m1MB8GA1UdIwQY
+              MBaAFDM3JxD1yAkeV/1OLtNJfy4B1+m1MA8GA1UdEwEB/wQFMAMBAf8wLwYDVR0R
+              BCgwJoIQZG9tYWluLTIuZXhhbXBsZYISKi5kb21haW4tMi5leGFtcGxlMA0GCSqG
+              SIb3DQEBCwUAA4IBAQC4FAgzNhP8y0WIAKwUHOXxrJOGHGZMnxb90NaYwlTzvXAv
+              C/Ca9YbNMjEEbREBach112D3wWfwcwSMmyBRAIsAsCKOhfvZi7kfo4EIsNI2TLft
+              HX6cl1r19YjyYCy/mRzgmLLsKHe7ecAoEtqqv3z8HBXDuVYcn3OfdwSMVvTHB6JT
+              q/TPG0Vg5WXh9vWf79PJOIkV8KEpIlhZk+Ufk7Ql81Gs6LHVuxR89VKa6w0zfUnJ
+              PJeRBUKoSXwJn3ye8UoXvaT6vRULXs4EY9yjUAjnOJrLqZrRVd2zYo9UjiLTognT
+              ZzmTMz5a1QQpFhNVQzgJTeqf7QVK0dkjdvwEilb+
+              -----END CERTIFICATE-----
+          private_key:
+            inline_string: |
+              -----BEGIN PRIVATE KEY-----
+              MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQDpJlD9LcFedN6r
+              cs+1JDfToMS8fjYGnQhkcsPRA4Mozx7seOcmjm7CI+mODo4Y+A+tsmyTvbAEKYSQ
+              k+SjMW8wnYtlpdA6HTxR0FaobgY4uvyOtFKL4p+RVyfaWXLz8iFd1KAFwBF7unkx
+              efMyYEyT+NLbhsUlgUsSO2IlSHMklYz7cQrQgFbscLTkFM7Ijm8y2EIV1yQUmyc4
+              IpGCHP+ZXkuUCBKP7xDCizUSPskTMcyVDCaGJXx00xgrj4G3s+rKdgqSkJzpPrcq
+              3HjWUM5lLKaMp4zESRi4AYXoUIZhl9Uglps/Tq+nLEHQa5DwFlMe498TmZKvGFDB
+              9dwgw2tDAgMBAAECggEAFHmweCOaDU0PNxhcpGhbXMMMNA+TeA43a/bmOodn7+AM
+              s7DEgA7XLEaSHs8pbIjwe40lWu44NI1e3oGWfTx8qtTTJqiiuk/R+c9lpOIQus+1
+              GWU9sJpE8DMqxVLAtSrJAmAHc6nT/z03ooA2uvBZGU+rWOsjijEqIh5D9sk/j3FF
+              6JCFfogxsbqbK9s+XWyp2Y8vHbS3QDl6510Mtqpei0EfXK5RAeh4d/kJoWfpC5rP
+              MLUg8J9qbTQ5i5xarexB+U/o+6kIvqJuZSJNVwSpwQzV68pl6PxiOC1r+f/fLf6g
+              qsSFF2yzbn5Q8iCzv0pqMA3g5hbOXOZU8oZR6YxDXQKBgQD0xoKEhn6MnfqSF/K1
+              V6qBDBenvQE+DPESQKcTKy39L7sPETKCYdTxytqi1M0xdtgFGIDW9VDKOdOBdXHB
+              QNRG5IYu0RzOd4JO9Ltisd7Tsxy8XLjhVFIbzFZWnixNAy96Bp4UxiJTTGKJzwy6
+              szf3og3svWP5QvphrtJfG1OQ/QKBgQDz11QRZThKGUBA+mrm57ca9EoJK/xaTRu+
+              JnoLZVGnq2o7KcdpEqjLIHRi5PkIllSKMYQN29n2/W61ed+lXTvwa+nXMYRVrP8l
+              lCZE/KiQvJPXY6ALNMtd8wBgtaHY/QG8NEWdLrO9VTeQFngg/EFeeBiDB213oZgx
+              Fpia2bTBPwKBgER2CSc73sVBokWeQRoLTPsPAMa/jEtonzx1rMUlvJUl9nG+Y5wn
+              9MEz9Xa5gjKlhMHYGqEEt/X3unpo+MoOcdDqNcV+Y0o0DtQ6ivaNvT8Ex7K/VE5h
+              oR15R2SulMFtdKfyleBFknAt2xmkOXE2kx7FypM+XWnoG9Oaa+iB4huZAoGADy8c
+              dAzaiXqzDpjJaWGKfGoz5ghQKYtdq+SXevgvMoKxFcgPO9LGogd+V94sR8WctBJL
+              R9Wl6AR2DWTucUyx+9GseRMDS5Z/OObVzzvwfzrO9f2lLK138Hy+TEdjMbDnl8Gl
+              iBktZh/VWuqbRmqO44QU+qvOvEFaycu/av0djV8CgYB47vYp4ZMmxRc9zCQMrcd3
+              hxCv/ZCT5co241dKQVcLUT7pX4f8bTLEv0XVXXcmNIgxAqd+ySLKdlSd+c+VQFuk
+              OiedbV2hSCZxCGISKWAgC9dlkeoT5XCYv/VtKcP/AgEggv+f9Sz0R1kRngBsWszz
+              TqBW/0Pm6bfnBi+WWTBwvA==
+              -----END PRIVATE KEY-----
+    listeners:
+      - name: listener_http
+        address:
+          socket_address: { address: 0.0.0.0, port_value: 8000 }
+        listener_filters:
+          - name: "envoy.filters.listener.tls_inspector"
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.listener.tls_inspector.v3.TlsInspector
+        access_log:
+          - name: envoy.access_loggers.file
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog
+              path: "/home/debian/orion/access-log-conn.txt"
+              log_format:
+                text_format: >
+                  {"connection_id":"%CONNECTION_ID%" "timestamp":"%START_TIME%", "duration":%DURATION%,"bytes_received":%DOWNSTREAM_WIRE_BYTES_RECEIVED%,"bytes_sent":%DOWNSTREAM_WIRE_BYTES_SENT%,"connection_termination_details":"%CONNECTION_TERMINATION_DETAILS%","downstream_remote_addr":"%DOWNSTREAM_REMOTE_ADDRESS%","downstream_local_addr":"%DOWNSTREAM_LOCAL_ADDRESS%"}
+        filterChains:
+          - name: filter_chain_http
+            filter_chain_match:
+              destination_port: 8000
+            transport_socket:
+              name: envoy.transport_sockets.tls
+              typedConfig:
+                '@type': type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
+                common_tls_context:
+                  tls_certificate_sds_secret_configs:
+                    - name: tls_server
+                    - name: tls_server_2
+            filters:
+              - name: http_gateway
+                typedConfig:
+                  "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                  statPrefix: ingress_http
+                  codecType: HTTP1
+                  http_filters:
+                    - name: envoy.filters.http.router
+                      typedConfig:
+                        "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                        start_child_span: false
+                  access_log:
+                    - name: envoy.access_loggers.file
+                      typed_config:
+                        "@type": type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog
+                        path: "/home/debian/orion/access-log.txt"
+                        log_format:
+                          text_format: "{\"timestamp\":\"%START_TIME%\",\"authority\":\"%REQ(:AUTHORITY)%\",\"agent_name\":\"%REQ(x-ioa-agent-name)%\",\"user_id\":\"%REQ(x-ioa-user-id)%\",\"method\":\"%REQ(:METHOD)%\",\"path\":\"%REQ(:PATH)%\",\"response_code\":%RESPONSE_CODE%,\"response_flags\":\"%RESPONSE_FLAGS%\",\"duration\":%DURATION%,\"time_to_first_byte\":%RESPONSE_DURATION%,\"bytes_received\":%DOWNSTREAM_WIRE_BYTES_RECEIVED%,\"bytes_sent\":%DOWNSTREAM_WIRE_BYTES_SENT%,\"upstream_host\":\"%UPSTREAM_HOST%\",\"upstream_cluster\":\"%UPSTREAM_CLUSTER%\",\"trace_id\":\"%TRACE_ID%\",\"route_name\":\"%ROUTE_NAME%\",\"connection_id\":\"%CONNECTION_ID%\"}\n"
+                  upgrade_configs:
+                    - upgrade_type: websocket
+                  route_config:
+                    name: basic_http_route
+                    request_headers_to_add:
+                      - header:
+                          key: "x-user-agent"
+                          value: "%REQ(USER-AGENT)%"
+                      - header:
+                          key: "downstream-remote"
+                          value: "%DOWNSTREAM_REMOTE_ADDRESS_WITHOUT_PORT%"
+                    virtual_hosts:
+                      - name: backend
+                        domains: ["*"]
+                        routes:
+                          - match:
+                              prefix: "/"
+                            name: "route-name"
+                            route:
+                              cluster: "http-cluster"
+    clusters:
+      - name: http-cluster
+        connect_timeout: 0.25s
+        type: STATIC
+        lb_policy: ROUND_ROBIN
+        load_assignment:
+          endpoints:
+            - lb_endpoints:
+                - endpoint:
+                    address:
+                      socket_address:
+                        address: 127.0.0.1
+                        port_value: 9000
+      - name: ext_ioa_cluster
+        type: STATIC
+        connect_timeout: 1.25s
+        lb_policy: ROUND_ROBIN
+        typed_extension_protocol_options:
+          envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+            "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+            explicit_http_config:
+              http2_protocol_options: {}
+        load_assignment:
+          cluster_name: ext_ioa_cluster
+          endpoints:
+          - lb_endpoints:
+            - endpoint:
+                address:
+                  socket_address:
+                    address: 0.0.0.0
+                    port_value: 18080

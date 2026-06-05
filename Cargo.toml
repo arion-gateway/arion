@@ -110,6 +110,10 @@ inherits = "release"
 [profile.bench]
 inherits = "release"
 
+# avoid
+[profile.dev.package."*"]
+debug = 0
+
 [workspace.lints.rust]
 ambiguous_negative_literals         = "warn"
 redundant_imports                   = "warn"

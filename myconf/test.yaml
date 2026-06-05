@@ -1,0 +1,73 @@
+runtime:
+  num_cpus: 1
+  num_runtimes: 1
+  event_interval: 31          # estimated optimal value
+  global_queue_interval: null   # default
+  max_io_events_per_tick: null  # default
+access_logging:
+  num_instances: 1
+  queue_length: 64
+  max_log_files: 5
+  log_rotation: daily
+  blocking: false
+logging:
+  log_level: "info"
+envoy_bootstrap:
+  static_resources:
+    listeners:
+      - name: listener_http
+        address:
+          socket_address: { address: 0.0.0.0, port_value: 8000 }
+        filter_chains:
+          - name: filter_chain_http
+            filter_chain_match:
+              destination_port: 8000
+            filters:
+              - name: http_gateway
+                typed_config:
+                  "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                  stat_prefix: ingress_http
+                  codec_type: HTTP1
+                  http_filters:
+                    - name: envoy.filters.http.router
+                      typed_config:
+                        "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                        start_child_span: false
+                  access_log:
+                    - name: envoy.access_loggers.stdout
+                      typed_config:
+                        "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+                        log_format:
+                          text_format_source:
+                            inline_string: "[%START_TIME%] %REQ(:METHOD)% %REQ(X-Custom-Header)% status=%RESPONSE_CODE% duration=%DURATION% downstream:%DOWNSTREAM_REMOTE_ADDRESS%\n"
+                  route_config:
+                    name: basic_http_route
+                    request_headers_to_add:
+                      - header:
+                          key: "x-user-agent"
+                          value: "%REQ(USER-AGENT)%"
+                      - header:
+                          key: "downstream-remote"
+                          value: "%DOWNSTREAM_REMOTE_ADDRESS_WITHOUT_PORT%"
+                    virtual_hosts:
+                      - name: backend
+                        domains: ["*"]
+                        routes:
+                          - match:
+                              prefix: "/"
+                            route:
+                              cluster: "http-cluster"
+    clusters:
+      - name: http-cluster
+        connect_timeout: 0.25s
+        type: STATIC
+        lb_policy: ROUND_ROBIN
+        load_assignment:
+          cluster_name: http-cluster
+          endpoints:
+            - lb_endpoints:
+                - endpoint:
+                    address:
+                      socket_address:
+                        address: 127.0.0.1
+                        port_value: 8100

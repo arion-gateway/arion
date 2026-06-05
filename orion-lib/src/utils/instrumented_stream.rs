@@ -3,18 +3,21 @@ use std::{
     pin::Pin,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc,
+        Arc, LazyLock,
     },
     task::{Context, Poll},
+    time::Duration,
 };
 
 use atomicoption::AtomicOption;
+
 #[cfg(feature = "metrics")]
 use opentelemetry::KeyValue;
 #[cfg(feature = "metrics")]
 use orion_metrics::metrics::user;
 use parking_lot::Mutex;
 use pin_project::pin_project;
+use quanta::Clock;
 use smallvec::SmallVec;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
@@ -59,15 +62,18 @@ impl CallbackQueue {
     }
 }
 
+static WALL_CLOCK: LazyLock<Clock> = LazyLock::new(|| Clock::new());
+
 pub struct StreamMetrics {
     total_bytes_read: AtomicU64,
     total_bytes_written: AtomicU64,
     txn_bytes_read_start: AtomicU64,
     txn_bytes_written_start: AtomicU64,
+    raw_clock: AtomicU64,
     requests_counter: AtomicU64,
     error: AtomicOption<ErrorSource>,
     #[allow(clippy::type_complexity)]
-    drop_fn: AtomicOption<Box<dyn FnOnce(&StreamMetrics) + Send>>,
+    drop_fn: AtomicOption<Box<dyn FnOnce(&StreamMetrics, Duration) + Send>>,
     #[allow(clippy::type_complexity)]
     flush_callbacks: CallbackQueue,
     user_partition_key: AtomicOption<&'static str>,
@@ -103,8 +109,8 @@ impl std::fmt::Debug for StreamMetrics {
 impl Drop for StreamMetrics {
     fn drop(&mut self) {
         self.on_flush();
-        if let Some(log_fn) = self.drop_fn.take(Ordering::Acquire) {
-            log_fn(self);
+        if let Some(drop_fn) = self.drop_fn.take(Ordering::Acquire) {
+            drop_fn(self, WALL_CLOCK.delta(self.raw_clock.load(Ordering::Relaxed), WALL_CLOCK.raw()));
         }
 
         #[cfg(feature = "metrics")]
@@ -127,6 +133,7 @@ impl StreamMetrics {
             total_bytes_written: AtomicU64::new(0),
             txn_bytes_read_start: AtomicU64::new(0),
             txn_bytes_written_start: AtomicU64::new(0),
+            raw_clock: AtomicU64::new(0),
             requests_counter: AtomicU64::new(0),
             error: AtomicOption::none(),
             drop_fn: AtomicOption::none(),
@@ -150,7 +157,7 @@ impl StreamMetrics {
     }
 
     #[inline]
-    pub fn with_drop_fn(&self, drop_fn: Box<dyn FnOnce(&StreamMetrics) + Send>) {
+    pub fn with_drop_fn(&self, drop_fn: Box<dyn FnOnce(&StreamMetrics, Duration) + Send>) {
         self.drop_fn.store(Ordering::Release, drop_fn);
     }
 
@@ -190,6 +197,11 @@ impl StreamMetrics {
     #[inline]
     pub fn inc_requests(&self) -> u64 {
         self.requests_counter.fetch_add(1, Ordering::Relaxed)
+    }
+
+    #[inline]
+    pub fn update_raw_clock(&self) {
+        self.raw_clock.store(WALL_CLOCK.raw(), Ordering::Relaxed)
     }
 
     #[inline]
@@ -279,6 +291,7 @@ impl<S: AsyncRead> AsyncRead for InstrumentedStream<S> {
             res @ Poll::Ready(Ok(())) => {
                 let bytes = buf.filled().len() - before;
                 this.metrics.on_read(bytes as u64);
+                this.metrics.update_raw_clock();
                 res
             },
             Poll::Ready(Err(e)) => {
@@ -294,9 +307,10 @@ impl<S: AsyncWrite> AsyncWrite for InstrumentedStream<S> {
     fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<std::io::Result<usize>> {
         let this = self.project();
         match this.inner.poll_write(cx, buf) {
-            Poll::Ready(Ok(n)) => {
-                this.metrics.on_write(n as u64);
-                Poll::Ready(Ok(n))
+            Poll::Ready(Ok(bytes)) => {
+                this.metrics.on_write(bytes as u64);
+                this.metrics.update_raw_clock();
+                Poll::Ready(Ok(bytes))
             },
             Poll::Ready(Err(e)) => {
                 this.metrics.on_write_error(&e);
@@ -308,7 +322,6 @@ impl<S: AsyncWrite> AsyncWrite for InstrumentedStream<S> {
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         let this = self.project();
-
         match this.inner.poll_flush(cx) {
             Poll::Ready(Ok(())) => {
                 this.metrics.on_flush();

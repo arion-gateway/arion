@@ -359,7 +359,7 @@ async fn test_cluster_idle_timeout_metric() {
 
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
 
-    let orion = OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default())
+    let orion = OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default().with_verbose())
         .await
         .expect("Failed to spawn Orion");
 
@@ -379,8 +379,8 @@ async fn test_cluster_idle_timeout_metric() {
     metrics_resp.assert_status(StatusCode::OK);
     let metrics = metrics_resp.body_str().unwrap();
 
-    let cx_idle_timeout = parse_metric_value(metrics, "cluster_upstream_cx_idle_timeout")
-        .expect("Missing cx_idle_timeout metric");
+    let cx_idle_timeout =
+        parse_metric_value(metrics, "cluster_upstream_cx_idle_timeout").expect("Missing cx_idle_timeout metric");
     assert_eq!(cx_idle_timeout, 1, "Expected exactly 1 upstream connection idle timeout");
 
     orion.shutdown();
