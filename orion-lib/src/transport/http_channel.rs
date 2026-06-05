@@ -222,13 +222,10 @@ impl HttpChannelBuilder {
 
             client_builder.http2_initial_connection_window_size(http2_options.initial_connection_window_size());
             client_builder.http2_initial_stream_window_size(http2_options.initial_stream_window_size());
-            client_builder.http2_connection_sharing(true);
 
             if let Some(max) = http2_options.max_concurrent_streams() {
                 client_builder.http2_initial_max_send_streams(max);
-                if let Ok(max) = u32::try_from(max) {
-                    client_builder.http2_max_concurrent_streams(max);
-                }
+                client_builder.http2_max_concurrent_reset_streams(max);
             }
         }
     }
