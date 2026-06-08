@@ -379,6 +379,7 @@ impl Service<Uri> for UnifiedConnector {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn call(&mut self, req: Uri) -> Self::Future {
         let uri = req;
         match self {
@@ -392,7 +393,7 @@ impl Service<Uri> for UnifiedConnector {
                     #[cfg(feature = "metrics")]
                     let shard_id = get_shard_id!();
                     let stream = fut.await;
-                    let stream = stream.map_err(|e| {
+                    let stream = stream.inspect_err(|e| {
                         match e.as_ref() {
                             ConnectError::Event(UpstreamError::ConnectTimeout(_)) => {
                                 // Record timeout metric
@@ -415,9 +416,6 @@ impl Service<Uri> for UnifiedConnector {
                                 );
                             },
                         }
-
-                        // Return the unmodified error to be propagated
-                        e
                     })?;
 
                     let tcp_stream = stream.into_inner();

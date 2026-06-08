@@ -12,6 +12,8 @@ use crate::body::channel_body::{BodyType, ChannelBody, FrameBridge};
 use crate::body::timeout_body::TimeoutBody;
 use crate::event_error::EventFailure;
 use crate::listeners::http_connection_manager::ext_proc::kind::{MessageType, RequestMsg, ResponseMsg};
+#[cfg(feature = "access-log")]
+use crate::listeners::http_connection_manager::TransactionContext;
 use crate::{OrionRequestBody, OrionResponseBody};
 use http_body_util::{BodyExt, Collected, LengthLimitError, Limited};
 #[cfg(feature = "metrics")]
@@ -523,6 +525,19 @@ impl ExternalProcessor {
             custom_metrics.with_headers(MetricsHook::ExtProcRequest, request.headers(), attrs.as_slice());
         }
 
+        #[cfg(feature = "access-log")]
+        if let Some(trans_ctx) = request.extensions().get::<Arc<TransactionContext>>() {
+            trans_ctx.with_loggers(|loggers| {
+                if let Err(err) = crate::access_log::evaluate_access_log_hook(
+                    crate::access_log::AccessLogHook::ExtProcRequest,
+                    request.headers(),
+                    loggers,
+                ) {
+                    tracing::warn!("Failed to process access log header for ExtProcRequest: {err}");
+                }
+            });
+        }
+
         debug!(target: "ext_proc", "apply_request completed: {res:?}!");
         request.body_mut().inner.inner.prefetch_frames().await;
         res
@@ -746,6 +761,19 @@ impl ExternalProcessor {
                 }
             }
             custom_metrics.with_headers(MetricsHook::ExtProcResponse, response.headers(), attrs.as_slice());
+        }
+
+        #[cfg(feature = "access-log")]
+        if let Some(trans_ctx) = response.extensions().get::<Arc<TransactionContext>>() {
+            trans_ctx.with_loggers(|loggers| {
+                if let Err(err) = crate::access_log::evaluate_access_log_hook(
+                    crate::access_log::AccessLogHook::ExtProcResponse,
+                    response.headers(),
+                    loggers,
+                ) {
+                    tracing::warn!("Failed to process access log header for ExtProcResponse: {err}");
+                }
+            });
         }
 
         debug!(target: "ext_proc", "apply_response completed: {res:?}!");

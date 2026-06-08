@@ -62,7 +62,7 @@ impl CallbackQueue {
     }
 }
 
-static WALL_CLOCK: LazyLock<Clock> = LazyLock::new(|| Clock::new());
+static WALL_CLOCK: LazyLock<Clock> = LazyLock::new(Clock::new);
 
 pub struct StreamMetrics {
     total_bytes_read: AtomicU64,
