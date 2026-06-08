@@ -3028,6 +3028,7 @@ dependencies = [
  "orion-interner",
  "ptrie",
  "serde",
+ "serde_json",
  "smallvec",
  "smol_str",
  "thiserror 2.0.18",

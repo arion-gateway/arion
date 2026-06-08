@@ -15,6 +15,7 @@
 //
 //
 
+use http::HeaderName;
 use orion_error::{Context, Error};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::num::NonZeroUsize;
@@ -98,6 +99,18 @@ pub struct AccessLogConfig {
     #[serde(default = "nonzero_usize::<10>")]
     pub max_log_files: NonZeroUsize,
     pub blocking: bool,
+    #[serde(skip_serializing_if = "Option::is_none", default = "Default::default", with = "http_serde_ext::header_name::option")]
+    pub incoming_request_header: Option<HeaderName>,
+    #[serde(skip_serializing_if = "Option::is_none", default = "Default::default", with = "http_serde_ext::header_name::option")]
+    pub ext_proc_request_header: Option<HeaderName>,
+    #[serde(skip_serializing_if = "Option::is_none", default = "Default::default", with = "http_serde_ext::header_name::option")]
+    pub upstream_request_header: Option<HeaderName>,
+    #[serde(skip_serializing_if = "Option::is_none", default = "Default::default", with = "http_serde_ext::header_name::option")]
+    pub incoming_response_header: Option<HeaderName>,
+    #[serde(skip_serializing_if = "Option::is_none", default = "Default::default", with = "http_serde_ext::header_name::option")]
+    pub ext_proc_response_header: Option<HeaderName>,
+    #[serde(skip_serializing_if = "Option::is_none", default = "Default::default", with = "http_serde_ext::header_name::option")]
+    pub downstream_response_header: Option<HeaderName>,
 }
 
 impl Default for AccessLogConfig {
@@ -109,6 +122,12 @@ impl Default for AccessLogConfig {
             log_max_size: None,
             max_log_files: nonzero_usize::<10>(),
             blocking: false,
+            incoming_request_header: None,
+            ext_proc_request_header: None,
+            upstream_request_header: None,
+            incoming_response_header: None,
+            ext_proc_response_header: None,
+            downstream_response_header: None,
         }
     }
 }
