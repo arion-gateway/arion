@@ -12,32 +12,32 @@ path = "src/main.rs"
 
 [dependencies]
 abort-on-drop.workspace        = true
-dhat                           = { version = "0.3.3", optional = true }
+dhat = { workspace = true, optional = true }
 futures.workspace              = true
 num_cpus.workspace             = true
 orion-configuration.workspace  = true
 orion-error.workspace          = true
 orion-format.workspace         = true
 orion-lib.workspace            = true
-orion-metrics                  = { workspace = true, optional = true }
+orion-metrics = { workspace = true, optional = true }
 orion-tracing.workspace        = true
 orion-xds.workspace            = true
-parking_lot                    = "0.12.5"
-pingora-timeout                = "0.3.0"
+parking_lot.workspace = true
+pingora-timeout.workspace = true
 tokio.workspace                = true
 tower.workspace                = true
 tracing.workspace              = true
 ahash.workspace                = true
 
-axum = "0.8.6"
+axum.workspace = true
 smol_str.workspace = true
 http.workspace = true
-opentelemetry = "0.29.0"
-regex = "1.12.2"
-serde = { version = "1.0", features = ["rc"] }
-serde_json = "1.0.145"
+opentelemetry.workspace = true
+regex.workspace = true
+serde = { workspace = true, features = ["rc"] }
+serde_json.workspace = true
 thiserror.workspace = true
-tracing-appender = "0.2"
+tracing-appender.workspace = true
 tracing-subscriber = { workspace = true, features = [
   "alloc",
   "env-filter",
@@ -45,7 +45,7 @@ tracing-subscriber = { workspace = true, features = [
   "registry",
   "std",
 ] }
-smallvec = "1.15.1"
+smallvec.workspace = true
 
 [features]
 config-dump = []
@@ -59,14 +59,14 @@ prometheus  = ["metrics"]
 
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
-tikv-jemallocator = { version = "0.6", optional = true }
+tikv-jemallocator = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-caps = "0.5"
-affinity = "0.1.2"
+caps.workspace = true
+affinity.workspace = true
 
 [dev-dependencies]
-axum-test              = "17.3.0"
+axum-test.workspace = true
 orion-data-plane-api.workspace = true
 
 [lints]

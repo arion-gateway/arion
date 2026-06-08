@@ -1,3 +1,4 @@
+extern crate rand_0_9 as rand;
 // Copyright 2025 The kmesh Authors
 //
 //

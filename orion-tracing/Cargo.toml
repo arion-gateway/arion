@@ -1,8 +1,10 @@
 [package]
 name = "orion-tracing"
-version = "0.1.0"
-edition = "2021"
+version.workspace      = true
+edition.workspace      = true
 
+license-file.workspace = true
+rust-version.workspace = true
 [features]
 tracing = []
 
@@ -20,8 +22,8 @@ smol_str.workspace = true
 thiserror.workspace = true
 http.workspace = true
 
-opentelemetry = "0.29.0"
-opentelemetry-otlp = { version = "0.29.0", features = [
+opentelemetry.workspace = true
+opentelemetry-otlp = { workspace = true, features = [
     "tonic",
     "tokio",
     "grpc-tonic",
@@ -32,11 +34,11 @@ opentelemetry-otlp = { version = "0.29.0", features = [
     "http-json",
 ] }
 
-opentelemetry_sdk = "0.29.0"
-parking_lot = "0.12.5"
-thread-id = "5.0.0"
-arc-swap = "1.7.1"
-uuid = { version = "1.18.1", features = ["v4"] }
-rand = "0.9.2"
-arrayvec = "0.7.6"
-traceparent = "0.0.3"
+opentelemetry_sdk.workspace = true
+parking_lot.workspace = true
+thread-id.workspace = true
+arc-swap.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+rand_0_9.workspace = true
+arrayvec.workspace = true
+traceparent.workspace = true

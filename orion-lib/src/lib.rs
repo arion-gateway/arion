@@ -16,6 +16,7 @@
 //
 
 #![recursion_limit = "128"]
+extern crate ctor_0_6 as ctor;
 #[allow(unused_imports)]
 #[macro_use]
 extern crate assert_matches;
