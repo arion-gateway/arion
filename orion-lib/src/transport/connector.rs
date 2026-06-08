@@ -39,14 +39,17 @@ use tracing::debug;
 
 use crate::listeners::internal_registry::{self, InternalConnection};
 use crate::listeners::metadata::DownstreamConnectionMetadata;
+#[cfg(feature = "metrics")]
+use crate::transport::http_channel::DEFAULT_IDLE_TIMEOUT;
 use crate::transport::{AsyncInstrumentedStream, HttpConnection};
 use crate::{
     event_error::{elapsed, UpstreamError},
     utils::instrumented_stream::InstrumentedStream,
 };
 
+use crate::with_metric;
 #[cfg(feature = "metrics")]
-use {crate::get_shard_id, crate::with_metric, opentelemetry::KeyValue, orion_metrics::metrics::clusters};
+use {crate::get_shard_id, opentelemetry::KeyValue, orion_metrics::metrics::clusters};
 
 use super::{bind_device::BindDevice, resolve};
 
@@ -60,8 +63,16 @@ pub enum ConnectError {
 
 #[derive(Clone, Debug)]
 pub enum ConnectUsing {
-    Socket { authority: Authority, bind_device: Option<BindDevice>, timeout: Option<Duration> },
-    InternalListener { listener_name: &'static str, synthetic_authority: Authority },
+    Socket {
+        authority: Authority,
+        bind_device: Option<BindDevice>,
+        connect_timeout: Option<Duration>,
+        idle_timeout: Option<Duration>,
+    },
+    InternalListener {
+        listener_name: &'static str,
+        synthetic_authority: Authority,
+    },
 }
 
 impl ConnectUsing {
@@ -74,17 +85,26 @@ impl ConnectUsing {
 
     pub fn with_bind_device(self, device: Option<BindDevice>) -> Self {
         match self {
-            ConnectUsing::Socket { authority, timeout, .. } => {
-                ConnectUsing::Socket { authority, bind_device: device, timeout }
+            ConnectUsing::Socket { authority, connect_timeout, idle_timeout, .. } => {
+                ConnectUsing::Socket { authority, bind_device: device, idle_timeout, connect_timeout }
             },
             internal @ ConnectUsing::InternalListener { .. } => internal,
         }
     }
 
-    pub fn with_timeout(self, timeout: Option<Duration>) -> Self {
+    pub fn with_connect_timeout(self, connect_timeout: Option<Duration>) -> Self {
         match self {
-            ConnectUsing::Socket { authority, bind_device, .. } => {
-                ConnectUsing::Socket { authority, bind_device, timeout }
+            ConnectUsing::Socket { authority, bind_device, idle_timeout, .. } => {
+                ConnectUsing::Socket { authority, bind_device, idle_timeout, connect_timeout }
+            },
+            internal @ ConnectUsing::InternalListener { .. } => internal,
+        }
+    }
+
+    pub fn with_idle_timeout(self, idle_timeout: Option<Duration>) -> Self {
+        match self {
+            ConnectUsing::Socket { authority, bind_device, connect_timeout, .. } => {
+                ConnectUsing::Socket { authority, bind_device, connect_timeout, idle_timeout }
             },
             internal @ ConnectUsing::InternalListener { .. } => internal,
         }
@@ -93,12 +113,13 @@ impl ConnectUsing {
     pub fn from_address(
         address: &Address,
         bind_device: Option<BindDevice>,
-        timeout: Option<Duration>,
+        connect_timeout: Option<Duration>,
+        idle_timeout: Option<Duration>,
     ) -> crate::Result<Self> {
         match address {
             Address::Socket(host, port) => {
                 let authority = Authority::try_from(format!("{host}:{port}"))?;
-                Ok(ConnectUsing::Socket { authority, bind_device, timeout })
+                Ok(ConnectUsing::Socket { authority, bind_device, connect_timeout, idle_timeout })
             },
             Address::Internal(internal) => {
                 let listener_name = internal.server_listener_name.to_static_str();
@@ -124,7 +145,8 @@ pub struct LocalConnectorWithDNSResolver {
     pub addr: Authority,
     pub cluster_name: &'static str,
     pub bind_device: Option<BindDevice>,
-    pub timeout: Option<Duration>,
+    pub connect_timeout: Option<Duration>,
+    pub idle_timeout: Option<Duration>,
 }
 
 impl LocalConnectorWithDNSResolver {
@@ -136,7 +158,7 @@ impl LocalConnectorWithDNSResolver {
         let addr = self.addr.clone();
         let device = self.bind_device.clone();
         let cluster_name = self.cluster_name;
-        let connection_timeout = self.timeout;
+        let connection_timeout = self.connect_timeout;
 
         async move {
             let host = addr.host();
@@ -192,7 +214,7 @@ impl LocalConnectorWithDNSResolver {
 
             if let Some(device) = device {
                 // binding might succeed here but still fail later
-                // e.g. with an uncategorized error on connect
+                // e.g. with an non-categorized error on connect
                 debug!("Binding socket to: {:?}", device);
                 super::bind_device::bind_device(&sock, &device).map_err(|e| {
                     ContextualError::new(e)
@@ -254,7 +276,6 @@ impl LocalConnectorWithDNSResolver {
 impl Service<Uri> for LocalConnectorWithDNSResolver {
     type Response = TokioIo<TcpStream>;
     type Error = ContextualError<ConnectError>;
-
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
     fn poll_ready(&mut self, _: &mut task::Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -323,12 +344,13 @@ pub enum UnifiedConnector {
 impl From<(&ConnectUsing, &'static str, bool)> for UnifiedConnector {
     fn from((target, cluster_name, is_http2): (&ConnectUsing, &'static str, bool)) -> Self {
         match target {
-            ConnectUsing::Socket { authority, bind_device, timeout } => {
+            ConnectUsing::Socket { authority, bind_device, connect_timeout, idle_timeout } => {
                 UnifiedConnector::Socket(LocalConnectorWithDNSResolver {
                     addr: authority.clone(),
                     cluster_name,
                     bind_device: bind_device.clone(),
-                    timeout: *timeout,
+                    connect_timeout: *connect_timeout,
+                    idle_timeout: *idle_timeout,
                 })
             },
             ConnectUsing::InternalListener { listener_name, .. } => {
@@ -364,15 +386,63 @@ impl Service<Uri> for UnifiedConnector {
                 #[allow(unused_variables)]
                 let cluster_name = c.cluster_name;
                 let fut = c.call(uri);
+                #[cfg(feature = "metrics")]
+                let idle_timeout = c.idle_timeout.unwrap_or(DEFAULT_IDLE_TIMEOUT);
                 Box::pin(async move {
-                    let stream = fut.await?;
+                    #[cfg(feature = "metrics")]
+                    let shard_id = get_shard_id!();
+                    let stream = fut.await;
+                    let stream = stream.map_err(|e| {
+                        match e.as_ref() {
+                            ConnectError::Event(UpstreamError::ConnectTimeout(_)) => {
+                                // Record timeout metric
+                                with_metric!(
+                                    clusters::UPSTREAM_CX_CONNECT_TIMEOUT,
+                                    add,
+                                    1,
+                                    shard_id,
+                                    &[KeyValue::new("cluster", cluster_name)]
+                                );
+                            },
+                            _ => {
+                                // Record generic connection failure metric
+                                with_metric!(
+                                    clusters::UPSTREAM_CX_CONNECT_FAIL,
+                                    add,
+                                    1,
+                                    shard_id,
+                                    &[KeyValue::new("cluster", cluster_name)]
+                                );
+                            },
+                        }
+
+                        // Return the unmodified error to be propagated
+                        e
+                    })?;
+
                     let tcp_stream = stream.into_inner();
                     let instrumented = InstrumentedStream::new(tcp_stream);
 
                     #[cfg(feature = "metrics")]
                     {
-                        let shard_id = get_shard_id!();
-                        instrumented.metrics().with_drop_fn(Box::new(move |metrics| {
+                        // new connection!
+                        //
+                        with_metric!(
+                            clusters::UPSTREAM_CX_TOTAL,
+                            add,
+                            1,
+                            shard_id,
+                            &[KeyValue::new("cluster", cluster_name)]
+                        );
+                        with_metric!(
+                            clusters::UPSTREAM_CX_ACTIVE,
+                            add,
+                            1,
+                            shard_id,
+                            &[KeyValue::new("cluster", cluster_name)]
+                        );
+
+                        instrumented.metrics().with_drop_fn(Box::new(move |metrics, idle| {
                             with_metric!(
                                 clusters::UPSTREAM_CX_RX_BYTES_TOTAL,
                                 add,
@@ -387,6 +457,31 @@ impl Service<Uri> for UnifiedConnector {
                                 shard_id,
                                 &[KeyValue::new("cluster", cluster_name)]
                             );
+
+                            with_metric!(
+                                clusters::UPSTREAM_CX_DESTROY,
+                                add,
+                                1,
+                                shard_id,
+                                &[KeyValue::new("cluster", cluster_name)]
+                            );
+                            with_metric!(
+                                clusters::UPSTREAM_CX_ACTIVE,
+                                sub,
+                                1,
+                                shard_id,
+                                &[KeyValue::new("cluster", cluster_name)]
+                            );
+
+                            if idle > idle_timeout {
+                                with_metric!(
+                                    clusters::UPSTREAM_CX_IDLE_TIMEOUT,
+                                    add,
+                                    1,
+                                    shard_id,
+                                    &[KeyValue::new("cluster", cluster_name)]
+                                );
+                            }
                         }))
                     }
 

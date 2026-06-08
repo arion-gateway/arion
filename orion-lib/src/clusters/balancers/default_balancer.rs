@@ -185,13 +185,14 @@ mod test {
                 transport_socket: UpstreamTransportSocketConfigurator::None,
                 http_protocol_options: HttpProtocolOptions::default(),
                 connection_timeout: None,
+                idle_timeout: None,
             });
         }
         loc_lb_endpoints
     }
 
     #[test]
-    fn test_default_loadbalancer_with_wrr_and_all_healthy_priority_not_contigous() {
+    fn test_default_loadbalancer_with_wrr_and_all_healthy_priority_not_contiguous() {
         let data = vec![
             (
                 1,

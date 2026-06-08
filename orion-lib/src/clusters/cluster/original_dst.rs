@@ -359,8 +359,12 @@ impl Endpoint {
     ) -> Result<Self> {
         use crate::transport::connector::ConnectUsing;
 
-        let connect_using =
-            ConnectUsing::Socket { authority: authority.clone(), bind_device, timeout: http_config.connect_timeout };
+        let connect_using = ConnectUsing::Socket {
+            authority: authority.clone(),
+            bind_device,
+            connect_timeout: http_config.connect_timeout,
+            idle_timeout: http_config.http_protocol_options.common.idle_timeout,
+        };
 
         let builder = HttpChannelBuilder::new(connect_using.clone());
         let builder = if let Some(tls_conf) = &http_config.tls_configurator {

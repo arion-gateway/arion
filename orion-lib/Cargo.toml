@@ -90,7 +90,7 @@ owning_ref = "0.4.1"
 rmcp = { version = "0.17.0", features = ["client", "transport-streamable-http-client-reqwest"] }
 moka = { version = "0.12.12", features = ["sync"] }
 contatori = { version = "0.7.5", optional = true }
-quanta = { version = "0.12.6", optional = true }
+quanta = "0.12.6"
 hyperlocal = "0.9.1"
 jsonschema = "0.41.0"
 ctor = "0.6.3"
@@ -115,7 +115,7 @@ tracing   = []
 access-log = []
 
 # performance instrumentation
-instrumentation = ["dep:contatori", "dep:quanta"]
+instrumentation = ["dep:contatori"]
 
 # mcp gateway model features:
 

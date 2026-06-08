@@ -1,0 +1,74 @@
+node:
+  id: "agent-gateway"
+  cluster: "test-id"
+runtime:
+  num_cpus: 2
+  num_runtimes: 2
+  event_interval: 31          # estimated optimal value
+  global_queue_interval: null   # default
+  max_io_events_per_tick: null  # default
+access_logging:
+  num_instances: 1
+  queue_length: 64
+  max_log_files: 5
+  log_rotation: minutely
+  log_max_size: 1000
+logging:
+  log_level: "trace,orion_proxy=trace,orion_xds=trace,orion_lib=trace,h2=trace"
+  log_directory: "/home/debian/orion/"
+  log_file: "orion.log"
+envoy_bootstrap:
+  node:
+    id: "agent-gateway"
+    cluster: "test-id"
+  dynamic_resources:
+    ads_config:
+      grpc_services:
+        - envoy_grpc:
+            cluster_name: xds_cluster
+  static_resources:
+    clusters:
+      - name: xds_cluster
+        connect_timeout: 0.25s
+        type: STATIC
+        lb_policy: ROUND_ROBIN
+        typed_extension_protocol_options:
+          envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+            "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+            explicit_http_config:
+              # force http2
+              http2_protocol_options: {}
+        load_assignment:
+          cluster_name: xds_cluster
+          endpoints:
+            - lb_endpoints:
+                - endpoint:
+                    address:
+                      socket_address:
+                        address: 0.0.0.0
+                        port_value: 1051
+      - name: ext_proc_cluster
+        type: STATIC
+        connect_timeout: 1.25s
+        lb_policy: ROUND_ROBIN
+        typed_extension_protocol_options:
+          envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+            "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+            explicit_http_config:
+              http2_protocol_options: {}
+        # This cluster points to your ext_proc gRPC server
+        load_assignment:
+          cluster_name: ext_proc_cluster
+          endpoints:
+            - lb_endpoints:
+                - endpoint:
+                    address:
+                      socket_address:
+                        address: 0.0.0.0
+                        port_value: 18080 # Porta del servizio ext_proc
+      # - name: cluster_cell_test
+      #   type: ORIGINAL_DST
+      #   lb_policy: CLUSTER_PROVIDED
+      #   original_dst_lb_config:
+      #     use_http_header: true
+      #   connect_timeout: 1s

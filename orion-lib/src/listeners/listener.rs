@@ -73,6 +73,8 @@ use orion_metrics::metrics::{http, listeners, tcp};
 
 use rustls::ServerConfig;
 use scopeguard::defer;
+#[cfg(any(feature = "access-log", feature = "metrics"))]
+use std::time::Duration;
 use std::{
     collections::HashMap,
     fmt::Debug,
@@ -390,7 +392,7 @@ impl Listener {
                                             let downstream_local_addr = local_address;
 
                                             Box::new(
-                                            move |metrics: &StreamMetrics| {
+                                            move |metrics: &StreamMetrics, _idle: Duration| {
                                                 #[cfg(feature = "metrics")]
                                                 {
                                                     with_metric!(

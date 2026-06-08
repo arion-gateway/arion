@@ -127,8 +127,13 @@ impl PartialLbEndpoint {
         self
     }
 
-    fn with_timeout(mut self, timeout: Option<Duration>) -> Self {
-        self.connect_using = self.connect_using.with_timeout(timeout);
+    fn with_connect_timeout(mut self, timeout: Option<Duration>) -> Self {
+        self.connect_using = self.connect_using.with_connect_timeout(timeout);
+        self
+    }
+
+    fn with_idle_timeout(mut self, timeout: Option<Duration>) -> Self {
+        self.connect_using = self.connect_using.with_idle_timeout(timeout);
         self
     }
 }
@@ -176,7 +181,7 @@ impl TryFrom<LbEndpointConfig> for PartialLbEndpoint {
     fn try_from(lb_endpoint: LbEndpointConfig) -> Result<Self> {
         let health_status = lb_endpoint.health_status;
         let address = lb_endpoint.address;
-        let connect_using = ConnectUsing::from_address(&address, None, None)?;
+        let connect_using = ConnectUsing::from_address(&address, None, None, None)?;
         let weight = lb_endpoint.load_balancing_weight.into();
         Ok(PartialLbEndpoint { connect_using, weight, health_status })
     }
@@ -192,6 +197,7 @@ pub struct LocalityLbEndpoints {
     pub transport_socket: UpstreamTransportSocketConfigurator,
     pub http_protocol_options: HttpProtocolOptions,
     pub connection_timeout: Option<Duration>,
+    pub idle_timeout: Option<Duration>,
 }
 impl LocalityLbEndpoints {
     fn rebuild(self) -> Result<Self> {
@@ -228,6 +234,7 @@ pub struct LocalityLbEndpointsBuilder {
     transport_socket: UpstreamTransportSocketConfigurator,
     server_name: Option<ServerName<'static>>,
     connection_timeout: Option<Duration>,
+    idle_timeout: Option<Duration>,
 }
 
 impl LocalityLbEndpointsBuilder {
@@ -239,7 +246,10 @@ impl LocalityLbEndpointsBuilder {
             .into_iter()
             .map(|e| {
                 let server_name = self.transport_socket.tls_configurator().and(self.server_name.clone());
-                let e = e.with_bind_device(self.bind_device.clone()).with_timeout(self.connection_timeout);
+                let e = e
+                    .with_bind_device(self.bind_device.clone())
+                    .with_connect_timeout(self.connection_timeout)
+                    .with_idle_timeout(self.idle_timeout);
 
                 LbEndpointBuilder::builder()
                     .with_endpoint(e)
@@ -275,6 +285,7 @@ impl LocalityLbEndpointsBuilder {
             transport_socket: self.transport_socket,
             http_protocol_options: self.http_protocol_options,
             connection_timeout: self.connection_timeout,
+            idle_timeout: self.idle_timeout,
         })
     }
 }
@@ -462,6 +473,8 @@ pub struct ClusterLoadAssignmentBuilder {
     server_name: Option<ServerName<'static>>,
     #[builder(default)]
     connection_timeout: Option<Duration>,
+    #[builder(default)]
+    idle_timeout: Option<Duration>,
 }
 
 impl ClusterLoadAssignmentBuilder {
@@ -481,6 +494,7 @@ impl ClusterLoadAssignmentBuilder {
                     .with_endpoints(e)
                     .with_bind_device(self.bind_device.clone())
                     .with_connection_timeout(self.connection_timeout)
+                    .with_idle_timeout(self.idle_timeout)
                     .with_transport_socket(self.transport_socket.clone())
                     .with_server_name(server_name)
                     .with_http_protocol_options(protocol_options.clone())
@@ -561,7 +575,8 @@ mod test {
             weight: u32,
             health_status: HealthStatus,
         ) -> Self {
-            let connect_using = ConnectUsing::Socket { authority, bind_device, timeout: None };
+            let connect_using =
+                ConnectUsing::Socket { authority, bind_device, connect_timeout: None, idle_timeout: None };
             let http_channel =
                 HttpChannelBuilder::new(connect_using.clone()).with_cluster_name(cluster_name).build().unwrap();
             let tcp_channel = TcpChannelConnector::new(

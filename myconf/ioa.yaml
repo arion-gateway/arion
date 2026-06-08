@@ -1,0 +1,106 @@
+runtime:
+  num_cpus: 1
+  num_runtimes: 1
+  event_interval: 31
+  global_queue_interval: null
+  max_io_events_per_tick: null
+logging:
+  log_level: "info"
+metrics:
+  user_key: 
+    source: Sni 
+    attribute_name: "user"
+  custom_key: !HeaderName
+    source: !HeaderName "x-user-id"
+    attribute_name: "metric-partition"
+  custom_metrics:
+    ioa_gateway:
+      - !Counter
+        name: "custom_request_counter"
+        description: "Counts requests based on a custom header"
+        header_name: "x-envoy-original-dst-host"
+        attribute_name: "original-dsthost"
+      - !Gauge
+        name: "custom_request_value"
+        description: "Value of a custom header"
+        header_name: "aio-custom-value"
+        attribute_name: "value"
+      - !Histogram
+        name: "custom_request_size"
+        description: "Records request sizes from a custom header"
+        header_name: "aio-custom-size"
+        buckets: [10, 50, 100, 500, 1000, +inf]
+envoy_bootstrap:
+  admin:
+    address:
+      socket_address:
+        address: "0.0.0.0"
+        port_value: 9901
+  static_resources:
+    listeners:
+      - name: listener_http
+        address:
+          socket_address: { address: 0.0.0.0, port_value: 8000 }
+        filter_chains:
+          - name: filter_chain_http
+            filter_chain_match:
+              destination_port: 8000
+            filters:
+              - name: http_gateway
+                typed_config:
+                  "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                  stat_prefix: ingress_http
+                  codec_type: HTTP1
+                  http_filters:
+                    - name: envoy.filters.http.cors
+                      typed_config:
+                        "@type": type.googleapis.com/envoy.extensions.filters.http.cors.v3.Cors
+                    - name: orion.filters.http.ioa
+                      typed_config:
+                        "@type": type.googleapis.com/orion.extensions.filters.http.ioa_gateway.v3.IoaGateway
+                        enable_cache: false
+                        routing_via_metadata: true
+                        grpc_service: 
+                          envoy_grpc:
+                            cluster_name: ioa_cluster
+                            max_receive_message_length: 4194304
+                    - name: envoy.filters.http.router
+                      typed_config:
+                        "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                        start_child_span: false
+                  route_config:
+                    name: basic_http_route
+                    virtual_hosts:
+                      - name: backend
+                        domains: ["*"]
+                        routes:
+                          - match:
+                              prefix: "/"
+                            route:
+                              cluster: default
+    clusters:
+      - name: default
+        connect_timeout: 0.25s
+        type: ORIGINAL_DST
+        lb_policy: CLUSTER_PROVIDED
+        original_dst_lb_config:
+          metadata_key:
+            key: "dynamic_dest"
+      - name: ioa_cluster
+        type: STATIC
+        connect_timeout: 1.25s
+        lb_policy: ROUND_ROBIN
+        typed_extension_protocol_options:
+          envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+            "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+            explicit_http_config:
+              http2_protocol_options: {}
+        load_assignment:
+          cluster_name: ioa_cluster
+          endpoints:
+          - lb_endpoints:
+            - endpoint:
+                address:
+                  socket_address:
+                    address: 0.0.0.0
+                    port_value: 18080
