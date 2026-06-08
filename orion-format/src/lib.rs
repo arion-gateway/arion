@@ -217,9 +217,7 @@ impl LogFormatter {
 fn json_value_to_string_type(val: &serde_json::Value) -> StringType {
     match val {
         serde_json::Value::Null => StringType::None,
-        serde_json::Value::Bool(b) => {
-            StringType::Smol(SmolStr::new_static(if *b { "true" } else { "false" }))
-        }
+        serde_json::Value::Bool(b) => StringType::Smol(SmolStr::new_static(if *b { "true" } else { "false" })),
         serde_json::Value::Number(n) => {
             if let Some(u) = n.as_u64() {
                 StringType::Smol(format_smolstr!("{u}"))
@@ -230,11 +228,9 @@ fn json_value_to_string_type(val: &serde_json::Value) -> StringType {
             } else {
                 StringType::None
             }
-        }
+        },
         serde_json::Value::String(s) => StringType::Smol(SmolStr::new(s)),
-        serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
-            StringType::Smol(format_smolstr!("{val}"))
-        }
+        serde_json::Value::Array(_) | serde_json::Value::Object(_) => StringType::Smol(format_smolstr!("{val}")),
     }
 }
 
@@ -565,7 +561,8 @@ mod tests {
 
     #[test]
     fn test_with_value() {
-        let source = LogFormatter::try_new("[%START_TIME%] %RESPONSE_CODE% %REQ(USER-AGENT)% %REQ(:AUTHORITY)%", false).unwrap();
+        let source =
+            LogFormatter::try_new("[%START_TIME%] %RESPONSE_CODE% %REQ(USER-AGENT)% %REQ(:AUTHORITY)%", false).unwrap();
         let mut formatter = source.clone();
 
         let value = serde_json::json!({

@@ -258,13 +258,9 @@ impl AccessLogGrammar {
                                         ReqArgument::Scheme => Operator::RequestScheme,
                                         ReqArgument::Method => Operator::RequestMethod,
                                         ReqArgument::Path => Operator::RequestPath,
-                                        ReqArgument::OriginalPathOrPath => {
-                                            Operator::RequestOriginalPathOrPath
-                                        },
+                                        ReqArgument::OriginalPathOrPath => Operator::RequestOriginalPathOrPath,
                                         ReqArgument::Authority => Operator::RequestAuthority,
-                                        ReqArgument::Header(header_name) => {
-                                            Operator::Request(header_name)
-                                        },
+                                        ReqArgument::Header(header_name) => Operator::Request(header_name),
                                     };
                                     return Some(op);
                                 }
@@ -273,14 +269,12 @@ impl AccessLogGrammar {
                                 if let Ok(arg) = Self::parse_response(arg_value) {
                                     let op = match arg {
                                         RespArgument::Status => Operator::ResponseStatus,
-                                        RespArgument::Header(header_name) => {
-                                            Operator::Response(header_name)
-                                        },
+                                        RespArgument::Header(header_name) => Operator::Response(header_name),
                                     };
                                     return Some(op);
                                 }
                             },
-                            _ => {}
+                            _ => {},
                         }
                     }
                 }

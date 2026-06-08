@@ -99,17 +99,41 @@ pub struct AccessLogConfig {
     #[serde(default = "nonzero_usize::<10>")]
     pub max_log_files: NonZeroUsize,
     pub blocking: bool,
-    #[serde(skip_serializing_if = "Option::is_none", default = "Default::default", with = "http_serde_ext::header_name::option")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        default = "Default::default",
+        with = "http_serde_ext::header_name::option"
+    )]
     pub incoming_request_header: Option<HeaderName>,
-    #[serde(skip_serializing_if = "Option::is_none", default = "Default::default", with = "http_serde_ext::header_name::option")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        default = "Default::default",
+        with = "http_serde_ext::header_name::option"
+    )]
     pub ext_proc_request_header: Option<HeaderName>,
-    #[serde(skip_serializing_if = "Option::is_none", default = "Default::default", with = "http_serde_ext::header_name::option")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        default = "Default::default",
+        with = "http_serde_ext::header_name::option"
+    )]
     pub upstream_request_header: Option<HeaderName>,
-    #[serde(skip_serializing_if = "Option::is_none", default = "Default::default", with = "http_serde_ext::header_name::option")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        default = "Default::default",
+        with = "http_serde_ext::header_name::option"
+    )]
     pub incoming_response_header: Option<HeaderName>,
-    #[serde(skip_serializing_if = "Option::is_none", default = "Default::default", with = "http_serde_ext::header_name::option")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        default = "Default::default",
+        with = "http_serde_ext::header_name::option"
+    )]
     pub ext_proc_response_header: Option<HeaderName>,
-    #[serde(skip_serializing_if = "Option::is_none", default = "Default::default", with = "http_serde_ext::header_name::option")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        default = "Default::default",
+        with = "http_serde_ext::header_name::option"
+    )]
     pub downstream_response_header: Option<HeaderName>,
 }
 
