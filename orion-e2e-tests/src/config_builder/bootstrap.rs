@@ -44,7 +44,7 @@ pub struct BootstrapBuilder {
     xds_config: Option<XdsConfig>,
     admin_config: Option<Admin>,
     metrics: MetricsConfig,
-    access_logging: Option<AccessLogConfig>,
+    access_log_config: Option<AccessLogConfig>,
 }
 
 impl Default for BootstrapBuilder {
@@ -65,7 +65,7 @@ impl BootstrapBuilder {
             xds_config: None,
             admin_config: None,
             metrics: MetricsConfig::default(),
-            access_logging: None,
+            access_log_config: None,
         }
     }
 
@@ -140,8 +140,8 @@ impl BootstrapBuilder {
     }
 
     #[must_use]
-    pub fn access_log(mut self, access_logging: AccessLogConfig) -> Self {
-        self.access_logging = Some(access_logging);
+    pub fn access_log(mut self, access_log_config: AccessLogConfig) -> Self {
+        self.access_log_config = Some(access_log_config);
         self
     }
 
@@ -209,7 +209,7 @@ impl BootstrapBuilder {
         OrionConfig {
             runtime: RuntimeConfig { num_cpus: self.runtime_cpus, num_runtimes: self.runtime_count },
             logging: LoggingConfig { log_level: self.log_level.clone() },
-            access_logging: self.access_logging.clone(),
+            access_log_config: self.access_log_config.clone(),
             envoy_bootstrap: EnvoyBootstrap {
                 admin: self.admin_config.clone(),
                 dynamic_resources,
@@ -276,7 +276,7 @@ struct OrionConfig {
     runtime: RuntimeConfig,
     logging: LoggingConfig,
     #[serde(skip_serializing_if = "Option::is_none")]
-    access_logging: Option<AccessLogConfig>,
+    access_log_config: Option<AccessLogConfig>,
     envoy_bootstrap: EnvoyBootstrap,
     metrics: MetricsConfig,
 }
