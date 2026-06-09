@@ -82,13 +82,14 @@ futures-util             = "0.3"
 glob                     = "0.3"
 h2                       = "0.4.12"
 hickory-resolver         = { version = "0.24", features = ["system-config"] }
-http                     = "1.3"
+http                     = "1.4.0"
 http-body                = "1.0"
 http-body-util           = "0.1.3"
 http-serde-ext           = "1.0.2"
 humantime-serde          = "1.1.1"
 hyper                    = { version = "1", features = ["full"] }
 hyper-util               = { version = "0.1.20", features = ["full"] }
+hyper-rustls             = { version = "0.27.7", features = ["default", "http2"] }
 hyperlocal               = "0.9.1"
 ipnet                    = "2.11"
 itertools                = "0.14.0"
@@ -131,13 +132,13 @@ rustls-platform-verifier = "0.3"
 rustls-webpki            = "0.102"
 schemars                 = { version = "1.1.0", features = ["std", "derive", "chrono04"] }
 scopeguard               = "1.2.0"
-serde                    = { version = "1", features = ["derive", "rc"] }
-serde_json               = "1"
+serde                    = { version = "1.0.228", features = ["derive", "rc"] }
+serde_json               = "1.0.149"
 serde_path_to_error      = "0.1.20"
 serde_regex              = "1.1.0"
 serde_yaml               = "0.9.34"
 smallvec                 = { version = "1", features = ["union"] }
-smol_str                 = { version = "0.3.4", features = ["serde"] }
+smol_str                 = { version = "0.3.5", features = ["serde"] }
 tempfile                 = "3.23"
 test-log                 = { version = "0.2.19", features = ["trace"] }
 thiserror                = "2.0.17"
@@ -157,7 +158,7 @@ tonic-prost-build        = "0.14"
 tower                    = { version = "0.5.2", features = ["make"] }
 tower-service            = "0.3.3"
 traceparent              = "0.0.3"
-tracing                  = "0.1"
+tracing                  = "0.1.44"
 tracing-appender         = "0.2.4"
 tracing-rolling-file     = { version = "0.1.3", features = ["non-blocking"] }
 tracing-subscriber       = "0.3"

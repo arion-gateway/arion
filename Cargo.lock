@@ -2890,7 +2890,7 @@ dependencies = [
 
 [[package]]
 name = "orion-auth"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "ahash",
  "base64 0.22.1",
@@ -2968,6 +2968,7 @@ name = "orion-e2e-tests"
 version = "0.1.0"
 dependencies = [
  "atomic-take",
+ "base64 0.22.1",
  "bytes",
  "ctor 0.2.9",
  "dashmap",
@@ -2991,6 +2992,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "smallvec",
+ "smol_str",
  "test-log",
  "thiserror 2.0.18",
  "tokio",
