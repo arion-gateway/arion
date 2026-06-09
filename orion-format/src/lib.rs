@@ -27,7 +27,7 @@ use context::Context;
 use operator::{Category, Operator};
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
-use smol_str::SmolStr;
+use smol_str::{format_smolstr, SmolStr};
 use std::{
     fmt::{self, Display, Formatter},
     io::IoSlice,
@@ -170,7 +170,7 @@ impl LogFormatter {
             if let Template::Placeholder(op, _) = template {
                 // SAFETY: `idx` is guaranteed to be valid for `format` vector by construction.
                 if matches!(unsafe { self.format.get_unchecked(idx) }, StringType::None) {
-                    let result = ctx.eval_part(op);
+                    let result = ctx.eval_op(op);
                     if !matches!(result, StringType::None) {
                         // SAFETY: `idx` is guaranteed to be valid for `format` vector, by construction.
                         unsafe { *self.format.get_unchecked_mut(idx) = result };
@@ -181,9 +181,60 @@ impl LogFormatter {
         self
     }
 
+    pub fn with_value(&mut self, value: &serde_json::Value) -> &Self {
+        let Some(obj) = value.as_object() else {
+            return self;
+        };
+
+        for (key, val) in obj {
+            if let Some(op) = AccessLogGrammar::parse_operator(key) {
+                let mut result = None;
+                for (idx, template) in self.conf.templates.iter().enumerate() {
+                    if let Template::Placeholder(t_op, _) = template {
+                        if *t_op == op {
+                            // SAFETY: `idx` is guaranteed to be valid for `format` vector by construction.
+                            if matches!(unsafe { self.format.get_unchecked(idx) }, StringType::None) {
+                                let res = result.get_or_insert_with(|| json_value_to_string_type(val));
+                                if !matches!(res, StringType::None) {
+                                    // SAFETY: `idx` is guaranteed to be valid for `format` vector, by construction.
+                                    unsafe { *self.format.get_unchecked_mut(idx) = res.clone() };
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        self
+    }
+
     #[inline]
     pub fn into_message(self) -> FormattedMessage {
         FormattedMessage { format: self.format, omit_empty_values: self.conf.omit_empty_values }
+    }
+}
+
+fn json_value_to_string_type(val: &serde_json::Value) -> StringType {
+    match val {
+        serde_json::Value::Null => StringType::None,
+        serde_json::Value::Bool(b) => {
+            StringType::Smol(SmolStr::new_static(if *b { "true" } else { "false" }))
+        }
+        serde_json::Value::Number(n) => {
+            if let Some(u) = n.as_u64() {
+                StringType::Smol(format_smolstr!("{u}"))
+            } else if let Some(i) = n.as_i64() {
+                StringType::Smol(format_smolstr!("{i}"))
+            } else if let Some(f) = n.as_f64() {
+                StringType::Smol(format_smolstr!("{f}"))
+            } else {
+                StringType::None
+            }
+        }
+        serde_json::Value::String(s) => StringType::Smol(SmolStr::new(s)),
+        serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
+            StringType::Smol(format_smolstr!("{val}"))
+        }
     }
 }
 
@@ -510,5 +561,25 @@ mod tests {
         println!("Vec:       {}", std::mem::size_of::<Vec<u8>>());
         println!("SmolStr:   {}", std::mem::size_of::<SmolStr>());
         println!("Box<[u8]>: {}", std::mem::size_of::<Box<[u8]>>());
+    }
+
+    #[test]
+    fn test_with_value() {
+        let source = LogFormatter::try_new("[%START_TIME%] %RESPONSE_CODE% %REQ(USER-AGENT)% %REQ(:AUTHORITY)%", false).unwrap();
+        let mut formatter = source.clone();
+
+        let value = serde_json::json!({
+            "START_TIME": "2026-06-08T12:00:00Z",
+            "RESPONSE_CODE": 200,
+            "REQ(USER-AGENT)": "Mozilla/5.0",
+            "REQ(:AUTHORITY)": "rust-lang.org"
+        });
+
+        formatter.with_value(&value);
+        let msg = formatter.into_message();
+        let mut buf = Vec::new();
+        msg.write_to(&mut buf).unwrap();
+        let result = String::from_utf8(buf).unwrap();
+        assert_eq!(result, "[2026-06-08T12:00:00Z] 200 Mozilla/5.0 rust-lang.org");
     }
 }

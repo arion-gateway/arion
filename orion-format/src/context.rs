@@ -34,7 +34,7 @@ use smol_str::ToSmolStr;
 use smol_str::{format_smolstr, SmolStr, SmolStrBuilder};
 
 pub trait Context {
-    fn eval_part(&self, op: &Operator) -> StringType;
+    fn eval_op(&self, op: &Operator) -> StringType;
 }
 
 #[derive(Debug, Clone, Default)]
@@ -46,7 +46,7 @@ pub struct SocketAddrContext {
 }
 
 impl Context for SocketAddrContext {
-    fn eval_part(&self, op: &Operator) -> StringType {
+    fn eval_op(&self, op: &Operator) -> StringType {
         match op {
             Operator::UpstreamHost | Operator::UpstreamRemoteAddress => {
                 self.upstream_peer_addr.map_or(StringType::None, |addr| StringType::Smol(addr.to_smolstr()))
@@ -106,12 +106,12 @@ pub struct TcpContext<'a> {
 }
 
 impl Context for TcpContext<'_> {
-    fn eval_part(&self, op: &Operator) -> StringType {
+    fn eval_op(&self, op: &Operator) -> StringType {
         match op {
             Operator::UpstreamCluster | Operator::UpstreamClusterRaw => {
                 StringType::Smol(SmolStr::new(self.cluster_name))
             },
-            _ => self.socket_address.eval_part(op),
+            _ => self.socket_address.eval_op(op),
         }
     }
 }
@@ -171,7 +171,7 @@ pub struct UpstreamContext<'a> {
 }
 
 impl Context for UpstreamContext<'_> {
-    fn eval_part(&self, op: &Operator) -> StringType {
+    fn eval_op(&self, op: &Operator) -> StringType {
         match op {
             Operator::UpstreamCluster | Operator::UpstreamClusterRaw => {
                 self.cluster_name.map_or(StringType::None, |cluster_name| StringType::Smol(SmolStr::new(cluster_name)))
@@ -197,7 +197,7 @@ pub struct InitContext {
 }
 
 impl Context for InitContext {
-    fn eval_part(&self, op: &Operator) -> StringType {
+    fn eval_op(&self, op: &Operator) -> StringType {
         match op {
             Operator::StartTime => StringType::Smol(format_system_time(self.start_time)),
             _ => StringType::None,
@@ -216,7 +216,7 @@ pub struct InitHttpContext<'a, T> {
 }
 
 impl<T> Context for InitHttpContext<'_, T> {
-    fn eval_part(&self, op: &Operator) -> StringType {
+    fn eval_op(&self, op: &Operator) -> StringType {
         match op {
             Operator::StartTime => StringType::Smol(format_system_time(self.start_time)),
             _ => DownstreamContext {
@@ -226,7 +226,7 @@ impl<T> Context for InitHttpContext<'_, T> {
                 server_name: self.server_name,
                 socket_address: self.socket_address.clone(),
             }
-            .eval_part(op),
+            .eval_op(op),
         }
     }
 }
@@ -238,7 +238,7 @@ pub struct HttpRequestDurationContext {
 }
 
 impl Context for HttpRequestDurationContext {
-    fn eval_part(&self, op: &Operator) -> StringType {
+    fn eval_op(&self, op: &Operator) -> StringType {
         match op {
             Operator::RequestDuration => {
                 let mut buffer = itoa::Buffer::new();
@@ -260,7 +260,7 @@ pub struct HttpResponseDurationContext {
 }
 
 impl Context for HttpResponseDurationContext {
-    fn eval_part(&self, op: &Operator) -> StringType {
+    fn eval_op(&self, op: &Operator) -> StringType {
         match op {
             Operator::ResponseDuration => {
                 let mut buffer = itoa::Buffer::new();
@@ -287,7 +287,7 @@ pub struct FinishContext {
 }
 
 impl Context for FinishContext {
-    fn eval_part(&self, op: &Operator) -> StringType {
+    fn eval_op(&self, op: &Operator) -> StringType {
         match op {
             Operator::ResponseFlags => StringType::Smol(ResponseFlagsShort(&self.response_flags).to_smolstr()),
             Operator::ResponseFlagsLong => StringType::Smol(ResponseFlagsLong(&self.response_flags).to_smolstr()),
@@ -324,7 +324,7 @@ pub struct WireContext {
 }
 
 impl Context for WireContext {
-    fn eval_part(&self, op: &Operator) -> StringType {
+    fn eval_op(&self, op: &Operator) -> StringType {
         match op {
             Operator::DownstreamWireBytesReceived => {
                 let mut buffer = itoa::Buffer::new();
@@ -349,7 +349,7 @@ pub struct ConnectionContext<'a> {
 }
 
 impl Context for ConnectionContext<'_> {
-    fn eval_part(&self, op: &Operator) -> StringType {
+    fn eval_op(&self, op: &Operator) -> StringType {
         match op {
             Operator::StartTime => StringType::Smol(format_system_time(self.start_time)),
             Operator::BytesReceived | Operator::DownstreamWireBytesReceived => {
@@ -389,7 +389,7 @@ pub struct UpstreamRequestContext<'a, T>(pub &'a Request<T>);
 pub struct UpstreamResponseContext<'a, T>(pub &'a Response<T>);
 
 impl<T> Context for DownstreamContext<'_, T> {
-    fn eval_part(&self, op: &Operator) -> StringType {
+    fn eval_op(&self, op: &Operator) -> StringType {
         match op {
             Operator::RequestHeadersBytes => {
                 let mut buffer = itoa::Buffer::new();
@@ -433,13 +433,13 @@ impl<T> Context for DownstreamContext<'_, T> {
             Operator::RequestedServerName => {
                 self.server_name.map_or(StringType::None, |sni| StringType::Smol(SmolStr::new(sni)))
             },
-            _ => self.socket_address.eval_part(op),
+            _ => self.socket_address.eval_op(op),
         }
     }
 }
 
 impl<T> Context for UpstreamRequestContext<'_, T> {
-    fn eval_part(&self, op: &Operator) -> StringType {
+    fn eval_op(&self, op: &Operator) -> StringType {
         match op {
             Operator::UpstreamProtocol => StringType::Smol(SmolStr::new_static(self.0.version().to_static_str())),
             Operator::UniqueId => {
@@ -453,7 +453,7 @@ impl<T> Context for UpstreamRequestContext<'_, T> {
 }
 
 impl<T> Context for DownstreamResponseContext<'_, T> {
-    fn eval_part(&self, op: &Operator) -> StringType {
+    fn eval_op(&self, op: &Operator) -> StringType {
         match op {
             Operator::ResponseHeadersBytes => {
                 let mut buffer = itoa::Buffer::new();

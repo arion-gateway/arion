@@ -239,6 +239,55 @@ impl AccessLogGrammar {
         }
         Err(FormatError::MissingBracket(input.into()))
     }
+
+    #[allow(clippy::string_slice)]
+    pub fn parse_operator(key: &str) -> Option<Operator> {
+        if let Some((placeholder, _category, placeholder_len, has_arg)) =
+            ENVOY_PATTERNS.find_longest_prefix(key.bytes())
+        {
+            if key.len() == *placeholder_len && !*has_arg {
+                return Some(placeholder.clone());
+            } else if *has_arg {
+                let after_placeholder = &key[*placeholder_len..];
+                if let Ok((arg_value, arg_len)) = Self::extract_operator_arg(after_placeholder) {
+                    if *placeholder_len + arg_len == key.len() {
+                        match placeholder {
+                            Operator::Request(_) => {
+                                if let Ok(arg) = Self::parse_request(arg_value) {
+                                    let op = match arg {
+                                        ReqArgument::Scheme => Operator::RequestScheme,
+                                        ReqArgument::Method => Operator::RequestMethod,
+                                        ReqArgument::Path => Operator::RequestPath,
+                                        ReqArgument::OriginalPathOrPath => {
+                                            Operator::RequestOriginalPathOrPath
+                                        },
+                                        ReqArgument::Authority => Operator::RequestAuthority,
+                                        ReqArgument::Header(header_name) => {
+                                            Operator::Request(header_name)
+                                        },
+                                    };
+                                    return Some(op);
+                                }
+                            },
+                            Operator::Response(_) => {
+                                if let Ok(arg) = Self::parse_response(arg_value) {
+                                    let op = match arg {
+                                        RespArgument::Status => Operator::ResponseStatus,
+                                        RespArgument::Header(header_name) => {
+                                            Operator::Response(header_name)
+                                        },
+                                    };
+                                    return Some(op);
+                                }
+                            },
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
 }
 
 impl Grammar for AccessLogGrammar {

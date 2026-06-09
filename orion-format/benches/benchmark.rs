@@ -255,6 +255,45 @@ fn benchmark_log_formatter(c: &mut Criterion) {
 }
 
 #[allow(clippy::unit_arg)]
+fn benchmark_log_formatter_from_json(c: &mut Criterion) {
+    let value = serde_json::json!({
+        "START_TIME": "2026-06-08T12:00:00Z",
+        "REQ(:METHOD)": "GET",
+        "REQ(X-ENVOY-ORIGINAL-PATH?:PATH)": "/hello",
+        "PROTOCOL": "HTTP/1.1",
+        "RESPONSE_CODE": 200,
+        "RESPONSE_FLAGS": "-",
+        "BYTES_RECEIVED": 128,
+        "BYTES_SENT": 256,
+        "DURATION": 100,
+        "RESP(X-ENVOY-UPSTREAM-SERVICE-TIME)": "-",
+        "REQ(X-FORWARDED-FOR)": "-",
+        "REQ(USER-AGENT)": "my-awesome-agent/1.0",
+        "REQ(X-REQUEST-ID)": "-",
+        "REQ(:AUTHORITY)": "www.rust-lang.org",
+        "UPSTREAM_HOST": "www.upstream.com"
+    });
+
+    let fmt = LogFormatter::try_new(DEFAULT_ACCESS_LOG_FORMAT, false).stealth_unwrap();
+    let mut sink = std::io::sink();
+
+    c.bench_function("log_formatter_from_json_full", |b| {
+        b.iter(|| {
+            let mut fmt = fmt.clone();
+            black_box(fmt.with_value(&value));
+        })
+    });
+
+    c.bench_function("log_formatter_from_json_full_write", |b| {
+        b.iter(|| {
+            let mut fmt = fmt.clone();
+            black_box(fmt.with_value(&value));
+            _ = black_box(|| fmt.into_message().write_to(&mut sink));
+        })
+    });
+}
+
+#[allow(clippy::unit_arg)]
 fn benchmark_request_parts(c: &mut Criterion) {
     let request = Request::builder()
         .uri("https://www.rust-lang.org/hello")
@@ -440,6 +479,7 @@ criterion_group!(
     benches,
     benchmark_rust_format,
     benchmark_log_formatter,
+    benchmark_log_formatter_from_json,
     benchmark_log_headers,
     benchmark_request_parts
 );
