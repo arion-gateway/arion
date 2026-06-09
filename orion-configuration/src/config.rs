@@ -47,7 +47,7 @@ pub struct Config {
     pub runtime: Runtime,
     #[serde(skip_serializing_if = "is_default", default)]
     pub logging: LogConfig,
-    #[serde(skip_serializing_if = "Option::is_none", default = "Default::default")]
+    #[serde(skip_serializing_if = "Option::is_none", default = "Default::default", rename = "access_logging")]
     pub access_log_config: Option<AccessLogConfig>,
     #[serde(skip_serializing_if = "Option::is_none", default = "Default::default")]
     pub metrics: Option<MetricsConfig>,
@@ -107,7 +107,7 @@ mod envoy_conversions {
         pub runtime: Runtime,
         #[serde(default)]
         pub logging: LogConfig,
-        #[serde(default)]
+        #[serde(default, rename = "access_logging")]
         pub access_log_config: Option<AccessLogConfig>,
         #[serde(default)]
         pub metrics: Option<MetricsConfig>,
