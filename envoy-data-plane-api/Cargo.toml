@@ -17,7 +17,7 @@ tonic-prost.workspace       = true
 tonic-health.workspace      = true
 
 [build-dependencies]
-glob                        = "^0.3"
+glob.workspace = true
 prost-build.workspace       = true
 prost-reflect.workspace     = true
 tonic-build.workspace       = true

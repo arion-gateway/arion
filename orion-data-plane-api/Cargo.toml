@@ -7,8 +7,8 @@ rust-version.workspace = true
 version.workspace      = true
 
 [dependencies]
-anyhow                         = "1"
-async-stream                   = "^0.3.6"
+anyhow.workspace = true
+async-stream.workspace = true
 envoy-data-plane-api.workspace = true
 futures.workspace              = true
 serde.workspace                = true

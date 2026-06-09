@@ -28,19 +28,19 @@ prost.workspace = true
 tonic.workspace = true
 tonic-health.workspace = true
 tonic-prost.workspace = true
-hyper           = { version = "1.7", features = ["server", "http1"] }
-uuid = { version = "1", features = ["v4"] }
-pingora-timeout = "0.3.0"
-dashmap = "6"
-atomic-take = "1.1.0"
-tokio-rustls = "0.26"
-ppp                 = { workspace = true }
-rustls = { version = "0.23", features = ["aws_lc_rs"] }
-rustls-pemfile = "2"
-ctor = "0.2"
-test-log = { version = "0.2.19", features = ["trace"] }
-futures-util = "0.3.32"
-pingora = { version = "0.8.0", features = ["time"] }
+hyper = { workspace = true, features = ["server", "http1"] }
+uuid = { workspace = true, features = ["v4"] }
+pingora-timeout.workspace = true
+dashmap.workspace = true
+atomic-take.workspace = true
+tokio-rustls.workspace = true
+ppp = { workspace = true }
+rustls = { workspace = true, features = ["aws_lc_rs"] }
+rustls-pemfile.workspace = true
+ctor.workspace = true
+test-log = { workspace = true, features = ["trace"] }
+futures-util.workspace = true
+pingora = { workspace = true, features = ["time"] }
 
 [dev-dependencies]
 tracing-test.workspace = true
