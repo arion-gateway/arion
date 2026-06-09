@@ -275,7 +275,7 @@ fn build_xds_cluster(address: &str, port: u16) -> Value {
 struct OrionConfig {
     runtime: RuntimeConfig,
     logging: LoggingConfig,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", rename = "access_logging")]
     access_log_config: Option<AccessLogConfig>,
     envoy_bootstrap: EnvoyBootstrap,
     metrics: MetricsConfig,
