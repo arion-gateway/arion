@@ -152,6 +152,30 @@ mod envoy_conversions {
                         deserialize_yaml(config).with_context_fn(|| {
                             ErrorInfo::default().with_message(format!("failed to deserialize \"{}\"", config.display()))
                         })?;
+
+                    if let Some(ref conf) = access_log_config {
+                        let mut custom_ops = std::collections::HashSet::new();
+                        if let Some(ref h) = conf.incoming_request_header {
+                            custom_ops.insert(smol_str::SmolStr::new(h.as_str()));
+                        }
+                        if let Some(ref h) = conf.ext_proc_request_header {
+                            custom_ops.insert(smol_str::SmolStr::new(h.as_str()));
+                        }
+                        if let Some(ref h) = conf.upstream_request_header {
+                            custom_ops.insert(smol_str::SmolStr::new(h.as_str()));
+                        }
+                        if let Some(ref h) = conf.incoming_response_header {
+                            custom_ops.insert(smol_str::SmolStr::new(h.as_str()));
+                        }
+                        if let Some(ref h) = conf.ext_proc_response_header {
+                            custom_ops.insert(smol_str::SmolStr::new(h.as_str()));
+                        }
+                        if let Some(ref h) = conf.downstream_response_header {
+                            custom_ops.insert(smol_str::SmolStr::new(h.as_str()));
+                        }
+                        _ = orion_format::CUSTOM_OPERATORS.set(custom_ops);
+                    }
+
                     let mut bootstrap = match (bootstrap, envoy_bootstrap) {
                         (None, None) => Bootstrap::default(),
                         (Some(b), None) => b,

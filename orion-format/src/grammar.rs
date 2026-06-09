@@ -19,7 +19,7 @@ use std::sync::LazyLock;
 
 use crate::{
     operator::{Category, HeaderName, Operator, ReqArgument, RespArgument},
-    FormatError, Grammar, Template,
+    FormatError, Grammar, Template, CUSTOM_OPERATORS,
 };
 use ptrie::Trie;
 use smol_str::SmolStr;
@@ -295,6 +295,7 @@ impl Grammar for AccessLogGrammar {
         while i < input.len() {
             let mut longest_placeholder: Option<(Operator, Category, usize)> = None;
             let mut skip = None;
+            let mut free_placeholder: Option<SmolStr> = None;
 
             // find the longest placeholder starting from the current index i
             //
@@ -374,6 +375,19 @@ impl Grammar for AccessLogGrammar {
                         }
                         skip = Some(2 + *placeholder_len);
                     }
+                } else if let Some(index) = remainder.find('%') {
+                    let custom_operator = &remainder[..index];
+                    let is_valid_custom =
+                        CUSTOM_OPERATORS.get().map(|ops| ops.contains(custom_operator)).unwrap_or(false);
+
+                    if is_valid_custom {
+                        free_placeholder = Some(SmolStr::new(custom_operator));
+                        skip = Some(2 + custom_operator.len());
+                    } else {
+                        return Err(FormatError::InvalidOperator(
+                            remainder.split_once('%').map(|(operator, _)| operator).unwrap_or(remainder).into(),
+                        ));
+                    }
                 } else {
                     return Err(FormatError::InvalidOperator(
                         remainder.split_once('%').map(|(operator, _)| operator).unwrap_or(remainder).into(),
@@ -381,7 +395,7 @@ impl Grammar for AccessLogGrammar {
                 }
             }
 
-            if let Some(placeholder) = longest_placeholder.as_ref() {
+            if longest_placeholder.is_some() || free_placeholder.is_some() {
                 // placeholder found
                 if i > literal_start {
                     let literal_text = &input[literal_start..i];
@@ -398,12 +412,17 @@ impl Grammar for AccessLogGrammar {
                     }
                 }
 
-                // Add this placeholder.
-                parts.push(Template::Placeholder(
-                    // input[i..i + skip.unwrap()].into() <- this is original placeholder
-                    placeholder.0.clone(),
-                    placeholder.1,
-                ));
+                if let Some(placeholder) = longest_placeholder.as_ref() {
+                    // Add this placeholder.
+                    parts.push(Template::Placeholder(
+                        // input[i..i + skip.unwrap()].into() <- this is original placeholder
+                        placeholder.0.clone(),
+                        placeholder.1,
+                    ));
+                } else if let Some(name) = free_placeholder {
+                    // Add custom/free placeholder.
+                    parts.push(Template::Custom(name));
+                }
 
                 // advance the index beyond the current placeholder and possibly its argument.
                 i += skip.unwrap_or(0);
@@ -441,6 +460,30 @@ mod tests {
     use crate::DEFAULT_ACCESS_LOG_FORMAT;
 
     use super::*;
+
+    #[test]
+    fn test_parse_free_placeholder() {
+        let mut ops = std::collections::HashSet::new();
+        ops.insert(SmolStr::new("MY_CUSTOM_KEY"));
+        ops.insert(SmolStr::new("KEY1"));
+        ops.insert(SmolStr::new("KEY2"));
+        _ = CUSTOM_OPERATORS.set(ops);
+
+        let input = "%MY_CUSTOM_KEY%";
+        let expected = vec![Template::Custom("MY_CUSTOM_KEY".into())];
+        let actual = AccessLogGrammar::parse(input).unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_parse_multiple_free_placeholders() {
+        let input = "Start %KEY1% middle %KEY2% end.";
+        let actual = AccessLogGrammar::parse(input).unwrap();
+        let has_key1 = actual.iter().any(|t| matches!(t, Template::Custom(name) if name.as_str() == "KEY1"));
+        let has_key2 = actual.iter().any(|t| matches!(t, Template::Custom(name) if name.as_str() == "KEY2"));
+        assert!(has_key1, "Should have parsed %KEY1% as Template::Free");
+        assert!(has_key2, "Should have parsed %KEY2% as Template::Free");
+    }
 
     #[test]
     fn test_parse_only_literals() {

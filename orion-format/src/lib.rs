@@ -29,10 +29,13 @@ use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 use smol_str::{format_smolstr, SmolStr};
 use std::{
+    collections::HashSet,
     fmt::{self, Display, Formatter},
     io::IoSlice,
-    sync::Arc,
+    sync::{Arc, OnceLock},
 };
+
+pub static CUSTOM_OPERATORS: OnceLock<HashSet<SmolStr>> = OnceLock::new();
 use thiserror::Error;
 
 pub const DEFAULT_ACCESS_LOG_FORMAT: &str = r#"[%START_TIME%] "%REQ(:METHOD)% %REQ(X-ENVOY-ORIGINAL-PATH?:PATH)% %PROTOCOL%" %RESPONSE_CODE% %RESPONSE_FLAGS% %BYTES_RECEIVED% %BYTES_SENT% %DURATION% %RESP(X-ENVOY-UPSTREAM-SERVICE-TIME)% "%REQ(X-FORWARDED-FOR)%" "%REQ(USER-AGENT)%" "%REQ(X-REQUEST-ID)%" "%REQ(:AUTHORITY)%" "%UPSTREAM_HOST%"
@@ -66,11 +69,12 @@ pub enum Template {
     Char(char),
     Literal(SmolStr),
     Placeholder(Operator, Category), // eg. ("DURATION", Pattern::Duration, None), (Pattern::Req, Some(":METHOD"))
+    Custom(SmolStr),
 }
 
 impl Template {
     pub fn is_placeholder(&self) -> bool {
-        matches!(self, Template::Placeholder(_, _))
+        matches!(self, Template::Placeholder(_, _) | Template::Custom(_))
     }
 
     pub fn is_unsupported(&self) -> bool {
@@ -87,6 +91,7 @@ impl Display for Template {
             Template::Char(c) => write!(f, "{c}"),
             Template::Literal(s) => write!(f, "{s}"),
             Template::Placeholder(op, _) => write!(f, "{op:?}"),
+            Template::Custom(s) => write!(f, "{s}"),
         }
     }
 }
@@ -149,6 +154,7 @@ impl LogFormatter {
                 },
                 Template::Literal(smol_str) => format.push(StringType::Smol(smol_str.clone())),
                 Template::Placeholder(_, _) => format.push(StringType::None),
+                Template::Custom(_) => format.push(StringType::None),
             }
         }
 
@@ -187,8 +193,10 @@ impl LogFormatter {
         };
 
         for (key, val) in obj {
+            let mut result = None;
+
+            // 1. Try to match against known operators (Template::Placeholder)
             if let Some(op) = AccessLogGrammar::parse_operator(key) {
-                let mut result = None;
                 for (idx, template) in self.conf.templates.iter().enumerate() {
                     if let Template::Placeholder(t_op, _) = template {
                         if *t_op == op {
@@ -199,6 +207,22 @@ impl LogFormatter {
                                     // SAFETY: `idx` is guaranteed to be valid for `format` vector, by construction.
                                     unsafe { *self.format.get_unchecked_mut(idx) = res.clone() };
                                 }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 2. Try to match against custom/free placeholders (Template::Free)
+            for (idx, template) in self.conf.templates.iter().enumerate() {
+                if let Template::Custom(name) = template {
+                    if name.as_str() == key {
+                        // SAFETY: `idx` is guaranteed to be valid for `format` vector by construction.
+                        if matches!(unsafe { self.format.get_unchecked(idx) }, StringType::None) {
+                            let res = result.get_or_insert_with(|| json_value_to_string_type(val));
+                            if !matches!(res, StringType::None) {
+                                // SAFETY: `idx` is guaranteed to be valid for `format` vector, by construction.
+                                unsafe { *self.format.get_unchecked_mut(idx) = res.clone() };
                             }
                         }
                     }
@@ -578,5 +602,64 @@ mod tests {
         msg.write_to(&mut buf).unwrap();
         let result = String::from_utf8(buf).unwrap();
         assert_eq!(result, "[2026-06-08T12:00:00Z] 200 Mozilla/5.0 rust-lang.org");
+    }
+
+    #[test]
+    fn test_with_value_free_placeholder() {
+        let mut ops = std::collections::HashSet::new();
+        ops.insert(SmolStr::new("MY_CUSTOM_KEY"));
+        ops.insert(SmolStr::new("KEY1"));
+        ops.insert(SmolStr::new("KEY2"));
+        _ = CUSTOM_OPERATORS.set(ops);
+
+        let source = LogFormatter::try_new("[%START_TIME%] %MY_CUSTOM_KEY%", false).unwrap();
+        let mut formatter = source.clone();
+
+        let value = serde_json::json!({
+            "START_TIME": "2026-06-08T12:00:00Z",
+            "MY_CUSTOM_KEY": "hello_world"
+        });
+
+        formatter.with_value(&value);
+        let msg = formatter.into_message();
+        let mut buf = Vec::new();
+        msg.write_to(&mut buf).unwrap();
+        let result = String::from_utf8(buf).unwrap();
+        assert_eq!(result, "[2026-06-08T12:00:00Z] hello_world");
+    }
+
+    #[test]
+    fn test_with_value_free_placeholder_omit_empty() {
+        // Test with omit_empty_values = false (should print "-")
+        let mut formatter_keep = LogFormatter::try_new("%KEY1% %KEY2%", false).unwrap();
+        let value = serde_json::json!({
+            "KEY1": "val1"
+        });
+        formatter_keep.with_value(&value);
+        let mut buf = Vec::new();
+        formatter_keep.into_message().write_to(&mut buf).unwrap();
+        assert_eq!(String::from_utf8(buf).unwrap(), "val1 -");
+
+        // Test with omit_empty_values = true (should omit KEY2)
+        let mut formatter_omit = LogFormatter::try_new("%KEY1% %KEY2%", true).unwrap();
+        formatter_omit.with_value(&value);
+        let mut buf = Vec::new();
+        formatter_omit.into_message().write_to(&mut buf).unwrap();
+        assert_eq!(String::from_utf8(buf).unwrap(), "val1 ");
+    }
+
+    #[test]
+    fn test_with_value_mixed_placeholders() {
+        let mut formatter = LogFormatter::try_new("%PROTOCOL% %KEY1% %RESPONSE_CODE% %KEY2%", false).unwrap();
+        let value = serde_json::json!({
+            "PROTOCOL": "HTTP/2",
+            "KEY1": "custom1",
+            "RESPONSE_CODE": 404,
+            "KEY2": "custom2"
+        });
+        formatter.with_value(&value);
+        let mut buf = Vec::new();
+        formatter.into_message().write_to(&mut buf).unwrap();
+        assert_eq!(String::from_utf8(buf).unwrap(), "HTTP/2 custom1 404 custom2");
     }
 }
