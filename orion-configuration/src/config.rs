@@ -155,23 +155,8 @@ mod envoy_conversions {
 
                     if let Some(ref conf) = access_log_config {
                         let mut custom_ops = std::collections::HashSet::new();
-                        if let Some(ref h) = conf.incoming_request_header {
-                            custom_ops.insert(smol_str::SmolStr::new(h.as_str()));
-                        }
-                        if let Some(ref h) = conf.ext_proc_request_header {
-                            custom_ops.insert(smol_str::SmolStr::new(h.as_str()));
-                        }
-                        if let Some(ref h) = conf.upstream_request_header {
-                            custom_ops.insert(smol_str::SmolStr::new(h.as_str()));
-                        }
-                        if let Some(ref h) = conf.incoming_response_header {
-                            custom_ops.insert(smol_str::SmolStr::new(h.as_str()));
-                        }
-                        if let Some(ref h) = conf.ext_proc_response_header {
-                            custom_ops.insert(smol_str::SmolStr::new(h.as_str()));
-                        }
-                        if let Some(ref h) = conf.downstream_response_header {
-                            custom_ops.insert(smol_str::SmolStr::new(h.as_str()));
+                        for op in &conf.custom_operators {
+                            custom_ops.insert(op.clone());
                         }
                         _ = orion_format::CUSTOM_OPERATORS.set(custom_ops);
                     }

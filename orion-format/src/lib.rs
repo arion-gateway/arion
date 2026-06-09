@@ -195,25 +195,7 @@ impl LogFormatter {
         for (key, val) in obj {
             let mut result = None;
 
-            // 1. Try to match against known operators (Template::Placeholder)
-            if let Some(op) = AccessLogGrammar::parse_operator(key) {
-                for (idx, template) in self.conf.templates.iter().enumerate() {
-                    if let Template::Placeholder(t_op, _) = template {
-                        if *t_op == op {
-                            // SAFETY: `idx` is guaranteed to be valid for `format` vector by construction.
-                            if matches!(unsafe { self.format.get_unchecked(idx) }, StringType::None) {
-                                let res = result.get_or_insert_with(|| json_value_to_string_type(val));
-                                if !matches!(res, StringType::None) {
-                                    // SAFETY: `idx` is guaranteed to be valid for `format` vector, by construction.
-                                    unsafe { *self.format.get_unchecked_mut(idx) = res.clone() };
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // 2. Try to match against custom/free placeholders (Template::Free)
+            // Try to match against custom placeholders (Template::Custom)
             for (idx, template) in self.conf.templates.iter().enumerate() {
                 if let Template::Custom(name) = template {
                     if name.as_str() == key {
@@ -583,17 +565,28 @@ mod tests {
         println!("Box<[u8]>: {}", std::mem::size_of::<Box<[u8]>>());
     }
 
+    fn init_custom_operators() {
+        let mut ops = std::collections::HashSet::new();
+        ops.insert(SmolStr::new("MY_CUSTOM_KEY"));
+        ops.insert(SmolStr::new("KEY1"));
+        ops.insert(SmolStr::new("KEY2"));
+        ops.insert(SmolStr::new("KEY3"));
+        ops.insert(SmolStr::new("KEY4"));
+        _ = CUSTOM_OPERATORS.set(ops);
+    }
+
     #[test]
     fn test_with_value() {
-        let source =
-            LogFormatter::try_new("[%START_TIME%] %RESPONSE_CODE% %REQ(USER-AGENT)% %REQ(:AUTHORITY)%", false).unwrap();
+        init_custom_operators();
+
+        let source = LogFormatter::try_new("[%KEY1%] %KEY2% %KEY3% %KEY4%", false).unwrap();
         let mut formatter = source.clone();
 
         let value = serde_json::json!({
-            "START_TIME": "2026-06-08T12:00:00Z",
-            "RESPONSE_CODE": 200,
-            "REQ(USER-AGENT)": "Mozilla/5.0",
-            "REQ(:AUTHORITY)": "rust-lang.org"
+            "KEY1": "2026-06-08T12:00:00Z",
+            "KEY2": 200,
+            "KEY3": "Mozilla/5.0",
+            "KEY4": "rust-lang.org"
         });
 
         formatter.with_value(&value);
@@ -606,11 +599,7 @@ mod tests {
 
     #[test]
     fn test_with_value_free_placeholder() {
-        let mut ops = std::collections::HashSet::new();
-        ops.insert(SmolStr::new("MY_CUSTOM_KEY"));
-        ops.insert(SmolStr::new("KEY1"));
-        ops.insert(SmolStr::new("KEY2"));
-        _ = CUSTOM_OPERATORS.set(ops);
+        init_custom_operators();
 
         let source = LogFormatter::try_new("[%START_TIME%] %MY_CUSTOM_KEY%", false).unwrap();
         let mut formatter = source.clone();
@@ -625,11 +614,13 @@ mod tests {
         let mut buf = Vec::new();
         msg.write_to(&mut buf).unwrap();
         let result = String::from_utf8(buf).unwrap();
-        assert_eq!(result, "[2026-06-08T12:00:00Z] hello_world");
+        assert_eq!(result, "[-] hello_world");
     }
 
     #[test]
     fn test_with_value_free_placeholder_omit_empty() {
+        init_custom_operators();
+
         // Test with omit_empty_values = false (should print "-")
         let mut formatter_keep = LogFormatter::try_new("%KEY1% %KEY2%", false).unwrap();
         let value = serde_json::json!({
@@ -650,6 +641,8 @@ mod tests {
 
     #[test]
     fn test_with_value_mixed_placeholders() {
+        init_custom_operators();
+
         let mut formatter = LogFormatter::try_new("%PROTOCOL% %KEY1% %RESPONSE_CODE% %KEY2%", false).unwrap();
         let value = serde_json::json!({
             "PROTOCOL": "HTTP/2",
@@ -660,6 +653,48 @@ mod tests {
         formatter.with_value(&value);
         let mut buf = Vec::new();
         formatter.into_message().write_to(&mut buf).unwrap();
-        assert_eq!(String::from_utf8(buf).unwrap(), "HTTP/2 custom1 404 custom2");
+        assert_eq!(String::from_utf8(buf).unwrap(), "- custom1 - custom2");
+    }
+
+    #[test]
+    fn test_with_value_no_overwrite_builtin() {
+        init_custom_operators();
+
+        // Create a formatter with a mix of standard and custom operators
+        let mut formatter = LogFormatter::try_new("%PROTOCOL% %KEY1% %RESPONSE_CODE%", false).unwrap();
+
+        // 1. First, populate standard operators using with_context
+        let req = build_request();
+        formatter.with_context(&DownstreamContext {
+            request: &req,
+            request_head_size: 0,
+            trace_id: None,
+            server_name: None,
+            socket_address: SocketAddrContext::default(),
+        });
+
+        let resp = build_response();
+        formatter.with_context(&DownstreamResponseContext { response: &resp, response_head_size: 0 });
+
+        // 2. Now call with_value with a JSON payload that tries to:
+        //    - Overwrite the already-populated standard operators (PROTOCOL, RESPONSE_CODE)
+        //    - Populate the custom operator (KEY1)
+        let value = serde_json::json!({
+            "PROTOCOL": "HTTP/2",         // Attempted overwrite of populated standard op
+            "RESPONSE_CODE": 500,         // Attempted overwrite of populated standard op
+            "KEY1": "custom-value",       // Custom operator
+        });
+
+        formatter.with_value(&value);
+
+        let mut buf = Vec::new();
+        formatter.into_message().write_to(&mut buf).unwrap();
+        let result = String::from_utf8(buf).unwrap();
+
+        // The standard operators must NOT be overwritten!
+        // - PROTOCOL should remain "HTTP/1.1" (from context)
+        // - RESPONSE_CODE should remain "200" (from context)
+        // - KEY1 should be populated with "custom-value"
+        assert_eq!(result, "HTTP/1.1 custom-value 200");
     }
 }

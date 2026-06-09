@@ -461,13 +461,19 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn test_parse_free_placeholder() {
+    fn init_custom_operators() {
         let mut ops = std::collections::HashSet::new();
         ops.insert(SmolStr::new("MY_CUSTOM_KEY"));
         ops.insert(SmolStr::new("KEY1"));
         ops.insert(SmolStr::new("KEY2"));
+        ops.insert(SmolStr::new("KEY3"));
+        ops.insert(SmolStr::new("KEY4"));
         _ = CUSTOM_OPERATORS.set(ops);
+    }
+
+    #[test]
+    fn test_parse_free_placeholder() {
+        init_custom_operators();
 
         let input = "%MY_CUSTOM_KEY%";
         let expected = vec![Template::Custom("MY_CUSTOM_KEY".into())];
@@ -477,6 +483,8 @@ mod tests {
 
     #[test]
     fn test_parse_multiple_free_placeholders() {
+        init_custom_operators();
+
         let input = "Start %KEY1% middle %KEY2% end.";
         let actual = AccessLogGrammar::parse(input).unwrap();
         let has_key1 = actual.iter().any(|t| matches!(t, Template::Custom(name) if name.as_str() == "KEY1"));
