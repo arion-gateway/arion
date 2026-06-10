@@ -158,7 +158,7 @@ mod envoy_conversions {
                         for op in &conf.custom_operators {
                             custom_ops.insert(op.clone());
                         }
-                        _ = orion_format::CUSTOM_OPERATORS.set(custom_ops);
+                        orion_format::set_custom_operators(custom_ops)?;
                     }
 
                     let mut bootstrap = match (bootstrap, envoy_bootstrap) {

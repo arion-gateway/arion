@@ -61,7 +61,7 @@ static ENVOY_RESP_ARGS: LazyLock<Trie<u8, (RespArgument, Category, usize, bool)>
     trie
 });
 
-static ENVOY_PATTERNS: LazyLock<Trie<u8, (Operator, Category, usize, bool)>> = LazyLock::new(|| {
+pub static ENVOY_OPERATORS: LazyLock<Trie<u8, (Operator, Category, usize, bool)>> = LazyLock::new(|| {
     let mut trie = Trie::new();
     trie_mapstr!(trie, "REQUEST_DURATION", Operator::RequestDuration);
     trie_mapstr!(trie, "REQUEST_TX_DURATION", Operator::RequestTxDuration);
@@ -261,7 +261,7 @@ impl Grammar for AccessLogGrammar {
                 if remainder.starts_with('%') {
                     skip = Some(2);
                 } else if let Some((placeholder, category, placeholder_len, has_arg)) =
-                    ENVOY_PATTERNS.find_longest_prefix(remainder.bytes())
+                    ENVOY_OPERATORS.find_longest_prefix(remainder.bytes())
                 {
                     // ensure the placeholder is properly closed with a '%'
                     //

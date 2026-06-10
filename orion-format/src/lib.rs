@@ -21,7 +21,7 @@ pub mod header_formatter;
 pub mod operator;
 pub mod types;
 
-use crate::grammar::AccessLogGrammar;
+use crate::grammar::{AccessLogGrammar, ENVOY_OPERATORS};
 use arrayvec::ArrayString;
 use context::Context;
 use operator::{Category, Operator};
@@ -35,7 +35,7 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
-pub static CUSTOM_OPERATORS: OnceLock<HashSet<SmolStr>> = OnceLock::new();
+static CUSTOM_OPERATORS: OnceLock<HashSet<SmolStr>> = OnceLock::new();
 use thiserror::Error;
 
 pub const DEFAULT_ACCESS_LOG_FORMAT: &str = r#"[%START_TIME%] "%REQ(:METHOD)% %REQ(X-ENVOY-ORIGINAL-PATH?:PATH)% %PROTOCOL%" %RESPONSE_CODE% %RESPONSE_FLAGS% %BYTES_RECEIVED% %BYTES_SENT% %DURATION% %RESP(X-ENVOY-UPSTREAM-SERVICE-TIME)% "%REQ(X-FORWARDED-FOR)%" "%REQ(USER-AGENT)%" "%REQ(X-REQUEST-ID)%" "%REQ(:AUTHORITY)%" "%UPSTREAM_HOST%"
@@ -43,6 +43,21 @@ pub const DEFAULT_ACCESS_LOG_FORMAT: &str = r#"[%START_TIME%] "%REQ(:METHOD)% %R
 
 pub const DEFAULT_ISTIO_ACCESS_LOG_FORMAT: &str = r#"[%START_TIME%] "%REQ(:METHOD)% %REQ(X-ENVOY-ORIGINAL-PATH?:PATH)% %PROTOCOL%" %RESPONSE_CODE% %RESPONSE_FLAGS% %RESPONSE_CODE_DETAILS% %CONNECTION_TERMINATION_DETAILS% "%UPSTREAM_TRANSPORT_FAILURE_REASON%" %BYTES_RECEIVED% %BYTES_SENT% %DURATION% %RESP(X-ENVOY-UPSTREAM-SERVICE-TIME)% "%REQ(X-FORWARDED-FOR)%" "%REQ(USER-AGENT)%" "%REQ(X-REQUEST-ID)%" "%REQ(:AUTHORITY)%" "%UPSTREAM_HOST%" %UPSTREAM_CLUSTER_RAW% %UPSTREAM_LOCAL_ADDRESS%  %DOWNSTREAM_LOCAL_ADDRESS% %DOWNSTREAM_REMOTE_ADDRESS% %REQUESTED_SERVER_NAME% %ROUTE_NAME%"
 "#;
+
+pub fn set_custom_operators(custom_ops: HashSet<SmolStr>) -> Result<(), FormatError> {
+    for op in custom_ops.iter() {
+        if op.contains('%') || op.contains(' ') {
+            return Err(FormatError::InvalidCustomOperator("cannot contain '%' or whitespace".to_string()));
+        }
+
+        if ENVOY_OPERATORS.get(op.as_str().bytes()).is_some() {
+            return Err(FormatError::InvalidCustomOperator(format!("{op} conflicts with built-in operator")));
+        }
+    }
+
+    _ = CUSTOM_OPERATORS.set(custom_ops);
+    Ok(())
+}
 
 #[derive(Error, Debug, Eq, PartialEq)]
 pub enum FormatError {
@@ -62,6 +77,8 @@ pub enum FormatError {
     InvalidRequestArg(String),
     #[error("invalid response argument `{0}`")]
     InvalidResponseArg(String),
+    #[error("invalid custom operator `{0}`")]
+    InvalidCustomOperator(String),
 }
 
 #[derive(Hash, PartialEq, Eq, Debug, Clone, Serialize, Deserialize)]
