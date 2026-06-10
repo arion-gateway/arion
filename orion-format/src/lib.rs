@@ -171,15 +171,17 @@ impl LogFormatter {
         self.format.len()
     }
 
-    pub fn with_context<C: Context>(&mut self, ctx: &C) -> &Self {
+    pub fn with_context<C: Context>(&mut self, ctx: &C) -> &mut Self {
         for (idx, template) in self.conf.templates.iter().enumerate() {
             if let Template::Placeholder(op, _) = template {
                 // SAFETY: `idx` is guaranteed to be valid for `format` vector by construction.
                 if matches!(unsafe { self.format.get_unchecked(idx) }, StringType::None) {
-                    let result = ctx.eval_op(op);
-                    if !matches!(result, StringType::None) {
+                    let res = ctx.eval_op(op);
+                    if !matches!(res, StringType::None) {
                         // SAFETY: `idx` is guaranteed to be valid for `format` vector, by construction.
-                        unsafe { *self.format.get_unchecked_mut(idx) = result };
+                        // SAFETY: ptr::write without dropping the old value, since it does not require destruction
+                        // (it is guaranteed to be StringType::None).
+                        unsafe { std::ptr::write(self.format.get_unchecked_mut(idx), res) };
                     }
                 }
             }
@@ -187,30 +189,29 @@ impl LogFormatter {
         self
     }
 
-    pub fn with_value(&mut self, value: &serde_json::Value) -> &Self {
+    pub fn with_value(&mut self, value: &serde_json::Value) -> &mut Self {
         let Some(obj) = value.as_object() else {
             return self;
         };
 
-        for (key, val) in obj {
-            let mut result = None;
-
-            // Try to match against custom placeholders (Template::Custom)
-            for (idx, template) in self.conf.templates.iter().enumerate() {
-                if let Template::Custom(name) = template {
-                    if name.as_str() == key {
-                        // SAFETY: `idx` is guaranteed to be valid for `format` vector by construction.
-                        if matches!(unsafe { self.format.get_unchecked(idx) }, StringType::None) {
-                            let res = result.get_or_insert_with(|| json_value_to_string_type(val));
-                            if !matches!(res, StringType::None) {
-                                // SAFETY: `idx` is guaranteed to be valid for `format` vector, by construction.
-                                unsafe { *self.format.get_unchecked_mut(idx) = res.clone() };
-                            }
+        // Try to match against custom placeholders (Template::Custom)
+        for (idx, template) in self.conf.templates.iter().enumerate() {
+            if let Template::Custom(name) = template {
+                if let Some(val) = obj.get(name.as_str()) {
+                    // SAFETY: `idx` is guaranteed to be valid for `format` vector by construction.
+                    if matches!(unsafe { self.format.get_unchecked(idx) }, StringType::None) {
+                        let res = json_value_to_string_type(val);
+                        if !matches!(res, StringType::None) {
+                            // SAFETY: `idx` is guaranteed to be valid for `format` vector, by construction.
+                            // SAFETY: ptr::write without dropping the old value, since it does not require destruction
+                            // (it is guaranteed to be StringType::None).
+                            unsafe { std::ptr::write(self.format.get_unchecked_mut(idx), res) };
                         }
                     }
                 }
             }
         }
+
         self
     }
 
