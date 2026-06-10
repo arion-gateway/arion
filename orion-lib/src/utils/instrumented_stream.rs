@@ -62,7 +62,7 @@ impl CallbackQueue {
     }
 }
 
-static WALL_CLOCK: LazyLock<Clock> = LazyLock::new(|| Clock::new());
+static WALL_CLOCK: LazyLock<Clock> = LazyLock::new(Clock::new);
 
 pub struct StreamMetrics {
     total_bytes_read: AtomicU64,
@@ -97,6 +97,7 @@ impl std::fmt::Debug for StreamMetrics {
             .field("total_bytes_written", &self.total_bytes_written)
             .field("txn_bytes_read_start", &self.txn_bytes_read_start)
             .field("txn_bytes_written_start", &self.txn_bytes_written_start)
+            .field("raw_clock", &self.raw_clock)
             .field("requests_counter", &self.requests_counter)
             .field("error", &error)
             .field("drop_fn", &self.drop_fn.is_some(Ordering::Relaxed))
@@ -157,6 +158,7 @@ impl StreamMetrics {
     }
 
     #[inline]
+    #[allow(clippy::type_complexity)]
     pub fn with_drop_fn(&self, drop_fn: Box<dyn FnOnce(&StreamMetrics, Duration) + Send>) {
         self.drop_fn.store(Ordering::Release, drop_fn);
     }

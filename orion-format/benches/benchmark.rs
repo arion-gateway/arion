@@ -20,6 +20,7 @@ use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use http::{HeaderMap, HeaderValue, Request, Response, StatusCode, Version};
 use orion_format::{
     context::{Context, DownstreamContext, DownstreamResponseContext, FinishContext, InitContext, SocketAddrContext},
+    set_custom_operators,
     types::{ResponseFlags, ResponseFlagsShort},
     LogFormatter, DEFAULT_ACCESS_LOG_FORMAT,
 };
@@ -255,6 +256,47 @@ fn benchmark_log_formatter(c: &mut Criterion) {
 }
 
 #[allow(clippy::unit_arg)]
+fn benchmark_log_formatter_from_json(c: &mut Criterion) {
+    let mut ops = std::collections::HashSet::new();
+    ops.insert(smol_str::SmolStr::new("INCOMING_REQUEST_HEADER"));
+    ops.insert(smol_str::SmolStr::new("EXT_PROC_REQUEST_HEADER"));
+    ops.insert(smol_str::SmolStr::new("UPSTREAM_REQUEST_HEADER"));
+    ops.insert(smol_str::SmolStr::new("INCOMING_RESPONSE_HEADER"));
+    ops.insert(smol_str::SmolStr::new("EXT_PROC_RESPONSE_HEADER"));
+    ops.insert(smol_str::SmolStr::new("DOWNSTREAM_RESPONSE_HEADER"));
+    _ = set_custom_operators(ops);
+
+    let value = serde_json::json!({
+        "START_TIME": "2026-06-08T12:00:00Z",
+        "INCOMING_REQUEST_HEADER": "val1",
+        "EXT_PROC_REQUEST_HEADER": "val2",
+        "UPSTREAM_REQUEST_HEADER": "val3",
+        "INCOMING_RESPONSE_HEADER": "val4",
+        "EXT_PROC_RESPONSE_HEADER": "val5",
+        "DOWNSTREAM_RESPONSE_HEADER": "val6"
+    });
+
+    let custom_format = "[%START_TIME%] %INCOMING_REQUEST_HEADER% %EXT_PROC_REQUEST_HEADER% %UPSTREAM_REQUEST_HEADER% %INCOMING_RESPONSE_HEADER% %EXT_PROC_RESPONSE_HEADER% %DOWNSTREAM_RESPONSE_HEADER%";
+    let fmt = LogFormatter::try_new(custom_format, false).stealth_unwrap();
+    let mut sink = std::io::sink();
+
+    c.bench_function("log_formatter_from_json_full", |b| {
+        b.iter(|| {
+            let mut fmt = fmt.clone();
+            black_box(fmt.with_value(&value));
+        })
+    });
+
+    c.bench_function("log_formatter_from_json_full_write", |b| {
+        b.iter(|| {
+            let mut fmt = fmt.clone();
+            black_box(fmt.with_value(&value));
+            _ = black_box(|| fmt.into_message().write_to(&mut sink));
+        })
+    });
+}
+
+#[allow(clippy::unit_arg)]
 fn benchmark_request_parts(c: &mut Criterion) {
     let request = Request::builder()
         .uri("https://www.rust-lang.org/hello")
@@ -440,6 +482,7 @@ criterion_group!(
     benches,
     benchmark_rust_format,
     benchmark_log_formatter,
+    benchmark_log_formatter_from_json,
     benchmark_log_headers,
     benchmark_request_parts
 );

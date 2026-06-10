@@ -542,6 +542,15 @@ impl TransactionContext {
         self.shard_id
     }
 
+    #[cfg(feature = "access-log")]
+    pub fn with_loggers<F>(&self, f: F)
+    where
+        F: FnOnce(&mut [orion_format::LogFormatter]),
+    {
+        let mut state = self.trans_state.lock();
+        f(&mut state.loggers);
+    }
+
     #[allow(unused_variables)]
     #[allow(clippy::too_many_lines)]
     #[allow(clippy::let_unit_value)]
@@ -946,6 +955,8 @@ impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usiz
         mut request: Request<OrionRequestBody>,
         (connection_manager, mut filter_idx, http_filter): (Arc<HttpConnectionManager>, usize, HttpFilterValue),
     ) -> Result<Response<OrionResponseBody>> {
+        #[cfg(feature = "access-log")]
+        let trans_ctx_arc = request.extensions().get::<Arc<TransactionContext>>().cloned();
         let mut cached_route = match_request_route(&request, &self.0);
         let mut active_filters: SmallVec<[HttpFilterValue; 4]> = SmallVec::new();
 
@@ -1095,6 +1106,10 @@ impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usiz
         };
 
         for filter in active_filters.iter_mut().rev() {
+            #[cfg(feature = "access-log")]
+            if let Some(ref trans_ctx) = trans_ctx_arc {
+                response.extensions_mut().insert(Arc::clone(trans_ctx));
+            }
             let filter_res = filter.apply_response(&mut response).await;
             if let FilterDecision::DirectResponse(direct_response) = filter_res {
                 response = *direct_response;
@@ -1113,6 +1128,8 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
         mut request: Request<OrionRequestBody>,
         arg: Arc<HttpConnectionManager>,
     ) -> Result<Response<OrionResponseBody>> {
+        #[cfg(feature = "access-log")]
+        let trans_ctx_arc = request.extensions().get::<Arc<TransactionContext>>().cloned();
         let connection_manager = arg;
         let mut cached_route = match_request_route(&request, &self);
         // let mut request: Request<HttpBody> = request.map(|body| body.map_inner(TimeoutBody::map_into));
@@ -1286,6 +1303,15 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
                         );
                     }
 
+                    #[cfg(feature = "access-log")]
+                    if let Err(err) = crate::access_log::evaluate_access_log_hook(
+                        crate::access_log::AccessLogHook::IncomingResponse,
+                        response.headers(),
+                        &mut trans_context.trans_state.lock().loggers,
+                    ) {
+                        tracing::warn!("Failed to process access log header for IncomingResponse: {err}");
+                    }
+
                     apply_mutations_on_response(
                         &mut response,
                         &self,
@@ -1300,6 +1326,10 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
         // let's process the active filters on response in the reverse order...
         //
         for filter in &mut active_filters.iter_mut().rev() {
+            #[cfg(feature = "access-log")]
+            if let Some(ref trans_ctx) = trans_ctx_arc {
+                response.extensions_mut().insert(Arc::clone(trans_ctx));
+            }
             let filter_res = filter.apply_response(&mut response).await;
             if let FilterDecision::DirectResponse(direct_response) = filter_res {
                 response = *direct_response;
@@ -1506,6 +1536,8 @@ where
             self.manager.http_tracer.update_tracing_headers(trace_ctx, &mut request);
         }
 
+        request.extensions_mut().insert(Arc::clone(&trans_ctx));
+
         let new_req_meta = RequestMetadata { request, downstream, stream_metrics };
 
         let inner = self.inner.clone();
@@ -1599,6 +1631,15 @@ where
                 }
             }
             custom_metrics.with_headers(MetricsHook::IncomingRequest, request.headers(), attrs.as_slice());
+        }
+
+        #[cfg(feature = "access-log")]
+        if let Err(err) = crate::access_log::evaluate_access_log_hook(
+            crate::access_log::AccessLogHook::IncomingRequest,
+            request.headers(),
+            &mut trans_ctx.trans_state.lock().loggers,
+        ) {
+            tracing::warn!("Failed to process access log header for IncomingRequest: {err}");
         }
 
         let inner = self.inner.clone();
@@ -1719,6 +1760,8 @@ where
                 )
             });
 
+            #[cfg(feature = "access-log")]
+            let trans_ctx_clone = Arc::clone(&trans_ctx);
             let response =
                 inner.call(PipelineRequest { request, trans_ctx, route_conf, downstream, stream_metrics }).await;
 
@@ -1738,6 +1781,17 @@ where
                         }
                     }
                     custom_metrics.with_headers(MetricsHook::DownstreamResponse, response.headers(), attrs.as_slice());
+                }
+            }
+
+            #[cfg(feature = "access-log")]
+            if let Ok(response) = &response {
+                if let Err(err) = crate::access_log::evaluate_access_log_hook(
+                    crate::access_log::AccessLogHook::DownstreamResponse,
+                    response.headers(),
+                    &mut trans_ctx_clone.trans_state.lock().loggers,
+                ) {
+                    tracing::warn!("Failed to process access log header for DownstreamResponse: {err}");
                 }
             }
             response

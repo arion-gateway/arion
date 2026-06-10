@@ -35,7 +35,7 @@ use {
 use tokio::{sync::mpsc::Sender, task::JoinSet};
 
 #[cfg(feature = "access-log")]
-use orion_lib::access_log::{start_access_loggers, update_configuration};
+use orion_lib::access_log::{start_access_loggers, update_configuration, AccessLogHeaders};
 
 use orion_error::Context;
 use orion_lib::{
@@ -368,6 +368,14 @@ async fn spawn_services(info: ServiceInfo) -> Result<()> {
                 conf.log_max_size,
                 conf.max_log_files.get(),
                 conf.blocking,
+                AccessLogHeaders {
+                    incoming_request_header: conf.incoming_request_header.clone(),
+                    ext_proc_request_header: conf.ext_proc_request_header.clone(),
+                    upstream_request_header: conf.upstream_request_header.clone(),
+                    incoming_response_header: conf.incoming_response_header.clone(),
+                    ext_proc_response_header: conf.ext_proc_response_header.clone(),
+                    downstream_response_header: conf.downstream_response_header.clone(),
+                },
             );
 
             info!("Access loggers started with {} instances", conf.num_instances);

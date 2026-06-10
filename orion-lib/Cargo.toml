@@ -50,7 +50,7 @@ futures-util = { workspace = true, default-features = false }
 h2.workspace = true
 hickory-resolver = { workspace = true, features = ["system-config"] }
 hyper = { workspace = true, features = ["full"] }
-hyper-rustls = { version = "0.27.7", features = ["default", "http2"] }
+hyper-rustls.workspace = true
 ipnet.workspace = true
 lru_time_cache.workspace = true
 opentelemetry.workspace = true

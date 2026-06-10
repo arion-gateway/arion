@@ -410,6 +410,17 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
             custom_metrics.with_headers(MetricsHook::UpstreamRequest, request.headers(), attrs.as_slice());
         }
 
+        #[cfg(feature = "access-log")]
+        trans_context.with_loggers(|loggers| {
+            if let Err(err) = crate::access_log::evaluate_access_log_hook(
+                crate::access_log::AccessLogHook::UpstreamRequest,
+                request.headers(),
+                loggers,
+            ) {
+                tracing::warn!("Failed to process access log header for UpstreamRequest: {err}");
+            }
+        });
+
         let RequestContext { route_timeout, retry_policy, priority } = ctx;
 
         let mut retries = Retries::default();
