@@ -955,6 +955,7 @@ impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usiz
         mut request: Request<OrionRequestBody>,
         (connection_manager, mut filter_idx, http_filter): (Arc<HttpConnectionManager>, usize, HttpFilterValue),
     ) -> Result<Response<OrionResponseBody>> {
+        #[cfg(feature = "access-log")]
         let trans_ctx_arc = request.extensions().get::<Arc<TransactionContext>>().cloned();
         let mut cached_route = match_request_route(&request, &self.0);
         let mut active_filters: SmallVec<[HttpFilterValue; 4]> = SmallVec::new();
@@ -1127,6 +1128,7 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
         mut request: Request<OrionRequestBody>,
         arg: Arc<HttpConnectionManager>,
     ) -> Result<Response<OrionResponseBody>> {
+        #[cfg(feature = "access-log")]
         let trans_ctx_arc = request.extensions().get::<Arc<TransactionContext>>().cloned();
         let connection_manager = arg;
         let mut cached_route = match_request_route(&request, &self);
@@ -1758,6 +1760,7 @@ where
                 )
             });
 
+            #[cfg(feature = "access-log")]
             let trans_ctx_clone = Arc::clone(&trans_ctx);
             let response =
                 inner.call(PipelineRequest { request, trans_ctx, route_conf, downstream, stream_metrics }).await;

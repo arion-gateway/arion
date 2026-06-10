@@ -20,8 +20,9 @@ use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use http::{HeaderMap, HeaderValue, Request, Response, StatusCode, Version};
 use orion_format::{
     context::{Context, DownstreamContext, DownstreamResponseContext, FinishContext, InitContext, SocketAddrContext},
+    set_custom_operators,
     types::{ResponseFlags, ResponseFlagsShort},
-    LogFormatter, CUSTOM_OPERATORS, DEFAULT_ACCESS_LOG_FORMAT,
+    LogFormatter, DEFAULT_ACCESS_LOG_FORMAT,
 };
 use orion_http_header::X_ENVOY_ORIGINAL_PATH;
 use smol_str::ToSmolStr;
@@ -263,7 +264,7 @@ fn benchmark_log_formatter_from_json(c: &mut Criterion) {
     ops.insert(smol_str::SmolStr::new("INCOMING_RESPONSE_HEADER"));
     ops.insert(smol_str::SmolStr::new("EXT_PROC_RESPONSE_HEADER"));
     ops.insert(smol_str::SmolStr::new("DOWNSTREAM_RESPONSE_HEADER"));
-    _ = CUSTOM_OPERATORS.set(ops);
+    _ = set_custom_operators(ops);
 
     let value = serde_json::json!({
         "START_TIME": "2026-06-08T12:00:00Z",

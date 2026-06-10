@@ -44,10 +44,11 @@ pub const DEFAULT_ACCESS_LOG_FORMAT: &str = r#"[%START_TIME%] "%REQ(:METHOD)% %R
 pub const DEFAULT_ISTIO_ACCESS_LOG_FORMAT: &str = r#"[%START_TIME%] "%REQ(:METHOD)% %REQ(X-ENVOY-ORIGINAL-PATH?:PATH)% %PROTOCOL%" %RESPONSE_CODE% %RESPONSE_FLAGS% %RESPONSE_CODE_DETAILS% %CONNECTION_TERMINATION_DETAILS% "%UPSTREAM_TRANSPORT_FAILURE_REASON%" %BYTES_RECEIVED% %BYTES_SENT% %DURATION% %RESP(X-ENVOY-UPSTREAM-SERVICE-TIME)% "%REQ(X-FORWARDED-FOR)%" "%REQ(USER-AGENT)%" "%REQ(X-REQUEST-ID)%" "%REQ(:AUTHORITY)%" "%UPSTREAM_HOST%" %UPSTREAM_CLUSTER_RAW% %UPSTREAM_LOCAL_ADDRESS%  %DOWNSTREAM_LOCAL_ADDRESS% %DOWNSTREAM_REMOTE_ADDRESS% %REQUESTED_SERVER_NAME% %ROUTE_NAME%"
 "#;
 
+#[allow(clippy::implicit_hasher)]
 pub fn set_custom_operators(custom_ops: HashSet<SmolStr>) -> Result<(), FormatError> {
-    for op in custom_ops.iter() {
+    for op in &custom_ops {
         if op.contains('%') || op.contains(' ') {
-            return Err(FormatError::InvalidCustomOperator("cannot contain '%' or whitespace".to_string()));
+            return Err(FormatError::InvalidCustomOperator("cannot contain '%' or whitespace".to_owned()));
         }
 
         if ENVOY_OPERATORS.get(op.as_str().bytes()).is_some() {
@@ -106,9 +107,8 @@ impl Display for Template {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Template::Char(c) => write!(f, "{c}"),
-            Template::Literal(s) => write!(f, "{s}"),
             Template::Placeholder(op, _) => write!(f, "{op:?}"),
-            Template::Custom(s) => write!(f, "{s}"),
+            Template::Literal(s) | Template::Custom(s) => write!(f, "{s}"),
         }
     }
 }
@@ -170,8 +170,7 @@ impl LogFormatter {
                     format.push(StringType::Smol(SmolStr::new(s)));
                 },
                 Template::Literal(smol_str) => format.push(StringType::Smol(smol_str.clone())),
-                Template::Placeholder(_, _) => format.push(StringType::None),
-                Template::Custom(_) => format.push(StringType::None),
+                Template::Placeholder(_, _) | Template::Custom(_) => format.push(StringType::None),
             }
         }
 
@@ -198,7 +197,10 @@ impl LogFormatter {
                         // SAFETY: `idx` is guaranteed to be valid for `format` vector, by construction.
                         // SAFETY: ptr::write without dropping the old value, since it does not require destruction
                         // (it is guaranteed to be StringType::None).
-                        unsafe { std::ptr::write(self.format.get_unchecked_mut(idx), res) };
+                        #[allow(clippy::multiple_unsafe_ops_per_block)]
+                        unsafe {
+                            std::ptr::write(self.format.get_unchecked_mut(idx), res)
+                        };
                     }
                 }
             }
@@ -222,7 +224,10 @@ impl LogFormatter {
                             // SAFETY: `idx` is guaranteed to be valid for `format` vector, by construction.
                             // SAFETY: ptr::write without dropping the old value, since it does not require destruction
                             // (it is guaranteed to be StringType::None).
-                            unsafe { std::ptr::write(self.format.get_unchecked_mut(idx), res) };
+                            #[allow(clippy::multiple_unsafe_ops_per_block)]
+                            unsafe {
+                                std::ptr::write(self.format.get_unchecked_mut(idx), res)
+                            };
                         }
                     }
                 }

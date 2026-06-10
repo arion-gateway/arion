@@ -170,7 +170,7 @@ async fn test_access_log_custom_operator_incoming_request() {
     // ── CLEANUP ──
     orion.shutdown();
     cleanup_config_file(&config_path);
-    let _ = std::fs::remove_file(&log_path);
+    _ = std::fs::remove_file(&log_path);
 }
 
 #[tokio::test]
@@ -248,7 +248,7 @@ async fn test_access_log_custom_operator_not_configured_is_graceful() {
     // ── CLEANUP ──
     orion.shutdown();
     cleanup_config_file(&config_path);
-    let _ = std::fs::remove_file(&log_path);
+    _ = std::fs::remove_file(&log_path);
 }
 
 #[tokio::test]
@@ -336,5 +336,5 @@ async fn test_access_log_custom_operator_multiple_fields() {
     // ── CLEANUP ──
     orion.shutdown();
     cleanup_config_file(&config_path);
-    let _ = std::fs::remove_file(&log_path);
+    _ = std::fs::remove_file(&log_path);
 }

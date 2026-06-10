@@ -84,9 +84,7 @@ async fn test_access_log_default_format_basic() {
     let listener_addr = orion.listener_addr().expect("Missing listener address");
 
     // Send a simple GET request
-    let req = format!(
-        "GET /hello HTTP/1.1\r\nHost: localhost\r\nUser-Agent: test-agent/1.0\r\nX-Request-Id: my-req-id-001\r\nConnection: close\r\n\r\n"
-    );
+    let req = "GET /hello HTTP/1.1\r\nHost: localhost\r\nUser-Agent: test-agent/1.0\r\nX-Request-Id: my-req-id-001\r\nConnection: close\r\n\r\n".to_owned();
 
     {
         let mut stream = TcpStream::connect(listener_addr).await.expect("Failed to connect");
@@ -169,7 +167,7 @@ async fn test_access_log_default_format_basic() {
     // ── CLEANUP ──
     orion.shutdown();
     cleanup_config_file(&config_path);
-    let _ = std::fs::remove_file(&log_path);
+    _ = std::fs::remove_file(&log_path);
 }
 
 #[tokio::test]
@@ -208,9 +206,7 @@ async fn test_access_log_default_format_with_original_path() {
     let listener_addr = orion.listener_addr().expect("Missing listener address");
 
     // Request with x-envoy-original-path header — the operator should return the original path
-    let req = format!(
-        "GET /rewritten HTTP/1.1\r\nHost: example.com\r\nX-Envoy-Original-Path: /original-path\r\nConnection: close\r\n\r\n"
-    );
+    let req = "GET /rewritten HTTP/1.1\r\nHost: example.com\r\nX-Envoy-Original-Path: /original-path\r\nConnection: close\r\n\r\n".to_owned();
 
     {
         let mut stream = TcpStream::connect(listener_addr).await.expect("Failed to connect");
@@ -236,11 +232,12 @@ async fn test_access_log_default_format_with_original_path() {
     // ── CLEANUP ──
     orion.shutdown();
     cleanup_config_file(&config_path);
-    let _ = std::fs::remove_file(&log_path);
+    _ = std::fs::remove_file(&log_path);
 }
 
 /// Extracts a double-quoted section from the start of a string.
 /// Returns `(quoted_content, rest_of_string)`.
+#[allow(clippy::string_slice)]
 fn extract_quoted(s: &str) -> (&str, &str) {
     let s = s.trim_start();
     assert!(s.starts_with('"'), "Expected quote at start: {s}");
@@ -248,12 +245,13 @@ fn extract_quoted(s: &str) -> (&str, &str) {
     let end = s[1..].find('"').expect("Missing closing quote");
     // end is the position within s[1..], so the closing quote is at 1+end in s
     // Content is s[1..1+end] (excludes both quotes)
-    let content = &s[1..1 + end];
+    let content = &s[1..=end];
     let rest = &s[1 + end + 1..]; // Skip closing quote
     (content, rest)
 }
 
 /// Splits a string by spaces, but treats double-quoted sections as single tokens.
+#[allow(clippy::string_slice)]
 fn split_mixed(s: &str) -> Vec<&str> {
     let s = s.trim();
     let mut result = Vec::new();
