@@ -27,13 +27,25 @@ use orion_lib::{ConfigurationSenders, SecretManager};
 use parking_lot::RwLock;
 use serde::Serialize;
 
-use crate::admin::{help::get_help, ready::get_ready};
+use crate::admin::{
+    certs::get_certs, clusters::get_clusters, help::get_help, home::get_home, listeners::get_listeners,
+    memory::get_memory, ready::get_ready, server_info::get_server_info,
+};
 
+mod certs;
+mod clusters;
 #[cfg(feature = "config-dump")]
 mod config_dump;
-mod ready;
-mod stats;
 mod help;
+mod home;
+mod listeners;
+mod memory;
+mod ready;
+#[cfg(feature = "metrics")]
+mod reset_counters;
+mod server_info;
+#[cfg(feature = "metrics")]
+mod stats;
 
 #[allow(dead_code)]
 #[derive(Clone)]
@@ -65,10 +77,32 @@ struct ServerInfo {
 
 fn build_admin_router(admin_state: AdminState) -> Router {
     let mut router = Router::new();
+    router = router.route("/", get(get_home));
+    router = router.route("/certs", get(get_certs));
+    router = router.route("/clusters", get(get_clusters));
+
     #[cfg(feature = "config-dump")]
     {
         router = router.route("/config_dump", get(config_dump::get_config_dump))
     }
+
+    router = router.route("/help", get(get_help));
+    router = router.route("/listeners", get(get_listeners));
+    router = router.route("/memory", get(get_memory));
+    #[cfg(feature = "metrics")]
+    {
+        use crate::admin::reset_counters::post_reset_counters;
+        use axum::routing::post;
+        router = router.route("/reset_counters", post(post_reset_counters));
+    }
+
+    #[cfg(feature = "metrics")]
+    {
+        use crate::admin::stats::get_stats;
+
+        router = router.route("/stats", get(get_stats));
+    }
+
     #[cfg(feature = "prometheus")]
     {
         use crate::admin::stats::prometheus::prometheus_handler;
@@ -76,7 +110,7 @@ fn build_admin_router(admin_state: AdminState) -> Router {
     }
 
     router = router.route("/ready", get(get_ready));
-    router = router.route("/help", get(get_help));
+    router = router.route("/server_info", get(get_server_info));
 
     router.with_state(admin_state)
 }
