@@ -20,18 +20,20 @@ use std::{
     time::{Duration, Instant},
 };
 
-use axum::{extract::State, routing::get, Json, Router};
+use axum::{routing::get, Router};
 use orion_configuration::config::Bootstrap;
 use orion_error::{Error, Result};
 use orion_lib::{ConfigurationSenders, SecretManager};
 use parking_lot::RwLock;
 use serde::Serialize;
-use serde_json::{json, Value};
+
+use crate::admin::{help::get_help, ready::get_ready};
 
 #[cfg(feature = "config-dump")]
 mod config_dump;
-#[cfg(feature = "prometheus")]
-mod prometheus;
+mod ready;
+mod stats;
+mod help;
 
 #[allow(dead_code)]
 #[derive(Clone)]
@@ -69,11 +71,12 @@ fn build_admin_router(admin_state: AdminState) -> Router {
     }
     #[cfg(feature = "prometheus")]
     {
-        use crate::admin::prometheus::prometheus_handler;
+        use crate::admin::stats::prometheus::prometheus_handler;
         router = router.route("/stats/prometheus", get(prometheus_handler))
     }
 
     router = router.route("/ready", get(get_ready));
+    router = router.route("/help", get(get_help));
 
     router.with_state(admin_state)
 }
@@ -97,11 +100,6 @@ pub async fn start_admin_server(
 
     axum::serve(listener, app).await?;
     Ok(())
-}
-
-async fn get_ready(State(mut admin_state): State<AdminState>) -> Json<Value> {
-    admin_state.server_info.uptime_all_epochs = Some(admin_state.server_startup.elapsed());
-    Json(json!(admin_state.server_info))
 }
 
 #[cfg(test)]

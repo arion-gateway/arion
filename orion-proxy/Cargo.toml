@@ -22,12 +22,13 @@ orion-lib.workspace            = true
 orion-metrics = { workspace = true, optional = true }
 orion-tracing.workspace        = true
 orion-xds.workspace            = true
-parking_lot.workspace = true
-pingora-timeout.workspace = true
+parking_lot.workspace          = true
+pingora-timeout.workspace      = true
 tokio.workspace                = true
 tower.workspace                = true
 tracing.workspace              = true
 ahash.workspace                = true
+const_format.workspace         = true
 
 axum.workspace = true
 smol_str.workspace = true
