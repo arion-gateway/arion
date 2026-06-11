@@ -16,8 +16,12 @@
 //
 
 use crate::Result;
+use chrono::{DateTime, Utc};
 use orion_configuration::{
-    config::secret::{Secret, TlsCertificate, Type, ValidationContext},
+    config::{
+        core::DataSource,
+        secret::{Secret, TlsCertificate, Type, ValidationContext},
+    },
     VerifySingleIter,
 };
 use rustc_hash::FxHashMap as HashMap;
@@ -26,6 +30,7 @@ use rustls::{
     RootCertStore,
 };
 use rustls_pemfile::{certs, pkcs8_private_keys};
+use serde::Serialize;
 use smol_str::{SmolStr, ToSmolStr};
 use std::sync::Arc;
 use tracing::{debug, warn};
@@ -131,6 +136,89 @@ impl TryFrom<&TlsCertificate> for CertificateSecret {
     }
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct SubjectAltName {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dns: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ip_address: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uri: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CertDetails {
+    pub path: String,
+    pub serial_number: String,
+    pub subject_alt_names: Vec<SubjectAltName>,
+    pub days_until_expiration: String,
+    pub valid_from: String,
+    pub expiration_time: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CertInfo {
+    pub ca_cert: Vec<CertDetails>,
+    pub cert_chain: Vec<CertDetails>,
+}
+
+fn data_source_path(ds: &DataSource) -> &str {
+    match ds {
+        DataSource::Path(p) => p.as_str(),
+        _ => "<inline>",
+    }
+}
+
+fn parse_cert_details(der: &[u8], path: &str) -> Option<CertDetails> {
+    let (_, x509) = x509_parser::parse_x509_certificate(der).ok()?;
+    let serial_number = x509.raw_serial().iter().map(|b| format!("{b:02x}")).collect();
+    let validity = x509.validity();
+    let valid_from =
+        DateTime::<Utc>::from_timestamp(validity.not_before.timestamp(), 0)?.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let expiration_time =
+        DateTime::<Utc>::from_timestamp(validity.not_after.timestamp(), 0)?.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let days_until_expiration = ((validity.not_after.timestamp() - Utc::now().timestamp()) / 86400).max(0).to_string();
+    let subject_alt_names = x509
+        .subject_alternative_name()
+        .ok()
+        .flatten()
+        .map(|san| {
+            san.value
+                .general_names
+                .iter()
+                .filter_map(|name| match name {
+                    GeneralName::DNSName(dns) => {
+                        Some(SubjectAltName { dns: Some((*dns).to_owned()), ip_address: None, uri: None })
+                    },
+                    GeneralName::IPAddress(bytes) => {
+                        let ip_str = match bytes.len() {
+                            4 => format!("{}.{}.{}.{}", bytes[0], bytes[1], bytes[2], bytes[3]),
+                            16 => {
+                                let addr: [u8; 16] = (*bytes).try_into().ok()?;
+                                std::net::Ipv6Addr::from(addr).to_string()
+                            },
+                            _ => return None,
+                        };
+                        Some(SubjectAltName { dns: None, ip_address: Some(ip_str), uri: None })
+                    },
+                    GeneralName::URI(uri) => {
+                        Some(SubjectAltName { dns: None, ip_address: None, uri: Some((*uri).to_owned()) })
+                    },
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Some(CertDetails {
+        path: path.to_owned(),
+        serial_number,
+        subject_alt_names,
+        days_until_expiration,
+        valid_from,
+        expiration_time,
+    })
+}
+
 impl SecretManager {
     pub fn new() -> Self {
         Self { certificate_secrets: HashMap::default(), validation_contexts: HashMap::default() }
@@ -190,5 +278,35 @@ impl SecretManager {
             }),
         );
         secrets
+    }
+
+    pub fn get_certs_info(
+        &self,
+        cert_names: &std::collections::HashSet<String>,
+        ca_names: &std::collections::HashSet<String>,
+    ) -> Vec<CertInfo> {
+        let mut result = Vec::new();
+        for name in cert_names {
+            let Some(cert_secret) = self.certificate_secrets.get(name.as_str()) else { continue };
+            let path = data_source_path(cert_secret.config.certificate_chain());
+            let cert_chain: Vec<CertDetails> =
+                cert_secret.certs.iter().filter_map(|der| parse_cert_details(der.as_ref(), path)).collect();
+            if !cert_chain.is_empty() {
+                result.push(CertInfo { ca_cert: vec![], cert_chain });
+            }
+        }
+        for name in ca_names {
+            let Some(cert_store) = self.validation_contexts.get(name.as_str()) else { continue };
+            let path = data_source_path(cert_store.config.trusted_ca());
+            let Ok(mut reader) = cert_store.config.trusted_ca().into_buf_read() else { continue };
+            let ca_cert: Vec<CertDetails> = certs(&mut reader)
+                .filter_map(|r| r.ok())
+                .filter_map(|der| parse_cert_details(der.as_ref(), path))
+                .collect();
+            if !ca_cert.is_empty() {
+                result.push(CertInfo { ca_cert, cert_chain: vec![] });
+            }
+        }
+        result
     }
 }
