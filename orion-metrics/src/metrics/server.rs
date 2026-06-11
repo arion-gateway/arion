@@ -137,6 +137,15 @@ pub(crate) fn init_metrics(number_of_threads: usize, rename: &std::collections::
         .build();
 }
 
+pub fn reset_metrics() {
+    use crate::sharded::Clearable;
+    let metrics: &[&dyn Clearable] =
+        &[&UPTIME, &CONCURRENCY, &MEMORY_HEAP_SIZE, &MEMORY_PHYSICAL_SIZE, &MEMORY_ALLOCATED];
+    for metric in metrics {
+        metric.clear();
+    }
+}
+
 mod util {
     /// Return the physical memory allocated by the process.
     ///

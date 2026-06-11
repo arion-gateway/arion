@@ -309,3 +309,22 @@ impl CustomMetrics {
             .chain(self.downstream_response.gauges().iter())
     }
 }
+
+impl crate::sharded::Clearable for CustomMetrics {
+    fn clear(&self) {
+        for counter in self.counters() {
+            counter.metric.value.clear();
+        }
+        for histogram in self.histograms() {
+            histogram.metric.value.clear();
+        }
+        for gauge in self.gauges() {
+            gauge.metric.value.clear();
+        }
+    }
+}
+
+pub fn reset_metrics() {
+    use crate::sharded::Clearable;
+    CUSTOM_METRICS.clear();
+}

@@ -142,3 +142,28 @@ pub(crate) fn init_metrics(rename: &std::collections::HashMap<String, String>) {
         "Total upstream bytes sent"
     );
 }
+
+pub fn reset_metrics() {
+    use crate::sharded::Clearable;
+    let metrics: &[&dyn Clearable] = &[
+        &UPSTREAM_RQ_TOTAL,
+        &UPSTREAM_RQ_ACTIVE,
+        &UPSTREAM_RQ_TIMEOUT,
+        &UPSTREAM_RQ_PER_TRY_TIMEOUT,
+        &UPSTREAM_RQ_RETRY,
+        &UPSTREAM_CX_TOTAL,
+        &UPSTREAM_CX_ACTIVE,
+        &UPSTREAM_CX_DESTROY,
+        &UPSTREAM_CX_IDLE_TIMEOUT,
+        &UPSTREAM_CX_CONNECT_FAIL,
+        &UPSTREAM_CX_CONNECT_TIMEOUT,
+        &UPSTREAM_CX_RX_BYTES_TOTAL,
+        &UPSTREAM_CX_TX_BYTES_TOTAL,
+        &UPSTREAM_CX_OVERFLOW,
+        &UPSTREAM_RQ_OVERFLOW,
+        &UPSTREAM_RQ_RETRY_OVERFLOW,
+    ];
+    for metric in metrics {
+        metric.clear();
+    }
+}

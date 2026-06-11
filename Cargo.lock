@@ -3227,6 +3227,7 @@ dependencies = [
  "orion-format",
  "orion-lib",
  "orion-metrics",
+ "orion-stats",
  "orion-tracing",
  "orion-xds",
  "parking_lot",
@@ -3243,6 +3244,14 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "orion-stats"
+version = "0.1.0"
+dependencies = [
+ "memory-stats",
+ "tikv-jemalloc-ctl",
 ]
 
 [[package]]

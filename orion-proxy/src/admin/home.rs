@@ -1,6 +1,6 @@
+use crate::admin::AdminState;
 use axum::{extract::State, response::Html};
 use maud::{html, Markup, DOCTYPE};
-use crate::admin::AdminState;
 
 pub async fn get_home(State(mut _admin_state): State<AdminState>) -> Html<String> {
     // Define minimal colors

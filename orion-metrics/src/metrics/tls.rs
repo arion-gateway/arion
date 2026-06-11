@@ -30,3 +30,8 @@ pub(crate) fn init_metrics(rename: &std::collections::HashMap<String, String>) {
         "Number of TLS handshakes"
     );
 }
+
+pub fn reset_metrics() {
+    use crate::sharded::Clearable;
+    HANDSHAKES.clear();
+}

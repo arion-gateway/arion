@@ -63,3 +63,17 @@ pub(crate) fn init_metrics(rename: &std::collections::HashMap<String, String>) {
         "Total active connections"
     );
 }
+
+pub fn reset_metrics() {
+    use crate::sharded::Clearable;
+    let metrics: &[&dyn Clearable] = &[
+        &DOWNSTREAM_CX_TOTAL,
+        &DOWNSTREAM_CX_DESTROY,
+        &DOWNSTREAM_CX_ACTIVE,
+        &NO_FILTER_CHAIN_MATCH,
+        &DOWNSTREAM_CX_LENGTH_MS,
+    ];
+    for metric in metrics {
+        metric.clear();
+    }
+}

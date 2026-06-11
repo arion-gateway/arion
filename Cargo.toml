@@ -11,6 +11,7 @@ members = [
   "orion-format",
   "orion-lib",
   "orion-metrics",
+  "orion-stats",
   "orion-proxy",
   "orion-tracing",
   "orion-xds",
@@ -40,6 +41,7 @@ orion-http-header        = { path = "orion-http-header" }
 orion-interner           = { path = "orion-interner" }
 orion-lib                = { path = "orion-lib" }
 orion-metrics            = { path = "orion-metrics" }
+orion-stats              = { path = "orion-stats" }
 orion-tracing            = { path = "orion-tracing" }
 orion-xds                = { path = "orion-xds" }
 

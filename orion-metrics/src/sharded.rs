@@ -27,6 +27,10 @@ use papaya::HashMap as ConcurrentHashMap;
 use smallvec::SmallVec;
 use std::{collections::hash_map, fmt};
 
+pub trait Clearable {
+    fn clear(&self);
+}
+
 pub struct ShardedU64<S> {
     data: ConcurrentHashMap<S, ConcurrentHashMap<SmallVec<[KeyValue; 4]>, AtomicU64, RandomState>, RandomState>,
 }
@@ -95,15 +99,17 @@ impl<S: Eq + Hash> ShardedU64<S> {
         self.data.pin().len()
     }
 
-    pub fn clear(&self) {
-        self.data.pin().clear();
-    }
-
     pub fn remove(&self, shard_id: S, key: &[KeyValue]) -> Option<u64> {
         let map = self.data.pin();
         let shard = map.get(&shard_id)?;
         let shard_pin = shard.pin();
         shard_pin.remove(key).map(|counter| counter.load(Ordering::Relaxed))
+    }
+}
+
+impl<S: Eq + std::hash::Hash> Clearable for ShardedU64<S> {
+    fn clear(&self) {
+        self.data.pin().clear();
     }
 }
 
@@ -189,6 +195,12 @@ impl IntoIterator for &'_ Gauge {
     }
 }
 
+impl Clearable for Gauge {
+    fn clear(&self) {
+        self.data.pin().clear();
+    }
+}
+
 impl Default for Gauge {
     fn default() -> Self {
         Self::new()
@@ -248,6 +260,16 @@ impl<S: Eq + Hash + Clone + Copy> ShardedHistogram<S> {
 
     pub fn count(&self) -> &ShardedU64<S> {
         &self.count
+    }
+}
+
+impl<S: Eq + Hash + Clone + Copy> Clearable for ShardedHistogram<S> {
+    fn clear(&self) {
+        for count in &self.counts {
+            count.clear();
+        }
+        self.sum.clear();
+        self.count.clear();
     }
 }
 

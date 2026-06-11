@@ -84,3 +84,32 @@ pub fn init_global_metrics(_exporters_config: &[OtelExporterConfig], config: &Me
     user::init_metrics(&config.rename);
     custom::init_metrics(&config.custom_metrics);
 }
+
+use crate::sharded::Clearable;
+
+impl<T: Clearable> Clearable for Metric<T> {
+    fn clear(&self) {
+        self.value.clear();
+    }
+}
+
+impl<T: Clearable> Clearable for std::sync::OnceLock<T> {
+    fn clear(&self) {
+        if let Some(val) = self.get() {
+            val.clear();
+        }
+    }
+}
+
+pub fn reset_global_metrics() {
+    info!("Resetting global metrics...");
+    tcp::reset_metrics();
+    tls::reset_metrics();
+    http::reset_metrics();
+    listeners::reset_metrics();
+    clusters::reset_metrics();
+    filters::reset_metrics();
+    server::reset_metrics();
+    user::reset_metrics();
+    custom::reset_metrics();
+}
