@@ -3194,6 +3194,7 @@ dependencies = [
  "opentelemetry_sdk",
  "orion-configuration",
  "orion-interner",
+ "orion-stats",
  "papaya",
  "parking_lot",
  "serde",
@@ -3250,7 +3251,9 @@ dependencies = [
 name = "orion-stats"
 version = "0.1.0"
 dependencies = [
+ "atomicoption",
  "memory-stats",
+ "serde",
  "tikv-jemalloc-ctl",
 ]
 

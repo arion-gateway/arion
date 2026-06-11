@@ -1,10 +1,36 @@
+use std::sync::atomic::Ordering;
 use std::sync::OnceLock;
 use std::time::Instant;
 
-pub static STARTUP_TIME: OnceLock<Instant> = OnceLock::new();
+use atomicoption::AtomicOption;
+use serde::Serialize;
+
+static STARTUP_TIME: OnceLock<Instant> = OnceLock::new();
+static PROXY_STATE: AtomicOption<ProxyState> = AtomicOption::none();
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub enum ProxyState {
+    #[default]
+    Initializing,
+    Draining,
+    PreInitializing,
+    Live,
+}
 
 pub fn init_startup_time() {
     _ = STARTUP_TIME.set(Instant::now());
+}
+
+pub fn get_startup_time() -> Option<&'static Instant> {
+    STARTUP_TIME.get()
+}
+
+pub fn set_proxy_state(state: ProxyState) {
+    PROXY_STATE.store(Ordering::Relaxed, state);
+}
+
+pub fn get_proxy_state() -> Option<&'static ProxyState> {
+    PROXY_STATE.as_ref(Ordering::Relaxed)
 }
 
 /// Return the physical memory allocated by the process.

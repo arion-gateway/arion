@@ -9,5 +9,7 @@ version.workspace      = true
 jemalloc = ["dep:tikv-jemalloc-ctl"]
 
 [dependencies]
+atomicoption.workspace = true
 memory-stats.workspace = true
+serde.workspace = true
 tikv-jemalloc-ctl = { workspace = true, optional = true, features = ["stats"] }

@@ -24,6 +24,7 @@ use axum::{routing::get, Router};
 use orion_configuration::config::Bootstrap;
 use orion_error::{Error, Result};
 use orion_lib::{ConfigurationSenders, SecretManager};
+use orion_stats::ProxyState;
 use parking_lot::RwLock;
 use serde::Serialize;
 
@@ -55,16 +56,6 @@ struct AdminState {
     secret_manager: Arc<RwLock<SecretManager>>,
     server_info: ServerInfo,
     server_startup: Instant,
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Debug, Default, Serialize)]
-enum ProxyState {
-    #[default]
-    Live,
-    Draining,
-    PreInitializing,
-    Initializing,
 }
 
 #[derive(Debug, Default, Serialize, Clone)]

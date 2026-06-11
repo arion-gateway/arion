@@ -18,9 +18,8 @@
 use crate::{metrics::Metric, sharded::Gauge};
 use std::sync::OnceLock;
 
-use {opentelemetry::global, std::time::Instant};
-
-static STARTUP_TIME: OnceLock<Instant> = OnceLock::new();
+use opentelemetry::global;
+use orion_stats::init_startup_time;
 
 pub static UPTIME: OnceLock<Metric<Gauge>> = OnceLock::new();
 pub static CONCURRENCY: OnceLock<Metric<Gauge>> = OnceLock::new();
@@ -84,8 +83,7 @@ pub fn update_server_metrics(rename: &std::collections::HashMap<String, String>)
 }
 
 pub(crate) fn init_metrics(number_of_threads: usize, rename: &std::collections::HashMap<String, String>) {
-    _ = STARTUP_TIME.set(Instant::now());
-
+    init_startup_time();
     CONCURRENCY
         .get_or_init(|| {
             Metric::new(
@@ -147,6 +145,8 @@ pub fn reset_metrics() {
 }
 
 mod util {
+    use orion_stats::get_startup_time;
+
     /// Return the physical memory allocated by the process.
     ///
     pub(crate) fn get_memory_physical_size() -> Option<usize> {
@@ -187,7 +187,7 @@ mod util {
 
     pub(crate) fn server_uptime() -> u64 {
         use std::time::Instant;
-        let start_up_time = super::STARTUP_TIME.get().copied().unwrap_or_else(Instant::now);
+        let start_up_time = get_startup_time().copied().unwrap_or_else(Instant::now);
         start_up_time.elapsed().as_secs()
     }
 }
