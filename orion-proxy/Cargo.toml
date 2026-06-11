@@ -29,6 +29,7 @@ tower.workspace                = true
 tracing.workspace              = true
 ahash.workspace                = true
 const_format.workspace         = true
+maud.workspace                 = true
 
 axum.workspace = true
 smol_str.workspace = true
