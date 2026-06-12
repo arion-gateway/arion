@@ -15,7 +15,7 @@ use tokio::sync::mpsc;
 use crate::admin::AdminState;
 use crate::xds_configurator::send_change_to_runtimes;
 
-pub async fn get_certs(State(admin_state): State<AdminState>) -> Json<Value> {
+pub async fn certs_handler(State(admin_state): State<AdminState>) -> Json<Value> {
     let mut cert_names: HashSet<String> = HashSet::new();
     let mut ca_names: HashSet<String> = HashSet::new();
 

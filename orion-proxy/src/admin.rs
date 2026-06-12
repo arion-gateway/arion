@@ -29,8 +29,8 @@ use parking_lot::RwLock;
 use serde::Serialize;
 
 use crate::admin::{
-    certs::get_certs, clusters::get_clusters, help::get_help, home::get_home, listeners::get_listeners,
-    memory::get_memory, ready::get_ready, server_info::get_server_info,
+    certs::certs_handler, clusters::clusters_handlers, help::help_handler, home::home_handler,
+    listeners::listeners_handler, memory::memory_handler, ready::ready_handler, server_info::server_info_handler,
 };
 
 mod certs;
@@ -68,23 +68,23 @@ struct ServerInfo {
 
 fn build_admin_router(admin_state: AdminState) -> Router {
     let mut router = Router::new();
-    router = router.route("/", get(get_home));
-    router = router.route("/certs", get(get_certs));
-    router = router.route("/clusters", get(get_clusters));
+    router = router.route("/", get(home_handler));
+    router = router.route("/certs", get(certs_handler));
+    router = router.route("/clusters", get(clusters_handlers));
 
     #[cfg(feature = "config-dump")]
     {
-        router = router.route("/config_dump", get(config_dump::get_config_dump))
+        router = router.route("/config_dump", get(config_dump::config_dump_handler))
     }
 
-    router = router.route("/help", get(get_help));
-    router = router.route("/listeners", get(get_listeners));
-    router = router.route("/memory", get(get_memory));
+    router = router.route("/help", get(help_handler));
+    router = router.route("/listeners", get(listeners_handler));
+    router = router.route("/memory", get(memory_handler));
     #[cfg(feature = "metrics")]
     {
-        use crate::admin::reset_counters::post_reset_counters;
+        use crate::admin::reset_counters::reset_counters_handler;
         use axum::routing::post;
-        router = router.route("/reset_counters", post(post_reset_counters));
+        router = router.route("/reset_counters", post(reset_counters_handler));
     }
 
     #[cfg(feature = "metrics")]
@@ -99,8 +99,8 @@ fn build_admin_router(admin_state: AdminState) -> Router {
         router = router.route("/stats/prometheus", get(prometheus_handler))
     }
 
-    router = router.route("/ready", get(get_ready));
-    router = router.route("/server_info", get(get_server_info));
+    router = router.route("/ready", get(ready_handler));
+    router = router.route("/server_info", get(server_info_handler));
 
     router.with_state(admin_state)
 }

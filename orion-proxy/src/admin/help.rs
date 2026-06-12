@@ -21,7 +21,7 @@ const RESET_COUNTERS_HELP: &str = "  /reset_counters (POST): reset all counters 
 #[cfg(not(feature = "metrics"))]
 const RESET_COUNTERS_HELP: &str = "";
 
-pub async fn get_help(State(mut _admin_state): State<AdminState>) -> String {
+pub async fn help_handler(State(mut _admin_state): State<AdminState>) -> String {
     const_format::concatcp!(
         "admin commands are:\n",
         "  /: admin home page\n",

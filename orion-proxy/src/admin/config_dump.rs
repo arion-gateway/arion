@@ -47,7 +47,7 @@ pub fn redact_secrets(secrets: Vec<Secret>) -> Vec<Secret> {
         .collect()
 }
 
-pub async fn get_config_dump(State(admin_state): State<AdminState>) -> Json<Value> {
+pub async fn config_dump_handler(State(admin_state): State<AdminState>) -> Json<Value> {
     // Unwrap listeners and routes configuration channels
     let mut listeners_senders = Vec::with_capacity(admin_state.configuration_senders.len());
     for ConfigurationSenders { listener_configuration_sender, .. } in admin_state.configuration_senders {
