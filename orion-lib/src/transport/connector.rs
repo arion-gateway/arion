@@ -386,6 +386,17 @@ impl Service<Uri> for UnifiedConnector {
             UnifiedConnector::Socket(c) => {
                 #[allow(unused_variables)]
                 let cluster_name = c.cluster_name;
+
+                // Check and increment circuit breaker connections
+                if let Err(_denial) = crate::clusters::try_increment_connections(cluster_name, crate::clusters::RoutingPriority::Default) {
+                    return Box::pin(async move {
+                        Err(ContextualError::new(ConnectError::Io(io::Error::new(
+                            io::ErrorKind::ConnectionRefused,
+                            format!("Circuit breaker max_connections exceeded for cluster {cluster_name}"),
+                        ))))
+                    });
+                }
+
                 let fut = c.call(uri);
                 #[cfg(feature = "metrics")]
                 let idle_timeout = c.idle_timeout.unwrap_or(DEFAULT_IDLE_TIMEOUT);
@@ -394,6 +405,9 @@ impl Service<Uri> for UnifiedConnector {
                     let shard_id = get_shard_id!();
                     let stream = fut.await;
                     let stream = stream.inspect_err(|e| {
+                        // Decrement circuit breaker connections since connection failed
+                        crate::clusters::decrement_connections(cluster_name, crate::clusters::RoutingPriority::Default);
+
                         match e.as_ref() {
                             ConnectError::Event(UpstreamError::ConnectTimeout(_)) => {
                                 // Record timeout metric
@@ -441,6 +455,9 @@ impl Service<Uri> for UnifiedConnector {
                         );
 
                         instrumented.metrics().with_drop_fn(Box::new(move |metrics, idle| {
+                            // Decrement circuit breaker connections on connection drop
+                            crate::clusters::decrement_connections(cluster_name, crate::clusters::RoutingPriority::Default);
+
                             with_metric!(
                                 clusters::UPSTREAM_CX_RX_BYTES_TOTAL,
                                 add,
@@ -480,6 +497,13 @@ impl Service<Uri> for UnifiedConnector {
                                     &[KeyValue::new("cluster", cluster_name)]
                                 );
                             }
+                        }))
+                    }
+                    #[cfg(not(feature = "metrics"))]
+                    {
+                        instrumented.metrics().with_drop_fn(Box::new(move |_metrics, _idle| {
+                            // Decrement circuit breaker connections on connection drop even if metrics are disabled
+                            crate::clusters::decrement_connections(cluster_name, crate::clusters::RoutingPriority::Default);
                         }))
                     }
 
