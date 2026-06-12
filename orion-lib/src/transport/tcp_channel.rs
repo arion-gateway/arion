@@ -70,7 +70,9 @@ impl TcpChannelConnector {
                 if let UnifiedConnector::Socket(ref socket_connector) = connector {
                     let cluster_name = socket_connector.cluster_name;
                     crate::clusters::try_increment_connections(cluster_name, crate::clusters::RoutingPriority::Default)
-                        .map_err(|e| -> crate::Error { format!("Circuit breaker max_connections exceeded: {:?}", e).into() })?;
+                        .map_err(|e| -> crate::Error {
+                            format!("Circuit breaker max_connections exceeded: {:?}", e).into()
+                        })?;
                     incremented_cb = true;
                     Some(cluster_name)
                 } else {
@@ -83,15 +85,20 @@ impl TcpChannelConnector {
             let res = async {
                 let (mut base_stream, cluster_name, upstream_local_addr, upstream_peer_addr) = match connector {
                     UnifiedConnector::Socket(socket_connector) => {
-                        let (tcp_stream, cluster_name) =
-                            socket_connector.connect().await.map_err(|e| e.with_context_msg("TCP connection failed"))?;
+                        let (tcp_stream, cluster_name) = socket_connector
+                            .connect()
+                            .await
+                            .map_err(|e| e.with_context_msg("TCP connection failed"))?;
 
                         let upstream_local_addr = tcp_stream.local_addr().ok();
                         let upstream_peer_addr = tcp_stream.peer_addr().ok();
                         let instrumented = InstrumentedStream::new(tcp_stream);
-                        
+
                         instrumented.metrics().with_drop_fn(Box::new(move |_metrics, _idle| {
-                            crate::clusters::decrement_connections(cluster_name, crate::clusters::RoutingPriority::Default);
+                            crate::clusters::decrement_connections(
+                                cluster_name,
+                                crate::clusters::RoutingPriority::Default,
+                            );
                         }));
 
                         let stream: AsyncInstrumentedStream = Box::new(instrumented);
@@ -116,7 +123,9 @@ impl TcpChannelConnector {
                         if !is_internal {
                             if let Some(metadata) = &connection_metadata {
                                 proxy_configurator.write_proxy_header(&mut base_stream, metadata).await.map_err(
-                                    |e| -> crate::Error { format!("Failed to write proxy protocol header: {e}").into() },
+                                    |e| -> crate::Error {
+                                        format!("Failed to write proxy protocol header: {e}").into()
+                                    },
                                 )?;
                             }
                         }
@@ -130,7 +139,8 @@ impl TcpChannelConnector {
                 };
 
                 Ok(TcpChannel { stream, cluster_name, upstream_local_addr, upstream_peer_addr })
-            }.await;
+            }
+            .await;
 
             if res.is_err() && incremented_cb {
                 if let Some(cluster_name) = cluster_name_for_cb {

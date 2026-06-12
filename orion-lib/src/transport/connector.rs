@@ -388,7 +388,9 @@ impl Service<Uri> for UnifiedConnector {
                 let cluster_name = c.cluster_name;
 
                 // Check and increment circuit breaker connections
-                if let Err(_denial) = crate::clusters::try_increment_connections(cluster_name, crate::clusters::RoutingPriority::Default) {
+                if let Err(_denial) =
+                    crate::clusters::try_increment_connections(cluster_name, crate::clusters::RoutingPriority::Default)
+                {
                     return Box::pin(async move {
                         Err(ContextualError::new(ConnectError::Io(io::Error::new(
                             io::ErrorKind::ConnectionRefused,
@@ -456,7 +458,10 @@ impl Service<Uri> for UnifiedConnector {
 
                         instrumented.metrics().with_drop_fn(Box::new(move |metrics, idle| {
                             // Decrement circuit breaker connections on connection drop
-                            crate::clusters::decrement_connections(cluster_name, crate::clusters::RoutingPriority::Default);
+                            crate::clusters::decrement_connections(
+                                cluster_name,
+                                crate::clusters::RoutingPriority::Default,
+                            );
 
                             with_metric!(
                                 clusters::UPSTREAM_CX_RX_BYTES_TOTAL,
@@ -503,7 +508,10 @@ impl Service<Uri> for UnifiedConnector {
                     {
                         instrumented.metrics().with_drop_fn(Box::new(move |_metrics, _idle| {
                             // Decrement circuit breaker connections on connection drop even if metrics are disabled
-                            crate::clusters::decrement_connections(cluster_name, crate::clusters::RoutingPriority::Default);
+                            crate::clusters::decrement_connections(
+                                cluster_name,
+                                crate::clusters::RoutingPriority::Default,
+                            );
                         }))
                     }
 

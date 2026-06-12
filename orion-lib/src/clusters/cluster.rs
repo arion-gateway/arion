@@ -184,14 +184,14 @@ impl TryFrom<&ClusterType> for ClusterConfig {
     type Error = Error;
     fn try_from(cluster: &ClusterType) -> Result<Self> {
         match cluster {
-            ClusterType::Static(static_cluster) => Ok((*static_cluster.config).clone()),
+            ClusterType::Static(static_cluster) => Ok((*static_cluster.global.config).clone()),
             ClusterType::Dynamic(dynamic_cluster) => {
                 let cla: ClusterLoadAssignmentConfig = dynamic_cluster.try_into()?;
-                let mut config = (*dynamic_cluster.config).clone();
+                let mut config = (*dynamic_cluster.global.config).clone();
                 config.discovery_settings = ClusterDiscoveryType::Eds(Some(cla));
                 Ok(config)
             },
-            ClusterType::OnDemand(original_dst_cluster) => Ok((*original_dst_cluster.config).clone()),
+            ClusterType::OnDemand(original_dst_cluster) => Ok((*original_dst_cluster.global.config).clone()),
         }
     }
 }
@@ -246,7 +246,7 @@ mod tests {
         let cla = match c {
             ClusterType::Static(s) => Some(&s.load_assignment),
             ClusterType::Dynamic(d) => {
-                assert_eq!(&d.bind_device, &expected_bind_device);
+                assert_eq!(&d.global.bind_device, &expected_bind_device);
                 d.load_assignment.as_ref()
             },
             ClusterType::OnDemand(_) => unreachable!("OnDemand cluster has no load assignment"),

@@ -1231,8 +1231,7 @@ mod envoy_conversions {
                 // max_retries,
                 retry_budget,
                 // track_remaining,
-                max_connection_pools
-                // max_connections
+                max_connection_pools // max_connections
             )?;
 
             let priority = EnvoyRoutingPriority::try_from(priority)

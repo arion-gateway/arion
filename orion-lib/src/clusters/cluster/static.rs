@@ -29,6 +29,7 @@ use crate::{
 };
 use http::uri::Authority;
 use orion_configuration::config::cluster::{HealthCheck, HealthStatus};
+use std::sync::Arc;
 use tracing::debug;
 
 #[derive(Debug, Clone)]
@@ -47,33 +48,35 @@ impl StaticClusterBuilder {
             self;
         let load_assignment = load_assignment.build()?;
         Ok(ClusterType::Static(StaticCluster {
-            name,
-            load_assignment,
+            global: Arc::new(GlobalStaticCluster { name, health_check, config, circuit_breaker }),
             transport_socket,
-            health_check,
-            config,
-            circuit_breaker,
+            load_assignment,
         }))
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct StaticCluster {
+pub struct GlobalStaticCluster {
     pub name: &'static str,
-    pub load_assignment: ClusterLoadAssignment,
-    pub(super) transport_socket: UpstreamTransportSocketConfigurator,
     pub health_check: Option<HealthCheck>,
     pub config: Box<orion_configuration::config::cluster::Cluster>,
     pub circuit_breaker: ClusterCircuitBreaker,
 }
 
+#[derive(Debug, Clone)]
+pub struct StaticCluster {
+    pub global: Arc<GlobalStaticCluster>,
+    pub(super) transport_socket: UpstreamTransportSocketConfigurator,
+    pub load_assignment: ClusterLoadAssignment,
+}
+
 impl ClusterOps for StaticCluster {
     fn get_name(&self) -> &'static str {
-        self.name
+        self.global.name
     }
 
     fn into_health_check(self) -> Option<HealthCheck> {
-        self.health_check
+        self.global.health_check.clone()
     }
 
     fn all_http_channels(&mut self) -> Vec<(Authority, HttpChannel)> {
@@ -102,7 +105,7 @@ impl ClusterOps for StaticCluster {
     }
 
     fn get_http_connection(&mut self, context: RoutingContext) -> Result<HttpChannels> {
-        debug!("{} : Getting connection", self.name);
+        debug!("{} : Getting connection", self.global.name);
         self.load_assignment.get_http_channel(context)
     }
 
@@ -119,6 +122,6 @@ impl ClusterOps for StaticCluster {
     }
 
     fn circuit_breaker(&self) -> &ClusterCircuitBreaker {
-        &self.circuit_breaker
+        &self.global.circuit_breaker
     }
 }

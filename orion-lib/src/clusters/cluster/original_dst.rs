@@ -37,6 +37,8 @@ use smol_str::SmolStr;
 use tracing::debug;
 use webpki::types::ServerName;
 
+use std::sync::Arc;
+
 use crate::{
     clusters::{
         circuit_breaker::ClusterCircuitBreaker,
@@ -105,6 +107,7 @@ impl OriginalDstClusterBuilder {
             } else {
                 (RoutingRequirement::Authority, None)
             };
+        let config_cleanup_interval = config.cleanup_interval.unwrap_or(DEFAULT_CLEANUP_INTERVAL);
         let http_config = HttpChannelConfig {
             tls_configurator: transport_socket.tls_configurator().cloned(),
             connect_timeout,
@@ -112,18 +115,17 @@ impl OriginalDstClusterBuilder {
             http_protocol_options: config.http_protocol_options.clone(),
         };
         ClusterType::OnDemand(OriginalDstCluster {
-            name,
+            global: Arc::new(GlobalOriginalDstCluster {
+                name,
+                transport_socket,
+                bind_device,
+                routing_requirements,
+                upstream_port_override,
+                config,
+                circuit_breaker,
+            }),
             http_config,
-            transport_socket,
-            bind_device,
-            endpoints: LruCache::with_expiry_duration_and_capacity(
-                config.cleanup_interval.unwrap_or(DEFAULT_CLEANUP_INTERVAL),
-                MAXIMUM_ENDPOINTS,
-            ),
-            routing_requirements,
-            upstream_port_override,
-            config,
-            circuit_breaker,
+            endpoints: LruCache::with_expiry_duration_and_capacity(config_cleanup_interval, MAXIMUM_ENDPOINTS),
         })
     }
 }
@@ -140,21 +142,26 @@ struct HttpChannelConfig {
 pub struct DynamicDest(pub SmolStr);
 
 #[derive(Clone)]
-pub struct OriginalDstCluster {
+pub struct GlobalOriginalDstCluster {
     pub name: &'static str,
-    http_config: HttpChannelConfig,
     transport_socket: UpstreamTransportSocketConfigurator,
     bind_device: Option<BindDevice>,
-    endpoints: LruCache<EndpointAddress, Endpoint>,
     routing_requirements: RoutingRequirement,
     upstream_port_override: Option<u16>,
     pub config: Box<orion_configuration::config::cluster::Cluster>,
     pub circuit_breaker: ClusterCircuitBreaker,
 }
 
+#[derive(Clone)]
+pub struct OriginalDstCluster {
+    pub global: Arc<GlobalOriginalDstCluster>,
+    endpoints: LruCache<EndpointAddress, Endpoint>,
+    http_config: HttpChannelConfig,
+}
+
 impl ClusterOps for OriginalDstCluster {
     fn get_name(&self) -> &'static str {
-        self.name
+        self.global.name
     }
 
     fn into_health_check(self) -> Option<HealthCheck> {
@@ -202,41 +209,42 @@ impl ClusterOps for OriginalDstCluster {
                 debug!("get HTTP connection by {dynamic_dest:?}...");
                 self.get_http_connection_by_dynamic_dest(dynamic_dest).map(HttpChannels::Single)
             },
-            _ => Err(format!("ORIGINAL_DST cluster {} requires authority or header routing context", self.name).into()),
+            _ => Err(format!("ORIGINAL_DST cluster {} requires authority or header routing context", self.global.name)
+                .into()),
         }
     }
 
     fn get_tcp_connection(&mut self, context: RoutingContext) -> Result<TcpChannelConnector> {
         match context {
             RoutingContext::Authority(authority) => self.get_tcp_connection_by_authority(authority),
-            _ => Err(format!("ORIGINAL_DST cluster {} requires authority routing context", self.name).into()),
+            _ => Err(format!("ORIGINAL_DST cluster {} requires authority routing context", self.global.name).into()),
         }
     }
 
     fn get_grpc_connection(&mut self, context: RoutingContext) -> Result<GrpcService> {
         match context {
             RoutingContext::Authority(authority) => self.get_grpc_connection_by_authority(authority),
-            _ => Err(format!("ORIGINAL_DST cluster {} requires authority routing context", self.name).into()),
+            _ => Err(format!("ORIGINAL_DST cluster {} requires authority routing context", self.global.name).into()),
         }
     }
 
     fn get_routing_requirements(&self) -> RoutingRequirement {
-        self.routing_requirements.clone()
+        self.global.routing_requirements.clone()
     }
 
     fn circuit_breaker(&self) -> &ClusterCircuitBreaker {
-        &self.circuit_breaker
+        &self.global.circuit_breaker
     }
 }
 
 impl OriginalDstCluster {
     fn apply_port_override<'a>(&self, authority: &'a Authority) -> Result<Cow<'a, Authority>> {
-        match self.upstream_port_override {
+        match self.global.upstream_port_override {
             Some(port_override) => {
                 let host = authority.host();
                 let upd_auth = format!("{host}:{port_override}").parse::<Authority>().with_context_msg(format!(
                     "Failed to apply port override {port_override} for cluster {}",
-                    self.name
+                    self.global.name
                 ))?;
 
                 Ok(Cow::Owned(upd_auth))
@@ -255,8 +263,8 @@ impl OriginalDstCluster {
         let endpoint = Endpoint::try_new(
             &endpoint_addr.0,
             &self.http_config,
-            self.bind_device.clone(),
-            self.transport_socket.clone(),
+            self.global.bind_device.clone(),
+            self.global.transport_socket.clone(),
         )?;
 
         let grpc_service = endpoint.grpc_service()?;
@@ -274,8 +282,8 @@ impl OriginalDstCluster {
         let endpoint = Endpoint::try_new(
             &endpoint_addr.0,
             &self.http_config,
-            self.bind_device.clone(),
-            self.transport_socket.clone(),
+            self.global.bind_device.clone(),
+            self.global.transport_socket.clone(),
         )?;
 
         let tcp_connector = endpoint.tcp_channel.clone();
@@ -288,7 +296,7 @@ impl OriginalDstCluster {
         let authority = Authority::try_from(dynamic_dest.0.as_str()).map_err(|_e| {
             format!(
                 "Invalid Authority in dynamic_dest metadata ({}) for ORIGINAL_DST cluster {}",
-                dynamic_dest.0, self.name
+                dynamic_dest.0, self.global.name
             )
         })?;
         self.get_http_connection_by_authority(&authority)
@@ -297,7 +305,7 @@ impl OriginalDstCluster {
     #[inline]
     fn get_http_connection_by_header(&mut self, header_value: &HeaderValue) -> Result<HttpChannel> {
         let authority = Authority::try_from(header_value.as_bytes())
-            .map_err(|_e| format!("Invalid authority in header for ORIGINAL_DST cluster {}", self.name))?;
+            .map_err(|_e| format!("Invalid authority in header for ORIGINAL_DST cluster {}", self.global.name))?;
         self.get_http_connection_by_authority(&authority)
     }
 
@@ -311,8 +319,8 @@ impl OriginalDstCluster {
         let endpoint = Endpoint::try_new(
             &endpoint_addr.0,
             &self.http_config,
-            self.bind_device.clone(),
-            self.transport_socket.clone(),
+            self.global.bind_device.clone(),
+            self.global.transport_socket.clone(),
         )?;
 
         let http_channel = endpoint.http_channel.clone();
