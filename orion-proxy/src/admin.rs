@@ -89,9 +89,8 @@ fn build_admin_router(admin_state: AdminState) -> Router {
 
     #[cfg(feature = "metrics")]
     {
-        use crate::admin::stats::get_stats;
-
-        router = router.route("/stats", get(get_stats));
+        use crate::admin::stats::canonical::stats_handler;
+        router = router.route("/stats", get(stats_handler));
     }
 
     #[cfg(feature = "prometheus")]
