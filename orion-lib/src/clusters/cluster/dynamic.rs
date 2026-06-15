@@ -50,7 +50,7 @@ pub struct DynamicClusterBuilder {
     pub health_check: Option<HealthCheck>,
     pub load_balancing_policy: LbPolicy,
     pub config: Box<orion_configuration::config::cluster::Cluster>,
-    pub circuit_breaker: ClusterCircuitBreaker,
+    pub circuit_breaker: Option<ClusterCircuitBreaker>,
 }
 
 impl DynamicClusterBuilder {
@@ -86,7 +86,7 @@ pub struct GlobalDynamicCluster {
     pub health_check: Option<HealthCheck>,
     pub load_balancing_policy: LbPolicy,
     pub config: Box<orion_configuration::config::cluster::Cluster>,
-    pub circuit_breaker: ClusterCircuitBreaker,
+    pub circuit_breaker: Option<ClusterCircuitBreaker>,
 }
 
 #[derive(Debug, Clone)]
@@ -173,8 +173,8 @@ impl ClusterOps for DynamicCluster {
         }
     }
 
-    fn circuit_breaker(&self) -> &ClusterCircuitBreaker {
-        &self.global.circuit_breaker
+    fn circuit_breaker(&self) -> Option<&ClusterCircuitBreaker> {
+        self.global.circuit_breaker.as_ref()
     }
 }
 

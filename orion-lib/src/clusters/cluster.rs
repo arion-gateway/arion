@@ -57,7 +57,7 @@ impl TryFrom<(Box<ClusterConfig>, &SecretManager)> for PartialClusterType {
 
         let transport_socket = UpstreamTransportSocketConfigurator::try_from((transport_socket_config, secrets))?;
 
-        let circuit_breaker = cluster.circuit_breakers.as_ref().map(ClusterCircuitBreaker::from).unwrap_or_default();
+        let circuit_breaker = cluster.circuit_breakers.as_ref().map(ClusterCircuitBreaker::from);
 
         let health_check = cluster.health_check;
         debug!("Cluster {} type {:?} ", cluster.name, cluster.discovery_settings);
@@ -169,7 +169,7 @@ pub trait ClusterOps {
     fn get_tcp_connection(&mut self, context: RoutingContext) -> Result<TcpChannelConnector>;
     fn get_grpc_connection(&mut self, context: RoutingContext) -> Result<GrpcService>;
     fn get_routing_requirements(&self) -> RoutingRequirement;
-    fn circuit_breaker(&self) -> &ClusterCircuitBreaker;
+    fn circuit_breaker(&self) -> Option<&ClusterCircuitBreaker>;
 }
 
 #[derive(Clone)]

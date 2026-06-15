@@ -39,7 +39,7 @@ pub struct StaticClusterBuilder {
     pub transport_socket: UpstreamTransportSocketConfigurator,
     pub health_check: Option<HealthCheck>,
     pub config: Box<orion_configuration::config::cluster::Cluster>,
-    pub circuit_breaker: ClusterCircuitBreaker,
+    pub circuit_breaker: Option<ClusterCircuitBreaker>,
 }
 
 impl StaticClusterBuilder {
@@ -60,7 +60,7 @@ pub struct GlobalStaticCluster {
     pub name: &'static str,
     pub health_check: Option<HealthCheck>,
     pub config: Box<orion_configuration::config::cluster::Cluster>,
-    pub circuit_breaker: ClusterCircuitBreaker,
+    pub circuit_breaker: Option<ClusterCircuitBreaker>,
 }
 
 #[derive(Debug, Clone)]
@@ -121,7 +121,7 @@ impl ClusterOps for StaticCluster {
         self.load_assignment.get_routing_requirements()
     }
 
-    fn circuit_breaker(&self) -> &ClusterCircuitBreaker {
-        &self.global.circuit_breaker
+    fn circuit_breaker(&self) -> Option<&ClusterCircuitBreaker> {
+        self.global.circuit_breaker.as_ref()
     }
 }

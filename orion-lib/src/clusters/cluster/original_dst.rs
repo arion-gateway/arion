@@ -75,7 +75,7 @@ pub struct OriginalDstClusterBuilder {
     pub connect_timeout: Option<Duration>,
     pub server_name: Option<ServerName<'static>>,
     pub config: Box<orion_configuration::config::cluster::Cluster>,
-    pub circuit_breaker: ClusterCircuitBreaker,
+    pub circuit_breaker: Option<ClusterCircuitBreaker>,
 }
 
 impl OriginalDstClusterBuilder {
@@ -149,7 +149,7 @@ pub struct GlobalOriginalDstCluster {
     routing_requirements: RoutingRequirement,
     upstream_port_override: Option<u16>,
     pub config: Box<orion_configuration::config::cluster::Cluster>,
-    pub circuit_breaker: ClusterCircuitBreaker,
+    pub circuit_breaker: Option<ClusterCircuitBreaker>,
 }
 
 #[derive(Clone)]
@@ -232,8 +232,8 @@ impl ClusterOps for OriginalDstCluster {
         self.global.routing_requirements.clone()
     }
 
-    fn circuit_breaker(&self) -> &ClusterCircuitBreaker {
-        &self.global.circuit_breaker
+    fn circuit_breaker(&self) -> Option<&ClusterCircuitBreaker> {
+        self.global.circuit_breaker.as_ref()
     }
 }
 
