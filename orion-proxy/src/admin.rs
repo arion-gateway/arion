@@ -130,43 +130,28 @@ pub async fn start_admin_server(
 mod tests {
     use super::*;
     use axum_test::TestServer;
+    use orion_stats::set_proxy_state;
 
     #[tokio::test]
-    #[allow(clippy::indexing_slicing)]
     async fn ready_endpoint_response() {
-        let server_startup = Instant::now();
         let admin_state = AdminState {
             bootstrap: Bootstrap::default(),
             configuration_senders: vec![],
             secret_manager: Arc::new(RwLock::new(orion_lib::SecretManager::default())),
             server_info: ServerInfo::default(),
-            server_startup,
+            server_startup: Instant::now(),
         };
         let app = build_admin_router(admin_state);
         let server = TestServer::new(app).unwrap();
 
-        // Add a small delay to ensure some uptime has elapsed
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        // Before the proxy reports itself live, /ready must fail.
+        let response = server.get("/ready").await;
+        response.assert_status_service_unavailable();
+
+        set_proxy_state(ProxyState::Live);
 
         let response = server.get("/ready").await;
         response.assert_status_ok();
-
-        let value: serde_json::Value = response.json();
-
-        // Validate the response structure
-        assert_eq!(value["state"], "Live");
-        assert!(value["uptime_all_epochs"].is_object());
-
-        // Parse the protobuf Duration format and validate it's reasonable
-        let uptime_obj = &value["uptime_all_epochs"];
-        assert!(uptime_obj["secs"].is_number());
-        assert!(uptime_obj["nanos"].is_number());
-
-        let seconds = uptime_obj["secs"].as_u64().unwrap();
-        let nanos = uptime_obj["nanos"].as_u64().unwrap();
-        let uptime_duration = Duration::new(seconds, u32::try_from(nanos).unwrap());
-
-        // The uptime should be at least 10ms (our sleep)
-        assert!(uptime_duration >= Duration::from_millis(10));
+        assert_eq!(response.text(), "LIVE");
     }
 }
