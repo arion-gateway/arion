@@ -29,7 +29,7 @@ use parking_lot::RwLock;
 use serde::Serialize;
 
 use crate::admin::{
-    certs::certs_handler, clusters::clusters_handlers, help::help_handler, home::home_handler,
+    certs::certs_handler, clusters::clusters_handler, help::help_handler, home::home_handler,
     listeners::listeners_handler, memory::memory_handler, ready::ready_handler, server_info::server_info_handler,
 };
 
@@ -70,7 +70,7 @@ fn build_admin_router(admin_state: AdminState) -> Router {
     let mut router = Router::new();
     router = router.route("/", get(home_handler));
     router = router.route("/certs", get(certs_handler));
-    router = router.route("/clusters", get(clusters_handlers));
+    router = router.route("/clusters", get(clusters_handler));
 
     #[cfg(feature = "config-dump")]
     {
