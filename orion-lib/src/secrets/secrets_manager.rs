@@ -32,7 +32,7 @@ use rustls::{
 use rustls_pemfile::{certs, pkcs8_private_keys};
 use serde::Serialize;
 use smol_str::{SmolStr, ToSmolStr};
-use std::sync::Arc;
+use std::{fmt::Write, sync::Arc};
 use tracing::{debug, warn};
 use webpki::types::ServerName;
 use x509_parser::extensions::GeneralName;
@@ -171,7 +171,10 @@ fn data_source_path(ds: &DataSource) -> &str {
 
 fn parse_cert_details(der: &[u8], path: &str) -> Option<CertDetails> {
     let (_, x509) = x509_parser::parse_x509_certificate(der).ok()?;
-    let serial_number = x509.raw_serial().iter().map(|b| format!("{b:02x}")).collect();
+    let serial_number = x509.raw_serial().iter().fold(String::new(), |mut serial, b| {
+        _ = write!(serial, "{b:02x}");
+        serial
+    });
     let validity = x509.validity();
     let valid_from =
         DateTime::<Utc>::from_timestamp(validity.not_before.timestamp(), 0)?.format("%Y-%m-%dT%H:%M:%SZ").to_string();
@@ -191,13 +194,11 @@ fn parse_cert_details(der: &[u8], path: &str) -> Option<CertDetails> {
                         Some(SubjectAltName { dns: Some((*dns).to_owned()), ip_address: None, uri: None })
                     },
                     GeneralName::IPAddress(bytes) => {
-                        let ip_str = match bytes.len() {
-                            4 => format!("{}.{}.{}.{}", bytes[0], bytes[1], bytes[2], bytes[3]),
-                            16 => {
-                                let addr: [u8; 16] = (*bytes).try_into().ok()?;
-                                std::net::Ipv6Addr::from(addr).to_string()
-                            },
-                            _ => return None,
+                        let ip_str = if let [a, b, c, d] = bytes {
+                            format!("{a}.{b}.{c}.{d}")
+                        } else {
+                            let addr: [u8; 16] = (*bytes).try_into().ok()?;
+                            std::net::Ipv6Addr::from(addr).to_string()
                         };
                         Some(SubjectAltName { dns: None, ip_address: Some(ip_str), uri: None })
                     },
@@ -300,7 +301,7 @@ impl SecretManager {
             let path = data_source_path(cert_store.config.trusted_ca());
             let Ok(mut reader) = cert_store.config.trusted_ca().into_buf_read() else { continue };
             let ca_cert: Vec<CertDetails> = certs(&mut reader)
-                .filter_map(|r| r.ok())
+                .filter_map(std::result::Result::ok)
                 .filter_map(|der| parse_cert_details(der.as_ref(), path))
                 .collect();
             if !ca_cert.is_empty() {

@@ -84,14 +84,14 @@ fn build_admin_router(admin_state: AdminState) -> Router {
     {
         use crate::admin::reset_counters::reset_counters_handler;
         use axum::routing::post;
-        router = router.route("/reset_counters", post(reset_counters_handler));
-    }
+        router = router.route("/reset_counters", post(reset_counters_handler))
+    };
 
     #[cfg(feature = "metrics")]
     {
         use crate::admin::stats::canonical::stats_handler;
-        router = router.route("/stats", get(stats_handler));
-    }
+        router = router.route("/stats", get(stats_handler))
+    };
 
     #[cfg(feature = "prometheus")]
     {

@@ -22,7 +22,7 @@ pub async fn certs_handler(State(admin_state): State<AdminState>) -> Json<Value>
     collect_listener_sds_names(&admin_state.configuration_senders, &mut cert_names, &mut ca_names).await;
 
     for cluster in get_all_clusters() {
-        collect_cluster_sds_names(&cluster.transport_socket, &mut cert_names, &mut ca_names);
+        collect_cluster_sds_names(cluster.transport_socket.as_ref(), &mut cert_names, &mut ca_names);
     }
 
     let certificates = admin_state.secret_manager.read().get_certs_info(&cert_names, &ca_names);
@@ -57,7 +57,7 @@ fn collect_filter_chain_tls_sds_names(
 ) {
     let Some(tls) = tls_config else { return };
     if let Secrets::SdsConfig(names) = &tls.common_tls_context.secrets {
-        cert_names.extend(names.iter().map(|n| n.to_string()));
+        cert_names.extend(names.iter().map(ToString::to_string));
     }
     if let Some(CommonTlsValidationContext::SdsConfig(name)) = &tls.common_tls_context.validation_context {
         ca_names.insert(name.to_string());
@@ -65,7 +65,7 @@ fn collect_filter_chain_tls_sds_names(
 }
 
 fn collect_cluster_sds_names(
-    transport_socket: &Option<UpstreamTransportSocketConfig>,
+    transport_socket: Option<&UpstreamTransportSocketConfig>,
     cert_names: &mut HashSet<String>,
     ca_names: &mut HashSet<String>,
 ) {

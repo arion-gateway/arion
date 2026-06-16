@@ -14,8 +14,8 @@ use orion_metrics::{
 };
 
 /// Formats the line in native Envoy format:
-/// prefix.[tag0_value].[tag1_value]...name: value
-/// Since KeyValues are already hierarchical, we simply iterate in order.
+/// prefix.[`tag0_value`].[`tag1_value`]...name: value
+/// Since `KeyValues` are already hierarchical, we simply iterate in order.
 fn format_canonical_line(
     out: &mut impl Write,
     prefix: &str,
@@ -23,7 +23,7 @@ fn format_canonical_line(
     labels: &[KeyValue],
     value: u64,
 ) -> io::Result<()> {
-    write!(out, "{}", prefix)?;
+    write!(out, "{prefix}")?;
 
     // Add hierarchical tag values
     for kv in labels {
@@ -31,7 +31,7 @@ fn format_canonical_line(
     }
 
     // Add metric name and final value
-    writeln!(out, ".{}: {}", name, value)?;
+    writeln!(out, ".{name}: {value}")?;
     Ok(())
 }
 
