@@ -133,3 +133,29 @@ pub(crate) fn init_metrics(rename: &std::collections::HashMap<String, String>) {
         "Number of active connections"
     );
 }
+
+pub fn reset_metrics() {
+    use crate::sharded::Clearable;
+    let metrics: &[&dyn Clearable] = &[
+        &INVOCATIONS,
+        &THROTTLES,
+        &SYSTEM_ERRORS,
+        &USER_ERRORS,
+        &TOTAL_ERRORS,
+        &BYTES_TX,
+        &BYTES_RX,
+        &INBOUND_STREAMING_BYTES_PROCESSED,
+        &OUTBOUND_STREAMING_BYTES_PROCESSED,
+        &LATENCY,
+        &CONNECTIONS,
+        &CONNECTIONS_ACTIVE,
+        &HTTP_1XX_RESPONSES,
+        &HTTP_2XX_RESPONSES,
+        &HTTP_3XX_RESPONSES,
+        &HTTP_4XX_RESPONSES,
+        &HTTP_5XX_RESPONSES,
+    ];
+    for metric in metrics {
+        metric.clear();
+    }
+}

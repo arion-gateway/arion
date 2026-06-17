@@ -15,23 +15,33 @@
 //
 //
 
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{sync::Arc, time::Instant};
 
-use axum::{extract::State, routing::get, Json, Router};
+use axum::{routing::get, Router};
 use orion_configuration::config::Bootstrap;
 use orion_error::{Error, Result};
 use orion_lib::{ConfigurationSenders, SecretManager};
 use parking_lot::RwLock;
-use serde::Serialize;
-use serde_json::{json, Value};
 
+use crate::admin::{
+    certs::certs_handler, clusters::clusters_handler, help::help_handler, home::home_handler,
+    listeners::listeners_handler, memory::memory_handler, ready::ready_handler, server_info::server_info_handler,
+};
+
+mod certs;
+mod clusters;
 #[cfg(feature = "config-dump")]
 mod config_dump;
-#[cfg(feature = "prometheus")]
-mod prometheus;
+mod help;
+mod home;
+mod listeners;
+mod memory;
+mod ready;
+#[cfg(feature = "metrics")]
+mod reset_counters;
+mod server_info;
+#[cfg(feature = "metrics")]
+mod stats;
 
 #[allow(dead_code)]
 #[derive(Clone)]
@@ -39,41 +49,44 @@ struct AdminState {
     bootstrap: Bootstrap,
     configuration_senders: Vec<ConfigurationSenders>,
     secret_manager: Arc<RwLock<SecretManager>>,
-    server_info: ServerInfo,
     server_startup: Instant,
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Debug, Default, Serialize)]
-enum ProxyState {
-    #[default]
-    Live,
-    Draining,
-    PreInitializing,
-    Initializing,
-}
-
-#[derive(Debug, Default, Serialize, Clone)]
-struct ServerInfo {
-    #[serde(default = "Default::default")]
-    state: ProxyState,
-    #[serde(skip_serializing_if = "Option::is_none", default = "Default::default")]
-    uptime_all_epochs: Option<Duration>,
 }
 
 fn build_admin_router(admin_state: AdminState) -> Router {
     let mut router = Router::new();
+    router = router.route("/", get(home_handler));
+    router = router.route("/certs", get(certs_handler));
+    router = router.route("/clusters", get(clusters_handler));
+
     #[cfg(feature = "config-dump")]
     {
-        router = router.route("/config_dump", get(config_dump::get_config_dump))
+        router = router.route("/config_dump", get(config_dump::config_dump_handler))
     }
+
+    router = router.route("/help", get(help_handler));
+    router = router.route("/listeners", get(listeners_handler));
+    router = router.route("/memory", get(memory_handler));
+    #[cfg(feature = "metrics")]
+    {
+        use crate::admin::reset_counters::reset_counters_handler;
+        use axum::routing::post;
+        router = router.route("/reset_counters", post(reset_counters_handler))
+    };
+
+    #[cfg(feature = "metrics")]
+    {
+        use crate::admin::stats::canonical::stats_handler;
+        router = router.route("/stats", get(stats_handler))
+    };
+
     #[cfg(feature = "prometheus")]
     {
-        use crate::admin::prometheus::prometheus_handler;
+        use crate::admin::stats::prometheus::prometheus_handler;
         router = router.route("/stats/prometheus", get(prometheus_handler))
     }
 
-    router = router.route("/ready", get(get_ready));
+    router = router.route("/ready", get(ready_handler));
+    router = router.route("/server_info", get(server_info_handler));
 
     router.with_state(admin_state)
 }
@@ -87,7 +100,6 @@ pub async fn start_admin_server(
         bootstrap: bootstrap.clone(),
         configuration_senders,
         secret_manager,
-        server_info: ServerInfo::default(),
         server_startup: Instant::now(),
     };
     let app = build_admin_router(admin_state);
@@ -99,52 +111,31 @@ pub async fn start_admin_server(
     Ok(())
 }
 
-async fn get_ready(State(mut admin_state): State<AdminState>) -> Json<Value> {
-    admin_state.server_info.uptime_all_epochs = Some(admin_state.server_startup.elapsed());
-    Json(json!(admin_state.server_info))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use axum_test::TestServer;
+    use orion_stats::set_proxy_state;
 
     #[tokio::test]
-    #[allow(clippy::indexing_slicing)]
     async fn ready_endpoint_response() {
-        let server_startup = Instant::now();
         let admin_state = AdminState {
             bootstrap: Bootstrap::default(),
             configuration_senders: vec![],
             secret_manager: Arc::new(RwLock::new(orion_lib::SecretManager::default())),
-            server_info: ServerInfo::default(),
-            server_startup,
+            server_startup: Instant::now(),
         };
         let app = build_admin_router(admin_state);
         let server = TestServer::new(app).unwrap();
 
-        // Add a small delay to ensure some uptime has elapsed
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        // Before the proxy reports itself live, /ready must fail.
+        let response = server.get("/ready").await;
+        response.assert_status_service_unavailable();
+
+        set_proxy_state(ProxyState::Live);
 
         let response = server.get("/ready").await;
         response.assert_status_ok();
-
-        let value: serde_json::Value = response.json();
-
-        // Validate the response structure
-        assert_eq!(value["state"], "Live");
-        assert!(value["uptime_all_epochs"].is_object());
-
-        // Parse the protobuf Duration format and validate it's reasonable
-        let uptime_obj = &value["uptime_all_epochs"];
-        assert!(uptime_obj["secs"].is_number());
-        assert!(uptime_obj["nanos"].is_number());
-
-        let seconds = uptime_obj["secs"].as_u64().unwrap();
-        let nanos = uptime_obj["nanos"].as_u64().unwrap();
-        let uptime_duration = Duration::new(seconds, u32::try_from(nanos).unwrap());
-
-        // The uptime should be at least 10ms (our sleep)
-        assert!(uptime_duration >= Duration::from_millis(10));
+        assert_eq!(response.text(), "LIVE");
     }
 }

@@ -25,6 +25,7 @@ use futures::future::join_all;
 use orion_configuration::config::{
     bootstrap::Node, log::AccessLogConfig, metrics::MetricsConfig, runtime::Affinity, Bootstrap,
 };
+use orion_stats::{set_proxy_state, ProxyState};
 
 #[cfg(feature = "tracing")]
 use {
@@ -229,6 +230,7 @@ fn launch_runtimes(
     };
 
     let handles = proxy_handles.into_iter().chain(std::iter::once(services_handle)).collect::<Vec<_>>();
+    set_proxy_state(ProxyState::Live);
 
     for h in handles {
         if let Err(err) = h.join() {

@@ -71,3 +71,18 @@ pub(crate) fn init_metrics(rename: &std::collections::HashMap<String, String>) {
         "Total number of bytes sent in TCP connections"
     );
 }
+
+pub fn reset_metrics() {
+    use crate::sharded::Clearable;
+    let metrics: &[&dyn Clearable] = &[
+        &DOWNSTREAM_CX_TOTAL,
+        &DOWNSTREAM_CX_DESTROY,
+        &DOWNSTREAM_CX_ACTIVE,
+        &DOWNSTREAM_CX_LENGTH_MS,
+        &CX_RX_BYTES_RECEIVED,
+        &CX_TX_BYTES_SENT,
+    ];
+    for metric in metrics {
+        metric.clear();
+    }
+}

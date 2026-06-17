@@ -19,15 +19,18 @@ orion-configuration.workspace  = true
 orion-error.workspace          = true
 orion-format.workspace         = true
 orion-lib.workspace            = true
+orion-stats.workspace          = true
 orion-metrics = { workspace = true, optional = true }
 orion-tracing.workspace        = true
 orion-xds.workspace            = true
-parking_lot.workspace = true
-pingora-timeout.workspace = true
+parking_lot.workspace          = true
+pingora-timeout.workspace      = true
 tokio.workspace                = true
 tower.workspace                = true
 tracing.workspace              = true
 ahash.workspace                = true
+const_format.workspace         = true
+maud.workspace                 = true
 
 axum.workspace = true
 smol_str.workspace = true
@@ -50,7 +53,7 @@ smallvec.workspace = true
 [features]
 config-dump = []
 dhat-heap   = ["dep:dhat"]
-jemalloc    = ["dep:tikv-jemallocator", "orion-metrics/jemalloc"]
+jemalloc    = ["dep:tikv-jemallocator", "orion-metrics/jemalloc", "orion-stats/jemalloc"]
 metrics     = ["dep:orion-metrics", "orion-lib/metrics"]
 instrumentation = ["orion-lib/instrumentation"]
 tracing     = ["orion-lib/tracing"]

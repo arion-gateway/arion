@@ -17,6 +17,7 @@
 
 use orion_configuration::{config::Config, options::Options};
 use orion_lib::{metrics, Result, RUNTIME_CONFIG};
+use orion_stats::{set_proxy_state, ProxyState};
 
 #[macro_use]
 mod admin;
@@ -30,6 +31,8 @@ pub fn run() -> Result<()> {
 
     let options = Options::parse_options();
     let Config { runtime, logging, access_log_config, metrics, bootstrap } = Config::new(&options)?;
+
+    set_proxy_state(ProxyState::Initializing);
 
     RUNTIME_CONFIG.set(runtime).map_err(|_e| "runtime config was somehow set before we had a chance to set it")?;
 

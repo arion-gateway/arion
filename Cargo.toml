@@ -11,6 +11,7 @@ members = [
   "orion-format",
   "orion-lib",
   "orion-metrics",
+  "orion-stats",
   "orion-proxy",
   "orion-tracing",
   "orion-xds",
@@ -40,6 +41,7 @@ orion-http-header        = { path = "orion-http-header" }
 orion-interner           = { path = "orion-interner" }
 orion-lib                = { path = "orion-lib" }
 orion-metrics            = { path = "orion-metrics" }
+orion-stats              = { path = "orion-stats" }
 orion-tracing            = { path = "orion-tracing" }
 orion-xds                = { path = "orion-xds" }
 
@@ -98,6 +100,7 @@ jsonschema               = "0.42.1"
 jsonwebtoken             = { version = "10.3.0", features = ["rust_crypto"] }
 lasso                    = { version = "0.7.3", features = ["ahash", "ahasher", "dashmap", "multi-threaded"] }
 lru_time_cache           = "0.11.11"
+maud                     = "0.26"
 memory-stats             = "1.2.0"
 moka                     = { version = "0.12.12", features = ["sync"] }
 nohash                   = "0.2.0"

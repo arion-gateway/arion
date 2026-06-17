@@ -30,6 +30,7 @@ opentelemetry-otlp = { workspace = true, features = [
 opentelemetry_sdk.workspace = true
 orion-configuration.workspace = true
 orion-interner.workspace = true
+orion-stats.workspace = true
 parking_lot.workspace = true
 serde.workspace = true
 thread-id.workspace = true
@@ -38,4 +39,3 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 smallvec.workspace = true
 const_format.workspace = true
-
