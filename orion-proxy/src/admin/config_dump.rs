@@ -104,7 +104,7 @@ pub async fn config_dump_handler(State(admin_state): State<AdminState>) -> Json<
 mod config_dump_tests {
     use std::{sync::Arc, time::Instant};
 
-    use crate::admin::{build_admin_router, ServerInfo};
+    use crate::admin::build_admin_router;
 
     use super::*;
     use axum_test::TestServer;
@@ -220,7 +220,6 @@ mod config_dump_tests {
             bootstrap: bootstrap.clone(),
             configuration_senders: vec![configuration_senders],
             secret_manager: Arc::new(RwLock::new(orion_lib::SecretManager::default())),
-            server_info: ServerInfo::default(),
             server_startup: Instant::now(),
         };
         let app = build_admin_router(admin_state);
@@ -324,7 +323,6 @@ mod config_dump_tests {
             bootstrap: Bootstrap::default(),
             configuration_senders: vec![configuration_senders],
             secret_manager: Arc::new(RwLock::new(orion_lib::SecretManager::default())),
-            server_info: ServerInfo::default(),
             server_startup: Instant::now(),
         };
         let app = build_admin_router(admin_state);
@@ -382,7 +380,6 @@ mod config_dump_tests {
             bootstrap: Bootstrap::default(),
             configuration_senders: vec![configuration_senders],
             secret_manager: Arc::new(RwLock::new(secret_manager)),
-            server_info: ServerInfo::default(),
             server_startup: Instant::now(),
         };
         let app = build_admin_router(admin_state);
@@ -439,7 +436,6 @@ mod config_dump_tests {
             bootstrap: Bootstrap::default(),
             configuration_senders: vec![configuration_senders],
             secret_manager: Arc::new(RwLock::new(secret_manager)),
-            server_info: ServerInfo::default(),
             server_startup: Instant::now(),
         };
         let app = build_admin_router(admin_state);
@@ -529,7 +525,6 @@ mod config_dump_tests {
             bootstrap: Bootstrap::default(),
             configuration_senders: vec![configuration_senders],
             secret_manager: Arc::new(RwLock::new(secret_manager)),
-            server_info: ServerInfo::default(),
             server_startup: Instant::now(),
         };
         let app = build_admin_router(admin_state);

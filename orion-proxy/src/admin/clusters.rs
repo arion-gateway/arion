@@ -156,7 +156,7 @@ pub async fn clusters_handler(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::admin::{build_admin_router, ServerInfo};
+    use crate::admin::build_admin_router;
     use axum_test::TestServer;
     use orion_configuration::config::{
         cluster::{Cluster, ClusterLoadAssignment, HttpProtocolOptions, LbEndpoint, LbPolicy, OriginalDstConfig},
@@ -172,7 +172,6 @@ mod tests {
             bootstrap: Bootstrap::default(),
             configuration_senders: vec![],
             secret_manager: Arc::new(RwLock::new(orion_lib::SecretManager::default())),
-            server_info: ServerInfo::default(),
             server_startup: Instant::now(),
         }
     }

@@ -15,18 +15,13 @@
 //
 //
 
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{sync::Arc, time::Instant};
 
 use axum::{routing::get, Router};
 use orion_configuration::config::Bootstrap;
 use orion_error::{Error, Result};
 use orion_lib::{ConfigurationSenders, SecretManager};
-use orion_stats::ProxyState;
 use parking_lot::RwLock;
-use serde::Serialize;
 
 use crate::admin::{
     certs::certs_handler, clusters::clusters_handler, help::help_handler, home::home_handler,
@@ -54,16 +49,7 @@ struct AdminState {
     bootstrap: Bootstrap,
     configuration_senders: Vec<ConfigurationSenders>,
     secret_manager: Arc<RwLock<SecretManager>>,
-    server_info: ServerInfo,
     server_startup: Instant,
-}
-
-#[derive(Debug, Default, Serialize, Clone)]
-struct ServerInfo {
-    #[serde(default = "Default::default")]
-    state: ProxyState,
-    #[serde(skip_serializing_if = "Option::is_none", default = "Default::default")]
-    uptime_all_epochs: Option<Duration>,
 }
 
 fn build_admin_router(admin_state: AdminState) -> Router {
@@ -114,7 +100,6 @@ pub async fn start_admin_server(
         bootstrap: bootstrap.clone(),
         configuration_senders,
         secret_manager,
-        server_info: ServerInfo::default(),
         server_startup: Instant::now(),
     };
     let app = build_admin_router(admin_state);
@@ -138,7 +123,6 @@ mod tests {
             bootstrap: Bootstrap::default(),
             configuration_senders: vec![],
             secret_manager: Arc::new(RwLock::new(orion_lib::SecretManager::default())),
-            server_info: ServerInfo::default(),
             server_startup: Instant::now(),
         };
         let app = build_admin_router(admin_state);
