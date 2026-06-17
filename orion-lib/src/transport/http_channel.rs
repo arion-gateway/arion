@@ -29,7 +29,7 @@ use crate::{
         synthetic_http_response::SyntheticHttpResponse,
     },
     secrets::{TlsConfigurator, WantsToBuildClient},
-    thread_local::{LocalBuilder, LocalObject},
+    thread_local::{LocalBuilder, ThreadLocalObject},
     transport::timer::PingoraTimer,
     Error, OrionRequestBody, OrionResponseBody, RequestContext, Result,
 };
@@ -79,14 +79,14 @@ type HttpsClient = Client<HttpsConnector<UnifiedConnector>, OrionRequestBody>;
 // The inner Arc, instead, is used to pass the client to async code, so it's already wrapped by the Arc.
 
 #[derive(Clone, Debug)]
-pub struct ClientContext {
+pub struct HttpsClientExt {
     configured_upstream_http_version: Codec,
-    client: Arc<LocalObject<Arc<HttpsClient>, Builder, HttpsConnector<UnifiedConnector>>>,
+    client: Arc<ThreadLocalObject<Arc<HttpsClient>, Builder, HttpsConnector<UnifiedConnector>>>,
 }
-impl ClientContext {
+impl HttpsClientExt {
     fn new(
         configured_upstream_http_version: Codec,
-        client: Arc<LocalObject<Arc<HttpsClient>, Builder, HttpsConnector<UnifiedConnector>>>,
+        client: Arc<ThreadLocalObject<Arc<HttpsClient>, Builder, HttpsConnector<UnifiedConnector>>>,
     ) -> Self {
         Self { configured_upstream_http_version, client }
     }
@@ -129,8 +129,8 @@ pub struct HttpChannel {
 
 #[derive(Clone, Debug)]
 pub enum HttpChannelClient {
-    Plain(Arc<LocalObject<Arc<HttpClient>, Builder, UnifiedConnector>>),
-    Tls(ClientContext),
+    Plain(Arc<ThreadLocalObject<Arc<HttpClient>, Builder, UnifiedConnector>>),
+    Tls(HttpsClientExt),
     Unix(hyper::Uri, Arc<Client<UnixConnector, InstrumentedBody<TimeoutBody<PolyBody>>>>),
 }
 
@@ -261,9 +261,9 @@ impl HttpChannelBuilder {
             };
 
             Ok(HttpChannel {
-                channel_client: HttpChannelClient::Tls(ClientContext::new(
+                channel_client: HttpChannelClient::Tls(HttpsClientExt::new(
                     self.http_protocol_options.codec,
-                    Arc::new(LocalObject::new(client_builder, http_connector)),
+                    Arc::new(ThreadLocalObject::new(client_builder, http_connector)),
                 )),
                 http_version: self.http_protocol_options.codec,
                 enable_trailers,
@@ -275,7 +275,7 @@ impl HttpChannelBuilder {
                 UnifiedConnector::from((&self.connect_using, self.cluster_name.unwrap_or_default(), is_http2));
 
             Ok(HttpChannel {
-                channel_client: HttpChannelClient::Plain(Arc::new(LocalObject::new(client_builder, connector))),
+                channel_client: HttpChannelClient::Plain(Arc::new(ThreadLocalObject::new(client_builder, connector))),
                 http_version: self.http_protocol_options.codec,
                 enable_trailers,
                 upstream_authority: authority,
@@ -494,7 +494,7 @@ impl HttpChannel {
     ) -> Result<Response<Incoming>> {
         match &self.channel_client {
             HttpChannelClient::Plain(sender) => {
-                let client = sender.get_or_build();
+                let client = sender.get_local();
                 let req = maybe_normalize_uri(request, false)?;
                 self.send_with_policy(
                     req,
@@ -509,9 +509,9 @@ impl HttpChannel {
                 .await
             },
             HttpChannelClient::Tls(context) => {
-                let ClientContext { configured_upstream_http_version, client: sender } = context;
+                let HttpsClientExt { configured_upstream_http_version, client: sender } = context;
                 let configured_version = *configured_upstream_http_version;
-                let client = sender.get_or_build();
+                let client = sender.get_local();
                 let req = maybe_normalize_uri(request, true)?;
                 //FIXME(hayley): apply http protocol translation for plaintext too
                 let req = maybe_change_http_protocol_version(req, configured_version)?;

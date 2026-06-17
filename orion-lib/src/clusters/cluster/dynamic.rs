@@ -26,6 +26,8 @@ use orion_configuration::config::{
     transport::BindDevice,
 };
 
+use std::sync::Arc;
+
 use crate::{
     clusters::{
         circuit_breaker::ClusterCircuitBreaker,
@@ -48,7 +50,7 @@ pub struct DynamicClusterBuilder {
     pub health_check: Option<HealthCheck>,
     pub load_balancing_policy: LbPolicy,
     pub config: Box<orion_configuration::config::cluster::Cluster>,
-    pub circuit_breaker: ClusterCircuitBreaker,
+    pub circuit_breaker: Option<ClusterCircuitBreaker>,
 }
 
 impl DynamicClusterBuilder {
@@ -63,28 +65,35 @@ impl DynamicClusterBuilder {
             circuit_breaker,
         } = self;
         ClusterType::Dynamic(DynamicCluster {
-            name,
+            global: Arc::new(GlobalDynamicCluster {
+                name,
+                bind_device,
+                health_check,
+                load_balancing_policy,
+                config,
+                circuit_breaker,
+            }),
             load_assignment: None,
             transport_socket,
-            health_check,
-            load_balancing_policy,
-            bind_device,
-            config,
-            circuit_breaker,
         })
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct DynamicCluster {
+pub struct GlobalDynamicCluster {
     pub name: &'static str,
     pub bind_device: Option<BindDevice>,
-    pub(super) load_assignment: Option<ClusterLoadAssignment>,
-    pub transport_socket: UpstreamTransportSocketConfigurator,
     pub health_check: Option<HealthCheck>,
     pub load_balancing_policy: LbPolicy,
     pub config: Box<orion_configuration::config::cluster::Cluster>,
-    pub circuit_breaker: ClusterCircuitBreaker,
+    pub circuit_breaker: Option<ClusterCircuitBreaker>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DynamicCluster {
+    pub global: Arc<GlobalDynamicCluster>,
+    pub(super) load_assignment: Option<ClusterLoadAssignment>,
+    pub transport_socket: UpstreamTransportSocketConfigurator,
 }
 
 impl DynamicCluster {
@@ -95,11 +104,11 @@ impl DynamicCluster {
 
 impl ClusterOps for DynamicCluster {
     fn get_name(&self) -> &'static str {
-        self.name
+        self.global.name
     }
 
     fn into_health_check(self) -> Option<HealthCheck> {
-        self.health_check
+        self.global.health_check.clone()
     }
 
     fn all_http_channels(&mut self) -> Vec<(Authority, HttpChannel)> {
@@ -134,7 +143,7 @@ impl ClusterOps for DynamicCluster {
         if let Some(cla) = self.load_assignment.as_mut() {
             cla.get_http_channel(context)
         } else {
-            Err(format!("{} No channels available", self.name).into())
+            Err(format!("{} No channels available", self.global.name).into())
         }
     }
 
@@ -142,7 +151,7 @@ impl ClusterOps for DynamicCluster {
         if let Some(cla) = self.load_assignment.as_mut() {
             cla.get_tcp_channel()
         } else {
-            Err(format!("{} No channels available", self.name).into())
+            Err(format!("{} No channels available", self.global.name).into())
         }
     }
 
@@ -150,22 +159,22 @@ impl ClusterOps for DynamicCluster {
         if let Some(cla) = self.load_assignment.as_mut() {
             cla.get_grpc_channel()
         } else {
-            Err(format!("{} No channels available", self.name).into())
+            Err(format!("{} No channels available", self.global.name).into())
         }
     }
 
     fn get_routing_requirements(&self) -> RoutingRequirement {
         if let Some(cla) = &self.load_assignment {
             cla.get_routing_requirements()
-        } else if self.load_balancing_policy.requires_hash() {
+        } else if self.global.load_balancing_policy.requires_hash() {
             RoutingRequirement::Hash
         } else {
             RoutingRequirement::None
         }
     }
 
-    fn circuit_breaker(&self) -> &ClusterCircuitBreaker {
-        &self.circuit_breaker
+    fn circuit_breaker(&self) -> Option<&ClusterCircuitBreaker> {
+        self.global.circuit_breaker.as_ref()
     }
 }
 
@@ -195,6 +204,6 @@ impl TryFrom<&DynamicCluster> for ClusterLoadAssignmentConfig {
                 Ok(LocalityLbEndpointsConfig { priority: lep.priority, lb_endpoints })
             })
             .collect::<crate::Result<Vec<_>>>()?;
-        Ok(ClusterLoadAssignmentConfig { cluster_name: cluster.name.into(), endpoints })
+        Ok(ClusterLoadAssignmentConfig { cluster_name: cluster.global.name.into(), endpoints })
     }
 }

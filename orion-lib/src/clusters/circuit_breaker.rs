@@ -76,6 +76,18 @@ impl ClusterCircuitBreaker {
         }
     }
 
+    pub fn try_increment_connections(&self, priority: RoutingPriority) -> Result<(), CircuitBreakerDenial> {
+        let state = self.get_state(priority);
+
+        let prev = state.active_connections.fetch_add(1, Ordering::Relaxed);
+        if prev >= state.thresholds.max_connections {
+            state.active_connections.fetch_sub(1, Ordering::Relaxed);
+            return Err(CircuitBreakerDenial::MaxConnections);
+        }
+
+        Ok(())
+    }
+
     pub fn increment_connections(&self, priority: RoutingPriority) {
         self.get_state(priority).active_connections.fetch_add(1, Ordering::Relaxed);
     }
@@ -86,11 +98,6 @@ impl ClusterCircuitBreaker {
 
     pub fn try_increment_requests(&self, priority: RoutingPriority) -> Result<(), CircuitBreakerDenial> {
         let state = self.get_state(priority);
-
-        let active_cx = state.active_connections.load(Ordering::Relaxed);
-        if active_cx >= state.thresholds.max_connections {
-            return Err(CircuitBreakerDenial::MaxConnections);
-        }
 
         let prev = state.active_requests.fetch_add(1, Ordering::Relaxed);
         if prev >= state.thresholds.max_requests {

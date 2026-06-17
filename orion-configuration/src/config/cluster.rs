@@ -1231,8 +1231,7 @@ mod envoy_conversions {
                 // max_retries,
                 retry_budget,
                 // track_remaining,
-                max_connection_pools,
-                max_connections
+                max_connection_pools // max_connections
             )?;
 
             let priority = EnvoyRoutingPriority::try_from(priority)
@@ -1241,8 +1240,7 @@ mod envoy_conversions {
                 .with_node("priority")?;
             Ok(Self {
                 priority,
-                // max_connections: max_connections.map(|v| v.value).unwrap_or(DEFAULT_MAX_CONNECTIONS) (not yet supported).
-                max_connections: DEFAULT_MAX_CONNECTIONS,
+                max_connections: max_connections.map(|v| v.value).unwrap_or(DEFAULT_MAX_CONNECTIONS),
                 max_requests: max_requests.map(|v| v.value).unwrap_or(DEFAULT_MAX_REQUESTS),
                 max_retries: max_retries.map(|v| v.value).unwrap_or(DEFAULT_MAX_RETRIES),
                 track_remaining,

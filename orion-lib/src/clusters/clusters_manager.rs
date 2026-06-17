@@ -167,9 +167,9 @@ pub fn change_cluster_load_assignment(name: &str, cla: &PartialClusterLoadAssign
                     let cla = ClusterLoadAssignmentBuilder::builder()
                         .with_cla(cla.clone())
                         .with_transport_socket(dynamic_cluster.transport_socket.clone())
-                        .with_cluster_name(dynamic_cluster.name)
-                        .with_bind_device(dynamic_cluster.bind_device.clone())
-                        .with_lb_policy(dynamic_cluster.load_balancing_policy.clone())
+                        .with_cluster_name(dynamic_cluster.global.name)
+                        .with_bind_device(dynamic_cluster.global.bind_device.clone())
+                        .with_lb_policy(dynamic_cluster.global.load_balancing_policy.clone())
                         .prepare();
                     cla.build().map(|cla| dynamic_cluster.change_load_assignment(Some(cla)))?;
                     Ok(cluster.clone())
@@ -303,23 +303,50 @@ where
 
 pub use super::circuit_breaker::{CircuitBreakerDenial, RoutingPriority};
 
+pub fn try_increment_connections(
+    cluster_id: ClusterID,
+    priority: RoutingPriority,
+) -> std::result::Result<(), CircuitBreakerDenial> {
+    CLUSTERS_MAP_CACHE.with_borrow_mut(|watcher| {
+        if let Some(cluster) = watcher.cached_or_latest().get_mut(cluster_id) {
+            if let Some(cb) = cluster.circuit_breaker() {
+                return cb.try_increment_connections(priority);
+            }
+        }
+        Ok(())
+    })
+}
+
+pub fn decrement_connections(cluster_id: ClusterID, priority: RoutingPriority) {
+    CLUSTERS_MAP_CACHE.with_borrow_mut(|watcher| {
+        if let Some(cluster) = watcher.cached_or_latest().get_mut(cluster_id) {
+            if let Some(cb) = cluster.circuit_breaker() {
+                cb.decrement_connections(priority);
+            }
+        }
+    });
+}
+
 pub fn try_increment_requests(
     cluster_id: ClusterID,
     priority: RoutingPriority,
 ) -> std::result::Result<(), CircuitBreakerDenial> {
     CLUSTERS_MAP_CACHE.with_borrow_mut(|watcher| {
         if let Some(cluster) = watcher.cached_or_latest().get_mut(cluster_id) {
-            cluster.circuit_breaker().try_increment_requests(priority)
-        } else {
-            Ok(())
+            if let Some(cb) = cluster.circuit_breaker() {
+                return cb.try_increment_requests(priority);
+            }
         }
+        Ok(())
     })
 }
 
 pub fn decrement_requests(cluster_id: ClusterID, priority: RoutingPriority) {
     CLUSTERS_MAP_CACHE.with_borrow_mut(|watcher| {
         if let Some(cluster) = watcher.cached_or_latest().get_mut(cluster_id) {
-            cluster.circuit_breaker().decrement_requests(priority);
+            if let Some(cb) = cluster.circuit_breaker() {
+                cb.decrement_requests(priority);
+            }
         }
     });
 }
@@ -330,17 +357,20 @@ pub fn try_increment_retries(
 ) -> std::result::Result<(), CircuitBreakerDenial> {
     CLUSTERS_MAP_CACHE.with_borrow_mut(|watcher| {
         if let Some(cluster) = watcher.cached_or_latest().get_mut(cluster_id) {
-            cluster.circuit_breaker().try_increment_retries(priority)
-        } else {
-            Ok(())
+            if let Some(cb) = cluster.circuit_breaker() {
+                return cb.try_increment_retries(priority);
+            }
         }
+        Ok(())
     })
 }
 
 pub fn decrement_retries(cluster_id: ClusterID, priority: RoutingPriority) {
     CLUSTERS_MAP_CACHE.with_borrow_mut(|watcher| {
         if let Some(cluster) = watcher.cached_or_latest().get_mut(cluster_id) {
-            cluster.circuit_breaker().decrement_retries(priority);
+            if let Some(cb) = cluster.circuit_breaker() {
+                cb.decrement_retries(priority);
+            }
         }
     });
 }

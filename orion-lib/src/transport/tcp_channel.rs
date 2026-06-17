@@ -65,50 +65,90 @@ impl TcpChannelConnector {
 
         Box::pin(async move {
             let is_internal = matches!(connector, UnifiedConnector::Internal(_));
-
-            let (mut base_stream, cluster_name, upstream_local_addr, upstream_peer_addr) = match connector {
-                UnifiedConnector::Socket(socket_connector) => {
-                    let (tcp_stream, cluster_name) =
-                        socket_connector.connect().await.map_err(|e| e.with_context_msg("TCP connection failed"))?;
-
-                    let upstream_local_addr = tcp_stream.local_addr().ok();
-                    let upstream_peer_addr = tcp_stream.peer_addr().ok();
-                    let stream: AsyncInstrumentedStream = Box::new(InstrumentedStream::new(tcp_stream));
-
-                    (stream, cluster_name, upstream_local_addr, upstream_peer_addr)
-                },
-                UnifiedConnector::Internal(internal_connector) => {
-                    let (stream, cluster_name) = internal_connector
-                        .connect(connection_metadata.clone().map(Arc::new))
-                        .await
-                        .map_err(|e| e.with_context_msg("Internal connection failed"))?;
-
-                    (stream, cluster_name, None, None)
-                },
+            let mut incremented_cb = false;
+            let cluster_name_for_cb = if !is_internal {
+                if let UnifiedConnector::Socket(ref socket_connector) = connector {
+                    let cluster_name = socket_connector.cluster_name;
+                    crate::clusters::try_increment_connections(cluster_name, crate::clusters::RoutingPriority::Default)
+                        .map_err(|e| -> crate::Error {
+                            format!("Circuit breaker max_connections exceeded: {:?}", e).into()
+                        })?;
+                    incremented_cb = true;
+                    Some(cluster_name)
+                } else {
+                    None
+                }
+            } else {
+                None
             };
 
-            let stream: AsyncInstrumentedStream = match &transport_socket {
-                UpstreamTransportSocketConfigurator::Tls(tls_configurator) => {
-                    configure_tls(tls_configurator, base_stream).await?
-                },
-                UpstreamTransportSocketConfigurator::ProxyProtocol(proxy_configurator) => {
-                    if !is_internal {
-                        if let Some(metadata) = &connection_metadata {
-                            proxy_configurator.write_proxy_header(&mut base_stream, metadata).await.map_err(
-                                |e| -> crate::Error { format!("Failed to write proxy protocol header: {e}").into() },
-                            )?;
+            let res = async {
+                let (mut base_stream, cluster_name, upstream_local_addr, upstream_peer_addr) = match connector {
+                    UnifiedConnector::Socket(socket_connector) => {
+                        let (tcp_stream, cluster_name) = socket_connector
+                            .connect()
+                            .await
+                            .map_err(|e| e.with_context_msg("TCP connection failed"))?;
+
+                        let upstream_local_addr = tcp_stream.local_addr().ok();
+                        let upstream_peer_addr = tcp_stream.peer_addr().ok();
+                        let instrumented = InstrumentedStream::new(tcp_stream);
+
+                        instrumented.metrics().with_drop_fn(Box::new(move |_metrics, _idle| {
+                            crate::clusters::decrement_connections(
+                                cluster_name,
+                                crate::clusters::RoutingPriority::Default,
+                            );
+                        }));
+
+                        let stream: AsyncInstrumentedStream = Box::new(instrumented);
+
+                        (stream, cluster_name, upstream_local_addr, upstream_peer_addr)
+                    },
+                    UnifiedConnector::Internal(internal_connector) => {
+                        let (stream, cluster_name) = internal_connector
+                            .connect(connection_metadata.clone().map(Arc::new))
+                            .await
+                            .map_err(|e| e.with_context_msg("Internal connection failed"))?;
+
+                        (stream, cluster_name, None, None)
+                    },
+                };
+
+                let stream: AsyncInstrumentedStream = match &transport_socket {
+                    UpstreamTransportSocketConfigurator::Tls(tls_configurator) => {
+                        configure_tls(tls_configurator, base_stream).await?
+                    },
+                    UpstreamTransportSocketConfigurator::ProxyProtocol(proxy_configurator) => {
+                        if !is_internal {
+                            if let Some(metadata) = &connection_metadata {
+                                proxy_configurator.write_proxy_header(&mut base_stream, metadata).await.map_err(
+                                    |e| -> crate::Error {
+                                        format!("Failed to write proxy protocol header: {e}").into()
+                                    },
+                                )?;
+                            }
                         }
-                    }
-                    if let Some(inner_tls) = &proxy_configurator.inner_tls_configurator {
-                        configure_tls(inner_tls, base_stream).await?
-                    } else {
-                        base_stream
-                    }
-                },
-                UpstreamTransportSocketConfigurator::None => base_stream,
-            };
+                        if let Some(inner_tls) = &proxy_configurator.inner_tls_configurator {
+                            configure_tls(inner_tls, base_stream).await?
+                        } else {
+                            base_stream
+                        }
+                    },
+                    UpstreamTransportSocketConfigurator::None => base_stream,
+                };
 
-            Ok(TcpChannel { stream, cluster_name, upstream_local_addr, upstream_peer_addr })
+                Ok(TcpChannel { stream, cluster_name, upstream_local_addr, upstream_peer_addr })
+            }
+            .await;
+
+            if res.is_err() && incremented_cb {
+                if let Some(cluster_name) = cluster_name_for_cb {
+                    crate::clusters::decrement_connections(cluster_name, crate::clusters::RoutingPriority::Default);
+                }
+            }
+
+            res
         })
     }
 }
