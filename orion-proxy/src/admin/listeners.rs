@@ -4,6 +4,7 @@ use axum::{
 };
 use orion_configuration::config::listener::ListenerType;
 use orion_lib::{ConfigDump, ConfigurationSenders, ListenerConfigurationChange};
+use std::fmt::Write;
 use tokio::sync::mpsc;
 
 use crate::{admin::AdminState, xds_configurator::send_change_to_runtimes};
@@ -26,7 +27,7 @@ async fn build_listeners_output(admin_state: AdminState) -> String {
                     ListenerType::Socket { address, .. } => address.to_string(),
                     ListenerType::Internal { .. } => String::new(),
                 };
-                out.push_str(&format!("{}::{address}\n", listener.name));
+                _ = writeln!(out, "{}::{address}", listener.name);
             }
         }
     }

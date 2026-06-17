@@ -115,7 +115,7 @@ pub async fn start_admin_server(
 mod tests {
     use super::*;
     use axum_test::TestServer;
-    use orion_stats::set_proxy_state;
+    use orion_stats::{set_proxy_state, ProxyState};
 
     #[tokio::test]
     async fn ready_endpoint_response() {

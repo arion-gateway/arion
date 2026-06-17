@@ -34,7 +34,7 @@ pub async fn server_info_handler(State(admin_state): State<AdminState>) -> impl 
         .map(|s| format!("{s:?}").to_uppercase())
         .unwrap_or_else(|| "INITIALIZING".to_owned());
 
-    let concurrency = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let concurrency = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
 
     let node = admin_state.bootstrap.node.as_ref().map_or_else(
         || NodeInfo { id: String::new(), cluster: String::new() },

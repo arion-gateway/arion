@@ -66,18 +66,14 @@ impl TcpChannelConnector {
         Box::pin(async move {
             let is_internal = matches!(connector, UnifiedConnector::Internal(_));
             let mut incremented_cb = false;
-            let cluster_name_for_cb = if !is_internal {
-                if let UnifiedConnector::Socket(ref socket_connector) = connector {
-                    let cluster_name = socket_connector.cluster_name;
-                    crate::clusters::try_increment_connections(cluster_name, crate::clusters::RoutingPriority::Default)
-                        .map_err(|e| -> crate::Error {
-                            format!("Circuit breaker max_connections exceeded: {:?}", e).into()
-                        })?;
-                    incremented_cb = true;
-                    Some(cluster_name)
-                } else {
-                    None
-                }
+            let cluster_name_for_cb = if let UnifiedConnector::Socket(ref socket_connector) = connector {
+                let cluster_name = socket_connector.cluster_name;
+                crate::clusters::try_increment_connections(cluster_name, crate::clusters::RoutingPriority::Default)
+                    .map_err(|e| -> crate::Error {
+                        format!("Circuit breaker max_connections exceeded: {e:?}").into()
+                    })?;
+                incremented_cb = true;
+                Some(cluster_name)
             } else {
                 None
             };

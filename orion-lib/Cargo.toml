@@ -46,7 +46,7 @@ arrayvec.workspace = true
 async-stream.workspace = true
 atomic-time.workspace = true
 enum_dispatch.workspace = true
-futures-util = { workspace = true, default-features = false }
+futures-util.workspace = true
 h2.workspace = true
 hickory-resolver = { workspace = true, features = ["system-config"] }
 hyper = { workspace = true, features = ["full"] }
