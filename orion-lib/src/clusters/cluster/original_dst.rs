@@ -261,6 +261,7 @@ impl OriginalDstCluster {
         }
 
         let endpoint = Endpoint::try_new(
+            self.global.name,
             &endpoint_addr.0,
             &self.http_config,
             self.global.bind_device.clone(),
@@ -280,6 +281,7 @@ impl OriginalDstCluster {
         }
 
         let endpoint = Endpoint::try_new(
+            self.global.name,
             &endpoint_addr.0,
             &self.http_config,
             self.global.bind_device.clone(),
@@ -317,6 +319,7 @@ impl OriginalDstCluster {
         }
 
         let endpoint = Endpoint::try_new(
+            self.global.name,
             &endpoint_addr.0,
             &self.http_config,
             self.global.bind_device.clone(),
@@ -360,6 +363,7 @@ struct Endpoint {
 
 impl Endpoint {
     fn try_new(
+        cluster_name: &'static str,
         authority: &Authority,
         http_config: &HttpChannelConfig,
         bind_device: Option<BindDevice>,
@@ -374,7 +378,7 @@ impl Endpoint {
             idle_timeout: http_config.http_protocol_options.common.idle_timeout,
         };
 
-        let builder = HttpChannelBuilder::new(connect_using.clone());
+        let builder = HttpChannelBuilder::new(connect_using.clone()).with_cluster_name(cluster_name);
         let builder = if let Some(tls_conf) = &http_config.tls_configurator {
             if let Some(server_name) = &http_config.server_name {
                 builder.with_tls(Some(tls_conf.clone())).with_server_name(server_name.clone())
@@ -385,7 +389,7 @@ impl Endpoint {
             builder
         };
         let http_channel = builder.with_http_protocol_options(http_config.http_protocol_options.clone()).build()?;
-        let tcp_channel = TcpChannelConnector::new(&connect_using, "original_dst_cluster", transport_socket);
+        let tcp_channel = TcpChannelConnector::new(&connect_using, cluster_name, transport_socket);
 
         Ok(Endpoint { http_channel, tcp_channel })
     }
@@ -622,5 +626,73 @@ mod tests {
 
         let grpc_no_dest = cluster.get_grpc_connection(RoutingContext::None);
         grpc_no_dest.unwrap_err();
+    }
+
+    fn create_test_cluster_config_with_circuit_breaker(
+        name: &str,
+        routing_method: OriginalDstRoutingMethod,
+        max_connections: u32,
+    ) -> ClusterConfig {
+        use orion_configuration::config::cluster::{CircuitBreakerThresholds, CircuitBreakers};
+        ClusterConfig {
+            circuit_breakers: Some(CircuitBreakers {
+                thresholds: vec![CircuitBreakerThresholds { max_connections, ..Default::default() }],
+            }),
+            ..create_test_cluster_config(name, routing_method, None, None)
+        }
+    }
+
+    #[test]
+    fn http_channel_has_correct_cluster_name() {
+        let config = create_test_cluster_config(
+            "my-original-dst",
+            OriginalDstRoutingMethod::HttpHeader { http_header_name: None },
+            None,
+            None,
+        );
+        let mut cluster = build_original_dst_cluster(config);
+
+        let authority = Authority::from_str("localhost:52000").unwrap();
+        let channel = cluster.get_http_connection_by_authority(&authority).unwrap();
+        assert_eq!(channel.cluster_name, "my-original-dst");
+    }
+
+    #[test]
+    fn circuit_breaker_is_present_when_configured() {
+        let config = create_test_cluster_config_with_circuit_breaker(
+            "cb-cluster",
+            OriginalDstRoutingMethod::HttpHeader { http_header_name: None },
+            5,
+        );
+        let cluster = build_original_dst_cluster(config);
+
+        let cb = cluster.circuit_breaker().expect("circuit breaker should be present");
+        let state = cb.get_state(orion_configuration::config::cluster::RoutingPriority::Default);
+        assert_eq!(state.thresholds.max_connections, 5);
+    }
+
+    #[test]
+    fn circuit_breaker_is_shared_across_clones() {
+        use crate::clusters::circuit_breaker::CircuitBreakerDenial;
+
+        let config = create_test_cluster_config_with_circuit_breaker(
+            "shared-cb",
+            OriginalDstRoutingMethod::HttpHeader { http_header_name: None },
+            1,
+        );
+        let cluster = build_original_dst_cluster(config);
+        let clone = cluster.clone();
+
+        let cb = cluster.circuit_breaker().unwrap();
+        cb.try_increment_connections(orion_configuration::config::cluster::RoutingPriority::Default).unwrap();
+
+        let clone_cb = clone.circuit_breaker().unwrap();
+        assert_eq!(
+            clone_cb
+                .try_increment_connections(orion_configuration::config::cluster::RoutingPriority::Default)
+                .unwrap_err(),
+            CircuitBreakerDenial::MaxConnections,
+            "Clone should share circuit breaker state"
+        );
     }
 }
