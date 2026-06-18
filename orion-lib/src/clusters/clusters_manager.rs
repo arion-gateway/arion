@@ -241,7 +241,7 @@ pub fn update_tls_context(secret_id: &str, secret: &TransportSecret) -> Result<V
 }
 
 pub fn add_cluster(partial_cluster: PartialClusterType) -> Result<ClusterType> {
-    let cluster = partial_cluster.build()?;
+    let mut cluster = partial_cluster.build()?;
     let cluster_name = cluster.get_name();
 
     CLUSTERS_MAP.update(|current| match current.entry(cluster_name) {
@@ -250,6 +250,7 @@ pub fn add_cluster(partial_cluster: PartialClusterType) -> Result<ClusterType> {
             Ok(cluster)
         },
         BTreeEntry::Occupied(mut entry) => {
+            cluster.preserve_circuit_breaker_from(entry.get());
             *(entry.get_mut()) = cluster.clone();
             Ok(cluster)
         },
@@ -261,7 +262,7 @@ pub fn add_cluster(partial_cluster: PartialClusterType) -> Result<ClusterType> {
 /// bug caused by `orion_interner`'s thread-local `Rodeo` being dropped when a
 /// short-lived test thread exits.
 pub fn add_cluster_for_test(partial_cluster: PartialClusterType) -> Result<ClusterType> {
-    let cluster = partial_cluster.build()?;
+    let mut cluster = partial_cluster.build()?;
     let leaked_name: &'static str = Box::leak(cluster.get_name().to_owned().into_boxed_str());
 
     CLUSTERS_MAP.update(|current| match current.entry(leaked_name) {
@@ -270,6 +271,7 @@ pub fn add_cluster_for_test(partial_cluster: PartialClusterType) -> Result<Clust
             Ok(cluster)
         },
         BTreeEntry::Occupied(mut entry) => {
+            cluster.preserve_circuit_breaker_from(entry.get());
             *(entry.get_mut()) = cluster.clone();
             Ok(cluster)
         },

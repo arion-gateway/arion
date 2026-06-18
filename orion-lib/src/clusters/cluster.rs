@@ -21,6 +21,7 @@ pub(crate) mod r#static;
 
 use enum_dispatch::enum_dispatch;
 use http::uri::Authority;
+use std::sync::Arc;
 
 use crate::clusters::{
     circuit_breaker::ClusterCircuitBreaker,
@@ -57,7 +58,7 @@ impl TryFrom<(Box<ClusterConfig>, &SecretManager)> for PartialClusterType {
 
         let transport_socket = UpstreamTransportSocketConfigurator::try_from((transport_socket_config, secrets))?;
 
-        let circuit_breaker = cluster.circuit_breakers.as_ref().map(ClusterCircuitBreaker::from);
+        let circuit_breaker = cluster.circuit_breakers.as_ref().map(|cb| Arc::new(ClusterCircuitBreaker::from(cb)));
 
         let health_check = cluster.health_check;
         debug!("Cluster {} type {:?} ", cluster.name, cluster.discovery_settings);
@@ -170,6 +171,8 @@ pub trait ClusterOps {
     fn get_grpc_connection(&mut self, context: RoutingContext) -> Result<GrpcService>;
     fn get_routing_requirements(&self) -> RoutingRequirement;
     fn circuit_breaker(&self) -> Option<&ClusterCircuitBreaker>;
+    fn take_circuit_breaker(&self) -> Option<Arc<ClusterCircuitBreaker>>;
+    fn set_circuit_breaker(&mut self, cb: Arc<ClusterCircuitBreaker>);
 }
 
 #[derive(Clone)]
@@ -178,6 +181,14 @@ pub enum ClusterType {
     Static(StaticCluster),
     Dynamic(DynamicCluster),
     OnDemand(OriginalDstCluster),
+}
+
+impl ClusterType {
+    pub fn preserve_circuit_breaker_from(&mut self, old: &Self) {
+        if let Some(cb) = old.take_circuit_breaker() {
+            self.set_circuit_breaker(cb);
+        }
+    }
 }
 
 impl TryFrom<&ClusterType> for ClusterConfig {
