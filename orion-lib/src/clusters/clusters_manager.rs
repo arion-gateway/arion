@@ -256,6 +256,26 @@ pub fn add_cluster(partial_cluster: PartialClusterType) -> Result<ClusterType> {
     })
 }
 
+/// Variant of [`add_cluster`] that re-keys the global map entry with a
+/// heap-leaked copy of the cluster name.  This avoids the dangling-`&'static str`
+/// bug caused by `orion_interner`'s thread-local `Rodeo` being dropped when a
+/// short-lived test thread exits.
+pub fn add_cluster_for_test(partial_cluster: PartialClusterType) -> Result<ClusterType> {
+    let cluster = partial_cluster.build()?;
+    let leaked_name: &'static str = Box::leak(cluster.get_name().to_owned().into_boxed_str());
+
+    CLUSTERS_MAP.update(|current| match current.entry(leaked_name) {
+        BTreeEntry::Vacant(entry) => {
+            entry.insert(cluster.clone());
+            Ok(cluster)
+        },
+        BTreeEntry::Occupied(mut entry) => {
+            *(entry.get_mut()) = cluster.clone();
+            Ok(cluster)
+        },
+    })
+}
+
 pub fn remove_cluster(cluster_name: &str) -> Result<()> {
     CLUSTERS_MAP.update(|current| current.remove(cluster_name).map(|_| ()).ok_or("No such cluster".into()))
 }

@@ -162,7 +162,7 @@ mod tests {
         cluster::{Cluster, ClusterLoadAssignment, HttpProtocolOptions, LbEndpoint, LbPolicy, OriginalDstConfig},
         Bootstrap,
     };
-    use orion_lib::clusters::{cluster::PartialClusterType, clusters_manager::add_cluster};
+    use orion_lib::clusters::{cluster::PartialClusterType, clusters_manager::add_cluster_for_test};
     use parking_lot::RwLock;
     use smol_str::SmolStr;
     use std::{num::NonZeroU32, sync::Arc, time::Instant};
@@ -194,7 +194,7 @@ mod tests {
     fn register_cluster(cluster: Cluster) {
         let secret_manager = orion_lib::SecretManager::default();
         let partial = PartialClusterType::try_from((Box::new(cluster), &secret_manager)).unwrap();
-        add_cluster(partial).unwrap();
+        add_cluster_for_test(partial).unwrap();
     }
 
     #[tokio::test]
