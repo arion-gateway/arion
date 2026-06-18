@@ -244,16 +244,15 @@ pub async fn handle_websocket_upgrade(
                     });
                     Ok(upstream_response)
                 },
-                Ok(response) => {
+                Ok(mut response) => {
                     error!(
                         "Upgrade attempt failure, upstream did not accept websocket upgrade, returned status code {:?}",
                         response.status()
                     );
-                    Ok(SyntheticHttpResponse::not_allowed(
-                        EventFailure::UpgradeFailed.into(),
-                        ResponseFlags(FmtResponseFlags::UPSTREAM_CONNECTION_FAILURE),
-                    )
-                    .into_response(version))
+                    if version == Version::HTTP_10 || version == Version::HTTP_11 {
+                        response.headers_mut().insert(header::CONNECTION, HeaderValue::from_static("close"));
+                    }
+                    Ok(response)
                 },
                 Err(err) => {
                     error!("Upgrade failed in attempting to establish upstream websocket {:?}", err);
