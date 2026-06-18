@@ -46,6 +46,17 @@ impl PriorityCircuitBreakerState {
     }
 }
 
+impl PriorityCircuitBreakerState {
+    fn with_thresholds(&self, thresholds: CircuitBreakerThresholds) -> Self {
+        Self {
+            thresholds,
+            active_requests: AtomicU32::new(self.active_requests.load(Ordering::Relaxed)),
+            active_retries: AtomicU32::new(self.active_retries.load(Ordering::Relaxed)),
+            active_connections: AtomicU32::new(self.active_connections.load(Ordering::Relaxed)),
+        }
+    }
+}
+
 impl Default for PriorityCircuitBreakerState {
     fn default() -> Self {
         Self::new(CircuitBreakerThresholds::default())
@@ -67,6 +78,14 @@ pub struct ClusterCircuitBreaker {
 impl ClusterCircuitBreaker {
     pub fn new(default_priority: PriorityCircuitBreakerState, high_priority: PriorityCircuitBreakerState) -> Self {
         Self { default_priority, high_priority }
+    }
+
+    #[must_use]
+    pub fn with_updated_thresholds(&self, new: &ClusterCircuitBreaker) -> Self {
+        Self {
+            default_priority: self.default_priority.with_thresholds(new.default_priority.thresholds.clone()),
+            high_priority: self.high_priority.with_thresholds(new.high_priority.thresholds.clone()),
+        }
     }
 
     pub fn get_state(&self, priority: RoutingPriority) -> &PriorityCircuitBreakerState {

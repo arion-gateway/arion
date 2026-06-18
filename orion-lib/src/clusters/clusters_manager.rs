@@ -396,3 +396,116 @@ pub fn decrement_retries(cluster_id: ClusterID, priority: RoutingPriority) {
         }
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::secrets::SecretManager;
+    use orion_configuration::config::cluster::{
+        CircuitBreakerThresholds, CircuitBreakers, ClusterDiscoveryType, LbPolicy, OriginalDstConfig,
+        OriginalDstRoutingMethod, StandardLbPolicy,
+    };
+    use orion_configuration::config::cluster::{Cluster as ClusterConfig, HttpProtocolOptions};
+    use std::sync::atomic::Ordering;
+
+    fn make_cluster_config(name: &str, max_requests: u32) -> ClusterConfig {
+        ClusterConfig {
+            name: name.into(),
+            discovery_settings: ClusterDiscoveryType::OriginalDst(OriginalDstConfig {
+                routing_method: OriginalDstRoutingMethod::HttpHeader { http_header_name: None },
+                upstream_port_override: None,
+            }),
+            cleanup_interval: None,
+            transport_socket: None,
+            bind_device: None,
+            load_balancing_policy: LbPolicy::Standard(StandardLbPolicy::ClusterProvided),
+            http_protocol_options: HttpProtocolOptions::default(),
+            health_check: None,
+            connect_timeout: None,
+            circuit_breakers: Some(CircuitBreakers {
+                thresholds: vec![CircuitBreakerThresholds { max_requests, ..Default::default() }],
+            }),
+        }
+    }
+
+    fn build_partial(config: ClusterConfig) -> PartialClusterType {
+        let secrets = SecretManager::new();
+        PartialClusterType::try_from((Box::new(config), &secrets)).unwrap()
+    }
+
+    #[test]
+    fn circuit_breaker_survives_cluster_replacement() {
+        let name = "cb-replace-test";
+        let partial = build_partial(make_cluster_config(name, 10));
+        let cluster = add_cluster_for_test(partial).unwrap();
+
+        let cb = cluster.circuit_breaker().expect("CB should be present");
+        cb.try_increment_requests(RoutingPriority::Default).unwrap();
+        let counter = cb.get_state(RoutingPriority::Default).active_requests.load(Ordering::Relaxed);
+        assert_eq!(counter, 1);
+
+        let partial2 = build_partial(make_cluster_config(name, 20));
+        let replaced = add_cluster_for_test(partial2).unwrap();
+
+        let cb_after = replaced.circuit_breaker().expect("CB should be present after replacement");
+        let counter_after = cb_after.get_state(RoutingPriority::Default).active_requests.load(Ordering::Relaxed);
+        assert_eq!(counter_after, 1, "replacement must preserve in-flight counter");
+
+        cb_after.decrement_requests(RoutingPriority::Default);
+        let counter_final = cb_after.get_state(RoutingPriority::Default).active_requests.load(Ordering::Relaxed);
+        assert_eq!(counter_final, 0, "decrement after replacement must reach zero");
+
+        remove_cluster(name).unwrap();
+    }
+
+    #[test]
+    fn simulated_race_increment_replace_decrement() {
+        let name = "cb-race-test";
+        let partial = build_partial(make_cluster_config(name, 5));
+        add_cluster_for_test(partial).unwrap();
+
+        try_increment_requests(name, RoutingPriority::Default).unwrap();
+
+        let partial2 = build_partial(make_cluster_config(name, 5));
+        add_cluster_for_test(partial2).unwrap();
+
+        decrement_requests(name, RoutingPriority::Default);
+
+        CLUSTERS_MAP_CACHE.with_borrow_mut(|watcher| {
+            let cluster = watcher.cached_or_latest().get_mut(name).unwrap();
+            let cb = cluster.circuit_breaker().unwrap();
+            let counter = cb.get_state(RoutingPriority::Default).active_requests.load(Ordering::Relaxed);
+            assert_eq!(counter, 0, "counter must be zero, not underflowed to u32::MAX");
+        });
+
+        remove_cluster(name).unwrap();
+    }
+
+    #[test]
+    fn replacement_inherits_thresholds_from_new_config() {
+        let name = "cb-threshold-test";
+        let partial = build_partial(make_cluster_config(name, 5));
+        add_cluster_for_test(partial).unwrap();
+
+        let partial2 = build_partial(make_cluster_config(name, 20));
+        let replaced = add_cluster_for_test(partial2).unwrap();
+
+        let cb = replaced.circuit_breaker().unwrap();
+        let thresholds = &cb.get_state(RoutingPriority::Default).thresholds;
+        assert_eq!(thresholds.max_requests, 20, "preserved CB adopts new thresholds");
+
+        remove_cluster(name).unwrap();
+    }
+
+    #[test]
+    fn first_add_does_not_panic() {
+        let name = "cb-first-add-test";
+        let partial = build_partial(make_cluster_config(name, 10));
+        let cluster = add_cluster_for_test(partial).unwrap();
+
+        let cb = cluster.circuit_breaker().expect("CB should exist on first add");
+        assert_eq!(cb.get_state(RoutingPriority::Default).active_requests.load(Ordering::Relaxed), 0);
+
+        remove_cluster(name).unwrap();
+    }
+}

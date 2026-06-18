@@ -185,8 +185,12 @@ pub enum ClusterType {
 
 impl ClusterType {
     pub fn preserve_circuit_breaker_from(&mut self, old: &Self) {
-        if let Some(cb) = old.take_circuit_breaker() {
-            self.set_circuit_breaker(cb);
+        if let Some(old_cb) = old.take_circuit_breaker() {
+            if let Some(new_cb) = self.circuit_breaker() {
+                self.set_circuit_breaker(Arc::new(old_cb.with_updated_thresholds(new_cb)));
+            } else {
+                self.set_circuit_breaker(old_cb);
+            }
         }
     }
 }
