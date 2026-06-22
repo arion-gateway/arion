@@ -25,6 +25,10 @@ pub static HTTP_3XX_RESPONSES: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock
 pub static HTTP_4XX_RESPONSES: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 pub static HTTP_5XX_RESPONSES: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 
+pub static HTTP_404_RESPONSES: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
+pub static HTTP_502_RESPONSES: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
+pub static HTTP_504_RESPONSES: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
+
 pub(crate) fn init_metrics(rename: &std::collections::HashMap<String, String>) {
     init_observable_counter!(
         INVOCATIONS,
@@ -121,6 +125,24 @@ pub(crate) fn init_metrics(rename: &std::collections::HashMap<String, String>) {
         "Total number of API calls that resulted in a 5xx HTTP response"
     );
     init_observable_counter!(
+        HTTP_404_RESPONSES,
+        crate::metrics::PREFIX_USER,
+        crate::metrics::resolve_metric_name(rename, "http_404_response"),
+        "Total number of API calls that resulted in a 404 HTTP response"
+    );
+    init_observable_counter!(
+        HTTP_502_RESPONSES,
+        crate::metrics::PREFIX_USER,
+        crate::metrics::resolve_metric_name(rename, "http_502_response"),
+        "Total number of API calls that resulted in a 502 HTTP response"
+    );
+    init_observable_counter!(
+        HTTP_504_RESPONSES,
+        crate::metrics::PREFIX_USER,
+        crate::metrics::resolve_metric_name(rename, "http_504_response"),
+        "Total number of API calls that resulted in a 504 HTTP response"
+    );
+    init_observable_counter!(
         CONNECTIONS,
         crate::metrics::PREFIX_USER,
         crate::metrics::resolve_metric_name(rename, "connections"),
@@ -154,6 +176,9 @@ pub fn reset_metrics() {
         &HTTP_3XX_RESPONSES,
         &HTTP_4XX_RESPONSES,
         &HTTP_5XX_RESPONSES,
+        &HTTP_404_RESPONSES,
+        &HTTP_502_RESPONSES,
+        &HTTP_504_RESPONSES,
     ];
     for metric in metrics {
         metric.clear();

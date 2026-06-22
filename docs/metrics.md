@@ -346,6 +346,9 @@ metrics:
 | `http_3xx_response` | Counter | ✅ | Total number of API calls that resulted in a 3xx HTTP response | `<attribute_name>` |
 | `http_4xx_response` | Counter | ✅ | Total number of API calls that resulted in a 4xx HTTP response | `<attribute_name>` |
 | `http_5xx_response` | Counter | ✅ | Total number of API calls that resulted in a 5xx HTTP response | `<attribute_name>` |
+| `http_404_response` | Counter | ✅ | Total number of API calls that resulted in a 404 HTTP response | `<attribute_name>` |
+| `http_502_response` | Counter | ✅ | Total number of API calls that resulted in a 502 HTTP response | `<attribute_name>` |
+| `http_504_response` | Counter | ✅ | Total number of API calls that resulted in a 504 HTTP response | `<attribute_name>` |
 | `connections` | Counter | ✅ | Number of total connections established | `<attribute_name>` |
 | `connections_active` | Gauge | ✅ | Number of active connections | `<attribute_name>` |
 

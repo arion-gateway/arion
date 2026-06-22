@@ -674,6 +674,18 @@ impl TransactionContext {
                             self.shard_id(),
                             &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
                         );
+                        if status_code == 404 {
+                            with_metric!(
+                                user::HTTP_404_RESPONSES,
+                                add,
+                                1,
+                                self.shard_id(),
+                                &[KeyValue::new(
+                                    metrics::USER_KEY.attribute_name().unwrap_or("user"),
+                                    user_partition_key
+                                )]
+                            );
+                        }
                     }
                 },
                 500..600 => {
@@ -694,7 +706,6 @@ impl TransactionContext {
                             self.shard_id(),
                             &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
                         );
-
                         with_metric!(
                             user::TOTAL_ERRORS,
                             add,
@@ -709,6 +720,33 @@ impl TransactionContext {
                             self.shard_id(),
                             &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
                         );
+                        match status_code {
+                            502 => {
+                                with_metric!(
+                                    user::HTTP_502_RESPONSES,
+                                    add,
+                                    1,
+                                    self.shard_id(),
+                                    &[KeyValue::new(
+                                        metrics::USER_KEY.attribute_name().unwrap_or("user"),
+                                        user_partition_key
+                                    )]
+                                );
+                            },
+                            504 => {
+                                with_metric!(
+                                    user::HTTP_504_RESPONSES,
+                                    add,
+                                    1,
+                                    self.shard_id(),
+                                    &[KeyValue::new(
+                                        metrics::USER_KEY.attribute_name().unwrap_or("user"),
+                                        user_partition_key
+                                    )]
+                                );
+                            },
+                            _ => (),
+                        }
                     }
 
                     with_server_span!(self.span_state, |srv_span: &mut BoxedSpan| {

@@ -170,6 +170,9 @@ fn build_canonical_output() -> io::Result<String> {
     process_metric_canonical(&mut out, &user::HTTP_3XX_RESPONSES)?;
     process_metric_canonical(&mut out, &user::HTTP_4XX_RESPONSES)?;
     process_metric_canonical(&mut out, &user::HTTP_5XX_RESPONSES)?;
+    process_metric_canonical(&mut out, &user::HTTP_404_RESPONSES)?;
+    process_metric_canonical(&mut out, &user::HTTP_502_RESPONSES)?;
+    process_metric_canonical(&mut out, &user::HTTP_504_RESPONSES)?;
     process_histogram_canonical(&mut out, &user::LATENCY)?;
 
     // filters
