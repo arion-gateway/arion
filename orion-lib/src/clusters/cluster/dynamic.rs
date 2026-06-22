@@ -30,7 +30,7 @@ use std::sync::Arc;
 
 use crate::{
     clusters::{
-        circuit_breaker::ClusterCircuitBreaker,
+        circuit_breaker::{CircuitBreakerCounters, ClusterCircuitBreaker},
         clusters_manager::{RoutingContext, RoutingRequirement},
         load_assignment::ClusterLoadAssignment,
         GrpcService,
@@ -54,7 +54,11 @@ pub struct DynamicClusterBuilder {
 }
 
 impl DynamicClusterBuilder {
-    pub fn build(self) -> ClusterType {
+    pub fn build(
+        self,
+        def_counters: Option<Arc<CircuitBreakerCounters>>,
+        high_counters: Option<Arc<CircuitBreakerCounters>>,
+    ) -> ClusterType {
         let DynamicClusterBuilder {
             name,
             transport_socket,
@@ -64,6 +68,11 @@ impl DynamicClusterBuilder {
             config,
             circuit_breaker,
         } = self;
+
+        // we are rebuilding the circuit breaker re-using the passed counters (usually taken from a pre-existing cluster entry in global map)
+        let circuit_breaker =
+            circuit_breaker.map(|cb| Arc::new(Arc::unwrap_or_clone(cb).with_counters(def_counters, high_counters)));
+
         ClusterType::Dynamic(DynamicCluster {
             global: Arc::new(GlobalDynamicCluster {
                 name,
@@ -175,16 +184,6 @@ impl ClusterOps for DynamicCluster {
 
     fn circuit_breaker(&self) -> Option<&ClusterCircuitBreaker> {
         self.global.circuit_breaker.as_deref()
-    }
-
-    fn take_circuit_breaker(&self) -> Option<Arc<ClusterCircuitBreaker>> {
-        self.global.circuit_breaker.clone()
-    }
-
-    fn set_circuit_breaker(&mut self, cb: Arc<ClusterCircuitBreaker>) {
-        if let Some(g) = Arc::get_mut(&mut self.global) {
-            g.circuit_breaker = Some(cb);
-        }
     }
 }
 

@@ -15,7 +15,10 @@
 //
 //
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{
+    atomic::{AtomicU32, Ordering},
+    Arc,
+};
 
 pub use orion_configuration::config::cluster::RoutingPriority;
 use orion_configuration::config::cluster::{CircuitBreakerThresholds, CircuitBreakers};
@@ -28,17 +31,15 @@ pub enum CircuitBreakerDenial {
 }
 
 #[derive(Debug)]
-pub struct PriorityCircuitBreakerState {
-    pub thresholds: CircuitBreakerThresholds,
+pub struct CircuitBreakerCounters {
     pub active_requests: AtomicU32,
     pub active_retries: AtomicU32,
     pub active_connections: AtomicU32,
 }
 
-impl PriorityCircuitBreakerState {
-    pub fn new(thresholds: CircuitBreakerThresholds) -> Self {
+impl CircuitBreakerCounters {
+    pub fn new() -> Self {
         Self {
-            thresholds,
             active_requests: AtomicU32::new(0),
             active_retries: AtomicU32::new(0),
             active_connections: AtomicU32::new(0),
@@ -46,33 +47,28 @@ impl PriorityCircuitBreakerState {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct PriorityCircuitBreakerState {
+    pub thresholds: CircuitBreakerThresholds,
+    pub counters: Arc<CircuitBreakerCounters>, // Arc here is required to share counters when CircuitBreaker is updated
+}
+
 impl PriorityCircuitBreakerState {
-    fn with_thresholds(&self, thresholds: CircuitBreakerThresholds) -> Self {
-        Self {
-            thresholds,
-            active_requests: AtomicU32::new(self.active_requests.load(Ordering::Relaxed)),
-            active_retries: AtomicU32::new(self.active_retries.load(Ordering::Relaxed)),
-            active_connections: AtomicU32::new(self.active_connections.load(Ordering::Relaxed)),
-        }
+    pub fn new(thresholds: CircuitBreakerThresholds, counters: Arc<CircuitBreakerCounters>) -> Self {
+        Self { thresholds, counters }
     }
 }
 
 impl Default for PriorityCircuitBreakerState {
     fn default() -> Self {
-        Self::new(CircuitBreakerThresholds::default())
-    }
-}
-
-impl Clone for PriorityCircuitBreakerState {
-    fn clone(&self) -> Self {
-        Self::new(self.thresholds.clone())
+        Self::new(CircuitBreakerThresholds::default(), Arc::new(CircuitBreakerCounters::new()))
     }
 }
 
 #[derive(Debug)]
 pub struct ClusterCircuitBreaker {
-    default_priority: PriorityCircuitBreakerState,
-    high_priority: PriorityCircuitBreakerState,
+    pub default_priority: PriorityCircuitBreakerState,
+    pub high_priority: PriorityCircuitBreakerState,
 }
 
 impl ClusterCircuitBreaker {
@@ -80,11 +76,20 @@ impl ClusterCircuitBreaker {
         Self { default_priority, high_priority }
     }
 
-    #[must_use]
-    pub fn with_updated_thresholds(&self, new: &ClusterCircuitBreaker) -> Self {
+    pub fn with_counters(
+        self,
+        def_counters: Option<Arc<CircuitBreakerCounters>>,
+        high_counters: Option<Arc<CircuitBreakerCounters>>,
+    ) -> Self {
         Self {
-            default_priority: self.default_priority.with_thresholds(new.default_priority.thresholds.clone()),
-            high_priority: self.high_priority.with_thresholds(new.high_priority.thresholds.clone()),
+            default_priority: PriorityCircuitBreakerState::new(
+                self.default_priority.thresholds,
+                def_counters.unwrap_or_else(|| Arc::new(CircuitBreakerCounters::new())),
+            ),
+            high_priority: PriorityCircuitBreakerState::new(
+                self.high_priority.thresholds,
+                high_counters.unwrap_or_else(|| Arc::new(CircuitBreakerCounters::new())),
+            ),
         }
     }
 
@@ -98,9 +103,9 @@ impl ClusterCircuitBreaker {
     pub fn try_increment_connections(&self, priority: RoutingPriority) -> Result<(), CircuitBreakerDenial> {
         let state = self.get_state(priority);
 
-        let prev = state.active_connections.fetch_add(1, Ordering::Relaxed);
+        let prev = state.counters.active_connections.fetch_add(1, Ordering::Relaxed);
         if prev >= state.thresholds.max_connections {
-            state.active_connections.fetch_sub(1, Ordering::Relaxed);
+            state.counters.active_connections.fetch_sub(1, Ordering::Relaxed);
             return Err(CircuitBreakerDenial::MaxConnections);
         }
 
@@ -108,19 +113,19 @@ impl ClusterCircuitBreaker {
     }
 
     pub fn increment_connections(&self, priority: RoutingPriority) {
-        self.get_state(priority).active_connections.fetch_add(1, Ordering::Relaxed);
+        self.get_state(priority).counters.active_connections.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn decrement_connections(&self, priority: RoutingPriority) {
-        self.get_state(priority).active_connections.fetch_sub(1, Ordering::Relaxed);
+        self.get_state(priority).counters.active_connections.fetch_sub(1, Ordering::Relaxed);
     }
 
     pub fn try_increment_requests(&self, priority: RoutingPriority) -> Result<(), CircuitBreakerDenial> {
         let state = self.get_state(priority);
 
-        let prev = state.active_requests.fetch_add(1, Ordering::Relaxed);
+        let prev = state.counters.active_requests.fetch_add(1, Ordering::Relaxed);
         if prev >= state.thresholds.max_requests {
-            state.active_requests.fetch_sub(1, Ordering::Relaxed);
+            state.counters.active_requests.fetch_sub(1, Ordering::Relaxed);
             return Err(CircuitBreakerDenial::MaxRequests);
         }
 
@@ -128,15 +133,15 @@ impl ClusterCircuitBreaker {
     }
 
     pub fn decrement_requests(&self, priority: RoutingPriority) {
-        self.get_state(priority).active_requests.fetch_sub(1, Ordering::Relaxed);
+        self.get_state(priority).counters.active_requests.fetch_sub(1, Ordering::Relaxed);
     }
 
     pub fn try_increment_retries(&self, priority: RoutingPriority) -> Result<(), CircuitBreakerDenial> {
         let state = self.get_state(priority);
 
-        let prev = state.active_retries.fetch_add(1, Ordering::Relaxed);
+        let prev = state.counters.active_retries.fetch_add(1, Ordering::Relaxed);
         if prev >= state.thresholds.max_retries {
-            state.active_retries.fetch_sub(1, Ordering::Relaxed);
+            state.counters.active_retries.fetch_sub(1, Ordering::Relaxed);
             return Err(CircuitBreakerDenial::MaxRetries);
         }
 
@@ -144,7 +149,7 @@ impl ClusterCircuitBreaker {
     }
 
     pub fn decrement_retries(&self, priority: RoutingPriority) {
-        self.get_state(priority).active_retries.fetch_sub(1, Ordering::Relaxed);
+        self.get_state(priority).counters.active_retries.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
@@ -163,10 +168,9 @@ impl Clone for ClusterCircuitBreaker {
 impl From<&CircuitBreakers> for ClusterCircuitBreaker {
     fn from(config: &CircuitBreakers) -> Self {
         let find = |priority| config.thresholds.iter().rfind(|t| t.priority == priority).cloned().unwrap_or_default();
-
         Self::new(
-            PriorityCircuitBreakerState::new(find(RoutingPriority::Default)),
-            PriorityCircuitBreakerState::new(find(RoutingPriority::High)),
+            PriorityCircuitBreakerState::new(find(RoutingPriority::Default), Arc::new(CircuitBreakerCounters::new())),
+            PriorityCircuitBreakerState::new(find(RoutingPriority::High), Arc::new(CircuitBreakerCounters::new())),
         )
     }
 }

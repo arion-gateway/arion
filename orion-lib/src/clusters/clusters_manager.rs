@@ -241,37 +241,21 @@ pub fn update_tls_context(secret_id: &str, secret: &TransportSecret) -> Result<V
 }
 
 pub fn add_cluster(partial_cluster: PartialClusterType) -> Result<ClusterType> {
-    let mut cluster = partial_cluster.build()?;
-    let cluster_name = cluster.get_name();
+    let cluster_name = partial_cluster.get_name();
 
     CLUSTERS_MAP.update(|current| match current.entry(cluster_name) {
         BTreeEntry::Vacant(entry) => {
+            let cluster = partial_cluster.build(None, None)?;
             entry.insert(cluster.clone());
             Ok(cluster)
         },
         BTreeEntry::Occupied(mut entry) => {
-            cluster.preserve_circuit_breaker_from(entry.get());
-            *(entry.get_mut()) = cluster.clone();
-            Ok(cluster)
-        },
-    })
-}
-
-/// Variant of [`add_cluster`] that re-keys the global map entry with a
-/// heap-leaked copy of the cluster name.  This avoids the dangling-`&'static str`
-/// bug caused by `orion_interner`'s thread-local `Rodeo` being dropped when a
-/// short-lived test thread exits.
-pub fn add_cluster_for_test(partial_cluster: PartialClusterType) -> Result<ClusterType> {
-    let mut cluster = partial_cluster.build()?;
-    let leaked_name: &'static str = Box::leak(cluster.get_name().to_owned().into_boxed_str());
-
-    CLUSTERS_MAP.update(|current| match current.entry(leaked_name) {
-        BTreeEntry::Vacant(entry) => {
-            entry.insert(cluster.clone());
-            Ok(cluster)
-        },
-        BTreeEntry::Occupied(mut entry) => {
-            cluster.preserve_circuit_breaker_from(entry.get());
+            let counters = entry
+                .get()
+                .circuit_breaker()
+                .map(|cb| (cb.default_priority.counters.clone(), cb.high_priority.counters.clone()))
+                .unzip();
+            let cluster = partial_cluster.build(counters.0, counters.1)?;
             *(entry.get_mut()) = cluster.clone();
             Ok(cluster)
         },
@@ -437,22 +421,24 @@ mod tests {
     fn circuit_breaker_survives_cluster_replacement() {
         let name = "cb-replace-test";
         let partial = build_partial(make_cluster_config(name, 10));
-        let cluster = add_cluster_for_test(partial).unwrap();
+        let cluster = add_cluster(partial).unwrap();
 
         let cb = cluster.circuit_breaker().expect("CB should be present");
         cb.try_increment_requests(RoutingPriority::Default).unwrap();
-        let counter = cb.get_state(RoutingPriority::Default).active_requests.load(Ordering::Relaxed);
+        let counter = cb.get_state(RoutingPriority::Default).counters.active_requests.load(Ordering::Relaxed);
         assert_eq!(counter, 1);
 
         let partial2 = build_partial(make_cluster_config(name, 20));
-        let replaced = add_cluster_for_test(partial2).unwrap();
+        let replaced = add_cluster(partial2).unwrap();
 
         let cb_after = replaced.circuit_breaker().expect("CB should be present after replacement");
-        let counter_after = cb_after.get_state(RoutingPriority::Default).active_requests.load(Ordering::Relaxed);
+        let counter_after =
+            cb_after.get_state(RoutingPriority::Default).counters.active_requests.load(Ordering::Relaxed);
         assert_eq!(counter_after, 1, "replacement must preserve in-flight counter");
 
         cb_after.decrement_requests(RoutingPriority::Default);
-        let counter_final = cb_after.get_state(RoutingPriority::Default).active_requests.load(Ordering::Relaxed);
+        let counter_final =
+            cb_after.get_state(RoutingPriority::Default).counters.active_requests.load(Ordering::Relaxed);
         assert_eq!(counter_final, 0, "decrement after replacement must reach zero");
 
         remove_cluster(name).unwrap();
@@ -462,19 +448,19 @@ mod tests {
     fn simulated_race_increment_replace_decrement() {
         let name = "cb-race-test";
         let partial = build_partial(make_cluster_config(name, 5));
-        add_cluster_for_test(partial).unwrap();
+        add_cluster(partial).unwrap();
 
         try_increment_requests(name, RoutingPriority::Default).unwrap();
 
         let partial2 = build_partial(make_cluster_config(name, 5));
-        add_cluster_for_test(partial2).unwrap();
+        add_cluster(partial2).unwrap();
 
         decrement_requests(name, RoutingPriority::Default);
 
         CLUSTERS_MAP_CACHE.with_borrow_mut(|watcher| {
             let cluster = watcher.cached_or_latest().get_mut(name).unwrap();
             let cb = cluster.circuit_breaker().unwrap();
-            let counter = cb.get_state(RoutingPriority::Default).active_requests.load(Ordering::Relaxed);
+            let counter = cb.get_state(RoutingPriority::Default).counters.active_requests.load(Ordering::Relaxed);
             assert_eq!(counter, 0, "counter must be zero, not underflowed to u32::MAX");
         });
 
@@ -485,10 +471,10 @@ mod tests {
     fn replacement_inherits_thresholds_from_new_config() {
         let name = "cb-threshold-test";
         let partial = build_partial(make_cluster_config(name, 5));
-        add_cluster_for_test(partial).unwrap();
+        add_cluster(partial).unwrap();
 
         let partial2 = build_partial(make_cluster_config(name, 20));
-        let replaced = add_cluster_for_test(partial2).unwrap();
+        let replaced = add_cluster(partial2).unwrap();
 
         let cb = replaced.circuit_breaker().unwrap();
         let thresholds = &cb.get_state(RoutingPriority::Default).thresholds;
@@ -501,10 +487,10 @@ mod tests {
     fn first_add_does_not_panic() {
         let name = "cb-first-add-test";
         let partial = build_partial(make_cluster_config(name, 10));
-        let cluster = add_cluster_for_test(partial).unwrap();
+        let cluster = add_cluster(partial).unwrap();
 
         let cb = cluster.circuit_breaker().expect("CB should exist on first add");
-        assert_eq!(cb.get_state(RoutingPriority::Default).active_requests.load(Ordering::Relaxed), 0);
+        assert_eq!(cb.get_state(RoutingPriority::Default).counters.active_requests.load(Ordering::Relaxed), 0);
 
         remove_cluster(name).unwrap();
     }

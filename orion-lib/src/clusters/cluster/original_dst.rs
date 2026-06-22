@@ -41,7 +41,7 @@ use std::sync::Arc;
 
 use crate::{
     clusters::{
-        circuit_breaker::ClusterCircuitBreaker,
+        circuit_breaker::{CircuitBreakerCounters, ClusterCircuitBreaker},
         clusters_manager::{MetadataKey, RoutingContext, RoutingRequirement},
         health::HealthStatus,
     },
@@ -79,7 +79,11 @@ pub struct OriginalDstClusterBuilder {
 }
 
 impl OriginalDstClusterBuilder {
-    pub fn build(self) -> ClusterType {
+    pub fn build(
+        self,
+        def_counters: Option<Arc<CircuitBreakerCounters>>,
+        high_counters: Option<Arc<CircuitBreakerCounters>>,
+    ) -> ClusterType {
         let OriginalDstClusterBuilder {
             name,
             bind_device,
@@ -89,6 +93,11 @@ impl OriginalDstClusterBuilder {
             config,
             circuit_breaker,
         } = self;
+
+        // we are rebuilding the circuit breaker re-using the passed counters (usually taken from a pre-existing cluster entry in global map)
+        let circuit_breaker =
+            circuit_breaker.map(|cb| Arc::new(Arc::unwrap_or_clone(cb).with_counters(def_counters, high_counters)));
+
         let (routing_requirements, upstream_port_override) =
             if let ClusterDiscoveryType::OriginalDst(ref original_dst_config) = config.discovery_settings {
                 let routing_req = match &original_dst_config.routing_method {
@@ -234,16 +243,6 @@ impl ClusterOps for OriginalDstCluster {
 
     fn circuit_breaker(&self) -> Option<&ClusterCircuitBreaker> {
         self.global.circuit_breaker.as_deref()
-    }
-
-    fn take_circuit_breaker(&self) -> Option<Arc<ClusterCircuitBreaker>> {
-        self.global.circuit_breaker.clone()
-    }
-
-    fn set_circuit_breaker(&mut self, cb: Arc<ClusterCircuitBreaker>) {
-        if let Some(g) = Arc::get_mut(&mut self.global) {
-            g.circuit_breaker = Some(cb);
-        }
     }
 }
 
@@ -563,7 +562,7 @@ mod tests {
     fn build_original_dst_cluster(config: ClusterConfig) -> OriginalDstCluster {
         let secrets_man = SecretManager::new();
         let partial = super::super::PartialClusterType::try_from((Box::new(config), &secrets_man)).unwrap();
-        match partial.build().unwrap() {
+        match partial.build(None, None).unwrap() {
             ClusterType::OnDemand(cluster) => cluster,
             _ => unreachable!("expected OriginalDstCluster config"),
         }

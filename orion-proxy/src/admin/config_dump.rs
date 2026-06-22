@@ -374,7 +374,7 @@ mod config_dump_tests {
         let partial_cluster =
             orion_lib::clusters::cluster::PartialClusterType::try_from((Box::new(cluster.clone()), &secret_manager))
                 .unwrap();
-        let _ = orion_lib::clusters::clusters_manager::add_cluster_for_test(partial_cluster).ok();
+        let _ = orion_lib::clusters::clusters_manager::add_cluster(partial_cluster).ok();
         let (configuration_senders, handle) = spawn_mock_listener_manager(None);
         let admin_state = AdminState {
             bootstrap: Bootstrap::default(),
@@ -430,7 +430,7 @@ mod config_dump_tests {
         let partial_cluster =
             orion_lib::clusters::cluster::PartialClusterType::try_from((Box::new(cluster.clone()), &secret_manager))
                 .unwrap();
-        orion_lib::clusters::clusters_manager::add_cluster_for_test(partial_cluster).unwrap();
+        orion_lib::clusters::clusters_manager::add_cluster(partial_cluster).unwrap();
         let (configuration_senders, handle) = spawn_mock_listener_manager(None);
         let admin_state = AdminState {
             bootstrap: Bootstrap::default(),
