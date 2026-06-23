@@ -496,7 +496,7 @@ impl ExternalProcessor {
             );
         };
 
-        let res = match response_rx.await {
+        let filter_decision = match response_rx.await {
             Ok(status) => self.apply_modification_on_request(request, status),
             Err(e) => self.on_filter_error(
                 format!("External processor: {e:?}").as_str(),
@@ -505,6 +505,8 @@ impl ExternalProcessor {
                 None,
             ),
         };
+
+        let headers = filter_decision.headers().unwrap_or(request.headers());
 
         #[cfg(feature = "metrics")]
         if let Some(custom_metrics) = CUSTOM_METRICS.get() {
@@ -516,31 +518,30 @@ impl ExternalProcessor {
             if let Some(custom_keys) = metrics::CUSTOM_KEYS.get() {
                 for key in custom_keys {
                     if let Some(source) = key.source() {
-                        if let Some(id) = metrics::extract_custom_partition_key(request.headers(), Some(source)) {
+                        if let Some(id) = metrics::extract_custom_partition_key(headers, Some(source)) {
                             attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
                         }
                     }
                 }
             }
-            custom_metrics.with_headers(MetricsHook::ExtProcRequest, request.headers(), attrs.as_slice());
+            custom_metrics.with_headers(MetricsHook::ExtProcRequest, headers, attrs.as_slice());
         }
 
         #[cfg(feature = "access-log")]
         if let Some(trans_ctx) = request.extensions().get::<Arc<TransactionContext>>() {
+            use crate::access_log;
             trans_ctx.with_loggers(|loggers| {
-                if let Err(err) = crate::access_log::evaluate_access_log_hook(
-                    crate::access_log::AccessLogHook::ExtProcRequest,
-                    request.headers(),
-                    loggers,
-                ) {
-                    tracing::warn!("Failed to process access log header for ExtProcRequest: {err}");
+                if let Err(err) =
+                    access_log::evaluate_access_log_hook(access_log::AccessLogHook::ExtProcRequest, headers, loggers)
+                {
+                    warn!("Failed to process access log header for ExtProcRequest: {err}");
                 }
             });
         }
 
-        debug!(target: "ext_proc", "apply_request completed: {res:?}!");
+        debug!(target: "ext_proc", "apply_request completed: {filter_decision:?}!");
         request.body_mut().inner.inner.prefetch_frames().await;
-        res
+        filter_decision
     }
 
     #[allow(clippy::too_many_lines)]
@@ -734,7 +735,7 @@ impl ExternalProcessor {
             );
         };
 
-        let res = match response_rx.await {
+        let filter_decision = match response_rx.await {
             Ok(status) => self.apply_modification_on_response(response, status),
             Err(e) => self.on_filter_error(
                 format!("External processor response processing: {e:?}").as_str(),
@@ -743,6 +744,8 @@ impl ExternalProcessor {
                 None,
             ),
         };
+
+        let headers = filter_decision.headers().unwrap_or(response.headers());
 
         #[cfg(feature = "metrics")]
         if let Some(custom_metrics) = CUSTOM_METRICS.get() {
@@ -754,29 +757,28 @@ impl ExternalProcessor {
             if let Some(custom_keys) = metrics::CUSTOM_KEYS.get() {
                 for key in custom_keys {
                     if let Some(source) = key.source() {
-                        if let Some(id) = metrics::extract_custom_partition_key(response.headers(), Some(source)) {
+                        if let Some(id) = metrics::extract_custom_partition_key(headers, Some(source)) {
                             attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
                         }
                     }
                 }
             }
-            custom_metrics.with_headers(MetricsHook::ExtProcResponse, response.headers(), attrs.as_slice());
+            custom_metrics.with_headers(MetricsHook::ExtProcResponse, headers, attrs.as_slice());
         }
 
         #[cfg(feature = "access-log")]
         if let Some(trans_ctx) = response.extensions().get::<Arc<TransactionContext>>() {
+            use crate::access_log;
             trans_ctx.with_loggers(|loggers| {
-                if let Err(err) = crate::access_log::evaluate_access_log_hook(
-                    crate::access_log::AccessLogHook::ExtProcResponse,
-                    response.headers(),
-                    loggers,
-                ) {
-                    tracing::warn!("Failed to process access log header for ExtProcResponse: {err}");
+                if let Err(err) =
+                    access_log::evaluate_access_log_hook(access_log::AccessLogHook::ExtProcResponse, headers, loggers)
+                {
+                    warn!("Failed to process access log header for ExtProcResponse: {err}");
                 }
             });
         }
 
-        debug!(target: "ext_proc", "apply_response completed: {res:?}!");
+        debug!(target: "ext_proc", "apply_response completed: {filter_decision:?}!");
 
         // Delay sending the response until the first frame is ready. This ensures
         // better performance when streaming bodies from the external processor.
@@ -786,7 +788,7 @@ impl ExternalProcessor {
         // cycles.
 
         response.body_mut().inner.prefetch_frames().await;
-        res
+        filter_decision
     }
 
     pub async fn send_processing_data(

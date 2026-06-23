@@ -17,7 +17,7 @@ use crate::{
     },
     OrionRequestBody, OrionResponseBody,
 };
-use http::{Request, Response, StatusCode};
+use http::{HeaderMap, HeaderValue, Request, Response, StatusCode};
 use orion_format::types::ResponseFlags as FmtResponseFlags;
 use smol_str::SmolStr;
 use tracing::debug;
@@ -41,6 +41,17 @@ pub enum FilterDecision {
 }
 
 impl FilterDecision {
+    // extract http headers from filter decision. Note that if the variant is Continue or Reroute,
+    // headers must be extracted from the original request or response.
+    #[inline]
+    pub fn headers(&self) -> Option<&HeaderMap<HeaderValue>> {
+        match self {
+            FilterDecision::Continue | FilterDecision::Reroute => None,
+            FilterDecision::DirectResponse(response) => Some(response.headers()),
+            FilterDecision::AsyncRequest(_, request) => request.as_ref().map(|r| r.headers()),
+        }
+    }
+
     #[inline]
     pub fn internal_server_error(msg: &str, ver: http::Version) -> FilterDecision {
         FilterDecision::DirectResponse(Box::new(
