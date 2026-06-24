@@ -506,6 +506,7 @@ impl ExternalProcessor {
             ),
         };
 
+        #[cfg(any(feature = "metrics", feature = "access-log"))]
         let headers = filter_decision.headers().unwrap_or(request.headers());
 
         #[cfg(feature = "metrics")]
@@ -745,6 +746,7 @@ impl ExternalProcessor {
             ),
         };
 
+        #[cfg(any(feature = "metrics", feature = "access-log"))]
         let headers = filter_decision.headers().unwrap_or(response.headers());
 
         #[cfg(feature = "metrics")]

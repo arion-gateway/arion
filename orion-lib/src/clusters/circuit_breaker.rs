@@ -30,7 +30,7 @@ pub enum CircuitBreakerDenial {
     MaxRetries,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct CircuitBreakerCounters {
     pub active_requests: AtomicU32,
     pub active_retries: AtomicU32,
@@ -76,6 +76,7 @@ impl ClusterCircuitBreaker {
         Self { default_priority, high_priority }
     }
 
+    #[must_use]
     pub fn with_counters(
         self,
         def_counters: Option<Arc<CircuitBreakerCounters>>,

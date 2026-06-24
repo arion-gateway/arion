@@ -44,6 +44,7 @@ impl FilterDecision {
     // extract http headers from filter decision. Note that if the variant is Continue or Reroute,
     // headers must be extracted from the original request or response.
     #[inline]
+    #[allow(unused)]
     pub fn headers(&self) -> Option<&HeaderMap<HeaderValue>> {
         match self {
             FilterDecision::Continue | FilterDecision::Reroute => None,
