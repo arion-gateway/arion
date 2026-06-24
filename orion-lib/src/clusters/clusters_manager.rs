@@ -33,6 +33,7 @@ use orion_configuration::config::cluster::{Cluster as ClusterConfig, ClusterSpec
 use orion_interner::StringInterner;
 use rand::{prelude::SliceRandom, thread_rng};
 use smol_str::SmolStr;
+use std::sync::Arc;
 use std::{
     cell::RefCell,
     collections::{btree_map::Entry as BTreeEntry, BTreeMap},
@@ -253,7 +254,7 @@ pub fn add_cluster(partial_cluster: PartialClusterType) -> Result<ClusterType> {
             let counters = entry
                 .get()
                 .circuit_breaker()
-                .map(|cb| (cb.default_priority.counters.clone(), cb.high_priority.counters.clone()))
+                .map(|cb| (Arc::clone(&cb.default_priority.counters), Arc::clone(&cb.high_priority.counters)))
                 .unzip();
             let cluster = partial_cluster.build(counters.0, counters.1)?;
             *(entry.get_mut()) = cluster.clone();
