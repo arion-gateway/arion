@@ -137,7 +137,7 @@ where
 
     async fn check(&mut self) -> Result<Self::Response, Error> {
         let request = create_request(self.http_version, &self.method, &self.host, &self.uri)?;
-        self.client.to_response(&TransactionContext::default(), request, RequestContext::default()).await
+        self.client.to_response(&Arc::new(TransactionContext::default()), request, RequestContext::default()).await
     }
 
     fn process_response(

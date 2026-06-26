@@ -297,7 +297,7 @@ impl HttpChannelBuilder {
 impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &HttpChannels {
     async fn to_response(
         self,
-        trans_context: &TransactionContext,
+        trans_context: &Arc<TransactionContext>,
         request: Request<OrionRequestBody>,
         arg: RequestContext<'a>,
     ) -> Result<Response<OrionResponseBody>> {
@@ -371,7 +371,7 @@ pub struct Retries {
 impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &HttpChannel {
     async fn to_response(
         self,
-        #[allow(unused_variables)] trans_context: &TransactionContext,
+        #[allow(unused_variables)] trans_context: &Arc<TransactionContext>,
         request: Request<OrionRequestBody>,
         arg: RequestContext<'a>,
     ) -> Result<Response<OrionResponseBody>> {

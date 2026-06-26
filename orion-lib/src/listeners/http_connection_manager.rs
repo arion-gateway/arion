@@ -964,7 +964,7 @@ fn select_virtual_host<'a, T>(request: &Request<T>, virtual_hosts: &'a [VirtualH
 pub trait RequestHandler<R, A>: Sized {
     fn to_response(
         self,
-        trans_context: &TransactionContext,
+        trans_context: &Arc<TransactionContext>,
         request: R,
         arg: A,
     ) -> impl Future<Output = Result<Response<OrionResponseBody>>> + Send;
@@ -989,12 +989,10 @@ impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usiz
     #[allow(clippy::too_many_lines)]
     async fn to_response(
         self,
-        trans_context: &TransactionContext,
+        trans_context: &Arc<TransactionContext>,
         mut request: Request<OrionRequestBody>,
         (connection_manager, mut filter_idx, http_filter): (Arc<HttpConnectionManager>, usize, HttpFilterValue),
     ) -> Result<Response<OrionResponseBody>> {
-        #[cfg(feature = "access-log")]
-        let trans_ctx_arc = request.extensions().get::<Arc<TransactionContext>>().cloned();
         let mut cached_route = match_request_route(&request, &self.0);
         let mut active_filters: SmallVec<[HttpFilterValue; 4]> = SmallVec::new();
 
@@ -1143,14 +1141,13 @@ impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usiz
             },
         };
 
+        response.extensions_mut().insert(Arc::clone(trans_context));
+
         for filter in active_filters.iter_mut().rev() {
-            #[cfg(feature = "access-log")]
-            if let Some(ref trans_ctx) = trans_ctx_arc {
-                response.extensions_mut().insert(Arc::clone(trans_ctx));
-            }
             let filter_res = filter.apply_response(&mut response).await;
             if let FilterDecision::DirectResponse(direct_response) = filter_res {
                 response = *direct_response;
+                response.extensions_mut().insert(Arc::clone(trans_context));
             }
         }
 
@@ -1162,12 +1159,10 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
     #[allow(clippy::too_many_lines)]
     async fn to_response(
         self,
-        trans_context: &TransactionContext,
+        trans_context: &Arc<TransactionContext>,
         mut request: Request<OrionRequestBody>,
         arg: Arc<HttpConnectionManager>,
     ) -> Result<Response<OrionResponseBody>> {
-        #[cfg(feature = "access-log")]
-        let trans_ctx_arc = request.extensions().get::<Arc<TransactionContext>>().cloned();
         let connection_manager = arg;
         let mut cached_route = match_request_route(&request, &self);
         // let mut request: Request<HttpBody> = request.map(|body| body.map_inner(TimeoutBody::map_into));
@@ -1223,7 +1218,7 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
                             let next_idx = current_idx + 1;
 
                             tokio::spawn(async move {
-                                let trans_ctx = TransactionContext::default();
+                                let trans_ctx = Arc::new(TransactionContext::default());
                                 _ = async_exec
                                     .to_response(&trans_ctx, *req, (conn_manager, next_idx, filter_value))
                                     .await;
@@ -1361,16 +1356,15 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
             },
         };
 
+        response.extensions_mut().insert(Arc::clone(trans_context));
+
         // let's process the active filters on response in the reverse order...
         //
         for filter in &mut active_filters.iter_mut().rev() {
-            #[cfg(feature = "access-log")]
-            if let Some(ref trans_ctx) = trans_ctx_arc {
-                response.extensions_mut().insert(Arc::clone(trans_ctx));
-            }
             let filter_res = filter.apply_response(&mut response).await;
             if let FilterDecision::DirectResponse(direct_response) = filter_res {
                 response = *direct_response;
+                response.extensions_mut().insert(Arc::clone(trans_context));
             }
         }
 

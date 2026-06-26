@@ -1,3 +1,4 @@
+use std::sync::Arc;
 // Copyright 2025 The kmesh Authors
 //
 //
@@ -40,7 +41,7 @@ use std::str::FromStr;
 impl<'a> RequestHandler<Request<OrionRequestBody>, (&'a RouteMatchResult, &'a str)> for &RedirectAction {
     async fn to_response(
         self,
-        #[allow(unused_variables)] trans_context: &TransactionContext,
+        #[allow(unused_variables)] trans_context: &Arc<TransactionContext>,
         request: Request<OrionRequestBody>,
         #[allow(unused_variables)] (route_match_result, route_name): (&'a RouteMatchResult, &'a str),
     ) -> Result<Response<OrionResponseBody>> {

@@ -15,6 +15,8 @@
 //
 //
 
+use std::sync::Arc;
+
 #[cfg(feature = "metrics")]
 use crate::metrics;
 
@@ -95,7 +97,7 @@ pub fn is_websocket_enabled_by_hcm(hcm_enabled_upgrades: &[UpgradeType]) -> bool
 
 #[allow(clippy::too_many_lines)]
 pub async fn handle_websocket_upgrade(
-    trans_ctx: &TransactionContext,
+    trans_ctx: &Arc<TransactionContext>,
     mut request: Request<OrionRequestBody>,
     svc_channel: &HttpChannels,
     #[cfg(feature = "metrics")] listener_name: &'static str,

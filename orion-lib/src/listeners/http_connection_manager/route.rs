@@ -1,3 +1,4 @@
+use std::sync::Arc;
 // Copyright 2025 The kmesh Authors
 //
 //
@@ -75,7 +76,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
     #[allow(unused_variables)]
     async fn to_response(
         self,
-        trans_context: &TransactionContext,
+        trans_context: &Arc<TransactionContext>,
         request: Request<OrionRequestBody>,
         (route_context, connection_manager): (RouteContext<'a>, &HttpConnectionManager),
     ) -> Result<Response<OrionResponseBody>> {
