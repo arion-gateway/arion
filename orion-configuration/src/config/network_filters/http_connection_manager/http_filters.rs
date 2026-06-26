@@ -15,6 +15,7 @@
 //
 //
 
+pub mod cedar_policy;
 pub mod cors;
 pub mod ext_proc;
 pub mod http_rbac;
@@ -24,6 +25,7 @@ pub mod mcp_gateway;
 pub mod router;
 pub mod user_rate_limit;
 
+use cedar_policy::CedarPolicy;
 pub use ext_proc::{ExtProcPerRoute, ExternalProcessor};
 use http_rbac::HttpRbac;
 use local_rate_limit::LocalRateLimit;
@@ -74,6 +76,7 @@ pub enum HttpFilterType {
     CorsPolicy(CorsConfig),
     McpGateway(McpGateway),
     UserRateLimit(UserRateLimiter),
+    CedarPolicy(CedarPolicy),
 }
 
 #[cfg(feature = "envoy-conversions")]
@@ -94,6 +97,7 @@ mod envoy_conversions {
     use crate::config::common::*;
     use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::cors::v3::Cors;
     use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::cors::v3::CorsPolicy;
+    use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::cedar::v3::CedarPolicy as ProtoCedarPolicy;
     use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::mcp::mcp_gateway::v3::McpGateway as OrionMcpGateway;
     use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::user_rate_limit::v3::UserRateLimiter as OrionUserRateLimiter;
     use orion_data_plane_api::envoy_data_plane_api::{
@@ -169,6 +173,7 @@ mod envoy_conversions {
                 SupportedEnvoyFilter::UserRateLimiter(user_rate_limit) => {
                     user_rate_limit.try_into().map(Self::UserRateLimit)
                 },
+                SupportedEnvoyFilter::CedarPolicy(cedar) => cedar.try_into().map(Self::CedarPolicy),
             }
         }
     }
@@ -185,6 +190,7 @@ mod envoy_conversions {
         CorsPolicy(CorsPolicy),
         McpGateway(OrionMcpGateway),
         UserRateLimiter(OrionUserRateLimiter),
+        CedarPolicy(ProtoCedarPolicy),
     }
 
     impl TryFrom<Any> for SupportedEnvoyFilter {
@@ -217,6 +223,9 @@ mod envoy_conversions {
                 },
                 "type.googleapis.com/orion.extensions.filters.http.user_rate_limit.v3.UserRateLimiter" => {
                     OrionUserRateLimiter::decode(typed_config.value.as_slice()).map(Self::UserRateLimiter)
+                },
+                "type.googleapis.com/orion.extensions.filters.http.cedar.v3.CedarPolicy" => {
+                    ProtoCedarPolicy::decode(typed_config.value.as_slice()).map(Self::CedarPolicy)
                 },
                 _ => return Err(GenericError::unsupported_variant(typed_config.type_url)),
             }
