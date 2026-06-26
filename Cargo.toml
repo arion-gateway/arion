@@ -4,6 +4,7 @@ members = [
   "orion-configuration",
   "orion-data-plane-api",
   "orion-auth",
+  "orion-cedar",
   "orion-error",
   "orion-http-header",
   "orion-e2e-tests",
@@ -32,6 +33,7 @@ version      = "0.1.0"
 # --- Orion Internal Crates ---
 envoy-data-plane-api     = { path = "envoy-data-plane-api" }
 orion-auth               = { path = "orion-auth" }
+orion-cedar              = { path = "orion-cedar" }
 orion-configuration      = { path = "orion-configuration" }
 orion-data-plane-api     = { path = "orion-data-plane-api" }
 orion-e2e-tests          = { path = "orion-e2e-tests" }
@@ -67,6 +69,7 @@ blake3                   = "1.8.3"
 bounded-integer          = "0.6.1"
 bytes                    = "1"
 caps                     = "0.5"
+cedar-policy             = "4.11"
 chrono                   = { version = "0.4.42", features = ["serde"] }
 clap                     = { version = "4.5.51", features = ["derive"] }
 const-str                = "1.1.0"
