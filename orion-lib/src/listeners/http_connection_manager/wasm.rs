@@ -13,7 +13,11 @@ use std::{
 };
 use thiserror::Error;
 use tracing::{debug, info};
-use wasmtime::{Engine, Instance, Linker, Module, Store};
+use smol_str::SmolStr;
+use wasmtime::{Engine, Instance, Linker, Module, Store, TypedFunc};
+
+mod hostcalls;
+mod types;
 
 #[derive(Error, Debug)]
 pub enum WasmError {
@@ -35,7 +39,7 @@ pub static WASM_REGISTRY: LazyLock<WasmRegistry> = LazyLock::new(|| WasmRegistry
 
 pub struct WasmRegistry {
     // Papaya's concurrent hash map for lock-free reads
-    cache: papaya::HashMap<String, Module>,
+    cache: papaya::HashMap<SmolStr, Module>,
 }
 
 impl WasmRegistry {
@@ -73,14 +77,15 @@ impl WasmRegistry {
 // Thread-local execution context
 // Holds the Wasmtime Store and Instance for lock-free execution
 pub struct ThreadContext {
-    pub store: Store<()>,
-    pub instance: Option<Instance>,
+    pub store: Store<hostcalls::WasmState>,
+    pub on_request_headers: TypedFunc<u64, i32>,
+    pub instance: Instance,
 }
 
 // Map thread-local storage by cache_key to support multiple distinct plugins
 // running on the same thread without overriding each other's Context.
 thread_local! {
-    static THREAD_CTX: RefCell<HashMap<String, ThreadContext, ahash::RandomState>> = RefCell::new(std::collections::HashMap::with_hasher(ahash::RandomState::default()));
+    static THREAD_CTX: RefCell<HashMap<SmolStr, ThreadContext, ahash::RandomState>> = RefCell::new(std::collections::HashMap::with_hasher(ahash::RandomState::default()));
 }
 
 #[derive(Debug, Clone)]
@@ -96,42 +101,77 @@ pub struct WasmFilter {
 
 impl WasmFilter {
     pub fn new(config: WasmConfig) -> Self {
-        // Fetch or compile. The first Tokio runtime will trigger JIT compilation.
+        // Fetch or compile. The first Tokio runtime will trigger compilation.
         // Subsequent runtimes will hit the fast path in Papaya.
         let registry = &*WASM_REGISTRY;
         let module = registry.get_or_compile(&config.code).ok();
         Self { inner: Arc::new(WasmFilterInner { config, module }) }
     }
 
+    fn create_thread_context(&self) -> Result<ThreadContext, WasmError> {
+        let engine = &*GLOBAL_ENGINE;
+        let mut store = Store::new(engine, hostcalls::WasmState { request: None, direct_response: None });
+        let mut linker = Linker::new(engine);
+
+        // register hostcalls...
+        if let Err(e) = hostcalls::register_hostcalls(&mut linker) {
+            return Err(WasmError::InitError(format!("failed to register hostcalls: {}", e)));
+        }
+
+        // Instantiate the module using the globally shared compiled code
+        let instance = match self.inner.module.as_ref() {
+            Some(module) => {
+                match linker.instantiate(&mut store, module) {
+                    Ok(inst) => inst,
+                    Err(e) => return Err(WasmError::InitError(format!("failed to instantiate module: {}", e))),
+                }
+            }
+            None => return Err(WasmError::InitError("WASM module is not loaded".to_string())),
+        };
+
+        let on_request_headers = instance.get_typed_func::<u64, i32>(&mut store, "on_request_headers")?;
+
+        Ok(ThreadContext { store, on_request_headers, instance })
+    }
+
     pub fn apply_request(&mut self, _req: &mut Request<OrionRequestBody>) -> FilterDecision {
         info!("WasFilter::apply_request: {:?}", self.inner.config);
         let cache_key = self.inner.config.code.cache_key();
 
-        THREAD_CTX.with(|ctx| {
+        let res: Result<Option<Response<OrionResponseBody>>, WasmError> = THREAD_CTX.with(|ctx| {
             let mut contexts = ctx.borrow_mut();
 
             // 1. If this thread hasn't instantiated THIS specific module yet, do it now.
-            let thread_ctx = contexts.entry(cache_key).or_insert_with(|| {
-                let engine = &*GLOBAL_ENGINE;
-                let mut store = Store::new(engine, ());
-                let linker = Linker::new(engine);
+            if !contexts.contains_key(&cache_key) {
+                let thread_ctx = self.create_thread_context()?;
+                contexts.insert(cache_key.clone(), thread_ctx);
+            }
 
-                // Note: Host functions (like orion_get_header) would be registered in the linker here.
+            let thread_ctx = contexts.get_mut(&cache_key).unwrap();
+            thread_ctx.store.data_mut().request = Some(_req as *mut _);
 
-                // Instantiate the module using the globally shared compiled code
-                let instance =
-                    self.inner.module.as_ref().map(|module| linker.instantiate(&mut store, &module).ok()).flatten();
+            // 2. Execute the Wasm logic
+            // Pass 0 as a dummy context ID/req_ptr for now, since the actual request
+            // is stored in the hostcall WasmState.
+            let res = thread_ctx.on_request_headers.call(&mut thread_ctx.store, 0);
 
-                ThreadContext { store, instance }
-            });
+            let direct_response = thread_ctx.store.data_mut().direct_response.take();
+            thread_ctx.store.data_mut().request = None;
 
-            // 2. Execute the Wasm logic lock-free
-            // Fetch the exported function and call it
-            // e.g., let func = thread_ctx.instance.get_typed_func::<u64, i32>(&mut thread_ctx.store, "on_request_headers").unwrap();
-            // func.call(&mut thread_ctx.store, req_ptr).unwrap();
+            // Map any Wasm trap/error back to WasmError
+            res?;
+
+            Ok(direct_response)
         });
 
-        FilterDecision::Continue
+        match res {
+            Ok(Some(mut response)) => {
+                *response.version_mut() = _req.version();
+                FilterDecision::DirectResponse(Box::new(response))
+            },
+            Ok(None) => FilterDecision::Continue,
+            Err(e) => FilterDecision::internal_server_error(&e.to_string(), _req.version()),
+        }
     }
 
     pub fn apply_response(&mut self, _res: &mut Response<OrionResponseBody>) -> FilterDecision {
