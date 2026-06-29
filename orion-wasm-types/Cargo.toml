@@ -1,0 +1,8 @@
+[package]
+name = "orion-wasm-types"
+version = "0.1.0"
+edition = "2021"
+description = "Shared ABI types between the Orion proxy (host) and the Orion Wasm SDK (guest)."
+license = "Apache-2.0"
+
+[dependencies]

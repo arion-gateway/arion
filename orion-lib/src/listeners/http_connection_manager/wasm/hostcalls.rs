@@ -25,7 +25,7 @@ fn orion_get_request_header(
 ) -> i32 {
     let memory = match caller.get_export("memory").and_then(|m| m.into_memory()) {
         Some(mem) => mem,
-        None => return OrionWasmResult::InvalidMemoryAccess as i32, // Memory not found
+        None => return OrionWasmResult::InvalidMemoryAccess.into(), // Memory not found
     };
 
     let name = {
@@ -33,17 +33,17 @@ fn orion_get_request_header(
         let start = name_ptr as usize;
         let end = start + name_len as usize;
         if end > data.len() {
-            return OrionWasmResult::InvalidMemoryAccess as i32;
+            return OrionWasmResult::InvalidMemoryAccess.into();
         }
         match std::str::from_utf8(&data[start..end]) {
             Ok(s) => s.to_smolstr(),
-            Err(_) => return OrionWasmResult::InvalidMemoryAccess as i32,
+            Err(_) => return OrionWasmResult::InvalidMemoryAccess.into(),
         }
     };
 
     let request_ptr = match caller.data().request {
         Some(ptr) => ptr,
-        None => return OrionWasmResult::InvalidMemoryAccess as i32, // No request in context
+        None => return OrionWasmResult::InvalidMemoryAccess.into(), // No request in context
     };
 
     let request = unsafe { &*request_ptr };
@@ -51,7 +51,7 @@ fn orion_get_request_header(
     if let Some(val) = request.headers().get(name.as_str()) {
         let val_bytes = val.as_bytes();
         if val_bytes.len() > value_max_len as usize {
-            return OrionWasmResult::BufferTooSmall as i32; // Buffer too small
+            return OrionWasmResult::BufferTooSmall.into(); // Buffer too small
         }
 
         let data = memory.data_mut(&mut caller);
@@ -60,7 +60,7 @@ fn orion_get_request_header(
         let val_start = value_ptr as usize;
         let val_end = val_start + val_bytes.len();
         if val_end > data.len() {
-            return OrionWasmResult::InvalidMemoryAccess as i32;
+            return OrionWasmResult::InvalidMemoryAccess.into();
         }
         data[val_start..val_end].copy_from_slice(val_bytes);
 
@@ -68,29 +68,29 @@ fn orion_get_request_header(
         let len_start = written_len_ptr as usize;
         let len_end = len_start + 4;
         if len_end > data.len() {
-            return OrionWasmResult::InvalidMemoryAccess as i32;
+            return OrionWasmResult::InvalidMemoryAccess.into();
         }
         data[len_start..len_end].copy_from_slice(&(val_bytes.len() as u32).to_le_bytes());
 
-        OrionWasmResult::Ok as i32 // OK
+        OrionWasmResult::Ok.into() // OK
     } else {
-        OrionWasmResult::NotFound as i32 // Not found
+        OrionWasmResult::NotFound.into() // Not found
     }
 }
 
 fn orion_get_request_body(mut caller: Caller<'_, WasmState>, body_ptr: u32, max_len: u32, written_len_ptr: u32) -> i32 {
     let memory = match caller.get_export("memory").and_then(|m| m.into_memory()) {
         Some(mem) => mem,
-        None => return OrionWasmResult::InvalidMemoryAccess as i32,
+        None => return OrionWasmResult::InvalidMemoryAccess.into(),
     };
 
     let body_bytes = match caller.data().buffered_body.as_ref() {
         Some(b) => b.clone(),
-        None => return OrionWasmResult::NotFound as i32,
+        None => return OrionWasmResult::NotFound.into(),
     };
 
     if body_bytes.len() > max_len as usize {
-        return OrionWasmResult::BufferTooSmall as i32;
+        return OrionWasmResult::BufferTooSmall.into();
     }
 
     let data = memory.data_mut(&mut caller);
@@ -98,18 +98,18 @@ fn orion_get_request_body(mut caller: Caller<'_, WasmState>, body_ptr: u32, max_
     let start = body_ptr as usize;
     let end = start + body_bytes.len();
     if end > data.len() {
-        return OrionWasmResult::InvalidMemoryAccess as i32;
+        return OrionWasmResult::InvalidMemoryAccess.into();
     }
     data[start..end].copy_from_slice(&body_bytes);
 
     let len_start = written_len_ptr as usize;
     let len_end = len_start + 4;
     if len_end > data.len() {
-        return OrionWasmResult::InvalidMemoryAccess as i32;
+        return OrionWasmResult::InvalidMemoryAccess.into();
     }
     data[len_start..len_end].copy_from_slice(&(body_bytes.len() as u32).to_le_bytes());
 
-    OrionWasmResult::Ok as i32
+    OrionWasmResult::Ok.into()
 }
 
 fn orion_send_direct_response(
@@ -120,7 +120,7 @@ fn orion_send_direct_response(
 ) -> i32 {
     let memory = match caller.get_export("memory").and_then(|m| m.into_memory()) {
         Some(mem) => mem,
-        None => return OrionWasmResult::InvalidMemoryAccess as i32,
+        None => return OrionWasmResult::InvalidMemoryAccess.into(),
     };
 
     let body_bytes = if body_len > 0 {
@@ -128,7 +128,7 @@ fn orion_send_direct_response(
         let start = body_ptr as usize;
         let end = start + body_len as usize;
         if end > data.len() {
-            return OrionWasmResult::InvalidMemoryAccess as i32;
+            return OrionWasmResult::InvalidMemoryAccess.into();
         }
         Bytes::copy_from_slice(&data[start..end])
     } else {
@@ -137,7 +137,7 @@ fn orion_send_direct_response(
 
     let status = match StatusCode::from_u16(status_code as u16) {
         Ok(s) => s,
-        Err(_) => return OrionWasmResult::InternalError as i32,
+        Err(_) => return OrionWasmResult::InternalError.into(),
     };
 
     use crate::body::poly_body::PolyBody;
@@ -146,7 +146,7 @@ fn orion_send_direct_response(
 
     caller.data_mut().direct_response = Some(response);
 
-    OrionWasmResult::Ok as i32
+    OrionWasmResult::Ok.into()
 }
 
 pub fn register_hostcalls(linker: &mut Linker<WasmState>) -> Result<(), wasmtime::Error> {

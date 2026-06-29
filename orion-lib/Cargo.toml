@@ -19,6 +19,7 @@ http-body-util.workspace = true
 hyper-util.workspace = true
 cedar-policy.workspace = true
 orion-configuration.workspace = true
+orion-wasm-types.workspace = true
 orion-data-plane-api.workspace = true
 orion-error.workspace = true
 orion-format.workspace = true

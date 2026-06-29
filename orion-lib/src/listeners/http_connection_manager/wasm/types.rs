@@ -1,17 +1,5 @@
-#[repr(i32)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum OrionWasmResult {
-    Ok = 0,
-    NotFound = 1,
-    BufferTooSmall = 2,
-    InvalidMemoryAccess = 3,
-    InternalError = 4,
-}
-
-#[repr(i32)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum FilterAction {
-    Continue = 0,
-    PauseAndBufferBody = 1,
-    DirectResponse = 2,
-}
+// Re-export the shared ABI types from the standalone `orion-wasm-types` crate.
+//
+// This keeps a single source of truth for the Wasm ABI contract shared between
+// the host (orion-lib) and the guest SDK (orion-wasm-sdk).
+pub use orion_wasm_types::{FilterAction, OrionWasmResult};

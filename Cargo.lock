@@ -3740,6 +3740,7 @@ dependencies = [
  "orion-interner",
  "orion-metrics",
  "orion-tracing",
+ "orion-wasm-types",
  "orion-xds",
  "owning_ref",
  "papaya",
@@ -3899,6 +3900,10 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
 ]
+
+[[package]]
+name = "orion-wasm-types"
+version = "0.1.0"
 
 [[package]]
 name = "orion-xds"

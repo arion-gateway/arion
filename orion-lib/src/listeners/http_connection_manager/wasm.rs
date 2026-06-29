@@ -156,7 +156,7 @@ impl WasmFilter {
                 thread_ctx.store.data_mut().request = None;
                 res.map_err(WasmError::Wasmtime)
             } else {
-                Ok(types::FilterAction::Continue as i32)
+                Ok(types::FilterAction::Continue.into())
             }
         });
 
@@ -203,7 +203,7 @@ impl WasmFilter {
 
                         res.map_err(WasmError::Wasmtime)
                     } else {
-                        Ok(types::FilterAction::Continue as i32)
+                        Ok(types::FilterAction::Continue.into())
                     }
                 });
 

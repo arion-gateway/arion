@@ -14,8 +14,12 @@ members = [
   "orion-stats",
   "orion-proxy",
   "orion-tracing",
+  "orion-wasm-types",
   "orion-xds",
   "tools/hyper_unix_listener",
+]
+exclude = [
+  "orion-wasm-sdk",
 ]
 
 resolver = "2"
@@ -43,6 +47,7 @@ orion-lib                = { path = "orion-lib" }
 orion-metrics            = { path = "orion-metrics" }
 orion-stats              = { path = "orion-stats" }
 orion-tracing            = { path = "orion-tracing" }
+orion-wasm-types         = { path = "orion-wasm-types" }
 orion-xds                = { path = "orion-xds" }
 
 # --- Third-party Dependencies ---
