@@ -10,9 +10,8 @@ use smol_str::ToSmolStr;
 use wasmtime::{Caller, Linker};
 
 pub struct WasmState {
-    pub request: Option<*mut Request<OrionRequestBody>>,
     pub direct_response: Option<Response<OrionResponseBody>>,
-    pub buffered_body: Option<bytes::Bytes>,
+    pub buffered_request_body: Option<bytes::Bytes>,
     pub buffered_response_body: Option<bytes::Bytes>,
 }
 
@@ -27,7 +26,7 @@ fn orion_get_request_header(
 ) -> i32 {
     let memory = match caller.get_export("memory").and_then(|m| m.into_memory()) {
         Some(mem) => mem,
-        None => return OrionWasmResult::InvalidMemoryAccess.into(), // Memory not found
+        None => return OrionWasmResult::InvalidMemoryAccess.into(),
     };
 
     let name = {
@@ -48,12 +47,11 @@ fn orion_get_request_header(
     if let Some(val) = request.headers().get(name.as_str()) {
         let val_bytes = val.as_bytes();
         if val_bytes.len() > value_max_len as usize {
-            return OrionWasmResult::BufferTooSmall.into(); // Buffer too small
+            return OrionWasmResult::BufferTooSmall.into();
         }
 
         let data = memory.data_mut(&mut caller);
 
-        // Write the value
         let val_start = value_ptr as usize;
         let val_end = val_start + val_bytes.len();
         if val_end > data.len() {
@@ -61,7 +59,6 @@ fn orion_get_request_header(
         }
         data[val_start..val_end].copy_from_slice(val_bytes);
 
-        // Write the written length
         let len_start = written_len_ptr as usize;
         let len_end = len_start + 4;
         if len_end > data.len() {
@@ -69,9 +66,9 @@ fn orion_get_request_header(
         }
         data[len_start..len_end].copy_from_slice(&(val_bytes.len() as u32).to_le_bytes());
 
-        OrionWasmResult::Ok.into() // OK
+        OrionWasmResult::Ok.into()
     } else {
-        OrionWasmResult::NotFound.into() // Not found
+        OrionWasmResult::NotFound.into()
     }
 }
 
@@ -87,7 +84,7 @@ fn orion_get_request_body(
         None => return OrionWasmResult::InvalidMemoryAccess.into(),
     };
 
-    let body_bytes = match caller.data().buffered_body.as_ref() {
+    let body_bytes = match caller.data().buffered_request_body.as_ref() {
         Some(b) => b.clone(),
         None => return OrionWasmResult::NotFound.into(),
     };

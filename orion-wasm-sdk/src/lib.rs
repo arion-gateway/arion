@@ -345,9 +345,6 @@ pub struct RequestHandle<S: State> {
 
 impl<S: State> RequestHandle<S> {
     /// Create a new request handle.
-    ///
-    /// # SAFETY
-    /// The caller must ensure `handle` is a valid host pointer of `Request`.
     #[doc(hidden)]
     pub unsafe fn new(handle: u64) -> Self {
         Self {
@@ -365,9 +362,6 @@ pub struct ResponseHandle<S: State> {
 
 impl<S: State> ResponseHandle<S> {
     /// Create a new response handle.
-    ///
-    /// # SAFETY
-    /// The caller must ensure `handle` is a valid host pointer of `Response`.
     #[doc(hidden)]
     pub unsafe fn new(handle: u64) -> Self {
         Self {
@@ -476,7 +470,25 @@ pub trait Plugin {
     }
 }
 
-/// Generate the `extern "C"` entry points the Orion host imports.
+/// # Example
+///
+/// ```no_run
+/// use orion_wasm_sdk::{Plugin, FilterAction, RequestHandle, RequestHeaders, orion_plugin};
+///
+/// #[derive(Default)]
+/// struct AuthFilter;
+///
+/// impl Plugin for AuthFilter {
+///     fn on_request_headers(&mut self, ctx: &RequestHandle<RequestHeaders>) -> FilterAction {
+///         match ctx.get_header("Authorization") {
+///             Ok(Some(v)) if v == "Bearer secret-token" => FilterAction::Continue,
+///             _ => ctx.direct_response(401, b"unauthorized"),
+///         }
+///     }
+/// }
+///
+/// orion_plugin!(AuthFilter);
+/// ```
 #[macro_export]
 macro_rules! orion_plugin {
     ($t:ty) => {
@@ -485,14 +497,15 @@ macro_rules! orion_plugin {
         #[no_mangle]
         pub extern "C" fn on_request_headers(request_handle: u64) -> i32 {
             use $crate::{Plugin, RequestHandle, RequestHeaders};
-            // SAFETY: Wasm is single-threaded; host invokes entry points sequentially.
+            // SAFETY: Wasm execution within a request context is sequential.
             let plugin = unsafe {
                 if PLUGIN.is_none() {
-                    PLUGIN = ::std::option::Option::Some(
-                        <$t as ::std::default::Default>::default(),
-                    );
+                    PLUGIN = ::std::option::Option::Some(<$t as ::std::default::Default>::default());
                 }
-                PLUGIN.as_mut().unwrap()
+                match PLUGIN.as_mut() {
+                    ::std::option::Option::Some(p) => p,
+                    ::std::option::Option::None => return $crate::FilterAction::Continue.into(),
+                }
             };
             let ctx = unsafe { RequestHandle::<RequestHeaders>::new(request_handle) };
             Plugin::on_request_headers(plugin, &ctx).into()
@@ -501,14 +514,15 @@ macro_rules! orion_plugin {
         #[no_mangle]
         pub extern "C" fn on_request_body(request_handle: u64, _body_len: u32) -> i32 {
             use $crate::{Plugin, RequestHandle, RequestBody};
-            // SAFETY: Wasm is single-threaded; host invokes entry points sequentially.
+            // SAFETY: Wasm execution within a request context is sequential.
             let plugin = unsafe {
                 if PLUGIN.is_none() {
-                    PLUGIN = ::std::option::Option::Some(
-                        <$t as ::std::default::Default>::default(),
-                    );
+                    PLUGIN = ::std::option::Option::Some(<$t as ::std::default::Default>::default());
                 }
-                PLUGIN.as_mut().unwrap()
+                match PLUGIN.as_mut() {
+                    ::std::option::Option::Some(p) => p,
+                    ::std::option::Option::None => return $crate::FilterAction::Continue.into(),
+                }
             };
             let ctx = unsafe { RequestHandle::<RequestBody>::new(request_handle) };
             Plugin::on_request_body(plugin, &ctx).into()
@@ -517,14 +531,15 @@ macro_rules! orion_plugin {
         #[no_mangle]
         pub extern "C" fn on_response_headers(response_handle: u64) -> i32 {
             use $crate::{Plugin, ResponseHandle, ResponseHeaders};
-            // SAFETY: Wasm is single-threaded; host invokes entry points sequentially.
+            // SAFETY: Wasm execution within a request context is sequential.
             let plugin = unsafe {
                 if PLUGIN.is_none() {
-                    PLUGIN = ::std::option::Option::Some(
-                        <$t as ::std::default::Default>::default(),
-                    );
+                    PLUGIN = ::std::option::Option::Some(<$t as ::std::default::Default>::default());
                 }
-                PLUGIN.as_mut().unwrap()
+                match PLUGIN.as_mut() {
+                    ::std::option::Option::Some(p) => p,
+                    ::std::option::Option::None => return $crate::FilterAction::Continue.into(),
+                }
             };
             let ctx = unsafe { ResponseHandle::<ResponseHeaders>::new(response_handle) };
             Plugin::on_response_headers(plugin, &ctx).into()
@@ -533,14 +548,15 @@ macro_rules! orion_plugin {
         #[no_mangle]
         pub extern "C" fn on_response_body(response_handle: u64, _body_len: u32) -> i32 {
             use $crate::{Plugin, ResponseHandle, ResponseBody};
-            // SAFETY: Wasm is single-threaded; host invokes entry points sequentially.
+            // SAFETY: Wasm execution within a request context is sequential.
             let plugin = unsafe {
                 if PLUGIN.is_none() {
-                    PLUGIN = ::std::option::Option::Some(
-                        <$t as ::std::default::Default>::default(),
-                    );
+                    PLUGIN = ::std::option::Option::Some(<$t as ::std::default::Default>::default());
                 }
-                PLUGIN.as_mut().unwrap()
+                match PLUGIN.as_mut() {
+                    ::std::option::Option::Some(p) => p,
+                    ::std::option::Option::None => return $crate::FilterAction::Continue.into(),
+                }
             };
             let ctx = unsafe { ResponseHandle::<ResponseBody>::new(response_handle) };
             Plugin::on_response_body(plugin, &ctx).into()

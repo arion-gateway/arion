@@ -20,7 +20,7 @@ use base64::engine::general_purpose::STANDARD;
 use base64_serde::base64_serde_type;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use smol_str::{format_smolstr, SmolStr};
+use smol_str::SmolStr;
 use std::{
     fmt::{Debug, Display},
     hash::{Hash, Hasher},
@@ -36,26 +36,6 @@ pub enum DataSource {
     InlineBytes(#[serde(with = "Base64Standard")] Vec<u8>),
     InlineString(SmolStr),
     EnvironmentVariable(SmolStr),
-}
-
-impl DataSource {
-    // Generates a unique cache key to avoid recompiling the same inline data
-    pub fn cache_key(&self) -> SmolStr {
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-
-        match self {
-            DataSource::Path(p) => format_smolstr!("path:{}", p),
-            DataSource::InlineBytes(b) => {
-                b.hash(&mut hasher);
-                format_smolstr!("bytes:{:x}", hasher.finish())
-            },
-            DataSource::InlineString(s) => {
-                s.hash(&mut hasher);
-                format_smolstr!("string:{:x}", hasher.finish())
-            },
-            DataSource::EnvironmentVariable(v) => format_smolstr!("env:{}", v),
-        }
-    }
 }
 
 #[derive(thiserror::Error, Debug)]
