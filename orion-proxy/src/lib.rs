@@ -26,9 +26,17 @@ mod proxy;
 mod runtime;
 mod xds_configurator;
 
-pub fn run() -> Result<()> {
+pub fn run() -> bool {
     let mut tracing_manager = proxy_tracing::TracingManager::new();
 
+    if let Err(e) = run_inner(&mut tracing_manager) {
+        tracing::error!("Orion proxy terminated with error: {:?}", e);
+        return false;
+    }
+    true
+}
+
+fn run_inner(tracing_manager: &mut proxy_tracing::TracingManager) -> Result<()> {
     let options = Options::parse_options();
     let Config { runtime, logging, access_log_config, metrics, bootstrap } = Config::new(&options)?;
 
@@ -74,7 +82,7 @@ pub fn run() -> Result<()> {
         tracing::warn!("CAP_NET_RAW is NOT available, SO_BINDTODEVICE will not work");
     }
 
-    proxy::run_orion(bootstrap, metrics, access_log_config);
+    proxy::run_orion(bootstrap, metrics, access_log_config)?;
     Ok(())
 }
 
