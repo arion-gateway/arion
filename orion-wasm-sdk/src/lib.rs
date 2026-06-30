@@ -319,6 +319,129 @@ pub fn get_http_response_header(_response_handle: u64, _name: &str) -> Result<Op
 }
 
 // ============================================================================
+// Typestate API
+// ============================================================================
+
+/// Marker type representing the headers phase of an HTTP request.
+pub struct RequestHeaders;
+/// Marker type representing the body phase of an HTTP request.
+pub struct RequestBody;
+/// Marker type representing the headers phase of an HTTP response.
+pub struct ResponseHeaders;
+/// Marker type representing the body phase of an HTTP response.
+pub struct ResponseBody;
+
+pub trait State {}
+impl State for RequestHeaders {}
+impl State for RequestBody {}
+impl State for ResponseHeaders {}
+impl State for ResponseBody {}
+
+/// Typestate wrapper around a request handle.
+pub struct RequestHandle<S: State> {
+    handle: u64,
+    _marker: core::marker::PhantomData<S>,
+}
+
+impl<S: State> RequestHandle<S> {
+    /// Create a new request handle.
+    ///
+    /// # SAFETY
+    /// The caller must ensure `handle` is a valid host pointer of `Request`.
+    #[doc(hidden)]
+    pub unsafe fn new(handle: u64) -> Self {
+        Self {
+            handle,
+            _marker: core::marker::PhantomData,
+        }
+    }
+}
+
+/// Typestate wrapper around a response handle.
+pub struct ResponseHandle<S: State> {
+    handle: u64,
+    _marker: core::marker::PhantomData<S>,
+}
+
+impl<S: State> ResponseHandle<S> {
+    /// Create a new response handle.
+    ///
+    /// # SAFETY
+    /// The caller must ensure `handle` is a valid host pointer of `Response`.
+    #[doc(hidden)]
+    pub unsafe fn new(handle: u64) -> Self {
+        Self {
+            handle,
+            _marker: core::marker::PhantomData,
+        }
+    }
+}
+
+impl RequestHandle<RequestHeaders> {
+    /// Read an HTTP request header by name.
+    pub fn get_header(&self, name: &str) -> Result<Option<String>, OrionWasmResult> {
+        get_http_request_header(self.handle, name)
+    }
+
+    /// Send a direct (local) HTTP response, short-circuiting the filter chain.
+    pub fn send_direct_response(&self, status_code: u16, body: &[u8]) -> Result<(), OrionWasmResult> {
+        send_http_direct_response(self.handle, status_code, body)
+    }
+
+    /// Convenience wrapper around `send_direct_response`.
+    pub fn direct_response(&self, status_code: u16, body: &[u8]) -> FilterAction {
+        match self.send_direct_response(status_code, body) {
+            Ok(()) => FilterAction::DirectResponse,
+            Err(_) => FilterAction::Continue,
+        }
+    }
+}
+
+impl RequestHandle<RequestBody> {
+    /// Read an HTTP request header by name.
+    pub fn get_header(&self, name: &str) -> Result<Option<String>, OrionWasmResult> {
+        get_http_request_header(self.handle, name)
+    }
+
+    /// Read the buffered request body.
+    pub fn get_body(&self) -> Result<Vec<u8>, OrionWasmResult> {
+        get_http_request_body(self.handle)
+    }
+
+    /// Send a direct (local) HTTP response, short-circuiting the filter chain.
+    pub fn send_direct_response(&self, status_code: u16, body: &[u8]) -> Result<(), OrionWasmResult> {
+        send_http_direct_response(self.handle, status_code, body)
+    }
+
+    /// Convenience wrapper around `send_direct_response`.
+    pub fn direct_response(&self, status_code: u16, body: &[u8]) -> FilterAction {
+        match self.send_direct_response(status_code, body) {
+            Ok(()) => FilterAction::DirectResponse,
+            Err(_) => FilterAction::Continue,
+        }
+    }
+}
+
+impl ResponseHandle<ResponseHeaders> {
+    /// Read an HTTP response header by name.
+    pub fn get_header(&self, name: &str) -> Result<Option<String>, OrionWasmResult> {
+        get_http_response_header(self.handle, name)
+    }
+}
+
+impl ResponseHandle<ResponseBody> {
+    /// Read an HTTP response header by name.
+    pub fn get_header(&self, name: &str) -> Result<Option<String>, OrionWasmResult> {
+        get_http_response_header(self.handle, name)
+    }
+
+    /// Read the buffered response body.
+    pub fn get_body(&self) -> Result<Vec<u8>, OrionWasmResult> {
+        get_http_response_body(self.handle)
+    }
+}
+
+// ============================================================================
 // High-level `Plugin` trait + `orion_plugin!` macro
 // ============================================================================
 
@@ -326,7 +449,7 @@ pub fn get_http_response_header(_response_handle: u64, _name: &str) -> Result<Op
 pub trait Plugin {
     /// Invoked on the request path before the body has been buffered.
     #[inline]
-    fn on_request_headers(&mut self, _request_handle: u64) -> FilterAction {
+    fn on_request_headers(&mut self, _ctx: &RequestHandle<RequestHeaders>) -> FilterAction {
         FilterAction::Continue
     }
 
@@ -334,13 +457,13 @@ pub trait Plugin {
     /// from [`Plugin::on_request_headers`] and the host has buffered the full
     /// request body.
     #[inline]
-    fn on_request_body(&mut self, _request_handle: u64) -> FilterAction {
+    fn on_request_body(&mut self, _ctx: &RequestHandle<RequestBody>) -> FilterAction {
         FilterAction::Continue
     }
 
     /// Invoked on the response path before the body has been buffered.
     #[inline]
-    fn on_response_headers(&mut self, _response_handle: u64) -> FilterAction {
+    fn on_response_headers(&mut self, _ctx: &ResponseHandle<ResponseHeaders>) -> FilterAction {
         FilterAction::Continue
     }
 
@@ -348,17 +471,8 @@ pub trait Plugin {
     /// from [`Plugin::on_response_headers`] and the host has buffered the full
     /// response body.
     #[inline]
-    fn on_response_body(&mut self, _response_handle: u64) -> FilterAction {
+    fn on_response_body(&mut self, _ctx: &ResponseHandle<ResponseBody>) -> FilterAction {
         FilterAction::Continue
-    }
-}
-
-/// Convenience wrapper around [`send_http_direct_response`].
-#[inline]
-pub fn direct_response(request_handle: u64, status_code: u16, body: &[u8]) -> FilterAction {
-    match send_http_direct_response(request_handle, status_code, body) {
-        Ok(()) => FilterAction::DirectResponse,
-        Err(_) => FilterAction::Continue,
     }
 }
 
@@ -370,7 +484,7 @@ macro_rules! orion_plugin {
 
         #[no_mangle]
         pub extern "C" fn on_request_headers(request_handle: u64) -> i32 {
-            use $crate::Plugin;
+            use $crate::{Plugin, RequestHandle, RequestHeaders};
             // SAFETY: Wasm is single-threaded; host invokes entry points sequentially.
             let plugin = unsafe {
                 if PLUGIN.is_none() {
@@ -380,12 +494,13 @@ macro_rules! orion_plugin {
                 }
                 PLUGIN.as_mut().unwrap()
             };
-            Plugin::on_request_headers(plugin, request_handle).into()
+            let ctx = unsafe { RequestHandle::<RequestHeaders>::new(request_handle) };
+            Plugin::on_request_headers(plugin, &ctx).into()
         }
 
         #[no_mangle]
         pub extern "C" fn on_request_body(request_handle: u64, _body_len: u32) -> i32 {
-            use $crate::Plugin;
+            use $crate::{Plugin, RequestHandle, RequestBody};
             // SAFETY: Wasm is single-threaded; host invokes entry points sequentially.
             let plugin = unsafe {
                 if PLUGIN.is_none() {
@@ -395,12 +510,13 @@ macro_rules! orion_plugin {
                 }
                 PLUGIN.as_mut().unwrap()
             };
-            Plugin::on_request_body(plugin, request_handle).into()
+            let ctx = unsafe { RequestHandle::<RequestBody>::new(request_handle) };
+            Plugin::on_request_body(plugin, &ctx).into()
         }
 
         #[no_mangle]
         pub extern "C" fn on_response_headers(response_handle: u64) -> i32 {
-            use $crate::Plugin;
+            use $crate::{Plugin, ResponseHandle, ResponseHeaders};
             // SAFETY: Wasm is single-threaded; host invokes entry points sequentially.
             let plugin = unsafe {
                 if PLUGIN.is_none() {
@@ -410,12 +526,13 @@ macro_rules! orion_plugin {
                 }
                 PLUGIN.as_mut().unwrap()
             };
-            Plugin::on_response_headers(plugin, response_handle).into()
+            let ctx = unsafe { ResponseHandle::<ResponseHeaders>::new(response_handle) };
+            Plugin::on_response_headers(plugin, &ctx).into()
         }
 
         #[no_mangle]
         pub extern "C" fn on_response_body(response_handle: u64, _body_len: u32) -> i32 {
-            use $crate::Plugin;
+            use $crate::{Plugin, ResponseHandle, ResponseBody};
             // SAFETY: Wasm is single-threaded; host invokes entry points sequentially.
             let plugin = unsafe {
                 if PLUGIN.is_none() {
@@ -425,7 +542,8 @@ macro_rules! orion_plugin {
                 }
                 PLUGIN.as_mut().unwrap()
             };
-            Plugin::on_response_body(plugin, response_handle).into()
+            let ctx = unsafe { ResponseHandle::<ResponseBody>::new(response_handle) };
+            Plugin::on_response_body(plugin, &ctx).into()
         }
     };
 }
