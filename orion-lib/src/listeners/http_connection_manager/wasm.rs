@@ -13,7 +13,7 @@ use std::{
     sync::{Arc, LazyLock},
 };
 use thiserror::Error;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use wasmtime::{Engine, Instance, Linker, Module, Store, TypedFunc};
 
 mod hostcalls;
@@ -79,7 +79,9 @@ impl WasmRegistry {
 pub struct ThreadContext {
     pub store: Store<hostcalls::WasmState>,
     pub on_request_headers: Option<TypedFunc<u64, i32>>,
-    pub on_request_body: Option<TypedFunc<u32, i32>>,
+    pub on_request_body: Option<TypedFunc<(u64, u32), i32>>,
+    pub on_response_headers: Option<TypedFunc<u64, i32>>,
+    pub on_response_body: Option<TypedFunc<(u64, u32), i32>>,
     pub instance: Instance,
 }
 
@@ -111,8 +113,15 @@ impl WasmFilter {
 
     fn create_thread_context(&self) -> Result<ThreadContext, WasmError> {
         let engine = &*GLOBAL_ENGINE;
-        let mut store =
-            Store::new(engine, hostcalls::WasmState { request: None, direct_response: None, buffered_body: None });
+        let mut store = Store::new(
+            engine,
+            hostcalls::WasmState {
+                request: None,
+                direct_response: None,
+                buffered_body: None,
+                buffered_response_body: None,
+            },
+        );
         let mut linker = Linker::new(engine);
 
         // register hostcalls...
@@ -130,9 +139,18 @@ impl WasmFilter {
         };
 
         let on_request_headers = instance.get_typed_func::<u64, i32>(&mut store, "on_request_headers").ok();
-        let on_request_body = instance.get_typed_func::<u32, i32>(&mut store, "on_request_body").ok();
+        let on_request_body = instance.get_typed_func::<(u64, u32), i32>(&mut store, "on_request_body").ok();
+        let on_response_headers = instance.get_typed_func::<u64, i32>(&mut store, "on_response_headers").ok();
+        let on_response_body = instance.get_typed_func::<(u64, u32), i32>(&mut store, "on_response_body").ok();
 
-        Ok(ThreadContext { store, on_request_headers, on_request_body, instance })
+        Ok(ThreadContext {
+            store,
+            on_request_headers,
+            on_request_body,
+            on_response_headers,
+            on_response_body,
+            instance,
+        })
     }
 
     pub async fn apply_request(&mut self, req: &mut Request<OrionRequestBody>) -> FilterDecision {
@@ -151,8 +169,9 @@ impl WasmFilter {
             let thread_ctx = contexts.get_mut(&cache_key).unwrap();
 
             if let Some(on_headers) = thread_ctx.on_request_headers.as_ref() {
+                let req_handle = req as *mut Request<OrionRequestBody> as u64;
                 thread_ctx.store.data_mut().request = Some(req as *mut _);
-                let res = on_headers.call(&mut thread_ctx.store, 0);
+                let res = on_headers.call(&mut thread_ctx.store, req_handle);
                 thread_ctx.store.data_mut().request = None;
                 res.map_err(WasmError::Wasmtime)
             } else {
@@ -193,10 +212,11 @@ impl WasmFilter {
                     let thread_ctx = contexts.get_mut(&cache_key).unwrap();
 
                     if let Some(on_body) = thread_ctx.on_request_body.as_ref() {
+                        let req_handle = req as *mut Request<OrionRequestBody> as u64;
                         thread_ctx.store.data_mut().request = Some(req as *mut _);
                         thread_ctx.store.data_mut().buffered_body = Some(full_body_bytes.clone());
 
-                        let res = on_body.call(&mut thread_ctx.store, full_body_bytes.len() as u32);
+                        let res = on_body.call(&mut thread_ctx.store, (req_handle, full_body_bytes.len() as u32));
 
                         thread_ctx.store.data_mut().request = None;
                         thread_ctx.store.data_mut().buffered_body = None;
@@ -222,7 +242,17 @@ impl WasmFilter {
                             *response.version_mut() = req.version();
                             FilterDecision::DirectResponse(Box::new(response))
                         } else {
-                            FilterDecision::Continue
+                            // The plugin returned DirectResponse without ever
+                            // calling `orion_send_direct_response`
+                            warn!(
+                                "wasm plugin returned DirectResponse from \
+                                 on_request_body without calling \
+                                 send_direct_response"
+                            );
+                            FilterDecision::internal_server_error(
+                                "DirectResponse without send_direct_response",
+                                req.version(),
+                            )
                         }
                     },
                     Ok(code) => FilterDecision::internal_server_error(
@@ -246,7 +276,18 @@ impl WasmFilter {
                     *response.version_mut() = req.version();
                     FilterDecision::DirectResponse(Box::new(response))
                 } else {
-                    FilterDecision::Continue
+                    // The plugin returned DirectResponse without ever
+                    // calling `orion_send_direct_response`: surface it as a
+                    // 500 instead of silently continuing.
+                    warn!(
+                        "wasm plugin returned DirectResponse from \
+                         on_request_headers without calling \
+                         send_direct_response"
+                    );
+                    FilterDecision::internal_server_error(
+                        "DirectResponse without send_direct_response",
+                        req.version(),
+                    )
                 }
             },
 
@@ -258,9 +299,83 @@ impl WasmFilter {
         }
     }
 
-    pub async fn apply_response(&mut self, _res: &mut Response<OrionResponseBody>) -> FilterDecision {
+    pub async fn apply_response(&mut self, res: &mut Response<OrionResponseBody>) -> FilterDecision {
         info!("WasFilter::apply_response: {:?}", self.inner.config);
-        FilterDecision::Continue
+        let cache_key = self.inner.config.code.cache_key();
+
+        let action_code: Result<i32, WasmError> = THREAD_CTX.with(|ctx| {
+            let mut contexts = ctx.borrow_mut();
+
+            if !contexts.contains_key(&cache_key) {
+                let thread_ctx = self.create_thread_context()?;
+                contexts.insert(cache_key.clone(), thread_ctx);
+            }
+
+            let thread_ctx = contexts.get_mut(&cache_key).unwrap();
+
+            if let Some(on_response_headers) = thread_ctx.on_response_headers.as_ref() {
+                let resp_handle = res as *mut Response<OrionResponseBody> as u64;
+                let res_val = on_response_headers.call(&mut thread_ctx.store, resp_handle);
+                res_val.map_err(WasmError::Wasmtime)
+            } else {
+                Ok(types::FilterAction::Continue.into())
+            }
+        });
+
+        match action_code {
+            Ok(0) => FilterDecision::Continue,
+
+            Ok(1) => {
+                // PauseAndBufferBody for response
+                use crate::body::poly_body::PolyBody;
+                use http_body_util::{BodyExt, Full};
+
+                // 1. Buffer response body
+                let full_body_bytes = match res.body_mut().collect().await {
+                    Ok(collected) => collected.to_bytes(),
+                    Err(_) => return FilterDecision::internal_server_error("Failed to collect response body", res.version()),
+                };
+
+                // 2. Swap response body
+                let old_body = std::mem::take(res.body_mut());
+                *res.body_mut() = old_body.map_inner(|_old_poly_body| {
+                    PolyBody::from(Full::from(full_body_bytes.clone()))
+                });
+
+                // 3. Invoke on_response_body
+                let body_action_code: Result<i32, WasmError> = THREAD_CTX.with(|ctx| {
+                    let mut contexts = ctx.borrow_mut();
+                    let thread_ctx = contexts.get_mut(&cache_key).unwrap();
+
+                    if let Some(on_body) = thread_ctx.on_response_body.as_ref() {
+                        let resp_handle = res as *mut Response<OrionResponseBody> as u64;
+                        thread_ctx.store.data_mut().buffered_response_body = Some(full_body_bytes.clone());
+
+                        let res_val = on_body.call(&mut thread_ctx.store, (resp_handle, full_body_bytes.len() as u32));
+
+                        thread_ctx.store.data_mut().buffered_response_body = None;
+                        res_val.map_err(WasmError::Wasmtime)
+                    } else {
+                        Ok(types::FilterAction::Continue.into())
+                    }
+                });
+
+                match body_action_code {
+                    Ok(0) => FilterDecision::Continue,
+                    Ok(code) => FilterDecision::internal_server_error(
+                        &format!("Invalid response body action code: {}", code),
+                        res.version(),
+                    ),
+                    Err(e) => FilterDecision::internal_server_error(&e.to_string(), res.version()),
+                }
+            }
+
+            Ok(code) => FilterDecision::internal_server_error(
+                &format!("Invalid Wasm response FilterAction code: {}", code),
+                res.version(),
+            ),
+            Err(e) => FilterDecision::internal_server_error(&e.to_string(), res.version()),
+        }
     }
 }
 

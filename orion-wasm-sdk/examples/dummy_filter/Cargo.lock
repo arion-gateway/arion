@@ -10,5 +10,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "orion-wasm-types"
+version = "0.1.0"
+
+[[package]]
 name = "orion_wasm_sdk"
 version = "0.1.0"
+dependencies = [
+ "orion-wasm-types",
+]

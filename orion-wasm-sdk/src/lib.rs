@@ -3,8 +3,11 @@
 //! This crate provides a high-level Rust API for writing WebAssembly plugins
 //! that run inside the Orion proxy via the Wasmtime runtime.
 //!
-//! Plugins export functions like `on_request_headers` and `on_request_body`,
-//! and use the hostcalls defined here to interact with the host (Orion).
+//! Plugin authors implement the idiomatic [`Plugin`] trait and invoke the
+//! [`orion_plugin!`](crate::orion_plugin!) macro to generate the `extern "C"`
+//! entry points the host imports. The hostcalls (`get_request_header`,
+//! `get_request_body`, `send_http_direct_response`, ...) are wrapped by the
+//! SDK so user code never touches raw FFI.
 //!
 //! The ABI types (`OrionWasmResult`, `FilterAction`) are shared with the host
 //! via the standalone [`orion_wasm_types`] crate.
@@ -21,14 +24,8 @@ mod ffi {
     #[link(wasm_import_module = "env")]
     extern "C" {
         /// Read an HTTP request header by name.
-        ///
-        /// - `name_ptr` / `name_len`: pointer to the header name in Wasm memory.
-        /// - `value_ptr` / `value_max_len`: caller-allocated buffer for the value.
-        /// - `written_len_ptr`: pointer to a `u32` where the actual written length
-        ///   will be stored.
-        ///
-        /// Returns an [`OrionWasmResult`] as `i32`.
         pub fn orion_get_request_header(
+            request_handle: u64,
             name_ptr: *const u8,
             name_len: u32,
             value_ptr: *mut u8,
@@ -37,32 +34,37 @@ mod ffi {
         ) -> i32;
 
         /// Read the buffered request body.
-        ///
-        /// Only available after the plugin returned [`FilterAction::PauseAndBufferBody`]
-        /// from `on_request_headers`, causing the host to collect the body and call
-        /// `on_request_body`.
-        ///
-        /// - `body_ptr` / `max_len`: caller-allocated buffer for the body bytes.
-        /// - `written_len_ptr`: pointer to a `u32` where the actual written length
-        ///   will be stored.
-        ///
-        /// Returns an [`OrionWasmResult`] as `i32`.
         pub fn orion_get_request_body(
+            request_handle: u64,
             body_ptr: *mut u8,
             max_len: u32,
             written_len_ptr: *mut u32,
         ) -> i32;
 
         /// Send a direct (local) HTTP response, short-circuiting the filter chain.
-        ///
-        /// - `status_code`: HTTP status code (e.g. 403).
-        /// - `body_ptr` / `body_len`: pointer to the response body in Wasm memory.
-        ///
-        /// Returns an [`OrionWasmResult`] as `i32`.
         pub fn orion_send_direct_response(
+            request_handle: u64,
             status_code: u32,
             body_ptr: *const u8,
             body_len: u32,
+        ) -> i32;
+
+        /// Read an HTTP response header by name.
+        pub fn orion_get_response_header(
+            response_handle: u64,
+            name_ptr: *const u8,
+            name_len: u32,
+            value_ptr: *mut u8,
+            value_max_len: u32,
+            written_len_ptr: *mut u32,
+        ) -> i32;
+
+        /// Read the buffered response body.
+        pub fn orion_get_response_body(
+            response_handle: u64,
+            body_ptr: *mut u8,
+            max_len: u32,
+            written_len_ptr: *mut u32,
         ) -> i32;
     }
 }
@@ -72,11 +74,8 @@ mod ffi {
 // ============================================================================
 
 /// Read an HTTP request header by name.
-///
-/// Returns `Ok(Some(value))` if the header exists, `Ok(None)` if it was not
-/// found, or `Err(OrionWasmResult)` if a host-level error occurred.
 #[cfg(target_arch = "wasm32")]
-pub fn get_request_header(name: &str) -> Result<Option<String>, OrionWasmResult> {
+pub fn get_http_request_header(request_handle: u64, name: &str) -> Result<Option<String>, OrionWasmResult> {
     const INITIAL_BUF: usize = 1024;
 
     // Try with a stack buffer first to avoid allocation in the common case.
@@ -85,6 +84,7 @@ pub fn get_request_header(name: &str) -> Result<Option<String>, OrionWasmResult>
 
     let res = unsafe {
         ffi::orion_get_request_header(
+            request_handle,
             name.as_ptr(),
             name.len() as u32,
             stack_buf.as_mut_ptr(),
@@ -96,19 +96,18 @@ pub fn get_request_header(name: &str) -> Result<Option<String>, OrionWasmResult>
     match OrionWasmResult::try_from(res) {
         Ok(OrionWasmResult::Ok) => {
             let len = written_len as usize;
-            Ok(Some(String::from_utf8(stack_buf[..len].to_vec()).ok()))
+            Ok(String::from_utf8(stack_buf[..len].to_vec()).ok())
         }
         Ok(OrionWasmResult::NotFound) => Ok(None),
         Ok(OrionWasmResult::BufferTooSmall) => {
-            // The value didn't fit in the stack buffer — retry with a heap
-            // allocation sized to a reasonable upper bound.  We don't know the
-            // exact required size from the host, so we grow exponentially.
+            // grow exponentially
             let mut heap_buf: Vec<u8> = vec![0u8; INITIAL_BUF * 4];
             let mut written_len: u32 = 0;
 
             loop {
                 let res = unsafe {
                     ffi::orion_get_request_header(
+                        request_handle,
                         name.as_ptr(),
                         name.len() as u32,
                         heap_buf.as_mut_ptr(),
@@ -120,14 +119,12 @@ pub fn get_request_header(name: &str) -> Result<Option<String>, OrionWasmResult>
                 match OrionWasmResult::try_from(res) {
                     Ok(OrionWasmResult::Ok) => {
                         let len = written_len as usize;
-                        return Ok(String::from_utf8(heap_buf[..len].to_vec()).ok().map(Some).unwrap_or(None));
+                        return Ok(String::from_utf8(heap_buf[..len].to_vec()).ok());
                     }
                     Ok(OrionWasmResult::NotFound) => return Ok(None),
                     Ok(OrionWasmResult::BufferTooSmall) => {
-                        // Double the buffer and retry.
                         let new_len = heap_buf.len().saturating_mul(2);
                         if new_len == heap_buf.len() {
-                            // Can't grow further.
                             return Err(OrionWasmResult::BufferTooSmall);
                         }
                         heap_buf.resize(new_len, 0);
@@ -143,18 +140,13 @@ pub fn get_request_header(name: &str) -> Result<Option<String>, OrionWasmResult>
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub fn get_request_header(_name: &str) -> Result<Option<String>, OrionWasmResult> {
+pub fn get_http_request_header(_request_handle: u64, _name: &str) -> Result<Option<String>, OrionWasmResult> {
     Err(OrionWasmResult::InternalError)
 }
 
 /// Read the buffered request body.
-///
-/// This is only valid inside `on_request_body` (i.e. after the plugin
-/// returned [`FilterAction::PauseAndBufferBody`] from `on_request_headers`).
-///
-/// Returns the body as `Vec<u8>`, or an [`OrionWasmResult`] error.
 #[cfg(target_arch = "wasm32")]
-pub fn get_request_body() -> Result<Vec<u8>, OrionWasmResult> {
+pub fn get_http_request_body(request_handle: u64) -> Result<Vec<u8>, OrionWasmResult> {
     const INITIAL_BUF: usize = 4096;
 
     let mut buf: Vec<u8> = vec![0u8; INITIAL_BUF];
@@ -163,6 +155,7 @@ pub fn get_request_body() -> Result<Vec<u8>, OrionWasmResult> {
     loop {
         let res = unsafe {
             ffi::orion_get_request_body(
+                request_handle,
                 buf.as_mut_ptr(),
                 buf.len() as u32,
                 &mut written_len as *mut u32,
@@ -175,8 +168,6 @@ pub fn get_request_body() -> Result<Vec<u8>, OrionWasmResult> {
                 return Ok(buf);
             }
             Ok(OrionWasmResult::BufferTooSmall) => {
-                // Grow and retry.  We don't have an exact size hint from the
-                // host, so we double until it fits.
                 let new_len = buf.len().saturating_mul(2);
                 if new_len == buf.len() {
                     return Err(OrionWasmResult::BufferTooSmall);
@@ -190,18 +181,16 @@ pub fn get_request_body() -> Result<Vec<u8>, OrionWasmResult> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub fn get_request_body() -> Result<Vec<u8>, OrionWasmResult> {
+pub fn get_http_request_body(_request_handle: u64) -> Result<Vec<u8>, OrionWasmResult> {
     Err(OrionWasmResult::InternalError)
 }
 
 /// Send a direct (local) HTTP response and short-circuit the filter chain.
-///
-/// After calling this, the plugin should return [`FilterAction::DirectResponse`]
-/// from its entry point (`on_request_headers` or `on_request_body`).
 #[cfg(target_arch = "wasm32")]
-pub fn send_direct_response(status_code: u16, body: &[u8]) -> Result<(), OrionWasmResult> {
+pub fn send_http_direct_response(request_handle: u64, status_code: u16, body: &[u8]) -> Result<(), OrionWasmResult> {
     let res = unsafe {
         ffi::orion_send_direct_response(
+            request_handle,
             status_code as u32,
             body.as_ptr(),
             body.len() as u32,
@@ -216,6 +205,227 @@ pub fn send_direct_response(status_code: u16, body: &[u8]) -> Result<(), OrionWa
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub fn send_direct_response(_status_code: u16, _body: &[u8]) -> Result<(), OrionWasmResult> {
+pub fn send_http_direct_response(_request_handle: u64, _status_code: u16, _body: &[u8]) -> Result<(), OrionWasmResult> {
     Err(OrionWasmResult::InternalError)
+}
+
+/// Read an HTTP response header by name.
+#[cfg(target_arch = "wasm32")]
+pub fn get_http_response_header(response_handle: u64, name: &str) -> Result<Option<String>, OrionWasmResult> {
+    const INITIAL_BUF: usize = 1024;
+    let mut stack_buf = [0u8; INITIAL_BUF];
+    let mut written_len: u32 = 0;
+
+    let res = unsafe {
+        ffi::orion_get_response_header(
+            response_handle,
+            name.as_ptr(),
+            name.len() as u32,
+            stack_buf.as_mut_ptr(),
+            stack_buf.len() as u32,
+            &mut written_len as *mut u32,
+        )
+    };
+
+    match OrionWasmResult::try_from(res) {
+        Ok(OrionWasmResult::Ok) => {
+            let len = written_len as usize;
+            Ok(String::from_utf8(stack_buf[..len].to_vec()).ok())
+        }
+        Ok(OrionWasmResult::NotFound) => Ok(None),
+        Ok(OrionWasmResult::BufferTooSmall) => {
+            let mut heap_buf: Vec<u8> = vec![0u8; INITIAL_BUF * 4];
+            let mut written_len: u32 = 0;
+
+            loop {
+                let res = unsafe {
+                    ffi::orion_get_response_header(
+                        response_handle,
+                        name.as_ptr(),
+                        name.len() as u32,
+                        heap_buf.as_mut_ptr(),
+                        heap_buf.len() as u32,
+                        &mut written_len as *mut u32,
+                    )
+                };
+
+                match OrionWasmResult::try_from(res) {
+                    Ok(OrionWasmResult::Ok) => {
+                        let len = written_len as usize;
+                        return Ok(String::from_utf8(heap_buf[..len].to_vec()).ok());
+                    }
+                    Ok(OrionWasmResult::NotFound) => return Ok(None),
+                    Ok(OrionWasmResult::BufferTooSmall) => {
+                        let new_len = heap_buf.len().saturating_mul(2);
+                        if new_len == heap_buf.len() {
+                            return Err(OrionWasmResult::BufferTooSmall);
+                        }
+                        heap_buf.resize(new_len, 0);
+                    }
+                    Ok(other) => return Err(other),
+                    Err(_) => return Err(OrionWasmResult::InternalError),
+                }
+            }
+        }
+        Ok(other) => Err(other),
+        Err(_) => Err(OrionWasmResult::InternalError),
+    }
+}
+
+/// Read the buffered response body.
+#[cfg(target_arch = "wasm32")]
+pub fn get_http_response_body(response_handle: u64) -> Result<Vec<u8>, OrionWasmResult> {
+    const INITIAL_BUF: usize = 4096;
+
+    let mut buf: Vec<u8> = vec![0u8; INITIAL_BUF];
+    let mut written_len: u32 = 0;
+
+    loop {
+        let res = unsafe {
+            ffi::orion_get_response_body(
+                response_handle,
+                buf.as_mut_ptr(),
+                buf.len() as u32,
+                &mut written_len as *mut u32,
+            )
+        };
+
+        match OrionWasmResult::try_from(res) {
+            Ok(OrionWasmResult::Ok) => {
+                buf.truncate(written_len as usize);
+                return Ok(buf);
+            }
+            Ok(OrionWasmResult::BufferTooSmall) => {
+                let new_len = buf.len().saturating_mul(2);
+                if new_len == buf.len() {
+                    return Err(OrionWasmResult::BufferTooSmall);
+                }
+                buf.resize(new_len, 0);
+            }
+            Ok(other) => return Err(other),
+            Err(_) => return Err(OrionWasmResult::InternalError),
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn get_http_response_body(_response_handle: u64) -> Result<Vec<u8>, OrionWasmResult> {
+    Err(OrionWasmResult::InternalError)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn get_http_response_header(_response_handle: u64, _name: &str) -> Result<Option<String>, OrionWasmResult> {
+    Err(OrionWasmResult::InternalError)
+}
+
+// ============================================================================
+// High-level `Plugin` trait + `orion_plugin!` macro
+// ============================================================================
+
+/// Idiomatic interface implemented by Orion Wasm plugins.
+pub trait Plugin {
+    /// Invoked on the request path before the body has been buffered.
+    #[inline]
+    fn on_request_headers(&mut self, _request_handle: u64) -> FilterAction {
+        FilterAction::Continue
+    }
+
+    /// Invoked after the plugin returned [`FilterAction::PauseAndBufferBody`]
+    /// from [`Plugin::on_request_headers`] and the host has buffered the full
+    /// request body.
+    #[inline]
+    fn on_request_body(&mut self, _request_handle: u64) -> FilterAction {
+        FilterAction::Continue
+    }
+
+    /// Invoked on the response path before the body has been buffered.
+    #[inline]
+    fn on_response_headers(&mut self, _response_handle: u64) -> FilterAction {
+        FilterAction::Continue
+    }
+
+    /// Invoked after the plugin returned [`FilterAction::PauseAndBufferBody`]
+    /// from [`Plugin::on_response_headers`] and the host has buffered the full
+    /// response body.
+    #[inline]
+    fn on_response_body(&mut self, _response_handle: u64) -> FilterAction {
+        FilterAction::Continue
+    }
+}
+
+/// Convenience wrapper around [`send_http_direct_response`].
+#[inline]
+pub fn direct_response(request_handle: u64, status_code: u16, body: &[u8]) -> FilterAction {
+    match send_http_direct_response(request_handle, status_code, body) {
+        Ok(()) => FilterAction::DirectResponse,
+        Err(_) => FilterAction::Continue,
+    }
+}
+
+/// Generate the `extern "C"` entry points the Orion host imports.
+#[macro_export]
+macro_rules! orion_plugin {
+    ($t:ty) => {
+        static mut PLUGIN: ::std::option::Option<$t> = ::std::option::Option::None;
+
+        #[no_mangle]
+        pub extern "C" fn on_request_headers(request_handle: u64) -> i32 {
+            use $crate::Plugin;
+            // SAFETY: Wasm is single-threaded; host invokes entry points sequentially.
+            let plugin = unsafe {
+                if PLUGIN.is_none() {
+                    PLUGIN = ::std::option::Option::Some(
+                        <$t as ::std::default::Default>::default(),
+                    );
+                }
+                PLUGIN.as_mut().unwrap()
+            };
+            Plugin::on_request_headers(plugin, request_handle).into()
+        }
+
+        #[no_mangle]
+        pub extern "C" fn on_request_body(request_handle: u64, _body_len: u32) -> i32 {
+            use $crate::Plugin;
+            // SAFETY: Wasm is single-threaded; host invokes entry points sequentially.
+            let plugin = unsafe {
+                if PLUGIN.is_none() {
+                    PLUGIN = ::std::option::Option::Some(
+                        <$t as ::std::default::Default>::default(),
+                    );
+                }
+                PLUGIN.as_mut().unwrap()
+            };
+            Plugin::on_request_body(plugin, request_handle).into()
+        }
+
+        #[no_mangle]
+        pub extern "C" fn on_response_headers(response_handle: u64) -> i32 {
+            use $crate::Plugin;
+            // SAFETY: Wasm is single-threaded; host invokes entry points sequentially.
+            let plugin = unsafe {
+                if PLUGIN.is_none() {
+                    PLUGIN = ::std::option::Option::Some(
+                        <$t as ::std::default::Default>::default(),
+                    );
+                }
+                PLUGIN.as_mut().unwrap()
+            };
+            Plugin::on_response_headers(plugin, response_handle).into()
+        }
+
+        #[no_mangle]
+        pub extern "C" fn on_response_body(response_handle: u64, _body_len: u32) -> i32 {
+            use $crate::Plugin;
+            // SAFETY: Wasm is single-threaded; host invokes entry points sequentially.
+            let plugin = unsafe {
+                if PLUGIN.is_none() {
+                    PLUGIN = ::std::option::Option::Some(
+                        <$t as ::std::default::Default>::default(),
+                    );
+                }
+                PLUGIN.as_mut().unwrap()
+            };
+            Plugin::on_response_body(plugin, response_handle).into()
+        }
+    };
 }
