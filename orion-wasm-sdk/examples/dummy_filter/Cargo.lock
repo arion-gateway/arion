@@ -3,7 +3,7 @@
 version = 4
 
 [[package]]
-name = "dummy_plugin"
+name = "dummy_filter"
 version = "0.1.0"
 dependencies = [
  "orion_wasm_sdk",
