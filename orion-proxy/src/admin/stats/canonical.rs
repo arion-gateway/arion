@@ -211,7 +211,7 @@ fn build_canonical_output() -> io::Result<String> {
         }
     }
 
-    String::from_utf8(out).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    Ok(String::from_utf8_lossy(&out).into_owned())
 }
 
 pub(crate) async fn stats_handler(State(_): State<AdminState>) -> Result<(HeaderMap, String), (StatusCode, String)> {
