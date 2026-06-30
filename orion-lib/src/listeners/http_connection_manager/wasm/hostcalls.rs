@@ -117,7 +117,7 @@ fn orion_get_request_body(
 
 fn orion_send_direct_response(
     mut caller: Caller<'_, WasmState>,
-    _request_handle: u64,
+    request_handle: u64,
     status_code: u32,
     body_ptr: u32,
     body_len: u32,
@@ -126,6 +126,8 @@ fn orion_send_direct_response(
         Some(mem) => mem,
         None => return OrionWasmResult::InvalidMemoryAccess.into(),
     };
+
+    let request = unsafe { &*(request_handle as *const Request<OrionRequestBody>) };
 
     let body_bytes = if body_len > 0 {
         let data = memory.data(&caller);
@@ -147,6 +149,7 @@ fn orion_send_direct_response(
     use crate::body::poly_body::PolyBody;
     let mut response = Response::new(TimeoutBody::new(None, PolyBody::from(Full::from(body_bytes))));
     *response.status_mut() = status;
+    *response.version_mut() = request.version();
 
     caller.data_mut().direct_response = Some(response);
 
