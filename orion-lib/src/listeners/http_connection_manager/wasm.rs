@@ -42,8 +42,8 @@ impl std::fmt::Debug for WasmFilterState {
 
 #[derive(Debug, Clone)]
 pub struct WasmFilterInner {
-    pub config: WasmConfig,
-    pub module: Option<Module>,
+    config: WasmConfig,
+    module: Module,
 }
 
 #[derive(Debug)]
@@ -59,18 +59,18 @@ impl Clone for WasmFilter {
 }
 
 impl WasmFilter {
-    pub fn new(config: WasmConfig) -> Self {
+    pub fn try_new(config: WasmConfig) -> Result<Self, WasmError> {
         let engine = &*GLOBAL_ENGINE;
         let module = match &config.code {
-            DataSource::Path(path) => Module::from_file(engine, path.as_str()).map_err(WasmError::Wasmtime),
-            DataSource::InlineBytes(bytes) => Module::from_binary(engine, bytes).map_err(WasmError::Wasmtime),
-            DataSource::InlineString(wat) => Module::new(engine, wat.as_str()).map_err(WasmError::Wasmtime),
-            DataSource::EnvironmentVariable(env) => Err(WasmError::UnsupportedDataSource(format!("EnvVar: {}", env))),
-        }
-        .map_err(|e| warn!("Failed to compile Wasm module: {}", e))
-        .ok();
+            DataSource::Path(path) => Module::from_file(engine, path.as_str()).map_err(WasmError::Wasmtime)?,
+            DataSource::InlineBytes(bytes) => Module::from_binary(engine, bytes).map_err(WasmError::Wasmtime)?,
+            DataSource::InlineString(wat) => Module::new(engine, wat.as_str()).map_err(WasmError::Wasmtime)?,
+            DataSource::EnvironmentVariable(env) => {
+                return Err(WasmError::UnsupportedDataSource(format!("EnvVar: {}", env)));
+            },
+        };
 
-        Self { inner: Arc::new(WasmFilterInner { config, module }), state: Mutex::new(None) }
+        Ok(Self { inner: Arc::new(WasmFilterInner { config, module }), state: Mutex::new(None) })
     }
 
     fn instantiate<'a>(
@@ -95,12 +95,9 @@ impl WasmFilter {
             }
 
             // Instantiate the module using the globally shared compiled code
-            let instance = match self.inner.module.as_ref() {
-                Some(module) => match linker.instantiate(&mut store, module) {
-                    Ok(inst) => inst,
-                    Err(e) => return Err(WasmError::InitError(format!("failed to instantiate module: {}", e))),
-                },
-                None => return Err(WasmError::InitError("WASM module is not loaded".to_string())),
+            let instance = match linker.instantiate(&mut store, &self.inner.module) {
+                Ok(inst) => inst,
+                Err(e) => return Err(WasmError::InitError(format!("failed to instantiate module: {}", e))),
             };
 
             *state_lock = Some(WasmFilterState { store, instance });

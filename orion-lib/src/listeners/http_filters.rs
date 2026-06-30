@@ -182,7 +182,7 @@ impl TryFrom<HttpFilterConfig> for HttpFilter {
         let HttpFilterConfig { name, disabled, filter } = value;
 
         let filter = match filter {
-            HttpFilterType::Wasm(conf) => HttpFilterValue::Wasm(WasmFilter::new(conf)),
+            HttpFilterType::Wasm(conf) => HttpFilterValue::Wasm(WasmFilter::try_new(conf)?),
             HttpFilterType::RateLimit(conf) => HttpFilterValue::RateLimit(conf.into()),
             HttpFilterType::Rbac(conf) => HttpFilterValue::Rbac(HttpRbac::new(&conf)),
             HttpFilterType::ExternalProcessor(conf) => HttpFilterValue::ExternalProcessor(conf.into()),
