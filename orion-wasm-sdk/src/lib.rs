@@ -78,7 +78,7 @@ mod ffi {
 
 /// Read an HTTP request header by name.
 #[cfg(target_arch = "wasm32")]
-pub fn get_http_request_header(request_handle: u64, name: &str) -> Result<Option<String>, OrionWasmResult> {
+fn get_http_request_header(request_handle: u64, name: &str) -> Result<Option<String>, OrionWasmResult> {
     const INITIAL_BUF: usize = 1024;
 
     // Try with a stack buffer first to avoid allocation in the common case.
@@ -143,13 +143,13 @@ pub fn get_http_request_header(request_handle: u64, name: &str) -> Result<Option
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub fn get_http_request_header(_request_handle: u64, _name: &str) -> Result<Option<String>, OrionWasmResult> {
+fn get_http_request_header(_request_handle: u64, _name: &str) -> Result<Option<String>, OrionWasmResult> {
     Err(OrionWasmResult::InternalError)
 }
 
 /// Read the buffered request body.
 #[cfg(target_arch = "wasm32")]
-pub fn get_http_request_body(request_handle: u64) -> Result<Vec<u8>, OrionWasmResult> {
+fn get_http_request_body(request_handle: u64) -> Result<Vec<u8>, OrionWasmResult> {
     const INITIAL_BUF: usize = 4096;
 
     let mut buf: Vec<u8> = vec![0u8; INITIAL_BUF];
@@ -184,13 +184,13 @@ pub fn get_http_request_body(request_handle: u64) -> Result<Vec<u8>, OrionWasmRe
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub fn get_http_request_body(_request_handle: u64) -> Result<Vec<u8>, OrionWasmResult> {
+fn get_http_request_body(_request_handle: u64) -> Result<Vec<u8>, OrionWasmResult> {
     Err(OrionWasmResult::InternalError)
 }
 
 /// Send a direct (local) HTTP response and short-circuit the filter chain.
 #[cfg(target_arch = "wasm32")]
-pub fn send_http_direct_response(request_handle: u64, status_code: u16, body: &[u8]) -> Result<(), OrionWasmResult> {
+fn send_http_direct_response(request_handle: u64, status_code: u16, body: &[u8]) -> Result<(), OrionWasmResult> {
     let res = unsafe {
         ffi::orion_send_direct_response(
             request_handle,
@@ -208,13 +208,13 @@ pub fn send_http_direct_response(request_handle: u64, status_code: u16, body: &[
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub fn send_http_direct_response(_request_handle: u64, _status_code: u16, _body: &[u8]) -> Result<(), OrionWasmResult> {
+fn send_http_direct_response(_request_handle: u64, _status_code: u16, _body: &[u8]) -> Result<(), OrionWasmResult> {
     Err(OrionWasmResult::InternalError)
 }
 
 /// Read an HTTP response header by name.
 #[cfg(target_arch = "wasm32")]
-pub fn get_http_response_header(response_handle: u64, name: &str) -> Result<Option<String>, OrionWasmResult> {
+fn get_http_response_header(response_handle: u64, name: &str) -> Result<Option<String>, OrionWasmResult> {
     const INITIAL_BUF: usize = 1024;
     let mut stack_buf = [0u8; INITIAL_BUF];
     let mut written_len: u32 = 0;
@@ -277,7 +277,7 @@ pub fn get_http_response_header(response_handle: u64, name: &str) -> Result<Opti
 
 /// Read the buffered response body.
 #[cfg(target_arch = "wasm32")]
-pub fn get_http_response_body(response_handle: u64) -> Result<Vec<u8>, OrionWasmResult> {
+fn get_http_response_body(response_handle: u64) -> Result<Vec<u8>, OrionWasmResult> {
     const INITIAL_BUF: usize = 4096;
 
     let mut buf: Vec<u8> = vec![0u8; INITIAL_BUF];
@@ -312,12 +312,12 @@ pub fn get_http_response_body(response_handle: u64) -> Result<Vec<u8>, OrionWasm
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub fn get_http_response_body(_response_handle: u64) -> Result<Vec<u8>, OrionWasmResult> {
+fn get_http_response_body(_response_handle: u64) -> Result<Vec<u8>, OrionWasmResult> {
     Err(OrionWasmResult::InternalError)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub fn get_http_response_header(_response_handle: u64, _name: &str) -> Result<Option<String>, OrionWasmResult> {
+fn get_http_response_header(_response_handle: u64, _name: &str) -> Result<Option<String>, OrionWasmResult> {
     Err(OrionWasmResult::InternalError)
 }
 
