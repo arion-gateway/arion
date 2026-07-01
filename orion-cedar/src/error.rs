@@ -1,3 +1,4 @@
+use cedar_policy::entities_errors::EntitiesError;
 use cedar_policy::{CedarSchemaError, ParseErrors, ValidationResult};
 use smol_str::SmolStr;
 
@@ -7,6 +8,8 @@ pub enum Error {
     PolicyParse(Box<ParseErrors>),
     #[error("failed to parse Cedar schema: {0}")]
     SchemaParse(Box<CedarSchemaError>),
+    #[error("failed to parse Cedar entities: {0}")]
+    EntitiesParse(Box<EntitiesError>),
     #[error("policy validation failed:\n{0}")]
     Validation(ValidationError),
     #[error("failed to build Cedar context: {0}")]
@@ -42,6 +45,12 @@ impl From<ParseErrors> for Error {
 impl From<CedarSchemaError> for Error {
     fn from(e: CedarSchemaError) -> Self {
         Self::SchemaParse(Box::new(e))
+    }
+}
+
+impl From<EntitiesError> for Error {
+    fn from(e: EntitiesError) -> Self {
+        Self::EntitiesParse(Box::new(e))
     }
 }
 

@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package orion.extensions.filters.http.cedar.v3;
+package orion.extensions.filters.http.cedar.cedar_policy.v3;
 
 // Cedar policy authorization filter.
 // Evaluates Cedar policies against request attributes to make authorization decisions.

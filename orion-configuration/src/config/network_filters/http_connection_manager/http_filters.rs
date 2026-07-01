@@ -97,7 +97,7 @@ mod envoy_conversions {
     use crate::config::common::*;
     use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::cors::v3::Cors;
     use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::cors::v3::CorsPolicy;
-    use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::cedar::v3::CedarPolicy as ProtoCedarPolicy;
+    use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::cedar::cedar_policy::v3::CedarPolicy as ProtoCedarPolicy;
     use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::mcp::mcp_gateway::v3::McpGateway as OrionMcpGateway;
     use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::user_rate_limit::v3::UserRateLimiter as OrionUserRateLimiter;
     use orion_data_plane_api::envoy_data_plane_api::{

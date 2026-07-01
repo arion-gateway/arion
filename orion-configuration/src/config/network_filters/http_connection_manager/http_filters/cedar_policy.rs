@@ -33,7 +33,7 @@ pub enum FailureMode {
 mod envoy_conversions {
     use super::{CedarPolicy, EnforcementMode, FailureMode};
     use crate::config::common::GenericError;
-    use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::cedar::v3::{
+    use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::cedar::cedar_policy::v3::{
         CedarPolicy as ProtoCedarPolicy, EnforcementMode as ProtoEnforcementMode, FailureMode as ProtoFailureMode,
     };
 
