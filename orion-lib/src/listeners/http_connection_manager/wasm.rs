@@ -6,6 +6,7 @@ use http::{Request, Response};
 use orion_configuration::config::{
     core::DataSource, network_filters::http_connection_manager::http_filters::wasm::WasmConfig,
 };
+use orion_interner::StringInterner;
 use parking_lot::Mutex;
 use std::sync::{Arc, LazyLock};
 use thiserror::Error;
@@ -82,6 +83,7 @@ impl WasmFilter {
             let mut store = Store::new(
                 engine,
                 hostcalls::WasmState {
+                    name: self.inner.config.name.to_static_str(),
                     direct_response: None,
                     buffered_request_body: None,
                     buffered_response_body: None,

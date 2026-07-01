@@ -10,6 +10,7 @@ use smol_str::ToSmolStr;
 use wasmtime::{Caller, Linker};
 
 pub struct WasmState {
+    pub name: &'static str,
     pub direct_response: Option<Response<OrionResponseBody>>,
     pub buffered_request_body: Option<bytes::Bytes>,
     pub buffered_response_body: Option<bytes::Bytes>,
@@ -250,12 +251,7 @@ fn orion_get_response_body(
     OrionWasmResult::Ok.into()
 }
 
-fn orion_log(
-    mut caller: Caller<'_, WasmState>,
-    level: u32,
-    msg_ptr: u32,
-    msg_len: u32,
-) -> i32 {
+fn orion_log(mut caller: Caller<'_, WasmState>, level: u32, msg_ptr: u32, msg_len: u32) -> i32 {
     let memory = match caller.get_export("memory").and_then(|m| m.into_memory()) {
         Some(mem) => mem,
         None => return OrionWasmResult::InvalidMemoryAccess.into(),
@@ -274,12 +270,13 @@ fn orion_log(
         Err(_) => return OrionWasmResult::InvalidMemoryAccess.into(),
     };
 
+    let name = caller.data().name;
     match level {
-        1 => tracing::error!(target: "wasm_plugin", "{}", msg),
-        2 => tracing::warn!(target: "wasm_plugin", "{}", msg),
-        3 => tracing::info!(target: "wasm_plugin", "{}", msg),
-        4 => tracing::debug!(target: "wasm_plugin", "{}", msg),
-        _ => tracing::trace!(target: "wasm_plugin", "{}", msg),
+        1 => tracing::error!(target: "wasm", "{name}: {msg}"),
+        2 => tracing::warn!(target:  "wasm", "{name}: {msg}"),
+        3 => tracing::info!(target:  "wasm", "{name}: {msg}"),
+        4 => tracing::debug!(target: "wasm", "{name}: {msg}"),
+        _ => tracing::trace!(target: "wasm", "{name}: {msg}"),
     }
 
     OrionWasmResult::Ok.into()
