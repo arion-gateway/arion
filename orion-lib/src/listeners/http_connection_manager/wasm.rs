@@ -27,7 +27,14 @@ pub enum WasmError {
 }
 
 // Lazily initialize the global engine and registry on first use
-pub static GLOBAL_ENGINE: LazyLock<Engine> = LazyLock::new(|| Engine::default());
+pub static GLOBAL_ENGINE: LazyLock<Engine> = LazyLock::new(|| {
+    let mut config = wasmtime::Config::new();
+    config.allocation_strategy(wasmtime::InstanceAllocationStrategy::pooling());
+    Engine::new(&config).unwrap_or_else(|e| {
+        warn!("Failed to initialize Wasm Engine with pooling: {}. Falling back to default.", e);
+        Engine::default()
+    })
+});
 
 // Request-local Wasm execution state
 struct WasmFilterState {
