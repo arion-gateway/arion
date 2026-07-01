@@ -48,10 +48,16 @@ impl std::fmt::Debug for WasmFilterState {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct WasmFilterInner {
     config: WasmConfig,
-    module: Module,
+    instance_pre: wasmtime::InstancePre<hostcalls::WasmState>,
+}
+
+impl std::fmt::Debug for WasmFilterInner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WasmFilterInner").field("config", &self.config).finish()
+    }
 }
 
 #[derive(Debug)]
@@ -78,7 +84,14 @@ impl WasmFilter {
             },
         };
 
-        Ok(Self { inner: Arc::new(WasmFilterInner { config, module }), state: Mutex::new(None) })
+        let mut linker = Linker::new(engine);
+        if let Err(e) = hostcalls::register_hostcalls(&mut linker) {
+            return Err(WasmError::InitError(format!("failed to register hostcalls: {}", e)));
+        }
+
+        let instance_pre = linker.instantiate_pre(&module).map_err(WasmError::Wasmtime)?;
+
+        Ok(Self { inner: Arc::new(WasmFilterInner { config, instance_pre }), state: Mutex::new(None) })
     }
 
     fn instantiate<'a>(
@@ -96,15 +109,8 @@ impl WasmFilter {
                     buffered_response_body: None,
                 },
             );
-            let mut linker = Linker::new(engine);
-
-            // register hostcalls...
-            if let Err(e) = hostcalls::register_hostcalls(&mut linker) {
-                return Err(WasmError::InitError(format!("failed to register hostcalls: {}", e)));
-            }
-
-            // Instantiate the module using the globally shared compiled code
-            let instance = match linker.instantiate(&mut store, &self.inner.module) {
+            // Instantiate the module ultra-fast using the pre-resolved imports
+            let instance = match self.inner.instance_pre.instantiate(&mut store) {
                 Ok(inst) => inst,
                 Err(e) => return Err(WasmError::InitError(format!("failed to instantiate module: {}", e))),
             };
