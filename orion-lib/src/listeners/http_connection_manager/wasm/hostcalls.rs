@@ -250,11 +250,47 @@ fn orion_get_response_body(
     OrionWasmResult::Ok.into()
 }
 
+fn orion_log(
+    mut caller: Caller<'_, WasmState>,
+    level: u32,
+    msg_ptr: u32,
+    msg_len: u32,
+) -> i32 {
+    let memory = match caller.get_export("memory").and_then(|m| m.into_memory()) {
+        Some(mem) => mem,
+        None => return OrionWasmResult::InvalidMemoryAccess.into(),
+    };
+
+    let data = memory.data(&caller);
+    let start = msg_ptr as usize;
+    let end = start + msg_len as usize;
+
+    if end > data.len() {
+        return OrionWasmResult::InvalidMemoryAccess.into();
+    }
+
+    let msg = match std::str::from_utf8(&data[start..end]) {
+        Ok(s) => s,
+        Err(_) => return OrionWasmResult::InvalidMemoryAccess.into(),
+    };
+
+    match level {
+        1 => tracing::error!(target: "wasm_plugin", "{}", msg),
+        2 => tracing::warn!(target: "wasm_plugin", "{}", msg),
+        3 => tracing::info!(target: "wasm_plugin", "{}", msg),
+        4 => tracing::debug!(target: "wasm_plugin", "{}", msg),
+        _ => tracing::trace!(target: "wasm_plugin", "{}", msg),
+    }
+
+    OrionWasmResult::Ok.into()
+}
+
 pub fn register_hostcalls(linker: &mut Linker<WasmState>) -> Result<(), wasmtime::Error> {
     linker.func_wrap("env", "orion_get_request_header", orion_get_request_header)?;
     linker.func_wrap("env", "orion_send_direct_response", orion_send_direct_response)?;
     linker.func_wrap("env", "orion_get_request_body", orion_get_request_body)?;
     linker.func_wrap("env", "orion_get_response_header", orion_get_response_header)?;
     linker.func_wrap("env", "orion_get_response_body", orion_get_response_body)?;
+    linker.func_wrap("env", "orion_log", orion_log)?;
     Ok(())
 }

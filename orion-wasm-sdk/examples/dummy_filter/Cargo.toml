@@ -12,3 +12,4 @@ crate-type = ["cdylib"]
 
 [dependencies]
 orion_wasm_sdk = { path = "../../" }
+tracing = "0.1"

@@ -6,18 +6,36 @@
 //! Orion host imports.
 
 use orion_wasm_sdk::{
-    orion_plugin, FilterAction, Plugin, RequestBody, RequestHandle, RequestHeaders,
+    orion_plugin, FilterAction, Plugin, RequestBody, RequestHandle, RequestHeaders, init_tracing
 };
+use tracing::{info, error, warn};
 
 #[derive(Default)]
-struct DummyFilter;
+struct DummyFilter {
+    initialized: bool,
+}
 
 impl Plugin for DummyFilter {
     fn on_request_headers(&mut self, ctx: &RequestHandle<RequestHeaders>) -> FilterAction {
+        if !self.initialized {
+            let _ = init_tracing();
+            self.initialized = true;
+            info!(version = "1.0", "DummyFilter Wasm initialized!");
+        }
+
         let auth = match ctx.get_header("Authorization") {
-            Ok(Some(value)) => value,
-            Ok(None) => return ctx.direct_response(401, b"401 Unauthorized: missing Authorization header"),
-            Err(_) => return ctx.direct_response(500, b"500 Internal Server Error"),
+            Ok(Some(value)) => {
+                info!("Header Authorization received: {:?}", value);
+                value
+            },
+            Ok(None) => {
+                warn!("No header Authorization provided!");
+                return ctx.direct_response(401, b"401 Unauthorized: missing Authorization header");
+            },
+            Err(_) => {
+                error!("Could not read from HTTP headers");
+                return ctx.direct_response(500, b"500 Internal Server Error");
+            }
         };
 
         if auth == "Bearer secret-token" {

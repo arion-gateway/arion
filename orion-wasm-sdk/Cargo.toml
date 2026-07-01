@@ -11,3 +11,4 @@ license = "Apache-2.0"
 
 [dependencies]
 orion-wasm-types = { path = "../orion-wasm-types" }
+tracing = "0.1"

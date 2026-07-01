@@ -9,7 +9,7 @@ use orion_configuration::config::{
 use parking_lot::Mutex;
 use std::sync::{Arc, LazyLock};
 use thiserror::Error;
-use tracing::{info, warn};
+use tracing::{debug, warn};
 use wasmtime::{Engine, Instance, Linker, Module, Store};
 
 mod hostcalls;
@@ -108,7 +108,7 @@ impl WasmFilter {
     }
 
     pub async fn apply_request(&mut self, req: &mut Request<OrionRequestBody>) -> FilterDecision {
-        info!("WasFilter::apply_request: {:?}", self.inner.config);
+        debug!("WasFilter::apply_request: {:?}", self.inner.config);
         let req_handle = req as *mut Request<OrionRequestBody> as u64;
 
         // PHASE 1: headers evaluation inside a scoped block to release MutexGuard before await
@@ -249,7 +249,7 @@ impl WasmFilter {
     }
 
     pub async fn apply_response(&mut self, res: &mut Response<OrionResponseBody>) -> FilterDecision {
-        info!("WasFilter::apply_response: {:?}", self.inner.config);
+        debug!("WasFilter::apply_response: {:?}", self.inner.config);
         let resp_handle = res as *mut Response<OrionResponseBody> as u64;
 
         // PHASE 1: headers evaluation inside a scoped block to release MutexGuard before await
