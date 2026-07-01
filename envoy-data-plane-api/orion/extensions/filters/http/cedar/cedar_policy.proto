@@ -22,6 +22,16 @@ message CedarPolicy {
 
   // Behavior when policy evaluation fails (parse error, missing entity, etc.).
   FailureMode failure_mode = 5;
+
+  // Cedar entity type used for the request principal.
+  // The JWT sub claim is used as the entity ID.
+  // Defaults to "User" when empty.
+  string principal_entity_type = 6;
+
+  // Cedar entity type used for the request resource.
+  // The URI path is used as the entity ID.
+  // Defaults to "HttpPath" when empty.
+  string resource_entity_type = 7;
 }
 
 // Enforcement mode for Cedar policy evaluation.

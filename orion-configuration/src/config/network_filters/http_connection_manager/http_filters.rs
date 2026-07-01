@@ -224,7 +224,7 @@ mod envoy_conversions {
                 "type.googleapis.com/orion.extensions.filters.http.user_rate_limit.v3.UserRateLimiter" => {
                     OrionUserRateLimiter::decode(typed_config.value.as_slice()).map(Self::UserRateLimiter)
                 },
-                "type.googleapis.com/orion.extensions.filters.http.cedar.v3.CedarPolicy" => {
+                "type.googleapis.com/orion.extensions.filters.http.cedar.cedar_policy.v3.CedarPolicy" => {
                     ProtoCedarPolicy::decode(typed_config.value.as_slice()).map(Self::CedarPolicy)
                 },
                 _ => return Err(GenericError::unsupported_variant(typed_config.type_url)),

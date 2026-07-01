@@ -128,25 +128,19 @@ mod tests {
 
     #[test]
     fn context_http_only() {
-        assert!(
-            build_authz_context(None, Some("POST"), Some("/mcp"), Some("sessionId=abc"), None, None).is_ok()
-        );
+        assert!(build_authz_context(None, Some("POST"), Some("/mcp"), Some("sessionId=abc"), None, None).is_ok());
     }
 
     #[test]
     fn context_jwt_and_http() {
         let claims = json!({ "sub": "svc-alice" });
-        assert!(
-            build_authz_context(Some(&claims), Some("POST"), Some("/mcp"), None, None, None).is_ok()
-        );
+        assert!(build_authz_context(Some(&claims), Some("POST"), Some("/mcp"), None, None, None).is_ok());
     }
 
     #[test]
     fn context_tool_args_serialised_to_string() {
         let args = json!({ "url": "https://example.com" });
-        assert!(
-            build_authz_context(None, None, None, None, Some("fetch"), Some(&args)).is_ok()
-        );
+        assert!(build_authz_context(None, None, None, None, Some("fetch"), Some(&args)).is_ok());
     }
 
     // --- integration: full AuthzRequest → PolicyStore round-trips ---

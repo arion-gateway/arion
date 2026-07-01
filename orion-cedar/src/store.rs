@@ -5,6 +5,7 @@ use tracing::{debug, warn};
 
 use crate::error::{Error, ValidationError};
 
+#[derive(Debug)]
 pub struct PolicyStore {
     policy_set: PolicySet,
     schema: Schema,

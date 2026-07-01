@@ -4,6 +4,7 @@ use crate::{
     body::response_flags::ResponseFlags,
     event_error::EventFailure,
     listeners::{
+        cedar_policy::CedarHttpFilter,
         http_connection_manager::{
             cors::Cors,
             ext_proc::ExternalProcessor,
@@ -144,6 +145,7 @@ pub enum HttpFilterValue {
     Cors(Cors),
     McpGateway(Box<McpGateway>),
     UserRateLimit(UserRateLimiter),
+    CedarPolicy(CedarHttpFilter),
 }
 
 pub trait FilterFactory {
@@ -160,6 +162,7 @@ impl FilterFactory for HttpFilterValue {
             HttpFilterValue::McpGateway(conf) => HttpFilterValue::McpGateway(Box::new(conf.new_from())),
             HttpFilterValue::Cors(conf) => HttpFilterValue::Cors(conf.clone()),
             HttpFilterValue::UserRateLimit(conf) => HttpFilterValue::UserRateLimit(conf.clone()),
+            HttpFilterValue::CedarPolicy(conf) => HttpFilterValue::CedarPolicy(conf.clone()),
         }
     }
 }
@@ -188,7 +191,7 @@ impl TryFrom<HttpFilterConfig> for HttpFilter {
             HttpFilterType::UserRateLimit(user_rate_limit) => {
                 HttpFilterValue::UserRateLimit(user_rate_limit.try_into()?)
             },
-            HttpFilterType::CedarPolicy(_conf) => todo!(),
+            HttpFilterType::CedarPolicy(conf) => HttpFilterValue::CedarPolicy(CedarHttpFilter::try_from_config(conf)?),
         };
         Ok(Self { name, disabled, filter: Some(filter), filter_config: hcm_config.map(Box::new) })
     }
@@ -204,6 +207,7 @@ impl HttpFilterValue {
             HttpFilterValue::Cors(cors) => cors.apply_request(request),
             HttpFilterValue::McpGateway(mcp) => mcp.apply_request(request).await,
             HttpFilterValue::UserRateLimit(user_rate_limiter) => user_rate_limiter.apply_request(request),
+            HttpFilterValue::CedarPolicy(cedar) => cedar.apply_request(request),
         }
     }
     pub async fn apply_response(&mut self, response: &mut Response<OrionResponseBody>) -> FilterDecision {
@@ -215,7 +219,8 @@ impl HttpFilterValue {
             HttpFilterValue::Rbac(_)
             | HttpFilterValue::RateLimit(_)
             | HttpFilterValue::UserRateLimit(_)
-            | HttpFilterValue::JwtAuthentication(_) => FilterDecision::Continue,
+            | HttpFilterValue::JwtAuthentication(_)
+            | HttpFilterValue::CedarPolicy(_) => FilterDecision::Continue,
         }
     }
     pub(crate) fn from_filter_override(

@@ -58,6 +58,7 @@ pub enum EventFailure {
     RouteNotFound,
     UpgradeFailed,
     RbacAccessDenied(SmolStr),
+    CedarAccessDenied(SmolStr),
     RateLimited,
     ExtProcError,
     ViaUpstream,
@@ -120,6 +121,9 @@ impl EventKind {
                 EventFailure::UpgradeFailed => Some(ResponseCodeDetails("upgrade_failed")),
                 EventFailure::RbacAccessDenied(id) => {
                     Some(ResponseCodeDetails(format!("rbac_access_denied[{id}]").to_static_str()))
+                },
+                EventFailure::CedarAccessDenied(id) => {
+                    Some(ResponseCodeDetails(format!("cedar_access_denied[{id}]").to_static_str()))
                 },
                 EventFailure::RateLimited => Some(ResponseCodeDetails("rate_limited")),
                 EventFailure::ExtProcError => Some(ResponseCodeDetails("ext_proc_error")),

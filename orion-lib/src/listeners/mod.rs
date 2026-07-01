@@ -15,6 +15,7 @@
 //
 //
 
+pub(crate) mod cedar_policy;
 pub(crate) mod filterchain;
 pub(crate) mod http_connection_manager;
 pub(crate) mod http_filters;

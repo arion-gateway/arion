@@ -11,6 +11,18 @@ pub struct CedarPolicy {
     pub enforcement_mode: EnforcementMode,
     #[serde(default)]
     pub failure_mode: FailureMode,
+    #[serde(default = "default_principal_entity_type")]
+    pub principal_entity_type: SmolStr,
+    #[serde(default = "default_resource_entity_type")]
+    pub resource_entity_type: SmolStr,
+}
+
+fn default_principal_entity_type() -> SmolStr {
+    SmolStr::new_static("User")
+}
+
+fn default_resource_entity_type() -> SmolStr {
+    SmolStr::new_static("HttpPath")
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -31,7 +43,9 @@ pub enum FailureMode {
 
 #[cfg(feature = "envoy-conversions")]
 mod envoy_conversions {
-    use super::{CedarPolicy, EnforcementMode, FailureMode};
+    use super::{
+        default_principal_entity_type, default_resource_entity_type, CedarPolicy, EnforcementMode, FailureMode,
+    };
     use crate::config::common::GenericError;
     use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::cedar::cedar_policy::v3::{
         CedarPolicy as ProtoCedarPolicy, EnforcementMode as ProtoEnforcementMode, FailureMode as ProtoFailureMode,
@@ -41,7 +55,15 @@ mod envoy_conversions {
         type Error = GenericError;
 
         fn try_from(proto: ProtoCedarPolicy) -> Result<Self, Self::Error> {
-            let ProtoCedarPolicy { policies, schema, entities, enforcement_mode, failure_mode } = proto;
+            let ProtoCedarPolicy {
+                policies,
+                schema,
+                entities,
+                enforcement_mode,
+                failure_mode,
+                principal_entity_type,
+                resource_entity_type,
+            } = proto;
 
             let enforcement_mode = match ProtoEnforcementMode::try_from(enforcement_mode) {
                 Ok(ProtoEnforcementMode::Enforce) => EnforcementMode::Enforce,
@@ -57,12 +79,25 @@ mod envoy_conversions {
                 Err(_) => return Err(GenericError::unsupported_variant(format!("failure_mode={failure_mode}"))),
             };
 
+            let principal_entity_type = if principal_entity_type.is_empty() {
+                default_principal_entity_type()
+            } else {
+                principal_entity_type.into()
+            };
+            let resource_entity_type = if resource_entity_type.is_empty() {
+                default_resource_entity_type()
+            } else {
+                resource_entity_type.into()
+            };
+
             Ok(Self {
                 policies: policies.into(),
                 schema: schema.into(),
                 entities: entities.into(),
                 enforcement_mode,
                 failure_mode,
+                principal_entity_type,
+                resource_entity_type,
             })
         }
     }
@@ -82,6 +117,8 @@ mod tests {
         assert_eq!(config.enforcement_mode, EnforcementMode::Enforce);
         assert_eq!(config.failure_mode, FailureMode::FailClosed);
         assert_eq!(config.entities.as_str(), "");
+        assert_eq!(config.principal_entity_type.as_str(), "User");
+        assert_eq!(config.resource_entity_type.as_str(), "HttpPath");
     }
 
     #[test]
