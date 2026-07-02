@@ -1,0 +1,121 @@
+#  Manual test for the Cedar HTTP authorization filter.
+#
+#  Scenario — anonymous Cedar RBAC (no JWT required):
+#    CedarHttpFilter builds principal as User::"anonymous" for every request
+#    (no JWT in extensions → anonymous fallback).
+#
+#  Policies tested:
+#    ALLOW  GET  /health  → 200 (reaches backend)
+#    DENY   POST /health  → 403 Cedar: access denied
+#    DENY   GET  /other   → 403 Cedar: access denied
+#
+#  Quick start:
+#    terminal 1: python3 -m http.server 4001          # dummy backend
+#    terminal 2: cargo run -p orion-proxy -- --config orion-proxy/conf/orion-runtime-cedar.yaml
+#    terminal 3: curl -v -X GET  http://localhost:8000/health   # expect 200
+#                curl -v -X POST http://localhost:8000/health   # expect 403
+#                curl -v -X GET  http://localhost:8000/other    # expect 403
+
+runtime:
+  num_cpus: 2
+  num_runtimes: 2
+  event_interval: 31
+
+logging:
+  log_level: "debug"
+
+envoy_bootstrap:
+  static_resources:
+    listeners:
+      - name: listener_cedar_anon
+        address:
+          socket_address: { address: 0.0.0.0, port_value: 8000 }
+        filterChains:
+          - name: filter_chain_cedar
+            filter_chain_match:
+              destination_port: 8000
+            filters:
+              - name: http_gateway
+                typedConfig:
+                  "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                  statPrefix: ingress_cedar
+                  codecType: HTTP1
+                  httpFilters:
+                    - name: orion.filters.http.cedar
+                      typed_config:
+                        "@type": type.googleapis.com/orion.extensions.filters.http.cedar.cedar_policy.v3.CedarPolicy
+
+                        # Cedar schema — declares entity types, actions, and context shape.
+                        # The http context record must match exactly what CedarHttpFilter injects:
+                        # { "http": { "method": String, "path": String, "query"?: String } }
+                        schema: |
+                          entity User;
+                          entity HttpPath;
+
+                          action "GET" appliesTo {
+                            principal: [User],
+                            resource:  [HttpPath],
+                            context: {
+                              http: {
+                                method: String,
+                                path:   String,
+                                query?: String,
+                              }
+                            }
+                          };
+
+                          action "POST" appliesTo {
+                            principal: [User],
+                            resource:  [HttpPath],
+                            context: {
+                              http: {
+                                method: String,
+                                path:   String,
+                                query?: String,
+                              }
+                            }
+                          };
+
+                        # Cedar policies — only GET /health is permitted for anonymous callers.
+                        # All other (principal, action, resource) combinations are implicitly denied.
+                        policies: |
+                          permit (
+                            principal == User::"anonymous",
+                            action    == Action::"GET",
+                            resource  == HttpPath::"/health"
+                          );
+
+                        # enforcement_mode 0 = ENFORCE (deny → 403)
+                        enforcement_mode: 0
+                        # failure_mode 1 = FAIL_OPEN (evaluation error → pass through)
+                        failure_mode: 1
+
+                    - name: envoy.filters.http.router
+                      typedConfig:
+                        "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                        start_child_span: false
+
+                  routeConfig:
+                    name: cedar_route
+                    virtual_hosts:
+                      - name: backend
+                        domains: ["*"]
+                        routes:
+                          - match:
+                              prefix: "/"
+                            route:
+                              cluster: cluster_backend
+
+    clusters:
+      - name: cluster_backend
+        connect_timeout: 0.25s
+        type: STATIC
+        lb_policy: ROUND_ROBIN
+        load_assignment:
+          endpoints:
+            - lb_endpoints:
+                - endpoint:
+                    address:
+                      socket_address:
+                        address: 127.0.0.1
+                        port_value: 4001
