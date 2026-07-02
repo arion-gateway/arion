@@ -31,6 +31,7 @@ use orion_data_plane_api::envoy_data_plane_api::{
             filters::{
                 http::{
                     ext_proc::v3::ExternalProcessor as EnvoyExternalProcessor,
+                    jwt_authn::v3::JwtAuthentication as EnvoyJwtAuthentication,
                     local_ratelimit::v3::LocalRateLimit as EnvoyLocalRateLimit,
                     {rbac::v3::Rbac as HttpRbac, router::v3::Router},
                 },
@@ -212,6 +213,32 @@ impl HcmBuilder {
         };
         self.proto.http_filters.push(HttpFilter {
             name: "envoy.filters.http.local_ratelimit".into(),
+            config_type: Some(HttpFilterConfigType::TypedConfig(any)),
+            ..Default::default()
+        });
+        self
+    }
+
+    #[must_use]
+    pub fn cedar_policy(mut self, builder: super::cedar_policy::CedarPolicyBuilder) -> Self {
+        let any: Any = builder.into();
+        self.proto.http_filters.push(HttpFilter {
+            name: "orion.filters.http.cedar".into(),
+            config_type: Some(HttpFilterConfigType::TypedConfig(any)),
+            ..Default::default()
+        });
+        self
+    }
+
+    #[must_use]
+    pub fn jwt_authn(mut self, jwt: impl Into<EnvoyJwtAuthentication>) -> Self {
+        let proto: EnvoyJwtAuthentication = jwt.into();
+        let any = Any {
+            type_url: "type.googleapis.com/envoy.extensions.filters.http.jwt_authn.v3.JwtAuthentication".to_string(),
+            value: proto.encode_to_vec(),
+        };
+        self.proto.http_filters.push(HttpFilter {
+            name: "envoy.filters.http.jwt_authn".into(),
             config_type: Some(HttpFilterConfigType::TypedConfig(any)),
             ..Default::default()
         });

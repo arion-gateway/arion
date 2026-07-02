@@ -6,13 +6,20 @@ use smol_str::SmolStr;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JwtClaims {
-    pub iss: Option<SmolStr>,      // issuer
-    pub sub: Option<SmolStr>,      // subject
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub iss: Option<SmolStr>, // issuer
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sub: Option<SmolStr>, // subject
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub aud: Option<Vec<SmolStr>>, // audience
-    pub exp: Option<u64>,          // expiration time
-    pub iat: Option<u64>,          // issued at
-    pub nbf: Option<u64>,          // not before
-    pub jti: Option<SmolStr>,      // JWT ID
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exp: Option<u64>, // expiration time
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub iat: Option<u64>, // issued at
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nbf: Option<u64>, // not before
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub jti: Option<SmolStr>, // JWT ID
 
     // all other custom claims
     #[serde(flatten)]

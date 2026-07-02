@@ -1,4 +1,4 @@
-use cedar_policy::{Context, Entities, Entity, EntityId, EntityTypeName, EntityUid, RestrictedExpression};
+use cedar_policy::{Context, Entities, Entity, EntityId, EntityTypeName, EntityUid, RestrictedExpression, Schema};
 use smol_str::SmolStr;
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
@@ -13,8 +13,12 @@ pub fn entity_uid(type_name: &str, id: &str) -> Result<EntityUid, Error> {
     Ok(EntityUid::from_type_name_and_id(type_name, id))
 }
 
-pub fn build_context(values: &serde_json::Value) -> Result<Context, Error> {
-    Context::from_json_value(values.clone(), None).map_err(|e| Error::Context(SmolStr::from(e.to_string())))
+pub fn build_context(
+    values: &serde_json::Value,
+    schema_and_action: Option<(&Schema, &EntityUid)>,
+) -> Result<Context, Error> {
+    Context::from_json_value(values.clone(), schema_and_action)
+        .map_err(|e| Error::Context(SmolStr::from(e.to_string())))
 }
 
 pub fn build_entities(entities: Vec<Entity>) -> Result<Entities, Error> {
@@ -55,10 +59,13 @@ mod tests {
 
     #[test]
     fn build_context_from_json() {
-        let ctx = build_context(&json!({
-            "method": "GET",
-            "path": "/api/v1/users",
-        }));
+        let ctx = build_context(
+            &json!({
+                "method": "GET",
+                "path": "/api/v1/users",
+            }),
+            None,
+        );
         assert!(ctx.is_ok());
     }
 

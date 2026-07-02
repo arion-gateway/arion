@@ -3278,6 +3278,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "jsonwebtoken",
  "orion-configuration",
  "orion-data-plane-api",
  "orion-xds",

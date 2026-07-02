@@ -1,4 +1,4 @@
-use cedar_policy::{Context, EntityUid};
+use cedar_policy::{Context, EntityUid, Schema};
 use serde_json::{Map, Value};
 use smol_str::SmolStr;
 
@@ -42,6 +42,7 @@ pub fn build_authz_context(
     http_query: Option<&str>,
     tool_name: Option<&str>,
     tool_args: Option<&Value>,
+    schema_and_action: Option<(&Schema, &EntityUid)>,
 ) -> Result<Context, Error> {
     let mut ctx = Map::new();
 
@@ -76,7 +77,7 @@ pub fn build_authz_context(
         ctx.insert("tool".to_owned(), Value::Object(tool));
     }
 
-    build_context(&Value::Object(ctx))
+    build_context(&Value::Object(ctx), schema_and_action)
 }
 
 #[cfg(test)]
@@ -117,33 +118,81 @@ mod tests {
 
     #[test]
     fn context_all_none_is_empty_record() {
-        assert!(build_authz_context(None, None, None, None, None, None).is_ok());
+        assert!(build_authz_context(None, None, None, None, None, None, None).is_ok());
     }
 
     #[test]
     fn context_jwt_only() {
         let claims = json!({ "sub": "svc-alice", "iss": "https://auth.example.com" });
-        assert!(build_authz_context(Some(&claims), None, None, None, None, None).is_ok());
+        assert!(build_authz_context(Some(&claims), None, None, None, None, None, None).is_ok());
     }
 
     #[test]
     fn context_http_only() {
-        assert!(build_authz_context(None, Some("POST"), Some("/mcp"), Some("sessionId=abc"), None, None).is_ok());
+        assert!(build_authz_context(None, Some("POST"), Some("/mcp"), Some("sessionId=abc"), None, None, None).is_ok());
     }
 
     #[test]
     fn context_jwt_and_http() {
         let claims = json!({ "sub": "svc-alice" });
-        assert!(build_authz_context(Some(&claims), Some("POST"), Some("/mcp"), None, None, None).is_ok());
+        assert!(build_authz_context(Some(&claims), Some("POST"), Some("/mcp"), None, None, None, None).is_ok());
     }
 
     #[test]
     fn context_tool_args_serialised_to_string() {
         let args = json!({ "url": "https://example.com" });
-        assert!(build_authz_context(None, None, None, None, Some("fetch"), Some(&args)).is_ok());
+        assert!(build_authz_context(None, None, None, None, Some("fetch"), Some(&args), None).is_ok());
     }
 
     // --- integration: full AuthzRequest → PolicyStore round-trips ---
+
+    // Diagnostic test: reproduces the e2e JWT scenario with Set<String> and Long context types.
+    // Mirrors JWT_SCHEMA + JWT_POLICIES from cedar_http.rs e2e tests exactly.
+    // If Cedar returns Err instead of Ok(Deny), the e2e test failure is a Cedar evaluation error
+    // being masked by fail_open. If it returns Ok(Deny), the issue is elsewhere.
+    #[test]
+    fn jwt_complex_types_deny_is_ok_not_err() {
+        const SCHEMA: &str = r#"
+            entity User;
+            entity HttpPath;
+            action "GET" appliesTo {
+                principal: [User],
+                resource: [HttpPath],
+                context: {
+                    jwt: { sub?: String, iss?: String, aud?: Set<String>, exp?: Long, iat?: Long },
+                    http: { method: String, path: String, query?: String }
+                }
+            };
+            action "POST" appliesTo {
+                principal: [User],
+                resource: [HttpPath],
+                context: {
+                    jwt: { sub?: String, iss?: String, aud?: Set<String>, exp?: Long, iat?: Long },
+                    http: { method: String, path: String, query?: String }
+                }
+            };
+        "#;
+        const POLICY: &str = r#"
+            permit(principal == User::"svc-frontend", action == Action::"GET", resource);
+            permit(principal == User::"svc-admin",    action,                  resource);
+        "#;
+        let store = PolicyStore::new(POLICY, SCHEMA, "").unwrap();
+        let claims = json!({
+            "sub": "svc-frontend",
+            "iss": "test-issuer",
+            "aud": ["mcp-gateway"],
+            "exp": 9_999_999_999u64,
+            "iat": 0u64
+        });
+        let result = store.is_authorized(AuthzRequest {
+            principal: entity_uid("User", "svc-frontend").unwrap(),
+            action: entity_uid("Action", "POST").unwrap(),
+            resource: entity_uid("HttpPath", "/api").unwrap(),
+            context: build_authz_context(Some(&claims), Some("POST"), Some("/api"), None, None, None, None).unwrap(),
+        });
+        assert!(result.is_ok(), "Cedar should return Ok(Deny), not Err: {:?}", result.err());
+        assert!(!result.unwrap().is_allowed(), "svc-frontend POST should be denied");
+    }
 
     // Identity-based: policy permits when context.jwt.sub matches.
     const JWT_SCHEMA: &str = r#"
@@ -173,7 +222,7 @@ mod tests {
                 principal: principal_from_jwt(&claims, "User").unwrap(),
                 action: entity_uid("Action", "read").unwrap(),
                 resource: entity_uid("Document", "doc-1").unwrap(),
-                context: build_authz_context(Some(&claims), None, None, None, None, None).unwrap(),
+                context: build_authz_context(Some(&claims), None, None, None, None, None, None).unwrap(),
             })
             .unwrap();
         assert!(response.is_allowed());
@@ -188,7 +237,7 @@ mod tests {
                 principal: principal_from_jwt(&claims, "User").unwrap(),
                 action: entity_uid("Action", "read").unwrap(),
                 resource: entity_uid("Document", "doc-1").unwrap(),
-                context: build_authz_context(Some(&claims), None, None, None, None, None).unwrap(),
+                context: build_authz_context(Some(&claims), None, None, None, None, None, None).unwrap(),
             })
             .unwrap();
         assert!(!response.is_allowed());
@@ -221,7 +270,7 @@ mod tests {
                 principal: entity_uid("User", "alice").unwrap(),
                 action: entity_uid("Action", "call").unwrap(),
                 resource: entity_uid("Api", "gateway").unwrap(),
-                context: build_authz_context(None, Some("POST"), Some("/mcp"), None, None, None).unwrap(),
+                context: build_authz_context(None, Some("POST"), Some("/mcp"), None, None, None, None).unwrap(),
             })
             .unwrap();
         assert!(response.is_allowed());
@@ -235,7 +284,7 @@ mod tests {
                 principal: entity_uid("User", "alice").unwrap(),
                 action: entity_uid("Action", "call").unwrap(),
                 resource: entity_uid("Api", "gateway").unwrap(),
-                context: build_authz_context(None, Some("GET"), Some("/mcp"), None, None, None).unwrap(),
+                context: build_authz_context(None, Some("GET"), Some("/mcp"), None, None, None, None).unwrap(),
             })
             .unwrap();
         assert!(!response.is_allowed());
@@ -268,7 +317,7 @@ mod tests {
                 principal: entity_uid("ServiceAccount", "backend").unwrap(),
                 action: entity_uid("Action", "invoke").unwrap(),
                 resource: entity_uid("McpServer", "gateway").unwrap(),
-                context: build_authz_context(None, None, None, None, Some("fetch"), None).unwrap(),
+                context: build_authz_context(None, None, None, None, Some("fetch"), None, None).unwrap(),
             })
             .unwrap();
         assert!(response.is_allowed());
@@ -282,7 +331,7 @@ mod tests {
                 principal: entity_uid("ServiceAccount", "backend").unwrap(),
                 action: entity_uid("Action", "invoke").unwrap(),
                 resource: entity_uid("McpServer", "gateway").unwrap(),
-                context: build_authz_context(None, None, None, None, Some("execute_code"), None).unwrap(),
+                context: build_authz_context(None, None, None, None, Some("execute_code"), None, None).unwrap(),
             })
             .unwrap();
         assert!(!response.is_allowed());

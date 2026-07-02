@@ -168,7 +168,7 @@ mod tests {
             principal: entity_uid("User", principal_id).unwrap(),
             action: entity_uid("Action", action_id).unwrap(),
             resource: entity_uid("Document", resource_id).unwrap(),
-            context: build_context(&json!({})).unwrap(),
+            context: build_context(&json!({}), None).unwrap(),
         }
     }
 
