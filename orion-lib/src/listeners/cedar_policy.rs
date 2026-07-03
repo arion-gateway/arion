@@ -1,10 +1,4 @@
 use http::Request;
-use orion_cedar::{
-    entity::entity_uid,
-    error::Error as CedarError,
-    request::{build_authz_context, principal_from_jwt},
-    store::{AuthzRequest, AuthzResponse, SharedPolicyStore},
-};
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::cedar_policy::{
     CedarPolicy as CedarPolicyConfig, EnforcementMode, FailureMode,
 };
@@ -12,6 +6,12 @@ use serde_json::Value;
 use smol_str::SmolStr;
 use std::sync::Arc;
 use tracing::{debug, warn};
+
+use crate::cedar::{
+    error::Error as CedarError,
+    request::{build_authz_context, entity_uid, principal_from_jwt},
+    store::{AuthzRequest, AuthzResponse, SharedPolicyStore},
+};
 
 use crate::{
     event_error::{EventFailure, EventKind},
@@ -32,7 +32,7 @@ pub(crate) struct CedarHttpFilter {
 
 impl CedarHttpFilter {
     pub(crate) fn try_from_config(conf: CedarPolicyConfig) -> crate::Result<Self> {
-        let store = orion_cedar::store::PolicyStore::new(&conf.policies, &conf.schema, &conf.entities)?;
+        let store = crate::cedar::store::PolicyStore::new(&conf.policies, &conf.schema, &conf.entities)?;
         Ok(Self {
             store: Arc::new(store),
             enforcement_mode: conf.enforcement_mode,
@@ -121,12 +121,8 @@ impl CedarHttpFilter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::listeners::http_connection_manager::jwt_authn::claims::JwtClaims;
     use ahash::RandomState;
-    use orion_configuration::config::network_filters::http_connection_manager::http_filters::cedar_policy::{
-        CedarPolicy as CedarPolicyConfig, EnforcementMode, FailureMode,
-    };
-    use smol_str::SmolStr;
+    use orion_configuration::config::network_filters::http_connection_manager::http_filters::cedar_policy::CedarPolicy as CedarPolicyConfig;
     use std::collections::HashMap;
 
     const JWT_SCHEMA: &str = r#"

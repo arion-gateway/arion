@@ -1,14 +1,23 @@
-use cedar_policy::{Context, EntityUid, Schema};
+use cedar_policy::{Context, EntityId, EntityTypeName, EntityUid, Schema};
 use serde_json::{Map, Value};
 use smol_str::SmolStr;
+use std::str::FromStr;
 
-use crate::entity::{build_context, entity_uid};
-use crate::error::Error;
+use super::error::Error;
 
-/// Extract a Cedar principal [`EntityUid`] from JWT claims.
-///
-/// Uses the `sub` claim as the entity ID. Returns [`Error::Entity`] if `sub`
-/// is absent or not a string.
+pub(crate) fn entity_uid(type_name: &str, id: &str) -> Result<EntityUid, Error> {
+    let type_name = EntityTypeName::from_str(type_name)
+        .map_err(|e| Error::Entity(SmolStr::from(format!("invalid entity type '{type_name}': {e}"))))?;
+    let id =
+        EntityId::from_str(id).map_err(|e| Error::Entity(SmolStr::from(format!("invalid entity id '{id}': {e}"))))?;
+    Ok(EntityUid::from_type_name_and_id(type_name, id))
+}
+
+fn build_context(values: &Value, schema_and_action: Option<(&Schema, &EntityUid)>) -> Result<Context, Error> {
+    Context::from_json_value(values.clone(), schema_and_action)
+        .map_err(|e| Error::Context(SmolStr::from(e.to_string())))
+}
+
 pub fn principal_from_jwt(claims: &Value, entity_type: &str) -> Result<EntityUid, Error> {
     let sub = claims
         .get("sub")
@@ -17,23 +26,6 @@ pub fn principal_from_jwt(claims: &Value, entity_type: &str) -> Result<EntityUid
     entity_uid(entity_type, sub)
 }
 
-/// Build a Cedar [`Context`] from per-request Orion data.
-///
-/// The resulting record contains up to three namespaces — each is omitted
-/// entirely when all its inputs are `None`:
-///
-/// - `jwt`:  the JWT claims object passed verbatim
-/// - `http`: `{ method?, path?, query? }` HTTP request metadata
-/// - `tool`: `{ name?, arguments_json? }` MCP tool call data
-///
-/// Tool arguments are JSON-serialised to a `String` (`arguments_json`) so
-/// that Cedar can declare them as a typed scalar in the schema rather than
-/// requiring a fully-typed record for arbitrary argument shapes.
-///
-/// The Cedar schema must declare exactly the context fields that policies
-/// reference. Only pass the namespaces relevant to the filter:
-/// - MCP tool filter: `jwt_claims` + `tool_name`/`tool_args`
-/// - HTTP RBAC filter: `jwt_claims` + `http_method`/`http_path`/`http_query`
 #[allow(clippy::too_many_arguments)]
 pub fn build_authz_context(
     jwt_claims: Option<&Value>,
@@ -83,10 +75,26 @@ pub fn build_authz_context(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::{AuthzRequest, PolicyStore};
+    use crate::cedar::store::{AuthzRequest, PolicyStore};
     use serde_json::json;
 
-    // --- principal_from_jwt ---
+    #[test]
+    fn entity_uid_valid() {
+        let uid = entity_uid("User", "alice").unwrap();
+        assert_eq!(uid.to_string(), "User::\"alice\"");
+    }
+
+    #[test]
+    fn entity_uid_with_namespace() {
+        let uid = entity_uid("AgentIdentity::IamEntity", "urn:example").unwrap();
+        assert_eq!(uid.to_string(), "AgentIdentity::IamEntity::\"urn:example\"");
+    }
+
+    #[test]
+    fn build_context_from_json() {
+        let ctx = build_context(&json!({ "method": "GET", "path": "/api/v1/users" }), None);
+        assert!(ctx.is_ok());
+    }
 
     #[test]
     fn principal_from_jwt_extracts_sub() {
@@ -113,8 +121,6 @@ mod tests {
         let claims = json!({ "sub": 42 });
         assert!(principal_from_jwt(&claims, "User").is_err());
     }
-
-    // --- build_authz_context ---
 
     #[test]
     fn context_all_none_is_empty_record() {
@@ -144,12 +150,6 @@ mod tests {
         assert!(build_authz_context(None, None, None, None, Some("fetch"), Some(&args), None).is_ok());
     }
 
-    // --- integration: full AuthzRequest → PolicyStore round-trips ---
-
-    // Diagnostic test: reproduces the e2e JWT scenario with Set<String> and Long context types.
-    // Mirrors JWT_SCHEMA + JWT_POLICIES from cedar_http.rs e2e tests exactly.
-    // If Cedar returns Err instead of Ok(Deny), the e2e test failure is a Cedar evaluation error
-    // being masked by fail_open. If it returns Ok(Deny), the issue is elsewhere.
     #[test]
     fn jwt_complex_types_deny_is_ok_not_err() {
         const SCHEMA: &str = r#"
@@ -194,7 +194,6 @@ mod tests {
         assert!(!result.unwrap().is_allowed(), "svc-frontend POST should be denied");
     }
 
-    // Identity-based: policy permits when context.jwt.sub matches.
     const JWT_SCHEMA: &str = r#"
         entity User;
         entity Document;
@@ -243,7 +242,6 @@ mod tests {
         assert!(!response.is_allowed());
     }
 
-    // Route-based: policy permits when context.http.method and path match.
     const HTTP_SCHEMA: &str = r#"
         entity User;
         entity Api;
@@ -290,7 +288,6 @@ mod tests {
         assert!(!response.is_allowed());
     }
 
-    // Tool-based: policy permits when context.tool.name matches.
     const TOOL_SCHEMA: &str = r#"
         entity ServiceAccount;
         entity McpServer;

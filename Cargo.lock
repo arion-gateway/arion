@@ -3188,21 +3188,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "orion-cedar"
-version = "0.1.0"
-dependencies = [
- "cedar-policy",
- "http",
- "serde",
- "serde_json",
- "smol_str",
- "test-log",
- "thiserror 2.0.18",
- "tracing",
- "tracing-test",
-]
-
-[[package]]
 name = "orion-configuration"
 version = "0.1.0"
 dependencies = [
@@ -3372,6 +3357,7 @@ dependencies = [
  "base64 0.22.1",
  "bounded-integer",
  "bytes",
+ "cedar-policy",
  "chrono",
  "const-str",
  "contatori",
@@ -3397,7 +3383,6 @@ dependencies = [
  "moka",
  "opentelemetry",
  "orion-auth",
- "orion-cedar",
  "orion-configuration",
  "orion-data-plane-api",
  "orion-error",

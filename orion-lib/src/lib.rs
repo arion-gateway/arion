@@ -27,6 +27,7 @@ pub mod extensions_context;
 
 pub mod access_log;
 mod body;
+pub(crate) mod cedar;
 pub mod clusters;
 pub mod instrumentation;
 mod listeners;

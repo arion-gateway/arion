@@ -1,9 +1,9 @@
-use cedar_policy::{Authorizer, Decision, Entities, EntityUid, PolicySet, Request, Schema, ValidationMode, Validator};
+use cedar_policy::{Authorizer, Context, Decision, Entities, EntityUid, PolicySet, Request, Schema, ValidationMode, Validator};
 use smol_str::SmolStr;
 use std::sync::Arc;
 use tracing::{debug, warn};
 
-use crate::error::{Error, ValidationError};
+use super::error::{Error, ValidationError};
 
 #[derive(Debug)]
 pub struct PolicyStore {
@@ -22,12 +22,11 @@ pub struct AuthzRequest {
     pub principal: EntityUid,
     pub action: EntityUid,
     pub resource: EntityUid,
-    pub context: cedar_policy::Context,
+    pub context: Context,
 }
 
 pub struct AuthzDiagnostics {
     pub reason: Vec<SmolStr>,
-    pub errors: Vec<SmolStr>,
 }
 
 impl PolicyStore {
@@ -71,7 +70,6 @@ impl PolicyStore {
 
         let diagnostics = AuthzDiagnostics {
             reason: response.diagnostics().reason().map(|id| SmolStr::from(id.to_string())).collect(),
-            errors: response.diagnostics().errors().map(|e| SmolStr::from(e.to_string())).collect(),
         };
 
         debug!(
@@ -86,14 +84,7 @@ impl PolicyStore {
         Ok(AuthzResponse { decision: response.decision(), diagnostics })
     }
 
-    pub fn schema(&self) -> &Schema {
-        &self.schema
-    }
-
-    pub fn policy_set(&self) -> &PolicySet {
-        &self.policy_set
-    }
-
+    #[cfg(test)]
     pub fn entities(&self) -> &Entities {
         &self.entities
     }
@@ -107,14 +98,10 @@ impl AuthzResponse {
 
 pub type SharedPolicyStore = Arc<PolicyStore>;
 
-pub fn new_shared(policy_src: &str, schema_src: &str, entities_json: &str) -> Result<SharedPolicyStore, Error> {
-    PolicyStore::new(policy_src, schema_src, entities_json).map(Arc::new)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::entity::{build_context, entity_uid};
+    use crate::cedar::request::entity_uid;
     use serde_json::json;
 
     const TEST_SCHEMA: &str = r#"
@@ -168,7 +155,7 @@ mod tests {
             principal: entity_uid("User", principal_id).unwrap(),
             action: entity_uid("Action", action_id).unwrap(),
             resource: entity_uid("Document", resource_id).unwrap(),
-            context: build_context(&json!({}), None).unwrap(),
+            context: Context::from_json_value(json!({}), None).unwrap(),
         }
     }
 
@@ -191,12 +178,6 @@ mod tests {
         let store = PolicyStore::new(TEST_POLICY, TEST_SCHEMA, "").unwrap();
         let response = store.is_authorized(make_request("alice", "write", "doc-1")).unwrap();
         assert!(!response.is_allowed());
-    }
-
-    #[test]
-    fn shared_store_is_cloneable() {
-        let store = new_shared(TEST_POLICY, TEST_SCHEMA, "").unwrap();
-        let _clone = Arc::clone(&store);
     }
 
     #[test]
