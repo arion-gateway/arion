@@ -257,12 +257,13 @@ impl TryFrom<McpGatewayConfig> for McpGateway {
     type Error = ToolBuilderError;
 
     fn try_from(config: McpGatewayConfig) -> Result<Self, Self::Error> {
-        let embeddings_client = config
-            .semantic_search_tool
-            .as_ref()
-            .and_then(|s| s.embeddings.clone())
-            .map(embeddings::EmbeddingsClient::from_config)
-            .map(Arc::new);
+        let embeddings_client = match config.semantic_search_tool.as_ref().and_then(|s| s.embeddings.clone()) {
+            Some(cfg) => {
+                let cfg = cfg.normalized().map_err(ToolBuilderError::InvalidEmbeddingsConfig)?;
+                Some(Arc::new(embeddings::EmbeddingsClient::from_config(cfg)))
+            },
+            None => None,
+        };
 
         let tools = Arc::new(ToolsRegistry::with_config(
             config.tools.clone(),

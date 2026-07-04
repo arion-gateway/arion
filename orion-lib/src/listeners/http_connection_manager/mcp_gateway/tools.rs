@@ -179,6 +179,10 @@ pub enum ToolBuilderError {
         "Tool '{tool}' has supplied embedding of dimension {got}, but embeddings service produces dimension {expected}"
     )]
     EmbeddingDimensionMismatch { tool: SmolStr, expected: usize, got: usize },
+    #[error("Tool '{0}' has a supplied embedding with non-finite components")]
+    EmbeddingNotFinite(SmolStr),
+    #[error("Invalid embeddings config: {0}")]
+    InvalidEmbeddingsConfig(String),
 }
 
 impl ToolEntry {
@@ -251,6 +255,9 @@ impl ToolsRegistry {
         let supplied = tool.embedding.as_slice();
         if supplied.is_empty() {
             return Ok(());
+        }
+        if !supplied.iter().all(|x| x.is_finite()) {
+            return Err(ToolBuilderError::EmbeddingNotFinite(tool.name.clone()));
         }
         let Some(client) = self.embeddings_client.as_ref() else {
             return Ok(());
@@ -694,9 +701,7 @@ impl ToolsRegistry {
             None => return Err(CallToolError::SemanticSearchUnavailable),
         };
 
-        scored.sort_by(|a, b| {
-            b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal).then_with(|| a.1.conf.name.cmp(&b.1.conf.name))
-        });
+        scored.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.conf.name.cmp(&b.1.conf.name)));
 
         let top_k = self.similarity_top_k();
         if top_k > 0 && scored.len() > top_k {
@@ -715,6 +720,15 @@ impl ToolsRegistry {
             Ok(v) => v,
             Err(err) => {
                 warn!(target: "mcp_gateway", "embed_query failed: {err}; cosine ranking unavailable");
+                #[cfg(feature = "metrics")]
+                let shard_id = get_shard_id!();
+                with_metric!(
+                    orion_metrics::metrics::mcp::EMBEDDING_FAILURES_TOTAL,
+                    add,
+                    1,
+                    shard_id,
+                    &[KeyValue::new("endpoint", client.description().to_owned())]
+                );
                 return None;
             },
         };

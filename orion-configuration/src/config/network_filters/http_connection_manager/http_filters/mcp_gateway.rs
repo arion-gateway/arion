@@ -191,6 +191,24 @@ impl RemoteEmbeddings {
     fn is_default_allow_bm25_fallback(v: &bool) -> bool {
         *v
     }
+
+    pub fn normalized(mut self) -> Result<Self, String> {
+        if self.cluster.is_empty() {
+            return Err("RemoteEmbeddings.cluster must not be empty".to_owned());
+        }
+        if self.model_id.is_empty() {
+            return Err("RemoteEmbeddings.model_id must not be empty".to_owned());
+        }
+        if self.dimensions == Some(0) {
+            return Err("RemoteEmbeddings.dimensions must be greater than zero".to_owned());
+        }
+        if self.path.is_empty() {
+            self.path = Self::default_path();
+        } else if !self.path.starts_with('/') {
+            self.path.insert(0, '/');
+        }
+        Ok(self)
+    }
 }
 
 #[cfg(feature = "envoy-conversions")]
@@ -470,31 +488,22 @@ mod envoy_conversions {
         type Error = GenericError;
         fn try_from(orion: OrionRemoteEmbeddings) -> Result<Self, Self::Error> {
             let OrionRemoteEmbeddings { cluster, model_id, path, timeout, dimensions, allow_bm25_fallback } = orion;
-            if cluster.is_empty() {
-                return Err(GenericError::from_msg("RemoteEmbeddings.cluster must not be empty"));
-            }
-            if model_id.is_empty() {
-                return Err(GenericError::from_msg("RemoteEmbeddings.model_id must not be empty"));
-            }
-            let path = if path.is_empty() { RemoteEmbeddings::default_path() } else { path };
             let timeout = timeout
                 .map(|d| -> Result<Duration, GenericError> {
                     let dur: RustType<Duration> = d.try_into()?;
                     Ok(dur.into_inner())
                 })
                 .transpose()?;
-            let dimensions = dimensions.map(|d| d as usize);
-            if dimensions == Some(0) {
-                return Err(GenericError::from_msg("RemoteEmbeddings.dimensions must be greater than zero"));
-            }
-            Ok(RemoteEmbeddings {
+            RemoteEmbeddings {
                 cluster: cluster.into(),
                 model_id: model_id.into(),
                 path,
                 timeout,
-                dimensions,
+                dimensions: dimensions.map(|d| d as usize),
                 allow_bm25_fallback: allow_bm25_fallback.unwrap_or(true),
-            })
+            }
+            .normalized()
+            .map_err(GenericError::from_msg)
         }
     }
 
@@ -670,6 +679,32 @@ mod envoy_conversions {
             .unwrap();
 
             assert!(!parsed.allow_bm25_fallback);
+        }
+
+        fn remote(cluster: &str, model_id: &str, path: &str, dimensions: Option<usize>) -> RemoteEmbeddings {
+            RemoteEmbeddings {
+                cluster: cluster.into(),
+                model_id: model_id.into(),
+                path: path.to_owned(),
+                timeout: None,
+                dimensions,
+                allow_bm25_fallback: true,
+            }
+        }
+
+        #[test]
+        fn normalized_prepends_leading_slash_and_defaults_empty_path() {
+            assert_eq!(remote("c", "m", "v1/embeddings", None).normalized().unwrap().path, "/v1/embeddings");
+            assert_eq!(remote("c", "m", "", None).normalized().unwrap().path, RemoteEmbeddings::default_path());
+            assert_eq!(remote("c", "m", "/custom", None).normalized().unwrap().path, "/custom");
+        }
+
+        #[test]
+        fn normalized_rejects_empty_cluster_empty_model_and_zero_dimensions() {
+            assert!(remote("", "m", "/p", None).normalized().is_err());
+            assert!(remote("c", "", "/p", None).normalized().is_err());
+            assert!(remote("c", "m", "/p", Some(0)).normalized().is_err());
+            assert!(remote("c", "m", "/p", Some(384)).normalized().is_ok());
         }
     }
 }

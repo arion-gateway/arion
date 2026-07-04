@@ -35,13 +35,15 @@ use crate::{OrionRequestBody, RequestContext};
 
 use super::{normalise_in_place, Embedding, EmbeddingError};
 
+const DEFAULT_EMBEDDINGS_TIMEOUT: Duration = Duration::from_secs(5);
+
 #[derive(Debug)]
 pub struct EmbeddingsClient {
     cluster_id: &'static str,
     cluster_label: SmolStr,
     model_id: SmolStr,
     path: String,
-    timeout: Option<Duration>,
+    timeout: Duration,
     description: String,
     dimensions: AtomicUsize,
     #[cfg(test)]
@@ -68,7 +70,7 @@ impl EmbeddingsClient {
             cluster_label: cluster,
             model_id,
             path,
-            timeout,
+            timeout: timeout.unwrap_or(DEFAULT_EMBEDDINGS_TIMEOUT),
             description,
             dimensions,
             #[cfg(test)]
@@ -86,7 +88,7 @@ impl EmbeddingsClient {
 
         let body: OrionRequestBody = InstrumentedBody::new(
             BodyKind::Request,
-            TimeoutBody::new(self.timeout, PolyBody::from(Full::new(Bytes::from(body_bytes)))),
+            TimeoutBody::new(Some(self.timeout), PolyBody::from(Full::new(Bytes::from(body_bytes)))),
             None,
             |_, _, _, _| {},
         );
@@ -101,7 +103,8 @@ impl EmbeddingsClient {
             .body(body)
             .map_err(|e| EmbeddingError::Service(format!("request: {e}")))?;
 
-        let request_context = RequestContext { route_timeout: self.timeout, retry_policy: None, ..Default::default() };
+        let request_context =
+            RequestContext { route_timeout: Some(self.timeout), retry_policy: None, ..Default::default() };
         let response = (&channels)
             .to_response(&TransactionContext::default(), request, request_context)
             .await
@@ -149,6 +152,15 @@ impl EmbeddingsClient {
         }
     }
 
+    fn finalize(&self, mut v: Vec<f32>) -> Result<Embedding, EmbeddingError> {
+        self.validate_or_record_dimensions(v.len())?;
+        if !v.iter().all(|x| x.is_finite()) {
+            return Err(EmbeddingError::Service("embedding contains non-finite components".into()));
+        }
+        normalise_in_place(&mut v);
+        Ok(Arc::new(v))
+    }
+
     pub fn dimensions(&self) -> Option<usize> {
         match self.dimensions.load(Ordering::Acquire) {
             0 => None,
@@ -167,10 +179,8 @@ impl EmbeddingsClient {
         }
 
         let mut vectors = self.post_for_embeddings(vec![text.to_string()]).await?;
-        let mut v = vectors.pop().ok_or_else(|| EmbeddingError::Service("empty result".into()))?;
-        self.validate_or_record_dimensions(v.len())?;
-        normalise_in_place(&mut v);
-        Ok(Arc::new(v))
+        let v = vectors.pop().ok_or_else(|| EmbeddingError::Service("empty result".into()))?;
+        self.finalize(v)
     }
 
     pub async fn embed_batch(&self, texts: &[String]) -> Result<Vec<Embedding>, EmbeddingError> {
@@ -184,10 +194,8 @@ impl EmbeddingsClient {
         }
         let vectors = self.post_for_embeddings(texts.to_vec()).await?;
         let mut out = Vec::with_capacity(vectors.len());
-        for mut v in vectors {
-            self.validate_or_record_dimensions(v.len())?;
-            normalise_in_place(&mut v);
-            out.push(Arc::new(v));
+        for v in vectors {
+            out.push(self.finalize(v)?);
         }
         Ok(out)
     }
@@ -214,7 +222,7 @@ impl EmbeddingsClient {
             cluster_label: "test".into(),
             model_id: "test-model".into(),
             path: "/v1/embeddings".to_owned(),
-            timeout: None,
+            timeout: DEFAULT_EMBEDDINGS_TIMEOUT,
             description: description.to_owned(),
             dimensions: AtomicUsize::new(3),
             test_mode: Some(test_mode),
@@ -286,4 +294,17 @@ fn one_hot_for(text: &str) -> Vec<f32> {
         v = vec![value, value, value];
     }
     v
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finalize_rejects_non_finite_components() {
+        let client = EmbeddingsClient::test_one_hot();
+        assert!(matches!(client.finalize(vec![f32::INFINITY, 0.0, 0.0]), Err(EmbeddingError::Service(_))));
+        assert!(matches!(client.finalize(vec![f32::NAN, 0.0, 0.0]), Err(EmbeddingError::Service(_))));
+        assert!(client.finalize(vec![1.0, 0.0, 0.0]).is_ok());
+    }
 }
