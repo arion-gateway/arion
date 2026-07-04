@@ -25,8 +25,8 @@ use orion_data_plane_api::envoy_data_plane_api::{
     google::protobuf::{Any, Duration as ProstDuration},
     orion::extensions::filters::http::mcp::mcp_gateway::v3::{
         mcp_server_backend, permission::PermissionType, tool, tool_rbac, DynamicMcpServer, FunctionGraphBackend,
-        JwtClaimMatcher, JwtHeaderMatcher, McpGateway, McpServerBackend, Permission, QueryParam, RestBackend,
-        SemanticSearch, ServerInfo, SimilarityConfig, TdsSpecifier, Tool, ToolRbac,
+        JwtClaimMatcher, JwtHeaderMatcher, McpGateway, McpServerBackend, Permission, QueryParam, RemoteEmbeddings,
+        RestBackend, SemanticSearch, ServerInfo, SimilarityConfig, TdsSpecifier, Tool, ToolRbac,
     },
     prost::Message,
 };
@@ -489,14 +489,36 @@ pub struct McpSemanticSearchBuilder {
 
 impl McpSemanticSearchBuilder {
     #[must_use]
-    pub fn new(embeddings_service: impl Into<String>) -> Self {
-        Self {
-            proto: SemanticSearch {
-                embeddings_service: embeddings_service.into(),
-                similarity: Some(SimilarityConfig { top_k: 0 }),
-                ..Default::default()
-            },
-        }
+    pub fn new() -> Self {
+        Self { proto: SemanticSearch { similarity: Some(SimilarityConfig { top_k: 0 }), ..Default::default() } }
+    }
+
+    #[must_use]
+    pub fn remote_embeddings(mut self, cluster: impl Into<String>, model_id: impl Into<String>) -> Self {
+        self.proto.embeddings =
+            Some(RemoteEmbeddings { cluster: cluster.into(), model_id: model_id.into(), ..Default::default() });
+        self
+    }
+
+    #[must_use]
+    pub fn embeddings_path(mut self, path: impl Into<String>) -> Self {
+        self.proto.embeddings.get_or_insert_with(RemoteEmbeddings::default).path = path.into();
+        self
+    }
+
+    #[must_use]
+    pub fn embeddings_timeout(mut self, duration: Duration) -> Self {
+        self.proto.embeddings.get_or_insert_with(RemoteEmbeddings::default).timeout = Some(ProstDuration {
+            seconds: i64::try_from(duration.as_secs()).unwrap_or(i64::MAX),
+            nanos: i32::try_from(duration.subsec_nanos()).unwrap_or(0),
+        });
+        self
+    }
+
+    #[must_use]
+    pub fn embeddings_dimensions(mut self, dimensions: u32) -> Self {
+        self.proto.embeddings.get_or_insert_with(RemoteEmbeddings::default).dimensions = Some(dimensions);
+        self
     }
 
     #[must_use]

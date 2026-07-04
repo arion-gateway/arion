@@ -293,6 +293,7 @@ impl XdsExtensionHandler for McpXdsHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::listeners::http_connection_manager::mcp_gateway::embeddings;
     use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::mcp::mcp_gateway::v3::{
         tool::UpstreamBackend as OrionUpstreamBackend, RestBackend as OrionRestBackend,
     };
@@ -300,16 +301,7 @@ mod tests {
     use tokio::sync::mpsc;
 
     fn empty_registry() -> Arc<ToolsRegistry> {
-        Arc::new(
-            ToolsRegistry::with_config(
-                Vec::new(),
-                Vec::new(),
-                None,
-                #[cfg(feature = "mcp-semantic-search")]
-                None,
-            )
-            .unwrap(),
-        )
+        Arc::new(ToolsRegistry::with_config(Vec::new(), Vec::new(), None, None).unwrap())
     }
 
     fn test_sub_mgr() -> (Arc<DeltaDiscoverySubscriptionManager>, mpsc::Receiver<SubscriptionEvent>) {
@@ -466,43 +458,24 @@ mod tests {
         assert!(registry.remove_tool("resource_name"));
     }
 
-    #[cfg(feature = "mcp-semantic-search")]
     #[tokio::test]
-    async fn tool_update_embedding_failure_does_not_insert_tool() {
+    async fn tool_update_embedding_failure_still_inserts_tool() {
         use orion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::{
             McpSemanticSearch, SimilarityConfig,
         };
 
-        #[derive(Debug)]
-        struct FailingProvider;
-        #[async_trait::async_trait]
-        impl crate::embeddings::EmbeddingsProvider for FailingProvider {
-            fn dimensions(&self) -> usize {
-                3
-            }
-            fn description(&self) -> &str {
-                "failing"
-            }
-            async fn embed_query(
-                &self,
-                _: &str,
-            ) -> Result<crate::embeddings::Embedding, crate::embeddings::EmbeddingError> {
-                Err(crate::embeddings::EmbeddingError::Provider("boom".into()))
-            }
-        }
-
         let handler = stub_handler();
-        let provider: Arc<dyn crate::embeddings::EmbeddingsProvider> = Arc::new(FailingProvider);
+        let client = embeddings::EmbeddingsClient::test_failing();
         let registry = Arc::new(
             ToolsRegistry::with_config(
                 Vec::new(),
                 Vec::new(),
                 Some(McpSemanticSearch {
                     enable_assisted_discovery: false,
-                    embeddings_service: "failing".into(),
+                    embeddings: None,
                     similarity: SimilarityConfig::default(),
                 }),
-                Some(provider),
+                Some(client),
             )
             .unwrap(),
         );
@@ -511,8 +484,9 @@ mod tests {
         let payload = rest_tool_proto("needs_embedding").encode_to_vec();
         let res = handler.handle_update(MCP_TOOL_TYPE_URL, "srv/cfg/needs_embedding", &payload).await;
 
-        assert!(res.is_err(), "provider failure should NACK the update");
-        assert!(registry.get_tool_by_name("needs_embedding").is_none());
+        assert!(res.is_ok(), "embeddings failure should not NACK the update: {res:?}");
+        let entry = registry.get_tool_by_name("needs_embedding").expect("tool should be inserted");
+        assert!(entry.embedding.load_full().is_none(), "tool should remain unembedded after embeddings failure");
     }
 
     async fn drain_subscribes(rx: &mut mpsc::Receiver<SubscriptionEvent>) -> Vec<String> {

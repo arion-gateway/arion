@@ -22,16 +22,13 @@ use clap::Parser;
 use http::StatusCode;
 use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::mcp::mcp_gateway::v3::Tool as OrionMcpTool;
 use orion_e2e_tests::config_builder::{
-    inline_string_data_source, ClusterBuilder, EndpointBuilder, LocalEmbeddingsServiceConfig, McpGatewayBuilder,
-    McpGatewayHttpConfigBuilder, McpRestBackendBuilder, McpSemanticSearchBuilder, McpToolBuilder,
+    inline_string_data_source, ClusterBuilder, EndpointBuilder, McpGatewayBuilder, McpGatewayHttpConfigBuilder,
+    McpRestBackendBuilder, McpSemanticSearchBuilder, McpToolBuilder,
 };
 use orion_e2e_tests::{CallToolResult, McpTestClient, OrionInstance, PreConfiguredResponse, SpawnOptions, TestBackend};
 use serde_json::{json, Value};
 
 const LISTENER_NAME: &str = "mcp_semantic_search_demo";
-const EMBEDDINGS_SERVICE_NAME: &str = "mcp-local-demo";
-const DEFAULT_MODEL_ID: &str = "BAAI/bge-small-en-v1.5";
-const DEFAULT_MODEL_DIR_ENV: &str = "ORION_MCP_EMBEDDINGS_MODEL_DIR";
 const SAMPLE_QUERY: &str = "I need the weather forecast and temperature";
 
 const WEATHER_CLUSTER: &str = "weather_backend";
@@ -41,17 +38,8 @@ const ADMIN_CLUSTER: &str = "admin_backend";
 
 #[derive(Debug, Parser)]
 #[command(name = "mcp_semantic_search")]
-#[command(about = "Run an interactive Orion MCP Gateway semantic-search demo backed by local FastEmbed embeddings.")]
+#[command(about = "Run an interactive Orion MCP Gateway semantic-search demo backed by built-in BM25 ranking.")]
 struct Args {
-    #[arg(long, default_value = DEFAULT_MODEL_ID)]
-    model_id: String,
-
-    #[arg(long, value_name = "DIR")]
-    model_dir: Option<PathBuf>,
-
-    #[arg(long, value_name = "N")]
-    dimensions: Option<usize>,
-
     #[arg(long, default_value_t = 2, value_name = "N")]
     top_k: u32,
 
@@ -67,15 +55,8 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut args = Args::parse();
-    if args.model_dir.is_none() {
-        args.model_dir = std::env::var_os(DEFAULT_MODEL_DIR_ENV).map(PathBuf::from);
-    }
+    let args = Args::parse();
     validate_args(&args)?;
-
-    eprintln!(
-        "The spawned `orion` binary must be built with `cargo build -p orion-proxy --features mcp-semantic-search`."
-    );
 
     let backends = DemoBackends::start().await?;
     let config_path = build_config(&args, &backends)?;
@@ -121,17 +102,6 @@ fn validate_args(args: &Args) -> Result<(), io::Error> {
     if args.top_k == 0 {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "--top-k must be greater than zero"));
     }
-    if args.dimensions == Some(0) {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "--dimensions must be greater than zero"));
-    }
-    if let Some(model_dir) = &args.model_dir {
-        if !model_dir.is_dir() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("--model-dir must be an existing directory: {}", model_dir.display()),
-            ));
-        }
-    }
     Ok(())
 }
 
@@ -145,32 +115,14 @@ fn spawn_options(args: &Args) -> SpawnOptions {
 }
 
 fn build_config(args: &Args, backends: &DemoBackends) -> orion_e2e_tests::Result<PathBuf> {
-    let gateway = McpGatewayBuilder::new("orion-mcp-local-demo", "1.0.0").tools(demo_tools()).semantic_search(
-        McpSemanticSearchBuilder::new(EMBEDDINGS_SERVICE_NAME)
-            .assisted_discovery(args.assisted_discovery)
-            .top_k(args.top_k),
-    );
-
-    let embeddings_service = local_embeddings_service(args).build_yaml()?;
+    let gateway = McpGatewayBuilder::new("orion-mcp-local-demo", "1.0.0")
+        .tools(demo_tools())
+        .semantic_search(McpSemanticSearchBuilder::new().assisted_discovery(args.assisted_discovery).top_k(args.top_k));
 
     McpGatewayHttpConfigBuilder::new(gateway)
         .listener(LISTENER_NAME, 0)
         .build_bootstrap(backends.clusters())
-        .embeddings_service(embeddings_service)
         .build_to_temp()
-}
-
-fn local_embeddings_service(args: &Args) -> LocalEmbeddingsServiceConfig {
-    let mut service = LocalEmbeddingsServiceConfig::new(EMBEDDINGS_SERVICE_NAME, args.model_id.clone());
-
-    if let Some(model_dir) = &args.model_dir {
-        service = service.model_dir(model_dir.display().to_string());
-    }
-    if let Some(dimensions) = args.dimensions {
-        service = service.dimensions(dimensions);
-    }
-
-    service
 }
 
 struct DemoBackends {
@@ -257,13 +209,7 @@ fn print_startup(args: &Args, backends: &DemoBackends, config_path: &std::path::
     println!("Orion MCP semantic-search demo is running");
     println!("Config: {}", config_path.display());
     println!("MCP endpoint: http://{listener_addr}/mcp");
-    println!("Model id: {}", args.model_id);
-    if let Some(model_dir) = &args.model_dir {
-        println!("Model dir: {}", model_dir.display());
-    }
-    if let Some(dimensions) = args.dimensions {
-        println!("Dimensions override: {dimensions}");
-    }
+    println!("Ranking: BM25");
     println!("Top K: {}", args.top_k);
     println!("Assisted discovery: {}", args.assisted_discovery);
     println!();

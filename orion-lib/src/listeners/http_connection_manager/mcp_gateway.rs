@@ -1,3 +1,4 @@
+pub(crate) mod embeddings;
 pub mod mcp;
 pub mod rbac;
 pub mod tools;

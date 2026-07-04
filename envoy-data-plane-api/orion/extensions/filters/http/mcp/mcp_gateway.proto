@@ -147,10 +147,28 @@ message SemanticSearch {
     bool enable_assisted_discovery = 1;
     // customize shape of results for relevant tools
     SimilarityConfig similarity = 2;
-    // name of EmbeddingService used for advanced semantic tool search
-    // EmbeddingService is a configured separately within Orion native 
-    // section of bootstrap config
-    string embeddings_service = 3 [(validate.rules).string = {min_bytes: 1}];
+    // Optional OpenAI-compatible remote embeddings endpoint. When omitted,
+    // Orion ranks tools with the built-in BM25 scorer.
+    RemoteEmbeddings embeddings = 3;
+}
+
+message RemoteEmbeddings {
+    // Orion cluster used to reach the embeddings endpoint.
+    string cluster = 1 [(validate.rules).string = {min_bytes: 1}];
+    // Model id sent in the OpenAI-compatible embeddings request body.
+    string model_id = 2 [(validate.rules).string = {min_bytes: 1}];
+    // Request path on the remote endpoint. Empty means /v1/embeddings.
+    string path = 3;
+    google.protobuf.Duration timeout = 4;
+    // Optional explicit vector dimension. When omitted, Orion learns it from
+    // the first successful embeddings response and validates later responses
+    // against that observed dimension.
+    optional uint32 dimensions = 5;
+    // Allow falling back to the built-in BM25 scorer when the remote embeddings
+    // service is unavailable or a tool has no embedding yet. Defaults to true.
+    // When false, Orion skips building BM25 term statistics entirely and
+    // semantic_search calls fail if cosine ranking is unavailable.
+    optional bool allow_bm25_fallback = 6;
 }
 
 message SimilarityConfig {

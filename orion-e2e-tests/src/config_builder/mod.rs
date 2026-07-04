@@ -35,7 +35,7 @@ mod tls;
 mod virtual_host;
 pub mod xds;
 
-pub use bootstrap::{BootstrapBuilder, LocalEmbeddingsServiceConfig};
+pub use bootstrap::BootstrapBuilder;
 pub use cluster::{Cluster, ClusterBuilder, HttpVersion, LbPolicy, UpstreamProxyProtocolBuilder};
 pub use endpoint::{Endpoint, EndpointBuilder, HealthStatus};
 pub use ext_proc::ExtProcBuilder;

@@ -133,7 +133,8 @@ pub enum McpRbacPermission {
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct McpSemanticSearch {
     pub enable_assisted_discovery: bool,
-    pub embeddings_service: SmolStr,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub embeddings: Option<RemoteEmbeddings>,
     #[serde(default)]
     pub similarity: SimilarityConfig,
 }
@@ -156,6 +157,42 @@ impl Default for SimilarityConfig {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RemoteEmbeddings {
+    pub cluster: SmolStr,
+    pub model_id: SmolStr,
+    #[serde(default = "RemoteEmbeddings::default_path", skip_serializing_if = "RemoteEmbeddings::is_default_path")]
+    pub path: String,
+    #[serde(with = "humantime_serde", skip_serializing_if = "Option::is_none", default)]
+    pub timeout: Option<Duration>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub dimensions: Option<usize>,
+    #[serde(
+        default = "RemoteEmbeddings::default_allow_bm25_fallback",
+        skip_serializing_if = "RemoteEmbeddings::is_default_allow_bm25_fallback"
+    )]
+    pub allow_bm25_fallback: bool,
+}
+
+impl RemoteEmbeddings {
+    pub fn default_path() -> String {
+        "/v1/embeddings".to_owned()
+    }
+
+    fn is_default_path(path: &str) -> bool {
+        path == Self::default_path()
+    }
+
+    fn default_allow_bm25_fallback() -> bool {
+        true
+    }
+
+    #[allow(clippy::trivially_copy_pass_by_ref)]
+    fn is_default_allow_bm25_fallback(v: &bool) -> bool {
+        *v
+    }
+}
+
 #[cfg(feature = "envoy-conversions")]
 mod envoy_conversions {
     use std::str::FromStr;
@@ -169,9 +206,10 @@ mod envoy_conversions {
         mcp_server_backend::TransportUpstream as OrionTransportUpstream, permission,
         tool::UpstreamBackend as OrionUpstreamBackend, tool_rbac::Action as OrionAction,
         DynamicMcpServer as OrionDynamicMcpServer, JwtClaimMatcher, JwtHeaderMatcher, McpGateway as OrionMcpGateway,
-        Permission as OrionPermission, QueryParam as OrionMcpQueryParams, SemanticSearch as OrionSemanticSearch,
-        ServerInfo as OrionMcpServerInfo, SimilarityConfig as OrionSimilarityConfig, TdsSpecifier as OrionTdsSpecifier,
-        Tool as OrionTool, ToolRbac as OrionToolRbac,
+        Permission as OrionPermission, QueryParam as OrionMcpQueryParams, RemoteEmbeddings as OrionRemoteEmbeddings,
+        SemanticSearch as OrionSemanticSearch, ServerInfo as OrionMcpServerInfo,
+        SimilarityConfig as OrionSimilarityConfig, TdsSpecifier as OrionTdsSpecifier, Tool as OrionTool,
+        ToolRbac as OrionToolRbac,
     };
     use tracing::warn;
 
@@ -419,15 +457,43 @@ mod envoy_conversions {
     impl TryFrom<OrionSemanticSearch> for McpSemanticSearch {
         type Error = GenericError;
         fn try_from(orion: OrionSemanticSearch) -> Result<Self, Self::Error> {
-            let OrionSemanticSearch { enable_assisted_discovery, embeddings_service, similarity } = orion;
+            let OrionSemanticSearch { enable_assisted_discovery, similarity, embeddings } = orion;
 
-            let embeddings_service = required!(embeddings_service)?;
             let similarity = similarity.map(TryInto::try_into).transpose()?.unwrap_or_default();
+            let embeddings = embeddings.map(TryInto::try_into).transpose()?;
 
-            Ok(McpSemanticSearch {
-                enable_assisted_discovery,
-                embeddings_service: embeddings_service.into(),
-                similarity,
+            Ok(McpSemanticSearch { enable_assisted_discovery, embeddings, similarity })
+        }
+    }
+
+    impl TryFrom<OrionRemoteEmbeddings> for RemoteEmbeddings {
+        type Error = GenericError;
+        fn try_from(orion: OrionRemoteEmbeddings) -> Result<Self, Self::Error> {
+            let OrionRemoteEmbeddings { cluster, model_id, path, timeout, dimensions, allow_bm25_fallback } = orion;
+            if cluster.is_empty() {
+                return Err(GenericError::from_msg("RemoteEmbeddings.cluster must not be empty"));
+            }
+            if model_id.is_empty() {
+                return Err(GenericError::from_msg("RemoteEmbeddings.model_id must not be empty"));
+            }
+            let path = if path.is_empty() { RemoteEmbeddings::default_path() } else { path };
+            let timeout = timeout
+                .map(|d| -> Result<Duration, GenericError> {
+                    let dur: RustType<Duration> = d.try_into()?;
+                    Ok(dur.into_inner())
+                })
+                .transpose()?;
+            let dimensions = dimensions.map(|d| d as usize);
+            if dimensions == Some(0) {
+                return Err(GenericError::from_msg("RemoteEmbeddings.dimensions must be greater than zero"));
+            }
+            Ok(RemoteEmbeddings {
+                cluster: cluster.into(),
+                model_id: model_id.into(),
+                path,
+                timeout,
+                dimensions,
+                allow_bm25_fallback: allow_bm25_fallback.unwrap_or(true),
             })
         }
     }
@@ -531,35 +597,79 @@ mod envoy_conversions {
             let orion = OrionSemanticSearch {
                 enable_assisted_discovery: true,
                 similarity: Some(OrionSimilarityConfig { top_k: 5 }),
-                embeddings_service: "mcp-default".to_string(),
+                embeddings: Some(OrionRemoteEmbeddings {
+                    cluster: "embeddings".to_owned(),
+                    model_id: "test-model".to_owned(),
+                    path: "/v1/embeddings".to_owned(),
+                    timeout: None,
+                    dimensions: Some(384),
+                    allow_bm25_fallback: None,
+                }),
             };
             let parsed: McpSemanticSearch = orion.try_into().unwrap();
             assert!(parsed.enable_assisted_discovery);
             assert_eq!(parsed.similarity.top_k, 5);
-            assert_eq!(parsed.embeddings_service.as_str(), "mcp-default");
+            let embeddings = parsed.embeddings.expect("remote embeddings config");
+            assert_eq!(embeddings.cluster.as_str(), "embeddings");
+            assert_eq!(embeddings.model_id.as_str(), "test-model");
+            assert_eq!(embeddings.path, "/v1/embeddings");
+            assert_eq!(embeddings.dimensions, Some(384));
+            assert!(embeddings.allow_bm25_fallback);
         }
 
         #[test]
         fn test_semantic_search_defaults_similarity() {
-            let orion = OrionSemanticSearch {
-                enable_assisted_discovery: false,
-                similarity: None,
-                embeddings_service: "mcp-default".to_string(),
-            };
+            let orion = OrionSemanticSearch { enable_assisted_discovery: false, similarity: None, embeddings: None };
             let parsed: McpSemanticSearch = orion.try_into().unwrap();
             assert_eq!(parsed.similarity.top_k, 10);
+            assert!(parsed.embeddings.is_none());
         }
 
         #[test]
-        fn test_semantic_search_empty_service_is_rejected() {
-            let orion = OrionSemanticSearch {
-                enable_assisted_discovery: false,
-                similarity: None,
-                embeddings_service: String::new(),
-            };
-            let result: Result<McpSemanticSearch, _> = orion.try_into();
+        fn test_semantic_search_empty_remote_cluster_is_rejected() {
+            let result: Result<RemoteEmbeddings, _> = OrionRemoteEmbeddings {
+                cluster: String::new(),
+                model_id: "test-model".to_owned(),
+                path: String::new(),
+                timeout: None,
+                dimensions: None,
+                allow_bm25_fallback: None,
+            }
+            .try_into();
             assert!(result.is_err());
-            assert!(result.unwrap_err().to_string().contains("embeddings_service"));
+            assert!(result.unwrap_err().to_string().contains("cluster"));
+        }
+
+        #[test]
+        fn test_remote_embeddings_allow_bm25_fallback_defaults_true() {
+            let parsed: RemoteEmbeddings = OrionRemoteEmbeddings {
+                cluster: "embeddings".to_owned(),
+                model_id: "test-model".to_owned(),
+                path: String::new(),
+                timeout: None,
+                dimensions: None,
+                allow_bm25_fallback: None,
+            }
+            .try_into()
+            .unwrap();
+
+            assert!(parsed.allow_bm25_fallback);
+        }
+
+        #[test]
+        fn test_remote_embeddings_allow_bm25_fallback_explicit_false() {
+            let parsed: RemoteEmbeddings = OrionRemoteEmbeddings {
+                cluster: "embeddings".to_owned(),
+                model_id: "test-model".to_owned(),
+                path: String::new(),
+                timeout: None,
+                dimensions: None,
+                allow_bm25_fallback: Some(false),
+            }
+            .try_into()
+            .unwrap();
+
+            assert!(!parsed.allow_bm25_fallback);
         }
     }
 }
