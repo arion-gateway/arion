@@ -5,7 +5,7 @@ use orion_configuration::config::network_filters::http_connection_manager::http_
 use serde_json::Value;
 use smol_str::SmolStr;
 use std::sync::Arc;
-use tracing::{debug, warn};
+use tracing::debug;
 
 use crate::cedar::{
     error::Error as CedarError,
@@ -42,12 +42,7 @@ impl CedarHttpFilter {
         })
     }
 
-    pub(crate) fn apply_request<B>(&self, req: &Request<B>) -> FilterDecision {
-        let result = self.evaluate(req);
-        self.make_decision(result, req.version())
-    }
-
-    pub(crate) fn evaluate<B>(&self, req: &Request<B>) -> Result<AuthzResponse, CedarError> {
+    fn evaluate_policy<B>(&self, req: &Request<B>) -> Result<AuthzResponse, CedarError> {
         let claims_value: Option<Value> =
             req.extensions().get::<JwtClaims>().and_then(|c| serde_json::to_value(c).ok());
 
@@ -55,7 +50,6 @@ impl CedarHttpFilter {
             .as_ref()
             .map(|v| principal_from_jwt(v, &self.principal_entity_type))
             .unwrap_or_else(|| entity_uid(&self.principal_entity_type, "anonymous"))?;
-
         let action = entity_uid("Action", req.method().as_str())?;
         let resource = entity_uid(&self.resource_entity_type, req.uri().path())?;
         let context = build_authz_context(
@@ -67,18 +61,16 @@ impl CedarHttpFilter {
             None,
             None,
         )?;
-
         self.store.is_authorized(AuthzRequest { principal, action, resource, context })
     }
 
-    fn make_decision(&self, result: Result<AuthzResponse, CedarError>, ver: http::Version) -> FilterDecision {
-        match result {
+    pub(crate) fn apply_request<B>(&self, req: &Request<B>) -> FilterDecision {
+        match self.evaluate_policy(req) {
             Ok(response) => {
-                let policy_id = response.diagnostics.reason.first().cloned().unwrap_or(SmolStr::new_static("cedar"));
-
                 debug!(
+                    target: "cedar_policy",
                     decision = ?response.decision,
-                    policy_id = %policy_id,
+                    policy_id = ?response.diagnostics.reason.first(),
                     enforcement = ?self.enforcement_mode,
                     "Cedar authorization decision"
                 );
@@ -88,12 +80,14 @@ impl CedarHttpFilter {
                         if response.is_allowed() {
                             FilterDecision::Continue
                         } else {
+                            let policy_id =
+                                response.diagnostics.reason.first().cloned().unwrap_or(SmolStr::new_static("cedar"));
                             FilterDecision::DirectResponse(Box::new(
                                 SyntheticHttpResponse::forbidden(
                                     EventKind::Failure(EventFailure::CedarAccessDenied(policy_id)),
-                                    "Cedar: access denied",
+                                    "Access denied",
                                 )
-                                .into_response(ver),
+                                .into_response(req.version()),
                             ))
                         }
                     },
@@ -101,15 +95,15 @@ impl CedarHttpFilter {
                 }
             },
             Err(err) => {
-                warn!(%err, "Cedar policy evaluation error");
+                debug!(target: "cedar_policy", %err, "Cedar policy evaluation error");
 
                 match self.failure_mode {
                     FailureMode::FailClosed => FilterDecision::DirectResponse(Box::new(
                         SyntheticHttpResponse::forbidden(
                             EventKind::Failure(EventFailure::CedarAccessDenied(SmolStr::new_static("error"))),
-                            "Cedar: policy evaluation error",
+                            "Access denied",
                         )
-                        .into_response(ver),
+                        .into_response(req.version()),
                     )),
                     FailureMode::FailOpen => FilterDecision::Continue,
                 }
@@ -179,26 +173,23 @@ mod tests {
     fn svc_frontend_get_is_allowed() {
         let filter = make_cedar_filter();
         let req = make_request("GET", "/api", jwt_claims("svc-frontend"));
-        let result = filter.evaluate(&req);
-        assert!(result.is_ok(), "Cedar should not error: {:?}", result.err());
-        assert!(result.unwrap().is_allowed(), "svc-frontend GET should be allowed");
+        assert!(matches!(filter.apply_request(&req), FilterDecision::Continue), "svc-frontend GET should be allowed");
     }
 
     #[test]
     fn svc_frontend_post_is_denied() {
         let filter = make_cedar_filter();
         let req = make_request("POST", "/api", jwt_claims("svc-frontend"));
-        let result = filter.evaluate(&req);
-        assert!(result.is_ok(), "Cedar should not error: {:?}", result.err());
-        assert!(!result.unwrap().is_allowed(), "svc-frontend POST should be denied");
+        assert!(
+            matches!(filter.apply_request(&req), FilterDecision::DirectResponse(_)),
+            "svc-frontend POST should be denied"
+        );
     }
 
     #[test]
     fn svc_admin_post_is_allowed() {
         let filter = make_cedar_filter();
         let req = make_request("POST", "/api", jwt_claims("svc-admin"));
-        let result = filter.evaluate(&req);
-        assert!(result.is_ok(), "Cedar should not error: {:?}", result.err());
-        assert!(result.unwrap().is_allowed(), "svc-admin POST should be allowed");
+        assert!(matches!(filter.apply_request(&req), FilterDecision::Continue), "svc-admin POST should be allowed");
     }
 }

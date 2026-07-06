@@ -1,4 +1,6 @@
-use cedar_policy::{Authorizer, Context, Decision, Entities, EntityUid, PolicySet, Request, Schema, ValidationMode, Validator};
+use cedar_policy::{
+    Authorizer, Context, Decision, Entities, EntityUid, PolicySet, Request, Schema, ValidationMode, Validator,
+};
 use smol_str::SmolStr;
 use std::sync::Arc;
 use tracing::{debug, warn};
