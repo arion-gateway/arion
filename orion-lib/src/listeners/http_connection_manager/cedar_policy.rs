@@ -67,7 +67,7 @@ impl CedarHttpFilter {
                 debug!(
                     target: "cedar_policy",
                     decision = ?response.decision,
-                    policy_id = ?response.diagnostics.reason.first(),
+                    policy_id = ?response.reason.as_ref().and_then(|r| r.first()),
                     enforcement = ?self.enforcement_mode,
                     "Cedar authorization decision"
                 );
@@ -78,7 +78,7 @@ impl CedarHttpFilter {
                             FilterDecision::Continue
                         } else {
                             let policy_id =
-                                response.diagnostics.reason.first().cloned().unwrap_or(SmolStr::new_static("cedar"));
+                                response.reason.and_then(|mut r| r.pop()).unwrap_or(SmolStr::new_static("cedar"));
                             FilterDecision::DirectResponse(Box::new(
                                 SyntheticHttpResponse::forbidden(
                                     EventKind::Failure(EventFailure::CedarAccessDenied(policy_id)),

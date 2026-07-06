@@ -17,7 +17,7 @@ pub struct PolicyStore {
 
 pub struct AuthzResponse {
     pub decision: Decision,
-    pub diagnostics: AuthzDiagnostics,
+    pub reason: Option<Vec<SmolStr>>,
 }
 
 pub struct AuthzRequest {
@@ -25,10 +25,6 @@ pub struct AuthzRequest {
     pub action: EntityUid,
     pub resource: EntityUid,
     pub context: Context,
-}
-
-pub struct AuthzDiagnostics {
-    pub reason: Vec<SmolStr>,
 }
 
 impl PolicyStore {
@@ -69,21 +65,17 @@ impl PolicyStore {
             .map_err(|e| Error::Context(SmolStr::from(e.to_string())))?;
 
         let response = self.authorizer.is_authorized(&request, &self.policy_set, &self.entities);
+        let decision = response.decision();
 
-        let diagnostics = AuthzDiagnostics {
-            reason: response.diagnostics().reason().map(|id| SmolStr::from(id.to_string())).collect(),
+        let reason: Option<Vec<SmolStr>> = if decision == Decision::Deny {
+            Some(response.diagnostics().reason().map(|id| SmolStr::from(id.to_string())).collect())
+        } else {
+            None
         };
 
-        debug!(
-            ?principal,
-            ?action,
-            ?resource,
-            decision = ?response.decision(),
-            reason = ?diagnostics.reason,
-            "Cedar authorization decision"
-        );
+        debug!(?principal, ?action, ?resource, ?decision, ?reason, "Cedar authorization decision");
 
-        Ok(AuthzResponse { decision: response.decision(), diagnostics })
+        Ok(AuthzResponse { decision, reason })
     }
 
     #[cfg(test)]
