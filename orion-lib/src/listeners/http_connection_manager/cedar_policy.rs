@@ -57,9 +57,6 @@ impl CedarHttpFilter {
             Some(req.method().as_str()),
             Some(req.uri().path()),
             req.uri().query(),
-            None,
-            None,
-            None,
         )?;
         self.store.is_authorized(AuthzRequest { principal, action, resource, context })
     }

@@ -1,4 +1,4 @@
-use cedar_policy::{Context, EntityId, EntityTypeName, EntityUid, Schema};
+use cedar_policy::{Context, EntityId, EntityTypeName, EntityUid};
 use serde_json::{Map, Value};
 use smol_str::SmolStr;
 use std::str::FromStr;
@@ -13,11 +13,6 @@ pub(crate) fn entity_uid(type_name: &str, id: &str) -> Result<EntityUid, Error> 
     Ok(EntityUid::from_type_name_and_id(type_name, id))
 }
 
-fn build_context(values: &Value, schema_and_action: Option<(&Schema, &EntityUid)>) -> Result<Context, Error> {
-    Context::from_json_value(values.clone(), schema_and_action)
-        .map_err(|e| Error::Context(SmolStr::from(e.to_string())))
-}
-
 pub fn principal_from_jwt(claims: &Value, entity_type: &str) -> Result<EntityUid, Error> {
     let sub = claims
         .get("sub")
@@ -26,15 +21,11 @@ pub fn principal_from_jwt(claims: &Value, entity_type: &str) -> Result<EntityUid
     entity_uid(entity_type, sub)
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn build_authz_context(
     jwt_claims: Option<&Value>,
     http_method: Option<&str>,
     http_path: Option<&str>,
     http_query: Option<&str>,
-    tool_name: Option<&str>,
-    tool_args: Option<&Value>,
-    schema_and_action: Option<(&Schema, &EntityUid)>,
 ) -> Result<Context, Error> {
     let mut ctx = Map::new();
 
@@ -56,20 +47,7 @@ pub fn build_authz_context(
         ctx.insert("http".to_owned(), Value::Object(http));
     }
 
-    if tool_name.is_some() || tool_args.is_some() {
-        let mut tool = Map::new();
-        if let Some(n) = tool_name {
-            tool.insert("name".to_owned(), Value::String(n.to_owned()));
-        }
-        if let Some(a) = tool_args {
-            let json_str = serde_json::to_string(a)
-                .map_err(|e| Error::Context(SmolStr::from(format!("failed to serialize tool arguments: {e}"))))?;
-            tool.insert("arguments_json".to_owned(), Value::String(json_str));
-        }
-        ctx.insert("tool".to_owned(), Value::Object(tool));
-    }
-
-    build_context(&Value::Object(ctx), schema_and_action)
+    Context::from_json_value(Value::Object(ctx), None).map_err(|e| Error::Context(SmolStr::from(e.to_string())))
 }
 
 #[cfg(test)]
@@ -88,12 +66,6 @@ mod tests {
     fn entity_uid_with_namespace() {
         let uid = entity_uid("AgentIdentity::IamEntity", "urn:example").unwrap();
         assert_eq!(uid.to_string(), "AgentIdentity::IamEntity::\"urn:example\"");
-    }
-
-    #[test]
-    fn build_context_from_json() {
-        let ctx = build_context(&json!({ "method": "GET", "path": "/api/v1/users" }), None);
-        assert!(ctx.is_ok());
     }
 
     #[test]
@@ -124,30 +96,24 @@ mod tests {
 
     #[test]
     fn context_all_none_is_empty_record() {
-        assert!(build_authz_context(None, None, None, None, None, None, None).is_ok());
+        assert!(build_authz_context(None, None, None, None).is_ok());
     }
 
     #[test]
     fn context_jwt_only() {
         let claims = json!({ "sub": "svc-alice", "iss": "https://auth.example.com" });
-        assert!(build_authz_context(Some(&claims), None, None, None, None, None, None).is_ok());
+        assert!(build_authz_context(Some(&claims), None, None, None).is_ok());
     }
 
     #[test]
     fn context_http_only() {
-        assert!(build_authz_context(None, Some("POST"), Some("/mcp"), Some("sessionId=abc"), None, None, None).is_ok());
+        assert!(build_authz_context(None, Some("POST"), Some("/mcp"), Some("sessionId=abc")).is_ok());
     }
 
     #[test]
     fn context_jwt_and_http() {
         let claims = json!({ "sub": "svc-alice" });
-        assert!(build_authz_context(Some(&claims), Some("POST"), Some("/mcp"), None, None, None, None).is_ok());
-    }
-
-    #[test]
-    fn context_tool_args_serialised_to_string() {
-        let args = json!({ "url": "https://example.com" });
-        assert!(build_authz_context(None, None, None, None, Some("fetch"), Some(&args), None).is_ok());
+        assert!(build_authz_context(Some(&claims), Some("POST"), Some("/mcp"), None).is_ok());
     }
 
     #[test]
@@ -188,7 +154,7 @@ mod tests {
             principal: entity_uid("User", "svc-frontend").unwrap(),
             action: entity_uid("Action", "POST").unwrap(),
             resource: entity_uid("HttpPath", "/api").unwrap(),
-            context: build_authz_context(Some(&claims), Some("POST"), Some("/api"), None, None, None, None).unwrap(),
+            context: build_authz_context(Some(&claims), Some("POST"), Some("/api"), None).unwrap(),
         });
         assert!(result.is_ok(), "Cedar should return Ok(Deny), not Err: {:?}", result.err());
         assert!(!result.unwrap().is_allowed(), "svc-frontend POST should be denied");
@@ -221,7 +187,7 @@ mod tests {
                 principal: principal_from_jwt(&claims, "User").unwrap(),
                 action: entity_uid("Action", "read").unwrap(),
                 resource: entity_uid("Document", "doc-1").unwrap(),
-                context: build_authz_context(Some(&claims), None, None, None, None, None, None).unwrap(),
+                context: build_authz_context(Some(&claims), None, None, None).unwrap(),
             })
             .unwrap();
         assert!(response.is_allowed());
@@ -236,7 +202,7 @@ mod tests {
                 principal: principal_from_jwt(&claims, "User").unwrap(),
                 action: entity_uid("Action", "read").unwrap(),
                 resource: entity_uid("Document", "doc-1").unwrap(),
-                context: build_authz_context(Some(&claims), None, None, None, None, None, None).unwrap(),
+                context: build_authz_context(Some(&claims), None, None, None).unwrap(),
             })
             .unwrap();
         assert!(!response.is_allowed());
@@ -268,7 +234,7 @@ mod tests {
                 principal: entity_uid("User", "alice").unwrap(),
                 action: entity_uid("Action", "call").unwrap(),
                 resource: entity_uid("Api", "gateway").unwrap(),
-                context: build_authz_context(None, Some("POST"), Some("/mcp"), None, None, None, None).unwrap(),
+                context: build_authz_context(None, Some("POST"), Some("/mcp"), None).unwrap(),
             })
             .unwrap();
         assert!(response.is_allowed());
@@ -282,53 +248,7 @@ mod tests {
                 principal: entity_uid("User", "alice").unwrap(),
                 action: entity_uid("Action", "call").unwrap(),
                 resource: entity_uid("Api", "gateway").unwrap(),
-                context: build_authz_context(None, Some("GET"), Some("/mcp"), None, None, None, None).unwrap(),
-            })
-            .unwrap();
-        assert!(!response.is_allowed());
-    }
-
-    const TOOL_SCHEMA: &str = r#"
-        entity ServiceAccount;
-        entity McpServer;
-        action "invoke" appliesTo {
-            principal: [ServiceAccount],
-            resource: [McpServer],
-            context: { tool: { name: String } }
-        };
-    "#;
-
-    const TOOL_POLICY: &str = r#"
-        permit (
-            principal == ServiceAccount::"backend",
-            action == Action::"invoke",
-            resource == McpServer::"gateway"
-        ) when { context.tool.name == "fetch" };
-    "#;
-
-    #[test]
-    fn tool_context_permits_allowed_tool() {
-        let store = PolicyStore::new(TOOL_POLICY, TOOL_SCHEMA, "").unwrap();
-        let response = store
-            .is_authorized(AuthzRequest {
-                principal: entity_uid("ServiceAccount", "backend").unwrap(),
-                action: entity_uid("Action", "invoke").unwrap(),
-                resource: entity_uid("McpServer", "gateway").unwrap(),
-                context: build_authz_context(None, None, None, None, Some("fetch"), None, None).unwrap(),
-            })
-            .unwrap();
-        assert!(response.is_allowed());
-    }
-
-    #[test]
-    fn tool_context_denies_blocked_tool() {
-        let store = PolicyStore::new(TOOL_POLICY, TOOL_SCHEMA, "").unwrap();
-        let response = store
-            .is_authorized(AuthzRequest {
-                principal: entity_uid("ServiceAccount", "backend").unwrap(),
-                action: entity_uid("Action", "invoke").unwrap(),
-                resource: entity_uid("McpServer", "gateway").unwrap(),
-                context: build_authz_context(None, None, None, None, Some("execute_code"), None, None).unwrap(),
+                context: build_authz_context(None, Some("GET"), Some("/mcp"), None).unwrap(),
             })
             .unwrap();
         assert!(!response.is_allowed());
