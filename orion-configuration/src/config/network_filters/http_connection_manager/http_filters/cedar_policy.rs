@@ -46,7 +46,7 @@ mod envoy_conversions {
     use super::{
         default_principal_entity_type, default_resource_entity_type, CedarPolicy, EnforcementMode, FailureMode,
     };
-    use crate::config::common::GenericError;
+    use crate::config::common::*;
     use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::cedar::cedar_policy::v3::{
         CedarPolicy as ProtoCedarPolicy, EnforcementMode as ProtoEnforcementMode, FailureMode as ProtoFailureMode,
     };
@@ -64,6 +64,9 @@ mod envoy_conversions {
                 principal_entity_type,
                 resource_entity_type,
             } = proto;
+
+            let policies = required!(policies)?;
+            let schema = required!(schema)?;
 
             let enforcement_mode = match ProtoEnforcementMode::try_from(enforcement_mode) {
                 Ok(ProtoEnforcementMode::Enforce) => EnforcementMode::Enforce,
