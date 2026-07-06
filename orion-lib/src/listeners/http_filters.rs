@@ -4,8 +4,8 @@ use crate::{
     body::response_flags::ResponseFlags,
     event_error::EventFailure,
     listeners::{
-        cedar_policy::CedarHttpFilter,
         http_connection_manager::{
+            cedar_policy::CedarHttpFilter,
             cors::Cors,
             ext_proc::ExternalProcessor,
             jwt_authn::{JwtAuthentication, JwtAuthenticationBuilder},
