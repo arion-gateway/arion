@@ -41,6 +41,7 @@ pub async fn init_tz_cache(set: &mut JoinSet<Result<()>>, tz: &TimeZone) -> Resu
             if prev_offset != offset_sec {
                 prev_offset = offset_sec;
                 LOCAL_OFFSET_SEC.store(Ordering::Release, offset_sec);
+                orion_format::context::set_local_offset_sec(offset_sec);
             }
 
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
