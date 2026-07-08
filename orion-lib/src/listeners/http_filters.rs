@@ -212,7 +212,7 @@ impl HttpFilterValue {
             HttpFilterValue::McpGateway(mcp) => mcp.apply_request(request).await,
             HttpFilterValue::UserRateLimit(user_rate_limiter) => user_rate_limiter.apply_request(request),
             HttpFilterValue::CedarPolicy(cedar) => cedar.apply_request(request),
-            HttpFilterValue::Wasm(wasm) => wasm.apply_request(request),
+            HttpFilterValue::Wasm(wasm) => wasm.apply_request(request).await,
         }
     }
     pub async fn apply_response(&mut self, response: &mut Response<OrionResponseBody>) -> FilterDecision {
@@ -221,7 +221,7 @@ impl HttpFilterValue {
             HttpFilterValue::ExternalProcessor(ext_proc) => ext_proc.apply_response(response).await,
             HttpFilterValue::McpGateway(mcp) => mcp.apply_response(response).await,
             HttpFilterValue::Cors(cors) => cors.apply_response(response),
-            HttpFilterValue::Wasm(wasm) => wasm.apply_response(response),
+            HttpFilterValue::Wasm(wasm) => wasm.apply_response(response).await,
             HttpFilterValue::Rbac(_)
             | HttpFilterValue::RateLimit(_)
             | HttpFilterValue::UserRateLimit(_)

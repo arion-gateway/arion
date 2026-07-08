@@ -20,7 +20,7 @@ use base64::engine::general_purpose::STANDARD;
 use base64_serde::base64_serde_type;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use smol_str::{SmolStr, format_smolstr};
+use smol_str::{format_smolstr, SmolStr};
 use std::{
     fmt::{Debug, Display},
     hash::{Hash, Hasher},

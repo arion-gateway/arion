@@ -7,3 +7,11 @@ pub enum OrionWasmResult {
     InvalidMemoryAccess = 3,
     InternalError = 4,
 }
+
+#[repr(i32)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum FilterAction {
+    Continue = 0,
+    PauseAndBufferBody = 1,
+    DirectResponse = 2,
+}
