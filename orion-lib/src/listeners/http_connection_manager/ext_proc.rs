@@ -72,7 +72,7 @@ use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::{sync::Arc, time::Duration};
 use tokio::sync::mpsc::error::SendError;
-use tokio::sync::{mpsc, oneshot, Semaphore};
+use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
 
 /// The total number of frames to prefetch before sending the request to the upstream service.
@@ -115,20 +115,6 @@ const EXT_PROC_FRAME_MERGE_LIMIT: u32 = parse!(
     },
     u32
 );
-
-/// The number of max concurrent `ext_proc` requests per core. This limits the number of concurrent requests to avoid
-/// overloading the external processor and spawning too many tasks.
-const EXT_PROC_MAX_CONCURRENT_REQUESTS: usize = parse!(
-    match option_env!("EXT_PROC_MAX_CONCURRENT_REQUESTS") {
-        Some(s) => s,
-        None => "24",
-    },
-    usize
-);
-
-thread_local! {
-    static EXT_PROC_CONCURRENT_PERMIT: Arc<Semaphore> = Arc::new(Semaphore::new(EXT_PROC_MAX_CONCURRENT_REQUESTS));
-}
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum ExtProcError {
@@ -185,7 +171,6 @@ impl From<(ExternalProcessorConfig, Option<ExtProcPerRoute>, Option<ExternalProc
         info!(target: "ext_proc", "const EXT_PROC_BUFFERED_BODY_LIMIT: {EXT_PROC_BUFFERED_BODY_LIMIT}");
         info!(target: "ext_proc", "const EXT_PROC_MERGE_WINDOW: {EXT_PROC_MERGE_WINDOW:?}");
         info!(target: "ext_proc", "const EXT_PROC_FRAME_MERGE_LIMIT: {EXT_PROC_FRAME_MERGE_LIMIT}");
-        info!(target: "ext_proc", "const EXT_PROC_MAX_CONCURRENT_REQUESTS: {EXT_PROC_MAX_CONCURRENT_REQUESTS}");
         let forward_rules = initial_config.forward_rules.clone();
         let worker_config = ExternalProcessingWorkerConfig::from((initial_config, per_route_config, ext_config));
         let overridable_modes = Arc::new(OverridableGlobalModes::from(&worker_config));
@@ -479,11 +464,6 @@ impl ExternalProcessor {
 
         let ver = request.version();
 
-        // Acquire permit before proceeding. This reduces the pressure on Tokio, reducing the number of tasks spawned.
-        // Note: It's safe the call unwrap here, since the semaphore is never closed explicitly.
-        #[allow(clippy::unwrap_used)]
-        let _permit = EXT_PROC_CONCURRENT_PERMIT.with(Clone::clone).acquire_owned().await.unwrap();
-
         let Ok(response_rx) = self.send_processing_data(processing_data, ver).await else {
             if self.inner.worker_config.failure_mode_allow {
                 return FilterDecision::Continue;
@@ -718,11 +698,6 @@ impl ExternalProcessor {
         };
 
         let ver = response.version();
-
-        // Acquire permit before proceeding. This reduces the pressure on Tokio, reducing the number of tasks spawned.
-        // Note: It's safe the call unwrap here, since the semaphore is never closed explicitly.
-        #[allow(clippy::unwrap_used)]
-        let _permit = EXT_PROC_CONCURRENT_PERMIT.with(Clone::clone).acquire_owned().await.unwrap();
 
         let Ok(response_rx) = self.send_processing_data(processing_data, ver).await else {
             if self.inner.worker_config.failure_mode_allow {
