@@ -29,82 +29,99 @@ mod xds_configurator;
 pub fn run() -> bool {
     let mut tracing_manager = proxy_tracing::TracingManager::new();
 
-    if let Err(e) = run_inner(&mut tracing_manager) {
-        tracing::error!("Orion proxy terminated with error: {:?}", e);
+    let result = (|| -> Result<()> {
+        let options = Options::parse_options();
+        let Config { runtime, logging, access_log_config, metrics, timezone, bootstrap } = Config::new(&options)?;
+
+        tracing_manager.update(logging)?;
+
+        set_proxy_state(ProxyState::Initializing);
+
+        RUNTIME_CONFIG.set(runtime).map_err(|_e| "runtime config was somehow set before we had a chance to set it")?;
+
+        // Set the header_name from which to extract the user_id
+        if let Some(source) =
+            metrics.as_ref().and_then(|metrics| metrics.user_key.as_ref()).map(|key| &key.source).cloned()
+        {
+            metrics::USER_KEY.set_source(source);
+        }
+
+        // Set the header_names and attribute_names from which to extract the custom keys
+        if let Some(metrics_config) = metrics.as_ref() {
+            let mut custom_keys = Vec::with_capacity(metrics_config.custom_keys.len());
+            for key in &metrics_config.custom_keys {
+                let pk = metrics::PartitionKey::new();
+                pk.set_source(key.source.clone());
+                if let Some(attribute_name) = &key.attribute_name {
+                    pk.set_attribute_name(attribute_name.clone());
+                }
+                custom_keys.push(pk);
+            }
+            let _ = metrics::CUSTOM_KEYS.set(custom_keys).ok();
+        }
+
+        // Set the attribute key value used to partition user metrics.
+        if let Some(attribute_name) = metrics
+            .as_ref()
+            .and_then(|metrics| metrics.user_key.as_ref())
+            .and_then(|key| key.attribute_name.as_ref())
+            .cloned()
+        {
+            metrics::USER_KEY.set_attribute_name(attribute_name);
+        }
+
+        #[cfg(target_os = "linux")]
+        if !(caps::has_cap(None, caps::CapSet::Permitted, caps::Capability::CAP_NET_RAW)?) {
+            tracing::warn!("CAP_NET_RAW is NOT available, SO_BINDTODEVICE will not work");
+        }
+
+        proxy::run_orion(bootstrap, metrics, access_log_config, timezone)?;
+        Ok(())
+    })();
+
+    if let Err(e) = result {
+        tracing::error!("Orion proxy terminated with error: {e:?}");
         return false;
     }
     true
 }
 
-fn run_inner(tracing_manager: &mut proxy_tracing::TracingManager) -> Result<()> {
-    let options = Options::parse_options();
-    let Config { runtime, logging, access_log_config, metrics, bootstrap } = Config::new(&options)?;
-
-    set_proxy_state(ProxyState::Initializing);
-
-    RUNTIME_CONFIG.set(runtime).map_err(|_e| "runtime config was somehow set before we had a chance to set it")?;
-
-    // Set the header_name from which to extract the user_id
-    //
-    if let Some(source) = metrics.as_ref().and_then(|metrics| metrics.user_key.as_ref()).map(|key| &key.source).cloned()
-    {
-        metrics::USER_KEY.set_source(source);
-    }
-
-    // Set the header_names and attribute_names from which to extract the custom keys
-    if let Some(metrics_config) = metrics.as_ref() {
-        let mut custom_keys = Vec::with_capacity(metrics_config.custom_keys.len());
-        for key in &metrics_config.custom_keys {
-            let pk = metrics::PartitionKey::new();
-            pk.set_source(key.source.clone());
-            if let Some(attribute_name) = &key.attribute_name {
-                pk.set_attribute_name(attribute_name.clone());
-            }
-            custom_keys.push(pk);
-        }
-        let _ = metrics::CUSTOM_KEYS.set(custom_keys).ok();
-    }
-
-    // Set the attribute key value used to partition user metrics.
-    if let Some(attribute_name) = metrics
-        .as_ref()
-        .and_then(|metrics| metrics.user_key.as_ref())
-        .and_then(|key| key.attribute_name.as_ref())
-        .cloned()
-    {
-        metrics::USER_KEY.set_attribute_name(attribute_name);
-    }
-
-    tracing_manager.update(logging)?;
-
-    #[cfg(target_os = "linux")]
-    if !(caps::has_cap(None, caps::CapSet::Permitted, caps::Capability::CAP_NET_RAW)?) {
-        tracing::warn!("CAP_NET_RAW is NOT available, SO_BINDTODEVICE will not work");
-    }
-
-    proxy::run_orion(bootstrap, metrics, access_log_config)?;
-    Ok(())
-}
-
 mod proxy_tracing {
     use tracing_appender::non_blocking::{NonBlocking, WorkerGuard};
     use tracing_subscriber::{
-        fmt,
-        fmt::format::{DefaultFields, Format},
-        layer::Layered,
-        reload,
-        reload::Handle,
-        EnvFilter, Registry,
+        fmt, fmt::format::DefaultFields, layer::Layered, reload, reload::Handle, EnvFilter, Registry,
     };
 
     use orion_configuration::config::LogConfig as LogConf;
     use orion_lib::Result;
 
-    type RegistryLayer =
-        fmt::Layer<Layered<reload::Layer<EnvFilter, Registry>, Registry>, DefaultFields, Format, NonBlocking>;
+    #[derive(Clone, Default)]
+    struct CustomTime;
+
+    impl fmt::time::FormatTime for CustomTime {
+        fn format_time(&self, w: &mut fmt::format::Writer<'_>) -> std::fmt::Result {
+            let offset_sec = orion_lib::timezone::local_offset_sec().unwrap_or(0);
+            let tz =
+                chrono::FixedOffset::east_opt(offset_sec).unwrap_or_else(|| chrono::FixedOffset::east_opt(0).unwrap());
+            let now = chrono::Utc::now().with_timezone(&tz);
+            write!(w, "{}", now.format("%Y-%m-%dT%H:%M:%S%.6f%z"))
+        }
+    }
+
+    type RegistryLayer = fmt::Layer<
+        Layered<reload::Layer<EnvFilter, Registry>, Registry>,
+        DefaultFields,
+        fmt::format::Format<fmt::format::Full, CustomTime>,
+        NonBlocking,
+    >;
     type FilterReloadHandle = Handle<EnvFilter, Registry>;
     type LayerReloadHandle = Handle<
-        fmt::Layer<Layered<reload::Layer<EnvFilter, Registry>, Registry>, DefaultFields, Format, NonBlocking>,
+        fmt::Layer<
+            Layered<reload::Layer<EnvFilter, Registry>, Registry>,
+            DefaultFields,
+            fmt::format::Format<fmt::format::Full, CustomTime>,
+            NonBlocking,
+        >,
         Layered<reload::Layer<EnvFilter, Registry>, Registry>,
     >;
 
@@ -171,7 +188,7 @@ mod proxy_tracing {
             let out = std::io::stdout();
             let is_terminal = std::io::IsTerminal::is_terminal(&out);
             let (non_blocking, guard) = tracing_appender::non_blocking(out);
-            let mut std_layer = fmt::layer().with_writer(non_blocking).with_thread_names(true);
+            let mut std_layer = fmt::layer().with_timer(CustomTime).with_writer(non_blocking).with_thread_names(true);
 
             if !is_terminal {
                 std_layer = std_layer.with_ansi(false);
@@ -183,7 +200,8 @@ mod proxy_tracing {
         fn file_layer(filename: &str, log_directory: Option<&String>) -> (WorkerGuard, RegistryLayer) {
             let file_appender = tracing_appender::rolling::hourly(log_directory.unwrap_or(&".".into()), filename);
             let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
-            let file_layer = fmt::layer().with_ansi(false).with_writer(non_blocking).with_thread_names(true);
+            let file_layer =
+                fmt::layer().with_timer(CustomTime).with_ansi(false).with_writer(non_blocking).with_thread_names(true);
 
             (guard, file_layer)
         }

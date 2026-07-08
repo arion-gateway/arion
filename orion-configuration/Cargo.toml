@@ -47,7 +47,7 @@ serde_regex.workspace = true
 tracing-appender = { workspace = true, features = ["parking_lot"] }
 tracing-subscriber = { workspace = true, features = ["env-filter", "std"] }
 jsonschema.workspace = true
-
+time.workspace = true
 
 [dev-dependencies]
 tracing-test.workspace = true
