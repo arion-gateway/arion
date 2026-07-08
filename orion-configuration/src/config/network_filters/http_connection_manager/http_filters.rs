@@ -1,3 +1,4 @@
+pub mod wasm;
 // Copyright 2025 The kmesh Authors
 //
 //
@@ -68,6 +69,7 @@ pub struct HttpFilter {
 #[serde(rename_all = "snake_case", tag = "filter_type", content = "filter_settings")]
 #[serde(bound(deserialize = ""))]
 pub enum HttpFilterType {
+    Wasm(WasmConfig),
     Rbac(HttpRbac),
     RateLimit(LocalRateLimit),
     ExternalProcessor(ExternalProcessor),
@@ -83,7 +85,7 @@ pub enum HttpFilterType {
 pub(crate) use envoy_conversions::*;
 
 use crate::config::network_filters::http_connection_manager::http_filters::{
-    cors::CorsConfig, jwt::JwtAuthentication, user_rate_limit::UserRateLimiter,
+    cors::CorsConfig, jwt::JwtAuthentication, user_rate_limit::UserRateLimiter, wasm::WasmConfig,
 };
 
 use super::is_default;
@@ -98,6 +100,7 @@ mod envoy_conversions {
     use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::cors::v3::Cors;
     use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::cors::v3::CorsPolicy;
     use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::cedar::cedar_policy::v3::CedarPolicy as ProtoCedarPolicy;
+    use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::wasm::v3::Wasm as EnvoyWasm;
     use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::mcp::mcp_gateway::v3::McpGateway as OrionMcpGateway;
     use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::user_rate_limit::v3::UserRateLimiter as OrionUserRateLimiter;
     use orion_data_plane_api::envoy_data_plane_api::{
@@ -160,6 +163,7 @@ mod envoy_conversions {
         type Error = GenericError;
         fn try_from(value: SupportedEnvoyFilter) -> Result<Self, Self::Error> {
             match value {
+                SupportedEnvoyFilter::Wasm(wasm) => wasm.try_into().map(Self::Wasm),
                 SupportedEnvoyFilter::LocalRateLimit(lr) => lr.try_into().map(Self::RateLimit),
                 SupportedEnvoyFilter::Rbac(rbac) => rbac.try_into().map(Self::Rbac),
                 SupportedEnvoyFilter::ExternalProcessor(ext_proc) => ext_proc.try_into().map(Self::ExternalProcessor),
@@ -181,6 +185,7 @@ mod envoy_conversions {
     #[allow(clippy::large_enum_variant)]
     #[derive(Debug, Clone)]
     pub(crate) enum SupportedEnvoyFilter {
+        Wasm(EnvoyWasm),
         LocalRateLimit(EnvoyLocalRateLimit),
         Rbac(EnvoyRbac),
         Router(EnvoyRouter),
@@ -197,6 +202,9 @@ mod envoy_conversions {
         type Error = GenericError;
         fn try_from(typed_config: Any) -> Result<Self, Self::Error> {
             match typed_config.type_url.as_str() {
+                "type.googleapis.com/envoy.extensions.filters.http.wasm.v3.Wasm" => {
+                    EnvoyWasm::decode(typed_config.value.as_slice()).map(Self::Wasm)
+                },
                 "type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit" => {
                     EnvoyLocalRateLimit::decode(typed_config.value.as_slice()).map(Self::LocalRateLimit)
                 },
