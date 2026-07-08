@@ -1,5 +1,5 @@
-use cedar_policy::{Context, EntityId, EntityTypeName, EntityUid};
-use serde_json::{Map, Value};
+use cedar_policy::{Context, EntityId, EntityTypeName, EntityUid, RestrictedExpression};
+use serde_json::Value;
 use smol_str::SmolStr;
 use std::str::FromStr;
 
@@ -21,33 +21,56 @@ pub fn principal_from_jwt(claims: &Value, entity_type: &str) -> Result<EntityUid
     entity_uid(entity_type, sub)
 }
 
+fn json_value_to_restricted_expr(value: &Value) -> Result<RestrictedExpression, Error> {
+    match value {
+        Value::String(s) => Ok(RestrictedExpression::new_string(s.clone())),
+        Value::Number(n) => n
+            .as_i64()
+            .map(RestrictedExpression::new_long)
+            .ok_or_else(|| Error::Context(SmolStr::from(format!("unsupported number in Cedar context: {n}")))),
+        Value::Bool(b) => Ok(RestrictedExpression::new_bool(*b)),
+        Value::Array(arr) => {
+            let items: Result<Vec<_>, _> = arr.iter().map(json_value_to_restricted_expr).collect();
+            Ok(RestrictedExpression::new_set(items?))
+        },
+        Value::Object(map) => {
+            let fields: Result<Vec<(String, RestrictedExpression)>, _> =
+                map.iter().map(|(k, v)| json_value_to_restricted_expr(v).map(|e| (k.clone(), e))).collect();
+            RestrictedExpression::new_record(fields?).map_err(|e| Error::Context(SmolStr::from(e.to_string())))
+        },
+        Value::Null => Err(Error::Context(SmolStr::new_static("null values are not supported in Cedar context"))),
+    }
+}
+
 pub fn build_authz_context(
     jwt_claims: Option<&Value>,
     http_method: Option<&str>,
     http_path: Option<&str>,
     http_query: Option<&str>,
 ) -> Result<Context, Error> {
-    let mut ctx = Map::new();
+    let mut pairs: Vec<(String, RestrictedExpression)> = Vec::new();
 
     if let Some(claims) = jwt_claims {
-        ctx.insert("jwt".to_owned(), claims.clone());
+        pairs.push(("jwt".to_string(), json_value_to_restricted_expr(claims)?));
     }
 
     if http_method.is_some() || http_path.is_some() || http_query.is_some() {
-        let mut http = Map::new();
+        let mut http_fields: Vec<(String, RestrictedExpression)> = Vec::new();
         if let Some(m) = http_method {
-            http.insert("method".to_owned(), Value::String(m.to_owned()));
+            http_fields.push(("method".to_string(), RestrictedExpression::new_string(m.to_string())));
         }
         if let Some(p) = http_path {
-            http.insert("path".to_owned(), Value::String(p.to_owned()));
+            http_fields.push(("path".to_string(), RestrictedExpression::new_string(p.to_string())));
         }
         if let Some(q) = http_query {
-            http.insert("query".to_owned(), Value::String(q.to_owned()));
+            http_fields.push(("query".to_string(), RestrictedExpression::new_string(q.to_string())));
         }
-        ctx.insert("http".to_owned(), Value::Object(http));
+        let http_record =
+            RestrictedExpression::new_record(http_fields).map_err(|e| Error::Context(SmolStr::from(e.to_string())))?;
+        pairs.push(("http".to_string(), http_record));
     }
 
-    Context::from_json_value(Value::Object(ctx), None).map_err(|e| Error::Context(SmolStr::from(e.to_string())))
+    Context::from_pairs(pairs).map_err(|e| Error::Context(SmolStr::from(e.to_string())))
 }
 
 #[cfg(test)]
