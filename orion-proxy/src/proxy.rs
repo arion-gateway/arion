@@ -23,7 +23,7 @@ use crate::{
 };
 use futures::future::join_all;
 use orion_configuration::config::{
-    bootstrap::Node, log::AccessLogConfig, metrics::MetricsConfig, runtime::Affinity, Bootstrap,
+    bootstrap::Node, log::AccessLogConfig, metrics::MetricsConfig, runtime::Affinity, timezone::TimeZone, Bootstrap,
 };
 use orion_stats::{set_proxy_state, ProxyState};
 
@@ -59,11 +59,12 @@ pub fn run_orion(
     bootstrap: Bootstrap,
     metrics: Option<MetricsConfig>,
     access_log_config: Option<AccessLogConfig>,
+    timezone: Option<TimeZone>,
 ) -> Result<()> {
     debug!("Starting on thread {:?}", std::thread::current().name());
 
     // launch the runtimes...
-    if let Err(e) = launch_runtimes(bootstrap, metrics, access_log_config) {
+    if let Err(e) = launch_runtimes(bootstrap, metrics, access_log_config, timezone) {
         return Err(e);
     }
     Ok(())
@@ -109,6 +110,7 @@ struct ServiceInfo {
     tracing: HashMap<TracingKey, TracingConfig>,
     #[cfg(feature = "metrics")]
     otel_exporters: Vec<OtelExporterConfig>,
+    timezone: Option<TimeZone>,
 }
 
 type SenderGuards = Vec<ConfigurationSenders>;
@@ -118,6 +120,7 @@ fn launch_runtimes(
     bootstrap: Bootstrap,
     #[allow(unused_variables)] metrics_config: Option<MetricsConfig>,
     _access_log_config: Option<AccessLogConfig>,
+    timezone: Option<TimeZone>,
 ) -> Result<SenderGuards> {
     let rt_config = runtime_config();
     let num_runtimes = rt_config.num_runtimes();
@@ -184,6 +187,7 @@ fn launch_runtimes(
         tracing,
         #[cfg(feature = "metrics")]
         otel_exporters: otel_exporters.clone(),
+        timezone,
     };
 
     info!("Launching Service runtime with {} threads", rt_config.num_service_threads.get());
@@ -269,7 +273,12 @@ fn spawn_proxy_runtime_from_thread(
 
         rt.block_on(async {
             tokio::select! {
-                _ = start_proxy(configuration_receivers) => {
+                result = start_proxy(configuration_receivers) => {
+                    if let Err(err) = result {
+                        tracing::error!("Proxy Runtime terminated with error: {err:?}");
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                        std::process::exit(1);
+                    }
                     info!("Proxy Runtime terminated!");
                     Ok(())
                 }
@@ -301,7 +310,9 @@ fn spawn_services_runtime_from_thread(
             tokio::select! {
                 result = spawn_services(service_info) => {
                     if let Err(err) = result {
-                        warn!("Error in services runtime: {err:?}");
+                        tracing::error!("Error in services runtime: {err:?}");
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                        std::process::exit(1);
                     }
                     info!("Service Runtime terminated!");
                     Ok(())
@@ -340,6 +351,7 @@ async fn spawn_services(info: ServiceInfo) -> Result<()> {
         tracing,
         #[cfg(feature = "metrics")]
             otel_exporters: exporters,
+        timezone,
     } = info;
     let mut set: JoinSet<Result<()>> = JoinSet::new();
 
@@ -397,6 +409,12 @@ async fn spawn_services(info: ServiceInfo) -> Result<()> {
             handles.join_all().await;
             Ok(())
         });
+    }
+
+    // spawn timezone handler
+    if let Some(tz) = timezone {
+        // Initialize timezone cache so that tracing_manager can use it
+        orion_lib::timezone::init_tz_cache(&mut set, &tz).await?;
     }
 
     // spawn admin interface task

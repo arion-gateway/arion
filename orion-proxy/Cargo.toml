@@ -11,6 +11,7 @@ name = "orion"
 path = "src/main.rs"
 
 [dependencies]
+chrono.workspace = true
 abort-on-drop.workspace        = true
 dhat = { workspace = true, optional = true }
 futures.workspace              = true
