@@ -102,7 +102,7 @@ atomicoption.workspace = true
 papaya.workspace = true
 const-str.workspace = true
 pingora = { workspace = true, features = ["time"] }
-
+wasmtime.workspace = true
 
 [dev-dependencies]
 orion-data-plane-api.workspace = true

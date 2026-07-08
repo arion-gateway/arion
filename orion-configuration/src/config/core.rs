@@ -38,6 +38,26 @@ pub enum DataSource {
     EnvironmentVariable(SmolStr),
 }
 
+impl DataSource {
+    // Generates a unique cache key to avoid recompiling the same inline data
+    pub fn cache_key(&self) -> String {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+
+        match self {
+            DataSource::Path(p) => format!("path:{}", p),
+            DataSource::InlineBytes(b) => {
+                b.hash(&mut hasher);
+                format!("bytes:{:x}", hasher.finish())
+            },
+            DataSource::InlineString(s) => {
+                s.hash(&mut hasher);
+                format!("string:{:x}", hasher.finish())
+            },
+            DataSource::EnvironmentVariable(v) => format!("env:{}", v),
+        }
+    }
+}
+
 #[derive(thiserror::Error, Debug)]
 pub enum DataSourceReadError {
     #[error("failed to read file \"{0}\"")]

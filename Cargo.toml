@@ -175,6 +175,7 @@ upon                     = "0.8"
 url                      = "2"
 uuid                     = { version = "1.18.1", features = ["v4"] }
 x509-parser              = { version = "0.17", features = ["default"] }
+wasmtime 	         = "40.0.4"
 
 [profile.release]
 codegen-units    = 1
