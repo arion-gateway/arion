@@ -437,7 +437,7 @@ impl RouteMatch {
     pub fn match_request<B>(&self, request: &Request<B>) -> RouteMatchResult {
         let path_match = self.path_matcher.as_ref().map(|path_matcher| {
             //todo(hayley): how do we treat empty paths here?
-            path_matcher.matches(request.uri().path_and_query().unwrap_or(&PathAndQuery::from_static("")))
+            path_matcher.matches(request.uri().path_and_query().unwrap_or(&PathAndQuery::from_static("/")))
         });
         //short circuit if path match fails
         let headers_matched = if path_match.as_ref().map(PathMatcherResult::matched).unwrap_or(true) {
