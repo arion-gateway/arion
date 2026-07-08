@@ -27,6 +27,7 @@ pub(crate) mod cedar_policy;
 pub mod cors;
 mod direct_response;
 pub mod ext_proc;
+pub mod wasm;
 //pub mod global_rate_limit;
 pub mod http_modifiers;
 pub mod jwt_authn;
