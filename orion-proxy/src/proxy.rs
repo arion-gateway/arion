@@ -62,11 +62,8 @@ pub fn run_orion(
     timezone: Option<TimeZone>,
 ) -> Result<()> {
     debug!("Starting on thread {:?}", std::thread::current().name());
-
     // launch the runtimes...
-    if let Err(e) = launch_runtimes(bootstrap, metrics, access_log_config, timezone) {
-        return Err(e);
-    }
+    launch_runtimes(bootstrap, metrics, access_log_config, timezone)?;
     Ok(())
 }
 
@@ -414,7 +411,7 @@ async fn spawn_services(info: ServiceInfo) -> Result<()> {
     // spawn timezone handler
     if let Some(tz) = timezone {
         // Initialize timezone cache so that tracing_manager can use it
-        orion_lib::timezone::init_tz_cache(&mut set, &tz).await?;
+        orion_lib::timezone::init_tz_cache(&mut set, &tz)?;
     }
 
     // spawn admin interface task

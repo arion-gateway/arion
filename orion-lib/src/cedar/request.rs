@@ -85,35 +85,35 @@ mod tests {
     #[test]
     fn principal_from_jwt_missing_sub_errors() {
         let claims = json!({ "iss": "https://auth.example.com" });
-        assert!(principal_from_jwt(&claims, "User").is_err());
+        principal_from_jwt(&claims, "User").unwrap_err();
     }
 
     #[test]
     fn principal_from_jwt_non_string_sub_errors() {
         let claims = json!({ "sub": 42 });
-        assert!(principal_from_jwt(&claims, "User").is_err());
+        principal_from_jwt(&claims, "User").unwrap_err();
     }
 
     #[test]
     fn context_all_none_is_empty_record() {
-        assert!(build_authz_context(None, None, None, None).is_ok());
+        build_authz_context(None, None, None, None).unwrap();
     }
 
     #[test]
     fn context_jwt_only() {
         let claims = json!({ "sub": "svc-alice", "iss": "https://auth.example.com" });
-        assert!(build_authz_context(Some(&claims), None, None, None).is_ok());
+        build_authz_context(Some(&claims), None, None, None).unwrap();
     }
 
     #[test]
     fn context_http_only() {
-        assert!(build_authz_context(None, Some("POST"), Some("/mcp"), Some("sessionId=abc")).is_ok());
+        build_authz_context(None, Some("POST"), Some("/mcp"), Some("sessionId=abc")).unwrap();
     }
 
     #[test]
     fn context_jwt_and_http() {
         let claims = json!({ "sub": "svc-alice" });
-        assert!(build_authz_context(Some(&claims), Some("POST"), Some("/mcp"), None).is_ok());
+        build_authz_context(Some(&claims), Some("POST"), Some("/mcp"), None).unwrap();
     }
 
     #[test]

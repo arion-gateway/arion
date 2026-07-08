@@ -512,7 +512,7 @@ pub fn format_system_time(time: SystemTime) -> ArrayString<64> {
 
     // Apply the mathematical offset
     if offset_sec != 0 {
-        datetime += chrono::Duration::seconds(offset_sec as i64);
+        datetime += chrono::Duration::seconds(i64::from(offset_sec));
     }
 
     let mut builder = ArrayString::<64>::new();
@@ -549,7 +549,7 @@ pub fn format_system_time(time: SystemTime) -> ArrayString<64> {
     if offset_sec == 0 {
         builder.push('Z');
     } else {
-        let abs_offset = offset_sec.abs();
+        let abs_offset = offset_sec.abs().cast_unsigned();
         let h = (abs_offset / 3600) as usize;
         let m = ((abs_offset % 3600) / 60) as usize;
 
@@ -557,6 +557,7 @@ pub fn format_system_time(time: SystemTime) -> ArrayString<64> {
         // SAFETY: Hours and minutes are always within TWO_DIGITS bounds
         builder.push_str(unsafe { TWO_DIGITS.get_unchecked(h) });
         builder.push(':');
+        // SAFETY: Hours and minutes are always within TWO_DIGITS bounds
         builder.push_str(unsafe { TWO_DIGITS.get_unchecked(m) });
     }
 

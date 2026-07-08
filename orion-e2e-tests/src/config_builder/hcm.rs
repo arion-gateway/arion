@@ -234,7 +234,7 @@ impl HcmBuilder {
     pub fn jwt_authn(mut self, jwt: impl Into<EnvoyJwtAuthentication>) -> Self {
         let proto: EnvoyJwtAuthentication = jwt.into();
         let any = Any {
-            type_url: "type.googleapis.com/envoy.extensions.filters.http.jwt_authn.v3.JwtAuthentication".to_string(),
+            type_url: "type.googleapis.com/envoy.extensions.filters.http.jwt_authn.v3.JwtAuthentication".to_owned(),
             value: proto.encode_to_vec(),
         };
         self.proto.http_filters.push(HttpFilter {

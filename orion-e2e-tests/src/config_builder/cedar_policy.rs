@@ -70,7 +70,7 @@ impl From<CedarPolicyBuilder> for Any {
             resource_entity_type: b.resource_entity_type,
         };
         Any {
-            type_url: "type.googleapis.com/orion.extensions.filters.http.cedar.cedar_policy.v3.CedarPolicy".to_string(),
+            type_url: "type.googleapis.com/orion.extensions.filters.http.cedar.cedar_policy.v3.CedarPolicy".to_owned(),
             value: proto.encode_to_vec(),
         }
     }

@@ -87,6 +87,7 @@ fn extract_pseudo_headers(mutation: &mut HeaderMutation) -> PseudoHeaders {
 
 #[allow(clippy::str_to_string)]
 #[allow(clippy::unnecessary_to_owned)]
+#[allow(clippy::single_match)]
 pub fn apply_request_header_mutations<B>(
     req: &mut Request<B>,
     mut mutation: HeaderMutation,
@@ -174,6 +175,7 @@ pub fn apply_request_header_mutations<B>(
     apply_header_mutations(req.headers_mut(), mutation, mutation_rules)
 }
 
+#[allow(clippy::single_match)]
 pub fn apply_response_header_mutations<B>(
     resp: &mut Response<B>,
     mut mutation: HeaderMutation,

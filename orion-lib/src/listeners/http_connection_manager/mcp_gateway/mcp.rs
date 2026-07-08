@@ -1198,7 +1198,7 @@ impl McpGateway {
 
     /// Extract body string from response bytes, with fallback messages based on status.
     fn extract_body_string(body: &Bytes, status: StatusCode) -> String {
-        Some(String::from_utf8_lossy(&body)).filter(|s| !s.is_empty()).map(String::from).unwrap_or_else(|| {
+        Some(String::from_utf8_lossy(body)).filter(|s| !s.is_empty()).map(String::from).unwrap_or_else(|| {
             if status == StatusCode::OK {
                 "OK".into()
             } else {

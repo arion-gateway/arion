@@ -129,44 +129,41 @@ fn make_jwt(sub: &str) -> String {
         iat: u64,
     }
     let claims = Claims {
-        sub: sub.to_string(),
-        iss: "test-issuer".to_string(),
-        aud: vec!["mcp-gateway".to_string()],
+        sub: sub.to_owned(),
+        iss: "test-issuer".to_owned(),
+        aud: vec!["mcp-gateway".to_owned()],
         exp: 9_999_999_999,
         iat: 0,
     };
     let key = EncodingKey::from_rsa_pem(TEST_RSA_PRIVATE_KEY_PEM.as_bytes()).unwrap();
     let mut header = Header::new(Algorithm::RS256);
-    header.kid = Some("test-key-2025".to_string());
+    header.kid = Some("test-key-2025".to_owned());
     encode(&header, &claims, &key).unwrap()
 }
 
 fn jwt_authn_for_tests() -> JwtAuthentication {
     let provider = JwtProvider {
-        audiences: vec!["mcp-gateway".to_string()],
-        from_headers: vec![JwtHeader { name: "Authorization".to_string(), value_prefix: "Bearer ".to_string() }],
+        audiences: vec!["mcp-gateway".to_owned()],
+        from_headers: vec![JwtHeader { name: "Authorization".to_owned(), value_prefix: "Bearer ".to_owned() }],
         jwks_source_specifier: Some(JwksSourceSpecifier::LocalJwks(DataSource {
-            specifier: Some(Specifier::InlineString(TEST_JWKS.to_string())),
+            specifier: Some(Specifier::InlineString(TEST_JWKS.to_owned())),
             ..Default::default()
         })),
         // Required so that orion inserts JwtClaims into request extensions, making them
         // available to downstream filters (Cedar).
-        payload_in_metadata: "jwt_payload".to_string(),
+        payload_in_metadata: "jwt_payload".to_owned(),
         ..Default::default()
     };
 
     let rule = RequirementRule {
-        r#match: Some(RouteMatch {
-            path_specifier: Some(PathSpecifier::Prefix("/".to_string())),
-            ..Default::default()
-        }),
+        r#match: Some(RouteMatch { path_specifier: Some(PathSpecifier::Prefix("/".to_owned())), ..Default::default() }),
         requirement_type: Some(RequirementType::Requires(JwtRequirement {
-            requires_type: Some(RequiresType::ProviderName("test_provider".to_string())),
+            requires_type: Some(RequiresType::ProviderName("test_provider".to_owned())),
         })),
     };
 
     JwtAuthentication {
-        providers: [("test_provider".to_string(), provider)].into_iter().collect(),
+        providers: [("test_provider".to_owned(), provider)].into_iter().collect(),
         rules: vec![rule],
         ..Default::default()
     }

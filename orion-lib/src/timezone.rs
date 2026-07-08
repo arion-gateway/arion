@@ -29,7 +29,8 @@ pub fn observes_daylight_saving(tz: &Tz) -> bool {
     let mut first_offset = None;
     for month in 1..=12 {
         if let Some(dt) = tz.with_ymd_and_hms(year, month, 1, 0, 0, 0).single() {
-            let offset_sec = dt.naive_local().signed_duration_since(dt.naive_utc()).num_seconds() as i32;
+            let offset_sec =
+                i32::try_from(dt.naive_local().signed_duration_since(dt.naive_utc()).num_seconds()).unwrap_or_default();
             if let Some(first) = first_offset {
                 if first != offset_sec {
                     return true;
@@ -42,7 +43,7 @@ pub fn observes_daylight_saving(tz: &Tz) -> bool {
     false
 }
 
-pub async fn init_tz_cache(set: &mut JoinSet<Result<()>>, tz: &TimeZone) -> Result<()> {
+pub fn init_tz_cache(set: &mut JoinSet<Result<()>>, tz: &TimeZone) -> Result<()> {
     let tz_local = tz.local.to_uppercase();
     if tz_local.is_empty() || tz_local == "UTC" {
         return Ok(());
@@ -55,7 +56,8 @@ pub async fn init_tz_cache(set: &mut JoinSet<Result<()>>, tz: &TimeZone) -> Resu
     if !observes_daylight_saving(&tz) {
         info!("Timezone {} has constant offset, setting it once", tz.name());
         let now = Utc::now().with_timezone(&tz);
-        let offset_sec = now.naive_local().signed_duration_since(now.naive_utc()).num_seconds() as i32;
+        let offset_sec =
+            i32::try_from(now.naive_local().signed_duration_since(now.naive_utc()).num_seconds()).unwrap_or_default();
         LOCAL_OFFSET_SEC.store(Ordering::Release, offset_sec);
         orion_format::context::set_local_offset_sec(offset_sec);
         return Ok(());
@@ -69,7 +71,8 @@ pub async fn init_tz_cache(set: &mut JoinSet<Result<()>>, tz: &TimeZone) -> Resu
             let now = Utc::now().with_timezone(&tz);
 
             // Calculate offset
-            let offset_sec = now.naive_local().signed_duration_since(now.naive_utc()).num_seconds() as i32;
+            let offset_sec = i32::try_from(now.naive_local().signed_duration_since(now.naive_utc()).num_seconds())
+                .unwrap_or_default();
 
             if prev_offset != offset_sec {
                 prev_offset = offset_sec;

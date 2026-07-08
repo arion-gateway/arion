@@ -1,7 +1,7 @@
 use cedar_policy::{
     Authorizer, Context, Decision, Entities, EntityUid, PolicySet, Request, Schema, ValidationMode, Validator,
 };
-use smol_str::SmolStr;
+use smol_str::{SmolStr, ToSmolStr};
 use std::sync::Arc;
 use tracing::{debug, warn};
 
@@ -67,11 +67,8 @@ impl PolicyStore {
         let response = self.authorizer.is_authorized(&request, &self.policy_set, &self.entities);
         let decision = response.decision();
 
-        let reason: Option<Vec<SmolStr>> = if decision == Decision::Deny {
-            Some(response.diagnostics().reason().map(|id| SmolStr::from(id.to_string())).collect())
-        } else {
-            None
-        };
+        let reason =
+            (decision == Decision::Deny).then(|| response.diagnostics().reason().map(ToSmolStr::to_smolstr).collect());
 
         debug!(?principal, ?action, ?resource, ?decision, ?reason, "Cedar authorization decision");
 
@@ -122,13 +119,13 @@ mod tests {
     #[test]
     fn store_loads_valid_policy() {
         let store = PolicyStore::new(TEST_POLICY, TEST_SCHEMA, "");
-        assert!(store.is_ok());
+        store.unwrap();
     }
 
     #[test]
     fn store_rejects_invalid_policy_syntax() {
         let result = PolicyStore::new("not a policy", TEST_SCHEMA, "");
-        assert!(result.is_err());
+        result.unwrap_err();
     }
 
     #[test]
@@ -141,7 +138,7 @@ mod tests {
             ) when { principal.nonexistent_attr == "x" };
         "#;
         let result = PolicyStore::new(bad_policy, TEST_SCHEMA, "");
-        assert!(result.is_err());
+        result.unwrap_err();
     }
 
     fn make_request(principal_id: &str, action_id: &str, resource_id: &str) -> AuthzRequest {
@@ -197,6 +194,6 @@ mod tests {
     #[test]
     fn store_rejects_invalid_entities_json() {
         let result = PolicyStore::new(TEST_POLICY, TEST_SCHEMA, "not valid json");
-        assert!(result.is_err());
+        result.unwrap_err();
     }
 }
