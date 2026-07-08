@@ -498,7 +498,6 @@ const TWO_DIGITS: [&str; 100] = [
     "95", "96", "97", "98", "99",
 ];
 
-
 static LOCAL_OFFSET_SEC: AtomicI32 = AtomicI32::new(0);
 
 pub fn set_local_offset_sec(offset: i32) {
