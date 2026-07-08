@@ -101,7 +101,7 @@ where
 
     let host = protocol_config.host(&endpoint.cluster)?;
     let host_name = host.to_string();
-    let uri = build_uri(scheme, host, protocol_config.path.unwrap_or(PathAndQuery::from_static("")))?;
+    let uri = build_uri(scheme, host, protocol_config.path.unwrap_or(PathAndQuery::from_static("/")))?;
 
     let checker = HttpChecker {
         expected_statuses: protocol_config.expected_statuses,
