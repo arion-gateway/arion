@@ -58,6 +58,7 @@ pub struct WasmFilterInner {
     has_on_request_body: bool,
     has_on_response_headers: bool,
     has_on_response_body: bool,
+    has_on_complete: bool,
 }
 
 impl std::fmt::Debug for WasmFilterInner {
@@ -103,6 +104,7 @@ impl WasmFilter {
         let mut has_on_request_body = false;
         let mut has_on_response_headers = false;
         let mut has_on_response_body = false;
+        let mut has_on_complete = false;
 
         for export in module.exports() {
             match export.name() {
@@ -110,6 +112,7 @@ impl WasmFilter {
                 "on_request_body" => has_on_request_body = true,
                 "on_response_headers" => has_on_response_headers = true,
                 "on_response_body" => has_on_response_body = true,
+                "on_complete" => has_on_complete = true,
                 _ => {}
             }
         }
@@ -126,6 +129,7 @@ impl WasmFilter {
                 has_on_request_body,
                 has_on_response_headers,
                 has_on_response_body,
+                has_on_complete,
             }),
             state: Mutex::new(None)
         })
@@ -441,6 +445,13 @@ impl Drop for WasmFilter {
     fn drop(&mut self) {
         // Zero locking overhead via get_mut()
         if let Some(mut state) = self.state.get_mut().take() {
+            // Guarantee on_complete is called exactly once when the filter lifecycle ends
+            if self.inner.has_on_complete {
+                if let Ok(on_complete) = state.instance.get_typed_func::<(), ()>(&mut state.store, "on_complete") {
+                    let _ = on_complete.call(&mut state.store, ());
+                }
+            }
+
             // Reset host state so requests don't pollute each other
             let data = state.store.data_mut();
             data.direct_response = None;

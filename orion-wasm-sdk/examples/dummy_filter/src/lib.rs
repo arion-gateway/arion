@@ -64,4 +64,8 @@ impl Plugin for DummyFilter {
             ctx.direct_response(403, b"403 Forbidden: body did not contain the magic word 'valid'")
         }
     }
+
+    fn on_complete(&mut self) {
+        debug!(version = "1.0", "DummyFilter: completed");
+    }
 }

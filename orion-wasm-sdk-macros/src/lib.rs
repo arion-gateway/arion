@@ -11,6 +11,7 @@ pub fn orion_plugin(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut has_req_body = false;
     let mut has_resp_headers = false;
     let mut has_resp_body = false;
+    let mut has_complete = false;
 
     for item in &input.items {
         if let ImplItem::Fn(method) = item {
@@ -19,6 +20,7 @@ pub fn orion_plugin(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 "on_request_body" => has_req_body = true,
                 "on_response_headers" => has_resp_headers = true,
                 "on_response_body" => has_resp_body = true,
+                "on_complete" => has_complete = true,
                 _ => {}
             }
         }
@@ -96,6 +98,23 @@ pub fn orion_plugin(_attr: TokenStream, item: TokenStream) -> TokenStream {
         quote! {}
     };
 
+    let complete_export = if has_complete {
+        quote! {
+            #[no_mangle]
+            pub extern "C" fn on_complete() {
+                let plugin = unsafe {
+                    if PLUGIN.is_none() {
+                        PLUGIN = ::std::option::Option::Some(<#self_ty as ::std::default::Default>::default());
+                    }
+                    PLUGIN.as_mut().unwrap()
+                };
+                ::orion_wasm_sdk::Plugin::on_complete(plugin);
+            }
+        }
+    } else {
+        quote! {}
+    };
+
     let expanded = quote! {
         #input
 
@@ -105,6 +124,7 @@ pub fn orion_plugin(_attr: TokenStream, item: TokenStream) -> TokenStream {
         #req_body_export
         #resp_headers_export
         #resp_body_export
+        #complete_export
     };
 
     TokenStream::from(expanded)

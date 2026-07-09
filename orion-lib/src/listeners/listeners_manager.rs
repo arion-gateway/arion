@@ -18,7 +18,7 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use tokio::sync::{broadcast, mpsc, Notify};
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use orion_configuration::config::{
     network_filters::http_connection_manager::RouteConfiguration, Listener as ListenerConfig,
