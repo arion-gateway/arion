@@ -2,6 +2,7 @@ use crate::{
     listeners::http_filters::{FilterDecision, FilterFactory},
     OrionRequestBody, OrionResponseBody,
 };
+use crossbeam_queue::ArrayQueue;
 use http::{Request, Response};
 use orion_configuration::config::{
     core::DataSource, network_filters::http_connection_manager::http_filters::wasm::WasmConfig,
@@ -52,6 +53,7 @@ impl std::fmt::Debug for WasmFilterState {
 pub struct WasmFilterInner {
     config: WasmConfig,
     instance_pre: wasmtime::InstancePre<hostcalls::WasmState>,
+    instance_pool: Arc<ArrayQueue<WasmFilterState>>,
 }
 
 impl std::fmt::Debug for WasmFilterInner {
@@ -63,6 +65,8 @@ impl std::fmt::Debug for WasmFilterInner {
 #[derive(Debug)]
 pub struct WasmFilter {
     inner: Arc<WasmFilterInner>,
+    // Mutex is strictly used to satisfy the `Sync` requirement of the compiler.
+    // Trick: wWe bypass the lock completely using `.get_mut()` at runtime.
     state: Mutex<Option<WasmFilterState>>,
 }
 
@@ -91,45 +95,57 @@ impl WasmFilter {
 
         let instance_pre = linker.instantiate_pre(&module).map_err(WasmError::Wasmtime)?;
 
-        Ok(Self { inner: Arc::new(WasmFilterInner { config, instance_pre }), state: Mutex::new(None) })
+        // Preallocate a lock-free queue for hot instances (max 1024 capacity)
+        let pool = Arc::new(ArrayQueue::new(1024));
+
+        Ok(Self {
+            inner: Arc::new(WasmFilterInner { config, instance_pre, instance_pool: pool }),
+            state: Mutex::new(None)
+        })
     }
 
-    fn instantiate<'a>(
-        &self,
-        state_lock: &'a mut Option<WasmFilterState>,
-    ) -> Result<&'a mut WasmFilterState, WasmError> {
-        if state_lock.is_none() {
-            let engine = &*GLOBAL_ENGINE;
-            let mut store = Store::new(
-                engine,
-                hostcalls::WasmState {
-                    name: self.inner.config.name.to_static_str(),
-                    direct_response: None,
-                    buffered_request_body: None,
-                    buffered_response_body: None,
-                },
-            );
-            // Instantiate the module ultra-fast using the pre-resolved imports
-            let instance = match self.inner.instance_pre.instantiate(&mut store) {
-                Ok(inst) => inst,
-                Err(e) => return Err(WasmError::InitError(format!("failed to instantiate module: {}", e))),
-            };
+    fn get_state(&mut self) -> Result<&mut WasmFilterState, WasmError> {
+        // Use get_mut() to safely access the data bypassing the lock!
+        // Zero locking overhead since we have &mut self.
+        let state_opt = self.state.get_mut();
 
-            *state_lock = Some(WasmFilterState { store, instance });
+        if state_opt.is_none() {
+            // Lock-free extraction from the pool
+            let state = match self.inner.instance_pool.pop() {
+                Some(s) => s,
+                None => {
+                    let engine = &*GLOBAL_ENGINE;
+                    let mut store = Store::new(
+                        engine,
+                        hostcalls::WasmState {
+                            name: self.inner.config.name.to_static_str(),
+                            direct_response: None,
+                            buffered_request_body: None,
+                            buffered_response_body: None,
+                        },
+                    );
+                    // Instantiate the module ultra-fast using the pre-resolved imports
+                    let instance = match self.inner.instance_pre.instantiate(&mut store) {
+                        Ok(inst) => inst,
+                        Err(e) => return Err(WasmError::InitError(format!("failed to instantiate module: {}", e))),
+                    };
+
+                    WasmFilterState { store, instance }
+                }
+            };
+            *state_opt = Some(state);
         }
 
-        // Return a mutable reference to the Wasm state using a safe Option to Result mapping
-        state_lock.as_mut().ok_or_else(|| WasmError::InitError("Wasm state is uninitialized".to_string()))
+        state_opt.as_mut().ok_or_else(|| WasmError::InitError("Wasm state is uninitialized".to_string()))
     }
 
     pub async fn apply_request(&mut self, req: &mut Request<OrionRequestBody>) -> FilterDecision {
         debug!("WasFilter::apply_request: {:?}", self.inner.config);
         let req_handle = req as *mut Request<OrionRequestBody> as u64;
 
-        // PHASE 1: headers evaluation inside a scoped block to release MutexGuard before await
+        // PHASE 1: headers evaluation
         let action_code: Result<i32, WasmError> = {
-            let mut state_lock = self.state.lock();
-            let state = match self.instantiate(&mut state_lock) {
+            let state = match self.get_state() {
                 Ok(s) => s,
                 Err(e) => return FilterDecision::internal_server_error(&e.to_string(), req.version()),
             };
@@ -151,7 +167,7 @@ impl WasmFilter {
                 use crate::body::timeout_body::TimeoutBody;
                 use http_body_util::{BodyExt, Full};
 
-                // 1. Buffer the entire body asynchronously (MutexGuard is not held here!)
+                // 1. Buffer the entire body asynchronously
                 let full_body_bytes = match req.body_mut().collect().await {
                     Ok(collected) => collected.to_bytes(),
                     Err(_) => {
@@ -160,21 +176,16 @@ impl WasmFilter {
                 };
 
                 // 2. We consumed the inner stream, we need to swap the inner PolyBody
-                //    with a new Full body containing the bytes we just collected.
-                //    We use `map_inner` to safely replace the inner TimeoutBody<PolyBody>
-                //    while preserving the telemetry/instrumentation wrappers!
                 let old_body = std::mem::take(req.body_mut());
 
-                // PolyBody implementation provides an `From<Full<Bytes>>`
                 *req.body_mut() = old_body.map_inner(|old_timeout_body| {
                     let old_timeout = old_timeout_body.timeout;
                     TimeoutBody::new(old_timeout, PolyBody::from(Full::from(full_body_bytes.clone())))
                 });
 
-                // 3. Re-enter the Wasm context inside a scoped block to invoke on_request_body
+                // 3. Re-enter the Wasm context to invoke on_request_body
                 let body_action_code: Result<i32, WasmError> = {
-                    let mut state_lock = self.state.lock();
-                    let state = match self.instantiate(&mut state_lock) {
+                    let state = match self.get_state() {
                         Ok(s) => s,
                         Err(e) => return FilterDecision::internal_server_error(&e.to_string(), req.version()),
                     };
@@ -199,8 +210,7 @@ impl WasmFilter {
                     Ok(0) => FilterDecision::Continue, // Continue
                     Ok(2) => {
                         // DirectResponse
-                        let mut state_lock = self.state.lock();
-                        let state = match self.instantiate(&mut state_lock) {
+                        let state = match self.get_state() {
                             Ok(s) => s,
                             Err(e) => return FilterDecision::internal_server_error(&e.to_string(), req.version()),
                         };
@@ -209,8 +219,6 @@ impl WasmFilter {
                             *response.version_mut() = req.version();
                             FilterDecision::DirectResponse(Box::new(response))
                         } else {
-                            // The plugin returned DirectResponse without ever
-                            // calling `orion_send_direct_response`
                             warn!(
                                 "wasm plugin returned DirectResponse from \
                                  on_request_body without calling \
@@ -232,8 +240,7 @@ impl WasmFilter {
 
             Ok(2) => {
                 // DirectResponse
-                let mut state_lock = self.state.lock();
-                let state = match self.instantiate(&mut state_lock) {
+                let state = match self.get_state() {
                     Ok(s) => s,
                     Err(e) => return FilterDecision::internal_server_error(&e.to_string(), req.version()),
                 };
@@ -243,9 +250,6 @@ impl WasmFilter {
                     *response.version_mut() = req.version();
                     FilterDecision::DirectResponse(Box::new(response))
                 } else {
-                    // The plugin returned DirectResponse without ever
-                    // calling `orion_send_direct_response`: surface it as a
-                    // 500 instead of silently continuing.
                     warn!(
                         "wasm plugin returned DirectResponse from \
                          on_request_headers without calling \
@@ -267,10 +271,9 @@ impl WasmFilter {
         debug!("WasFilter::apply_response: {:?}", self.inner.config);
         let resp_handle = res as *mut Response<OrionResponseBody> as u64;
 
-        // PHASE 1: headers evaluation inside a scoped block to release MutexGuard before await
+        // PHASE 1: headers evaluation
         let action_code: Result<i32, WasmError> = {
-            let mut state_lock = self.state.lock();
-            let state = match self.instantiate(&mut state_lock) {
+            let state = match self.get_state() {
                 Ok(s) => s,
                 Err(e) => return FilterDecision::internal_server_error(&e.to_string(), res.version()),
             };
@@ -293,7 +296,7 @@ impl WasmFilter {
                 use crate::body::poly_body::PolyBody;
                 use http_body_util::{BodyExt, Full};
 
-                // 1. Buffer response body (MutexGuard is not held here!)
+                // 1. Buffer response body
                 let full_body_bytes = match res.body_mut().collect().await {
                     Ok(collected) => collected.to_bytes(),
                     Err(_) => {
@@ -306,10 +309,9 @@ impl WasmFilter {
                 *res.body_mut() =
                     old_body.map_inner(|_old_poly_body| PolyBody::from(Full::from(full_body_bytes.clone())));
 
-                // 3. Invoke on_response_body inside a scoped block
+                // 3. Invoke on_response_body
                 let body_action_code: Result<i32, WasmError> = {
-                    let mut state_lock = self.state.lock();
-                    let state = match self.instantiate(&mut state_lock) {
+                    let state = match self.get_state() {
                         Ok(s) => s,
                         Err(e) => return FilterDecision::internal_server_error(&e.to_string(), res.version()),
                     };
@@ -345,6 +347,22 @@ impl WasmFilter {
                 res.version(),
             ),
             Err(e) => FilterDecision::internal_server_error(&e.to_string(), res.version()),
+        }
+    }
+}
+
+impl Drop for WasmFilter {
+    fn drop(&mut self) {
+        // Zero locking overhead via get_mut()
+        if let Some(mut state) = self.state.get_mut().take() {
+            // Reset host state so requests don't pollute each other
+            let data = state.store.data_mut();
+            data.direct_response = None;
+            data.buffered_request_body = None;
+            data.buffered_response_body = None;
+
+            // Push back to the global lock-free pool. If it's full (1024), the state is dropped.
+            let _ = self.inner.instance_pool.push(state);
         }
     }
 }

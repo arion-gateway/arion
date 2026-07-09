@@ -8,7 +8,7 @@
 use orion_wasm_sdk::{
     orion_plugin, FilterAction, Plugin, RequestBody, RequestHandle, RequestHeaders, init_tracing
 };
-use tracing::{info, error, warn};
+use tracing::{info, debug, error, warn};
 
 #[derive(Default)]
 struct DummyFilter {
@@ -20,12 +20,12 @@ impl Plugin for DummyFilter {
         if !self.initialized {
             let _ = init_tracing();
             self.initialized = true;
-            info!(version = "1.0", "DummyFilter Wasm initialized!");
+            debug!(version = "1.0", "DummyFilter Wasm initialized!");
         }
 
         let auth = match ctx.get_header("Authorization") {
             Ok(Some(value)) => {
-                info!("Header Authorization received: {:?}", value);
+                debug!("Header Authorization received: {:?}", value);
                 value
             },
             Ok(None) => {
@@ -40,9 +40,11 @@ impl Plugin for DummyFilter {
 
         if auth == "Bearer secret-token" {
             // Authorized — let the request continue through the filter chain.
+            debug!(version = "1.0", "DummyFilter: continue....");
             FilterAction::Continue
         } else if auth == "Bearer buffer-me" {
             // Ask the host to buffer the body and invoke `on_request_body`.
+            debug!(version = "1.0", "DummyFilter: pause and buffer body....");
             FilterAction::PauseAndBufferBody
         } else {
             ctx.direct_response(401, b"401 Unauthorized: invalid credentials")
