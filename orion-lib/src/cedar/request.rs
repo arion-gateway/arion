@@ -48,29 +48,51 @@ pub fn build_authz_context(
     http_path: Option<&str>,
     http_query: Option<&str>,
 ) -> Result<Context, Error> {
-    let mut pairs: Vec<(String, RestrictedExpression)> = Vec::new();
+    let expr_err = |e: &dyn std::fmt::Display| Error::Context(SmolStr::from(e.to_string()));
 
-    if let Some(claims) = jwt_claims {
-        pairs.push(("jwt".to_string(), json_value_to_restricted_expr(claims)?));
+    // Build http record using stack-allocated arrays for the common cases.
+    // Falls back to Vec only for partial http fields (edge case, not on hot path).
+    let http = if http_method.is_some() || http_path.is_some() || http_query.is_some() {
+        let record = match (http_method, http_path, http_query) {
+            (Some(m), Some(p), Some(q)) => RestrictedExpression::new_record([
+                ("method".to_string(), RestrictedExpression::new_string(m.to_string())),
+                ("path".to_string(), RestrictedExpression::new_string(p.to_string())),
+                ("query".to_string(), RestrictedExpression::new_string(q.to_string())),
+            ]),
+            (Some(m), Some(p), None) => RestrictedExpression::new_record([
+                ("method".to_string(), RestrictedExpression::new_string(m.to_string())),
+                ("path".to_string(), RestrictedExpression::new_string(p.to_string())),
+            ]),
+            _ => {
+                let mut fields = Vec::with_capacity(3);
+                if let Some(m) = http_method {
+                    fields.push(("method".to_string(), RestrictedExpression::new_string(m.to_string())));
+                }
+                if let Some(p) = http_path {
+                    fields.push(("path".to_string(), RestrictedExpression::new_string(p.to_string())));
+                }
+                if let Some(q) = http_query {
+                    fields.push(("query".to_string(), RestrictedExpression::new_string(q.to_string())));
+                }
+                RestrictedExpression::new_record(fields)
+            },
+        }
+        .map_err(|e| expr_err(&e))?;
+        Some(record)
+    } else {
+        None
+    };
+
+    match (jwt_claims, http) {
+        (Some(claims), Some(http_rec)) => Context::from_pairs([
+            ("jwt".to_string(), json_value_to_restricted_expr(claims)?),
+            ("http".to_string(), http_rec),
+        ]),
+        (Some(claims), None) => Context::from_pairs([("jwt".to_string(), json_value_to_restricted_expr(claims)?)]),
+        (None, Some(http_rec)) => Context::from_pairs([("http".to_string(), http_rec)]),
+        (None, None) => return Ok(Context::empty()),
     }
-
-    if http_method.is_some() || http_path.is_some() || http_query.is_some() {
-        let mut http_fields: Vec<(String, RestrictedExpression)> = Vec::new();
-        if let Some(m) = http_method {
-            http_fields.push(("method".to_string(), RestrictedExpression::new_string(m.to_string())));
-        }
-        if let Some(p) = http_path {
-            http_fields.push(("path".to_string(), RestrictedExpression::new_string(p.to_string())));
-        }
-        if let Some(q) = http_query {
-            http_fields.push(("query".to_string(), RestrictedExpression::new_string(q.to_string())));
-        }
-        let http_record =
-            RestrictedExpression::new_record(http_fields).map_err(|e| Error::Context(SmolStr::from(e.to_string())))?;
-        pairs.push(("http".to_string(), http_record));
-    }
-
-    Context::from_pairs(pairs).map_err(|e| Error::Context(SmolStr::from(e.to_string())))
+    .map_err(|e| expr_err(&e))
 }
 
 #[cfg(test)]
