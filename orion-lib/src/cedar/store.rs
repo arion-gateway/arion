@@ -61,7 +61,7 @@ impl PolicyStore {
     pub fn is_authorized(&self, authz_req: AuthzRequest) -> Result<AuthzResponse, Error> {
         let AuthzRequest { principal, action, resource, context } = authz_req;
 
-        let request = Request::new(principal.clone(), action.clone(), resource.clone(), context, Some(&self.schema))
+        let request = Request::new(principal, action, resource, context, Some(&self.schema))
             .map_err(|e| Error::Context(SmolStr::from(e.to_string())))?;
 
         let response = self.authorizer.is_authorized(&request, &self.policy_set, &self.entities);
@@ -70,7 +70,14 @@ impl PolicyStore {
         let reason =
             (decision == Decision::Deny).then(|| response.diagnostics().reason().map(ToSmolStr::to_smolstr).collect());
 
-        debug!(?principal, ?action, ?resource, ?decision, ?reason, "Cedar authorization decision");
+        debug!(
+            principal = ?request.principal(),
+            action = ?request.action(),
+            resource = ?request.resource(),
+            ?decision,
+            ?reason,
+            "Cedar authorization decision"
+        );
 
         Ok(AuthzResponse { decision, reason })
     }
