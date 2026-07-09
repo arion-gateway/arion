@@ -2,7 +2,7 @@
 //!
 //! This plugin demonstrates the high-level `Plugin` trait API: the user
 //! implements `Plugin` with idiomatic Rust methods returning `FilterAction`,
-//! and the `orion_plugin!` macro generates the `extern "C"` entry points the
+//! and the `#[orion_plugin]` procedural macro generates the `extern "C"` entry points the
 //! Orion host imports.
 
 use orion_wasm_sdk::{
@@ -15,6 +15,7 @@ struct DummyFilter {
     initialized: bool,
 }
 
+#[orion_plugin]
 impl Plugin for DummyFilter {
     fn on_request_headers(&mut self, ctx: &RequestHandle<RequestHeaders>) -> FilterAction {
         if !self.initialized {
@@ -64,5 +65,3 @@ impl Plugin for DummyFilter {
         }
     }
 }
-
-orion_plugin!(DummyFilter);

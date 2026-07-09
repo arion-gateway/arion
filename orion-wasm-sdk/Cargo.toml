@@ -11,4 +11,5 @@ license = "Apache-2.0"
 
 [dependencies]
 orion-wasm-types = { path = "../orion-wasm-types" }
+orion-wasm-sdk-macros = { path = "../orion-wasm-sdk-macros" }
 tracing = "0.1"

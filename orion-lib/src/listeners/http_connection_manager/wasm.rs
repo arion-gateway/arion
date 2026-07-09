@@ -54,6 +54,10 @@ pub struct WasmFilterInner {
     config: WasmConfig,
     instance_pre: wasmtime::InstancePre<hostcalls::WasmState>,
     instance_pool: Arc<ArrayQueue<WasmFilterState>>,
+    has_on_request_headers: bool,
+    has_on_request_body: bool,
+    has_on_response_headers: bool,
+    has_on_response_body: bool,
 }
 
 impl std::fmt::Debug for WasmFilterInner {
@@ -95,11 +99,34 @@ impl WasmFilter {
 
         let instance_pre = linker.instantiate_pre(&module).map_err(WasmError::Wasmtime)?;
 
+        let mut has_on_request_headers = false;
+        let mut has_on_request_body = false;
+        let mut has_on_response_headers = false;
+        let mut has_on_response_body = false;
+
+        for export in module.exports() {
+            match export.name() {
+                "on_request_headers" => has_on_request_headers = true,
+                "on_request_body" => has_on_request_body = true,
+                "on_response_headers" => has_on_response_headers = true,
+                "on_response_body" => has_on_response_body = true,
+                _ => {}
+            }
+        }
+
         // Preallocate a lock-free queue for hot instances (max 1024 capacity)
         let pool = Arc::new(ArrayQueue::new(1024));
 
         Ok(Self {
-            inner: Arc::new(WasmFilterInner { config, instance_pre, instance_pool: pool }),
+            inner: Arc::new(WasmFilterInner {
+                config,
+                instance_pre,
+                instance_pool: pool,
+                has_on_request_headers,
+                has_on_request_body,
+                has_on_response_headers,
+                has_on_response_body,
+            }),
             state: Mutex::new(None)
         })
     }
@@ -141,10 +168,14 @@ impl WasmFilter {
 
     pub async fn apply_request(&mut self, req: &mut Request<OrionRequestBody>) -> FilterDecision {
         debug!("WasFilter::apply_request: {:?}", self.inner.config);
+        if !self.inner.has_on_request_headers && !self.inner.has_on_request_body {
+            return FilterDecision::Continue;
+        }
+
         let req_handle = req as *mut Request<OrionRequestBody> as u64;
 
         // PHASE 1: headers evaluation
-        let action_code: Result<i32, WasmError> = {
+        let action_code: Result<i32, WasmError> = if self.inner.has_on_request_headers {
             let state = match self.get_state() {
                 Ok(s) => s,
                 Err(e) => return FilterDecision::internal_server_error(&e.to_string(), req.version()),
@@ -156,6 +187,8 @@ impl WasmFilter {
             } else {
                 Ok(types::FilterAction::Continue.into())
             }
+        } else {
+            Ok(1) // Implicitly return PauseAndBufferBody if the plugin only implements the body hook
         };
 
         match action_code {
@@ -184,7 +217,7 @@ impl WasmFilter {
                 });
 
                 // 3. Re-enter the Wasm context to invoke on_request_body
-                let body_action_code: Result<i32, WasmError> = {
+                let body_action_code: Result<i32, WasmError> = if self.inner.has_on_request_body {
                     let state = match self.get_state() {
                         Ok(s) => s,
                         Err(e) => return FilterDecision::internal_server_error(&e.to_string(), req.version()),
@@ -204,6 +237,8 @@ impl WasmFilter {
                     };
 
                     res
+                } else {
+                    Ok(types::FilterAction::Continue.into())
                 };
 
                 match body_action_code {
@@ -269,10 +304,14 @@ impl WasmFilter {
 
     pub async fn apply_response(&mut self, res: &mut Response<OrionResponseBody>) -> FilterDecision {
         debug!("WasFilter::apply_response: {:?}", self.inner.config);
+        if !self.inner.has_on_response_headers && !self.inner.has_on_response_body {
+            return FilterDecision::Continue;
+        }
+
         let resp_handle = res as *mut Response<OrionResponseBody> as u64;
 
         // PHASE 1: headers evaluation
-        let action_code: Result<i32, WasmError> = {
+        let action_code: Result<i32, WasmError> = if self.inner.has_on_response_headers {
             let state = match self.get_state() {
                 Ok(s) => s,
                 Err(e) => return FilterDecision::internal_server_error(&e.to_string(), res.version()),
@@ -286,6 +325,8 @@ impl WasmFilter {
             } else {
                 Ok(types::FilterAction::Continue.into())
             }
+        } else {
+            Ok(1) // Implicitly return PauseAndBufferBody if the plugin only implements the body hook
         };
 
         match action_code {
@@ -310,7 +351,7 @@ impl WasmFilter {
                     old_body.map_inner(|_old_poly_body| PolyBody::from(Full::from(full_body_bytes.clone())));
 
                 // 3. Invoke on_response_body
-                let body_action_code: Result<i32, WasmError> = {
+                let body_action_code: Result<i32, WasmError> = if self.inner.has_on_response_body {
                     let state = match self.get_state() {
                         Ok(s) => s,
                         Err(e) => return FilterDecision::internal_server_error(&e.to_string(), res.version()),
@@ -330,6 +371,8 @@ impl WasmFilter {
                     };
 
                     res_val
+                } else {
+                    Ok(types::FilterAction::Continue.into())
                 };
 
                 match body_action_code {
