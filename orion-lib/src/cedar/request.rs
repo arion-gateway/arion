@@ -1,16 +1,29 @@
 use cedar_policy::{Context, EntityId, EntityTypeName, EntityUid, RestrictedExpression};
 use serde_json::Value;
 use smol_str::SmolStr;
-use std::str::FromStr;
+use std::{cell::RefCell, collections::HashMap, str::FromStr};
 
 use super::error::Error;
 
+thread_local! {
+    static ENTITY_TYPE_CACHE: RefCell<HashMap<SmolStr, EntityTypeName>> = RefCell::default();
+}
+
 pub(crate) fn entity_uid(type_name: &str, id: &str) -> Result<EntityUid, Error> {
-    let type_name = EntityTypeName::from_str(type_name)
-        .map_err(|e| Error::Entity(SmolStr::from(format!("invalid entity type '{type_name}': {e}"))))?;
+    let et = ENTITY_TYPE_CACHE.with(|cache| -> Result<EntityTypeName, Error> {
+        let mut cache = cache.borrow_mut();
+        if let Some(et) = cache.get(type_name) {
+            Ok(et.clone())
+        } else {
+            let et = EntityTypeName::from_str(type_name)
+                .map_err(|e| Error::Entity(SmolStr::from(format!("invalid entity type '{type_name}': {e}"))))?;
+            cache.insert(SmolStr::from(type_name), et.clone());
+            Ok(et)
+        }
+    })?;
     let id =
         EntityId::from_str(id).map_err(|e| Error::Entity(SmolStr::from(format!("invalid entity id '{id}': {e}"))))?;
-    Ok(EntityUid::from_type_name_and_id(type_name, id))
+    Ok(EntityUid::from_type_name_and_id(et, id))
 }
 
 pub fn principal_from_jwt(claims: &Value, entity_type: &str) -> Result<EntityUid, Error> {
@@ -50,8 +63,6 @@ pub fn build_authz_context(
 ) -> Result<Context, Error> {
     let expr_err = |e: &dyn std::fmt::Display| Error::Context(SmolStr::from(e.to_string()));
 
-    // Build http record using stack-allocated arrays for the common cases.
-    // Falls back to Vec only for partial http fields (edge case, not on hot path).
     let http = if http_method.is_some() || http_path.is_some() || http_query.is_some() {
         let record = match (http_method, http_path, http_query) {
             (Some(m), Some(p), Some(q)) => RestrictedExpression::new_record([
