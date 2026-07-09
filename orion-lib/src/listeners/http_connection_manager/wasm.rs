@@ -124,7 +124,7 @@ impl WasmFilter {
                             buffered_response_body: None,
                         },
                     );
-                    // Instantiate the module ultra-fast using the pre-resolved imports
+                    // Instantiate the module using the pre-resolved imports
                     let instance = match self.inner.instance_pre.instantiate(&mut store) {
                         Ok(inst) => inst,
                         Err(e) => return Err(WasmError::InitError(format!("failed to instantiate module: {}", e))),
@@ -334,11 +334,54 @@ impl WasmFilter {
 
                 match body_action_code {
                     Ok(0) => FilterDecision::Continue,
+                    Ok(2) => {
+                        // DirectResponse
+                        let state = match self.get_state() {
+                            Ok(s) => s,
+                            Err(e) => return FilterDecision::internal_server_error(&e.to_string(), res.version()),
+                        };
+                        let direct_resp = state.store.data_mut().direct_response.take();
+                        if let Some(mut response) = direct_resp {
+                            *response.version_mut() = res.version();
+                            FilterDecision::DirectResponse(Box::new(response))
+                        } else {
+                            warn!(
+                                "wasm plugin returned DirectResponse from \
+                                 on_response_body without calling \
+                                 send_direct_response"
+                            );
+                            FilterDecision::internal_server_error(
+                                "DirectResponse without send_direct_response",
+                                res.version(),
+                            )
+                        }
+                    },
                     Ok(code) => FilterDecision::internal_server_error(
                         &format!("Invalid response body action code: {}", code),
                         res.version(),
                     ),
                     Err(e) => FilterDecision::internal_server_error(&e.to_string(), res.version()),
+                }
+            },
+
+            Ok(2) => {
+                // DirectResponse
+                let state = match self.get_state() {
+                    Ok(s) => s,
+                    Err(e) => return FilterDecision::internal_server_error(&e.to_string(), res.version()),
+                };
+                let direct_resp = state.store.data_mut().direct_response.take();
+
+                if let Some(mut response) = direct_resp {
+                    *response.version_mut() = res.version();
+                    FilterDecision::DirectResponse(Box::new(response))
+                } else {
+                    warn!(
+                        "wasm plugin returned DirectResponse from \
+                         on_response_headers without calling \
+                         send_direct_response"
+                    );
+                    FilterDecision::internal_server_error("DirectResponse without send_direct_response", res.version())
                 }
             },
 
