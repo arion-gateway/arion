@@ -394,6 +394,18 @@ impl ResponseHandle<ResponseBody> {
 
 /// Idiomatic interface implemented by Orion Wasm plugins.
 pub trait Plugin {
+    /// Invoked once when the Wasm module is instantiated.
+    #[inline]
+    fn on_plugin_start(&mut self) { }
+
+    /// Invoked when the Wasm module instance is destroyed by the host.
+    #[inline]
+    fn on_plugin_destroy(&mut self) { }
+
+    /// Invoked at the beginning of a new HTTP request/transaction.
+    #[inline]
+    fn on_transaction_start(&mut self) { }
+
     /// Invoked on the request path before the body has been buffered.
     #[inline]
     fn on_request_headers(&mut self, _ctx: &RequestHandle<RequestHeaders>) -> FilterAction {
@@ -422,10 +434,10 @@ pub trait Plugin {
         FilterAction::Continue
     }
 
-    /// Invoked when the request/response has been fully processed and the plugin
-    /// is about to be dropped. This is a good place to clean up any internal resources
+    /// Invoked when the request/response has been fully processed and the transaction is complete.
+    /// This is a good place to clean up any transaction-specific resources before the plugin is reused.
     #[inline]
-    fn on_complete(&mut self) { }
+    fn on_transaction_complete(&mut self) { }
 }
 
 /// # Example

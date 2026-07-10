@@ -11,7 +11,10 @@ pub fn orion_plugin(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut has_req_body = false;
     let mut has_resp_headers = false;
     let mut has_resp_body = false;
-    let mut has_complete = false;
+    let mut has_plugin_start = false;
+    let mut has_plugin_destroy = false;
+    let mut has_transaction_start = false;
+    let mut has_transaction_complete = false;
 
     for item in &input.items {
         if let ImplItem::Fn(method) = item {
@@ -20,7 +23,10 @@ pub fn orion_plugin(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 "on_request_body" => has_req_body = true,
                 "on_response_headers" => has_resp_headers = true,
                 "on_response_body" => has_resp_body = true,
-                "on_complete" => has_complete = true,
+                "on_plugin_start" => has_plugin_start = true,
+                "on_plugin_destroy" => has_plugin_destroy = true,
+                "on_transaction_start" => has_transaction_start = true,
+                "on_transaction_complete" => has_transaction_complete = true,
                 _ => {}
             }
         }
@@ -98,17 +104,68 @@ pub fn orion_plugin(_attr: TokenStream, item: TokenStream) -> TokenStream {
         quote! {}
     };
 
-    let complete_export = if has_complete {
+    let plugin_start_export = if has_plugin_start {
         quote! {
             #[no_mangle]
-            pub extern "C" fn on_complete() {
+            pub extern "C" fn on_plugin_start() {
                 let plugin = unsafe {
                     if PLUGIN.is_none() {
                         PLUGIN = ::std::option::Option::Some(<#self_ty as ::std::default::Default>::default());
                     }
                     PLUGIN.as_mut().unwrap()
                 };
-                ::orion_wasm_sdk::Plugin::on_complete(plugin);
+                ::orion_wasm_sdk::Plugin::on_plugin_start(plugin);
+            }
+        }
+    } else {
+        quote! {}
+    };
+
+    let plugin_destroy_export = if has_plugin_destroy {
+        quote! {
+            #[no_mangle]
+            pub extern "C" fn on_plugin_destroy() {
+                let plugin = unsafe {
+                    if PLUGIN.is_none() {
+                        PLUGIN = ::std::option::Option::Some(<#self_ty as ::std::default::Default>::default());
+                    }
+                    PLUGIN.as_mut().unwrap()
+                };
+                ::orion_wasm_sdk::Plugin::on_plugin_destroy(plugin);
+            }
+        }
+    } else {
+        quote! {}
+    };
+
+    let transaction_start_export = if has_transaction_start {
+        quote! {
+            #[no_mangle]
+            pub extern "C" fn on_transaction_start() {
+                let plugin = unsafe {
+                    if PLUGIN.is_none() {
+                        PLUGIN = ::std::option::Option::Some(<#self_ty as ::std::default::Default>::default());
+                    }
+                    PLUGIN.as_mut().unwrap()
+                };
+                ::orion_wasm_sdk::Plugin::on_transaction_start(plugin);
+            }
+        }
+    } else {
+        quote! {}
+    };
+
+    let transaction_complete_export = if has_transaction_complete {
+        quote! {
+            #[no_mangle]
+            pub extern "C" fn on_transaction_complete() {
+                let plugin = unsafe {
+                    if PLUGIN.is_none() {
+                        PLUGIN = ::std::option::Option::Some(<#self_ty as ::std::default::Default>::default());
+                    }
+                    PLUGIN.as_mut().unwrap()
+                };
+                ::orion_wasm_sdk::Plugin::on_transaction_complete(plugin);
             }
         }
     } else {
@@ -124,7 +181,10 @@ pub fn orion_plugin(_attr: TokenStream, item: TokenStream) -> TokenStream {
         #req_body_export
         #resp_headers_export
         #resp_body_export
-        #complete_export
+        #plugin_start_export
+        #plugin_destroy_export
+        #transaction_start_export
+        #transaction_complete_export
     };
 
     TokenStream::from(expanded)

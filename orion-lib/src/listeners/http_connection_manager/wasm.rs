@@ -49,6 +49,14 @@ impl std::fmt::Debug for WasmFilterState {
     }
 }
 
+impl Drop for WasmFilterState {
+    fn drop(&mut self) {
+        if let Ok(on_destroy) = self.instance.get_typed_func::<(), ()>(&mut self.store, "on_plugin_destroy") {
+            let _ = on_destroy.call(&mut self.store, ());
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct WasmFilterInner {
     config: WasmConfig,
@@ -58,7 +66,10 @@ pub struct WasmFilterInner {
     has_on_request_body: bool,
     has_on_response_headers: bool,
     has_on_response_body: bool,
-    has_on_complete: bool,
+    has_on_plugin_start: bool,
+    has_on_plugin_destroy: bool,
+    has_on_transaction_start: bool,
+    has_on_transaction_complete: bool,
 }
 
 impl std::fmt::Debug for WasmFilterInner {
@@ -104,7 +115,10 @@ impl WasmFilter {
         let mut has_on_request_body = false;
         let mut has_on_response_headers = false;
         let mut has_on_response_body = false;
-        let mut has_on_complete = false;
+        let mut has_on_plugin_start = false;
+        let mut has_on_plugin_destroy = false;
+        let mut has_on_transaction_start = false;
+        let mut has_on_transaction_complete = false;
 
         for export in module.exports() {
             match export.name() {
@@ -112,7 +126,10 @@ impl WasmFilter {
                 "on_request_body" => has_on_request_body = true,
                 "on_response_headers" => has_on_response_headers = true,
                 "on_response_body" => has_on_response_body = true,
-                "on_complete" => has_on_complete = true,
+                "on_plugin_start" => has_on_plugin_start = true,
+                "on_plugin_destroy" => has_on_plugin_destroy = true,
+                "on_transaction_start" => has_on_transaction_start = true,
+                "on_transaction_complete" => has_on_transaction_complete = true,
                 _ => {}
             }
         }
@@ -129,7 +146,10 @@ impl WasmFilter {
                 has_on_request_body,
                 has_on_response_headers,
                 has_on_response_body,
-                has_on_complete,
+                has_on_plugin_start,
+                has_on_plugin_destroy,
+                has_on_transaction_start,
+                has_on_transaction_complete,
             }),
             state: Mutex::new(None)
         })
@@ -161,6 +181,12 @@ impl WasmFilter {
                         Err(e) => return Err(WasmError::InitError(format!("failed to instantiate module: {}", e))),
                     };
 
+                    if self.inner.has_on_plugin_start {
+                        if let Ok(on_start) = instance.get_typed_func::<(), ()>(&mut store, "on_plugin_start") {
+                            let _ = on_start.call(&mut store, ());
+                        }
+                    }
+
                     WasmFilterState { store, instance }
                 }
             };
@@ -172,6 +198,17 @@ impl WasmFilter {
 
     pub async fn apply_request(&mut self, req: &mut Request<OrionRequestBody>) -> FilterDecision {
         debug!("WasFilter::apply_request: {:?}", self.inner.config);
+        
+        if self.inner.has_on_transaction_start {
+            let state = match self.get_state() {
+                Ok(s) => s,
+                Err(e) => return FilterDecision::internal_server_error(&e.to_string(), req.version()),
+            };
+            if let Ok(on_tx_start) = state.instance.get_typed_func::<(), ()>(&mut state.store, "on_transaction_start") {
+                let _ = on_tx_start.call(&mut state.store, ());
+            }
+        }
+
         if !self.inner.has_on_request_headers && !self.inner.has_on_request_body {
             return FilterDecision::Continue;
         }
@@ -445,10 +482,10 @@ impl Drop for WasmFilter {
     fn drop(&mut self) {
         // Zero locking overhead via get_mut()
         if let Some(mut state) = self.state.get_mut().take() {
-            // Guarantee on_complete is called exactly once when the filter lifecycle ends
-            if self.inner.has_on_complete {
-                if let Ok(on_complete) = state.instance.get_typed_func::<(), ()>(&mut state.store, "on_complete") {
-                    let _ = on_complete.call(&mut state.store, ());
+            // Guarantee on_transaction_complete is called exactly once when the filter lifecycle ends
+            if self.inner.has_on_transaction_complete {
+                if let Ok(on_tx_comp) = state.instance.get_typed_func::<(), ()>(&mut state.store, "on_transaction_complete") {
+                    let _ = on_tx_comp.call(&mut state.store, ());
                 }
             }
 

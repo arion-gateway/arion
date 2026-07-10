@@ -11,19 +11,24 @@ use orion_wasm_sdk::{
 use tracing::{info, debug, error, warn};
 
 #[derive(Default)]
-struct DummyFilter {
-    initialized: bool,
-}
+struct DummyFilter;
 
 #[orion_plugin]
 impl Plugin for DummyFilter {
-    fn on_request_headers(&mut self, ctx: &RequestHandle<RequestHeaders>) -> FilterAction {
-        if !self.initialized {
-            let _ = init_tracing();
-            self.initialized = true;
-            debug!(version = "1.0", "DummyFilter Wasm initialized!");
-        }
+    fn on_plugin_start(&mut self) {
+        let _ = init_tracing();
+        debug!(version = "1.0", "DummyFilter Wasm: on_plugin_start - Instance initialized!");
+    }
 
+    fn on_plugin_destroy(&mut self) {
+        debug!(version = "1.0", "DummyFilter Wasm: on_plugin_destroy - Instance destroyed!");
+    }
+
+    fn on_transaction_start(&mut self) {
+        debug!(version = "1.0", "DummyFilter Wasm: on_transaction_start - New HTTP Request!");
+    }
+
+    fn on_request_headers(&mut self, ctx: &RequestHandle<RequestHeaders>) -> FilterAction {
         let auth = match ctx.get_header("Authorization") {
             Ok(Some(value)) => {
                 debug!("Header Authorization received: {:?}", value);
@@ -65,7 +70,7 @@ impl Plugin for DummyFilter {
         }
     }
 
-    fn on_complete(&mut self) {
-        debug!(version = "1.0", "DummyFilter: completed");
+    fn on_transaction_complete(&mut self) {
+        debug!(version = "1.0", "DummyFilter Wasm: on_transaction_complete - Request finished.");
     }
 }

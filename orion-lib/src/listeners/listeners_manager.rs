@@ -145,6 +145,7 @@ impl ListenersManager {
         });
         #[cfg(debug_assertions)]
         if self.listener_handles.contains_key(&listener_name) {
+            use tracing::debug;
             debug!("Listener {listener_name} already exists, replacing it");
         }
         // note: join handle gets overwritten here if it already exists.
