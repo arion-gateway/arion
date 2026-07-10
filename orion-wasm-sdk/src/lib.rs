@@ -99,8 +99,9 @@ fn get_http_request_header(request_handle: u64, name: &str) -> Result<Option<Hea
     let mut written_len: u32 = 0;
 
     let res = unsafe {
-        ffi::orion_get_request_header(
+        ffi::orion_get_header(
             request_handle,
+            ffi::HeaderTarget::Request as u32,
             name.as_ptr(),
             name.len() as u32,
             stack_buf.as_mut_ptr(),
@@ -122,8 +123,9 @@ fn get_http_request_header(request_handle: u64, name: &str) -> Result<Option<Hea
 
             loop {
                 let res = unsafe {
-                    ffi::orion_get_request_header(
+                    ffi::orion_get_header(
                         request_handle,
+                        ffi::HeaderTarget::Request as u32,
                         name.as_ptr(),
                         name.len() as u32,
                         heap_buf.as_mut_ptr(),
@@ -170,8 +172,9 @@ fn get_http_request_body(request_handle: u64) -> Result<Vec<u8>, OrionWasmResult
 
     loop {
         let res = unsafe {
-            ffi::orion_get_request_body(
+            ffi::orion_get_body(
                 request_handle,
+                ffi::HeaderTarget::Request as u32,
                 buf.as_mut_ptr(),
                 buf.len() as u32,
                 &mut written_len as *mut u32,
@@ -233,8 +236,9 @@ fn get_http_response_header(response_handle: u64, name: &str) -> Result<Option<H
     let mut written_len: u32 = 0;
 
     let res = unsafe {
-        ffi::orion_get_response_header(
+        ffi::orion_get_header(
             response_handle,
+            ffi::HeaderTarget::Response as u32,
             name.as_ptr(),
             name.len() as u32,
             stack_buf.as_mut_ptr(),
@@ -255,8 +259,9 @@ fn get_http_response_header(response_handle: u64, name: &str) -> Result<Option<H
 
             loop {
                 let res = unsafe {
-                    ffi::orion_get_response_header(
+                    ffi::orion_get_header(
                         response_handle,
+                        ffi::HeaderTarget::Response as u32,
                         name.as_ptr(),
                         name.len() as u32,
                         heap_buf.as_mut_ptr(),
@@ -298,8 +303,9 @@ fn get_http_response_body(response_handle: u64) -> Result<Vec<u8>, OrionWasmResu
 
     loop {
         let res = unsafe {
-            ffi::orion_get_response_body(
+            ffi::orion_get_body(
                 response_handle,
+                ffi::HeaderTarget::Response as u32,
                 buf.as_mut_ptr(),
                 buf.len() as u32,
                 &mut written_len as *mut u32,
@@ -343,8 +349,9 @@ fn get_http_request_headers_map(request_handle: u64) -> Result<HeaderMap, OrionW
 
     loop {
         let res = unsafe {
-            ffi::orion_get_request_headers_map(
+            ffi::orion_get_headers_map(
                 request_handle,
+                ffi::HeaderTarget::Request as u32,
                 buf.as_mut_ptr(),
                 buf.len() as u32,
                 &mut written_len as *mut u32,
@@ -375,7 +382,7 @@ fn get_http_request_headers_map(_request_handle: u64) -> Result<HeaderMap, Orion
 #[cfg(target_arch = "wasm32")]
 fn set_http_request_headers_map(request_handle: u64, headers: &HeaderMap) -> Result<(), OrionWasmResult> {
     let serialized = serialize_header_map(headers);
-    let res = unsafe { ffi::orion_set_request_headers_map(request_handle, serialized.as_ptr(), serialized.len() as u32) };
+    let res = unsafe { ffi::orion_set_headers_map(request_handle, ffi::HeaderTarget::Request as u32, serialized.as_ptr(), serialized.len() as u32) };
     match OrionWasmResult::try_from(res) {
         Ok(OrionWasmResult::Ok) => Ok(()),
         Ok(other) => Err(other),
@@ -396,8 +403,9 @@ fn get_http_response_headers_map(response_handle: u64) -> Result<HeaderMap, Orio
 
     loop {
         let res = unsafe {
-            ffi::orion_get_response_headers_map(
+            ffi::orion_get_headers_map(
                 response_handle,
+                ffi::HeaderTarget::Response as u32,
                 buf.as_mut_ptr(),
                 buf.len() as u32,
                 &mut written_len as *mut u32,
@@ -428,7 +436,7 @@ fn get_http_response_headers_map(_response_handle: u64) -> Result<HeaderMap, Ori
 #[cfg(target_arch = "wasm32")]
 fn set_http_response_headers_map(response_handle: u64, headers: &HeaderMap) -> Result<(), OrionWasmResult> {
     let serialized = serialize_header_map(headers);
-    let res = unsafe { ffi::orion_set_response_headers_map(response_handle, serialized.as_ptr(), serialized.len() as u32) };
+    let res = unsafe { ffi::orion_set_headers_map(response_handle, ffi::HeaderTarget::Response as u32, serialized.as_ptr(), serialized.len() as u32) };
     match OrionWasmResult::try_from(res) {
         Ok(OrionWasmResult::Ok) => Ok(()),
         Ok(other) => Err(other),
