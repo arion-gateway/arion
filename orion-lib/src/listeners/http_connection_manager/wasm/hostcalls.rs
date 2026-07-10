@@ -48,11 +48,11 @@ fn orion_get_header(
         0 => {
             let request = unsafe { &*(handle as *const Request<OrionRequestBody>) };
             request.headers().get(name.as_str())
-        }
+        },
         1 => {
             let response = unsafe { &*(handle as *const Response<OrionResponseBody>) };
             response.headers().get(name.as_str())
-        }
+        },
         _ => return OrionWasmResult::InternalError.into(),
     };
 
@@ -86,7 +86,7 @@ fn orion_get_header(
 
 fn orion_get_body(
     mut caller: Caller<'_, WasmState>,
-    handle: u64,
+    _handle: u64,
     handle_type: u32,
     body_ptr: u32,
     max_len: u32,
@@ -101,11 +101,11 @@ fn orion_get_body(
         0 => match caller.data().buffered_request_body.as_ref() {
             Some(b) => b.clone(),
             None => return OrionWasmResult::NotFound.into(),
-        }
+        },
         1 => match caller.data().buffered_response_body.as_ref() {
             Some(b) => b.clone(),
             None => return OrionWasmResult::NotFound.into(),
-        }
+        },
         _ => return OrionWasmResult::InternalError.into(),
     };
 
@@ -172,8 +172,6 @@ fn orion_send_direct_response(
 
     OrionWasmResult::Ok.into()
 }
-
-
 
 fn orion_log(mut caller: Caller<'_, WasmState>, level: u32, msg_ptr: u32, msg_len: u32) -> i32 {
     let memory = match caller.get_export("memory").and_then(|m| m.into_memory()) {
@@ -283,16 +281,16 @@ fn orion_get_headers_map(
         Some(mem) => mem,
         None => return OrionWasmResult::InvalidMemoryAccess.into(),
     };
-    
+
     let serialized = match handle_type {
         0 => {
             let request = unsafe { &*(handle as *const Request<OrionRequestBody>) };
             serialize_header_map(request.headers())
-        }
+        },
         1 => {
             let response = unsafe { &*(handle as *const Response<OrionResponseBody>) };
             serialize_header_map(response.headers())
-        }
+        },
         _ => return OrionWasmResult::InternalError.into(),
     };
 
@@ -336,19 +334,19 @@ fn orion_set_headers_map(
         Some(h) => h,
         None => return OrionWasmResult::InternalError.into(),
     };
-    
+
     match handle_type {
         0 => {
             let request = unsafe { &mut *(handle as *mut Request<OrionRequestBody>) };
             *request.headers_mut() = headers;
-        }
+        },
         1 => {
             let response = unsafe { &mut *(handle as *mut Response<OrionResponseBody>) };
             *response.headers_mut() = headers;
-        }
+        },
         _ => return OrionWasmResult::InternalError.into(),
     }
-    
+
     OrionWasmResult::Ok.into()
 }
 
@@ -515,7 +513,6 @@ fn orion_replace_header(
 }
 
 pub fn register_hostcalls(linker: &mut Linker<WasmState>) -> Result<(), wasmtime::Error> {
-
     linker.func_wrap("env", "orion_get_header", orion_get_header)?;
     linker.func_wrap("env", "orion_get_body", orion_get_body)?;
     linker.func_wrap("env", "orion_get_headers_map", orion_get_headers_map)?;
@@ -525,7 +522,7 @@ pub fn register_hostcalls(linker: &mut Linker<WasmState>) -> Result<(), wasmtime
     linker.func_wrap("env", "orion_add_header", orion_add_header)?;
     linker.func_wrap("env", "orion_remove_header", orion_remove_header)?;
     linker.func_wrap("env", "orion_replace_header", orion_replace_header)?;
-    
+
     linker.func_wrap("env", "orion_send_direct_response", orion_send_direct_response)?;
     linker.func_wrap("env", "orion_log", orion_log)?;
     Ok(())
