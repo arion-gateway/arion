@@ -539,7 +539,7 @@ impl RequestHandle<RequestBody> {
         get_http_request_headers_map(self.handle)
     }
 
-    pub fn set_headers_map(&self, headers: &HeaderMap) -> Result<(), OrionWasmResult> {
+    pub fn set_headers_map(&mut self, headers: &HeaderMap) -> Result<(), OrionWasmResult> {
         set_http_request_headers_map(self.handle, headers)
     }
 
@@ -561,7 +561,7 @@ impl ResponseHandle<ResponseHeaders> {
         get_http_response_headers_map(self.handle)
     }
 
-    pub fn set_headers_map(&self, headers: &HeaderMap) -> Result<(), OrionWasmResult> {
+    pub fn set_headers_map(&mut self, headers: &HeaderMap) -> Result<(), OrionWasmResult> {
         set_http_response_headers_map(self.handle, headers)
     }
 
