@@ -130,7 +130,7 @@ impl WasmFilter {
                 "on_plugin_destroy" => has_on_plugin_destroy = true,
                 "on_transaction_start" => has_on_transaction_start = true,
                 "on_transaction_complete" => has_on_transaction_complete = true,
-                _ => {}
+                _ => {},
             }
         }
 
@@ -151,7 +151,7 @@ impl WasmFilter {
                 has_on_transaction_start,
                 has_on_transaction_complete,
             }),
-            state: Mutex::new(None)
+            state: Mutex::new(None),
         })
     }
 
@@ -188,7 +188,7 @@ impl WasmFilter {
                     }
 
                     WasmFilterState { store, instance }
-                }
+                },
             };
             *state_opt = Some(state);
         }
@@ -198,7 +198,7 @@ impl WasmFilter {
 
     pub async fn apply_request(&mut self, req: &mut Request<OrionRequestBody>) -> FilterDecision {
         debug!("WasFilter::apply_request: {:?}", self.inner.config);
-        
+
         if self.inner.has_on_transaction_start {
             let state = match self.get_state() {
                 Ok(s) => s,
@@ -484,7 +484,9 @@ impl Drop for WasmFilter {
         if let Some(mut state) = self.state.get_mut().take() {
             // Guarantee on_transaction_complete is called exactly once when the filter lifecycle ends
             if self.inner.has_on_transaction_complete {
-                if let Ok(on_tx_comp) = state.instance.get_typed_func::<(), ()>(&mut state.store, "on_transaction_complete") {
+                if let Ok(on_tx_comp) =
+                    state.instance.get_typed_func::<(), ()>(&mut state.store, "on_transaction_complete")
+                {
                     let _ = on_tx_comp.call(&mut state.store, ());
                 }
             }

@@ -51,5 +51,16 @@ extern "C" {
     pub fn orion_set_request_headers_map(request_handle: u64, buf_ptr: *const u8, buf_len: u32) -> i32;
     pub fn orion_get_response_headers_map(response_handle: u64, buf_ptr: *mut u8, max_len: u32, written_len_ptr: *mut u32) -> i32;
     pub fn orion_set_response_headers_map(response_handle: u64, buf_ptr: *const u8, buf_len: u32) -> i32;
+
+    pub fn orion_set_header(handle: u64, handle_type: u32, name_ptr: *const u8, name_len: u32, value_ptr: *const u8, value_len: u32) -> i32;
+    pub fn orion_add_header(handle: u64, handle_type: u32, name_ptr: *const u8, name_len: u32, value_ptr: *const u8, value_len: u32) -> i32;
+    pub fn orion_remove_header(handle: u64, handle_type: u32, name_ptr: *const u8, name_len: u32) -> i32;
+    pub fn orion_replace_header(handle: u64, handle_type: u32, name_ptr: *const u8, name_len: u32, value_ptr: *const u8, value_len: u32) -> i32;
+}
+
+#[repr(u32)]
+pub enum HeaderTarget {
+    Request = 0,
+    Response = 1,
 }
 

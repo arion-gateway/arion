@@ -27,7 +27,7 @@ mod ffi;
 // Header Map serialization
 // ============================================================================
 
-pub use http::HeaderMap;
+pub use http::{HeaderMap, header::HeaderName, header::HeaderValue};
 
 #[cfg(target_arch = "wasm32")]
 fn serialize_header_map(headers: &HeaderMap) -> Vec<u8> {
@@ -91,7 +91,7 @@ fn deserialize_header_map(data: &[u8]) -> Option<HeaderMap> {
 
 /// Read an HTTP request header by name.
 #[cfg(target_arch = "wasm32")]
-fn get_http_request_header(request_handle: u64, name: &str) -> Result<Option<String>, OrionWasmResult> {
+fn get_http_request_header(request_handle: u64, name: &str) -> Result<Option<HeaderValue>, OrionWasmResult> {
     const INITIAL_BUF: usize = 1024;
 
     // Try with a stack buffer first to avoid allocation in the common case.
@@ -112,7 +112,7 @@ fn get_http_request_header(request_handle: u64, name: &str) -> Result<Option<Str
     match OrionWasmResult::try_from(res) {
         Ok(OrionWasmResult::Ok) => {
             let len = written_len as usize;
-            Ok(String::from_utf8(stack_buf[..len].to_vec()).ok())
+            Ok(HeaderValue::from_bytes(&stack_buf[..len]).ok())
         }
         Ok(OrionWasmResult::NotFound) => Ok(None),
         Ok(OrionWasmResult::BufferTooSmall) => {
@@ -135,7 +135,7 @@ fn get_http_request_header(request_handle: u64, name: &str) -> Result<Option<Str
                 match OrionWasmResult::try_from(res) {
                     Ok(OrionWasmResult::Ok) => {
                         let len = written_len as usize;
-                        return Ok(String::from_utf8(heap_buf[..len].to_vec()).ok());
+                        return Ok(HeaderValue::from_bytes(&heap_buf[..len]).ok());
                     }
                     Ok(OrionWasmResult::NotFound) => return Ok(None),
                     Ok(OrionWasmResult::BufferTooSmall) => {
@@ -156,7 +156,7 @@ fn get_http_request_header(request_handle: u64, name: &str) -> Result<Option<Str
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn get_http_request_header(_request_handle: u64, _name: &str) -> Result<Option<String>, OrionWasmResult> {
+fn get_http_request_header(_request_handle: u64, _name: &str) -> Result<Option<HeaderValue>, OrionWasmResult> {
     Err(OrionWasmResult::InternalError)
 }
 
@@ -227,7 +227,7 @@ fn send_http_direct_response(_request_handle: u64, _status_code: u16, _body: &[u
 
 /// Read an HTTP response header by name.
 #[cfg(target_arch = "wasm32")]
-fn get_http_response_header(response_handle: u64, name: &str) -> Result<Option<String>, OrionWasmResult> {
+fn get_http_response_header(response_handle: u64, name: &str) -> Result<Option<HeaderValue>, OrionWasmResult> {
     const INITIAL_BUF: usize = 1024;
     let mut stack_buf = [0u8; INITIAL_BUF];
     let mut written_len: u32 = 0;
@@ -246,7 +246,7 @@ fn get_http_response_header(response_handle: u64, name: &str) -> Result<Option<S
     match OrionWasmResult::try_from(res) {
         Ok(OrionWasmResult::Ok) => {
             let len = written_len as usize;
-            Ok(String::from_utf8(stack_buf[..len].to_vec()).ok())
+            Ok(HeaderValue::from_bytes(&stack_buf[..len]).ok())
         }
         Ok(OrionWasmResult::NotFound) => Ok(None),
         Ok(OrionWasmResult::BufferTooSmall) => {
@@ -268,7 +268,7 @@ fn get_http_response_header(response_handle: u64, name: &str) -> Result<Option<S
                 match OrionWasmResult::try_from(res) {
                     Ok(OrionWasmResult::Ok) => {
                         let len = written_len as usize;
-                        return Ok(String::from_utf8(heap_buf[..len].to_vec()).ok());
+                        return Ok(HeaderValue::from_bytes(&heap_buf[..len]).ok());
                     }
                     Ok(OrionWasmResult::NotFound) => return Ok(None),
                     Ok(OrionWasmResult::BufferTooSmall) => {
@@ -330,7 +330,7 @@ fn get_http_response_body(_response_handle: u64) -> Result<Vec<u8>, OrionWasmRes
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn get_http_response_header(_response_handle: u64, _name: &str) -> Result<Option<String>, OrionWasmResult> {
+fn get_http_response_header(_response_handle: u64, _name: &str) -> Result<Option<HeaderValue>, OrionWasmResult> {
     Err(OrionWasmResult::InternalError)
 }
 
@@ -441,6 +441,86 @@ fn set_http_response_headers_map(_response_handle: u64, _headers: &HeaderMap) ->
     Err(OrionWasmResult::InternalError)
 }
 
+#[cfg(target_arch = "wasm32")]
+fn set_http_request_header(request_handle: u64, name: &HeaderName, value: &HeaderValue) -> Result<(), OrionWasmResult> {
+    let name_bytes = name.as_str().as_bytes();
+    let value_bytes = value.as_bytes();
+    let res = unsafe { ffi::orion_set_header(request_handle, ffi::HeaderTarget::Request as u32, name_bytes.as_ptr(), name_bytes.len() as u32, value_bytes.as_ptr(), value_bytes.len() as u32) };
+    match OrionWasmResult::try_from(res) { Ok(OrionWasmResult::Ok) => Ok(()), Ok(other) => Err(other), Err(_) => Err(OrionWasmResult::InternalError) }
+}
+#[cfg(not(target_arch = "wasm32"))]
+fn set_http_request_header(_request_handle: u64, _name: &HeaderName, _value: &HeaderValue) -> Result<(), OrionWasmResult> { Err(OrionWasmResult::InternalError) }
+
+#[cfg(target_arch = "wasm32")]
+fn add_http_request_header(request_handle: u64, name: &HeaderName, value: &HeaderValue) -> Result<(), OrionWasmResult> {
+    let name_bytes = name.as_str().as_bytes();
+    let value_bytes = value.as_bytes();
+    let res = unsafe { ffi::orion_add_header(request_handle, ffi::HeaderTarget::Request as u32, name_bytes.as_ptr(), name_bytes.len() as u32, value_bytes.as_ptr(), value_bytes.len() as u32) };
+    match OrionWasmResult::try_from(res) { Ok(OrionWasmResult::Ok) => Ok(()), Ok(other) => Err(other), Err(_) => Err(OrionWasmResult::InternalError) }
+}
+#[cfg(not(target_arch = "wasm32"))]
+fn add_http_request_header(_request_handle: u64, _name: &HeaderName, _value: &HeaderValue) -> Result<(), OrionWasmResult> { Err(OrionWasmResult::InternalError) }
+
+#[cfg(target_arch = "wasm32")]
+fn remove_http_request_header(request_handle: u64, name: &HeaderName) -> Result<(), OrionWasmResult> {
+    let name_bytes = name.as_str().as_bytes();
+    let res = unsafe { ffi::orion_remove_header(request_handle, ffi::HeaderTarget::Request as u32, name_bytes.as_ptr(), name_bytes.len() as u32) };
+    match OrionWasmResult::try_from(res) { Ok(OrionWasmResult::Ok) => Ok(()), Ok(other) => Err(other), Err(_) => Err(OrionWasmResult::InternalError) }
+}
+#[cfg(not(target_arch = "wasm32"))]
+fn remove_http_request_header(_request_handle: u64, _name: &HeaderName) -> Result<(), OrionWasmResult> { Err(OrionWasmResult::InternalError) }
+
+#[cfg(target_arch = "wasm32")]
+fn replace_http_request_header(request_handle: u64, name: &HeaderName, value: &HeaderValue) -> Result<(), OrionWasmResult> {
+    let name_bytes = name.as_str().as_bytes();
+    let value_bytes = value.as_bytes();
+    let res = unsafe { ffi::orion_replace_header(request_handle, ffi::HeaderTarget::Request as u32, name_bytes.as_ptr(), name_bytes.len() as u32, value_bytes.as_ptr(), value_bytes.len() as u32) };
+    match OrionWasmResult::try_from(res) { Ok(OrionWasmResult::Ok) => Ok(()), Ok(other) => Err(other), Err(_) => Err(OrionWasmResult::InternalError) }
+}
+#[cfg(not(target_arch = "wasm32"))]
+fn replace_http_request_header(_request_handle: u64, _name: &HeaderName, _value: &HeaderValue) -> Result<(), OrionWasmResult> { Err(OrionWasmResult::InternalError) }
+
+
+#[cfg(target_arch = "wasm32")]
+fn set_http_response_header(response_handle: u64, name: &HeaderName, value: &HeaderValue) -> Result<(), OrionWasmResult> {
+    let name_bytes = name.as_str().as_bytes();
+    let value_bytes = value.as_bytes();
+    let res = unsafe { ffi::orion_set_header(response_handle, ffi::HeaderTarget::Response as u32, name_bytes.as_ptr(), name_bytes.len() as u32, value_bytes.as_ptr(), value_bytes.len() as u32) };
+    match OrionWasmResult::try_from(res) { Ok(OrionWasmResult::Ok) => Ok(()), Ok(other) => Err(other), Err(_) => Err(OrionWasmResult::InternalError) }
+}
+#[cfg(not(target_arch = "wasm32"))]
+fn set_http_response_header(_response_handle: u64, _name: &HeaderName, _value: &HeaderValue) -> Result<(), OrionWasmResult> { Err(OrionWasmResult::InternalError) }
+
+#[cfg(target_arch = "wasm32")]
+fn add_http_response_header(response_handle: u64, name: &HeaderName, value: &HeaderValue) -> Result<(), OrionWasmResult> {
+    let name_bytes = name.as_str().as_bytes();
+    let value_bytes = value.as_bytes();
+    let res = unsafe { ffi::orion_add_header(response_handle, ffi::HeaderTarget::Response as u32, name_bytes.as_ptr(), name_bytes.len() as u32, value_bytes.as_ptr(), value_bytes.len() as u32) };
+    match OrionWasmResult::try_from(res) { Ok(OrionWasmResult::Ok) => Ok(()), Ok(other) => Err(other), Err(_) => Err(OrionWasmResult::InternalError) }
+}
+#[cfg(not(target_arch = "wasm32"))]
+fn add_http_response_header(_response_handle: u64, _name: &HeaderName, _value: &HeaderValue) -> Result<(), OrionWasmResult> { Err(OrionWasmResult::InternalError) }
+
+#[cfg(target_arch = "wasm32")]
+fn remove_http_response_header(response_handle: u64, name: &HeaderName) -> Result<(), OrionWasmResult> {
+    let name_bytes = name.as_str().as_bytes();
+    let res = unsafe { ffi::orion_remove_header(response_handle, ffi::HeaderTarget::Response as u32, name_bytes.as_ptr(), name_bytes.len() as u32) };
+    match OrionWasmResult::try_from(res) { Ok(OrionWasmResult::Ok) => Ok(()), Ok(other) => Err(other), Err(_) => Err(OrionWasmResult::InternalError) }
+}
+#[cfg(not(target_arch = "wasm32"))]
+fn remove_http_response_header(_response_handle: u64, _name: &HeaderName) -> Result<(), OrionWasmResult> { Err(OrionWasmResult::InternalError) }
+
+#[cfg(target_arch = "wasm32")]
+fn replace_http_response_header(response_handle: u64, name: &HeaderName, value: &HeaderValue) -> Result<(), OrionWasmResult> {
+    let name_bytes = name.as_str().as_bytes();
+    let value_bytes = value.as_bytes();
+    let res = unsafe { ffi::orion_replace_header(response_handle, ffi::HeaderTarget::Response as u32, name_bytes.as_ptr(), name_bytes.len() as u32, value_bytes.as_ptr(), value_bytes.len() as u32) };
+    match OrionWasmResult::try_from(res) { Ok(OrionWasmResult::Ok) => Ok(()), Ok(other) => Err(other), Err(_) => Err(OrionWasmResult::InternalError) }
+}
+#[cfg(not(target_arch = "wasm32"))]
+fn replace_http_response_header(_response_handle: u64, _name: &HeaderName, _value: &HeaderValue) -> Result<(), OrionWasmResult> { Err(OrionWasmResult::InternalError) }
+
+
 // ============================================================================
 // Typestate API
 
@@ -497,11 +577,26 @@ impl<S: State> ResponseHandle<S> {
 
 impl RequestHandle<RequestHeaders> {
     /// Read an HTTP request header by name.
-    pub fn get_header(&self, name: &str) -> Result<Option<String>, OrionWasmResult> {
+    pub fn get_header(&self, name: &str) -> Result<Option<HeaderValue>, OrionWasmResult> {
         get_http_request_header(self.handle, name)
     }
 
-    /// Send a direct (local) HTTP response, short-circuiting the filter chain.
+    pub fn set_header(&self, name: HeaderName, value: HeaderValue) -> Result<(), OrionWasmResult> {
+        set_http_request_header(self.handle, &name, &value)
+    }
+
+    pub fn add_header(&self, name: HeaderName, value: HeaderValue) -> Result<(), OrionWasmResult> {
+        add_http_request_header(self.handle, &name, &value)
+    }
+
+    pub fn remove_header(&self, name: &HeaderName) -> Result<(), OrionWasmResult> {
+        remove_http_request_header(self.handle, name)
+    }
+
+    pub fn replace_header(&self, name: HeaderName, value: HeaderValue) -> Result<(), OrionWasmResult> {
+        replace_http_request_header(self.handle, &name, &value)
+    }
+
     pub fn get_headers_map(&self) -> Result<HeaderMap, OrionWasmResult> {
         get_http_request_headers_map(self.handle)
     }
@@ -525,8 +620,24 @@ impl RequestHandle<RequestHeaders> {
 
 impl RequestHandle<RequestBody> {
     /// Read an HTTP request header by name.
-    pub fn get_header(&self, name: &str) -> Result<Option<String>, OrionWasmResult> {
+    pub fn get_header(&self, name: &str) -> Result<Option<HeaderValue>, OrionWasmResult> {
         get_http_request_header(self.handle, name)
+    }
+
+    pub fn set_header(&self, name: HeaderName, value: HeaderValue) -> Result<(), OrionWasmResult> {
+        set_http_request_header(self.handle, &name, &value)
+    }
+
+    pub fn add_header(&self, name: HeaderName, value: HeaderValue) -> Result<(), OrionWasmResult> {
+        add_http_request_header(self.handle, &name, &value)
+    }
+
+    pub fn remove_header(&self, name: &HeaderName) -> Result<(), OrionWasmResult> {
+        remove_http_request_header(self.handle, name)
+    }
+
+    pub fn replace_header(&self, name: HeaderName, value: HeaderValue) -> Result<(), OrionWasmResult> {
+        replace_http_request_header(self.handle, &name, &value)
     }
 
     /// Read the buffered request body.
@@ -534,12 +645,11 @@ impl RequestHandle<RequestBody> {
         get_http_request_body(self.handle)
     }
 
-    /// Send a direct (local) HTTP response, short-circuiting the filter chain.
     pub fn get_headers_map(&self) -> Result<HeaderMap, OrionWasmResult> {
         get_http_request_headers_map(self.handle)
     }
 
-    pub fn set_headers_map(&mut self, headers: &HeaderMap) -> Result<(), OrionWasmResult> {
+    pub fn set_headers_map(&self, headers: &HeaderMap) -> Result<(), OrionWasmResult> {
         set_http_request_headers_map(self.handle, headers)
     }
 
@@ -561,13 +671,29 @@ impl ResponseHandle<ResponseHeaders> {
         get_http_response_headers_map(self.handle)
     }
 
-    pub fn set_headers_map(&mut self, headers: &HeaderMap) -> Result<(), OrionWasmResult> {
+    pub fn set_headers_map(&self, headers: &HeaderMap) -> Result<(), OrionWasmResult> {
         set_http_response_headers_map(self.handle, headers)
     }
 
     /// Read an HTTP response header by name.
-    pub fn get_header(&self, name: &str) -> Result<Option<String>, OrionWasmResult> {
+    pub fn get_header(&self, name: &str) -> Result<Option<HeaderValue>, OrionWasmResult> {
         get_http_response_header(self.handle, name)
+    }
+
+    pub fn set_header(&self, name: HeaderName, value: HeaderValue) -> Result<(), OrionWasmResult> {
+        set_http_response_header(self.handle, &name, &value)
+    }
+
+    pub fn add_header(&self, name: HeaderName, value: HeaderValue) -> Result<(), OrionWasmResult> {
+        add_http_response_header(self.handle, &name, &value)
+    }
+
+    pub fn remove_header(&self, name: &HeaderName) -> Result<(), OrionWasmResult> {
+        remove_http_response_header(self.handle, name)
+    }
+
+    pub fn replace_header(&self, name: HeaderName, value: HeaderValue) -> Result<(), OrionWasmResult> {
+        replace_http_response_header(self.handle, &name, &value)
     }
 }
 
@@ -581,8 +707,24 @@ impl ResponseHandle<ResponseBody> {
     }
 
     /// Read an HTTP response header by name.
-    pub fn get_header(&self, name: &str) -> Result<Option<String>, OrionWasmResult> {
+    pub fn get_header(&self, name: &str) -> Result<Option<HeaderValue>, OrionWasmResult> {
         get_http_response_header(self.handle, name)
+    }
+
+    pub fn set_header(&self, name: HeaderName, value: HeaderValue) -> Result<(), OrionWasmResult> {
+        set_http_response_header(self.handle, &name, &value)
+    }
+
+    pub fn add_header(&self, name: HeaderName, value: HeaderValue) -> Result<(), OrionWasmResult> {
+        add_http_response_header(self.handle, &name, &value)
+    }
+
+    pub fn remove_header(&self, name: &HeaderName) -> Result<(), OrionWasmResult> {
+        remove_http_response_header(self.handle, name)
+    }
+
+    pub fn replace_header(&self, name: HeaderName, value: HeaderValue) -> Result<(), OrionWasmResult> {
+        replace_http_response_header(self.handle, &name, &value)
     }
 
     /// Read the buffered response body.

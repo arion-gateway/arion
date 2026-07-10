@@ -1,0 +1,65 @@
+//! Example using the Orion Wasm SDK to mutate HTTP headers natively.
+use orion_wasm_sdk::{
+    orion_plugin, FilterAction, Plugin, RequestHandle, RequestHeaders, ResponseHandle, ResponseHeaders, init_tracing
+};
+use tracing::{info, debug, error};
+
+#[derive(Default)]
+struct HeaderApiFilter;
+
+#[orion_plugin]
+impl Plugin for HeaderApiFilter {
+    fn on_plugin_start(&mut self) {
+        let _ = init_tracing();
+        info!(version = "1.0", "HeaderApiFilter Wasm: Instance initialized!");
+    }
+
+    fn on_request_headers(&mut self, ctx: &RequestHandle<RequestHeaders>) -> FilterAction {
+        info!("--- Processing Request Headers ---");
+
+        // 1. Set a new header (or replace if it exists)
+        if let Err(e) = ctx.set_header(
+            http::header::HeaderName::from_static("x-custom-set"),
+            http::header::HeaderValue::from_static("set-value"),
+        ) {
+            error!("Failed to set header: {:?}", e);
+        }
+
+        // 2. Add a header (appends to existing)
+        if let Err(e) = ctx.add_header(
+            http::header::HeaderName::from_static("x-custom-add"),
+            http::header::HeaderValue::from_static("add-value"),
+        ) {
+            error!("Failed to add header: {:?}", e);
+        }
+
+        // 3. Remove a header
+        if let Err(e) = ctx.remove_header(&http::header::HeaderName::from_static("user-agent")) {
+            error!("Failed to remove header: {:?}", e);
+        }
+
+        // 4. Replace an existing header (only if it exists)
+        if let Err(e) = ctx.replace_header(
+            http::header::HeaderName::from_static("x-custom-set"),
+            http::header::HeaderValue::from_static("replaced-value"),
+        ) {
+            error!("Failed to replace header: {:?}", e);
+        }
+
+        FilterAction::Continue
+    }
+
+    fn on_response_headers(&mut self, ctx: &ResponseHandle<ResponseHeaders>) -> FilterAction {
+        info!("--- Processing Response Headers ---");
+
+        // 1. Set a response header
+        if let Err(e) = ctx.set_header(
+            http::header::HeaderName::from_static("x-response-set"),
+            http::header::HeaderValue::from_static("res-set-value"),
+        ) {
+            error!("Failed to set response header: {:?}", e);
+        }
+
+        FilterAction::Continue
+    }
+}
