@@ -282,8 +282,150 @@ fn orion_log(mut caller: Caller<'_, WasmState>, level: u32, msg_ptr: u32, msg_le
     OrionWasmResult::Ok.into()
 }
 
+
+use http::HeaderMap;
+
+fn serialize_header_map(headers: &HeaderMap) -> Vec<u8> {
+    let mut buf = Vec::new();
+    let num_headers = headers.iter().count() as u32;
+    buf.extend_from_slice(&num_headers.to_le_bytes());
+
+    for (key, val) in headers.iter() {
+        let key_bytes = key.as_str().as_bytes();
+        let val_bytes = val.as_bytes();
+
+        buf.extend_from_slice(&(key_bytes.len() as u32).to_le_bytes());
+        buf.extend_from_slice(key_bytes);
+
+        buf.extend_from_slice(&(val_bytes.len() as u32).to_le_bytes());
+        buf.extend_from_slice(val_bytes);
+    }
+    buf
+}
+
+fn deserialize_header_map(data: &[u8]) -> Option<HeaderMap> {
+    let mut headers = HeaderMap::new();
+    if data.len() < 4 {
+        return Some(headers);
+    }
+
+    let num_headers = u32::from_le_bytes(data[0..4].try_into().unwrap());
+    let mut offset = 4;
+
+    for _ in 0..num_headers {
+        if offset + 4 > data.len() { return None; }
+        let key_len = u32::from_le_bytes(data[offset..offset+4].try_into().unwrap()) as usize;
+        offset += 4;
+
+        if offset + key_len > data.len() { return None; }
+        let key_bytes = &data[offset..offset+key_len];
+        offset += key_len;
+
+        if offset + 4 > data.len() { return None; }
+        let val_len = u32::from_le_bytes(data[offset..offset+4].try_into().unwrap()) as usize;
+        offset += 4;
+
+        if offset + val_len > data.len() { return None; }
+        let val_bytes = &data[offset..offset+val_len];
+        offset += val_len;
+
+        if let (Ok(name), Ok(value)) = (http::header::HeaderName::from_bytes(key_bytes), http::header::HeaderValue::from_bytes(val_bytes)) {
+            headers.append(name, value);
+        } else {
+            return None;
+        }
+    }
+    Some(headers)
+}
+
+fn orion_get_request_headers_map(mut caller: Caller<'_, WasmState>, request_handle: u64, buf_ptr: u32, max_len: u32, written_len_ptr: u32) -> i32 {
+    let memory = match caller.get_export("memory").and_then(|m| m.into_memory()) {
+        Some(mem) => mem,
+        None => return OrionWasmResult::InvalidMemoryAccess.into(),
+    };
+    let request = unsafe { &*(request_handle as *const Request<OrionRequestBody>) };
+    let serialized = serialize_header_map(request.headers());
+    if serialized.len() > max_len as usize {
+        return OrionWasmResult::BufferTooSmall.into();
+    }
+    let data = memory.data_mut(&mut caller);
+    let start = buf_ptr as usize;
+    let end = start + serialized.len();
+    if end > data.len() { return OrionWasmResult::InvalidMemoryAccess.into(); }
+    data[start..end].copy_from_slice(&serialized);
+    let len_start = written_len_ptr as usize;
+    let len_end = len_start + 4;
+    if len_end > data.len() { return OrionWasmResult::InvalidMemoryAccess.into(); }
+    data[len_start..len_end].copy_from_slice(&(serialized.len() as u32).to_le_bytes());
+    OrionWasmResult::Ok.into()
+}
+
+fn orion_set_request_headers_map(mut caller: Caller<'_, WasmState>, request_handle: u64, buf_ptr: u32, buf_len: u32) -> i32 {
+    let memory = match caller.get_export("memory").and_then(|m| m.into_memory()) {
+        Some(mem) => mem,
+        None => return OrionWasmResult::InvalidMemoryAccess.into(),
+    };
+    let data = memory.data(&caller);
+    let start = buf_ptr as usize;
+    let end = start + buf_len as usize;
+    if end > data.len() { return OrionWasmResult::InvalidMemoryAccess.into(); }
+    let headers = match deserialize_header_map(&data[start..end]) {
+        Some(h) => h,
+        None => return OrionWasmResult::InternalError.into(),
+    };
+    let request = unsafe { &mut *(request_handle as *mut Request<OrionRequestBody>) };
+    *request.headers_mut() = headers;
+    OrionWasmResult::Ok.into()
+}
+
+fn orion_get_response_headers_map(mut caller: Caller<'_, WasmState>, response_handle: u64, buf_ptr: u32, max_len: u32, written_len_ptr: u32) -> i32 {
+    let memory = match caller.get_export("memory").and_then(|m| m.into_memory()) {
+        Some(mem) => mem,
+        None => return OrionWasmResult::InvalidMemoryAccess.into(),
+    };
+    let response = unsafe { &*(response_handle as *const Response<OrionResponseBody>) };
+    let serialized = serialize_header_map(response.headers());
+    if serialized.len() > max_len as usize {
+        return OrionWasmResult::BufferTooSmall.into();
+    }
+    let data = memory.data_mut(&mut caller);
+    let start = buf_ptr as usize;
+    let end = start + serialized.len();
+    if end > data.len() { return OrionWasmResult::InvalidMemoryAccess.into(); }
+    data[start..end].copy_from_slice(&serialized);
+    let len_start = written_len_ptr as usize;
+    let len_end = len_start + 4;
+    if len_end > data.len() { return OrionWasmResult::InvalidMemoryAccess.into(); }
+    data[len_start..len_end].copy_from_slice(&(serialized.len() as u32).to_le_bytes());
+    OrionWasmResult::Ok.into()
+}
+
+fn orion_set_response_headers_map(mut caller: Caller<'_, WasmState>, response_handle: u64, buf_ptr: u32, buf_len: u32) -> i32 {
+    let memory = match caller.get_export("memory").and_then(|m| m.into_memory()) {
+        Some(mem) => mem,
+        None => return OrionWasmResult::InvalidMemoryAccess.into(),
+    };
+    let data = memory.data(&caller);
+    let start = buf_ptr as usize;
+    let end = start + buf_len as usize;
+    if end > data.len() { return OrionWasmResult::InvalidMemoryAccess.into(); }
+    let headers = match deserialize_header_map(&data[start..end]) {
+        Some(h) => h,
+        None => return OrionWasmResult::InternalError.into(),
+    };
+    let response = unsafe { &mut *(response_handle as *mut Response<OrionResponseBody>) };
+    *response.headers_mut() = headers;
+    OrionWasmResult::Ok.into()
+}
+
 pub fn register_hostcalls(linker: &mut Linker<WasmState>) -> Result<(), wasmtime::Error> {
+
     linker.func_wrap("env", "orion_get_request_header", orion_get_request_header)?;
+
+    linker.func_wrap("env", "orion_get_request_headers_map", orion_get_request_headers_map)?;
+    linker.func_wrap("env", "orion_set_request_headers_map", orion_set_request_headers_map)?;
+    linker.func_wrap("env", "orion_get_response_headers_map", orion_get_response_headers_map)?;
+    linker.func_wrap("env", "orion_set_response_headers_map", orion_set_response_headers_map)?;
     linker.func_wrap("env", "orion_send_direct_response", orion_send_direct_response)?;
     linker.func_wrap("env", "orion_get_request_body", orion_get_request_body)?;
     linker.func_wrap("env", "orion_get_response_header", orion_get_response_header)?;

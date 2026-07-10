@@ -46,4 +46,10 @@ extern "C" {
 
     /// Log a message via the host's tracing framework.
     pub fn orion_log(level: u32, msg_ptr: *const u8, msg_len: u32) -> i32;
+
+    pub fn orion_get_request_headers_map(request_handle: u64, buf_ptr: *mut u8, max_len: u32, written_len_ptr: *mut u32) -> i32;
+    pub fn orion_set_request_headers_map(request_handle: u64, buf_ptr: *const u8, buf_len: u32) -> i32;
+    pub fn orion_get_response_headers_map(response_handle: u64, buf_ptr: *mut u8, max_len: u32, written_len_ptr: *mut u32) -> i32;
+    pub fn orion_set_response_headers_map(response_handle: u64, buf_ptr: *const u8, buf_len: u32) -> i32;
 }
+

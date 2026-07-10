@@ -13,3 +13,4 @@ license = "Apache-2.0"
 orion-wasm-types = { path = "../orion-wasm-types" }
 orion-wasm-sdk-macros = { path = "../orion-wasm-sdk-macros" }
 tracing = "0.1"
+http = "1.0"
