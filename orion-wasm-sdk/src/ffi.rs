@@ -38,6 +38,7 @@ extern "C" {
     pub fn orion_add_header(handle: u64, handle_type: u32, name_ptr: *const u8, name_len: u32, value_ptr: *const u8, value_len: u32) -> i32;
     pub fn orion_remove_header(handle: u64, handle_type: u32, name_ptr: *const u8, name_len: u32) -> i32;
     pub fn orion_replace_header(handle: u64, handle_type: u32, name_ptr: *const u8, name_len: u32, value_ptr: *const u8, value_len: u32) -> i32;
+    pub fn orion_apply_header_mutations(handle: u64, handle_type: u32, buf_ptr: *const u8, buf_len: u32) -> i32;
 }
 
 #[derive(Copy, Clone)]

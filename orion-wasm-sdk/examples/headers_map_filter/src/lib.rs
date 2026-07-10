@@ -5,13 +5,13 @@ use orion_wasm_sdk::{
 use tracing::{info, debug, error};
 
 #[derive(Default)]
-struct HeaderMutationFilter;
+struct HeadersMapFilter;
 
 #[orion_plugin]
-impl Plugin for HeaderMutationFilter {
+impl Plugin for HeadersMapFilter {
     fn on_plugin_start(&mut self) {
         let _ = init_tracing();
-        info!(version = "1.0", "HeaderMutationFilter Wasm: Instance initialized!");
+        info!(version = "1.0", "HeadersMapFilter Wasm: Instance initialized!");
     }
 
     fn on_request_headers(&mut self, ctx: &RequestHandle<RequestHeaders>) -> FilterAction {

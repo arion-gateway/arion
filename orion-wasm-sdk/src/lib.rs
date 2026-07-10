@@ -317,6 +317,76 @@ fn replace_http_header(handle: u64, target: ffi::HeaderTarget, name: &HeaderName
 #[cfg(not(target_arch = "wasm32"))]
 fn replace_http_header(_handle: u64, _target: ffi::HeaderTarget, _name: &HeaderName, _value: &HeaderValue) -> Result<(), OrionWasmResult> { Err(OrionWasmResult::InternalError) }
 
+
+pub enum HeaderMutation {
+    Set(HeaderName, HeaderValue),
+    Add(HeaderName, HeaderValue),
+    Replace(HeaderName, HeaderValue),
+    Remove(HeaderName),
+}
+
+#[cfg(target_arch = "wasm32")]
+fn serialize_header_mutations(mutations: &[HeaderMutation]) -> Vec<u8> {
+    let mut buf = Vec::new();
+    let num_mutations = mutations.len() as u32;
+    buf.extend_from_slice(&num_mutations.to_le_bytes());
+
+    for mutation in mutations {
+        match mutation {
+            HeaderMutation::Set(name, value) => {
+                buf.push(0);
+                let name_bytes = name.as_str().as_bytes();
+                buf.extend_from_slice(&(name_bytes.len() as u32).to_le_bytes());
+                buf.extend_from_slice(name_bytes);
+                let value_bytes = value.as_bytes();
+                buf.extend_from_slice(&(value_bytes.len() as u32).to_le_bytes());
+                buf.extend_from_slice(value_bytes);
+            }
+            HeaderMutation::Add(name, value) => {
+                buf.push(1);
+                let name_bytes = name.as_str().as_bytes();
+                buf.extend_from_slice(&(name_bytes.len() as u32).to_le_bytes());
+                buf.extend_from_slice(name_bytes);
+                let value_bytes = value.as_bytes();
+                buf.extend_from_slice(&(value_bytes.len() as u32).to_le_bytes());
+                buf.extend_from_slice(value_bytes);
+            }
+            HeaderMutation::Replace(name, value) => {
+                buf.push(2);
+                let name_bytes = name.as_str().as_bytes();
+                buf.extend_from_slice(&(name_bytes.len() as u32).to_le_bytes());
+                buf.extend_from_slice(name_bytes);
+                let value_bytes = value.as_bytes();
+                buf.extend_from_slice(&(value_bytes.len() as u32).to_le_bytes());
+                buf.extend_from_slice(value_bytes);
+            }
+            HeaderMutation::Remove(name) => {
+                buf.push(3);
+                let name_bytes = name.as_str().as_bytes();
+                buf.extend_from_slice(&(name_bytes.len() as u32).to_le_bytes());
+                buf.extend_from_slice(name_bytes);
+            }
+        }
+    }
+    buf
+}
+
+#[cfg(target_arch = "wasm32")]
+fn apply_header_mutations(handle: u64, target: ffi::HeaderTarget, mutations: &[HeaderMutation]) -> Result<(), OrionWasmResult> {
+    let serialized = serialize_header_mutations(mutations);
+    let res = unsafe { ffi::orion_apply_header_mutations(handle, target as u32, serialized.as_ptr(), serialized.len() as u32) };
+    match OrionWasmResult::try_from(res) {
+        Ok(OrionWasmResult::Ok) => Ok(()),
+        Ok(other) => Err(other),
+        Err(_) => Err(OrionWasmResult::InternalError),
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn apply_header_mutations(_handle: u64, _target: ffi::HeaderTarget, _mutations: &[HeaderMutation]) -> Result<(), OrionWasmResult> {
+    Err(OrionWasmResult::InternalError)
+}
+
 // ============================================================================
 // Typestate API
 
@@ -401,6 +471,10 @@ impl RequestHandle<RequestHeaders> {
         set_http_headers_map(self.handle, ffi::HeaderTarget::Request, headers)
     }
 
+    pub fn apply_header_mutations(&self, mutations: &[HeaderMutation]) -> Result<(), OrionWasmResult> {
+        apply_header_mutations(self.handle, ffi::HeaderTarget::Request, mutations)
+    }
+
     pub fn send_direct_response(&self, status_code: u16, body: &[u8]) -> Result<(), OrionWasmResult> {
         send_http_direct_response(self.handle, status_code, body)
     }
@@ -449,6 +523,10 @@ impl RequestHandle<RequestBody> {
         set_http_headers_map(self.handle, ffi::HeaderTarget::Request, headers)
     }
 
+    pub fn apply_header_mutations(&self, mutations: &[HeaderMutation]) -> Result<(), OrionWasmResult> {
+        apply_header_mutations(self.handle, ffi::HeaderTarget::Request, mutations)
+    }
+
     pub fn send_direct_response(&self, status_code: u16, body: &[u8]) -> Result<(), OrionWasmResult> {
         send_http_direct_response(self.handle, status_code, body)
     }
@@ -469,6 +547,10 @@ impl ResponseHandle<ResponseHeaders> {
 
     pub fn set_headers_map(&self, headers: &HeaderMap) -> Result<(), OrionWasmResult> {
         set_http_headers_map(self.handle, ffi::HeaderTarget::Response, headers)
+    }
+
+    pub fn apply_header_mutations(&self, mutations: &[HeaderMutation]) -> Result<(), OrionWasmResult> {
+        apply_header_mutations(self.handle, ffi::HeaderTarget::Response, mutations)
     }
 
     /// Read an HTTP response header by name.
@@ -500,6 +582,10 @@ impl ResponseHandle<ResponseBody> {
 
     pub fn set_headers_map(&self, headers: &HeaderMap) -> Result<(), OrionWasmResult> {
         set_http_headers_map(self.handle, ffi::HeaderTarget::Response, headers)
+    }
+
+    pub fn apply_header_mutations(&self, mutations: &[HeaderMutation]) -> Result<(), OrionWasmResult> {
+        apply_header_mutations(self.handle, ffi::HeaderTarget::Response, mutations)
     }
 
     /// Read an HTTP response header by name.

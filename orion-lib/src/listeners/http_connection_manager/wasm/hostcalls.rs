@@ -512,6 +512,126 @@ fn orion_replace_header(
     }
 }
 
+pub enum HeaderMutation {
+    Set(http::header::HeaderName, http::header::HeaderValue),
+    Add(http::header::HeaderName, http::header::HeaderValue),
+    Replace(http::header::HeaderName, http::header::HeaderValue),
+    Remove(http::header::HeaderName),
+}
+
+fn deserialize_header_mutations(data: &[u8]) -> Option<Vec<HeaderMutation>> {
+    if data.len() < 4 {
+        return None;
+    }
+    let num_mutations = u32::from_le_bytes(data[0..4].try_into().unwrap());
+    let mut offset = 4;
+    let mut mutations = Vec::new();
+
+    for _ in 0..num_mutations {
+        if offset >= data.len() {
+            return None;
+        }
+        let mut_type = data[offset];
+        offset += 1;
+
+        if offset + 4 > data.len() {
+            return None;
+        }
+        let name_len = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
+        offset += 4;
+
+        if offset + name_len > data.len() {
+            return None;
+        }
+        let name_bytes = &data[offset..offset + name_len];
+        offset += name_len;
+
+        let name_str = std::str::from_utf8(name_bytes).ok()?;
+        let name = http::header::HeaderName::try_from(name_str).ok()?;
+
+        if mut_type == 3 {
+            mutations.push(HeaderMutation::Remove(name));
+        } else {
+            if offset + 4 > data.len() {
+                return None;
+            }
+            let val_len = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
+            offset += 4;
+
+            if offset + val_len > data.len() {
+                return None;
+            }
+            let val_bytes = &data[offset..offset + val_len];
+            offset += val_len;
+            let value = http::header::HeaderValue::from_bytes(val_bytes).ok()?;
+
+            match mut_type {
+                0 => mutations.push(HeaderMutation::Set(name, value)),
+                1 => mutations.push(HeaderMutation::Add(name, value)),
+                2 => mutations.push(HeaderMutation::Replace(name, value)),
+                _ => return None,
+            }
+        }
+    }
+    Some(mutations)
+}
+
+fn apply_mutations_to_map(map: &mut http::HeaderMap, mutations: Vec<HeaderMutation>) {
+    for mutation in mutations {
+        match mutation {
+            HeaderMutation::Set(name, value) => {
+                map.insert(name, value);
+            },
+            HeaderMutation::Add(name, value) => {
+                map.append(name, value);
+            },
+            HeaderMutation::Replace(name, value) => {
+                if map.contains_key(&name) {
+                    map.insert(name, value);
+                }
+            },
+            HeaderMutation::Remove(name) => while map.remove(&name).is_some() {},
+        }
+    }
+}
+
+fn orion_apply_header_mutations(
+    mut caller: Caller<'_, WasmState>,
+    handle: u64,
+    handle_type: u32,
+    buf_ptr: u32,
+    buf_len: u32,
+) -> i32 {
+    let memory = match caller.get_export("memory").and_then(|m| m.into_memory()) {
+        Some(mem) => mem,
+        None => return OrionWasmResult::InvalidMemoryAccess.into(),
+    };
+    let data = memory.data(&caller);
+    let start = buf_ptr as usize;
+    let end = start + buf_len as usize;
+    if end > data.len() {
+        return OrionWasmResult::InvalidMemoryAccess.into();
+    }
+    let mutations = match deserialize_header_mutations(&data[start..end]) {
+        Some(m) => m,
+        None => return OrionWasmResult::InternalError.into(),
+    };
+
+    match handle_type {
+        0 => {
+            let request = unsafe { &mut *(handle as *mut Request<OrionRequestBody>) };
+            apply_mutations_to_map(request.headers_mut(), mutations);
+        },
+        1 => {
+            let response = unsafe { &mut *(handle as *mut Response<OrionResponseBody>) };
+            apply_mutations_to_map(response.headers_mut(), mutations);
+        },
+        _ => return OrionWasmResult::InternalError.into(),
+    }
+
+    OrionWasmResult::Ok.into()
+}
+
 pub fn register_hostcalls(linker: &mut Linker<WasmState>) -> Result<(), wasmtime::Error> {
     linker.func_wrap("env", "orion_get_header", orion_get_header)?;
     linker.func_wrap("env", "orion_get_body", orion_get_body)?;
@@ -522,6 +642,7 @@ pub fn register_hostcalls(linker: &mut Linker<WasmState>) -> Result<(), wasmtime
     linker.func_wrap("env", "orion_add_header", orion_add_header)?;
     linker.func_wrap("env", "orion_remove_header", orion_remove_header)?;
     linker.func_wrap("env", "orion_replace_header", orion_replace_header)?;
+    linker.func_wrap("env", "orion_apply_header_mutations", orion_apply_header_mutations)?;
 
     linker.func_wrap("env", "orion_send_direct_response", orion_send_direct_response)?;
     linker.func_wrap("env", "orion_log", orion_log)?;

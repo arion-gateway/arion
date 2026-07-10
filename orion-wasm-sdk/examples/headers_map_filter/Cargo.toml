@@ -1,5 +1,5 @@
 [package]
-name = "header_mutation_filter"
+name = "headers_map_filter"
 version = "0.1.0"
 edition = "2021"
 
