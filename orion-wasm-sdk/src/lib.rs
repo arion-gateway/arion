@@ -31,7 +31,12 @@ pub use http::{HeaderMap, header::HeaderName, header::HeaderValue};
 
 #[cfg(target_arch = "wasm32")]
 fn serialize_header_map(headers: &HeaderMap) -> Vec<u8> {
-    let mut buf = Vec::new();
+    let mut capacity = 4;
+    for (key, val) in headers.iter() {
+        capacity += 8 + key.as_str().len() + val.len();
+    }
+
+    let mut buf = Vec::with_capacity(capacity);
     let num_headers = headers.iter().count() as u32;
     buf.extend_from_slice(&num_headers.to_le_bytes());
 
@@ -88,12 +93,14 @@ fn deserialize_header_map(data: &[u8]) -> Option<HeaderMap> {
 // High-level API
 // ============================================================================
 
+const DEFAULT_HEADER_STACK_BUF_SIZE: usize = 1024;
+const DEFAULT_HEAP_BUF_SIZE: usize = 4096;
+
 
 /// Read an HTTP header by name.
 #[cfg(target_arch = "wasm32")]
 fn get_http_header(handle: u64, target: ffi::HeaderTarget, name: &str) -> Result<Option<HeaderValue>, OrionWasmResult> {
-    const INITIAL_BUF: usize = 1024;
-    let mut stack_buf = [0u8; INITIAL_BUF];
+    let mut stack_buf = [0u8; DEFAULT_HEADER_STACK_BUF_SIZE];
     let mut written_len: u32 = 0;
 
     let res = unsafe {
@@ -115,7 +122,7 @@ fn get_http_header(handle: u64, target: ffi::HeaderTarget, name: &str) -> Result
         }
         Ok(OrionWasmResult::NotFound) => Ok(None),
         Ok(OrionWasmResult::BufferTooSmall) => {
-            let mut heap_buf: Vec<u8> = vec![0u8; INITIAL_BUF * 4];
+            let mut heap_buf: Vec<u8> = Vec::with_capacity(DEFAULT_HEAP_BUF_SIZE);
             let mut written_len: u32 = 0;
 
             loop {
@@ -126,23 +133,23 @@ fn get_http_header(handle: u64, target: ffi::HeaderTarget, name: &str) -> Result
                         name.as_ptr(),
                         name.len() as u32,
                         heap_buf.as_mut_ptr(),
-                        heap_buf.len() as u32,
+                        heap_buf.capacity() as u32,
                         &mut written_len as *mut u32,
                     )
                 };
 
                 match OrionWasmResult::try_from(res) {
                     Ok(OrionWasmResult::Ok) => {
-                        let len = written_len as usize;
-                        return Ok(HeaderValue::from_bytes(&heap_buf[..len]).ok());
+                        unsafe { heap_buf.set_len(written_len as usize); }
+                        return Ok(HeaderValue::from_bytes(&heap_buf).ok());
                     }
                     Ok(OrionWasmResult::NotFound) => return Ok(None),
                     Ok(OrionWasmResult::BufferTooSmall) => {
-                        let new_len = heap_buf.len().saturating_mul(2);
-                        if new_len == heap_buf.len() {
+                        let new_cap = heap_buf.capacity().saturating_mul(2);
+                        if new_cap == heap_buf.capacity() {
                             return Err(OrionWasmResult::BufferTooSmall);
                         }
-                        heap_buf.resize(new_len, 0);
+                        heap_buf.reserve_exact(new_cap);
                     }
                     Ok(other) => return Err(other),
                     Err(_) => return Err(OrionWasmResult::InternalError),
@@ -162,8 +169,7 @@ fn get_http_header(_handle: u64, _target: ffi::HeaderTarget, _name: &str) -> Res
 /// Read the buffered body.
 #[cfg(target_arch = "wasm32")]
 fn get_http_body(handle: u64, target: ffi::HeaderTarget) -> Result<Vec<u8>, OrionWasmResult> {
-    const INITIAL_BUF: usize = 4096;
-    let mut buf: Vec<u8> = vec![0u8; INITIAL_BUF];
+    let mut buf: Vec<u8> = Vec::with_capacity(DEFAULT_HEAP_BUF_SIZE);
     let mut written_len: u32 = 0;
 
     loop {
@@ -172,22 +178,22 @@ fn get_http_body(handle: u64, target: ffi::HeaderTarget) -> Result<Vec<u8>, Orio
                 handle,
                 target as u32,
                 buf.as_mut_ptr(),
-                buf.len() as u32,
+                buf.capacity() as u32,
                 &mut written_len as *mut u32,
             )
         };
 
         match OrionWasmResult::try_from(res) {
             Ok(OrionWasmResult::Ok) => {
-                buf.truncate(written_len as usize);
+                unsafe { buf.set_len(written_len as usize); }
                 return Ok(buf);
             }
             Ok(OrionWasmResult::BufferTooSmall) => {
-                let new_len = buf.len().saturating_mul(2);
-                if new_len == buf.len() {
+                let new_cap = buf.capacity().saturating_mul(2);
+                if new_cap == buf.capacity() {
                     return Err(OrionWasmResult::BufferTooSmall);
                 }
-                buf.resize(new_len, 0);
+                buf.reserve_exact(new_cap);
             }
             Ok(other) => return Err(other),
             Err(_) => return Err(OrionWasmResult::InternalError),
@@ -226,8 +232,7 @@ fn send_http_direct_response(_request_handle: u64, _status_code: u16, _body: &[u
 
 #[cfg(target_arch = "wasm32")]
 fn get_http_headers_map(handle: u64, target: ffi::HeaderTarget) -> Result<HeaderMap, OrionWasmResult> {
-    const INITIAL_BUF: usize = 4096;
-    let mut buf: Vec<u8> = vec![0u8; INITIAL_BUF];
+    let mut buf: Vec<u8> = Vec::with_capacity(DEFAULT_HEAP_BUF_SIZE);
     let mut written_len: u32 = 0;
 
     loop {
@@ -236,20 +241,20 @@ fn get_http_headers_map(handle: u64, target: ffi::HeaderTarget) -> Result<Header
                 handle,
                 target as u32,
                 buf.as_mut_ptr(),
-                buf.len() as u32,
+                buf.capacity() as u32,
                 &mut written_len as *mut u32,
             )
         };
 
         match OrionWasmResult::try_from(res) {
             Ok(OrionWasmResult::Ok) => {
-                buf.truncate(written_len as usize);
+                unsafe { buf.set_len(written_len as usize); }
                 return deserialize_header_map(&buf).ok_or(OrionWasmResult::InternalError);
             }
             Ok(OrionWasmResult::BufferTooSmall) => {
-                let new_len = buf.len().saturating_mul(2);
-                if new_len == buf.len() { return Err(OrionWasmResult::BufferTooSmall); }
-                buf.resize(new_len, 0);
+                let new_cap = buf.capacity().saturating_mul(2);
+                if new_cap == buf.capacity() { return Err(OrionWasmResult::BufferTooSmall); }
+                buf.reserve_exact(new_cap);
             }
             Ok(other) => return Err(other),
             Err(_) => return Err(OrionWasmResult::InternalError),
@@ -327,7 +332,22 @@ pub enum HeaderMutation {
 
 #[cfg(target_arch = "wasm32")]
 fn serialize_header_mutations(mutations: &[HeaderMutation]) -> Vec<u8> {
-    let mut buf = Vec::new();
+    let mut capacity = 4;
+    for mutation in mutations {
+        capacity += 1;
+        match mutation {
+            HeaderMutation::Set(name, value)
+            | HeaderMutation::Add(name, value)
+            | HeaderMutation::Replace(name, value) => {
+                capacity += 8 + name.as_str().len() + value.len();
+            }
+            HeaderMutation::Remove(name) => {
+                capacity += 4 + name.as_str().len();
+            }
+        }
+    }
+
+    let mut buf = Vec::with_capacity(capacity);
     let num_mutations = mutations.len() as u32;
     buf.extend_from_slice(&num_mutations.to_le_bytes());
 
@@ -335,30 +355,15 @@ fn serialize_header_mutations(mutations: &[HeaderMutation]) -> Vec<u8> {
         match mutation {
             HeaderMutation::Set(name, value) => {
                 buf.push(0);
-                let name_bytes = name.as_str().as_bytes();
-                buf.extend_from_slice(&(name_bytes.len() as u32).to_le_bytes());
-                buf.extend_from_slice(name_bytes);
-                let value_bytes = value.as_bytes();
-                buf.extend_from_slice(&(value_bytes.len() as u32).to_le_bytes());
-                buf.extend_from_slice(value_bytes);
+                write_key_val(&mut buf, name, value);
             }
             HeaderMutation::Add(name, value) => {
                 buf.push(1);
-                let name_bytes = name.as_str().as_bytes();
-                buf.extend_from_slice(&(name_bytes.len() as u32).to_le_bytes());
-                buf.extend_from_slice(name_bytes);
-                let value_bytes = value.as_bytes();
-                buf.extend_from_slice(&(value_bytes.len() as u32).to_le_bytes());
-                buf.extend_from_slice(value_bytes);
+                write_key_val(&mut buf, name, value);
             }
             HeaderMutation::Replace(name, value) => {
                 buf.push(2);
-                let name_bytes = name.as_str().as_bytes();
-                buf.extend_from_slice(&(name_bytes.len() as u32).to_le_bytes());
-                buf.extend_from_slice(name_bytes);
-                let value_bytes = value.as_bytes();
-                buf.extend_from_slice(&(value_bytes.len() as u32).to_le_bytes());
-                buf.extend_from_slice(value_bytes);
+                write_key_val(&mut buf, name, value);
             }
             HeaderMutation::Remove(name) => {
                 buf.push(3);
@@ -369,6 +374,17 @@ fn serialize_header_mutations(mutations: &[HeaderMutation]) -> Vec<u8> {
         }
     }
     buf
+}
+
+#[inline]
+#[cfg(target_arch = "wasm32")]
+fn write_key_val(buf: &mut Vec<u8>, name: &HeaderName, value: &HeaderValue) {
+    let name_bytes = name.as_str().as_bytes();
+    let value_bytes = value.as_bytes();
+    buf.extend_from_slice(&(name_bytes.len() as u32).to_le_bytes());
+    buf.extend_from_slice(name_bytes);
+    buf.extend_from_slice(&(value_bytes.len() as u32).to_le_bytes());
+    buf.extend_from_slice(value_bytes);
 }
 
 #[cfg(target_arch = "wasm32")]
