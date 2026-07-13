@@ -12,8 +12,9 @@
 //! The ABI types (`OrionWasmResult`, `FilterAction`) are shared with the host
 //! via the standalone [`orion_wasm_types`] crate.
 
+use http::{Method, StatusCode};
 pub use orion_wasm_types::{FilterAction, OrionWasmResult};
-
+use smol_str::SmolStr;
 
 // ============================================================================
 // FFI declarations — match the hostcalls registered in
@@ -797,4 +798,63 @@ impl tracing::Subscriber for OrionWasmSubscriber {
 
 pub fn init_tracing() -> Result<(), tracing::subscriber::SetGlobalDefaultError> {
     tracing::subscriber::set_global_default(OrionWasmSubscriber)
+}
+
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct CalloutRequest {
+    pub cluster_name: SmolStr,
+    pub path: SmolStr,
+    #[serde(with = "http_serde_ext::method")]
+    pub method: Method,
+    #[serde(with = "http_serde_ext::header_map")]
+    pub headers: HeaderMap,
+    pub body: Option<Vec<u8>>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct CalloutResponse {
+    #[serde(with = "http_serde_ext::status_code")]
+    pub status: StatusCode,
+    #[serde(with = "http_serde_ext::header_map")]
+    pub headers: HeaderMap,
+    pub body: Option<Vec<u8>>,
+}
+
+/// Dispatches an asynchronous HTTP call using the host's cluster manager.
+#[cfg(target_arch = "wasm32")]
+pub fn dispatch_http_call(request: &CalloutRequest) -> Result<CalloutResponse, OrionWasmResult> {
+    let req_bytes = match serde_json::to_vec(request) {
+        Ok(b) => b,
+        Err(_) => return Err(OrionWasmResult::InternalError),
+    };
+
+    let mut resp_buf = vec![0u8; 1024 * 8]; // 8k KB buffer for response
+    let mut written_len = 0u32;
+
+    let res = unsafe {
+        ffi::orion_dispatch_http_call(
+            req_bytes.as_ptr(),
+            req_bytes.len() as u32,
+            resp_buf.as_mut_ptr(),
+            resp_buf.len() as u32,
+            &mut written_len as *mut u32,
+        )
+    };
+
+    if res == 0 {
+        resp_buf.truncate(written_len as usize);
+        match serde_json::from_slice(&resp_buf) {
+            Ok(resp) => Ok(resp),
+            Err(_) => Err(OrionWasmResult::InternalError),
+        }
+    } else {
+        Err(OrionWasmResult::try_from(res).unwrap_or(OrionWasmResult::InternalError))
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn dispatch_http_call(_request: &CalloutRequest) -> Result<CalloutResponse, OrionWasmResult> {
+    Err(OrionWasmResult::InternalError)
 }

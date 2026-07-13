@@ -105,6 +105,7 @@ pingora = { workspace = true, features = ["time"] }
 wasmtime.workspace = true
 thread_local.workspace = true
 crossbeam-queue = { workspace = true }
+http-serde-ext.workspace = true
 [dev-dependencies]
 orion-data-plane-api.workspace = true
 serde_yaml.workspace           = true

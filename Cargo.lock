@@ -3722,6 +3722,7 @@ dependencies = [
  "http",
  "http-body",
  "http-body-util",
+ "http-serde-ext",
  "hyper",
  "hyper-rustls",
  "hyper-util",

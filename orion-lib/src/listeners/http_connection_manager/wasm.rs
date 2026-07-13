@@ -31,6 +31,7 @@ pub enum WasmError {
 pub static GLOBAL_ENGINE: LazyLock<Engine> = LazyLock::new(|| {
     let mut config = wasmtime::Config::new();
     config.allocation_strategy(wasmtime::InstanceAllocationStrategy::pooling());
+    config.async_support(true);
     Engine::new(&config).unwrap_or_else(|e| {
         warn!("Failed to initialize Wasm Engine with pooling: {}. Falling back to default.", e);
         Engine::default()
@@ -52,7 +53,13 @@ impl std::fmt::Debug for WasmFilterState {
 impl Drop for WasmFilterState {
     fn drop(&mut self) {
         if let Ok(on_destroy) = self.instance.get_typed_func::<(), ()>(&mut self.store, "on_plugin_destroy") {
-            let _ = on_destroy.call(&mut self.store, ());
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                tokio::task::block_in_place(|| {
+                    handle.block_on(async {
+                        let _ = on_destroy.call_async(&mut self.store, ()).await;
+                    });
+                });
+            }
         }
     }
 }
@@ -155,7 +162,7 @@ impl WasmFilter {
         })
     }
 
-    fn get_state(&mut self) -> Result<&mut WasmFilterState, WasmError> {
+    async fn get_state(&mut self) -> Result<&mut WasmFilterState, WasmError> {
         // Use get_mut() to safely access the data bypassing the lock!
         // Zero locking overhead since we have &mut self.
         let state_opt = self.state.get_mut();
@@ -176,14 +183,14 @@ impl WasmFilter {
                         },
                     );
                     // Instantiate the module using the pre-resolved imports
-                    let instance = match self.inner.instance_pre.instantiate(&mut store) {
+                    let instance = match self.inner.instance_pre.instantiate_async(&mut store).await {
                         Ok(inst) => inst,
                         Err(e) => return Err(WasmError::InitError(format!("failed to instantiate module: {}", e))),
                     };
 
                     if self.inner.has_on_plugin_start {
                         if let Ok(on_start) = instance.get_typed_func::<(), ()>(&mut store, "on_plugin_start") {
-                            let _ = on_start.call(&mut store, ());
+                            let _ = on_start.call_async(&mut store, ()).await;
                         }
                     }
 
@@ -200,12 +207,12 @@ impl WasmFilter {
         debug!("WasFilter::apply_request: {:?}", self.inner.config);
 
         if self.inner.has_on_transaction_start {
-            let state = match self.get_state() {
+            let state = match self.get_state().await {
                 Ok(s) => s,
                 Err(e) => return FilterDecision::internal_server_error(&e.to_string(), req.version()),
             };
             if let Ok(on_tx_start) = state.instance.get_typed_func::<(), ()>(&mut state.store, "on_transaction_start") {
-                let _ = on_tx_start.call(&mut state.store, ());
+                let _ = on_tx_start.call_async(&mut state.store, ()).await;
             }
         }
 
@@ -217,13 +224,13 @@ impl WasmFilter {
 
         // PHASE 1: headers evaluation
         let action_code: Result<i32, WasmError> = if self.inner.has_on_request_headers {
-            let state = match self.get_state() {
+            let state = match self.get_state().await {
                 Ok(s) => s,
                 Err(e) => return FilterDecision::internal_server_error(&e.to_string(), req.version()),
             };
 
             if let Ok(on_headers) = state.instance.get_typed_func::<u64, i32>(&mut state.store, "on_request_headers") {
-                let res = on_headers.call(&mut state.store, req_handle);
+                let res = on_headers.call_async(&mut state.store, req_handle).await;
                 res.map_err(WasmError::Wasmtime)
             } else {
                 Ok(types::FilterAction::Continue.into())
@@ -259,7 +266,7 @@ impl WasmFilter {
 
                 // 3. Re-enter the Wasm context to invoke on_request_body
                 let body_action_code: Result<i32, WasmError> = if self.inner.has_on_request_body {
-                    let state = match self.get_state() {
+                    let state = match self.get_state().await {
                         Ok(s) => s,
                         Err(e) => return FilterDecision::internal_server_error(&e.to_string(), req.version()),
                     };
@@ -269,7 +276,7 @@ impl WasmFilter {
                     {
                         state.store.data_mut().buffered_request_body = Some(full_body_bytes.clone());
 
-                        let res = on_body.call(&mut state.store, (req_handle, full_body_bytes.len() as u32));
+                        let res = on_body.call_async(&mut state.store, (req_handle, full_body_bytes.len() as u32)).await;
 
                         if let Some(mutated_body) = state.store.data_mut().buffered_request_body.take() {
                             if req.headers().contains_key(http::header::CONTENT_LENGTH) {
@@ -299,7 +306,7 @@ impl WasmFilter {
                     Ok(0) => FilterDecision::Continue, // Continue
                     Ok(2) => {
                         // DirectResponse
-                        let state = match self.get_state() {
+                        let state = match self.get_state().await {
                             Ok(s) => s,
                             Err(e) => return FilterDecision::internal_server_error(&e.to_string(), req.version()),
                         };
@@ -329,7 +336,7 @@ impl WasmFilter {
 
             Ok(2) => {
                 // DirectResponse
-                let state = match self.get_state() {
+                let state = match self.get_state().await {
                     Ok(s) => s,
                     Err(e) => return FilterDecision::internal_server_error(&e.to_string(), req.version()),
                 };
@@ -366,7 +373,7 @@ impl WasmFilter {
 
         // PHASE 1: headers evaluation
         let action_code: Result<i32, WasmError> = if self.inner.has_on_response_headers {
-            let state = match self.get_state() {
+            let state = match self.get_state().await {
                 Ok(s) => s,
                 Err(e) => return FilterDecision::internal_server_error(&e.to_string(), res.version()),
             };
@@ -374,7 +381,7 @@ impl WasmFilter {
             if let Ok(on_response_headers) =
                 state.instance.get_typed_func::<u64, i32>(&mut state.store, "on_response_headers")
             {
-                let res_val = on_response_headers.call(&mut state.store, resp_handle);
+                let res_val = on_response_headers.call_async(&mut state.store, resp_handle).await;
                 res_val.map_err(WasmError::Wasmtime)
             } else {
                 Ok(types::FilterAction::Continue.into())
@@ -406,7 +413,7 @@ impl WasmFilter {
 
                 // 3. Invoke on_response_body
                 let body_action_code: Result<i32, WasmError> = if self.inner.has_on_response_body {
-                    let state = match self.get_state() {
+                    let state = match self.get_state().await {
                         Ok(s) => s,
                         Err(e) => return FilterDecision::internal_server_error(&e.to_string(), res.version()),
                     };
@@ -416,7 +423,7 @@ impl WasmFilter {
                     {
                         state.store.data_mut().buffered_response_body = Some(full_body_bytes.clone());
 
-                        let res_val = on_body.call(&mut state.store, (resp_handle, full_body_bytes.len() as u32));
+                        let res_val = on_body.call_async(&mut state.store, (resp_handle, full_body_bytes.len() as u32)).await;
 
                         if let Some(mutated_body) = state.store.data_mut().buffered_response_body.take() {
                             if res.headers().contains_key(http::header::CONTENT_LENGTH) {
@@ -445,7 +452,7 @@ impl WasmFilter {
                     Ok(0) => FilterDecision::Continue,
                     Ok(2) => {
                         // DirectResponse
-                        let state = match self.get_state() {
+                        let state = match self.get_state().await {
                             Ok(s) => s,
                             Err(e) => return FilterDecision::internal_server_error(&e.to_string(), res.version()),
                         };
@@ -475,7 +482,7 @@ impl WasmFilter {
 
             Ok(2) => {
                 // DirectResponse
-                let state = match self.get_state() {
+                let state = match self.get_state().await {
                     Ok(s) => s,
                     Err(e) => return FilterDecision::internal_server_error(&e.to_string(), res.version()),
                 };
@@ -505,24 +512,22 @@ impl WasmFilter {
 
 impl Drop for WasmFilter {
     fn drop(&mut self) {
-        // Zero locking overhead via get_mut()
         if let Some(mut state) = self.state.get_mut().take() {
-            // Guarantee on_transaction_complete is called exactly once when the filter lifecycle ends
             if self.inner.has_on_transaction_complete {
-                if let Ok(on_tx_comp) =
-                    state.instance.get_typed_func::<(), ()>(&mut state.store, "on_transaction_complete")
-                {
-                    let _ = on_tx_comp.call(&mut state.store, ());
+                if let Ok(on_tx_comp) = state.instance.get_typed_func::<(), ()>(&mut state.store, "on_transaction_complete") {
+                    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                        tokio::task::block_in_place(|| {
+                            handle.block_on(async {
+                                let _ = on_tx_comp.call_async(&mut state.store, ()).await;
+                            });
+                        });
+                    }
                 }
             }
-
-            // Reset host state so requests don't pollute each other
             let data = state.store.data_mut();
             data.direct_response = None;
             data.buffered_request_body = None;
             data.buffered_response_body = None;
-
-            // Push back to the global lock-free pool. If it's full (1024), the state is dropped.
             let _ = self.inner.instance_pool.push(state);
         }
     }

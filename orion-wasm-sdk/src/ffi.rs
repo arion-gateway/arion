@@ -28,6 +28,15 @@ extern "C" {
         body_len: u32,
     ) -> i32;
 
+    /// Dispatch an async HTTP call via the host cluster manager.
+    pub fn orion_dispatch_http_call(
+        req_ptr: *const u8,
+        req_len: u32,
+        resp_buf_ptr: *mut u8,
+        resp_buf_max: u32,
+        resp_len_ptr: *mut u32,
+    ) -> i32;
+
     /// Send a direct (local) HTTP response, short-circuiting the filter chain.
     pub fn orion_send_direct_response(
         request_handle: u64,

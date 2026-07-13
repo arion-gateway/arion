@@ -6,8 +6,32 @@ use bytes::Bytes;
 use http::StatusCode;
 use http::{Request, Response};
 use http_body_util::Full;
-use smol_str::ToSmolStr;
+use smol_str::{SmolStr, ToSmolStr};
 use wasmtime::{Caller, Linker};
+
+use serde::{Deserialize, Serialize};
+
+use http::Method;
+
+#[derive(Serialize, Deserialize)]
+pub struct CalloutRequest {
+    pub cluster_name: SmolStr,
+    pub path: SmolStr,
+    #[serde(with = "http_serde_ext::method")]
+    pub method: Method,
+    #[serde(with = "http_serde_ext::header_map")]
+    pub headers: HeaderMap,
+    pub body: Option<Vec<u8>>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct CalloutResponse {
+    #[serde(with = "http_serde_ext::status_code")]
+    pub status: StatusCode,
+    #[serde(with = "http_serde_ext::header_map")]
+    pub headers: HeaderMap,
+    pub body: Option<Vec<u8>>,
+}
 
 pub struct WasmState {
     pub name: &'static str,
@@ -665,6 +689,164 @@ fn orion_apply_header_mutations(
     OrionWasmResult::Ok.into()
 }
 
+use orion_configuration::config::cluster::ClusterSpecifier;
+use crate::clusters::{clusters_manager, RoutingContext, RoutingPriority};
+use http_body_util::BodyExt;
+
+fn orion_dispatch_http_call(
+    mut caller: Caller<'_, WasmState>,
+    (req_ptr, req_len, resp_buf_ptr, resp_buf_max, resp_len_ptr): (u32, u32, u32, u32, u32),
+) -> Box<dyn std::future::Future<Output = i32> + Send + '_> {
+    Box::new(async move {
+        // 1. Read the serialized request from Wasm memory
+        let req_bytes = {
+            let memory = match caller.get_export("memory").and_then(|m| m.into_memory()) {
+                Some(mem) => mem,
+                None => return OrionWasmResult::InvalidMemoryAccess.into(),
+            };
+            let data = memory.data(&caller);
+            let start = req_ptr as usize;
+            let end = start + req_len as usize;
+            if end > data.len() {
+                return OrionWasmResult::InvalidMemoryAccess.into();
+            }
+            data[start..end].to_vec()
+        };
+
+        let callout_req: CalloutRequest = match serde_json::from_slice(&req_bytes) {
+            Ok(req) => req,
+            Err(e) => {
+                tracing::error!("Callout deserialization failed: {:?}", e);
+                return OrionWasmResult::InternalError.into();
+            }
+        };
+
+        // 2. Resolve cluster and acquire connection
+        let cluster_spec = ClusterSpecifier::Cluster(callout_req.cluster_name.clone().into());
+        let cluster_id = match clusters_manager::resolve_cluster(&cluster_spec, None) {
+            Some(id) => id,
+            None => return OrionWasmResult::NotFound.into(),
+        };
+
+        let http_service = match clusters_manager::get_http_connection(cluster_id, RoutingContext::None) {
+            Ok(svc) => svc,
+            Err(e) => {
+                tracing::error!("Callout failed to get HTTP connection: {:?}", e);
+                return OrionWasmResult::InternalError.into();
+            }
+        };
+
+        let uri_str = if callout_req.path.starts_with("http://") || callout_req.path.starts_with("https://") {
+            callout_req.path.to_string()
+        } else {
+            format!("http://{}{}", callout_req.cluster_name, callout_req.path)
+        };
+
+        let mut builder = http::Request::builder()
+            .method(callout_req.method)
+            .uri(uri_str);
+            
+        let mut has_host = false;
+        for (k, v) in callout_req.headers.into_iter() {
+            if let Some(name) = k {
+                if name == http::header::HOST {
+                    has_host = true;
+                }
+                builder = builder.header(name, v);
+            }
+        }
+
+        if !has_host {
+            builder = builder.header(http::header::HOST, callout_req.cluster_name.as_str());
+        }
+
+        let body_bytes = callout_req.body.unwrap_or_default();
+        let instrumented = crate::OrionRequestBody::default().map_inner(|_| {
+            crate::body::timeout_body::TimeoutBody::new(
+                None,
+                crate::body::poly_body::PolyBody::from(http_body_util::Full::from(body_bytes))
+            )
+        });
+        
+        let request = match builder.body(instrumented) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!("Callout failed to build request body: {:?}", e);
+                return OrionWasmResult::InternalError.into();
+            }
+        };
+
+        let channel = http_service.channel();
+        
+        // 3. Send async request - this is where the Wasm fiber suspends!
+        let response_result = channel.send_request(
+            request,
+            Some(std::time::Duration::from_secs(5)),
+            None,
+            RoutingPriority::Default,
+            None,
+            #[cfg(feature = "instrumentation")]
+            &quanta::Clock::new(),
+        ).await;
+
+        let response = match response_result {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!("Callout HTTP request failed: {:?}", e);
+                return OrionWasmResult::InternalError.into();
+            }
+        };
+
+        let status = response.status();
+        let resp_headers = response.headers().clone();
+
+        let body_bytes = match response.into_body().collect().await {
+            Ok(collected) => collected.to_bytes().to_vec(),
+            Err(e) => {
+                tracing::error!("Callout failed to collect response body: {:?}", e);
+                return OrionWasmResult::InternalError.into();
+            }
+        };
+
+        let callout_resp = CalloutResponse {
+            status,
+            headers: resp_headers,
+            body: Some(body_bytes),
+        };
+
+        let resp_bytes = match serde_json::to_vec(&callout_resp) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::error!("Callout response serialization failed: {:?}", e);
+                return OrionWasmResult::InternalError.into();
+            }
+        };
+
+        if resp_bytes.len() > resp_buf_max as usize {
+            return OrionWasmResult::BufferTooSmall.into();
+        }
+
+        let memory = caller.get_export("memory").unwrap().into_memory().unwrap();
+        let data = memory.data_mut(&mut caller);
+        
+        let rb_start = resp_buf_ptr as usize;
+        let rb_end = rb_start + resp_bytes.len();
+        if rb_end > data.len() {
+            return OrionWasmResult::InvalidMemoryAccess.into();
+        }
+        data[rb_start..rb_end].copy_from_slice(&resp_bytes);
+
+        let rl_start = resp_len_ptr as usize;
+        let rl_end = rl_start + 4;
+        if rl_end > data.len() {
+            return OrionWasmResult::InvalidMemoryAccess.into();
+        }
+        data[rl_start..rl_end].copy_from_slice(&(resp_bytes.len() as u32).to_le_bytes());
+
+        OrionWasmResult::Ok.into()
+    })
+}
+
 pub fn register_hostcalls(linker: &mut Linker<WasmState>) -> Result<(), wasmtime::Error> {
     linker.func_wrap("env", "orion_get_header", orion_get_header)?;
     linker.func_wrap("env", "orion_get_body", orion_get_body)?;
@@ -680,5 +862,6 @@ pub fn register_hostcalls(linker: &mut Linker<WasmState>) -> Result<(), wasmtime
 
     linker.func_wrap("env", "orion_send_direct_response", orion_send_direct_response)?;
     linker.func_wrap("env", "orion_log", orion_log)?;
+    linker.func_wrap_async("env", "orion_dispatch_http_call", orion_dispatch_http_call)?;
     Ok(())
 }
