@@ -271,7 +271,20 @@ impl WasmFilter {
 
                         let res = on_body.call(&mut state.store, (req_handle, full_body_bytes.len() as u32));
 
-                        state.store.data_mut().buffered_request_body = None;
+                        if let Some(mutated_body) = state.store.data_mut().buffered_request_body.take() {
+                            if req.headers().contains_key(http::header::CONTENT_LENGTH) {
+                                req.headers_mut().insert(
+                                    http::header::CONTENT_LENGTH,
+                                    http::header::HeaderValue::from_str(&mutated_body.len().to_string()).unwrap(),
+                                );
+                            }
+                            let old_body = std::mem::take(req.body_mut());
+                            *req.body_mut() = old_body.map_inner(|old_timeout_body| {
+                                let old_timeout = old_timeout_body.timeout;
+                                TimeoutBody::new(old_timeout, PolyBody::from(Full::from(mutated_body)))
+                            });
+                        }
+
                         res.map_err(WasmError::Wasmtime)
                     } else {
                         Ok(types::FilterAction::Continue.into())
@@ -405,7 +418,19 @@ impl WasmFilter {
 
                         let res_val = on_body.call(&mut state.store, (resp_handle, full_body_bytes.len() as u32));
 
-                        state.store.data_mut().buffered_response_body = None;
+                        if let Some(mutated_body) = state.store.data_mut().buffered_response_body.take() {
+                            if res.headers().contains_key(http::header::CONTENT_LENGTH) {
+                                res.headers_mut().insert(
+                                    http::header::CONTENT_LENGTH,
+                                    http::header::HeaderValue::from_str(&mutated_body.len().to_string()).unwrap(),
+                                );
+                            }
+                            let old_body = std::mem::take(res.body_mut());
+                            *res.body_mut() = old_body.map_inner(|_old_poly_body| {
+                                PolyBody::from(Full::from(mutated_body))
+                            });
+                        }
+
                         res_val.map_err(WasmError::Wasmtime)
                     } else {
                         Ok(types::FilterAction::Continue.into())

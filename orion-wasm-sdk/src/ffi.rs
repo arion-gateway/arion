@@ -20,6 +20,14 @@ extern "C" {
         written_len_ptr: *mut u32,
     ) -> i32;
 
+    /// Replace the buffered body.
+    pub fn orion_set_body(
+        handle: u64,
+        handle_type: u32,
+        body_ptr: *const u8,
+        body_len: u32,
+    ) -> i32;
+
     /// Send a direct (local) HTTP response, short-circuiting the filter chain.
     pub fn orion_send_direct_response(
         request_handle: u64,

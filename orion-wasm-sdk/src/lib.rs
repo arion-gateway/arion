@@ -206,6 +206,30 @@ fn get_http_body(_handle: u64, _target: ffi::HeaderTarget) -> Result<Vec<u8>, Or
     Err(OrionWasmResult::InternalError)
 }
 
+/// Replace the buffered body.
+#[cfg(target_arch = "wasm32")]
+fn set_http_body(handle: u64, target: ffi::HeaderTarget, body: &[u8]) -> Result<(), OrionWasmResult> {
+    let res = unsafe {
+        ffi::orion_set_body(
+            handle,
+            target as u32,
+            body.as_ptr(),
+            body.len() as u32,
+        )
+    };
+
+    match OrionWasmResult::try_from(res) {
+        Ok(OrionWasmResult::Ok) => Ok(()),
+        Ok(other) => Err(other),
+        Err(_) => Err(OrionWasmResult::InternalError),
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn set_http_body(_handle: u64, _target: ffi::HeaderTarget, _body: &[u8]) -> Result<(), OrionWasmResult> {
+    Err(OrionWasmResult::InternalError)
+}
+
 /// Send a direct (local) HTTP response and short-circuit the filter chain.
 #[cfg(target_arch = "wasm32")]
 fn send_http_direct_response(request_handle: u64, status_code: u16, body: &[u8]) -> Result<(), OrionWasmResult> {
@@ -531,6 +555,11 @@ impl RequestHandle<RequestBody> {
         get_http_body(self.handle, ffi::HeaderTarget::Request)
     }
 
+    /// Replace the buffered request body.
+    pub fn set_body(&self, body: &[u8]) -> Result<(), OrionWasmResult> {
+        set_http_body(self.handle, ffi::HeaderTarget::Request, body)
+    }
+
     pub fn get_headers_map(&self) -> Result<HeaderMap, OrionWasmResult> {
         get_http_headers_map(self.handle, ffi::HeaderTarget::Request)
     }
@@ -628,6 +657,11 @@ impl ResponseHandle<ResponseBody> {
     /// Read the buffered response body.
     pub fn get_body(&self) -> Result<Vec<u8>, OrionWasmResult> {
         get_http_body(self.handle, ffi::HeaderTarget::Response)
+    }
+
+    /// Replace the buffered response body.
+    pub fn set_body(&self, body: &[u8]) -> Result<(), OrionWasmResult> {
+        set_http_body(self.handle, ffi::HeaderTarget::Response, body)
     }
 }
 
