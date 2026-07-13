@@ -738,10 +738,10 @@ impl ToolsRegistry {
             let Some(tool_embedding) = entry.embedding.load_full() else {
                 debug!(
                     target: "mcp_gateway",
-                    "tool '{}' has no embedding; cosine ranking unavailable for the full candidate set",
+                    "tool '{}' has no embedding yet; excluded from cosine ranking",
                     entry.conf.name
                 );
-                return None;
+                continue;
             };
             let score = match embeddings::cosine_similarity(query_embedding.as_slice(), tool_embedding.as_slice()) {
                 Ok(score) => score,
@@ -1595,6 +1595,49 @@ mod tests {
             registry.get_tool_by_name("needs_embedding").unwrap().embedding.load_full().is_none(),
             "embeddings failure should leave the tool unembedded"
         );
+    }
+
+    #[tokio::test]
+    async fn unembedded_tool_is_excluded_from_cosine_ranking_not_abort() {
+        use orion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::{
+            McpSemanticSearch, RemoteEmbeddings, SimilarityConfig,
+        };
+
+        let client = embeddings::EmbeddingsClient::test_one_hot();
+        let semantic_search = Some(McpSemanticSearch {
+            enable_assisted_discovery: false,
+            embeddings: Some(RemoteEmbeddings {
+                cluster: "embeddings".into(),
+                model_id: "test-model".into(),
+                path: RemoteEmbeddings::default_path(),
+                timeout: None,
+                dimensions: Some(3),
+                allow_bm25_fallback: false,
+            }),
+            similarity: SimilarityConfig { top_k: 5 },
+        });
+
+        let mut tool_a = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
+        tool_a.name = "weather_get_forecast".into();
+        tool_a.description = "Get the weather forecast".into();
+        tool_a.embedding = EmbeddingVector(vec![1.0, 0.0, 0.0]);
+
+        let mut tool_b = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
+        tool_b.name = "billing_lookup".into();
+        tool_b.description = "Find billing invoices".into();
+
+        let registry =
+            ToolsRegistry::with_config(vec![tool_a, tool_b], Vec::new(), semantic_search, Some(client)).unwrap();
+
+        assert!(registry.get_tool_by_name("weather_get_forecast").unwrap().embedding.load_full().is_some());
+        assert!(registry.get_tool_by_name("billing_lookup").unwrap().embedding.load_full().is_none());
+
+        let req_ext = http::Extensions::new();
+        let result = registry.rank_tools_for_query(&req_ext, "weather forecast").await;
+
+        let ranked = result.expect("unembedded tool must not cause SemanticSearchUnavailable");
+        assert_eq!(ranked.len(), 1);
+        assert_eq!(ranked[0].conf.name.as_str(), "weather_get_forecast");
     }
 
     #[tokio::test]
