@@ -702,6 +702,29 @@ pub fn get_plugin_config() -> Result<Option<String>, OrionWasmResult> {
     Err(OrionWasmResult::InternalError)
 }
 
+/// Set a custom metric key-value pair.
+#[cfg(target_arch = "wasm32")]
+pub fn set_custom_metric(key: &str, value: &str) -> Result<(), OrionWasmResult> {
+    let res = unsafe {
+        ffi::orion_set_custom_metric(
+            key.as_ptr(),
+            key.len() as u32,
+            value.as_ptr(),
+            value.len() as u32,
+        )
+    };
+    match OrionWasmResult::try_from(res) {
+        Ok(OrionWasmResult::Ok) => Ok(()),
+        Ok(other) => Err(other),
+        Err(_) => Err(OrionWasmResult::InternalError),
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn set_custom_metric(_key: &str, _value: &str) -> Result<(), OrionWasmResult> {
+    Err(OrionWasmResult::InternalError)
+}
+
 /// Idiomatic interface implemented by Orion Wasm plugins.
 pub trait Plugin {
     /// Invoked once when the Wasm module is instantiated.

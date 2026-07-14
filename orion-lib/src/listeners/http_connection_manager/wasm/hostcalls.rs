@@ -247,6 +247,53 @@ fn orion_send_direct_response(
     OrionWasmResult::Ok.into()
 }
 
+fn orion_set_custom_metric(
+    mut caller: Caller<'_, WasmState>,
+    key_ptr: u32,
+    key_len: u32,
+    value_ptr: u32,
+    value_len: u32,
+) -> i32 {
+    let memory = match caller.get_export("memory").and_then(|m| m.into_memory()) {
+        Some(mem) => mem,
+        None => return OrionWasmResult::InvalidMemoryAccess.into(),
+    };
+
+    #[cfg(feature = "metrics")]
+    {
+        let data = memory.data(&caller);
+        let k_start = key_ptr as usize;
+        let k_end = k_start + key_len as usize;
+        let v_start = value_ptr as usize;
+        let v_end = v_start + value_len as usize;
+
+        if k_end > data.len() || v_end > data.len() {
+            return OrionWasmResult::InvalidMemoryAccess.into();
+        }
+
+        let key = match std::str::from_utf8(&data[k_start..k_end]) {
+            Ok(s) => s,
+            Err(_) => return OrionWasmResult::InvalidMemoryAccess.into(),
+        };
+
+        let value = match std::str::from_utf8(&data[v_start..v_end]) {
+            Ok(s) => s,
+            Err(_) => return OrionWasmResult::InvalidMemoryAccess.into(),
+        };
+
+        if let Some(custom_metrics) = orion_metrics::metrics::custom::CUSTOM_METRICS.get() {
+            let mut kv = orion_metrics::key_value::KeyValueMap::default();
+            kv.insert(key, value);
+            custom_metrics.with_key_value(orion_metrics::metrics::custom::MetricsHook::Wasm, &kv, &[]);
+        }
+        OrionWasmResult::Ok.into()
+    }
+    #[cfg(not(feature = "metrics"))]
+    {
+        OrionWasmResult::InternalError.into()
+    }
+}
+
 fn orion_log(mut caller: Caller<'_, WasmState>, level: u32, msg_ptr: u32, msg_len: u32) -> i32 {
     let memory = match caller.get_export("memory").and_then(|m| m.into_memory()) {
         Some(mem) => mem,
@@ -699,9 +746,9 @@ fn orion_apply_header_mutations(
     OrionWasmResult::Ok.into()
 }
 
-use orion_configuration::config::cluster::ClusterSpecifier;
 use crate::clusters::{clusters_manager, RoutingContext, RoutingPriority};
 use http_body_util::BodyExt;
+use orion_configuration::config::cluster::ClusterSpecifier;
 
 fn orion_dispatch_http_call(
     mut caller: Caller<'_, WasmState>,
@@ -723,13 +770,14 @@ fn orion_dispatch_http_call(
             data[start..end].to_vec()
         };
 
-        let callout_req: CalloutRequest = match bincode_next::serde::decode_from_slice(&req_bytes, bincode_next::config::standard()) {
-            Ok((req, _)) => req,
-            Err(e) => {
-                tracing::error!("Callout deserialization failed: {:?}", e);
-                return OrionWasmResult::InternalError.into();
-            }
-        };
+        let callout_req: CalloutRequest =
+            match bincode_next::serde::decode_from_slice(&req_bytes, bincode_next::config::standard()) {
+                Ok((req, _)) => req,
+                Err(e) => {
+                    tracing::error!("Callout deserialization failed: {:?}", e);
+                    return OrionWasmResult::InternalError.into();
+                },
+            };
 
         // 2. Resolve cluster and acquire connection
         let cluster_spec = ClusterSpecifier::Cluster(callout_req.cluster_name.clone().into());
@@ -743,7 +791,7 @@ fn orion_dispatch_http_call(
             Err(e) => {
                 tracing::error!("Callout failed to get HTTP connection: {:?}", e);
                 return OrionWasmResult::InternalError.into();
-            }
+            },
         };
 
         let uri_str = if callout_req.path.starts_with("http://") || callout_req.path.starts_with("https://") {
@@ -752,10 +800,8 @@ fn orion_dispatch_http_call(
             format!("http://{}{}", callout_req.cluster_name, callout_req.path)
         };
 
-        let mut builder = http::Request::builder()
-            .method(callout_req.method)
-            .uri(uri_str);
-            
+        let mut builder = http::Request::builder().method(callout_req.method).uri(uri_str);
+
         let mut has_host = false;
         for (k, v) in callout_req.headers.into_iter() {
             if let Some(name) = k {
@@ -774,37 +820,39 @@ fn orion_dispatch_http_call(
         let instrumented = crate::OrionRequestBody::default().map_inner(|_| {
             crate::body::timeout_body::TimeoutBody::new(
                 None,
-                crate::body::poly_body::PolyBody::from(http_body_util::Full::from(body_bytes))
+                crate::body::poly_body::PolyBody::from(http_body_util::Full::from(body_bytes)),
             )
         });
-        
+
         let request = match builder.body(instrumented) {
             Ok(r) => r,
             Err(e) => {
                 tracing::error!("Callout failed to build request body: {:?}", e);
                 return OrionWasmResult::InternalError.into();
-            }
+            },
         };
 
         let channel = http_service.channel();
-        
+
         // 3. Send async request - this is where the Wasm fiber suspends!
-        let response_result = channel.send_request(
-            request,
-            Some(std::time::Duration::from_secs(5)),
-            None,
-            RoutingPriority::Default,
-            None,
-            #[cfg(feature = "instrumentation")]
-            &quanta::Clock::new(),
-        ).await;
+        let response_result = channel
+            .send_request(
+                request,
+                Some(std::time::Duration::from_secs(5)),
+                None,
+                RoutingPriority::Default,
+                None,
+                #[cfg(feature = "instrumentation")]
+                &quanta::Clock::new(),
+            )
+            .await;
 
         let response = match response_result {
             Ok(r) => r,
             Err(e) => {
                 tracing::error!("Callout HTTP request failed: {:?}", e);
                 return OrionWasmResult::InternalError.into();
-            }
+            },
         };
 
         let status = response.status();
@@ -815,21 +863,17 @@ fn orion_dispatch_http_call(
             Err(e) => {
                 tracing::error!("Callout failed to collect response body: {:?}", e);
                 return OrionWasmResult::InternalError.into();
-            }
+            },
         };
 
-        let callout_resp = CalloutResponse {
-            status,
-            headers: resp_headers,
-            body: Some(body_bytes),
-        };
+        let callout_resp = CalloutResponse { status, headers: resp_headers, body: Some(body_bytes) };
 
         let resp_bytes = match bincode_next::serde::encode_to_vec(&callout_resp, bincode_next::config::standard()) {
             Ok(b) => b,
             Err(e) => {
                 tracing::error!("Callout response serialization failed: {:?}", e);
                 return OrionWasmResult::InternalError.into();
-            }
+            },
         };
 
         let memory = caller.get_export("memory").unwrap().into_memory().unwrap();
@@ -838,12 +882,14 @@ fn orion_dispatch_http_call(
             None => {
                 tracing::error!("Callout failed: guest does not export orion_malloc");
                 return OrionWasmResult::InternalError.into();
-            }
+            },
         };
 
         // Call orion_malloc on the guest
         let mut results = [wasmtime::Val::I32(0)];
-        if let Err(e) = alloc_func.call_async(&mut caller, &[wasmtime::Val::I32(resp_bytes.len() as i32)], &mut results).await {
+        if let Err(e) =
+            alloc_func.call_async(&mut caller, &[wasmtime::Val::I32(resp_bytes.len() as i32)], &mut results).await
+        {
             tracing::error!("Callout failed to call orion_malloc: {:?}", e);
             return OrionWasmResult::InternalError.into();
         }
@@ -895,6 +941,7 @@ pub fn register_hostcalls(linker: &mut Linker<WasmState>) -> Result<(), wasmtime
     linker.func_wrap("env", "orion_apply_header_mutations", orion_apply_header_mutations)?;
 
     linker.func_wrap("env", "orion_send_direct_response", orion_send_direct_response)?;
+    linker.func_wrap("env", "orion_set_custom_metric", orion_set_custom_metric)?;
     linker.func_wrap("env", "orion_log", orion_log)?;
     linker.func_wrap_async("env", "orion_dispatch_http_call", orion_dispatch_http_call)?;
     Ok(())

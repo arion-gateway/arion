@@ -7,6 +7,14 @@ extern "C" {
         written_len_ptr: *mut u32,
     ) -> i32;
 
+    /// Set a custom metric.
+    pub fn orion_set_custom_metric(
+        key_ptr: *const u8,
+        key_len: u32,
+        value_ptr: *const u8,
+        value_len: u32,
+    ) -> i32;
+
     /// Read an HTTP header by name.
     pub fn orion_get_header(
         handle: u64,

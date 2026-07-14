@@ -279,7 +279,8 @@ impl WasmFilter {
                     {
                         state.store.data_mut().buffered_request_body = Some(full_body_bytes.clone());
 
-                        let res = on_body.call_async(&mut state.store, (req_handle, full_body_bytes.len() as u32)).await;
+                        let res =
+                            on_body.call_async(&mut state.store, (req_handle, full_body_bytes.len() as u32)).await;
 
                         if let Some(mutated_body) = state.store.data_mut().buffered_request_body.take() {
                             if req.headers().contains_key(http::header::CONTENT_LENGTH) {
@@ -426,7 +427,8 @@ impl WasmFilter {
                     {
                         state.store.data_mut().buffered_response_body = Some(full_body_bytes.clone());
 
-                        let res_val = on_body.call_async(&mut state.store, (resp_handle, full_body_bytes.len() as u32)).await;
+                        let res_val =
+                            on_body.call_async(&mut state.store, (resp_handle, full_body_bytes.len() as u32)).await;
 
                         if let Some(mutated_body) = state.store.data_mut().buffered_response_body.take() {
                             if res.headers().contains_key(http::header::CONTENT_LENGTH) {
@@ -436,9 +438,8 @@ impl WasmFilter {
                                 );
                             }
                             let old_body = std::mem::take(res.body_mut());
-                            *res.body_mut() = old_body.map_inner(|_old_poly_body| {
-                                PolyBody::from(Full::from(mutated_body))
-                            });
+                            *res.body_mut() =
+                                old_body.map_inner(|_old_poly_body| PolyBody::from(Full::from(mutated_body)));
                         }
 
                         res_val.map_err(WasmError::Wasmtime)
@@ -517,7 +518,9 @@ impl Drop for WasmFilter {
     fn drop(&mut self) {
         if let Some(mut state) = self.state.get_mut().take() {
             if self.inner.has_on_transaction_complete {
-                if let Ok(on_tx_comp) = state.instance.get_typed_func::<(), ()>(&mut state.store, "on_transaction_complete") {
+                if let Ok(on_tx_comp) =
+                    state.instance.get_typed_func::<(), ()>(&mut state.store, "on_transaction_complete")
+                {
                     if let Ok(handle) = tokio::runtime::Handle::try_current() {
                         tokio::task::block_in_place(|| {
                             handle.block_on(async {

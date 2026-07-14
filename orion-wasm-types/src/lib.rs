@@ -112,7 +112,10 @@ impl From<FilterAction> for i32 {
     }
 }
 
-use http::{HeaderMap, Method, StatusCode, header::{HeaderName, HeaderValue}};
+use http::{
+    header::{HeaderName, HeaderValue},
+    HeaderMap, Method, StatusCode,
+};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
