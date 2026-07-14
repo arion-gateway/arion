@@ -799,21 +799,23 @@ pub fn dispatch_http_call(request: &CalloutRequest) -> Result<CalloutResponse, O
         Err(_) => return Err(OrionWasmResult::InternalError),
     };
 
-    let mut resp_buf = vec![0u8; 1024 * 8]; // 8k KB buffer for response
-    let mut written_len = 0u32;
+    let mut resp_ptr: *mut u8 = std::ptr::null_mut();
+    let mut resp_len = 0u32;
 
     let res = unsafe {
         ffi::orion_dispatch_http_call(
             req_bytes.as_ptr(),
             req_bytes.len() as u32,
-            resp_buf.as_mut_ptr(),
-            resp_buf.len() as u32,
-            &mut written_len as *mut u32,
+            &mut resp_ptr as *mut *mut u8,
+            &mut resp_len as *mut u32,
         )
     };
 
     if res == 0 {
-        resp_buf.truncate(written_len as usize);
+        if resp_ptr.is_null() {
+            return Err(OrionWasmResult::InternalError);
+        }
+        let resp_buf = unsafe { Vec::from_raw_parts(resp_ptr, resp_len as usize, resp_len as usize) };
         match bincode_next::serde::decode_from_slice(&resp_buf, bincode_next::config::standard()) {
             Ok((resp, _)) => Ok(resp),
             Err(_) => Err(OrionWasmResult::InternalError),
@@ -826,4 +828,13 @@ pub fn dispatch_http_call(request: &CalloutRequest) -> Result<CalloutResponse, O
 #[cfg(not(target_arch = "wasm32"))]
 pub fn dispatch_http_call(_request: &CalloutRequest) -> Result<CalloutResponse, OrionWasmResult> {
     Err(OrionWasmResult::InternalError)
+}
+
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub extern "C" fn orion_malloc(size: u32) -> *mut u8 {
+    let mut buf = Vec::with_capacity(size as usize);
+    let ptr = buf.as_mut_ptr();
+    std::mem::forget(buf);
+    ptr
 }

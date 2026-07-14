@@ -665,7 +665,7 @@ use http_body_util::BodyExt;
 
 fn orion_dispatch_http_call(
     mut caller: Caller<'_, WasmState>,
-    (req_ptr, req_len, resp_buf_ptr, resp_buf_max, resp_len_ptr): (u32, u32, u32, u32, u32),
+    (req_ptr, req_len, resp_ptr_ptr, resp_len_ptr): (u32, u32, u32, u32),
 ) -> Box<dyn std::future::Future<Output = i32> + Send + '_> {
     Box::new(async move {
         // 1. Read the serialized request from Wasm memory
@@ -792,19 +792,42 @@ fn orion_dispatch_http_call(
             }
         };
 
-        if resp_bytes.len() > resp_buf_max as usize {
-            return OrionWasmResult::BufferTooSmall.into();
+        let memory = caller.get_export("memory").unwrap().into_memory().unwrap();
+        let alloc_func = match caller.get_export("orion_malloc").and_then(|e| e.into_func()) {
+            Some(func) => func,
+            None => {
+                tracing::error!("Callout failed: guest does not export orion_malloc");
+                return OrionWasmResult::InternalError.into();
+            }
+        };
+
+        // Call orion_malloc on the guest
+        let mut results = [wasmtime::Val::I32(0)];
+        if let Err(e) = alloc_func.call_async(&mut caller, &[wasmtime::Val::I32(resp_bytes.len() as i32)], &mut results).await {
+            tracing::error!("Callout failed to call orion_malloc: {:?}", e);
+            return OrionWasmResult::InternalError.into();
         }
 
-        let memory = caller.get_export("memory").unwrap().into_memory().unwrap();
+        let resp_ptr = match results[0] {
+            wasmtime::Val::I32(ptr) => ptr as u32,
+            _ => return OrionWasmResult::InternalError.into(),
+        };
+
         let data = memory.data_mut(&mut caller);
-        
-        let rb_start = resp_buf_ptr as usize;
+        let rb_start = resp_ptr as usize;
         let rb_end = rb_start + resp_bytes.len();
         if rb_end > data.len() {
             return OrionWasmResult::InvalidMemoryAccess.into();
         }
         data[rb_start..rb_end].copy_from_slice(&resp_bytes);
+
+        // Write the pointer and length back to the guest
+        let ptr_start = resp_ptr_ptr as usize;
+        let ptr_end = ptr_start + 4;
+        if ptr_end > data.len() {
+            return OrionWasmResult::InvalidMemoryAccess.into();
+        }
+        data[ptr_start..ptr_end].copy_from_slice(&resp_ptr.to_le_bytes());
 
         let rl_start = resp_len_ptr as usize;
         let rl_end = rl_start + 4;
