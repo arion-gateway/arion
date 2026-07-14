@@ -661,6 +661,47 @@ impl ResponseHandle<ResponseBody> {
 // High-level `Plugin` trait + `orion_plugin!` macro
 // ============================================================================
 
+/// Read the plugin configuration.
+#[cfg(target_arch = "wasm32")]
+pub fn get_plugin_config() -> Result<Option<String>, OrionWasmResult> {
+    let mut buf: Vec<u8> = Vec::with_capacity(DEFAULT_HEAP_BUF_SIZE);
+    let mut written_len: u32 = 0;
+
+    loop {
+        let res = unsafe {
+            ffi::orion_get_plugin_config(
+                buf.as_mut_ptr(),
+                buf.capacity() as u32,
+                &mut written_len as *mut u32,
+            )
+        };
+
+        match OrionWasmResult::try_from(res) {
+            Ok(OrionWasmResult::Ok) => {
+                unsafe { buf.set_len(written_len as usize); }
+                return String::from_utf8(buf)
+                    .map(Some)
+                    .map_err(|_| OrionWasmResult::InternalError);
+            }
+            Ok(OrionWasmResult::NotFound) => return Ok(None),
+            Ok(OrionWasmResult::BufferTooSmall) => {
+                let new_cap = buf.capacity().saturating_mul(2);
+                if new_cap == buf.capacity() {
+                    return Err(OrionWasmResult::BufferTooSmall);
+                }
+                buf.reserve_exact(new_cap);
+            }
+            Ok(other) => return Err(other),
+            Err(_) => return Err(OrionWasmResult::InternalError),
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn get_plugin_config() -> Result<Option<String>, OrionWasmResult> {
+    Err(OrionWasmResult::InternalError)
+}
+
 /// Idiomatic interface implemented by Orion Wasm plugins.
 pub trait Plugin {
     /// Invoked once when the Wasm module is instantiated.

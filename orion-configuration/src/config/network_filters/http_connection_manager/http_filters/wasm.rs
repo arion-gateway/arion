@@ -12,7 +12,7 @@ pub struct WasmConfig {
     pub runtime: SmolStr,
     pub code: DataSource,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub configuration: Option<serde_json::Value>,
+    pub configuration: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub allow_precompiled: Option<bool>,
 }
@@ -79,16 +79,14 @@ mod envoy_conversions {
             };
             let code = DataSource::try_from(code_local)?;
 
-            let config_json = if let Some(any) = configuration {
+            let config_string = if let Some(any) = configuration {
                 use orion_data_plane_api::envoy_data_plane_api::google::protobuf::StringValue;
                 use orion_data_plane_api::envoy_data_plane_api::prost::Message;
 
                 if any.type_url == "type.googleapis.com/google.protobuf.StringValue" {
                     let string_val = StringValue::decode(any.value.as_slice())
                         .map_err(|e| GenericError::from_msg_with_cause("failed to decode StringValue", e))?;
-                    let json_value: serde_json::Value = serde_json::from_str(&string_val.value)
-                        .map_err(|e| GenericError::from_msg_with_cause("failed to parse StringValue as JSON", e))?;
-                    Some(json_value)
+                    Some(string_val.value)
                 } else {
                     return Err(GenericError::unsupported_variant(any.type_url));
                 }
@@ -102,7 +100,7 @@ mod envoy_conversions {
                 vm_id: if vm_config.vm_id.is_empty() { None } else { Some(vm_config.vm_id.into()) },
                 runtime: vm_config.runtime.into(),
                 code,
-                configuration: config_json,
+                configuration: config_string,
                 allow_precompiled: if vm_config.allow_precompiled { Some(true) } else { None },
             })
         }

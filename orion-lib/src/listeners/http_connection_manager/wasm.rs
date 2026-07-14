@@ -173,10 +173,13 @@ impl WasmFilter {
                 Some(s) => s,
                 None => {
                     let engine = &*GLOBAL_ENGINE;
+                    let plugin_config = self.inner.config.configuration.as_ref().cloned();
+
                     let mut store = Store::new(
                         engine,
                         hostcalls::WasmState {
                             name: self.inner.config.name.to_static_str(),
+                            plugin_config,
                             direct_response: None,
                             buffered_request_body: None,
                             buffered_response_body: None,

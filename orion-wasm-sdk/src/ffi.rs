@@ -1,5 +1,12 @@
 #[link(wasm_import_module = "env")]
 extern "C" {
+    /// Read the plugin configuration.
+    pub fn orion_get_plugin_config(
+        config_ptr: *mut u8,
+        max_len: u32,
+        written_len_ptr: *mut u32,
+    ) -> i32;
+
     /// Read an HTTP header by name.
     pub fn orion_get_header(
         handle: u64,

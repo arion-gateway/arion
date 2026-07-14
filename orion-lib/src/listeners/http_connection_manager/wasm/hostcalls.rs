@@ -12,6 +12,7 @@ use wasmtime::{Caller, Linker};
 use orion_wasm_types::{CalloutRequest, CalloutResponse, HeaderMutation};
 pub struct WasmState {
     pub name: &'static str,
+    pub plugin_config: Option<String>,
     pub direct_response: Option<Response<OrionResponseBody>>,
     pub buffered_request_body: Option<bytes::Bytes>,
     pub buffered_response_body: Option<bytes::Bytes>,
@@ -83,6 +84,45 @@ fn orion_get_header(
     } else {
         OrionWasmResult::NotFound.into()
     }
+}
+
+fn orion_get_plugin_config(
+    mut caller: Caller<'_, WasmState>,
+    config_ptr: u32,
+    max_len: u32,
+    written_len_ptr: u32,
+) -> i32 {
+    let memory = match caller.get_export("memory").and_then(|m| m.into_memory()) {
+        Some(mem) => mem,
+        None => return OrionWasmResult::InvalidMemoryAccess.into(),
+    };
+
+    let config_string = match caller.data().plugin_config.as_ref() {
+        Some(s) => s.clone(),
+        None => return OrionWasmResult::NotFound.into(),
+    };
+    let config_bytes = config_string.as_bytes();
+
+    if config_bytes.len() > max_len as usize {
+        return OrionWasmResult::BufferTooSmall.into();
+    }
+
+    let data = memory.data_mut(&mut caller);
+    let start = config_ptr as usize;
+    let end = start + config_bytes.len();
+    if end > data.len() {
+        return OrionWasmResult::InvalidMemoryAccess.into();
+    }
+    data[start..end].copy_from_slice(&config_bytes);
+
+    let len_start = written_len_ptr as usize;
+    let len_end = len_start + 4;
+    if len_end > data.len() {
+        return OrionWasmResult::InvalidMemoryAccess.into();
+    }
+    data[len_start..len_end].copy_from_slice(&(config_bytes.len() as u32).to_le_bytes());
+
+    OrionWasmResult::Ok.into()
 }
 
 fn orion_get_body(
@@ -841,6 +881,7 @@ fn orion_dispatch_http_call(
 }
 
 pub fn register_hostcalls(linker: &mut Linker<WasmState>) -> Result<(), wasmtime::Error> {
+    linker.func_wrap("env", "orion_get_plugin_config", orion_get_plugin_config)?;
     linker.func_wrap("env", "orion_get_header", orion_get_header)?;
     linker.func_wrap("env", "orion_get_body", orion_get_body)?;
     linker.func_wrap("env", "orion_set_body", orion_set_body)?;
