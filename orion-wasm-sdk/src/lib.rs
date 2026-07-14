@@ -794,7 +794,7 @@ pub fn init_tracing() -> Result<(), tracing::subscriber::SetGlobalDefaultError> 
 /// Dispatches an asynchronous HTTP call using the host's cluster manager.
 #[cfg(target_arch = "wasm32")]
 pub fn dispatch_http_call(request: &CalloutRequest) -> Result<CalloutResponse, OrionWasmResult> {
-    let req_bytes = match serde_json::to_vec(request) {
+    let req_bytes = match bincode_next::serde::encode_to_vec(request, bincode_next::config::standard()) {
         Ok(b) => b,
         Err(_) => return Err(OrionWasmResult::InternalError),
     };
@@ -814,8 +814,8 @@ pub fn dispatch_http_call(request: &CalloutRequest) -> Result<CalloutResponse, O
 
     if res == 0 {
         resp_buf.truncate(written_len as usize);
-        match serde_json::from_slice(&resp_buf) {
-            Ok(resp) => Ok(resp),
+        match bincode_next::serde::decode_from_slice(&resp_buf, bincode_next::config::standard()) {
+            Ok((resp, _)) => Ok(resp),
             Err(_) => Err(OrionWasmResult::InternalError),
         }
     } else {

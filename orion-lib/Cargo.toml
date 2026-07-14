@@ -106,6 +106,8 @@ wasmtime.workspace = true
 thread_local.workspace = true
 crossbeam-queue = { workspace = true }
 http-serde-ext.workspace = true
+
+bincode-next = { version = "2.1.0", features = ["serde"] }
 [dev-dependencies]
 orion-data-plane-api.workspace = true
 serde_yaml.workspace           = true

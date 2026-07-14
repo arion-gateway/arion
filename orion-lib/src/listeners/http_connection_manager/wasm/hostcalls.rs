@@ -683,8 +683,8 @@ fn orion_dispatch_http_call(
             data[start..end].to_vec()
         };
 
-        let callout_req: CalloutRequest = match serde_json::from_slice(&req_bytes) {
-            Ok(req) => req,
+        let callout_req: CalloutRequest = match bincode_next::serde::decode_from_slice(&req_bytes, bincode_next::config::standard()) {
+            Ok((req, _)) => req,
             Err(e) => {
                 tracing::error!("Callout deserialization failed: {:?}", e);
                 return OrionWasmResult::InternalError.into();
@@ -784,7 +784,7 @@ fn orion_dispatch_http_call(
             body: Some(body_bytes),
         };
 
-        let resp_bytes = match serde_json::to_vec(&callout_resp) {
+        let resp_bytes = match bincode_next::serde::encode_to_vec(&callout_resp, bincode_next::config::standard()) {
             Ok(b) => b,
             Err(e) => {
                 tracing::error!("Callout response serialization failed: {:?}", e);
