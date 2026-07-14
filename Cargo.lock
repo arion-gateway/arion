@@ -3906,6 +3906,12 @@ dependencies = [
 [[package]]
 name = "orion-wasm-types"
 version = "0.1.0"
+dependencies = [
+ "http",
+ "http-serde-ext",
+ "serde",
+ "smol_str",
+]
 
 [[package]]
 name = "orion-xds"

@@ -12,9 +12,7 @@
 //! The ABI types (`OrionWasmResult`, `FilterAction`) are shared with the host
 //! via the standalone [`orion_wasm_types`] crate.
 
-use http::{Method, StatusCode};
-pub use orion_wasm_types::{FilterAction, OrionWasmResult};
-use smol_str::SmolStr;
+pub use orion_wasm_types::{FilterAction, OrionWasmResult, HeaderMutation, CalloutRequest, CalloutResponse};
 
 // ============================================================================
 // FFI declarations — match the hostcalls registered in
@@ -347,13 +345,6 @@ fn replace_http_header(handle: u64, target: ffi::HeaderTarget, name: &HeaderName
 #[cfg(not(target_arch = "wasm32"))]
 fn replace_http_header(_handle: u64, _target: ffi::HeaderTarget, _name: &HeaderName, _value: &HeaderValue) -> Result<(), OrionWasmResult> { Err(OrionWasmResult::InternalError) }
 
-
-pub enum HeaderMutation {
-    Set(HeaderName, HeaderValue),
-    Add(HeaderName, HeaderValue),
-    Replace(HeaderName, HeaderValue),
-    Remove(HeaderName),
-}
 
 #[cfg(target_arch = "wasm32")]
 fn serialize_header_mutations(mutations: &[HeaderMutation]) -> Vec<u8> {
@@ -798,28 +789,6 @@ impl tracing::Subscriber for OrionWasmSubscriber {
 
 pub fn init_tracing() -> Result<(), tracing::subscriber::SetGlobalDefaultError> {
     tracing::subscriber::set_global_default(OrionWasmSubscriber)
-}
-
-use serde::{Deserialize, Serialize};
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct CalloutRequest {
-    pub cluster_name: SmolStr,
-    pub path: SmolStr,
-    #[serde(with = "http_serde_ext::method")]
-    pub method: Method,
-    #[serde(with = "http_serde_ext::header_map")]
-    pub headers: HeaderMap,
-    pub body: Option<Vec<u8>>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct CalloutResponse {
-    #[serde(with = "http_serde_ext::status_code")]
-    pub status: StatusCode,
-    #[serde(with = "http_serde_ext::header_map")]
-    pub headers: HeaderMap,
-    pub body: Option<Vec<u8>>,
 }
 
 /// Dispatches an asynchronous HTTP call using the host's cluster manager.

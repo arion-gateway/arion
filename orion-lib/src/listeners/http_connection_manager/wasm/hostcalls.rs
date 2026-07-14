@@ -6,33 +6,10 @@ use bytes::Bytes;
 use http::StatusCode;
 use http::{Request, Response};
 use http_body_util::Full;
-use smol_str::{SmolStr, ToSmolStr};
+use smol_str::ToSmolStr;
 use wasmtime::{Caller, Linker};
 
-use serde::{Deserialize, Serialize};
-
-use http::Method;
-
-#[derive(Serialize, Deserialize)]
-pub struct CalloutRequest {
-    pub cluster_name: SmolStr,
-    pub path: SmolStr,
-    #[serde(with = "http_serde_ext::method")]
-    pub method: Method,
-    #[serde(with = "http_serde_ext::header_map")]
-    pub headers: HeaderMap,
-    pub body: Option<Vec<u8>>,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct CalloutResponse {
-    #[serde(with = "http_serde_ext::status_code")]
-    pub status: StatusCode,
-    #[serde(with = "http_serde_ext::header_map")]
-    pub headers: HeaderMap,
-    pub body: Option<Vec<u8>>,
-}
-
+use orion_wasm_types::{CalloutRequest, CalloutResponse, HeaderMutation};
 pub struct WasmState {
     pub name: &'static str,
     pub direct_response: Option<Response<OrionResponseBody>>,
@@ -567,13 +544,6 @@ fn orion_replace_header(
         },
         Err(e) => e.into(),
     }
-}
-
-pub enum HeaderMutation {
-    Set(http::header::HeaderName, http::header::HeaderValue),
-    Add(http::header::HeaderName, http::header::HeaderValue),
-    Replace(http::header::HeaderName, http::header::HeaderValue),
-    Remove(http::header::HeaderName),
 }
 
 fn deserialize_header_mutations(data: &[u8]) -> Option<Vec<HeaderMutation>> {

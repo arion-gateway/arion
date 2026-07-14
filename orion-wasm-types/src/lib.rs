@@ -1,14 +1,8 @@
 //! Shared ABI types between the Orion proxy (host) and the Orion Wasm SDK (guest).
 //!
-//! This crate is `no_std` and has zero dependencies so it can be compiled for
-//! both native targets (inside `orion-lib`) and `wasm32` targets (inside
-//! `orion-wasm-sdk`).
-//!
 //! The numeric values of every enum variant are part of the **stable ABI**:
 //! changing them is a breaking change that requires bumping the crate version
 //! and updating both the host and the guest.
-
-#![no_std]
 
 use core::convert::TryFrom;
 
@@ -116,4 +110,35 @@ impl From<FilterAction> for i32 {
     fn from(v: FilterAction) -> Self {
         v as i32
     }
+}
+
+use http::{HeaderMap, Method, StatusCode, header::{HeaderName, HeaderValue}};
+use serde::{Deserialize, Serialize};
+use smol_str::SmolStr;
+
+pub enum HeaderMutation {
+    Set(HeaderName, HeaderValue),
+    Add(HeaderName, HeaderValue),
+    Replace(HeaderName, HeaderValue),
+    Remove(HeaderName),
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct CalloutRequest {
+    pub cluster_name: SmolStr,
+    pub path: SmolStr,
+    #[serde(with = "http_serde_ext::method")]
+    pub method: Method,
+    #[serde(with = "http_serde_ext::header_map")]
+    pub headers: HeaderMap,
+    pub body: Option<Vec<u8>>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct CalloutResponse {
+    #[serde(with = "http_serde_ext::status_code")]
+    pub status: StatusCode,
+    #[serde(with = "http_serde_ext::header_map")]
+    pub headers: HeaderMap,
+    pub body: Option<Vec<u8>>,
 }
