@@ -15,6 +15,12 @@ extern "C" {
         value_len: u32,
     ) -> i32;
 
+    /// Set multiple custom metrics at once.
+    pub fn orion_set_custom_metrics(
+        buffer_ptr: *const u8,
+        buffer_len: u32,
+    ) -> i32;
+
     /// Read an HTTP header by name.
     pub fn orion_get_header(
         handle: u64,
