@@ -16,6 +16,7 @@ pub struct WasmState {
     pub direct_response: Option<Response<OrionResponseBody>>,
     pub buffered_request_body: Option<bytes::Bytes>,
     pub buffered_response_body: Option<bytes::Bytes>,
+    pub access_log_operators: Vec<(String, String)>,
 }
 
 fn orion_get_header(
@@ -363,6 +364,68 @@ fn orion_set_custom_metrics(mut caller: Caller<'_, WasmState>, buffer_ptr: u32, 
     {
         OrionWasmResult::InternalError.into()
     }
+}
+
+fn orion_set_access_log_operators(mut caller: Caller<'_, WasmState>, buffer_ptr: u32, buffer_len: u32) -> i32 {
+    let memory = match caller.get_export("memory").and_then(|m| m.into_memory()) {
+        Some(mem) => mem,
+        None => return OrionWasmResult::InvalidMemoryAccess.into(),
+    };
+
+    let data = memory.data(&caller);
+    let start = buffer_ptr as usize;
+    let end = start + buffer_len as usize;
+    if end > data.len() {
+        return OrionWasmResult::InvalidMemoryAccess.into();
+    }
+    let buf = &data[start..end];
+
+    if buf.len() < 4 {
+        return OrionWasmResult::InvalidMemoryAccess.into();
+    }
+    let num_entries = u32::from_le_bytes(buf[0..4].try_into().unwrap());
+    let mut offset = 4;
+
+    let mut operators = Vec::with_capacity(num_entries as usize);
+
+    for _ in 0..num_entries {
+        if offset + 4 > buf.len() {
+            return OrionWasmResult::InvalidMemoryAccess.into();
+        }
+        let k_len = u32::from_le_bytes(buf[offset..offset + 4].try_into().unwrap()) as usize;
+        offset += 4;
+
+        if offset + k_len > buf.len() {
+            return OrionWasmResult::InvalidMemoryAccess.into();
+        }
+        let k_bytes = &buf[offset..offset + k_len];
+        offset += k_len;
+        let k_str = match std::str::from_utf8(k_bytes) {
+            Ok(s) => s.to_owned(),
+            Err(_) => return OrionWasmResult::InvalidMemoryAccess.into(),
+        };
+
+        if offset + 4 > buf.len() {
+            return OrionWasmResult::InvalidMemoryAccess.into();
+        }
+        let v_len = u32::from_le_bytes(buf[offset..offset + 4].try_into().unwrap()) as usize;
+        offset += 4;
+
+        if offset + v_len > buf.len() {
+            return OrionWasmResult::InvalidMemoryAccess.into();
+        }
+        let v_bytes = &buf[offset..offset + v_len];
+        offset += v_len;
+        let v_str = match std::str::from_utf8(v_bytes) {
+            Ok(s) => s.to_owned(),
+            Err(_) => return OrionWasmResult::InvalidMemoryAccess.into(),
+        };
+
+        operators.push((k_str, v_str));
+    }
+
+    caller.data_mut().access_log_operators.extend(operators);
+    OrionWasmResult::Ok.into()
 }
 
 fn orion_log(mut caller: Caller<'_, WasmState>, level: u32, msg_ptr: u32, msg_len: u32) -> i32 {
@@ -1014,6 +1077,7 @@ pub fn register_hostcalls(linker: &mut Linker<WasmState>) -> Result<(), wasmtime
     linker.func_wrap("env", "orion_send_direct_response", orion_send_direct_response)?;
     linker.func_wrap("env", "orion_set_custom_metric", orion_set_custom_metric)?;
     linker.func_wrap("env", "orion_set_custom_metrics", orion_set_custom_metrics)?;
+    linker.func_wrap("env", "orion_set_access_log_operators", orion_set_access_log_operators)?;
     linker.func_wrap("env", "orion_log", orion_log)?;
     linker.func_wrap_async("env", "orion_dispatch_http_call", orion_dispatch_http_call)?;
     Ok(())

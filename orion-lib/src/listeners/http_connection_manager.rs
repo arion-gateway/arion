@@ -1380,7 +1380,7 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
                     }
 
                     #[cfg(feature = "access-log")]
-                    if let Err(err) = crate::access_log::evaluate_access_log_hook(
+                    if let Err(err) = crate::access_log::evaluate_base64_access_log_hook(
                         crate::access_log::AccessLogHook::IncomingResponse,
                         response.headers(),
                         &mut trans_context.trans_state.lock().loggers,
@@ -1709,7 +1709,7 @@ where
         }
 
         #[cfg(feature = "access-log")]
-        if let Err(err) = crate::access_log::evaluate_access_log_hook(
+        if let Err(err) = crate::access_log::evaluate_base64_access_log_hook(
             crate::access_log::AccessLogHook::IncomingRequest,
             request.headers(),
             &mut trans_ctx.trans_state.lock().loggers,
@@ -1861,7 +1861,7 @@ where
 
             #[cfg(feature = "access-log")]
             if let Ok(response) = &response {
-                if let Err(err) = crate::access_log::evaluate_access_log_hook(
+                if let Err(err) = crate::access_log::evaluate_base64_access_log_hook(
                     crate::access_log::AccessLogHook::DownstreamResponse,
                     response.headers(),
                     &mut trans_ctx_clone.trans_state.lock().loggers,

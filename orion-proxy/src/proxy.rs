@@ -390,6 +390,7 @@ async fn spawn_services(info: ServiceInfo) -> Result<()> {
                     incoming_response_header: conf.incoming_response_header.clone(),
                     ext_proc_response_header: conf.ext_proc_response_header.clone(),
                     downstream_response_header: conf.downstream_response_header.clone(),
+                    wasm_header: conf.wasm_header.clone(),
                 },
             );
 

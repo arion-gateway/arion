@@ -183,6 +183,7 @@ impl WasmFilter {
                             direct_response: None,
                             buffered_request_body: None,
                             buffered_response_body: None,
+                            access_log_operators: Vec::new(),
                         },
                     );
                     // Instantiate the module using the pre-resolved imports
@@ -233,8 +234,8 @@ impl WasmFilter {
             };
 
             if let Ok(on_headers) = state.instance.get_typed_func::<u64, i32>(&mut state.store, "on_request_headers") {
-                let res = on_headers.call_async(&mut state.store, req_handle).await;
-                res.map_err(WasmError::Wasmtime)
+                let response = on_headers.call_async(&mut state.store, req_handle).await;
+                response.map_err(WasmError::Wasmtime)
             } else {
                 Ok(types::FilterAction::Continue.into())
             }
@@ -242,7 +243,7 @@ impl WasmFilter {
             Ok(1) // Implicitly return PauseAndBufferBody if the plugin only implements the body hook
         };
 
-        match action_code {
+        let decision = match action_code {
             Ok(0) => FilterDecision::Continue,
 
             Ok(1) => {
@@ -274,12 +275,12 @@ impl WasmFilter {
                         Err(e) => return FilterDecision::internal_server_error(&e.to_string(), req.version()),
                     };
 
-                    let res = if let Ok(on_body) =
+                    let response = if let Ok(on_body) =
                         state.instance.get_typed_func::<(u64, u32), i32>(&mut state.store, "on_request_body")
                     {
                         state.store.data_mut().buffered_request_body = Some(full_body_bytes.clone());
 
-                        let res =
+                        let response =
                             on_body.call_async(&mut state.store, (req_handle, full_body_bytes.len() as u32)).await;
 
                         if let Some(mutated_body) = state.store.data_mut().buffered_request_body.take() {
@@ -296,12 +297,12 @@ impl WasmFilter {
                             });
                         }
 
-                        res.map_err(WasmError::Wasmtime)
+                        response.map_err(WasmError::Wasmtime)
                     } else {
                         Ok(types::FilterAction::Continue.into())
                     };
 
-                    res
+                    response
                 } else {
                     Ok(types::FilterAction::Continue.into())
                 };
@@ -364,22 +365,48 @@ impl WasmFilter {
                 req.version(),
             ),
             Err(e) => FilterDecision::internal_server_error(&e.to_string(), req.version()),
+        };
+
+        self.extract_and_apply_access_log_operators(req.extensions());
+
+        decision
+    }
+
+    fn extract_and_apply_access_log_operators(&mut self, extensions: &http::Extensions) {
+        if let Some(state) = self.state.get_mut() {
+            let ops = std::mem::take(&mut state.store.data_mut().access_log_operators);
+            if !ops.is_empty() {
+                #[cfg(all(feature = "access-log", feature = "metrics"))]
+                if let Some(ctx) =
+                    extensions.get::<std::sync::Arc<crate::listeners::http_connection_manager::TransactionContext>>()
+                {
+                    let mut kv = orion_metrics::key_value::KeyValueMap::default();
+                    for (k, v) in ops.iter() {
+                        kv.insert(k.as_str(), v.as_str());
+                    }
+                    let _ = crate::access_log::evaluate_plain_access_log_hook(
+                        crate::access_log::AccessLogHook::Wasm,
+                        &kv,
+                        &mut ctx.trans_state.lock().loggers,
+                    );
+                }
+            }
         }
     }
 
-    pub async fn apply_response(&mut self, res: &mut Response<OrionResponseBody>) -> FilterDecision {
+    pub async fn apply_response(&mut self, response: &mut Response<OrionResponseBody>) -> FilterDecision {
         debug!("WasFilter::apply_response: {:?}", self.inner.config);
         if !self.inner.has_on_response_headers && !self.inner.has_on_response_body {
             return FilterDecision::Continue;
         }
 
-        let resp_handle = res as *mut Response<OrionResponseBody> as u64;
+        let resp_handle = response as *mut Response<OrionResponseBody> as u64;
 
         // PHASE 1: headers evaluation
         let action_code: Result<i32, WasmError> = if self.inner.has_on_response_headers {
             let state = match self.get_state().await {
                 Ok(s) => s,
-                Err(e) => return FilterDecision::internal_server_error(&e.to_string(), res.version()),
+                Err(e) => return FilterDecision::internal_server_error(&e.to_string(), response.version()),
             };
 
             if let Ok(on_response_headers) =
@@ -394,7 +421,7 @@ impl WasmFilter {
             Ok(1) // Implicitly return PauseAndBufferBody if the plugin only implements the body hook
         };
 
-        match action_code {
+        let decision = match action_code {
             Ok(0) => FilterDecision::Continue,
 
             Ok(1) => {
@@ -403,23 +430,26 @@ impl WasmFilter {
                 use http_body_util::{BodyExt, Full};
 
                 // 1. Buffer response body
-                let full_body_bytes = match res.body_mut().collect().await {
+                let full_body_bytes = match response.body_mut().collect().await {
                     Ok(collected) => collected.to_bytes(),
                     Err(_) => {
-                        return FilterDecision::internal_server_error("Failed to collect response body", res.version());
+                        return FilterDecision::internal_server_error(
+                            "Failed to collect response body",
+                            response.version(),
+                        );
                     },
                 };
 
                 // 2. Swap response body
-                let old_body = std::mem::take(res.body_mut());
-                *res.body_mut() =
+                let old_body = std::mem::take(response.body_mut());
+                *response.body_mut() =
                     old_body.map_inner(|_old_poly_body| PolyBody::from(Full::from(full_body_bytes.clone())));
 
                 // 3. Invoke on_response_body
                 let body_action_code: Result<i32, WasmError> = if self.inner.has_on_response_body {
                     let state = match self.get_state().await {
                         Ok(s) => s,
-                        Err(e) => return FilterDecision::internal_server_error(&e.to_string(), res.version()),
+                        Err(e) => return FilterDecision::internal_server_error(&e.to_string(), response.version()),
                     };
 
                     let res_val = if let Ok(on_body) =
@@ -431,14 +461,14 @@ impl WasmFilter {
                             on_body.call_async(&mut state.store, (resp_handle, full_body_bytes.len() as u32)).await;
 
                         if let Some(mutated_body) = state.store.data_mut().buffered_response_body.take() {
-                            if res.headers().contains_key(http::header::CONTENT_LENGTH) {
-                                res.headers_mut().insert(
+                            if response.headers().contains_key(http::header::CONTENT_LENGTH) {
+                                response.headers_mut().insert(
                                     http::header::CONTENT_LENGTH,
                                     http::header::HeaderValue::from_str(&mutated_body.len().to_string()).unwrap(),
                                 );
                             }
-                            let old_body = std::mem::take(res.body_mut());
-                            *res.body_mut() =
+                            let old_body = std::mem::take(response.body_mut());
+                            *response.body_mut() =
                                 old_body.map_inner(|_old_poly_body| PolyBody::from(Full::from(mutated_body)));
                         }
 
@@ -458,11 +488,11 @@ impl WasmFilter {
                         // DirectResponse
                         let state = match self.get_state().await {
                             Ok(s) => s,
-                            Err(e) => return FilterDecision::internal_server_error(&e.to_string(), res.version()),
+                            Err(e) => return FilterDecision::internal_server_error(&e.to_string(), response.version()),
                         };
                         let direct_resp = state.store.data_mut().direct_response.take();
                         if let Some(mut response) = direct_resp {
-                            *response.version_mut() = res.version();
+                            *response.version_mut() = response.version();
                             FilterDecision::DirectResponse(Box::new(response))
                         } else {
                             warn!(
@@ -472,15 +502,15 @@ impl WasmFilter {
                             );
                             FilterDecision::internal_server_error(
                                 "DirectResponse without send_direct_response",
-                                res.version(),
+                                response.version(),
                             )
                         }
                     },
                     Ok(code) => FilterDecision::internal_server_error(
                         &format!("Invalid response body action code: {}", code),
-                        res.version(),
+                        response.version(),
                     ),
-                    Err(e) => FilterDecision::internal_server_error(&e.to_string(), res.version()),
+                    Err(e) => FilterDecision::internal_server_error(&e.to_string(), response.version()),
                 }
             },
 
@@ -488,12 +518,12 @@ impl WasmFilter {
                 // DirectResponse
                 let state = match self.get_state().await {
                     Ok(s) => s,
-                    Err(e) => return FilterDecision::internal_server_error(&e.to_string(), res.version()),
+                    Err(e) => return FilterDecision::internal_server_error(&e.to_string(), response.version()),
                 };
                 let direct_resp = state.store.data_mut().direct_response.take();
 
                 if let Some(mut response) = direct_resp {
-                    *response.version_mut() = res.version();
+                    *response.version_mut() = response.version();
                     FilterDecision::DirectResponse(Box::new(response))
                 } else {
                     warn!(
@@ -501,16 +531,23 @@ impl WasmFilter {
                          on_response_headers without calling \
                          send_direct_response"
                     );
-                    FilterDecision::internal_server_error("DirectResponse without send_direct_response", res.version())
+                    FilterDecision::internal_server_error(
+                        "DirectResponse without send_direct_response",
+                        response.version(),
+                    )
                 }
             },
 
             Ok(code) => FilterDecision::internal_server_error(
                 &format!("Invalid Wasm response FilterAction code: {}", code),
-                res.version(),
+                response.version(),
             ),
-            Err(e) => FilterDecision::internal_server_error(&e.to_string(), res.version()),
-        }
+            Err(e) => FilterDecision::internal_server_error(&e.to_string(), response.version()),
+        };
+
+        self.extract_and_apply_access_log_operators(response.extensions());
+
+        decision
     }
 }
 

@@ -21,6 +21,12 @@ extern "C" {
         buffer_len: u32,
     ) -> i32;
 
+    /// Set multiple access log operators at once.
+    pub fn orion_set_access_log_operators(
+        buffer_ptr: *const u8,
+        buffer_len: u32,
+    ) -> i32;
+
     /// Read an HTTP header by name.
     pub fn orion_get_header(
         handle: u64,

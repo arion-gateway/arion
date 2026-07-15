@@ -763,6 +763,44 @@ where
     Err(OrionWasmResult::InternalError)
 }
 
+/// Set multiple access log operators at once.
+#[cfg(target_arch = "wasm32")]
+pub fn set_access_log_operators<'a, I>(operators: I) -> Result<(), OrionWasmResult>
+where
+    I: IntoIterator<Item = (&'a str, &'a str)>,
+{
+    let mut buf = Vec::new();
+    buf.extend_from_slice(&[0, 0, 0, 0]); // placeholder for count
+    let mut count = 0u32;
+    for (k, v) in operators.into_iter() {
+        let k_bytes = k.as_bytes();
+        let v_bytes = v.as_bytes();
+        buf.extend_from_slice(&(k_bytes.len() as u32).to_le_bytes());
+        buf.extend_from_slice(k_bytes);
+        buf.extend_from_slice(&(v_bytes.len() as u32).to_le_bytes());
+        buf.extend_from_slice(v_bytes);
+        count += 1;
+    }
+    buf[0..4].copy_from_slice(&count.to_le_bytes());
+
+    let res = unsafe {
+        ffi::orion_set_access_log_operators(buf.as_ptr(), buf.len() as u32)
+    };
+    match OrionWasmResult::try_from(res) {
+        Ok(OrionWasmResult::Ok) => Ok(()),
+        Ok(other) => Err(other),
+        Err(_) => Err(OrionWasmResult::InternalError),
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn set_access_log_operators<'a, I>(_operators: I) -> Result<(), OrionWasmResult>
+where
+    I: IntoIterator<Item = (&'a str, &'a str)>,
+{
+    Err(OrionWasmResult::InternalError)
+}
+
 /// Idiomatic interface implemented by Orion Wasm plugins.
 pub trait Plugin {
     /// Invoked once when the Wasm module is instantiated.

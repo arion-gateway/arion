@@ -41,6 +41,7 @@ pub struct AccessLogHeaders {
     pub incoming_response_header: Option<HeaderName>,
     pub ext_proc_response_header: Option<HeaderName>,
     pub downstream_response_header: Option<HeaderName>,
+    pub wasm_header: Option<HeaderName>,
 }
 
 pub static ACCESS_LOG_HEADERS: OnceLock<AccessLogHeaders> = OnceLock::new();
@@ -63,13 +64,14 @@ pub enum AccessLogHook {
     IncomingResponse,
     ExtProcResponse,
     DownstreamResponse,
+    Wasm,
 }
 
 /// Evaluates the access log hook by extracting the configured header,
 /// base64-decoding it, parsing it as JSON, and applying it to the loggers.
 /// Returns `Ok(())` if the header is not configured or not found (no-op).
 /// Returns an error only in case of actual data malformation.
-pub fn evaluate_access_log_hook(
+pub fn evaluate_base64_access_log_hook(
     hook: AccessLogHook,
     headers: &http::HeaderMap,
     loggers: &mut [orion_format::LogFormatter],
@@ -85,6 +87,7 @@ pub fn evaluate_access_log_hook(
         AccessLogHook::IncomingResponse => headers_config.incoming_response_header.as_ref(),
         AccessLogHook::ExtProcResponse => headers_config.ext_proc_response_header.as_ref(),
         AccessLogHook::DownstreamResponse => headers_config.downstream_response_header.as_ref(),
+        AccessLogHook::Wasm => headers_config.wasm_header.as_ref(),
     }) else {
         return Ok(());
     };
@@ -104,6 +107,29 @@ pub fn evaluate_access_log_hook(
     // Apply to loggers
     for logger in loggers {
         logger.with_value(&json_val);
+    }
+
+    Ok(())
+}
+
+/// Evaluates the access log hook by extracting the configured key from the given
+/// KeyValueMap, parsing it directly as JSON (without base64 decoding), and applying
+/// it to the loggers.
+#[cfg(feature = "metrics")]
+pub fn evaluate_plain_access_log_hook(
+    _hook: AccessLogHook,
+    headers: &orion_metrics::key_value::KeyValueMap<'_>,
+    loggers: &mut [orion_format::LogFormatter],
+) -> Result<(), AccessLogHeaderError> {
+    if headers.is_empty() {
+        return Ok(());
+    }
+
+    // Apply directly to loggers without intermediate allocations
+    for logger in loggers {
+        for (k, v) in headers.iter() {
+            logger.with_custom_value(k, v);
+        }
     }
 
     Ok(())
