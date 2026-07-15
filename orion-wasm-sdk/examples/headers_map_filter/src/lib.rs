@@ -1,8 +1,6 @@
 //! Example using the Orion Wasm SDK to mutate HTTP headers.
-use orion_wasm_sdk::{
-    orion_plugin, FilterAction, Plugin, RequestHandle, RequestHeaders, init_tracing
-};
-use tracing::{info, debug, error};
+use orion_wasm_sdk::{init_tracing, orion_plugin, FilterAction, HttpHeaders, Plugin, RequestHandle};
+use tracing::{debug, error, info};
 
 #[derive(Default)]
 struct HeadersMapFilter;
@@ -14,14 +12,14 @@ impl Plugin for HeadersMapFilter {
         info!(version = "1.0", "HeadersMapFilter Wasm: Instance initialized!");
     }
 
-    fn on_request_headers(&mut self, ctx: &RequestHandle<RequestHeaders>) -> FilterAction {
+    fn on_request_headers(&mut self, ctx: &RequestHandle<HttpHeaders>) -> FilterAction {
         // 1. Get the current headers map
         let mut headers = match ctx.get_headers_map() {
             Ok(h) => h,
             Err(_) => {
                 error!("Failed to get headers map from host");
                 return ctx.direct_response(500, b"Internal Server Error");
-            }
+            },
         };
 
         // 2. Log all headers
@@ -35,7 +33,7 @@ impl Plugin for HeadersMapFilter {
         info!("Injecting new header 'X-Wasm-Mutated: true'");
         headers.insert(
             http::header::HeaderName::from_static("x-wasm-mutated"),
-            http::header::HeaderValue::from_static("true")
+            http::header::HeaderValue::from_static("true"),
         );
 
         // 4. Set the headers map back to the host

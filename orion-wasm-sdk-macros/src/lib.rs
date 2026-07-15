@@ -42,7 +42,7 @@ pub fn orion_plugin(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     }
                     PLUGIN.as_mut().unwrap()
                 };
-                let ctx = unsafe { ::orion_wasm_sdk::RequestHandle::<::orion_wasm_sdk::RequestHeaders>::new(request_handle) };
+                let ctx = unsafe { ::orion_wasm_sdk::RequestHandle::<::orion_wasm_sdk::HttpHeaders>::new(request_handle) };
                 ::orion_wasm_sdk::Plugin::on_request_headers(plugin, &ctx).into()
             }
         }
@@ -60,7 +60,7 @@ pub fn orion_plugin(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     }
                     PLUGIN.as_mut().unwrap()
                 };
-                let ctx = unsafe { ::orion_wasm_sdk::RequestHandle::<::orion_wasm_sdk::RequestBody>::new(request_handle) };
+                let ctx = unsafe { ::orion_wasm_sdk::RequestHandle::<::orion_wasm_sdk::HttpBody>::new(request_handle) };
                 ::orion_wasm_sdk::Plugin::on_request_body(plugin, &ctx).into()
             }
         }
@@ -78,7 +78,7 @@ pub fn orion_plugin(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     }
                     PLUGIN.as_mut().unwrap()
                 };
-                let ctx = unsafe { ::orion_wasm_sdk::ResponseHandle::<::orion_wasm_sdk::ResponseHeaders>::new(response_handle) };
+                let ctx = unsafe { ::orion_wasm_sdk::ResponseHandle::<::orion_wasm_sdk::HttpHeaders>::new(response_handle) };
                 ::orion_wasm_sdk::Plugin::on_response_headers(plugin, &ctx).into()
             }
         }
@@ -96,7 +96,7 @@ pub fn orion_plugin(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     }
                     PLUGIN.as_mut().unwrap()
                 };
-                let ctx = unsafe { ::orion_wasm_sdk::ResponseHandle::<::orion_wasm_sdk::ResponseBody>::new(response_handle) };
+                let ctx = unsafe { ::orion_wasm_sdk::ResponseHandle::<::orion_wasm_sdk::HttpBody>::new(response_handle) };
                 ::orion_wasm_sdk::Plugin::on_response_body(plugin, &ctx).into()
             }
         }

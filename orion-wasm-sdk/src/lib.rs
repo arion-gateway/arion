@@ -12,7 +12,9 @@
 //! The ABI types (`OrionWasmResult`, `FilterAction`) are shared with the host
 //! via the standalone [`orion_wasm_types`] crate.
 
-pub use orion_wasm_types::{CalloutRequest, CalloutResponse, FilterAction, HeaderMutation, OrionWasmResult, OrionWasmError};
+pub use orion_wasm_types::{
+    CalloutRequest, CalloutResponse, FilterAction, HeaderMutation, OrionWasmError, OrionWasmResult,
+};
 
 // ============================================================================
 // FFI declarations — match the hostcalls registered in
@@ -289,7 +291,6 @@ pub fn get_plugin_config() -> Result<Option<String>, OrionWasmError> {
     }
 }
 
-
 /// Set multiple custom metric key-value pairs at once.
 pub fn set_custom_metrics<'a, I>(metrics: I) -> Result<(), OrionWasmError>
 where
@@ -321,7 +322,6 @@ where
     OrionWasmResult::from_ffi(res)
 }
 
-
 /// Set multiple access log operators at once.
 pub fn set_access_log_operators<'a, I>(operators: I) -> Result<(), OrionWasmError>
 where
@@ -350,7 +350,6 @@ where
     let res = unsafe { ffi::orion_set_access_log_operators(buf.as_ptr(), buf.len() as u32) };
     OrionWasmResult::from_ffi(res)
 }
-
 
 /// Idiomatic interface implemented by Orion Wasm plugins.
 pub trait Plugin {
@@ -513,7 +512,6 @@ pub fn dispatch_http_call(request: &CalloutRequest) -> Result<CalloutResponse, O
         Err(OrionWasmResult::from_ffi(res).unwrap_err())
     }
 }
-
 
 #[no_mangle]
 pub extern "C" fn orion_malloc(size: u32) -> *mut u8 {

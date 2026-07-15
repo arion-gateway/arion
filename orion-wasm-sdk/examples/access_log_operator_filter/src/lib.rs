@@ -1,7 +1,8 @@
 use orion_wasm_sdk::{
-    orion_plugin, set_access_log_operators, FilterAction, Plugin, RequestHandle, RequestHeaders, ResponseHandle, ResponseHeaders, init_tracing
+    init_tracing, orion_plugin, set_access_log_operators, FilterAction, HttpHeaders, Plugin, RequestHandle,
+    ResponseHandle,
 };
-use tracing::{info, error};
+use tracing::{error, info};
 
 #[derive(Default)]
 struct AccessLogOperatorFilter;
@@ -13,13 +14,9 @@ impl Plugin for AccessLogOperatorFilter {
         info!("AccessLogOperatorFilter: Wasm module initialized.");
     }
 
-    fn on_request_headers(&mut self, _ctx: &RequestHandle<RequestHeaders>) -> FilterAction {
+    fn on_request_headers(&mut self, _ctx: &RequestHandle<HttpHeaders>) -> FilterAction {
         // Set multiple access log operators during request processing
-        let operators = [
-            ("op_1", "\"value_from_request_phase\""),
-            ("op_2", "42"),
-            ("op_3", "{\"nested\": true}"),
-        ];
+        let operators = [("op_1", "\"value_from_request_phase\""), ("op_2", "42"), ("op_3", "{\"nested\": true}")];
 
         if let Err(e) = set_access_log_operators(operators) {
             error!("Failed to set access log operators: {:?}", e);
@@ -30,11 +27,9 @@ impl Plugin for AccessLogOperatorFilter {
         FilterAction::Continue
     }
 
-    fn on_response_headers(&mut self, _ctx: &ResponseHandle<ResponseHeaders>) -> FilterAction {
+    fn on_response_headers(&mut self, _ctx: &ResponseHandle<HttpHeaders>) -> FilterAction {
         // We can also set or overwrite them during the response phase
-        let operators = [
-            ("op_4", "\"value_from_response_phase\""),
-        ];
+        let operators = [("op_4", "\"value_from_response_phase\"")];
 
         if let Err(e) = set_access_log_operators(operators) {
             error!("Failed to set access log operators on response: {:?}", e);

@@ -1,11 +1,10 @@
 //! Example using the Orion Wasm SDK to perform an HTTP Callout and replace the request body.
+use http::{HeaderMap, Method};
 use orion_wasm_sdk::{
-    dispatch_http_call, init_tracing, orion_plugin, CalloutRequest, FilterAction, Plugin,
-    RequestBody, RequestHandle,
+    dispatch_http_call, init_tracing, orion_plugin, CalloutRequest, FilterAction, HttpBody, Plugin, RequestHandle,
 };
-use tracing::{error, info};
-use http::{Method, HeaderMap};
 use smol_str::SmolStr;
+use tracing::{error, info};
 
 #[derive(Default)]
 struct CalloutBodyFilter;
@@ -17,7 +16,7 @@ impl Plugin for CalloutBodyFilter {
         info!(version = "1.0", "CalloutBodyFilter Wasm: Instance initialized!");
     }
 
-    fn on_request_body(&mut self, ctx: &RequestHandle<RequestBody>) -> FilterAction {
+    fn on_request_body(&mut self, ctx: &RequestHandle<HttpBody>) -> FilterAction {
         info!("--- Processing Request Body with Callout ---");
 
         // 1. Get the original body to send to the external service
@@ -26,7 +25,7 @@ impl Plugin for CalloutBodyFilter {
             Err(e) => {
                 error!("Failed to get request body: {:?}", e);
                 return FilterAction::Continue;
-            }
+            },
         };
 
         // 2. Prepare the callout request
@@ -51,7 +50,7 @@ impl Plugin for CalloutBodyFilter {
                 if response.status.is_success() {
                     // 4. Extract the body from the callout response and replace the original request body
                     let new_body = response.body.unwrap_or_else(|| b"Fallback Body".to_vec());
-                    
+
                     if let Err(e) = ctx.set_body(&new_body) {
                         error!("Failed to replace the request body: {:?}", e);
                     } else {
@@ -60,10 +59,10 @@ impl Plugin for CalloutBodyFilter {
                 } else {
                     error!("Callout returned non-success status, keeping original body");
                 }
-            }
+            },
             Err(e) => {
                 error!("Failed to execute callout: {:?}", e);
-            }
+            },
         }
 
         FilterAction::Continue

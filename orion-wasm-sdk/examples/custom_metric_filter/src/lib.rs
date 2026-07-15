@@ -4,9 +4,9 @@
 //! from within a Wasm plugin using `set_custom_metric`.
 
 use orion_wasm_sdk::{
-    orion_plugin, set_custom_metrics, FilterAction, Plugin, RequestHandle, RequestHeaders, init_tracing
+    init_tracing, orion_plugin, set_custom_metrics, FilterAction, HttpHeaders, Plugin, RequestHandle,
 };
-use tracing::{info, debug, error};
+use tracing::{debug, error, info};
 
 #[derive(Default)]
 struct CustomMetricFilter;
@@ -18,7 +18,7 @@ impl Plugin for CustomMetricFilter {
         info!("CustomMetricFilter: Wasm module initialized.");
     }
 
-    fn on_request_headers(&mut self, _ctx: &RequestHandle<RequestHeaders>) -> FilterAction {
+    fn on_request_headers(&mut self, _ctx: &RequestHandle<HttpHeaders>) -> FilterAction {
         // Evaluate a single custom metric with key "custom" and value "metric".
         match set_custom_metrics([("custom", "metric")]) {
             Ok(_) => debug!("Single custom metric successfully evaluated!"),
@@ -26,10 +26,7 @@ impl Plugin for CustomMetricFilter {
         }
 
         // Evaluate multiple custom metrics at once without allocating a HashMap!
-        let multi_metrics = [
-            ("user_tier", "premium"),
-            ("datacenter", "eu-west-1"),
-        ];
+        let multi_metrics = [("user_tier", "premium"), ("datacenter", "eu-west-1")];
 
         match orion_wasm_sdk::set_custom_metrics(multi_metrics) {
             Ok(_) => debug!("Multiple custom metrics successfully evaluated!"),

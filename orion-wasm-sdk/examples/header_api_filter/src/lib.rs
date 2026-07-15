@@ -1,8 +1,6 @@
 //! Example using the Orion Wasm SDK to mutate HTTP headers natively.
-use orion_wasm_sdk::{
-    orion_plugin, FilterAction, Plugin, RequestHandle, RequestHeaders, ResponseHandle, ResponseHeaders, init_tracing
-};
-use tracing::{info, debug, error};
+use orion_wasm_sdk::{init_tracing, orion_plugin, FilterAction, HttpHeaders, Plugin, RequestHandle, ResponseHandle};
+use tracing::{debug, error, info};
 
 #[derive(Default)]
 struct HeaderApiFilter;
@@ -14,7 +12,7 @@ impl Plugin for HeaderApiFilter {
         info!(version = "1.0", "HeaderApiFilter Wasm: Instance initialized!");
     }
 
-    fn on_request_headers(&mut self, ctx: &RequestHandle<RequestHeaders>) -> FilterAction {
+    fn on_request_headers(&mut self, ctx: &RequestHandle<HttpHeaders>) -> FilterAction {
         info!("--- Processing Request Headers ---");
 
         // 1. Set a new header (or replace if it exists)
@@ -49,7 +47,7 @@ impl Plugin for HeaderApiFilter {
         FilterAction::Continue
     }
 
-    fn on_response_headers(&mut self, ctx: &ResponseHandle<ResponseHeaders>) -> FilterAction {
+    fn on_response_headers(&mut self, ctx: &ResponseHandle<HttpHeaders>) -> FilterAction {
         info!("--- Processing Response Headers ---");
 
         // 1. Set a response header

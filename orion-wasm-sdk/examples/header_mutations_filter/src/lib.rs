@@ -1,8 +1,8 @@
 //! Example using the Orion Wasm SDK to mutate HTTP headers natively using the batch API.
 use orion_wasm_sdk::{
-    orion_plugin, FilterAction, Plugin, RequestHandle, RequestHeaders, ResponseHandle, ResponseHeaders, init_tracing, HeaderMutation
+    init_tracing, orion_plugin, FilterAction, HeaderMutation, HttpHeaders, Plugin, RequestHandle, ResponseHandle,
 };
-use tracing::{info, debug, error};
+use tracing::{debug, error, info};
 
 #[derive(Default)]
 struct HeaderMutationsFilter;
@@ -14,7 +14,7 @@ impl Plugin for HeaderMutationsFilter {
         info!(version = "1.0", "HeaderMutationsFilter Wasm: Instance initialized!");
     }
 
-    fn on_request_headers(&mut self, ctx: &RequestHandle<RequestHeaders>) -> FilterAction {
+    fn on_request_headers(&mut self, ctx: &RequestHandle<HttpHeaders>) -> FilterAction {
         info!("--- Processing Request Headers with Batch API ---");
 
         let mutations = vec![
@@ -26,9 +26,7 @@ impl Plugin for HeaderMutationsFilter {
                 http::header::HeaderName::from_static("x-custom-add"),
                 http::header::HeaderValue::from_static("add-value"),
             ),
-            HeaderMutation::Remove(
-                http::header::HeaderName::from_static("user-agent"),
-            ),
+            HeaderMutation::Remove(http::header::HeaderName::from_static("user-agent")),
             HeaderMutation::Replace(
                 http::header::HeaderName::from_static("x-custom-set"),
                 http::header::HeaderValue::from_static("replaced-value"),
@@ -42,15 +40,13 @@ impl Plugin for HeaderMutationsFilter {
         FilterAction::Continue
     }
 
-    fn on_response_headers(&mut self, ctx: &ResponseHandle<ResponseHeaders>) -> FilterAction {
+    fn on_response_headers(&mut self, ctx: &ResponseHandle<HttpHeaders>) -> FilterAction {
         info!("--- Processing Response Headers with Batch API ---");
 
-        let mutations = vec![
-            HeaderMutation::Set(
-                http::header::HeaderName::from_static("x-response-set"),
-                http::header::HeaderValue::from_static("res-set-value"),
-            ),
-        ];
+        let mutations = vec![HeaderMutation::Set(
+            http::header::HeaderName::from_static("x-response-set"),
+            http::header::HeaderValue::from_static("res-set-value"),
+        )];
 
         if let Err(e) = ctx.apply_header_mutations(&mutations) {
             error!("Failed to apply response header mutations: {:?}", e);

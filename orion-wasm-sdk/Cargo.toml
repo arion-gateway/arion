@@ -8,7 +8,7 @@ license = "Apache-2.0"
 # This crate is intentionally kept out of the main Orion workspace so it can
 # be consumed standalone by external plugin authors compiling to wasm32.
 [workspace]
-
+members = ["examples/*"]
 [dependencies]
 orion-wasm-types = { path = "../orion-wasm-types" }
 orion-wasm-sdk-macros = { path = "../orion-wasm-sdk-macros" }

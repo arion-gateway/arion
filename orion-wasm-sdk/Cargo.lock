@@ -3,6 +3,14 @@
 version = 4
 
 [[package]]
+name = "access_log_operator_filter"
+version = "0.1.0"
+dependencies = [
+ "orion_wasm_sdk",
+ "tracing",
+]
+
+[[package]]
 name = "bincode-next"
 version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -25,6 +33,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "body_mutation_filter"
+version = "0.1.0"
+dependencies = [
+ "http",
+ "orion_wasm_sdk",
+ "tracing",
+]
+
+[[package]]
 name = "borsh"
 version = "1.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -41,10 +58,71 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
+name = "callout_body_filter"
+version = "0.1.0"
+dependencies = [
+ "http",
+ "orion_wasm_sdk",
+ "smol_str",
+ "tracing",
+]
+
+[[package]]
 name = "cfg_aliases"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
+
+[[package]]
+name = "config_logger_filter"
+version = "0.1.0"
+dependencies = [
+ "orion_wasm_sdk",
+ "tracing",
+]
+
+[[package]]
+name = "custom_metric_filter"
+version = "0.1.0"
+dependencies = [
+ "orion_wasm_sdk",
+ "tracing",
+]
+
+[[package]]
+name = "dummy_filter"
+version = "0.1.0"
+dependencies = [
+ "orion_wasm_sdk",
+ "tracing",
+]
+
+[[package]]
+name = "header_api_filter"
+version = "0.1.0"
+dependencies = [
+ "http",
+ "orion_wasm_sdk",
+ "tracing",
+]
+
+[[package]]
+name = "header_mutations_filter"
+version = "0.1.0"
+dependencies = [
+ "http",
+ "orion_wasm_sdk",
+ "tracing",
+]
+
+[[package]]
+name = "headers_map_filter"
+version = "0.1.0"
+dependencies = [
+ "http",
+ "orion_wasm_sdk",
+ "tracing",
+]
 
 [[package]]
 name = "http"
