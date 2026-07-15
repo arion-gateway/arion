@@ -383,3 +383,35 @@ pub(crate) fn apply_header_mutations(
     };
     OrionWasmResult::from_ffi(res)
 }
+
+/// Serialize an iterator of `(key, value)` string pairs into the wire format shared by
+/// the `orion_set_custom_metrics` and `orion_set_access_log_operators` hostcalls:
+/// a little-endian `u32` count, followed by each pair encoded as
+/// `u32 key_len | key_bytes | u32 val_len | val_bytes`.
+pub(crate) fn serialize_kv_pairs<'a, I>(pairs: I) -> Vec<u8>
+where
+    I: IntoIterator<Item = (&'a str, &'a str)>,
+{
+    let iter = pairs.into_iter();
+    let estimated = {
+        let (lower, upper) = iter.size_hint();
+        upper.unwrap_or(lower)
+    };
+
+    // 4 bytes count + (4 bytes k_len + k_bytes + 4 bytes v_len + v_bytes) per item.
+    // Assumes an average of 16 bytes per string as a safe baseline.
+    let mut buf = Vec::with_capacity(4 + estimated * 40);
+    buf.extend_from_slice(&[0, 0, 0, 0]); // placeholder for count
+    let mut count: u32 = 0;
+    for (k, v) in iter {
+        let k_bytes = k.as_bytes();
+        let v_bytes = v.as_bytes();
+        buf.extend_from_slice(&(k_bytes.len() as u32).to_le_bytes());
+        buf.extend_from_slice(k_bytes);
+        buf.extend_from_slice(&(v_bytes.len() as u32).to_le_bytes());
+        buf.extend_from_slice(v_bytes);
+        count += 1;
+    }
+    buf[0..4].copy_from_slice(&count.to_le_bytes());
+    buf
+}

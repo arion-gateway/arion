@@ -248,6 +248,69 @@ fn orion_send_direct_response(
     OrionWasmResult::Ok.into()
 }
 
+/// Lazily parses the wire format shared by the `orion_set_custom_metrics` and
+/// `orion_set_access_log_operators` hostcalls: a little-endian `u32` count,
+/// followed by that many entries each encoded as
+/// `u32 key_len | key_bytes | u32 val_len | val_bytes`.
+///
+/// Yields borrowed `(&str, &str)` pairs with no intermediate allocation. Once
+/// `buf` is found to be truncated or to contain invalid UTF-8, yields a single
+/// `Err(())` and then stops; callers should treat that as
+/// `OrionWasmResult::InvalidMemoryAccess`.
+struct KvPairs<'a> {
+    buf: &'a [u8],
+    offset: usize,
+    remaining: u32,
+    failed: bool,
+}
+
+impl<'a> KvPairs<'a> {
+    fn new(buf: &'a [u8]) -> Option<Self> {
+        if buf.len() < 4 {
+            return None;
+        }
+        let remaining = u32::from_le_bytes(buf[0..4].try_into().unwrap());
+        Some(Self { buf, offset: 4, remaining, failed: false })
+    }
+
+    fn read_str(&mut self) -> Result<&'a str, ()> {
+        if self.offset + 4 > self.buf.len() {
+            return Err(());
+        }
+        let len = u32::from_le_bytes(self.buf[self.offset..self.offset + 4].try_into().unwrap()) as usize;
+        self.offset += 4;
+
+        if self.offset + len > self.buf.len() {
+            return Err(());
+        }
+        let s = std::str::from_utf8(&self.buf[self.offset..self.offset + len]).map_err(|_| ())?;
+        self.offset += len;
+        Ok(s)
+    }
+}
+
+impl<'a> Iterator for KvPairs<'a> {
+    type Item = Result<(&'a str, &'a str), ()>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.failed || self.remaining == 0 {
+            return None;
+        }
+        self.remaining -= 1;
+
+        let result = self.read_str().and_then(|k| self.read_str().map(|v| (k, v)));
+        if result.is_err() {
+            self.failed = true;
+        }
+        Some(result)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let n = self.remaining as usize;
+        (n, Some(n))
+    }
+}
+
 fn orion_set_custom_metrics(mut caller: Caller<'_, WasmState>, buffer_ptr: u32, buffer_len: u32) -> i32 {
     let memory = match caller.get_export("memory").and_then(|m| m.into_memory()) {
         Some(mem) => mem,
@@ -264,51 +327,19 @@ fn orion_set_custom_metrics(mut caller: Caller<'_, WasmState>, buffer_ptr: u32, 
         }
         let buf = &data[start..end];
 
-        if buf.len() < 4 {
-            return OrionWasmResult::InvalidMemoryAccess.into();
-        }
-        let num_entries = u32::from_le_bytes(buf[0..4].try_into().unwrap());
-        let mut offset = 4;
+        let pairs = match KvPairs::new(buf) {
+            Some(pairs) => pairs,
+            None => return OrionWasmResult::InvalidMemoryAccess.into(),
+        };
 
         if let Some(custom_metrics) = orion_metrics::metrics::custom::CUSTOM_METRICS.get() {
             let mut kv = orion_metrics::key_value::KeyValueMap::default();
-
-            for _ in 0..num_entries {
-                if offset + 4 > buf.len() {
-                    return OrionWasmResult::InvalidMemoryAccess.into();
-                }
-                let k_len = u32::from_le_bytes(buf[offset..offset + 4].try_into().unwrap()) as usize;
-                offset += 4;
-
-                if offset + k_len > buf.len() {
-                    return OrionWasmResult::InvalidMemoryAccess.into();
-                }
-                let k_bytes = &buf[offset..offset + k_len];
-                offset += k_len;
-                let k_str = match std::str::from_utf8(k_bytes) {
-                    Ok(s) => s,
-                    Err(_) => return OrionWasmResult::InvalidMemoryAccess.into(),
+            for pair in pairs {
+                match pair {
+                    Ok((k_str, v_str)) => kv.insert(k_str, v_str),
+                    Err(()) => return OrionWasmResult::InvalidMemoryAccess.into(),
                 };
-
-                if offset + 4 > buf.len() {
-                    return OrionWasmResult::InvalidMemoryAccess.into();
-                }
-                let v_len = u32::from_le_bytes(buf[offset..offset + 4].try_into().unwrap()) as usize;
-                offset += 4;
-
-                if offset + v_len > buf.len() {
-                    return OrionWasmResult::InvalidMemoryAccess.into();
-                }
-                let v_bytes = &buf[offset..offset + v_len];
-                offset += v_len;
-                let v_str = match std::str::from_utf8(v_bytes) {
-                    Ok(s) => s,
-                    Err(_) => return OrionWasmResult::InvalidMemoryAccess.into(),
-                };
-
-                kv.insert(k_str, v_str);
             }
-
             custom_metrics.with_key_value(orion_metrics::metrics::custom::MetricsHook::Wasm, &kv, &[]);
         }
         OrionWasmResult::Ok.into()
@@ -333,48 +364,17 @@ fn orion_set_access_log_operators(mut caller: Caller<'_, WasmState>, buffer_ptr:
     }
     let buf = &data[start..end];
 
-    if buf.len() < 4 {
-        return OrionWasmResult::InvalidMemoryAccess.into();
-    }
-    let num_entries = u32::from_le_bytes(buf[0..4].try_into().unwrap());
-    let mut offset = 4;
+    let pairs = match KvPairs::new(buf) {
+        Some(pairs) => pairs,
+        None => return OrionWasmResult::InvalidMemoryAccess.into(),
+    };
 
-    let mut operators = Vec::with_capacity(num_entries as usize);
-
-    for _ in 0..num_entries {
-        if offset + 4 > buf.len() {
-            return OrionWasmResult::InvalidMemoryAccess.into();
+    let mut operators = Vec::with_capacity(pairs.size_hint().0);
+    for pair in pairs {
+        match pair {
+            Ok((k, v)) => operators.push((k.to_owned(), v.to_owned())),
+            Err(()) => return OrionWasmResult::InvalidMemoryAccess.into(),
         }
-        let k_len = u32::from_le_bytes(buf[offset..offset + 4].try_into().unwrap()) as usize;
-        offset += 4;
-
-        if offset + k_len > buf.len() {
-            return OrionWasmResult::InvalidMemoryAccess.into();
-        }
-        let k_bytes = &buf[offset..offset + k_len];
-        offset += k_len;
-        let k_str = match std::str::from_utf8(k_bytes) {
-            Ok(s) => s.to_owned(),
-            Err(_) => return OrionWasmResult::InvalidMemoryAccess.into(),
-        };
-
-        if offset + 4 > buf.len() {
-            return OrionWasmResult::InvalidMemoryAccess.into();
-        }
-        let v_len = u32::from_le_bytes(buf[offset..offset + 4].try_into().unwrap()) as usize;
-        offset += 4;
-
-        if offset + v_len > buf.len() {
-            return OrionWasmResult::InvalidMemoryAccess.into();
-        }
-        let v_bytes = &buf[offset..offset + v_len];
-        offset += v_len;
-        let v_str = match std::str::from_utf8(v_bytes) {
-            Ok(s) => s.to_owned(),
-            Err(_) => return OrionWasmResult::InvalidMemoryAccess.into(),
-        };
-
-        operators.push((k_str, v_str));
     }
 
     caller.data_mut().access_log_operators.extend(operators);

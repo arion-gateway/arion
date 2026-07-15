@@ -296,28 +296,7 @@ pub fn set_custom_metrics<'a, I>(metrics: I) -> Result<(), OrionWasmError>
 where
     I: IntoIterator<Item = (&'a str, &'a str)>,
 {
-    let iter = metrics.into_iter();
-    let estimated = {
-        let (lower, upper) = iter.size_hint();
-        upper.unwrap_or(lower)
-    };
-
-    // 4 bytes count + (4 bytes k_len + k_bytes + 4 bytes v_len + v_bytes) per item
-    // Assuming an average of 16 bytes per string as a safe baseline
-    let mut buf = Vec::with_capacity(4 + estimated * 40);
-    buf.extend_from_slice(&[0, 0, 0, 0]); // placeholder for count
-    let mut count = 0u32;
-    for (k, v) in iter {
-        let k_bytes = k.as_bytes();
-        let v_bytes = v.as_bytes();
-        buf.extend_from_slice(&(k_bytes.len() as u32).to_le_bytes());
-        buf.extend_from_slice(k_bytes);
-        buf.extend_from_slice(&(v_bytes.len() as u32).to_le_bytes());
-        buf.extend_from_slice(v_bytes);
-        count += 1;
-    }
-    buf[0..4].copy_from_slice(&count.to_le_bytes());
-
+    let buf = serialize_kv_pairs(metrics);
     let res = unsafe { ffi::orion_set_custom_metrics(buf.as_ptr(), buf.len() as u32) };
     OrionWasmResult::from_ffi(res)
 }
@@ -327,26 +306,7 @@ pub fn set_access_log_operators<'a, I>(operators: I) -> Result<(), OrionWasmErro
 where
     I: IntoIterator<Item = (&'a str, &'a str)>,
 {
-    let iter = operators.into_iter();
-    let estimated = {
-        let (lower, upper) = iter.size_hint();
-        upper.unwrap_or(lower)
-    };
-    // 4 bytes count + (4 bytes k_len + k_bytes + 4 bytes v_len + v_bytes) per item
-    let mut buf = Vec::with_capacity(4 + estimated * 40);
-    buf.extend_from_slice(&[0, 0, 0, 0]); // placeholder for count
-    let mut count = 0u32;
-    for (k, v) in iter {
-        let k_bytes = k.as_bytes();
-        let v_bytes = v.as_bytes();
-        buf.extend_from_slice(&(k_bytes.len() as u32).to_le_bytes());
-        buf.extend_from_slice(k_bytes);
-        buf.extend_from_slice(&(v_bytes.len() as u32).to_le_bytes());
-        buf.extend_from_slice(v_bytes);
-        count += 1;
-    }
-    buf[0..4].copy_from_slice(&count.to_le_bytes());
-
+    let buf = serialize_kv_pairs(operators);
     let res = unsafe { ffi::orion_set_access_log_operators(buf.as_ptr(), buf.len() as u32) };
     OrionWasmResult::from_ffi(res)
 }
