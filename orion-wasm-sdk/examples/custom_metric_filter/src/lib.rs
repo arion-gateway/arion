@@ -4,7 +4,7 @@
 //! from within a Wasm plugin using `set_custom_metric`.
 
 use orion_wasm_sdk::{
-    orion_plugin, set_custom_metric, FilterAction, Plugin, RequestHandle, RequestHeaders, init_tracing
+    orion_plugin, set_custom_metrics, FilterAction, Plugin, RequestHandle, RequestHeaders, init_tracing
 };
 use tracing::{info, debug, error};
 
@@ -20,7 +20,7 @@ impl Plugin for CustomMetricFilter {
 
     fn on_request_headers(&mut self, _ctx: &RequestHandle<RequestHeaders>) -> FilterAction {
         // Evaluate a single custom metric with key "custom" and value "metric".
-        match set_custom_metric("custom", "metric") {
+        match set_custom_metrics([("custom", "metric")]) {
             Ok(_) => debug!("Single custom metric successfully evaluated!"),
             Err(_) => error!("Failed to evaluate single custom metric!"),
         }

@@ -12,7 +12,7 @@
 //! The ABI types (`OrionWasmResult`, `FilterAction`) are shared with the host
 //! via the standalone [`orion_wasm_types`] crate.
 
-pub use orion_wasm_types::{FilterAction, OrionWasmResult, HeaderMutation, CalloutRequest, CalloutResponse};
+pub use orion_wasm_types::{CalloutRequest, CalloutResponse, FilterAction, HeaderMutation, OrionWasmResult};
 
 // ============================================================================
 // FFI declarations — match the hostcalls registered in
@@ -21,12 +21,11 @@ pub use orion_wasm_types::{FilterAction, OrionWasmResult, HeaderMutation, Callou
 #[cfg(target_arch = "wasm32")]
 mod ffi;
 
-
 // ============================================================================
 // Header Map serialization
 // ============================================================================
 
-pub use http::{HeaderMap, header::HeaderName, header::HeaderValue};
+pub use http::{header::HeaderName, header::HeaderValue, HeaderMap};
 
 #[cfg(target_arch = "wasm32")]
 fn serialize_header_map(headers: &HeaderMap) -> Vec<u8> {
@@ -54,32 +53,42 @@ fn serialize_header_map(headers: &HeaderMap) -> Vec<u8> {
 
 #[cfg(target_arch = "wasm32")]
 fn deserialize_header_map(data: &[u8]) -> Option<HeaderMap> {
-    let mut headers = HeaderMap::new();
     if data.len() < 4 {
-        return Some(headers);
+        return Some(HeaderMap::new());
     }
 
     let num_headers = u32::from_le_bytes(data[0..4].try_into().unwrap());
+    let mut headers = HeaderMap::with_capacity(num_headers as usize);
     let mut offset = 4;
 
     for _ in 0..num_headers {
-        if offset + 4 > data.len() { return None; }
-        let key_len = u32::from_le_bytes(data[offset..offset+4].try_into().unwrap()) as usize;
+        if offset + 4 > data.len() {
+            return None;
+        }
+        let key_len = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
         offset += 4;
 
-        if offset + key_len > data.len() { return None; }
-        let key_bytes = &data[offset..offset+key_len];
+        if offset + key_len > data.len() {
+            return None;
+        }
+        let key_bytes = &data[offset..offset + key_len];
         offset += key_len;
 
-        if offset + 4 > data.len() { return None; }
-        let val_len = u32::from_le_bytes(data[offset..offset+4].try_into().unwrap()) as usize;
+        if offset + 4 > data.len() {
+            return None;
+        }
+        let val_len = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
         offset += 4;
 
-        if offset + val_len > data.len() { return None; }
-        let val_bytes = &data[offset..offset+val_len];
+        if offset + val_len > data.len() {
+            return None;
+        }
+        let val_bytes = &data[offset..offset + val_len];
         offset += val_len;
 
-        if let (Ok(name), Ok(value)) = (http::header::HeaderName::from_bytes(key_bytes), http::header::HeaderValue::from_bytes(val_bytes)) {
+        if let (Ok(name), Ok(value)) =
+            (http::header::HeaderName::from_bytes(key_bytes), http::header::HeaderValue::from_bytes(val_bytes))
+        {
             headers.append(name, value);
         } else {
             return None;
@@ -94,7 +103,6 @@ fn deserialize_header_map(data: &[u8]) -> Option<HeaderMap> {
 
 const DEFAULT_HEADER_STACK_BUF_SIZE: usize = 1024;
 const DEFAULT_HEAP_BUF_SIZE: usize = 4096;
-
 
 /// Read an HTTP header by name.
 #[cfg(target_arch = "wasm32")]
@@ -118,7 +126,7 @@ fn get_http_header(handle: u64, target: ffi::HeaderTarget, name: &str) -> Result
         Ok(OrionWasmResult::Ok) => {
             let len = written_len as usize;
             Ok(HeaderValue::from_bytes(&stack_buf[..len]).ok())
-        }
+        },
         Ok(OrionWasmResult::NotFound) => Ok(None),
         Ok(OrionWasmResult::BufferTooSmall) => {
             let mut heap_buf: Vec<u8> = Vec::with_capacity(DEFAULT_HEAP_BUF_SIZE);
@@ -139,9 +147,11 @@ fn get_http_header(handle: u64, target: ffi::HeaderTarget, name: &str) -> Result
 
                 match OrionWasmResult::try_from(res) {
                     Ok(OrionWasmResult::Ok) => {
-                        unsafe { heap_buf.set_len(written_len as usize); }
+                        unsafe {
+                            heap_buf.set_len(written_len as usize);
+                        }
                         return Ok(HeaderValue::from_bytes(&heap_buf).ok());
-                    }
+                    },
                     Ok(OrionWasmResult::NotFound) => return Ok(None),
                     Ok(OrionWasmResult::BufferTooSmall) => {
                         let new_cap = heap_buf.capacity().saturating_mul(2);
@@ -149,19 +159,23 @@ fn get_http_header(handle: u64, target: ffi::HeaderTarget, name: &str) -> Result
                             return Err(OrionWasmResult::BufferTooSmall);
                         }
                         heap_buf.reserve_exact(new_cap);
-                    }
+                    },
                     Ok(other) => return Err(other),
                     Err(_) => return Err(OrionWasmResult::InternalError),
                 }
             }
-        }
+        },
         Ok(other) => Err(other),
         Err(_) => Err(OrionWasmResult::InternalError),
     }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn get_http_header(_handle: u64, _target: ffi::HeaderTarget, _name: &str) -> Result<Option<HeaderValue>, OrionWasmResult> {
+fn get_http_header(
+    _handle: u64,
+    _target: ffi::HeaderTarget,
+    _name: &str,
+) -> Result<Option<HeaderValue>, OrionWasmResult> {
     Err(OrionWasmResult::InternalError)
 }
 
@@ -184,16 +198,18 @@ fn get_http_body(handle: u64, target: ffi::HeaderTarget) -> Result<Vec<u8>, Orio
 
         match OrionWasmResult::try_from(res) {
             Ok(OrionWasmResult::Ok) => {
-                unsafe { buf.set_len(written_len as usize); }
+                unsafe {
+                    buf.set_len(written_len as usize);
+                }
                 return Ok(buf);
-            }
+            },
             Ok(OrionWasmResult::BufferTooSmall) => {
                 let new_cap = buf.capacity().saturating_mul(2);
                 if new_cap == buf.capacity() {
                     return Err(OrionWasmResult::BufferTooSmall);
                 }
                 buf.reserve_exact(new_cap);
-            }
+            },
             Ok(other) => return Err(other),
             Err(_) => return Err(OrionWasmResult::InternalError),
         }
@@ -208,14 +224,7 @@ fn get_http_body(_handle: u64, _target: ffi::HeaderTarget) -> Result<Vec<u8>, Or
 /// Replace the buffered body.
 #[cfg(target_arch = "wasm32")]
 fn set_http_body(handle: u64, target: ffi::HeaderTarget, body: &[u8]) -> Result<(), OrionWasmResult> {
-    let res = unsafe {
-        ffi::orion_set_body(
-            handle,
-            target as u32,
-            body.as_ptr(),
-            body.len() as u32,
-        )
-    };
+    let res = unsafe { ffi::orion_set_body(handle, target as u32, body.as_ptr(), body.len() as u32) };
 
     match OrionWasmResult::try_from(res) {
         Ok(OrionWasmResult::Ok) => Ok(()),
@@ -233,12 +242,7 @@ fn set_http_body(_handle: u64, _target: ffi::HeaderTarget, _body: &[u8]) -> Resu
 #[cfg(target_arch = "wasm32")]
 fn send_http_direct_response(request_handle: u64, status_code: u16, body: &[u8]) -> Result<(), OrionWasmResult> {
     let res = unsafe {
-        ffi::orion_send_direct_response(
-            request_handle,
-            status_code as u32,
-            body.as_ptr(),
-            body.len() as u32,
-        )
+        ffi::orion_send_direct_response(request_handle, status_code as u32, body.as_ptr(), body.len() as u32)
     };
 
     match OrionWasmResult::try_from(res) {
@@ -271,14 +275,18 @@ fn get_http_headers_map(handle: u64, target: ffi::HeaderTarget) -> Result<Header
 
         match OrionWasmResult::try_from(res) {
             Ok(OrionWasmResult::Ok) => {
-                unsafe { buf.set_len(written_len as usize); }
+                unsafe {
+                    buf.set_len(written_len as usize);
+                }
                 return deserialize_header_map(&buf).ok_or(OrionWasmResult::InternalError);
-            }
+            },
             Ok(OrionWasmResult::BufferTooSmall) => {
                 let new_cap = buf.capacity().saturating_mul(2);
-                if new_cap == buf.capacity() { return Err(OrionWasmResult::BufferTooSmall); }
+                if new_cap == buf.capacity() {
+                    return Err(OrionWasmResult::BufferTooSmall);
+                }
                 buf.reserve_exact(new_cap);
-            }
+            },
             Ok(other) => return Err(other),
             Err(_) => return Err(OrionWasmResult::InternalError),
         }
@@ -293,7 +301,8 @@ fn get_http_headers_map(_handle: u64, _target: ffi::HeaderTarget) -> Result<Head
 #[cfg(target_arch = "wasm32")]
 fn set_http_headers_map(handle: u64, target: ffi::HeaderTarget, headers: &HeaderMap) -> Result<(), OrionWasmResult> {
     let serialized = serialize_header_map(headers);
-    let res = unsafe { ffi::orion_set_headers_map(handle, target as u32, serialized.as_ptr(), serialized.len() as u32) };
+    let res =
+        unsafe { ffi::orion_set_headers_map(handle, target as u32, serialized.as_ptr(), serialized.len() as u32) };
     match OrionWasmResult::try_from(res) {
         Ok(OrionWasmResult::Ok) => Ok(()),
         Ok(other) => Err(other),
@@ -307,44 +316,124 @@ fn set_http_headers_map(_handle: u64, _target: ffi::HeaderTarget, _headers: &Hea
 }
 
 #[cfg(target_arch = "wasm32")]
-fn set_http_header(handle: u64, target: ffi::HeaderTarget, name: &HeaderName, value: &HeaderValue) -> Result<(), OrionWasmResult> {
+fn set_http_header(
+    handle: u64,
+    target: ffi::HeaderTarget,
+    name: &HeaderName,
+    value: &HeaderValue,
+) -> Result<(), OrionWasmResult> {
     let name_bytes = name.as_str().as_bytes();
     let value_bytes = value.as_bytes();
-    let res = unsafe { ffi::orion_set_header(handle, target as u32, name_bytes.as_ptr(), name_bytes.len() as u32, value_bytes.as_ptr(), value_bytes.len() as u32) };
-    match OrionWasmResult::try_from(res) { Ok(OrionWasmResult::Ok) => Ok(()), Ok(other) => Err(other), Err(_) => Err(OrionWasmResult::InternalError) }
+    let res = unsafe {
+        ffi::orion_set_header(
+            handle,
+            target as u32,
+            name_bytes.as_ptr(),
+            name_bytes.len() as u32,
+            value_bytes.as_ptr(),
+            value_bytes.len() as u32,
+        )
+    };
+    match OrionWasmResult::try_from(res) {
+        Ok(OrionWasmResult::Ok) => Ok(()),
+        Ok(other) => Err(other),
+        Err(_) => Err(OrionWasmResult::InternalError),
+    }
 }
 #[cfg(not(target_arch = "wasm32"))]
-fn set_http_header(_handle: u64, _target: ffi::HeaderTarget, _name: &HeaderName, _value: &HeaderValue) -> Result<(), OrionWasmResult> { Err(OrionWasmResult::InternalError) }
+fn set_http_header(
+    _handle: u64,
+    _target: ffi::HeaderTarget,
+    _name: &HeaderName,
+    _value: &HeaderValue,
+) -> Result<(), OrionWasmResult> {
+    Err(OrionWasmResult::InternalError)
+}
 
 #[cfg(target_arch = "wasm32")]
-fn add_http_header(handle: u64, target: ffi::HeaderTarget, name: &HeaderName, value: &HeaderValue) -> Result<(), OrionWasmResult> {
+fn add_http_header(
+    handle: u64,
+    target: ffi::HeaderTarget,
+    name: &HeaderName,
+    value: &HeaderValue,
+) -> Result<(), OrionWasmResult> {
     let name_bytes = name.as_str().as_bytes();
     let value_bytes = value.as_bytes();
-    let res = unsafe { ffi::orion_add_header(handle, target as u32, name_bytes.as_ptr(), name_bytes.len() as u32, value_bytes.as_ptr(), value_bytes.len() as u32) };
-    match OrionWasmResult::try_from(res) { Ok(OrionWasmResult::Ok) => Ok(()), Ok(other) => Err(other), Err(_) => Err(OrionWasmResult::InternalError) }
+    let res = unsafe {
+        ffi::orion_add_header(
+            handle,
+            target as u32,
+            name_bytes.as_ptr(),
+            name_bytes.len() as u32,
+            value_bytes.as_ptr(),
+            value_bytes.len() as u32,
+        )
+    };
+    match OrionWasmResult::try_from(res) {
+        Ok(OrionWasmResult::Ok) => Ok(()),
+        Ok(other) => Err(other),
+        Err(_) => Err(OrionWasmResult::InternalError),
+    }
 }
 #[cfg(not(target_arch = "wasm32"))]
-fn add_http_header(_handle: u64, _target: ffi::HeaderTarget, _name: &HeaderName, _value: &HeaderValue) -> Result<(), OrionWasmResult> { Err(OrionWasmResult::InternalError) }
+fn add_http_header(
+    _handle: u64,
+    _target: ffi::HeaderTarget,
+    _name: &HeaderName,
+    _value: &HeaderValue,
+) -> Result<(), OrionWasmResult> {
+    Err(OrionWasmResult::InternalError)
+}
 
 #[cfg(target_arch = "wasm32")]
 fn remove_http_header(handle: u64, target: ffi::HeaderTarget, name: &HeaderName) -> Result<(), OrionWasmResult> {
     let name_bytes = name.as_str().as_bytes();
     let res = unsafe { ffi::orion_remove_header(handle, target as u32, name_bytes.as_ptr(), name_bytes.len() as u32) };
-    match OrionWasmResult::try_from(res) { Ok(OrionWasmResult::Ok) => Ok(()), Ok(other) => Err(other), Err(_) => Err(OrionWasmResult::InternalError) }
+    match OrionWasmResult::try_from(res) {
+        Ok(OrionWasmResult::Ok) => Ok(()),
+        Ok(other) => Err(other),
+        Err(_) => Err(OrionWasmResult::InternalError),
+    }
 }
 #[cfg(not(target_arch = "wasm32"))]
-fn remove_http_header(_handle: u64, _target: ffi::HeaderTarget, _name: &HeaderName) -> Result<(), OrionWasmResult> { Err(OrionWasmResult::InternalError) }
+fn remove_http_header(_handle: u64, _target: ffi::HeaderTarget, _name: &HeaderName) -> Result<(), OrionWasmResult> {
+    Err(OrionWasmResult::InternalError)
+}
 
 #[cfg(target_arch = "wasm32")]
-fn replace_http_header(handle: u64, target: ffi::HeaderTarget, name: &HeaderName, value: &HeaderValue) -> Result<(), OrionWasmResult> {
+fn replace_http_header(
+    handle: u64,
+    target: ffi::HeaderTarget,
+    name: &HeaderName,
+    value: &HeaderValue,
+) -> Result<(), OrionWasmResult> {
     let name_bytes = name.as_str().as_bytes();
     let value_bytes = value.as_bytes();
-    let res = unsafe { ffi::orion_replace_header(handle, target as u32, name_bytes.as_ptr(), name_bytes.len() as u32, value_bytes.as_ptr(), value_bytes.len() as u32) };
-    match OrionWasmResult::try_from(res) { Ok(OrionWasmResult::Ok) => Ok(()), Ok(other) => Err(other), Err(_) => Err(OrionWasmResult::InternalError) }
+    let res = unsafe {
+        ffi::orion_replace_header(
+            handle,
+            target as u32,
+            name_bytes.as_ptr(),
+            name_bytes.len() as u32,
+            value_bytes.as_ptr(),
+            value_bytes.len() as u32,
+        )
+    };
+    match OrionWasmResult::try_from(res) {
+        Ok(OrionWasmResult::Ok) => Ok(()),
+        Ok(other) => Err(other),
+        Err(_) => Err(OrionWasmResult::InternalError),
+    }
 }
 #[cfg(not(target_arch = "wasm32"))]
-fn replace_http_header(_handle: u64, _target: ffi::HeaderTarget, _name: &HeaderName, _value: &HeaderValue) -> Result<(), OrionWasmResult> { Err(OrionWasmResult::InternalError) }
-
+fn replace_http_header(
+    _handle: u64,
+    _target: ffi::HeaderTarget,
+    _name: &HeaderName,
+    _value: &HeaderValue,
+) -> Result<(), OrionWasmResult> {
+    Err(OrionWasmResult::InternalError)
+}
 
 #[cfg(target_arch = "wasm32")]
 fn serialize_header_mutations(mutations: &[HeaderMutation]) -> Vec<u8> {
@@ -356,10 +445,10 @@ fn serialize_header_mutations(mutations: &[HeaderMutation]) -> Vec<u8> {
             | HeaderMutation::Add(name, value)
             | HeaderMutation::Replace(name, value) => {
                 capacity += 8 + name.as_str().len() + value.len();
-            }
+            },
             HeaderMutation::Remove(name) => {
                 capacity += 4 + name.as_str().len();
-            }
+            },
         }
     }
 
@@ -372,21 +461,21 @@ fn serialize_header_mutations(mutations: &[HeaderMutation]) -> Vec<u8> {
             HeaderMutation::Set(name, value) => {
                 buf.push(0);
                 write_key_val(&mut buf, name, value);
-            }
+            },
             HeaderMutation::Add(name, value) => {
                 buf.push(1);
                 write_key_val(&mut buf, name, value);
-            }
+            },
             HeaderMutation::Replace(name, value) => {
                 buf.push(2);
                 write_key_val(&mut buf, name, value);
-            }
+            },
             HeaderMutation::Remove(name) => {
                 buf.push(3);
                 let name_bytes = name.as_str().as_bytes();
                 buf.extend_from_slice(&(name_bytes.len() as u32).to_le_bytes());
                 buf.extend_from_slice(name_bytes);
-            }
+            },
         }
     }
     buf
@@ -404,9 +493,15 @@ fn write_key_val(buf: &mut Vec<u8>, name: &HeaderName, value: &HeaderValue) {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn apply_header_mutations(handle: u64, target: ffi::HeaderTarget, mutations: &[HeaderMutation]) -> Result<(), OrionWasmResult> {
+fn apply_header_mutations(
+    handle: u64,
+    target: ffi::HeaderTarget,
+    mutations: &[HeaderMutation],
+) -> Result<(), OrionWasmResult> {
     let serialized = serialize_header_mutations(mutations);
-    let res = unsafe { ffi::orion_apply_header_mutations(handle, target as u32, serialized.as_ptr(), serialized.len() as u32) };
+    let res = unsafe {
+        ffi::orion_apply_header_mutations(handle, target as u32, serialized.as_ptr(), serialized.len() as u32)
+    };
     match OrionWasmResult::try_from(res) {
         Ok(OrionWasmResult::Ok) => Ok(()),
         Ok(other) => Err(other),
@@ -415,7 +510,11 @@ fn apply_header_mutations(handle: u64, target: ffi::HeaderTarget, mutations: &[H
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn apply_header_mutations(_handle: u64, _target: ffi::HeaderTarget, _mutations: &[HeaderMutation]) -> Result<(), OrionWasmResult> {
+fn apply_header_mutations(
+    _handle: u64,
+    _target: ffi::HeaderTarget,
+    _mutations: &[HeaderMutation],
+) -> Result<(), OrionWasmResult> {
     Err(OrionWasmResult::InternalError)
 }
 
@@ -449,10 +548,7 @@ impl<S: State> RequestHandle<S> {
     /// Create a new request handle.
     #[doc(hidden)]
     pub unsafe fn new(handle: u64) -> Self {
-        Self {
-            handle,
-            _marker: core::marker::PhantomData,
-        }
+        Self { handle, _marker: core::marker::PhantomData }
     }
 }
 
@@ -466,10 +562,7 @@ impl<S: State> ResponseHandle<S> {
     /// Create a new response handle.
     #[doc(hidden)]
     pub unsafe fn new(handle: u64) -> Self {
-        Self {
-            handle,
-            _marker: core::marker::PhantomData,
-        }
+        Self { handle, _marker: core::marker::PhantomData }
     }
 }
 
@@ -669,20 +762,16 @@ pub fn get_plugin_config() -> Result<Option<String>, OrionWasmResult> {
 
     loop {
         let res = unsafe {
-            ffi::orion_get_plugin_config(
-                buf.as_mut_ptr(),
-                buf.capacity() as u32,
-                &mut written_len as *mut u32,
-            )
+            ffi::orion_get_plugin_config(buf.as_mut_ptr(), buf.capacity() as u32, &mut written_len as *mut u32)
         };
 
         match OrionWasmResult::try_from(res) {
             Ok(OrionWasmResult::Ok) => {
-                unsafe { buf.set_len(written_len as usize); }
-                return String::from_utf8(buf)
-                    .map(Some)
-                    .map_err(|_| OrionWasmResult::InternalError);
-            }
+                unsafe {
+                    buf.set_len(written_len as usize);
+                }
+                return String::from_utf8(buf).map(Some).map_err(|_| OrionWasmResult::InternalError);
+            },
             Ok(OrionWasmResult::NotFound) => return Ok(None),
             Ok(OrionWasmResult::BufferTooSmall) => {
                 let new_cap = buf.capacity().saturating_mul(2);
@@ -690,7 +779,7 @@ pub fn get_plugin_config() -> Result<Option<String>, OrionWasmResult> {
                     return Err(OrionWasmResult::BufferTooSmall);
                 }
                 buf.reserve_exact(new_cap);
-            }
+            },
             Ok(other) => return Err(other),
             Err(_) => return Err(OrionWasmResult::InternalError),
         }
@@ -702,34 +791,24 @@ pub fn get_plugin_config() -> Result<Option<String>, OrionWasmResult> {
     Err(OrionWasmResult::InternalError)
 }
 
-/// Set a custom metric key-value pair.
-#[cfg(target_arch = "wasm32")]
-pub fn set_custom_metric(key: &str, value: &str) -> Result<(), OrionWasmResult> {
-    let res = unsafe {
-        ffi::orion_set_custom_metric(
-            key.as_ptr(),
-            key.len() as u32,
-            value.as_ptr(),
-            value.len() as u32,
-        )
-    };
-    match OrionWasmResult::try_from(res) {
-        Ok(OrionWasmResult::Ok) => Ok(()),
-        Ok(other) => Err(other),
-        Err(_) => Err(OrionWasmResult::InternalError),
-    }
-}
-
 /// Set multiple custom metric key-value pairs at once.
 #[cfg(target_arch = "wasm32")]
 pub fn set_custom_metrics<'a, I>(metrics: I) -> Result<(), OrionWasmResult>
 where
     I: IntoIterator<Item = (&'a str, &'a str)>,
 {
-    let mut buf = Vec::new();
+    let iter = metrics.into_iter();
+    let estimated = {
+        let (lower, upper) = iter.size_hint();
+        upper.unwrap_or(lower)
+    };
+
+    // 4 bytes count + (4 bytes k_len + k_bytes + 4 bytes v_len + v_bytes) per item
+    // Assuming an average of 16 bytes per string as a safe baseline
+    let mut buf = Vec::with_capacity(4 + estimated * 40);
     buf.extend_from_slice(&[0, 0, 0, 0]); // placeholder for count
     let mut count = 0u32;
-    for (k, v) in metrics.into_iter() {
+    for (k, v) in iter {
         let k_bytes = k.as_bytes();
         let v_bytes = v.as_bytes();
         buf.extend_from_slice(&(k_bytes.len() as u32).to_le_bytes());
@@ -740,19 +819,12 @@ where
     }
     buf[0..4].copy_from_slice(&count.to_le_bytes());
 
-    let res = unsafe {
-        ffi::orion_set_custom_metrics(buf.as_ptr(), buf.len() as u32)
-    };
+    let res = unsafe { ffi::orion_set_custom_metrics(buf.as_ptr(), buf.len() as u32) };
     match OrionWasmResult::try_from(res) {
         Ok(OrionWasmResult::Ok) => Ok(()),
         Ok(other) => Err(other),
         Err(_) => Err(OrionWasmResult::InternalError),
     }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub fn set_custom_metric(_key: &str, _value: &str) -> Result<(), OrionWasmResult> {
-    Err(OrionWasmResult::InternalError)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -769,10 +841,16 @@ pub fn set_access_log_operators<'a, I>(operators: I) -> Result<(), OrionWasmResu
 where
     I: IntoIterator<Item = (&'a str, &'a str)>,
 {
-    let mut buf = Vec::new();
+    let iter = operators.into_iter();
+    let estimated = {
+        let (lower, upper) = iter.size_hint();
+        upper.unwrap_or(lower)
+    };
+    // 4 bytes count + (4 bytes k_len + k_bytes + 4 bytes v_len + v_bytes) per item
+    let mut buf = Vec::with_capacity(4 + estimated * 40);
     buf.extend_from_slice(&[0, 0, 0, 0]); // placeholder for count
     let mut count = 0u32;
-    for (k, v) in operators.into_iter() {
+    for (k, v) in iter {
         let k_bytes = k.as_bytes();
         let v_bytes = v.as_bytes();
         buf.extend_from_slice(&(k_bytes.len() as u32).to_le_bytes());
@@ -783,9 +861,7 @@ where
     }
     buf[0..4].copy_from_slice(&count.to_le_bytes());
 
-    let res = unsafe {
-        ffi::orion_set_access_log_operators(buf.as_ptr(), buf.len() as u32)
-    };
+    let res = unsafe { ffi::orion_set_access_log_operators(buf.as_ptr(), buf.len() as u32) };
     match OrionWasmResult::try_from(res) {
         Ok(OrionWasmResult::Ok) => Ok(()),
         Ok(other) => Err(other),
@@ -805,15 +881,15 @@ where
 pub trait Plugin {
     /// Invoked once when the Wasm module is instantiated.
     #[inline]
-    fn on_plugin_start(&mut self) { }
+    fn on_plugin_start(&mut self) {}
 
     /// Invoked when the Wasm module instance is destroyed by the host.
     #[inline]
-    fn on_plugin_destroy(&mut self) { }
+    fn on_plugin_destroy(&mut self) {}
 
     /// Invoked at the beginning of a new HTTP request/transaction.
     #[inline]
-    fn on_transaction_start(&mut self) { }
+    fn on_transaction_start(&mut self) {}
 
     /// Invoked on the request path before the body has been buffered.
     #[inline]
@@ -846,7 +922,7 @@ pub trait Plugin {
     /// Invoked when the request/response has been fully processed and the transaction is complete.
     /// This is a good place to clean up any transaction-specific resources before the plugin is reused.
     #[inline]
-    fn on_transaction_complete(&mut self) { }
+    fn on_transaction_complete(&mut self) {}
 }
 
 /// # Example

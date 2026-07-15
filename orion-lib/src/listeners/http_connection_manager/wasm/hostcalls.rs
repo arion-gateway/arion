@@ -248,53 +248,6 @@ fn orion_send_direct_response(
     OrionWasmResult::Ok.into()
 }
 
-fn orion_set_custom_metric(
-    mut caller: Caller<'_, WasmState>,
-    key_ptr: u32,
-    key_len: u32,
-    value_ptr: u32,
-    value_len: u32,
-) -> i32 {
-    let memory = match caller.get_export("memory").and_then(|m| m.into_memory()) {
-        Some(mem) => mem,
-        None => return OrionWasmResult::InvalidMemoryAccess.into(),
-    };
-
-    #[cfg(feature = "metrics")]
-    {
-        let data = memory.data(&caller);
-        let k_start = key_ptr as usize;
-        let k_end = k_start + key_len as usize;
-        let v_start = value_ptr as usize;
-        let v_end = v_start + value_len as usize;
-
-        if k_end > data.len() || v_end > data.len() {
-            return OrionWasmResult::InvalidMemoryAccess.into();
-        }
-
-        let key = match std::str::from_utf8(&data[k_start..k_end]) {
-            Ok(s) => s,
-            Err(_) => return OrionWasmResult::InvalidMemoryAccess.into(),
-        };
-
-        let value = match std::str::from_utf8(&data[v_start..v_end]) {
-            Ok(s) => s,
-            Err(_) => return OrionWasmResult::InvalidMemoryAccess.into(),
-        };
-
-        if let Some(custom_metrics) = orion_metrics::metrics::custom::CUSTOM_METRICS.get() {
-            let mut kv = orion_metrics::key_value::KeyValueMap::default();
-            kv.insert(key, value);
-            custom_metrics.with_key_value(orion_metrics::metrics::custom::MetricsHook::Wasm, &kv, &[]);
-        }
-        OrionWasmResult::Ok.into()
-    }
-    #[cfg(not(feature = "metrics"))]
-    {
-        OrionWasmResult::InternalError.into()
-    }
-}
-
 fn orion_set_custom_metrics(mut caller: Caller<'_, WasmState>, buffer_ptr: u32, buffer_len: u32) -> i32 {
     let memory = match caller.get_export("memory").and_then(|m| m.into_memory()) {
         Some(mem) => mem,
@@ -1075,7 +1028,7 @@ pub fn register_hostcalls(linker: &mut Linker<WasmState>) -> Result<(), wasmtime
     linker.func_wrap("env", "orion_apply_header_mutations", orion_apply_header_mutations)?;
 
     linker.func_wrap("env", "orion_send_direct_response", orion_send_direct_response)?;
-    linker.func_wrap("env", "orion_set_custom_metric", orion_set_custom_metric)?;
+
     linker.func_wrap("env", "orion_set_custom_metrics", orion_set_custom_metrics)?;
     linker.func_wrap("env", "orion_set_access_log_operators", orion_set_access_log_operators)?;
     linker.func_wrap("env", "orion_log", orion_log)?;

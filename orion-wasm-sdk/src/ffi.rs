@@ -7,14 +7,6 @@ extern "C" {
         written_len_ptr: *mut u32,
     ) -> i32;
 
-    /// Set a custom metric.
-    pub fn orion_set_custom_metric(
-        key_ptr: *const u8,
-        key_len: u32,
-        value_ptr: *const u8,
-        value_len: u32,
-    ) -> i32;
-
     /// Set multiple custom metrics at once.
     pub fn orion_set_custom_metrics(
         buffer_ptr: *const u8,
