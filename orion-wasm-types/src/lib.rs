@@ -28,6 +28,49 @@ pub enum OrionWasmResult {
 
 /// Error returned when converting a raw `i32` into [`OrionWasmResult`] and the
 /// value does not match any known variant.
+/// Idiomatic Rust error type for Orion SDK.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrionWasmError {
+    NotFound,
+    BufferTooSmall,
+    InvalidMemoryAccess,
+    InternalError,
+}
+
+impl core::fmt::Display for OrionWasmError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::NotFound => write!(f, "NotFound"),
+            Self::BufferTooSmall => write!(f, "BufferTooSmall"),
+            Self::InvalidMemoryAccess => write!(f, "InvalidMemoryAccess"),
+            Self::InternalError => write!(f, "InternalError"),
+        }
+    }
+}
+
+impl std::error::Error for OrionWasmError {}
+
+impl OrionWasmResult {
+    #[inline]
+    pub fn into_result(self) -> Result<(), OrionWasmError> {
+        match self {
+            Self::Ok => Ok(()),
+            Self::NotFound => Err(OrionWasmError::NotFound),
+            Self::BufferTooSmall => Err(OrionWasmError::BufferTooSmall),
+            Self::InvalidMemoryAccess => Err(OrionWasmError::InvalidMemoryAccess),
+            Self::InternalError => Err(OrionWasmError::InternalError),
+        }
+    }
+
+    #[inline]
+    pub fn from_ffi(v: i32) -> Result<(), OrionWasmError> {
+        match Self::try_from(v) {
+            Ok(res) => res.into_result(),
+            Err(_) => Err(OrionWasmError::InternalError),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UnknownOrionWasmResult(pub i32);
 
