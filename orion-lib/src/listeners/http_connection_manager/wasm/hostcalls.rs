@@ -6,7 +6,7 @@ use bytes::Bytes;
 use http::StatusCode;
 use http::{Request, Response};
 use http_body_util::Full;
-use smol_str::ToSmolStr;
+use smol_str::{SmolStr, ToSmolStr};
 use wasmtime::{Caller, Linker};
 
 use orion_wasm_types::{CalloutRequest, CalloutResponse, HeaderMutation};
@@ -16,7 +16,7 @@ pub struct WasmState {
     pub direct_response: Option<Response<OrionResponseBody>>,
     pub buffered_request_body: Option<bytes::Bytes>,
     pub buffered_response_body: Option<bytes::Bytes>,
-    pub access_log_operators: Vec<(String, String)>,
+    pub access_log_operators: Vec<(SmolStr, SmolStr)>,
 }
 
 fn orion_get_header(
@@ -248,69 +248,6 @@ fn orion_send_direct_response(
     OrionWasmResult::Ok.into()
 }
 
-/// Lazily parses the wire format shared by the `orion_set_custom_metrics` and
-/// `orion_set_access_log_operators` hostcalls: a little-endian `u32` count,
-/// followed by that many entries each encoded as
-/// `u32 key_len | key_bytes | u32 val_len | val_bytes`.
-///
-/// Yields borrowed `(&str, &str)` pairs with no intermediate allocation. Once
-/// `buf` is found to be truncated or to contain invalid UTF-8, yields a single
-/// `Err(())` and then stops; callers should treat that as
-/// `OrionWasmResult::InvalidMemoryAccess`.
-struct KvPairs<'a> {
-    buf: &'a [u8],
-    offset: usize,
-    remaining: u32,
-    failed: bool,
-}
-
-impl<'a> KvPairs<'a> {
-    fn new(buf: &'a [u8]) -> Option<Self> {
-        if buf.len() < 4 {
-            return None;
-        }
-        let remaining = u32::from_le_bytes(buf[0..4].try_into().unwrap());
-        Some(Self { buf, offset: 4, remaining, failed: false })
-    }
-
-    fn read_str(&mut self) -> Result<&'a str, ()> {
-        if self.offset + 4 > self.buf.len() {
-            return Err(());
-        }
-        let len = u32::from_le_bytes(self.buf[self.offset..self.offset + 4].try_into().unwrap()) as usize;
-        self.offset += 4;
-
-        if self.offset + len > self.buf.len() {
-            return Err(());
-        }
-        let s = std::str::from_utf8(&self.buf[self.offset..self.offset + len]).map_err(|_| ())?;
-        self.offset += len;
-        Ok(s)
-    }
-}
-
-impl<'a> Iterator for KvPairs<'a> {
-    type Item = Result<(&'a str, &'a str), ()>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.failed || self.remaining == 0 {
-            return None;
-        }
-        self.remaining -= 1;
-
-        let result = self.read_str().and_then(|k| self.read_str().map(|v| (k, v)));
-        if result.is_err() {
-            self.failed = true;
-        }
-        Some(result)
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let n = self.remaining as usize;
-        (n, Some(n))
-    }
-}
-
 fn orion_set_custom_metrics(mut caller: Caller<'_, WasmState>, buffer_ptr: u32, buffer_len: u32) -> i32 {
     let memory = match caller.get_export("memory").and_then(|m| m.into_memory()) {
         Some(mem) => mem,
@@ -327,18 +264,18 @@ fn orion_set_custom_metrics(mut caller: Caller<'_, WasmState>, buffer_ptr: u32, 
         }
         let buf = &data[start..end];
 
-        let pairs = match KvPairs::new(buf) {
-            Some(pairs) => pairs,
-            None => return OrionWasmResult::InvalidMemoryAccess.into(),
+        let pairs = match bincode_next::serde::decode_from_slice::<Vec<(SmolStr, SmolStr)>, _>(
+            buf,
+            bincode_next::config::standard(),
+        ) {
+            Ok((p, _)) => p,
+            Err(_) => return OrionWasmResult::InvalidMemoryAccess.into(),
         };
 
         if let Some(custom_metrics) = orion_metrics::metrics::custom::CUSTOM_METRICS.get() {
             let mut kv = orion_metrics::key_value::KeyValueMap::default();
-            for pair in pairs {
-                match pair {
-                    Ok((k_str, v_str)) => kv.insert(k_str, v_str),
-                    Err(()) => return OrionWasmResult::InvalidMemoryAccess.into(),
-                };
+            for (k, v) in &pairs {
+                kv.insert(k.as_str(), v.as_str());
             }
             custom_metrics.with_key_value(orion_metrics::metrics::custom::MetricsHook::Wasm, &kv, &[]);
         }
@@ -364,18 +301,13 @@ fn orion_set_access_log_operators(mut caller: Caller<'_, WasmState>, buffer_ptr:
     }
     let buf = &data[start..end];
 
-    let pairs = match KvPairs::new(buf) {
-        Some(pairs) => pairs,
-        None => return OrionWasmResult::InvalidMemoryAccess.into(),
+    let operators = match bincode_next::serde::decode_from_slice::<Vec<(SmolStr, SmolStr)>, _>(
+        buf,
+        bincode_next::config::standard(),
+    ) {
+        Ok((ops, _)) => ops,
+        Err(_) => return OrionWasmResult::InvalidMemoryAccess.into(),
     };
-
-    let mut operators = Vec::with_capacity(pairs.size_hint().0);
-    for pair in pairs {
-        match pair {
-            Ok((k, v)) => operators.push((k.to_owned(), v.to_owned())),
-            Err(()) => return OrionWasmResult::InvalidMemoryAccess.into(),
-        }
-    }
 
     caller.data_mut().access_log_operators.extend(operators);
     OrionWasmResult::Ok.into()
@@ -413,68 +345,26 @@ fn orion_log(mut caller: Caller<'_, WasmState>, level: u32, msg_ptr: u32, msg_le
 }
 
 use http::HeaderMap;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-fn serialize_header_map(headers: &HeaderMap) -> Vec<u8> {
-    let mut buf = Vec::new();
-    let num_headers = headers.iter().count() as u32;
-    buf.extend_from_slice(&num_headers.to_le_bytes());
+// HeaderMap serde wrappers
 
-    for (key, val) in headers.iter() {
-        let key_bytes = key.as_str().as_bytes();
-        let val_bytes = val.as_bytes();
+struct SerHeaderMap<'a>(&'a HeaderMap);
 
-        buf.extend_from_slice(&(key_bytes.len() as u32).to_le_bytes());
-        buf.extend_from_slice(key_bytes);
-
-        buf.extend_from_slice(&(val_bytes.len() as u32).to_le_bytes());
-        buf.extend_from_slice(val_bytes);
+impl<'a> Serialize for SerHeaderMap<'a> {
+    #[inline]
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        http_serde_ext::header_map::serialize(self.0, s)
     }
-    buf
 }
 
-fn deserialize_header_map(data: &[u8]) -> Option<HeaderMap> {
-    let mut headers = HeaderMap::new();
-    if data.len() < 4 {
-        return Some(headers);
+struct DeHeaderMap(HeaderMap);
+
+impl<'de> Deserialize<'de> for DeHeaderMap {
+    #[inline]
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        http_serde_ext::header_map::deserialize(d).map(DeHeaderMap)
     }
-
-    let num_headers = u32::from_le_bytes(data[0..4].try_into().unwrap());
-    let mut offset = 4;
-
-    for _ in 0..num_headers {
-        if offset + 4 > data.len() {
-            return None;
-        }
-        let key_len = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
-        offset += 4;
-
-        if offset + key_len > data.len() {
-            return None;
-        }
-        let key_bytes = &data[offset..offset + key_len];
-        offset += key_len;
-
-        if offset + 4 > data.len() {
-            return None;
-        }
-        let val_len = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
-        offset += 4;
-
-        if offset + val_len > data.len() {
-            return None;
-        }
-        let val_bytes = &data[offset..offset + val_len];
-        offset += val_len;
-
-        if let (Ok(name), Ok(value)) =
-            (http::header::HeaderName::from_bytes(key_bytes), http::header::HeaderValue::from_bytes(val_bytes))
-        {
-            headers.append(name, value);
-        } else {
-            return None;
-        }
-    }
-    Some(headers)
 }
 
 fn orion_get_headers_map(
@@ -490,16 +380,20 @@ fn orion_get_headers_map(
         None => return OrionWasmResult::InvalidMemoryAccess.into(),
     };
 
-    let serialized = match handle_type {
+    let headers = match handle_type {
         0 => {
             let request = unsafe { &*(handle as *const Request<OrionRequestBody>) };
-            serialize_header_map(request.headers())
+            request.headers()
         },
         1 => {
             let response = unsafe { &*(handle as *const Response<OrionResponseBody>) };
-            serialize_header_map(response.headers())
+            response.headers()
         },
         _ => return OrionWasmResult::InternalError.into(),
+    };
+    let serialized = match bincode_next::serde::encode_to_vec(&SerHeaderMap(headers), bincode_next::config::standard()) {
+        Ok(b) => b,
+        Err(_) => return OrionWasmResult::InternalError.into(),
     };
 
     if serialized.len() > max_len as usize {
@@ -538,9 +432,12 @@ fn orion_set_headers_map(
     if end > data.len() {
         return OrionWasmResult::InvalidMemoryAccess.into();
     }
-    let headers = match deserialize_header_map(&data[start..end]) {
-        Some(h) => h,
-        None => return OrionWasmResult::InternalError.into(),
+    let headers = match bincode_next::serde::decode_from_slice::<DeHeaderMap, _>(
+        &data[start..end],
+        bincode_next::config::standard(),
+    ) {
+        Ok((DeHeaderMap(h), _)) => h,
+        Err(_) => return OrionWasmResult::InternalError.into(),
     };
 
     match handle_type {
@@ -721,60 +618,12 @@ fn orion_replace_header(
 }
 
 fn deserialize_header_mutations(data: &[u8]) -> Option<Vec<HeaderMutation>> {
-    if data.len() < 4 {
-        return None;
-    }
-    let num_mutations = u32::from_le_bytes(data[0..4].try_into().unwrap());
-    let mut offset = 4;
-    let mut mutations = Vec::new();
-
-    for _ in 0..num_mutations {
-        if offset >= data.len() {
-            return None;
-        }
-        let mut_type = data[offset];
-        offset += 1;
-
-        if offset + 4 > data.len() {
-            return None;
-        }
-        let name_len = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
-        offset += 4;
-
-        if offset + name_len > data.len() {
-            return None;
-        }
-        let name_bytes = &data[offset..offset + name_len];
-        offset += name_len;
-
-        let name_str = std::str::from_utf8(name_bytes).ok()?;
-        let name = http::header::HeaderName::try_from(name_str).ok()?;
-
-        if mut_type == 3 {
-            mutations.push(HeaderMutation::Remove(name));
-        } else {
-            if offset + 4 > data.len() {
-                return None;
-            }
-            let val_len = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
-            offset += 4;
-
-            if offset + val_len > data.len() {
-                return None;
-            }
-            let val_bytes = &data[offset..offset + val_len];
-            offset += val_len;
-            let value = http::header::HeaderValue::from_bytes(val_bytes).ok()?;
-
-            match mut_type {
-                0 => mutations.push(HeaderMutation::Set(name, value)),
-                1 => mutations.push(HeaderMutation::Add(name, value)),
-                2 => mutations.push(HeaderMutation::Replace(name, value)),
-                _ => return None,
-            }
-        }
-    }
-    Some(mutations)
+    bincode_next::serde::decode_from_slice::<Vec<HeaderMutation>, _>(
+        data,
+        bincode_next::config::standard(),
+    )
+    .ok()
+    .map(|(mutations, _)| mutations)
 }
 
 fn apply_mutations_to_map(map: &mut http::HeaderMap, mutations: Vec<HeaderMutation>) {

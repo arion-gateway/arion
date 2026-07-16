@@ -296,7 +296,9 @@ pub fn set_custom_metrics<'a, I>(metrics: I) -> Result<(), OrionWasmError>
 where
     I: IntoIterator<Item = (&'a str, &'a str)>,
 {
-    let buf = serialize_kv_pairs(metrics);
+    let pairs: Vec<(&str, &str)> = metrics.into_iter().collect();
+    let buf = bincode_next::serde::encode_to_vec(pairs.as_slice(), bincode_next::config::standard())
+        .map_err(|_| OrionWasmError::InternalError)?;
     let res = unsafe { ffi::orion_set_custom_metrics(buf.as_ptr(), buf.len() as u32) };
     OrionWasmResult::from_ffi(res)
 }
@@ -306,7 +308,9 @@ pub fn set_access_log_operators<'a, I>(operators: I) -> Result<(), OrionWasmErro
 where
     I: IntoIterator<Item = (&'a str, &'a str)>,
 {
-    let buf = serialize_kv_pairs(operators);
+    let pairs: Vec<(&str, &str)> = operators.into_iter().collect();
+    let buf = bincode_next::serde::encode_to_vec(pairs.as_slice(), bincode_next::config::standard())
+        .map_err(|_| OrionWasmError::InternalError)?;
     let res = unsafe { ffi::orion_set_access_log_operators(buf.as_ptr(), buf.len() as u32) };
     OrionWasmResult::from_ffi(res)
 }

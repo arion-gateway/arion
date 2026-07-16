@@ -161,12 +161,25 @@ use http::{
 };
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
+use http_serde_ext;
 
+#[derive(Serialize, Deserialize)]
 pub enum HeaderMutation {
-    Set(HeaderName, HeaderValue),
-    Add(HeaderName, HeaderValue),
-    Replace(HeaderName, HeaderValue),
-    Remove(HeaderName),
+    Set(
+        #[serde(with = "http_serde_ext::header_name")] HeaderName,
+        #[serde(with = "http_serde_ext::header_value")] HeaderValue,
+    ),
+    Add(
+        #[serde(with = "http_serde_ext::header_name")] HeaderName,
+        #[serde(with = "http_serde_ext::header_value")] HeaderValue,
+    ),
+    Replace(
+        #[serde(with = "http_serde_ext::header_name")] HeaderName,
+        #[serde(with = "http_serde_ext::header_value")] HeaderValue,
+    ),
+    Remove(
+        #[serde(with = "http_serde_ext::header_name")] HeaderName,
+    ),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
