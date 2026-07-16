@@ -155,13 +155,96 @@ impl From<FilterAction> for i32 {
     }
 }
 
+#[repr(u32)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum HeaderTarget {
+    Request = 0,
+    Response = 1,
+    RequestTrailers = 2,
+    ResponseTrailers = 3,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnknownHeaderTarget(pub u32);
+
+impl core::fmt::Display for UnknownHeaderTarget {
+    #[inline]
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "unknown HeaderTarget value: {}", self.0)
+    }
+}
+
+impl TryFrom<u32> for HeaderTarget {
+    type Error = UnknownHeaderTarget;
+
+    #[inline]
+    fn try_from(v: u32) -> Result<Self, Self::Error> {
+        match v {
+            0 => Ok(Self::Request),
+            1 => Ok(Self::Response),
+            2 => Ok(Self::RequestTrailers),
+            3 => Ok(Self::ResponseTrailers),
+            _ => Err(UnknownHeaderTarget(v)),
+        }
+    }
+}
+
+impl From<HeaderTarget> for u32 {
+    #[inline]
+    fn from(v: HeaderTarget) -> Self {
+        v as u32
+    }
+}
+
+#[repr(u32)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum LogLevel {
+    Error = 1,
+    Warn = 2,
+    Info = 3,
+    Debug = 4,
+    Trace = 5,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnknownLogLevel(pub u32);
+
+impl core::fmt::Display for UnknownLogLevel {
+    #[inline]
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "unknown LogLevel value: {}", self.0)
+    }
+}
+
+impl TryFrom<u32> for LogLevel {
+    type Error = UnknownLogLevel;
+
+    #[inline]
+    fn try_from(v: u32) -> Result<Self, UnknownLogLevel> {
+        match v {
+            1 => Ok(LogLevel::Error),
+            2 => Ok(Self::Warn),
+            3 => Ok(Self::Info),
+            4 => Ok(Self::Debug),
+            5 => Ok(Self::Trace),
+            _ => Err(UnknownLogLevel(v)),
+        }
+    }
+}
+
+impl From<LogLevel> for u32 {
+    #[inline]
+    fn from(v: LogLevel) -> Self {
+        v as u32
+    }
+}
+
 use http::{
     header::{HeaderName, HeaderValue},
     HeaderMap, Method, StatusCode,
 };
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
-use http_serde_ext;
 
 #[derive(Serialize, Deserialize)]
 pub enum HeaderMutation {
@@ -177,9 +260,7 @@ pub enum HeaderMutation {
         #[serde(with = "http_serde_ext::header_name")] HeaderName,
         #[serde(with = "http_serde_ext::header_value")] HeaderValue,
     ),
-    Remove(
-        #[serde(with = "http_serde_ext::header_name")] HeaderName,
-    ),
+    Remove(#[serde(with = "http_serde_ext::header_name")] HeaderName),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

@@ -13,7 +13,7 @@
 //! via the standalone [`orion_wasm_types`] crate.
 
 pub use orion_wasm_types::{
-    CalloutRequest, CalloutResponse, FilterAction, HeaderMutation, OrionWasmError, OrionWasmResult,
+    CalloutRequest, CalloutResponse, FilterAction, HeaderMutation, OrionWasmError, OrionWasmResult, LogLevel
 };
 
 // ============================================================================
@@ -172,6 +172,30 @@ impl RequestHandle<HttpBody> {
         set_http_headers_map(self.handle, ffi::HeaderTarget::RequestTrailers, trailers)
     }
 
+    pub fn get_http_trailer(&self, name: &str) -> Result<Option<HeaderValue>, OrionWasmError> {
+        get_http_header(self.handle, ffi::HeaderTarget::RequestTrailers, name)
+    }
+
+    pub fn set_http_trailer(&self, name: HeaderName, value: HeaderValue) -> Result<(), OrionWasmError> {
+        set_http_header(self.handle, ffi::HeaderTarget::RequestTrailers, &name, &value)
+    }
+
+    pub fn add_http_trailer(&self, name: HeaderName, value: HeaderValue) -> Result<(), OrionWasmError> {
+        add_http_header(self.handle, ffi::HeaderTarget::RequestTrailers, &name, &value)
+    }
+
+    pub fn remove_http_trailer(&self, name: &HeaderName) -> Result<(), OrionWasmError> {
+        remove_http_header(self.handle, ffi::HeaderTarget::RequestTrailers, name)
+    }
+
+    pub fn replace_http_trailer(&self, name: HeaderName, value: HeaderValue) -> Result<(), OrionWasmError> {
+        replace_http_header(self.handle, ffi::HeaderTarget::RequestTrailers, &name, &value)
+    }
+
+    pub fn apply_http_trailer_mutations(&self, mutations: &[HeaderMutation]) -> Result<(), OrionWasmError> {
+        apply_header_mutations(self.handle, ffi::HeaderTarget::RequestTrailers, mutations)
+    }
+
     pub fn send_direct_response(&self, status_code: u16, body: &[u8]) -> Result<(), OrionWasmError> {
         send_http_direct_response(self.handle, status_code, body)
     }
@@ -270,6 +294,30 @@ impl ResponseHandle<HttpBody> {
 
     pub fn set_http_trailers_map(&self, trailers: &HeaderMap) -> Result<(), OrionWasmError> {
         set_http_headers_map(self.handle, ffi::HeaderTarget::ResponseTrailers, trailers)
+    }
+
+    pub fn get_http_trailer(&self, name: &str) -> Result<Option<HeaderValue>, OrionWasmError> {
+        get_http_header(self.handle, ffi::HeaderTarget::ResponseTrailers, name)
+    }
+
+    pub fn set_http_trailer(&self, name: HeaderName, value: HeaderValue) -> Result<(), OrionWasmError> {
+        set_http_header(self.handle, ffi::HeaderTarget::ResponseTrailers, &name, &value)
+    }
+
+    pub fn add_http_trailer(&self, name: HeaderName, value: HeaderValue) -> Result<(), OrionWasmError> {
+        add_http_header(self.handle, ffi::HeaderTarget::ResponseTrailers, &name, &value)
+    }
+
+    pub fn remove_http_trailer(&self, name: &HeaderName) -> Result<(), OrionWasmError> {
+        remove_http_header(self.handle, ffi::HeaderTarget::ResponseTrailers, name)
+    }
+
+    pub fn replace_http_trailer(&self, name: HeaderName, value: HeaderValue) -> Result<(), OrionWasmError> {
+        replace_http_header(self.handle, ffi::HeaderTarget::ResponseTrailers, &name, &value)
+    }
+
+    pub fn apply_http_trailer_mutations(&self, mutations: &[HeaderMutation]) -> Result<(), OrionWasmError> {
+        apply_header_mutations(self.handle, ffi::HeaderTarget::ResponseTrailers, mutations)
     }
 }
 
@@ -439,15 +487,15 @@ impl tracing::Subscriber for OrionWasmSubscriber {
         event.record(&mut visitor);
 
         let level = match *event.metadata().level() {
-            tracing::Level::ERROR => 1,
-            tracing::Level::WARN => 2,
-            tracing::Level::INFO => 3,
-            tracing::Level::DEBUG => 4,
-            tracing::Level::TRACE => 5,
+            tracing::Level::ERROR => LogLevel::Error,
+            tracing::Level::WARN => LogLevel::Warn,
+            tracing::Level::INFO => LogLevel::Info,
+            tracing::Level::DEBUG => LogLevel::Debug,
+            tracing::Level::TRACE => LogLevel::Trace,
         };
 
         unsafe {
-            ffi::orion_log(level, visitor.message.as_ptr(), visitor.message.len() as u32);
+            ffi::orion_log(level.into(), visitor.message.as_ptr(), visitor.message.len() as u32);
         }
     }
 

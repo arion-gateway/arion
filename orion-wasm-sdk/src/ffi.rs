@@ -84,11 +84,4 @@ extern "C" {
     pub fn orion_apply_header_mutations(handle: u64, handle_type: u32, buf_ptr: *const u8, buf_len: u32) -> i32;
 }
 
-#[derive(Copy, Clone)]
-#[repr(u32)]
-pub enum HeaderTarget {
-    Request = 0,
-    Response = 1,
-    RequestTrailers = 2,
-    ResponseTrailers = 3,
-}
+pub use orion_wasm_types::HeaderTarget;

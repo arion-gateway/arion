@@ -198,7 +198,7 @@ pub(crate) fn set_http_headers_map(
     target: ffi::HeaderTarget,
     headers: &HeaderMap,
 ) -> Result<(), OrionWasmError> {
-    let serialized = bincode_next::serde::encode_to_vec(&SerHeaderMap(headers), bincode_next::config::standard())
+    let serialized = bincode_next::serde::encode_to_vec(SerHeaderMap(headers), bincode_next::config::standard())
         .map_err(|_| OrionWasmError::InternalError)?;
     let res =
         unsafe { ffi::orion_set_headers_map(handle, target as u32, serialized.as_ptr(), serialized.len() as u32) };

@@ -8,6 +8,7 @@ use orion_configuration::config::{
     core::DataSource, network_filters::http_connection_manager::http_filters::wasm::WasmConfig,
 };
 use orion_interner::StringInterner;
+use orion_wasm_types::FilterAction;
 use parking_lot::Mutex;
 use std::sync::{Arc, LazyLock};
 use thiserror::Error;
@@ -141,7 +142,7 @@ impl WasmFilter {
             }
         }
 
-        // Preallocate a lock-free queue for hot instances (max 1024 capacity)
+        // Pre-allocate a lock-free queue for hot instances (max 1024 capacity)
         let pool = Arc::new(ArrayQueue::new(1024));
 
         Ok(Self {
@@ -229,7 +230,7 @@ impl WasmFilter {
         let req_handle = req as *mut Request<OrionRequestBody> as u64;
 
         // PHASE 1: headers evaluation
-        let action_code: Result<i32, WasmError> = if self.inner.has_on_request_headers {
+        let action_code: Result<FilterAction, WasmError> = if self.inner.has_on_request_headers {
             let state = match self.get_state().await {
                 Ok(s) => s,
                 Err(e) => return FilterDecision::internal_server_error(&e.to_string(), req.version()),
@@ -237,18 +238,20 @@ impl WasmFilter {
 
             if let Ok(on_headers) = state.instance.get_typed_func::<u64, i32>(&mut state.store, "on_request_headers") {
                 let response = on_headers.call_async(&mut state.store, req_handle).await;
-                response.map_err(WasmError::Wasmtime)
+                response.map_err(WasmError::Wasmtime).and_then(|v| {
+                    FilterAction::try_from(v)
+                        .map_err(|_| WasmError::InitError(format!("Invalid Wasm FilterAction code: {}", v)))
+                })
             } else {
-                Ok(types::FilterAction::Continue.into())
+                Ok(FilterAction::Continue)
             }
         } else {
-            Ok(1) // Implicitly return PauseAndBufferBody if the plugin only implements the body hook
+            Ok(FilterAction::PauseAndBufferBody) // Implicitly return PauseAndBufferBody if the plugin only implements the body hook
         };
 
         let decision = match action_code {
-            Ok(0) => FilterDecision::Continue,
-
-            Ok(1) => {
+            Ok(FilterAction::Continue) => FilterDecision::Continue,
+            Ok(FilterAction::PauseAndBufferBody) => {
                 // PauseAndBufferBody
                 use crate::body::poly_body::PolyBody;
                 use crate::body::timeout_body::TimeoutBody;
@@ -271,13 +274,14 @@ impl WasmFilter {
                     let old_timeout = old_timeout_body.timeout;
                     let mut pb = PolyBody::from(Full::from(full_body_bytes.clone()));
                     if let Some(t) = trailers.clone() {
-                        pb = pb.with_trailers(t).unwrap_or_else(|_| PolyBody::from(Full::from(full_body_bytes.clone())));
+                        pb =
+                            pb.with_trailers(t).unwrap_or_else(|_| PolyBody::from(Full::from(full_body_bytes.clone())));
                     }
                     TimeoutBody::new(old_timeout, pb)
                 });
 
                 // 3. Re-enter the Wasm context to invoke on_request_body
-                let body_action_code: Result<i32, WasmError> = if self.inner.has_on_request_body {
+                let body_action_code: Result<FilterAction, WasmError> = if self.inner.has_on_request_body {
                     let state = match self.get_state().await {
                         Ok(s) => s,
                         Err(e) => return FilterDecision::internal_server_error(&e.to_string(), req.version()),
@@ -316,17 +320,20 @@ impl WasmFilter {
 
                         response.map_err(WasmError::Wasmtime)
                     } else {
-                        Ok(types::FilterAction::Continue.into())
+                        Ok(FilterAction::Continue.into())
                     };
 
-                    response
+                    response.and_then(|v| {
+                        FilterAction::try_from(v)
+                            .map_err(|_| WasmError::InitError(format!("Invalid body action code: {}", v)))
+                    })
                 } else {
-                    Ok(types::FilterAction::Continue.into())
+                    Ok(FilterAction::Continue)
                 };
 
                 match body_action_code {
-                    Ok(0) => FilterDecision::Continue, // Continue
-                    Ok(2) => {
+                    Ok(FilterAction::Continue) => FilterDecision::Continue, // Continue
+                    Ok(FilterAction::DirectResponse) => {
                         // DirectResponse
                         let state = match self.get_state().await {
                             Ok(s) => s,
@@ -348,15 +355,15 @@ impl WasmFilter {
                             )
                         }
                     },
-                    Ok(code) => FilterDecision::internal_server_error(
-                        &format!("Invalid body action code: {}", code),
+                    Ok(action) => FilterDecision::internal_server_error(
+                        &format!("Invalid body action code: {:?}", action),
                         req.version(),
                     ),
                     Err(e) => FilterDecision::internal_server_error(&e.to_string(), req.version()),
                 }
             },
 
-            Ok(2) => {
+            Ok(FilterAction::DirectResponse) => {
                 // DirectResponse
                 let state = match self.get_state().await {
                     Ok(s) => s,
@@ -377,10 +384,6 @@ impl WasmFilter {
                 }
             },
 
-            Ok(code) => FilterDecision::internal_server_error(
-                &format!("Invalid Wasm FilterAction code: {}", code),
-                req.version(),
-            ),
             Err(e) => FilterDecision::internal_server_error(&e.to_string(), req.version()),
         };
 
@@ -420,7 +423,7 @@ impl WasmFilter {
         let resp_handle = response as *mut Response<OrionResponseBody> as u64;
 
         // PHASE 1: headers evaluation
-        let action_code: Result<i32, WasmError> = if self.inner.has_on_response_headers {
+        let action_code: Result<FilterAction, WasmError> = if self.inner.has_on_response_headers {
             let state = match self.get_state().await {
                 Ok(s) => s,
                 Err(e) => return FilterDecision::internal_server_error(&e.to_string(), response.version()),
@@ -430,18 +433,21 @@ impl WasmFilter {
                 state.instance.get_typed_func::<u64, i32>(&mut state.store, "on_response_headers")
             {
                 let res_val = on_response_headers.call_async(&mut state.store, resp_handle).await;
-                res_val.map_err(WasmError::Wasmtime)
+                res_val.map_err(WasmError::Wasmtime).and_then(|v| {
+                    FilterAction::try_from(v)
+                        .map_err(|_| WasmError::InitError(format!("Invalid Wasm response FilterAction code: {}", v)))
+                })
             } else {
-                Ok(types::FilterAction::Continue.into())
+                Ok(FilterAction::Continue)
             }
         } else {
-            Ok(1) // Implicitly return PauseAndBufferBody if the plugin only implements the body hook
+            Ok(FilterAction::PauseAndBufferBody) // Implicitly return PauseAndBufferBody if the plugin only implements the body hook
         };
 
         let decision = match action_code {
-            Ok(0) => FilterDecision::Continue,
+            Ok(FilterAction::Continue) => FilterDecision::Continue,
 
-            Ok(1) => {
+            Ok(FilterAction::PauseAndBufferBody) => {
                 // PauseAndBufferBody for response
                 use crate::body::poly_body::PolyBody;
                 use http_body_util::{BodyExt, Full};
@@ -464,13 +470,14 @@ impl WasmFilter {
                 *response.body_mut() = old_body.map_inner(|_old_poly_body| {
                     let mut pb = PolyBody::from(Full::from(full_body_bytes.clone()));
                     if let Some(t) = trailers.clone() {
-                        pb = pb.with_trailers(t).unwrap_or_else(|_| PolyBody::from(Full::from(full_body_bytes.clone())));
+                        pb =
+                            pb.with_trailers(t).unwrap_or_else(|_| PolyBody::from(Full::from(full_body_bytes.clone())));
                     }
                     pb
                 });
 
                 // 3. Invoke on_response_body
-                let body_action_code: Result<i32, WasmError> = if self.inner.has_on_response_body {
+                let body_action_code: Result<FilterAction, WasmError> = if self.inner.has_on_response_body {
                     let state = match self.get_state().await {
                         Ok(s) => s,
                         Err(e) => return FilterDecision::internal_server_error(&e.to_string(), response.version()),
@@ -508,17 +515,20 @@ impl WasmFilter {
 
                         res_val.map_err(WasmError::Wasmtime)
                     } else {
-                        Ok(types::FilterAction::Continue.into())
+                        Ok(FilterAction::Continue.into())
                     };
 
-                    res_val
+                    res_val.and_then(|v| {
+                        FilterAction::try_from(v)
+                            .map_err(|_| WasmError::InitError(format!("Invalid response body action code: {}", v)))
+                    })
                 } else {
-                    Ok(types::FilterAction::Continue.into())
+                    Ok(FilterAction::Continue)
                 };
 
                 match body_action_code {
-                    Ok(0) => FilterDecision::Continue,
-                    Ok(2) => {
+                    Ok(FilterAction::Continue) => FilterDecision::Continue,
+                    Ok(FilterAction::DirectResponse) => {
                         // DirectResponse
                         let state = match self.get_state().await {
                             Ok(s) => s,
@@ -540,15 +550,15 @@ impl WasmFilter {
                             )
                         }
                     },
-                    Ok(code) => FilterDecision::internal_server_error(
-                        &format!("Invalid response body action code: {}", code),
+                    Ok(action) => FilterDecision::internal_server_error(
+                        &format!("Invalid response body action code: {:?}", action),
                         response.version(),
                     ),
                     Err(e) => FilterDecision::internal_server_error(&e.to_string(), response.version()),
                 }
             },
 
-            Ok(2) => {
+            Ok(FilterAction::DirectResponse) => {
                 // DirectResponse
                 let state = match self.get_state().await {
                     Ok(s) => s,
@@ -572,10 +582,6 @@ impl WasmFilter {
                 }
             },
 
-            Ok(code) => FilterDecision::internal_server_error(
-                &format!("Invalid Wasm response FilterAction code: {}", code),
-                response.version(),
-            ),
             Err(e) => FilterDecision::internal_server_error(&e.to_string(), response.version()),
         };
 
