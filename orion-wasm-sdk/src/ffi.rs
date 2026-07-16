@@ -89,4 +89,6 @@ extern "C" {
 pub enum HeaderTarget {
     Request = 0,
     Response = 1,
+    RequestTrailers = 2,
+    ResponseTrailers = 3,
 }

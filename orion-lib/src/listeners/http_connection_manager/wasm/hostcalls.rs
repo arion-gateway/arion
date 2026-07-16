@@ -1,3 +1,5 @@
+use std::sync::LazyLock;
+
 use super::types::OrionWasmResult;
 use crate::body::timeout_body::TimeoutBody;
 use crate::OrionRequestBody;
@@ -16,6 +18,8 @@ pub struct WasmState {
     pub direct_response: Option<Response<OrionResponseBody>>,
     pub buffered_request_body: Option<bytes::Bytes>,
     pub buffered_response_body: Option<bytes::Bytes>,
+    pub request_trailers: Option<http::HeaderMap>,
+    pub response_trailers: Option<http::HeaderMap>,
     pub access_log_operators: Vec<(SmolStr, SmolStr)>,
 }
 
@@ -380,6 +384,8 @@ fn orion_get_headers_map(
         None => return OrionWasmResult::InvalidMemoryAccess.into(),
     };
 
+    static EMPTY_MAP : LazyLock<http::HeaderMap> = LazyLock::new(|| http::HeaderMap::new());
+
     let headers = match handle_type {
         0 => {
             let request = unsafe { &*(handle as *const Request<OrionRequestBody>) };
@@ -389,6 +395,8 @@ fn orion_get_headers_map(
             let response = unsafe { &*(handle as *const Response<OrionResponseBody>) };
             response.headers()
         },
+        2 => caller.data().request_trailers.as_ref().unwrap_or(&EMPTY_MAP),
+        3 => caller.data().response_trailers.as_ref().unwrap_or(&EMPTY_MAP),
         _ => return OrionWasmResult::InternalError.into(),
     };
     let serialized = match bincode_next::serde::encode_to_vec(&SerHeaderMap(headers), bincode_next::config::standard()) {
@@ -448,6 +456,12 @@ fn orion_set_headers_map(
         1 => {
             let response = unsafe { &mut *(handle as *mut Response<OrionResponseBody>) };
             *response.headers_mut() = headers;
+        },
+        2 => {
+            caller.data_mut().request_trailers = Some(headers);
+        },
+        3 => {
+            caller.data_mut().response_trailers = Some(headers);
         },
         _ => return OrionWasmResult::InternalError.into(),
     }

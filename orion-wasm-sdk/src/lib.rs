@@ -164,6 +164,14 @@ impl RequestHandle<HttpBody> {
         apply_header_mutations(self.handle, ffi::HeaderTarget::Request, mutations)
     }
 
+    pub fn get_http_trailers_map(&self) -> Result<HeaderMap, OrionWasmError> {
+        get_http_headers_map(self.handle, ffi::HeaderTarget::RequestTrailers)
+    }
+
+    pub fn set_http_trailers_map(&self, trailers: &HeaderMap) -> Result<(), OrionWasmError> {
+        set_http_headers_map(self.handle, ffi::HeaderTarget::RequestTrailers, trailers)
+    }
+
     pub fn send_direct_response(&self, status_code: u16, body: &[u8]) -> Result<(), OrionWasmError> {
         send_http_direct_response(self.handle, status_code, body)
     }
@@ -254,6 +262,14 @@ impl ResponseHandle<HttpBody> {
     /// Replace the buffered response body.
     pub fn set_body(&self, body: &[u8]) -> Result<(), OrionWasmError> {
         set_http_body(self.handle, ffi::HeaderTarget::Response, body)
+    }
+
+    pub fn get_http_trailers_map(&self) -> Result<HeaderMap, OrionWasmError> {
+        get_http_headers_map(self.handle, ffi::HeaderTarget::ResponseTrailers)
+    }
+
+    pub fn set_http_trailers_map(&self, trailers: &HeaderMap) -> Result<(), OrionWasmError> {
+        set_http_headers_map(self.handle, ffi::HeaderTarget::ResponseTrailers, trailers)
     }
 }
 

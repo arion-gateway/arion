@@ -183,6 +183,8 @@ impl WasmFilter {
                             direct_response: None,
                             buffered_request_body: None,
                             buffered_response_body: None,
+                            request_trailers: None,
+                            response_trailers: None,
                             access_log_operators: Vec::new(),
                         },
                     );
@@ -253,19 +255,25 @@ impl WasmFilter {
                 use http_body_util::{BodyExt, Full};
 
                 // 1. Buffer the entire body asynchronously
-                let full_body_bytes = match req.body_mut().collect().await {
-                    Ok(collected) => collected.to_bytes(),
+                let collected = match req.body_mut().collect().await {
+                    Ok(c) => c,
                     Err(_) => {
                         return FilterDecision::internal_server_error("Failed to collect body", req.version());
                     },
                 };
+                let trailers = collected.trailers().cloned();
+                let full_body_bytes = collected.to_bytes();
 
                 // 2. We consumed the inner stream, we need to swap the inner PolyBody
                 let old_body = std::mem::take(req.body_mut());
 
                 *req.body_mut() = old_body.map_inner(|old_timeout_body| {
                     let old_timeout = old_timeout_body.timeout;
-                    TimeoutBody::new(old_timeout, PolyBody::from(Full::from(full_body_bytes.clone())))
+                    let mut pb = PolyBody::from(Full::from(full_body_bytes.clone()));
+                    if let Some(t) = trailers.clone() {
+                        pb = pb.with_trailers(t).unwrap_or_else(|_| PolyBody::from(Full::from(full_body_bytes.clone())));
+                    }
+                    TimeoutBody::new(old_timeout, pb)
                 });
 
                 // 3. Re-enter the Wasm context to invoke on_request_body
@@ -279,21 +287,30 @@ impl WasmFilter {
                         state.instance.get_typed_func::<(u64, u32), i32>(&mut state.store, "on_request_body")
                     {
                         state.store.data_mut().buffered_request_body = Some(full_body_bytes.clone());
+                        state.store.data_mut().request_trailers = trailers;
 
                         let response =
                             on_body.call_async(&mut state.store, (req_handle, full_body_bytes.len() as u32)).await;
 
-                        if let Some(mutated_body) = state.store.data_mut().buffered_request_body.take() {
+                        let mutated_body = state.store.data_mut().buffered_request_body.take();
+                        let mutated_trailers = state.store.data_mut().request_trailers.take();
+
+                        if mutated_body.is_some() || mutated_trailers.is_some() {
+                            let final_body = mutated_body.unwrap_or_else(|| full_body_bytes.clone());
                             if req.headers().contains_key(http::header::CONTENT_LENGTH) {
                                 req.headers_mut().insert(
                                     http::header::CONTENT_LENGTH,
-                                    http::header::HeaderValue::from_str(&mutated_body.len().to_string()).unwrap(),
+                                    http::header::HeaderValue::from_str(&final_body.len().to_string()).unwrap(),
                                 );
                             }
                             let old_body = std::mem::take(req.body_mut());
                             *req.body_mut() = old_body.map_inner(|old_timeout_body| {
                                 let old_timeout = old_timeout_body.timeout;
-                                TimeoutBody::new(old_timeout, PolyBody::from(Full::from(mutated_body)))
+                                let mut pb = PolyBody::from(Full::from(final_body.clone()));
+                                if let Some(t) = mutated_trailers {
+                                    pb = pb.with_trailers(t).unwrap_or_else(|_| PolyBody::from(Full::from(final_body)));
+                                }
+                                TimeoutBody::new(old_timeout, pb)
                             });
                         }
 
@@ -430,8 +447,8 @@ impl WasmFilter {
                 use http_body_util::{BodyExt, Full};
 
                 // 1. Buffer response body
-                let full_body_bytes = match response.body_mut().collect().await {
-                    Ok(collected) => collected.to_bytes(),
+                let collected = match response.body_mut().collect().await {
+                    Ok(c) => c,
                     Err(_) => {
                         return FilterDecision::internal_server_error(
                             "Failed to collect response body",
@@ -439,11 +456,18 @@ impl WasmFilter {
                         );
                     },
                 };
+                let trailers = collected.trailers().cloned();
+                let full_body_bytes = collected.to_bytes();
 
                 // 2. Swap response body
                 let old_body = std::mem::take(response.body_mut());
-                *response.body_mut() =
-                    old_body.map_inner(|_old_poly_body| PolyBody::from(Full::from(full_body_bytes.clone())));
+                *response.body_mut() = old_body.map_inner(|_old_poly_body| {
+                    let mut pb = PolyBody::from(Full::from(full_body_bytes.clone()));
+                    if let Some(t) = trailers.clone() {
+                        pb = pb.with_trailers(t).unwrap_or_else(|_| PolyBody::from(Full::from(full_body_bytes.clone())));
+                    }
+                    pb
+                });
 
                 // 3. Invoke on_response_body
                 let body_action_code: Result<i32, WasmError> = if self.inner.has_on_response_body {
@@ -456,20 +480,30 @@ impl WasmFilter {
                         state.instance.get_typed_func::<(u64, u32), i32>(&mut state.store, "on_response_body")
                     {
                         state.store.data_mut().buffered_response_body = Some(full_body_bytes.clone());
+                        state.store.data_mut().response_trailers = trailers;
 
                         let res_val =
                             on_body.call_async(&mut state.store, (resp_handle, full_body_bytes.len() as u32)).await;
 
-                        if let Some(mutated_body) = state.store.data_mut().buffered_response_body.take() {
+                        let mutated_body = state.store.data_mut().buffered_response_body.take();
+                        let mutated_trailers = state.store.data_mut().response_trailers.take();
+
+                        if mutated_body.is_some() || mutated_trailers.is_some() {
+                            let final_body = mutated_body.unwrap_or_else(|| full_body_bytes.clone());
                             if response.headers().contains_key(http::header::CONTENT_LENGTH) {
                                 response.headers_mut().insert(
                                     http::header::CONTENT_LENGTH,
-                                    http::header::HeaderValue::from_str(&mutated_body.len().to_string()).unwrap(),
+                                    http::header::HeaderValue::from_str(&final_body.len().to_string()).unwrap(),
                                 );
                             }
                             let old_body = std::mem::take(response.body_mut());
-                            *response.body_mut() =
-                                old_body.map_inner(|_old_poly_body| PolyBody::from(Full::from(mutated_body)));
+                            *response.body_mut() = old_body.map_inner(|_old_poly_body| {
+                                let mut pb = PolyBody::from(Full::from(final_body.clone()));
+                                if let Some(t) = mutated_trailers {
+                                    pb = pb.with_trailers(t).unwrap_or_else(|_| PolyBody::from(Full::from(final_body)));
+                                }
+                                pb
+                            });
                         }
 
                         res_val.map_err(WasmError::Wasmtime)
