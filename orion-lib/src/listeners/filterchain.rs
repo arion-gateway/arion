@@ -243,8 +243,7 @@ impl FilterchainType {
     pub async fn start_filterchain(
         &self,
         stream: AsyncInstrumentedStream,
-        metadata: DownstreamMetadata,
-        listener_name: &'static str,
+        metadata: Box<DownstreamMetadata>,
         #[allow(unused_variables)] start_instant: std::time::Instant,
     ) -> Result<()> {
         #[cfg(feature = "metrics")]
@@ -252,14 +251,26 @@ impl FilterchainType {
         let Self { config, handler } = self;
         match handler {
             ConnectionHandler::Http(http_connection_manager) => {
-                with_metric!(http::DOWNSTREAM_CX_TOTAL, add, 1, shard_id, &[KeyValue::new("listener", listener_name)]);
-                with_metric!(http::DOWNSTREAM_CX_ACTIVE, add, 1, shard_id, &[KeyValue::new("listener", listener_name)]);
+                with_metric!(
+                    http::DOWNSTREAM_CX_TOTAL,
+                    add,
+                    1,
+                    shard_id,
+                    &[KeyValue::new("listener", metadata.listener_name)]
+                );
+                with_metric!(
+                    http::DOWNSTREAM_CX_ACTIVE,
+                    add,
+                    1,
+                    shard_id,
+                    &[KeyValue::new("listener", metadata.listener_name)]
+                );
                 defer! {
-                    with_metric!(http::DOWNSTREAM_CX_DESTROY, add, 1, shard_id, &[KeyValue::new("listener", listener_name)]);
-                    with_metric!(http::DOWNSTREAM_CX_ACTIVE, sub, 1, shard_id, &[KeyValue::new("listener", listener_name)]);
+                    with_metric!(http::DOWNSTREAM_CX_DESTROY, add, 1, shard_id, &[KeyValue::new("listener", metadata.listener_name)]);
+                    with_metric!(http::DOWNSTREAM_CX_ACTIVE, sub, 1, shard_id, &[KeyValue::new("listener", metadata.listener_name)]);
                     with_histogram!(http::DOWNSTREAM_CX_LENGTH_MS, record,
                         u64::try_from(start_instant.elapsed().as_millis()).unwrap_or(u64::MAX),
-                        shard_id, &[KeyValue::new("listener", listener_name)]);
+                        shard_id, &[KeyValue::new("listener", metadata.listener_name)]);
                 }
 
                 let trans_svc = http_connection_manager.transaction_context_svc();
@@ -274,7 +285,13 @@ impl FilterchainType {
                     let (stream, negotiated) =
                         start_tls(http_connection_manager.listener_name, stream, tls_configurator, Some(codec_type))
                             .await?;
-                    with_metric!(tls::HANDSHAKES, add, 1, shard_id, &[KeyValue::new("listener", listener_name)]);
+                    with_metric!(
+                        tls::HANDSHAKES,
+                        add,
+                        1,
+                        shard_id,
+                        &[KeyValue::new("listener", metadata.listener_name)]
+                    );
 
                     // if we negotiated a protocol over ALPN, use that instead of the configured CodecType.
                     // since we use codec_type to determine our alpn response, we will never negotiate a protocol not covered by codec_type
@@ -295,7 +312,7 @@ impl FilterchainType {
                     (stream, codec_type)
                 };
 
-                debug!("{listener_name} tried to negotiate {codec_type:?}, got {selected_codec:?}");
+                debug!("{} tried to negotiate {codec_type:?}, got {selected_codec:?}", metadata.listener_name);
                 let mut hyper_server = HyperServerBuilder::new(TokioExecutor::new());
                 let stream_metrics = stream.shared_metrics();
                 let stream = TokioIo::new(stream);
@@ -313,12 +330,25 @@ impl FilterchainType {
                 hyper_server
                     .serve_connection_with_upgrades(stream, metadata_svc)
                     .await
-                    .inspect_err(|err| debug!("{listener_name} : HTTP connection error: {err}"))
+                    .inspect_err(|err| debug!("{} : HTTP connection error: {err}", metadata.listener_name))
                     .map_err(Error::from)
             },
             ConnectionHandler::Tcp(tcp_proxy) => {
-                with_metric!(tcp::DOWNSTREAM_CX_TOTAL, add, 1, shard_id, &[KeyValue::new("listener", listener_name)]);
-                with_metric!(tcp::DOWNSTREAM_CX_ACTIVE, add, 1, shard_id, &[KeyValue::new("listener", listener_name)]);
+                with_metric!(
+                    tcp::DOWNSTREAM_CX_TOTAL,
+                    add,
+                    1,
+                    shard_id,
+                    &[KeyValue::new("listener", metadata.listener_name)]
+                );
+                with_metric!(
+                    tcp::DOWNSTREAM_CX_ACTIVE,
+                    add,
+                    1,
+                    shard_id,
+                    &[KeyValue::new("listener", metadata.listener_name)]
+                );
+                let listener_name = metadata.listener_name;
                 defer! {
                     with_metric!(tcp::DOWNSTREAM_CX_DESTROY, add, 1, shard_id, &[KeyValue::new("listener", listener_name)]);
                     with_metric!(tcp::DOWNSTREAM_CX_ACTIVE, sub, 1, shard_id, &[KeyValue::new("listener", listener_name)]);

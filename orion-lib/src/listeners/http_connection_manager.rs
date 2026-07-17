@@ -817,6 +817,9 @@ impl Service<PipelineRequest<Request<OrionRequestBody>>> for HttpPipelineSvc {
             let downstream_addr = downstream.connection.peer_address();
             let stream_metrics_clone = Arc::clone(&stream_metrics);
 
+            // save downtream metadata as request extension...
+            request.extensions_mut().insert(downstream);
+
             // check if this is the first request on the stream, and if so, record it in the metrics.
             if stream_metrics.inc_requests() == 0 {
                 #[cfg(feature = "metrics")]
@@ -1460,7 +1463,7 @@ fn apply_mutations_on_response<B>(
 // --- NEW SERVICES ---
 pub struct RequestMetadata<R> {
     pub request: R,
-    pub downstream: DownstreamMetadata,
+    pub downstream: Box<DownstreamMetadata>,
     pub stream_metrics: Arc<StreamMetrics>,
 }
 
@@ -1473,19 +1476,19 @@ pub struct PipelineRequest<R> {
     pub request: R,
     pub trans_ctx: Arc<TransactionContext>,
     pub route_conf: Arc<RouteConfiguration>,
-    pub downstream: DownstreamMetadata,
+    pub downstream: Box<DownstreamMetadata>,
     pub stream_metrics: Arc<StreamMetrics>,
 }
 
 #[derive(Clone)]
 pub struct MetadataSvc<S> {
-    downstream: DownstreamMetadata,
+    downstream: Box<DownstreamMetadata>,
     stream_metrics: Arc<StreamMetrics>,
     inner: S,
 }
 
 impl<S> MetadataSvc<S> {
-    pub fn new(downstream: DownstreamMetadata, stream_metrics: Arc<StreamMetrics>, inner: S) -> Self {
+    pub fn new(downstream: Box<DownstreamMetadata>, stream_metrics: Arc<StreamMetrics>, inner: S) -> Self {
         Self { downstream, stream_metrics, inner }
     }
 }
