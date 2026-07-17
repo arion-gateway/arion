@@ -86,23 +86,7 @@ impl<S: State> RequestHandle<S> {
             Err(OrionWasmResult::from_ffi(res).unwrap_err())
         }
     }
-}
 
-/// Typestate wrapper around a response handle.
-pub struct ResponseHandle<S: State> {
-    handle: u64,
-    _marker: core::marker::PhantomData<S>,
-}
-
-impl<S: State> ResponseHandle<S> {
-    /// Create a new response handle.
-    #[doc(hidden)]
-    pub unsafe fn new(handle: u64) -> Self {
-        Self { handle, _marker: core::marker::PhantomData }
-    }
-}
-
-impl RequestHandle<HttpHeaders> {
     /// Read an HTTP request header by name.
     pub fn get_header(&self, name: &str) -> Result<Option<HeaderValue>, OrionWasmError> {
         get_http_header(self.handle, ffi::HeaderTarget::Request, name)
@@ -150,27 +134,6 @@ impl RequestHandle<HttpHeaders> {
 }
 
 impl RequestHandle<HttpBody> {
-    /// Read an HTTP request header by name.
-    pub fn get_header(&self, name: &str) -> Result<Option<HeaderValue>, OrionWasmError> {
-        get_http_header(self.handle, ffi::HeaderTarget::Request, name)
-    }
-
-    pub fn set_header(&self, name: HeaderName, value: HeaderValue) -> Result<(), OrionWasmError> {
-        set_http_header(self.handle, ffi::HeaderTarget::Request, &name, &value)
-    }
-
-    pub fn add_header(&self, name: HeaderName, value: HeaderValue) -> Result<(), OrionWasmError> {
-        add_http_header(self.handle, ffi::HeaderTarget::Request, &name, &value)
-    }
-
-    pub fn remove_header(&self, name: &HeaderName) -> Result<(), OrionWasmError> {
-        remove_http_header(self.handle, ffi::HeaderTarget::Request, name)
-    }
-
-    pub fn replace_header(&self, name: HeaderName, value: HeaderValue) -> Result<(), OrionWasmError> {
-        replace_http_header(self.handle, ffi::HeaderTarget::Request, &name, &value)
-    }
-
     /// Read the buffered request body.
     pub fn get_body(&self) -> Result<Vec<u8>, OrionWasmError> {
         get_http_body(self.handle, ffi::HeaderTarget::Request)
@@ -179,18 +142,6 @@ impl RequestHandle<HttpBody> {
     /// Replace the buffered request body.
     pub fn set_body(&self, body: &[u8]) -> Result<(), OrionWasmError> {
         set_http_body(self.handle, ffi::HeaderTarget::Request, body)
-    }
-
-    pub fn get_headers_map(&self) -> Result<HeaderMap, OrionWasmError> {
-        get_http_headers_map(self.handle, ffi::HeaderTarget::Request)
-    }
-
-    pub fn set_headers_map(&self, headers: &HeaderMap) -> Result<(), OrionWasmError> {
-        set_http_headers_map(self.handle, ffi::HeaderTarget::Request, headers)
-    }
-
-    pub fn apply_header_mutations(&self, mutations: &[HeaderMutation]) -> Result<(), OrionWasmError> {
-        apply_header_mutations(self.handle, ffi::HeaderTarget::Request, mutations)
     }
 
     pub fn get_trailers_map(&self) -> Result<HeaderMap, OrionWasmError> {
@@ -224,21 +175,21 @@ impl RequestHandle<HttpBody> {
     pub fn apply_trailer_mutations(&self, mutations: &[HeaderMutation]) -> Result<(), OrionWasmError> {
         apply_header_mutations(self.handle, ffi::HeaderTarget::RequestTrailers, mutations)
     }
-
-    pub fn send_direct_response(&self, status_code: u16, body: &[u8]) -> Result<(), OrionWasmError> {
-        send_http_direct_response(self.handle, status_code, body)
-    }
-
-    /// Convenience wrapper around `send_direct_response`.
-    pub fn direct_response(&self, status_code: u16, body: &[u8]) -> FilterAction {
-        match self.send_direct_response(status_code, body) {
-            Ok(()) => FilterAction::DirectResponse,
-            Err(_) => FilterAction::Continue,
-        }
-    }
 }
 
-impl ResponseHandle<HttpHeaders> {
+/// Typestate wrapper around a response handle.
+pub struct ResponseHandle<S: State> {
+    handle: u64,
+    _marker: core::marker::PhantomData<S>,
+}
+
+impl<S: State> ResponseHandle<S> {
+    /// Create a new response handle.
+    #[doc(hidden)]
+    pub unsafe fn new(handle: u64) -> Self {
+        Self { handle, _marker: core::marker::PhantomData }
+    }
+
     pub fn get_headers_map(&self) -> Result<HeaderMap, OrionWasmError> {
         get_http_headers_map(self.handle, ffi::HeaderTarget::Response)
     }
@@ -274,39 +225,6 @@ impl ResponseHandle<HttpHeaders> {
 }
 
 impl ResponseHandle<HttpBody> {
-    pub fn get_headers_map(&self) -> Result<HeaderMap, OrionWasmError> {
-        get_http_headers_map(self.handle, ffi::HeaderTarget::Response)
-    }
-
-    pub fn set_headers_map(&self, headers: &HeaderMap) -> Result<(), OrionWasmError> {
-        set_http_headers_map(self.handle, ffi::HeaderTarget::Response, headers)
-    }
-
-    pub fn apply_header_mutations(&self, mutations: &[HeaderMutation]) -> Result<(), OrionWasmError> {
-        apply_header_mutations(self.handle, ffi::HeaderTarget::Response, mutations)
-    }
-
-    /// Read an HTTP response header by name.
-    pub fn get_header(&self, name: &str) -> Result<Option<HeaderValue>, OrionWasmError> {
-        get_http_header(self.handle, ffi::HeaderTarget::Response, name)
-    }
-
-    pub fn set_header(&self, name: HeaderName, value: HeaderValue) -> Result<(), OrionWasmError> {
-        set_http_header(self.handle, ffi::HeaderTarget::Response, &name, &value)
-    }
-
-    pub fn add_header(&self, name: HeaderName, value: HeaderValue) -> Result<(), OrionWasmError> {
-        add_http_header(self.handle, ffi::HeaderTarget::Response, &name, &value)
-    }
-
-    pub fn remove_header(&self, name: &HeaderName) -> Result<(), OrionWasmError> {
-        remove_http_header(self.handle, ffi::HeaderTarget::Response, name)
-    }
-
-    pub fn replace_header(&self, name: HeaderName, value: HeaderValue) -> Result<(), OrionWasmError> {
-        replace_http_header(self.handle, ffi::HeaderTarget::Response, &name, &value)
-    }
-
     /// Read the buffered response body.
     pub fn get_body(&self) -> Result<Vec<u8>, OrionWasmError> {
         get_http_body(self.handle, ffi::HeaderTarget::Response)
