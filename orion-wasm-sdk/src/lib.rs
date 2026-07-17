@@ -164,35 +164,35 @@ impl RequestHandle<HttpBody> {
         apply_header_mutations(self.handle, ffi::HeaderTarget::Request, mutations)
     }
 
-    pub fn get_http_trailers_map(&self) -> Result<HeaderMap, OrionWasmError> {
+    pub fn get_trailers_map(&self) -> Result<HeaderMap, OrionWasmError> {
         get_http_headers_map(self.handle, ffi::HeaderTarget::RequestTrailers)
     }
 
-    pub fn set_http_trailers_map(&self, trailers: &HeaderMap) -> Result<(), OrionWasmError> {
+    pub fn set_trailers_map(&self, trailers: &HeaderMap) -> Result<(), OrionWasmError> {
         set_http_headers_map(self.handle, ffi::HeaderTarget::RequestTrailers, trailers)
     }
 
-    pub fn get_http_trailer(&self, name: &str) -> Result<Option<HeaderValue>, OrionWasmError> {
+    pub fn get_trailer(&self, name: &str) -> Result<Option<HeaderValue>, OrionWasmError> {
         get_http_header(self.handle, ffi::HeaderTarget::RequestTrailers, name)
     }
 
-    pub fn set_http_trailer(&self, name: HeaderName, value: HeaderValue) -> Result<(), OrionWasmError> {
+    pub fn set_trailer(&self, name: HeaderName, value: HeaderValue) -> Result<(), OrionWasmError> {
         set_http_header(self.handle, ffi::HeaderTarget::RequestTrailers, &name, &value)
     }
 
-    pub fn add_http_trailer(&self, name: HeaderName, value: HeaderValue) -> Result<(), OrionWasmError> {
+    pub fn add_trailer(&self, name: HeaderName, value: HeaderValue) -> Result<(), OrionWasmError> {
         add_http_header(self.handle, ffi::HeaderTarget::RequestTrailers, &name, &value)
     }
 
-    pub fn remove_http_trailer(&self, name: &HeaderName) -> Result<(), OrionWasmError> {
+    pub fn remove_trailer(&self, name: &HeaderName) -> Result<(), OrionWasmError> {
         remove_http_header(self.handle, ffi::HeaderTarget::RequestTrailers, name)
     }
 
-    pub fn replace_http_trailer(&self, name: HeaderName, value: HeaderValue) -> Result<(), OrionWasmError> {
+    pub fn replace_trailer(&self, name: HeaderName, value: HeaderValue) -> Result<(), OrionWasmError> {
         replace_http_header(self.handle, ffi::HeaderTarget::RequestTrailers, &name, &value)
     }
 
-    pub fn apply_http_trailer_mutations(&self, mutations: &[HeaderMutation]) -> Result<(), OrionWasmError> {
+    pub fn apply_trailer_mutations(&self, mutations: &[HeaderMutation]) -> Result<(), OrionWasmError> {
         apply_header_mutations(self.handle, ffi::HeaderTarget::RequestTrailers, mutations)
     }
 
@@ -288,35 +288,35 @@ impl ResponseHandle<HttpBody> {
         set_http_body(self.handle, ffi::HeaderTarget::Response, body)
     }
 
-    pub fn get_http_trailers_map(&self) -> Result<HeaderMap, OrionWasmError> {
+    pub fn get_trailers_map(&self) -> Result<HeaderMap, OrionWasmError> {
         get_http_headers_map(self.handle, ffi::HeaderTarget::ResponseTrailers)
     }
 
-    pub fn set_http_trailers_map(&self, trailers: &HeaderMap) -> Result<(), OrionWasmError> {
+    pub fn set_trailers_map(&self, trailers: &HeaderMap) -> Result<(), OrionWasmError> {
         set_http_headers_map(self.handle, ffi::HeaderTarget::ResponseTrailers, trailers)
     }
 
-    pub fn get_http_trailer(&self, name: &str) -> Result<Option<HeaderValue>, OrionWasmError> {
+    pub fn get_trailer(&self, name: &str) -> Result<Option<HeaderValue>, OrionWasmError> {
         get_http_header(self.handle, ffi::HeaderTarget::ResponseTrailers, name)
     }
 
-    pub fn set_http_trailer(&self, name: HeaderName, value: HeaderValue) -> Result<(), OrionWasmError> {
+    pub fn set_trailer(&self, name: HeaderName, value: HeaderValue) -> Result<(), OrionWasmError> {
         set_http_header(self.handle, ffi::HeaderTarget::ResponseTrailers, &name, &value)
     }
 
-    pub fn add_http_trailer(&self, name: HeaderName, value: HeaderValue) -> Result<(), OrionWasmError> {
+    pub fn add_trailer(&self, name: HeaderName, value: HeaderValue) -> Result<(), OrionWasmError> {
         add_http_header(self.handle, ffi::HeaderTarget::ResponseTrailers, &name, &value)
     }
 
-    pub fn remove_http_trailer(&self, name: &HeaderName) -> Result<(), OrionWasmError> {
+    pub fn remove_trailer(&self, name: &HeaderName) -> Result<(), OrionWasmError> {
         remove_http_header(self.handle, ffi::HeaderTarget::ResponseTrailers, name)
     }
 
-    pub fn replace_http_trailer(&self, name: HeaderName, value: HeaderValue) -> Result<(), OrionWasmError> {
+    pub fn replace_trailer(&self, name: HeaderName, value: HeaderValue) -> Result<(), OrionWasmError> {
         replace_http_header(self.handle, ffi::HeaderTarget::ResponseTrailers, &name, &value)
     }
 
-    pub fn apply_http_trailer_mutations(&self, mutations: &[HeaderMutation]) -> Result<(), OrionWasmError> {
+    pub fn apply_trailer_mutations(&self, mutations: &[HeaderMutation]) -> Result<(), OrionWasmError> {
         apply_header_mutations(self.handle, ffi::HeaderTarget::ResponseTrailers, mutations)
     }
 }
@@ -542,7 +542,7 @@ pub fn dispatch_http_call(request: &CalloutRequest) -> Result<CalloutResponse, O
 }
 
 /// Sets an absolute IO timeout for all subsequent IO operations in the current context.
-/// 
+///
 /// If any subsequent blocking IO operation (such as `dispatch_http_call`) does not complete
 /// before the timeout expires, it will return `OrionWasmError::Timeout`.
 pub fn set_io_timeout(duration: std::time::Duration) -> Result<(), OrionWasmError> {
@@ -552,7 +552,7 @@ pub fn set_io_timeout(duration: std::time::Duration) -> Result<(), OrionWasmErro
 }
 
 /// Disarms the current IO timeout and returns the remaining time.
-/// 
+///
 /// Returns `Ok(Duration::ZERO)` if no timeout was set, or if the timeout had already expired.
 pub fn clear_io_timeout() -> Result<std::time::Duration, OrionWasmError> {
     let mut remaining_us = 0u64;
