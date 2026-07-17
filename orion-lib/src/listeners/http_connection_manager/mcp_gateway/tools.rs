@@ -82,7 +82,7 @@ pub struct ToolEntry {
     pub input_schema_validator: Option<Validator>,
     pub output_schema_validator: Option<Validator>,
     pub rbac: Option<ToolRbac>,
-    pub bm25_doc: Option<Bm25Document>,
+    pub bm25_doc: Bm25Document,
     pub embedding: arc_swap::ArcSwapOption<Vec<f32>>,
 }
 
@@ -227,7 +227,7 @@ impl ToolsRegistry {
         for tool_conf in tools {
             registry.validate_supplied_embedding(&tool_conf)?;
 
-            let entry = build_tool_entry(tool_conf, ToolSource::Provided, true)?;
+            let entry = build_tool_entry(tool_conf, ToolSource::Provided)?;
             let name = entry.conf.name.clone();
             if registry.tools.insert(name.clone(), Arc::new(entry)).is_some() {
                 return Err(ToolBuilderError::DuplicateTool(name));
@@ -362,7 +362,7 @@ impl ToolsRegistry {
             }
         }
         self.validate_supplied_embedding(&tool)?;
-        let entry = build_tool_entry(tool, ToolSource::Provided, true)?;
+        let entry = build_tool_entry(tool, ToolSource::Provided)?;
         if let Some(existing) = self.tools.get(&name) {
             if !matches!(existing.source, ToolSource::Provided) {
                 return Err(ToolBuilderError::DuplicateTool(name));
@@ -491,7 +491,7 @@ impl ToolsRegistry {
 
     async fn fetch_and_materialise(&self, server: &DynamicMcpServerEntry) {
         let server_name = &server.conf.name;
-        match Self::fetch_dynamic_server_tools(server, true).await {
+        match Self::fetch_dynamic_server_tools(server).await {
             Ok(materialised) => {
                 self.evict_dynamic_tools_for(server_name);
                 for entry in materialised {
@@ -513,10 +513,7 @@ impl ToolsRegistry {
         });
     }
 
-    async fn fetch_dynamic_server_tools(
-        server: &DynamicMcpServerEntry,
-        build_bm25_doc: bool,
-    ) -> Result<Vec<ToolEntry>, ListToolsError> {
+    async fn fetch_dynamic_server_tools(server: &DynamicMcpServerEntry) -> Result<Vec<ToolEntry>, ListToolsError> {
         let server_name = server.conf.name.clone();
         let upstream_tools = Self::list_upstream_tools(&server.conf.transport, &server.conf.url).await?;
 
@@ -539,8 +536,7 @@ impl ToolsRegistry {
                     rbac: server.conf.rbac.clone(),
                     embedding: EmbeddingVector::default(),
                 };
-                let bm25_doc = build_bm25_doc
-                    .then(|| Bm25Document::from_tool_parts(&conf.name, &conf.description, &conf.input_schema));
+                let bm25_doc = Bm25Document::from_tool_parts(&conf.name, &conf.description, &conf.input_schema);
                 ToolEntry {
                     conf,
                     source: ToolSource::Dynamic { server_name: server_name.clone(), upstream_tool_name },
@@ -742,10 +738,7 @@ impl ToolsRegistry {
     }
 
     fn bm25_scores(&self, user_query: &str, candidates: &[Arc<ToolEntry>]) -> Vec<(f32, Arc<ToolEntry>)> {
-        static EMPTY_BM25_DOC: LazyLock<Bm25Document> = LazyLock::new(|| Bm25Document::from_text(""));
-
-        let documents: Vec<&Bm25Document> =
-            candidates.iter().map(|entry| entry.bm25_doc.as_ref().unwrap_or(&EMPTY_BM25_DOC)).collect();
+        let documents: Vec<&Bm25Document> = candidates.iter().map(|entry| &entry.bm25_doc).collect();
         embeddings::bm25_scores(user_query, &documents)
             .into_iter()
             .zip(candidates.iter())
@@ -857,11 +850,7 @@ impl ToolsRegistry {
     }
 }
 
-fn build_tool_entry(
-    tool_conf: McpTool,
-    source: ToolSource,
-    build_bm25_doc: bool,
-) -> Result<ToolEntry, ToolBuilderError> {
+fn build_tool_entry(tool_conf: McpTool, source: ToolSource) -> Result<ToolEntry, ToolBuilderError> {
     let rbac = tool_conf.rbac.as_ref().map(convert_config_rbac_to_runtime);
     let input_schema_validator = if tool_conf.input_schema.is_empty() {
         None
@@ -906,8 +895,7 @@ fn build_tool_entry(
             arc_swap::ArcSwapOption::from(Some(Arc::new(v)))
         }
     };
-    let bm25_doc = build_bm25_doc
-        .then(|| Bm25Document::from_tool_parts(&tool_conf.name, &tool_conf.description, &tool_conf.input_schema));
+    let bm25_doc = Bm25Document::from_tool_parts(&tool_conf.name, &tool_conf.description, &tool_conf.input_schema);
     Ok(ToolEntry {
         conf: tool_conf,
         source,
@@ -1281,7 +1269,6 @@ mod tests {
         let entry = build_tool_entry(
             dynamic_conf,
             ToolSource::Dynamic { server_name: "srv".into(), upstream_tool_name: "tool".into() },
-            true,
         )
         .unwrap();
         registry.tools.insert("srv__tool".into(), Arc::new(entry));
@@ -1330,7 +1317,6 @@ mod tests {
             let entry = build_tool_entry(
                 conf,
                 ToolSource::Dynamic { server_name: "srv".into(), upstream_tool_name: upstream.into() },
-                true,
             )
             .unwrap();
             registry.tools.insert(entry.conf.name.clone(), Arc::new(entry));
