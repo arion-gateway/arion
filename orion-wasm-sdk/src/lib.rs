@@ -57,6 +57,35 @@ impl<S: State> RequestHandle<S> {
     pub unsafe fn new(handle: u64) -> Self {
         Self { handle, _marker: core::marker::PhantomData }
     }
+
+    /// Retrieve the downstream metadata for this connection.
+    pub fn get_downstream_metadata(&self) -> Result<Option<orion_wasm_types::DownstreamMetadata>, OrionWasmError> {
+        let mut resp_ptr: *mut u8 = std::ptr::null_mut();
+        let mut resp_len = 0u32;
+
+        let res = unsafe {
+            ffi::orion_get_downstream_metadata(
+                self.handle,
+                &mut resp_ptr as *mut *mut u8,
+                &mut resp_len as *mut u32,
+            )
+        };
+
+        if res == 0 {
+            if resp_ptr.is_null() {
+                return Ok(None);
+            }
+            let resp_buf = unsafe { Vec::from_raw_parts(resp_ptr, resp_len as usize, resp_len as usize) };
+            match bincode_next::serde::decode_from_slice(&resp_buf, bincode_next::config::standard()) {
+                Ok((meta, _)) => Ok(Some(meta)),
+                Err(_) => Err(OrionWasmError::InternalError),
+            }
+        } else if res == 1 { // NotFound
+            Ok(None)
+        } else {
+            Err(OrionWasmResult::from_ffi(res).unwrap_err())
+        }
+    }
 }
 
 /// Typestate wrapper around a response handle.

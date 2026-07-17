@@ -47,6 +47,12 @@ extern "C" {
     /// Log a message via the host's tracing framework.
     pub fn orion_log(level: u32, msg_ptr: *const u8, msg_len: u32) -> i32;
 
+    pub fn orion_get_downstream_metadata(
+        handle: u64,
+        out_ptr_ptr: *mut *mut u8,
+        out_len_ptr: *mut u32,
+    ) -> i32;
+
     pub fn orion_get_headers_map(
         handle: u64,
         handle_type: u32,

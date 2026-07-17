@@ -1027,6 +1027,113 @@ fn orion_sleep(
     })
 }
 
+fn orion_get_downstream_metadata(
+    mut caller: Caller<'_, WasmState>,
+    (request_handle, out_ptr_ptr, out_len_ptr): (u64, u32, u32),
+) -> Box<dyn std::future::Future<Output = i32> + Send + '_> {
+    Box::new(async move {
+        let request = unsafe { &*(request_handle as *const Request<OrionRequestBody>) };
+        
+        let host_meta = match request.extensions().get::<Box<crate::listeners::metadata::DownstreamMetadata>>() {
+            Some(m) => m,
+            None => return OrionWasmResult::NotFound.into(),
+        };
+
+        let mapped_connection = match &host_meta.connection {
+            crate::listeners::metadata::DownstreamConnectionMetadata::FromSocket { peer_address, local_address } => {
+                orion_wasm_types::DownstreamConnectionMetadata::FromSocket {
+                    peer_address: *peer_address,
+                    local_address: *local_address,
+                }
+            },
+            crate::listeners::metadata::DownstreamConnectionMetadata::FromProxyProtocol {
+                original_peer_address,
+                original_destination_address,
+                protocol,
+                tlv_data,
+                proxy_peer_address,
+                proxy_local_address,
+            } => {
+                let mapped_protocol = match protocol {
+                    ppp::v2::Protocol::Stream => orion_wasm_types::ProxyProtocol::Stream,
+                    ppp::v2::Protocol::Datagram => orion_wasm_types::ProxyProtocol::Datagram,
+                    ppp::v2::Protocol::Unspecified => orion_wasm_types::ProxyProtocol::Unspec,
+                };
+                let mut mapped_tlv = std::collections::HashMap::new();
+                for (k, v) in tlv_data {
+                    let k_u8: u8 = (*k).clone().into();
+                    mapped_tlv.insert(k_u8, v.clone());
+                }
+                orion_wasm_types::DownstreamConnectionMetadata::FromProxyProtocol {
+                    original_peer_address: *original_peer_address,
+                    original_destination_address: *original_destination_address,
+                    protocol: mapped_protocol,
+                    tlv_data: mapped_tlv,
+                    proxy_peer_address: *proxy_peer_address,
+                    proxy_local_address: *proxy_local_address,
+                }
+            },
+        };
+
+        let guest_meta = orion_wasm_types::DownstreamMetadata {
+            connection: mapped_connection,
+            sni: host_meta.sni.as_ref().map(|s| s.to_string()),
+            listener_name: host_meta.listener_name.to_string(),
+        };
+
+        let encoded = match bincode_next::serde::encode_to_vec(&guest_meta, bincode_next::config::standard()) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::error!("Failed to encode DownstreamMetadata: {:?}", e);
+                return OrionWasmResult::InternalError.into();
+            },
+        };
+
+        let alloc_func = match caller.get_export("orion_malloc").and_then(|e| e.into_func()) {
+            Some(func) => func,
+            None => return OrionWasmResult::InternalError.into(),
+        };
+
+        let mut results = [wasmtime::Val::I32(0)];
+        if let Err(e) = alloc_func.call_async(&mut caller, &[wasmtime::Val::I32(encoded.len() as i32)], &mut results).await {
+            tracing::error!("Failed to call orion_malloc async: {:?}", e);
+            return OrionWasmResult::InternalError.into();
+        }
+
+        let allocated_ptr = match results[0] {
+            wasmtime::Val::I32(ptr) => ptr as u32,
+            _ => return OrionWasmResult::InternalError.into(),
+        };
+
+        let memory = match caller.get_export("memory").and_then(|m| m.into_memory()) {
+            Some(mem) => mem,
+            None => return OrionWasmResult::InvalidMemoryAccess.into(),
+        };
+
+        let data = memory.data_mut(&mut caller);
+        let start = allocated_ptr as usize;
+        let end = start + encoded.len();
+        if end > data.len() {
+            return OrionWasmResult::InvalidMemoryAccess.into();
+        }
+        data[start..end].copy_from_slice(&encoded);
+
+        let ptr_start = out_ptr_ptr as usize;
+        if ptr_start + 4 > data.len() {
+            return OrionWasmResult::InvalidMemoryAccess.into();
+        }
+        data[ptr_start..ptr_start + 4].copy_from_slice(&allocated_ptr.to_le_bytes());
+
+        let len_start = out_len_ptr as usize;
+        if len_start + 4 > data.len() {
+            return OrionWasmResult::InvalidMemoryAccess.into();
+        }
+        data[len_start..len_start + 4].copy_from_slice(&(encoded.len() as u32).to_le_bytes());
+
+        OrionWasmResult::Ok.into()
+    })
+}
+
 pub fn register_hostcalls(linker: &mut Linker<WasmState>) -> Result<(), wasmtime::Error> {
     linker.func_wrap("env", "orion_get_plugin_config", orion_get_plugin_config)?;
     linker.func_wrap("env", "orion_get_header", orion_get_header)?;
@@ -1042,6 +1149,7 @@ pub fn register_hostcalls(linker: &mut Linker<WasmState>) -> Result<(), wasmtime
     linker.func_wrap("env", "orion_apply_header_mutations", orion_apply_header_mutations)?;
 
     linker.func_wrap("env", "orion_send_direct_response", orion_send_direct_response)?;
+    linker.func_wrap_async("env", "orion_get_downstream_metadata", orion_get_downstream_metadata)?;
 
     linker.func_wrap("env", "orion_set_custom_metrics", orion_set_custom_metrics)?;
     linker.func_wrap("env", "orion_set_access_log_operators", orion_set_access_log_operators)?;

@@ -288,3 +288,38 @@ pub struct CalloutResponse {
     pub headers: HeaderMap,
     pub body: Option<Vec<u8>>,
 }
+
+// ============================================================================
+// Downstream Metadata
+// ============================================================================
+
+/// Represents the transport protocol from the proxy protocol header.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum ProxyProtocol {
+    Unspec,
+    Stream,
+    Datagram,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum DownstreamConnectionMetadata {
+    FromSocket {
+        peer_address: std::net::SocketAddr,
+        local_address: std::net::SocketAddr,
+    },
+    FromProxyProtocol {
+        original_peer_address: std::net::SocketAddr,
+        original_destination_address: std::net::SocketAddr,
+        protocol: ProxyProtocol,
+        tlv_data: std::collections::HashMap<u8, Vec<u8>>,
+        proxy_peer_address: std::net::SocketAddr,
+        proxy_local_address: std::net::SocketAddr,
+    },
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DownstreamMetadata {
+    pub connection: DownstreamConnectionMetadata,
+    pub sni: Option<String>,
+    pub listener_name: String,
+}
