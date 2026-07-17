@@ -66,7 +66,6 @@ pub struct ToolsRegistry {
     semantic_search: Option<McpSemanticSearch>,
     bootstrapped: OnceCell<()>,
     embeddings_client: Option<Arc<embeddings::EmbeddingsClient>>,
-    bm25_enabled: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -146,8 +145,6 @@ pub enum CallToolError {
     SerdeError(#[from] serde_json::Error),
     #[error("Validation error: {0}")]
     ValidationError(String),
-    #[error("semantic search unavailable: embeddings failed and BM25 fallback is disabled")]
-    SemanticSearchUnavailable,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -219,21 +216,18 @@ impl ToolsRegistry {
         semantic_search: Option<McpSemanticSearch>,
         embeddings_client: Option<Arc<embeddings::EmbeddingsClient>>,
     ) -> Result<Self, ToolBuilderError> {
-        let bm25_enabled =
-            semantic_search.as_ref().is_some_and(|ss| ss.embeddings.as_ref().is_none_or(|e| e.allow_bm25_fallback));
         let registry = Self {
             tools: DashMap::with_hasher(ahash::RandomState::new()),
             dynamic_mcp_servers: DashMap::with_hasher(ahash::RandomState::new()),
             semantic_search,
             bootstrapped: OnceCell::new(),
             embeddings_client,
-            bm25_enabled,
         };
 
         for tool_conf in tools {
             registry.validate_supplied_embedding(&tool_conf)?;
 
-            let entry = build_tool_entry(tool_conf, ToolSource::Provided, registry.bm25_enabled)?;
+            let entry = build_tool_entry(tool_conf, ToolSource::Provided, true)?;
             let name = entry.conf.name.clone();
             if registry.tools.insert(name.clone(), Arc::new(entry)).is_some() {
                 return Err(ToolBuilderError::DuplicateTool(name));
@@ -336,19 +330,11 @@ impl ToolsRegistry {
                 debug!(target: "mcp_gateway", "Embedded {} tools via {}", names.len(), client.description());
             },
             Err(err) => {
-                if self.bm25_enabled {
-                    warn!(
-                        target: "mcp_gateway",
-                        "embed_batch failed for {} tools: {err}; semantic_search will use BM25 fallback",
-                        names.len()
-                    );
-                } else {
-                    warn!(
-                        target: "mcp_gateway",
-                        "embed_batch failed for {} tools: {err}; semantic_search will fail until embeddings are available",
-                        names.len()
-                    );
-                }
+                warn!(
+                    target: "mcp_gateway",
+                    "embed_batch failed for {} tools: {err}; semantic_search will use BM25 fallback",
+                    names.len()
+                );
                 #[cfg(feature = "metrics")]
                 let shard_id = get_shard_id!();
                 with_metric!(
@@ -376,7 +362,7 @@ impl ToolsRegistry {
             }
         }
         self.validate_supplied_embedding(&tool)?;
-        let entry = build_tool_entry(tool, ToolSource::Provided, self.bm25_enabled)?;
+        let entry = build_tool_entry(tool, ToolSource::Provided, true)?;
         if let Some(existing) = self.tools.get(&name) {
             if !matches!(existing.source, ToolSource::Provided) {
                 return Err(ToolBuilderError::DuplicateTool(name));
@@ -505,7 +491,7 @@ impl ToolsRegistry {
 
     async fn fetch_and_materialise(&self, server: &DynamicMcpServerEntry) {
         let server_name = &server.conf.name;
-        match Self::fetch_dynamic_server_tools(server, self.bm25_enabled).await {
+        match Self::fetch_dynamic_server_tools(server, true).await {
             Ok(materialised) => {
                 self.evict_dynamic_tools_for(server_name);
                 for entry in materialised {
@@ -694,8 +680,7 @@ impl ToolsRegistry {
 
         let mut scored = match self.vector_scores(user_query, &candidates).await {
             Some(scored) => scored,
-            None if self.bm25_enabled => self.bm25_scores(user_query, &candidates),
-            None => return Err(CallToolError::SemanticSearchUnavailable),
+            None => self.bm25_scores(user_query, &candidates),
         };
 
         scored.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.conf.name.cmp(&b.1.conf.name)));
@@ -1476,39 +1461,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bm25_fallback_disabled_skips_tf_and_errors() {
-        use orion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::{
-            McpSemanticSearch, RemoteEmbeddings, SimilarityConfig,
-        };
-
-        let client = embeddings::EmbeddingsClient::test_failing();
-        let semantic_search = Some(McpSemanticSearch {
-            enable_assisted_discovery: false,
-            embeddings: Some(RemoteEmbeddings {
-                cluster: "embeddings".into(),
-                model_id: "test-model".into(),
-                path: RemoteEmbeddings::default_path(),
-                timeout: None,
-                dimensions: None,
-                allow_bm25_fallback: false,
-            }),
-            similarity: SimilarityConfig { top_k: 1 },
-        });
-
-        let mut tool = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
-        tool.name = "weather_get_forecast".into();
-        tool.description = "Get the weather forecast".into();
-
-        let registry = ToolsRegistry::with_config(vec![tool], Vec::new(), semantic_search, Some(client)).unwrap();
-        let entry = registry.get_tool_by_name("weather_get_forecast").unwrap();
-        assert!(entry.bm25_doc.is_none(), "BM25 document should not be built when fallback is disabled");
-
-        let req_ext = http::Extensions::new();
-        let result = registry.rank_tools_for_query(&req_ext, "weather forecast").await;
-        assert!(matches!(result, Err(CallToolError::SemanticSearchUnavailable)));
-    }
-
-    #[tokio::test]
     async fn bm25_fallback_allowed_degrades_to_bm25() {
         use orion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::{
             McpSemanticSearch, RemoteEmbeddings, SimilarityConfig,
@@ -1522,8 +1474,7 @@ mod tests {
                 model_id: "test-model".into(),
                 path: RemoteEmbeddings::default_path(),
                 timeout: None,
-                dimensions: None,
-                allow_bm25_fallback: true,
+                dimensions: 3,
             }),
             similarity: SimilarityConfig { top_k: 1 },
         });
@@ -1537,7 +1488,6 @@ mod tests {
 
         let registry =
             ToolsRegistry::with_config(vec![tool_a, tool_b], Vec::new(), semantic_search, Some(client)).unwrap();
-        assert!(registry.get_tool_by_name("billing_lookup").unwrap().bm25_doc.is_some());
 
         let req_ext = http::Extensions::new();
         let ranked = registry
@@ -1608,8 +1558,7 @@ mod tests {
                 model_id: "test-model".into(),
                 path: RemoteEmbeddings::default_path(),
                 timeout: None,
-                dimensions: Some(3),
-                allow_bm25_fallback: false,
+                dimensions: 3,
             }),
             similarity: SimilarityConfig { top_k: 5 },
         });
@@ -1632,7 +1581,7 @@ mod tests {
         let req_ext = http::Extensions::new();
         let result = registry.rank_tools_for_query(&req_ext, "weather forecast").await;
 
-        let ranked = result.expect("unembedded tool must not cause SemanticSearchUnavailable");
+        let ranked = result.expect("unembedded tool must not abort cosine ranking");
         assert_eq!(ranked.len(), 1);
         assert_eq!(ranked[0].conf.name.as_str(), "weather_get_forecast");
     }

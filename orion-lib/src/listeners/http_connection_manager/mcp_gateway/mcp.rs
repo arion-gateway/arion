@@ -1201,10 +1201,6 @@ impl McpGateway {
                             CallToolError::ValidationError(e) => {
                                 model::ErrorData::internal_error(format!("Json schema validation error: {e}"), None)
                             },
-                            CallToolError::SemanticSearchUnavailable => model::ErrorData::internal_error(
-                                "semantic search unavailable: embeddings failed and BM25 fallback is disabled",
-                                None,
-                            ),
                         };
 
                         return MessageResult::JsonRpcError(self.build_json_rpc_error(error_data));

@@ -162,11 +162,7 @@ message RemoteEmbeddings {
     google.protobuf.Duration timeout = 4;
     // Vector dimension produced by the model. Must be greater than zero.
     uint32 dimensions = 5 [(validate.rules).uint32 = {gt: 0}];
-    // Allow falling back to the built-in BM25 scorer when the remote embeddings
-    // service is unavailable or a tool has no embedding yet. Defaults to true.
-    // When false, Orion skips building BM25 term statistics entirely and
-    // semantic_search calls fail if cosine ranking is unavailable.
-    optional bool allow_bm25_fallback = 6;
+    reserved 6;
 }
 
 message SimilarityConfig {

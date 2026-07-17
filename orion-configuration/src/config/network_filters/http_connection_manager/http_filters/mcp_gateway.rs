@@ -166,11 +166,6 @@ pub struct RemoteEmbeddings {
     #[serde(with = "humantime_serde", skip_serializing_if = "Option::is_none", default)]
     pub timeout: Option<Duration>,
     pub dimensions: usize,
-    #[serde(
-        default = "RemoteEmbeddings::default_allow_bm25_fallback",
-        skip_serializing_if = "RemoteEmbeddings::is_default_allow_bm25_fallback"
-    )]
-    pub allow_bm25_fallback: bool,
 }
 
 impl RemoteEmbeddings {
@@ -180,15 +175,6 @@ impl RemoteEmbeddings {
 
     fn is_default_path(path: &str) -> bool {
         path == Self::default_path()
-    }
-
-    fn default_allow_bm25_fallback() -> bool {
-        true
-    }
-
-    #[allow(clippy::trivially_copy_pass_by_ref)]
-    fn is_default_allow_bm25_fallback(v: &bool) -> bool {
-        *v
     }
 
     pub fn normalized(mut self) -> Result<Self, String> {
@@ -486,7 +472,7 @@ mod envoy_conversions {
     impl TryFrom<OrionRemoteEmbeddings> for RemoteEmbeddings {
         type Error = GenericError;
         fn try_from(orion: OrionRemoteEmbeddings) -> Result<Self, Self::Error> {
-            let OrionRemoteEmbeddings { cluster, model_id, path, timeout, dimensions, allow_bm25_fallback } = orion;
+            let OrionRemoteEmbeddings { cluster, model_id, path, timeout, dimensions } = orion;
             let timeout = timeout
                 .map(|d| -> Result<Duration, GenericError> {
                     let dur: RustType<Duration> = d.try_into()?;
@@ -499,7 +485,6 @@ mod envoy_conversions {
                 path,
                 timeout,
                 dimensions: dimensions as usize,
-                allow_bm25_fallback: allow_bm25_fallback.unwrap_or(true),
             }
             .normalized()
             .map_err(GenericError::from_msg)
@@ -611,7 +596,6 @@ mod envoy_conversions {
                     path: "/v1/embeddings".to_owned(),
                     timeout: None,
                     dimensions: 384,
-                    allow_bm25_fallback: None,
                 }),
             };
             let parsed: McpSemanticSearch = orion.try_into().unwrap();
@@ -622,7 +606,6 @@ mod envoy_conversions {
             assert_eq!(embeddings.model_id.as_str(), "test-model");
             assert_eq!(embeddings.path, "/v1/embeddings");
             assert_eq!(embeddings.dimensions, 384);
-            assert!(embeddings.allow_bm25_fallback);
         }
 
         #[test]
@@ -641,43 +624,10 @@ mod envoy_conversions {
                 path: String::new(),
                 timeout: None,
                 dimensions: 384,
-                allow_bm25_fallback: None,
             }
             .try_into();
             assert!(result.is_err());
             assert!(result.unwrap_err().to_string().contains("cluster"));
-        }
-
-        #[test]
-        fn test_remote_embeddings_allow_bm25_fallback_defaults_true() {
-            let parsed: RemoteEmbeddings = OrionRemoteEmbeddings {
-                cluster: "embeddings".to_owned(),
-                model_id: "test-model".to_owned(),
-                path: String::new(),
-                timeout: None,
-                dimensions: 384,
-                allow_bm25_fallback: None,
-            }
-            .try_into()
-            .unwrap();
-
-            assert!(parsed.allow_bm25_fallback);
-        }
-
-        #[test]
-        fn test_remote_embeddings_allow_bm25_fallback_explicit_false() {
-            let parsed: RemoteEmbeddings = OrionRemoteEmbeddings {
-                cluster: "embeddings".to_owned(),
-                model_id: "test-model".to_owned(),
-                path: String::new(),
-                timeout: None,
-                dimensions: 384,
-                allow_bm25_fallback: Some(false),
-            }
-            .try_into()
-            .unwrap();
-
-            assert!(!parsed.allow_bm25_fallback);
         }
 
         fn remote(cluster: &str, model_id: &str, path: &str, dimensions: usize) -> RemoteEmbeddings {
@@ -687,7 +637,6 @@ mod envoy_conversions {
                 path: path.to_owned(),
                 timeout: None,
                 dimensions,
-                allow_bm25_fallback: true,
             }
         }
 
