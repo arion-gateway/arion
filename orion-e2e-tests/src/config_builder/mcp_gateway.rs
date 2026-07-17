@@ -517,7 +517,7 @@ impl McpSemanticSearchBuilder {
 
     #[must_use]
     pub fn embeddings_dimensions(mut self, dimensions: u32) -> Self {
-        self.proto.embeddings.get_or_insert_with(RemoteEmbeddings::default).dimensions = Some(dimensions);
+        self.proto.embeddings.get_or_insert_with(RemoteEmbeddings::default).dimensions = dimensions;
         self
     }
 

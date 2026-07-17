@@ -262,13 +262,10 @@ impl ToolsRegistry {
         let Some(client) = self.embeddings_client.as_ref() else {
             return Ok(());
         };
-        let Some(dimensions) = client.dimensions() else {
-            return Ok(());
-        };
-        if supplied.len() != dimensions {
+        if supplied.len() != client.dimensions() {
             return Err(ToolBuilderError::EmbeddingDimensionMismatch {
                 tool: tool.name.clone(),
-                expected: dimensions,
+                expected: client.dimensions(),
                 got: supplied.len(),
             });
         }

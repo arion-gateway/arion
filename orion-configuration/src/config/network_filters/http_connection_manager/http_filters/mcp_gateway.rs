@@ -165,8 +165,7 @@ pub struct RemoteEmbeddings {
     pub path: String,
     #[serde(with = "humantime_serde", skip_serializing_if = "Option::is_none", default)]
     pub timeout: Option<Duration>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub dimensions: Option<usize>,
+    pub dimensions: usize,
     #[serde(
         default = "RemoteEmbeddings::default_allow_bm25_fallback",
         skip_serializing_if = "RemoteEmbeddings::is_default_allow_bm25_fallback"
@@ -199,7 +198,7 @@ impl RemoteEmbeddings {
         if self.model_id.is_empty() {
             return Err("RemoteEmbeddings.model_id must not be empty".to_owned());
         }
-        if self.dimensions == Some(0) {
+        if self.dimensions == 0 {
             return Err("RemoteEmbeddings.dimensions must be greater than zero".to_owned());
         }
         if self.path.is_empty() {
@@ -499,7 +498,7 @@ mod envoy_conversions {
                 model_id: model_id.into(),
                 path,
                 timeout,
-                dimensions: dimensions.map(|d| d as usize),
+                dimensions: dimensions as usize,
                 allow_bm25_fallback: allow_bm25_fallback.unwrap_or(true),
             }
             .normalized()
@@ -611,7 +610,7 @@ mod envoy_conversions {
                     model_id: "test-model".to_owned(),
                     path: "/v1/embeddings".to_owned(),
                     timeout: None,
-                    dimensions: Some(384),
+                    dimensions: 384,
                     allow_bm25_fallback: None,
                 }),
             };
@@ -622,7 +621,7 @@ mod envoy_conversions {
             assert_eq!(embeddings.cluster.as_str(), "embeddings");
             assert_eq!(embeddings.model_id.as_str(), "test-model");
             assert_eq!(embeddings.path, "/v1/embeddings");
-            assert_eq!(embeddings.dimensions, Some(384));
+            assert_eq!(embeddings.dimensions, 384);
             assert!(embeddings.allow_bm25_fallback);
         }
 
@@ -641,7 +640,7 @@ mod envoy_conversions {
                 model_id: "test-model".to_owned(),
                 path: String::new(),
                 timeout: None,
-                dimensions: None,
+                dimensions: 384,
                 allow_bm25_fallback: None,
             }
             .try_into();
@@ -656,7 +655,7 @@ mod envoy_conversions {
                 model_id: "test-model".to_owned(),
                 path: String::new(),
                 timeout: None,
-                dimensions: None,
+                dimensions: 384,
                 allow_bm25_fallback: None,
             }
             .try_into()
@@ -672,7 +671,7 @@ mod envoy_conversions {
                 model_id: "test-model".to_owned(),
                 path: String::new(),
                 timeout: None,
-                dimensions: None,
+                dimensions: 384,
                 allow_bm25_fallback: Some(false),
             }
             .try_into()
@@ -681,7 +680,7 @@ mod envoy_conversions {
             assert!(!parsed.allow_bm25_fallback);
         }
 
-        fn remote(cluster: &str, model_id: &str, path: &str, dimensions: Option<usize>) -> RemoteEmbeddings {
+        fn remote(cluster: &str, model_id: &str, path: &str, dimensions: usize) -> RemoteEmbeddings {
             RemoteEmbeddings {
                 cluster: cluster.into(),
                 model_id: model_id.into(),
@@ -694,17 +693,17 @@ mod envoy_conversions {
 
         #[test]
         fn normalized_prepends_leading_slash_and_defaults_empty_path() {
-            assert_eq!(remote("c", "m", "v1/embeddings", None).normalized().unwrap().path, "/v1/embeddings");
-            assert_eq!(remote("c", "m", "", None).normalized().unwrap().path, RemoteEmbeddings::default_path());
-            assert_eq!(remote("c", "m", "/custom", None).normalized().unwrap().path, "/custom");
+            assert_eq!(remote("c", "m", "v1/embeddings", 384).normalized().unwrap().path, "/v1/embeddings");
+            assert_eq!(remote("c", "m", "", 384).normalized().unwrap().path, RemoteEmbeddings::default_path());
+            assert_eq!(remote("c", "m", "/custom", 384).normalized().unwrap().path, "/custom");
         }
 
         #[test]
         fn normalized_rejects_empty_cluster_empty_model_and_zero_dimensions() {
-            assert!(remote("", "m", "/p", None).normalized().is_err());
-            assert!(remote("c", "", "/p", None).normalized().is_err());
-            assert!(remote("c", "m", "/p", Some(0)).normalized().is_err());
-            assert!(remote("c", "m", "/p", Some(384)).normalized().is_ok());
+            assert!(remote("", "m", "/p", 384).normalized().is_err());
+            assert!(remote("c", "", "/p", 384).normalized().is_err());
+            assert!(remote("c", "m", "/p", 0).normalized().is_err());
+            assert!(remote("c", "m", "/p", 384).normalized().is_ok());
         }
     }
 }

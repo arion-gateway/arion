@@ -60,10 +60,10 @@ impl EmbeddingsClient {
         model_id: SmolStr,
         path: String,
         timeout: Option<Duration>,
-        dimensions: Option<usize>,
+        dimensions: usize,
     ) -> Self {
         let description = format!("remote://{cluster}{path} ({model_id})");
-        let dimensions = AtomicUsize::new(dimensions.unwrap_or_default());
+        let dimensions = AtomicUsize::new(dimensions);
         let cluster_id = cluster.as_str().to_static_str();
         Self {
             cluster_id,
@@ -137,15 +137,9 @@ impl EmbeddingsClient {
         Ok(data.into_iter().map(|e| e.embedding).collect())
     }
 
-    fn validate_or_record_dimensions(&self, actual: usize) -> Result<(), EmbeddingError> {
+    fn validate_dimensions(&self, actual: usize) -> Result<(), EmbeddingError> {
         let expected = self.dimensions.load(Ordering::Acquire);
-        if expected == 0 {
-            match self.dimensions.compare_exchange(0, actual, Ordering::AcqRel, Ordering::Acquire) {
-                Ok(_) => Ok(()),
-                Err(recorded) if recorded == actual => Ok(()),
-                Err(recorded) => Err(EmbeddingError::DimensionMismatch { expected: recorded, got: actual }),
-            }
-        } else if expected == actual {
+        if expected == actual {
             Ok(())
         } else {
             Err(EmbeddingError::DimensionMismatch { expected, got: actual })
@@ -153,19 +147,16 @@ impl EmbeddingsClient {
     }
 
     fn finalize(&self, mut v: Vec<f32>) -> Result<Embedding, EmbeddingError> {
-        self.validate_or_record_dimensions(v.len())?;
         if !v.iter().all(|x| x.is_finite()) {
             return Err(EmbeddingError::Service("embedding contains non-finite components".into()));
         }
+        self.validate_dimensions(v.len())?;
         normalise_in_place(&mut v);
         Ok(Arc::new(v))
     }
 
-    pub fn dimensions(&self) -> Option<usize> {
-        match self.dimensions.load(Ordering::Acquire) {
-            0 => None,
-            dimensions => Some(dimensions),
-        }
+    pub fn dimensions(&self) -> usize {
+        self.dimensions.load(Ordering::Acquire)
     }
 
     pub fn description(&self) -> &str {
