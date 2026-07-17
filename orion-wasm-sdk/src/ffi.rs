@@ -82,6 +82,10 @@ extern "C" {
         value_len: u32,
     ) -> i32;
     pub fn orion_apply_header_mutations(handle: u64, handle_type: u32, buf_ptr: *const u8, buf_len: u32) -> i32;
+
+    pub fn orion_set_io_timeout(microseconds: u64) -> i32;
+    pub fn orion_clear_io_timeout(remaining_us_ptr: *mut u64) -> i32;
+    pub fn orion_sleep(microseconds: u64) -> i32;
 }
 
 pub use orion_wasm_types::HeaderTarget;

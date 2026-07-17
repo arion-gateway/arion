@@ -541,6 +541,36 @@ pub fn dispatch_http_call(request: &CalloutRequest) -> Result<CalloutResponse, O
     }
 }
 
+/// Sets an absolute IO timeout for all subsequent IO operations in the current context.
+/// 
+/// If any subsequent blocking IO operation (such as `dispatch_http_call`) does not complete
+/// before the timeout expires, it will return `OrionWasmError::Timeout`.
+pub fn set_io_timeout(duration: std::time::Duration) -> Result<(), OrionWasmError> {
+    let microseconds = duration.as_micros().try_into().unwrap_or(u64::MAX);
+    let res = unsafe { ffi::orion_set_io_timeout(microseconds) };
+    OrionWasmResult::from_ffi(res)
+}
+
+/// Disarms the current IO timeout and returns the remaining time.
+/// 
+/// Returns `Ok(Duration::ZERO)` if no timeout was set, or if the timeout had already expired.
+pub fn clear_io_timeout() -> Result<std::time::Duration, OrionWasmError> {
+    let mut remaining_us = 0u64;
+    let res = unsafe { ffi::orion_clear_io_timeout(&mut remaining_us as *mut u64) };
+    OrionWasmResult::from_ffi(res)?;
+    Ok(std::time::Duration::from_micros(remaining_us))
+}
+
+/// Suspends the execution of the WebAssembly module for the specified duration.
+///
+/// Thanks to Orion's asynchronous Wasm engine, this does not block the proxy server.
+/// It only suspends the current Wasm execution.
+pub fn sleep(duration: std::time::Duration) -> Result<(), OrionWasmError> {
+    let microseconds = duration.as_micros().try_into().unwrap_or(u64::MAX);
+    let res = unsafe { ffi::orion_sleep(microseconds) };
+    OrionWasmResult::from_ffi(res)
+}
+
 #[no_mangle]
 pub extern "C" fn orion_malloc(size: u32) -> *mut u8 {
     let mut buf = Vec::with_capacity(size as usize);

@@ -187,6 +187,7 @@ impl WasmFilter {
                             request_trailers: None,
                             response_trailers: None,
                             access_log_operators: Vec::new(),
+                            io_deadline: None,
                         },
                     );
                     // Instantiate the module using the pre-resolved imports
@@ -611,6 +612,7 @@ impl Drop for WasmFilter {
             data.direct_response = None;
             data.buffered_request_body = None;
             data.buffered_response_body = None;
+            data.io_deadline = None;
             let _ = self.inner.instance_pool.push(state);
         }
     }

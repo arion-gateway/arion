@@ -24,6 +24,8 @@ pub enum OrionWasmResult {
     InvalidMemoryAccess = 3,
     /// An internal host error occurred.
     InternalError = 4,
+    /// The operation timed out.
+    Timeout = 5,
 }
 
 /// Error returned when converting a raw `i32` into [`OrionWasmResult`] and the
@@ -35,6 +37,7 @@ pub enum OrionWasmError {
     BufferTooSmall,
     InvalidMemoryAccess,
     InternalError,
+    Timeout,
 }
 
 impl core::fmt::Display for OrionWasmError {
@@ -44,6 +47,7 @@ impl core::fmt::Display for OrionWasmError {
             Self::BufferTooSmall => write!(f, "BufferTooSmall"),
             Self::InvalidMemoryAccess => write!(f, "InvalidMemoryAccess"),
             Self::InternalError => write!(f, "InternalError"),
+            Self::Timeout => write!(f, "Timeout"),
         }
     }
 }
@@ -59,6 +63,7 @@ impl OrionWasmResult {
             Self::BufferTooSmall => Err(OrionWasmError::BufferTooSmall),
             Self::InvalidMemoryAccess => Err(OrionWasmError::InvalidMemoryAccess),
             Self::InternalError => Err(OrionWasmError::InternalError),
+            Self::Timeout => Err(OrionWasmError::Timeout),
         }
     }
 
@@ -92,6 +97,7 @@ impl TryFrom<i32> for OrionWasmResult {
             2 => Ok(Self::BufferTooSmall),
             3 => Ok(Self::InvalidMemoryAccess),
             4 => Ok(Self::InternalError),
+            5 => Ok(Self::Timeout),
             _ => Err(UnknownOrionWasmResult(v)),
         }
     }

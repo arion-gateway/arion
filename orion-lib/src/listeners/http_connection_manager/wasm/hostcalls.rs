@@ -21,6 +21,7 @@ pub struct WasmState {
     pub request_trailers: Option<http::HeaderMap>,
     pub response_trailers: Option<http::HeaderMap>,
     pub access_log_operators: Vec<(SmolStr, SmolStr)>,
+    pub io_deadline: Option<std::time::Instant>,
 }
 
 fn orion_get_header(
@@ -844,24 +845,46 @@ fn orion_dispatch_http_call(
 
         let channel = http_service.channel();
 
-        // 3. Send async request - this is where the Wasm fiber suspends!
-        let response_result = channel
-            .send_request(
-                request,
-                Some(std::time::Duration::from_secs(5)),
-                None,
-                RoutingPriority::Default,
-                None,
-                #[cfg(feature = "instrumentation")]
-                &quanta::Clock::new(),
-            )
-            .await;
+        let timeout_duration = if let Some(deadline) = caller.data().io_deadline {
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                return OrionWasmResult::Timeout.into();
+            }
+            Some(deadline.duration_since(now))
+        } else {
+            None
+        };
 
-        let response = match response_result {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::error!("Callout HTTP request failed: {:?}", e);
-                return OrionWasmResult::InternalError.into();
+        let clock = quanta::Clock::new();
+
+        // 3. Send async request - this is where the Wasm fiber suspends!
+        let request_fut = channel.send_request(
+            request,
+            None,
+            None,
+            RoutingPriority::Default,
+            None,
+            #[cfg(feature = "instrumentation")]
+            &clock,
+        );
+
+        let response = match timeout_duration {
+            Some(duration) => match pingora_timeout::fast_timeout::fast_timeout(duration, request_fut).await {
+                Ok(Ok(r)) => r,
+                Ok(Err(e)) => {
+                    tracing::error!("Callout HTTP request failed: {:?}", e);
+                    return OrionWasmResult::InternalError.into();
+                },
+                Err(_) => {
+                    return OrionWasmResult::Timeout.into();
+                },
+            },
+            None => match request_fut.await {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::error!("Callout HTTP request failed: {:?}", e);
+                    return OrionWasmResult::InternalError.into();
+                },
             },
         };
 
@@ -936,6 +959,74 @@ fn orion_dispatch_http_call(
     })
 }
 
+fn orion_set_io_timeout(mut caller: Caller<'_, WasmState>, microseconds: u64) -> i32 {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_micros(microseconds);
+    caller.data_mut().io_deadline = Some(deadline);
+    OrionWasmResult::Ok.into()
+}
+
+fn orion_clear_io_timeout(mut caller: Caller<'_, WasmState>, remaining_us_ptr: u32) -> i32 {
+    let memory = match caller.get_export("memory").and_then(|m| m.into_memory()) {
+        Some(mem) => mem,
+        None => return OrionWasmResult::InvalidMemoryAccess.into(),
+    };
+
+    let remaining_us: u64 = if let Some(deadline) = caller.data_mut().io_deadline.take() {
+        let now = std::time::Instant::now();
+        if deadline > now {
+            (deadline - now).as_micros() as u64
+        } else {
+            0
+        }
+    } else {
+        0
+    };
+
+    let data = memory.data_mut(&mut caller);
+    let start = remaining_us_ptr as usize;
+    let end = start + 8;
+    if end > data.len() {
+        return OrionWasmResult::InvalidMemoryAccess.into();
+    }
+    data[start..end].copy_from_slice(&remaining_us.to_le_bytes());
+
+    OrionWasmResult::Ok.into()
+}
+
+fn orion_sleep(
+    caller: Caller<'_, WasmState>,
+    (microseconds,): (u64,),
+) -> Box<dyn std::future::Future<Output = i32> + Send + '_> {
+    let mut duration = std::time::Duration::from_micros(microseconds);
+    let mut is_timeout = false;
+
+    if let Some(deadline) = caller.data().io_deadline {
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            duration = std::time::Duration::ZERO;
+            is_timeout = true;
+        } else {
+            let max_duration = deadline.duration_since(now);
+            if duration > max_duration {
+                duration = max_duration;
+                is_timeout = true;
+            }
+        }
+    }
+
+    Box::new(async move {
+        if duration > std::time::Duration::ZERO {
+            pingora_timeout::fast_timeout::fast_sleep(duration).await;
+        }
+
+        if is_timeout {
+            OrionWasmResult::Timeout.into()
+        } else {
+            OrionWasmResult::Ok.into()
+        }
+    })
+}
+
 pub fn register_hostcalls(linker: &mut Linker<WasmState>) -> Result<(), wasmtime::Error> {
     linker.func_wrap("env", "orion_get_plugin_config", orion_get_plugin_config)?;
     linker.func_wrap("env", "orion_get_header", orion_get_header)?;
@@ -955,6 +1046,9 @@ pub fn register_hostcalls(linker: &mut Linker<WasmState>) -> Result<(), wasmtime
     linker.func_wrap("env", "orion_set_custom_metrics", orion_set_custom_metrics)?;
     linker.func_wrap("env", "orion_set_access_log_operators", orion_set_access_log_operators)?;
     linker.func_wrap("env", "orion_log", orion_log)?;
+    linker.func_wrap("env", "orion_set_io_timeout", orion_set_io_timeout)?;
+    linker.func_wrap("env", "orion_clear_io_timeout", orion_clear_io_timeout)?;
     linker.func_wrap_async("env", "orion_dispatch_http_call", orion_dispatch_http_call)?;
+    linker.func_wrap_async("env", "orion_sleep", orion_sleep)?;
     Ok(())
 }
