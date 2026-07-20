@@ -1,0 +1,339 @@
+#![allow(clippy::expect_used, reason = "test infrastructure — panicking on setup failure is intentional")]
+
+use std::path::PathBuf;
+
+use http::StatusCode;
+use orion_e2e_tests::config_builder::{
+    BootstrapBuilder, ClusterBuilder, FilterChainBuilder, HcmBuilder, ListenerBuilder, RouteBuilder,
+    RouteConfigBuilder, VirtualHostBuilder, WasmBuilder,
+};
+use orion_e2e_tests::{OrionInstance, PreConfiguredResponse, RequestBuilder, SpawnOptions, TestBackend, TestClient};
+
+async fn setup_wasm(wasm_builder: WasmBuilder) -> (TestBackend, OrionInstance, TestClient, PathBuf) {
+    let backend = TestBackend::start().await.expect("backend start");
+    backend.set_default_response(PreConfiguredResponse::with_body("backend response")).await;
+
+    let bootstrap = BootstrapBuilder::new()
+        .listener(ListenerBuilder::new("http").port(0).filter_chain(FilterChainBuilder::new("main").hcm(
+            HcmBuilder::new().http1().wasm(wasm_builder).route_config(
+                RouteConfigBuilder::new("routes").virtual_host(
+                    VirtualHostBuilder::new("default").route(RouteBuilder::new().match_prefix("/").cluster("backend")),
+                ),
+            ),
+        )))
+        .cluster(ClusterBuilder::with_endpoint("backend", backend.addr()));
+
+    let config_path = bootstrap.build_to_temp().expect("build config");
+    let orion =
+        OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default()).await.expect("spawn orion");
+    #[allow(clippy::unwrap_used)]
+    let client = TestClient::new(orion.listener_addr().unwrap());
+
+    (backend, orion, client, config_path)
+}
+
+fn get_wasm_path(filter_name: &str) -> String {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR must be set");
+    let mut path = PathBuf::from(manifest_dir);
+    path.pop(); // Go to workspace root
+    path.push("orion-wasm-sdk");
+    path.push("target");
+    path.push("wasm32-unknown-unknown");
+    path.push("debug");
+    path.push(format!("{}.wasm", filter_name));
+    path.to_string_lossy().into_owned()
+}
+
+fn dummy_filter_builder() -> WasmBuilder {
+    WasmBuilder::new()
+        .name("dummy_filter")
+        .root_id("dummy_root_id")
+        .vm_id("dummy_vm_id")
+        .code_filename(get_wasm_path("dummy_filter"))
+}
+
+#[tokio::test]
+#[test_log::test]
+async fn test_wasm_dummy_filter_missing_authorization() {
+    let (_backend, _orion, client, _cfg) = setup_wasm(dummy_filter_builder()).await;
+
+    let response = client.get("/test").await.expect("request");
+    response.assert_status(StatusCode::UNAUTHORIZED);
+    response.assert_body("401 Unauthorized: missing Authorization header");
+}
+
+#[tokio::test]
+#[test_log::test]
+async fn test_wasm_dummy_filter_invalid_authorization() {
+    let (_backend, _orion, client, _cfg) = setup_wasm(dummy_filter_builder()).await;
+
+    let response = client.send(RequestBuilder::get("/test").header("Authorization", "Bearer invalid")).await.expect("request");
+    response.assert_status(StatusCode::UNAUTHORIZED);
+    response.assert_body("401 Unauthorized: invalid credentials");
+}
+
+#[tokio::test]
+#[test_log::test]
+async fn test_wasm_dummy_filter_authorized() {
+    let (mut backend, _orion, client, _cfg) = setup_wasm(dummy_filter_builder()).await;
+
+    let response = client.send(RequestBuilder::get("/test").header("Authorization", "Bearer secret-token")).await.expect("request");
+    response.assert_status(StatusCode::OK);
+    response.assert_body("backend response");
+
+    let captured = backend.await_request().await.expect("backend request");
+    assert_eq!(captured.path(), "/test");
+}
+
+fn header_mutations_filter_builder() -> WasmBuilder {
+    WasmBuilder::new()
+        .name("header_mutations_filter")
+        .root_id("header_mutations_root_id")
+        .vm_id("header_mutations_vm_id")
+        .code_filename(get_wasm_path("header_mutations_filter"))
+}
+
+#[tokio::test]
+#[test_log::test]
+async fn test_wasm_header_mutations_filter() {
+    let (mut backend, _orion, client, _cfg) = setup_wasm(header_mutations_filter_builder()).await;
+
+    backend.set_default_response(
+        PreConfiguredResponse::default()
+            .header("x-response-add", "initial-res-value")
+            .header("x-response-remove", "to-be-removed")
+            .header("x-response-set", "will-be-replaced")
+    ).await;
+
+    let response = client
+        .send(
+            RequestBuilder::get("/test")
+                .header("user-agent", "my-agent")
+                .header("x-custom-add", "initial-value")
+        )
+        .await
+        .expect("request");
+
+    response.assert_status(StatusCode::OK);
+    response.assert_header("x-response-set", "res-replaced-value");
+    
+    let added_headers: Vec<_> = response.header_all("x-response-add");
+    assert_eq!(added_headers, vec!["initial-res-value", "res-add-value"]);
+
+    assert_eq!(response.header("x-response-remove"), None);
+
+    let captured = backend.await_request().await.expect("backend request");
+    assert_eq!(captured.header("x-custom-set"), Some("replaced-value"));
+    assert_eq!(captured.header_all("x-custom-add"), vec!["initial-value", "add-value"]);
+    assert_eq!(captured.header("user-agent"), None);
+}
+
+#[tokio::test]
+#[test_log::test]
+async fn test_wasm_dummy_filter_buffer_body_valid() {
+    let (mut backend, _orion, client, _cfg) = setup_wasm(dummy_filter_builder()).await;
+
+    let response = client.send(RequestBuilder::post("/test").header("Authorization", "Bearer buffer-me").body("valid")).await.expect("request");
+    response.assert_status(StatusCode::OK);
+    response.assert_body("backend response");
+
+    let captured = backend.await_request().await.expect("backend request");
+    assert_eq!(captured.body_str(), Some("valid"));
+}
+
+#[tokio::test]
+#[test_log::test]
+async fn test_wasm_dummy_filter_buffer_body_invalid() {
+    let (_backend, _orion, client, _cfg) = setup_wasm(dummy_filter_builder()).await;
+
+    let response = client.send(RequestBuilder::post("/test").header("Authorization", "Bearer buffer-me").body("invalid-body")).await.expect("request");
+    response.assert_status(StatusCode::FORBIDDEN);
+    response.assert_body("403 Forbidden: body did not contain the magic word 'valid'");
+}
+
+fn header_api_filter_builder() -> WasmBuilder {
+    WasmBuilder::new()
+        .name("header_api_filter")
+        .root_id("header_api_root_id")
+        .vm_id("header_api_vm_id")
+        .code_filename(get_wasm_path("header_api_filter"))
+}
+
+#[tokio::test]
+#[test_log::test]
+async fn test_wasm_header_api_filter() {
+    let (mut backend, _orion, client, _cfg) = setup_wasm(header_api_filter_builder()).await;
+
+    backend.set_default_response(
+        PreConfiguredResponse::default()
+            .header("x-response-add", "initial-res-value")
+            .header("x-response-remove", "to-be-removed")
+            .header("x-response-set", "will-be-replaced")
+    ).await;
+
+    let response = client
+        .send(
+            RequestBuilder::get("/test")
+                .header("user-agent", "my-agent")
+                .header("x-custom-add", "initial-value")
+        )
+        .await
+        .expect("request");
+
+    response.assert_status(StatusCode::OK);
+    // 1. set_header
+    // wait, replace_header in our plugin uses x-response-set. 
+    // The plugin does:
+    // ctx.set_header("x-response-set", "res-set-value")
+    // ctx.replace_header("x-response-set", "res-replaced-value")
+    response.assert_header("x-response-set", "res-replaced-value");
+    
+    // 2. add_header
+    assert_eq!(response.header_all("x-response-add"), vec!["initial-res-value", "res-add-value"]);
+
+    // 3. remove_header
+    assert_eq!(response.header("x-response-remove"), None);
+
+    let captured = backend.await_request().await.expect("backend request");
+    assert_eq!(captured.header("x-custom-set"), Some("replaced-value"));
+    assert_eq!(captured.header_all("x-custom-add"), vec!["initial-value", "add-value"]);
+    assert_eq!(captured.header("user-agent"), None);
+}
+
+fn headers_map_filter_builder() -> WasmBuilder {
+    WasmBuilder::new()
+        .name("headers_map_filter")
+        .root_id("headers_map_root_id")
+        .vm_id("headers_map_vm_id")
+        .code_filename(get_wasm_path("headers_map_filter"))
+}
+
+#[tokio::test]
+#[test_log::test]
+async fn test_wasm_headers_map_filter() {
+    let (mut backend, _orion, client, _cfg) = setup_wasm(headers_map_filter_builder()).await;
+
+    let response = client
+        .send(
+            RequestBuilder::get("/test")
+        )
+        .await
+        .expect("request");
+
+    response.assert_status(StatusCode::OK);
+
+    let captured = backend.await_request().await.expect("backend request");
+    assert_eq!(captured.header("x-wasm-mutated"), Some("true"));
+}
+
+fn body_mutation_filter_builder() -> WasmBuilder {
+    WasmBuilder::new()
+        .name("body_mutation_filter")
+        .root_id("body_mutation_root_id")
+        .vm_id("body_mutation_vm_id")
+        .code_filename(get_wasm_path("body_mutation_filter"))
+}
+
+#[tokio::test]
+#[test_log::test]
+async fn test_wasm_body_mutation_filter() {
+    let (mut backend, _orion, client, _cfg) = setup_wasm(body_mutation_filter_builder()).await;
+    backend.set_default_response(PreConfiguredResponse::with_body("backend response")).await;
+
+    let response = client
+        .send(
+            RequestBuilder::post("/test").body("client request")
+        )
+        .await
+        .expect("request");
+
+    response.assert_status(StatusCode::OK);
+    response.assert_body("[prepended by wasm on response] backend response");
+
+    let captured = backend.await_request().await.expect("backend request");
+    assert_eq!(captured.body_str(), Some("client request [appended by wasm on request]"));
+}
+
+fn callout_body_filter_builder() -> WasmBuilder {
+    WasmBuilder::new()
+        .name("callout_body_filter")
+        .root_id("callout_body_root_id")
+        .vm_id("callout_body_vm_id")
+        .code_filename(get_wasm_path("callout_body_filter"))
+}
+
+#[tokio::test]
+#[test_log::test]
+async fn test_wasm_callout_body_filter() {
+    let mut backend = TestBackend::start().await.expect("backend start");
+    let mut callout_backend = TestBackend::start().await.expect("callout start");
+    
+    backend.set_default_response(PreConfiguredResponse::with_body("backend response")).await;
+    callout_backend.set_default_response(PreConfiguredResponse::with_body("callout response")).await;
+
+    let bootstrap = BootstrapBuilder::new()
+        .listener(ListenerBuilder::new("http").port(0).filter_chain(FilterChainBuilder::new("main").hcm(
+            HcmBuilder::new().http1().wasm(callout_body_filter_builder()).route_config(
+                RouteConfigBuilder::new("routes").virtual_host(
+                    VirtualHostBuilder::new("default").route(RouteBuilder::new().match_prefix("/").cluster("backend")),
+                ),
+            ),
+        )))
+        .cluster(ClusterBuilder::with_endpoint("backend", backend.addr()))
+        .cluster(ClusterBuilder::with_endpoint("service", callout_backend.addr()));
+
+    let config_path = bootstrap.build_to_temp().expect("build config");
+    let _orion =
+        OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default()).await.expect("spawn orion");
+    #[allow(clippy::unwrap_used)]
+    let client = TestClient::new(_orion.listener_addr().unwrap());
+
+    let response = client
+        .send(
+            RequestBuilder::post("/test").body("client request")
+        )
+        .await
+        .expect("request");
+
+    response.assert_status(StatusCode::OK);
+    response.assert_body("backend response");
+
+    let captured_callout = callout_backend.await_request().await.expect("callout request");
+    assert_eq!(captured_callout.body_str(), Some("client request"));
+    assert_eq!(captured_callout.header("x-callout-id"), Some("wasm-plugin-123"));
+
+    let captured = backend.await_request().await.expect("backend request");
+    assert_eq!(captured.body_str(), Some("callout response"));
+}
+
+macro_rules! define_simple_wasm_test {
+    ($test_name:ident, $filter_name:expr) => {
+        #[tokio::test]
+        #[test_log::test]
+        async fn $test_name() {
+            let builder = WasmBuilder::new()
+                .name($filter_name)
+                .root_id(format!("{}_root_id", $filter_name))
+                .vm_id(format!("{}_vm_id", $filter_name))
+                .code_filename(get_wasm_path($filter_name));
+
+            let (backend, _orion, client, _cfg) = setup_wasm(builder).await;
+            backend.set_default_response(PreConfiguredResponse::with_body("backend response")).await;
+
+            let response = client
+                .send(RequestBuilder::get("/test"))
+                .await
+                .expect("request");
+
+            response.assert_status(StatusCode::OK);
+            response.assert_body("backend response");
+        }
+    };
+}
+
+define_simple_wasm_test!(test_wasm_custom_metric_filter, "custom_metric_filter");
+define_simple_wasm_test!(test_wasm_metadata_filter, "metadata_filter");
+define_simple_wasm_test!(test_wasm_config_logger_filter, "config_logger_filter");
+define_simple_wasm_test!(test_wasm_sleep_timeout_filter, "sleep_timeout_filter");
+define_simple_wasm_test!(test_wasm_access_log_operator_filter, "access_log_operator_filter");
+
