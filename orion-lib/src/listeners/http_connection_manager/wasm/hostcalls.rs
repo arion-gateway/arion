@@ -791,7 +791,7 @@ fn orion_dispatch_http_call(
             };
 
         // 2. Resolve cluster and acquire connection
-        let cluster_spec = ClusterSpecifier::Cluster(callout_req.cluster_name.clone().into());
+        let cluster_spec = ClusterSpecifier::Cluster(callout_req.cluster_name.clone());
         let cluster_id = match clusters_manager::resolve_cluster(&cluster_spec, None) {
             Some(id) => id,
             None => return OrionWasmResult::NotFound.into(),
@@ -1033,7 +1033,7 @@ fn orion_get_downstream_metadata(
 ) -> Box<dyn std::future::Future<Output = i32> + Send + '_> {
     Box::new(async move {
         let request = unsafe { &*(request_handle as *const Request<OrionRequestBody>) };
-        
+
         let host_meta = match request.extensions().get::<Box<crate::listeners::metadata::DownstreamMetadata>>() {
             Some(m) => m,
             None => return OrionWasmResult::NotFound.into(),
