@@ -213,17 +213,34 @@ fn headers_map_filter_builder() -> WasmBuilder {
 async fn test_wasm_headers_map_filter() {
     let (mut backend, _orion, client, _cfg) = setup_wasm(headers_map_filter_builder()).await;
 
+    backend.set_default_response(
+        PreConfiguredResponse::default()
+            .header("x-response-add", "initial-res-value")
+            .header("x-response-remove", "to-be-removed")
+            .header("x-response-set", "will-be-replaced")
+    ).await;
+
     let response = client
         .send(
             RequestBuilder::get("/test")
+                .header("user-agent", "my-agent")
+                .header("x-custom-add", "initial-value")
         )
         .await
         .expect("request");
 
     response.assert_status(StatusCode::OK);
+    response.assert_header("x-response-set", "res-replaced-value");
+    
+    let added_headers: Vec<_> = response.header_all("x-response-add");
+    assert_eq!(added_headers, vec!["initial-res-value", "res-add-value"]);
+
+    assert_eq!(response.header("x-response-remove"), None);
 
     let captured = backend.await_request().await.expect("backend request");
-    assert_eq!(captured.header("x-wasm-mutated"), Some("true"));
+    assert_eq!(captured.header("x-custom-set"), Some("replaced-value"));
+    assert_eq!(captured.header_all("x-custom-add"), vec!["initial-value", "add-value"]);
+    assert_eq!(captured.header("user-agent"), None);
 }
 
 fn body_mutation_filter_builder() -> WasmBuilder {

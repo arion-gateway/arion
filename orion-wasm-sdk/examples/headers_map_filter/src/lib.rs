@@ -13,33 +13,57 @@ impl Plugin for HeadersMapFilter {
     }
 
     fn on_request_headers(&mut self, ctx: &RequestHandle<HttpHeaders>) -> FilterAction {
-        // 1. Get the current headers map
         let mut headers = match ctx.get_headers_map() {
             Ok(h) => h,
-            Err(_) => {
-                error!("Failed to get headers map from host");
-                return ctx.direct_response(500, b"Internal Server Error");
-            },
+            Err(_) => return ctx.direct_response(500, b"Internal Server Error"),
         };
 
-        // 2. Log all headers
-        info!("--- Incoming Request Headers ---");
-        for (key, val) in headers.iter() {
-            info!("{}: {:?}", key, val);
-        }
-        info!("--------------------------------");
-
-        // 3. Add a new header
-        info!("Injecting new header 'X-Wasm-Mutated: true'");
+        // 1. Remove user-agent
+        headers.remove(http::header::HeaderName::from_static("user-agent"));
+        
+        // 2. Insert (Set/Replace) x-custom-set
         headers.insert(
-            http::header::HeaderName::from_static("x-wasm-mutated"),
-            http::header::HeaderValue::from_static("true"),
+            http::header::HeaderName::from_static("x-custom-set"),
+            http::header::HeaderValue::from_static("replaced-value")
         );
 
-        // 4. Set the headers map back to the host
+        // 3. Append (Add) x-custom-add
+        headers.append(
+            http::header::HeaderName::from_static("x-custom-add"),
+            http::header::HeaderValue::from_static("add-value")
+        );
+
         if let Err(e) = ctx.set_headers_map(&headers) {
             error!("Failed to set headers map: {:?}", e);
             return ctx.direct_response(500, b"Internal Server Error");
+        }
+
+        FilterAction::Continue
+    }
+
+    fn on_response_headers(&mut self, ctx: &orion_wasm_sdk::ResponseHandle<HttpHeaders>) -> FilterAction {
+        let mut headers = match ctx.get_headers_map() {
+            Ok(h) => h,
+            Err(_) => return FilterAction::Continue,
+        };
+
+        // 1. Remove x-response-remove
+        headers.remove(http::header::HeaderName::from_static("x-response-remove"));
+        
+        // 2. Insert (Set/Replace) x-response-set
+        headers.insert(
+            http::header::HeaderName::from_static("x-response-set"),
+            http::header::HeaderValue::from_static("res-replaced-value")
+        );
+
+        // 3. Append (Add) x-response-add
+        headers.append(
+            http::header::HeaderName::from_static("x-response-add"),
+            http::header::HeaderValue::from_static("res-add-value")
+        );
+
+        if let Err(e) = ctx.set_headers_map(&headers) {
+            error!("Failed to set response headers map: {:?}", e);
         }
 
         FilterAction::Continue
