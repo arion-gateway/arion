@@ -5,9 +5,9 @@ use std::path::PathBuf;
 use http::StatusCode;
 use orion_e2e_tests::config_builder::{
     BootstrapBuilder, ClusterBuilder, FilterChainBuilder, HcmBuilder, ListenerBuilder, RouteBuilder,
-    RouteConfigBuilder, VirtualHostBuilder, WasmBuilder,
+    RouteConfigBuilder, VirtualHostBuilder, WasmBuilder, DownstreamTlsBuilder
 };
-use orion_e2e_tests::{OrionInstance, PreConfiguredResponse, RequestBuilder, SpawnOptions, TestBackend, TestClient};
+use orion_e2e_tests::{OrionInstance, PreConfiguredResponse, RequestBuilder, SpawnOptions, TestBackend, TestClient, TestCerts, TlsTestClientBuilder};
 
 async fn setup_wasm(wasm_builder: WasmBuilder) -> (TestBackend, OrionInstance, TestClient, PathBuf) {
     let backend = TestBackend::start().await.expect("backend start");
@@ -349,7 +349,98 @@ macro_rules! define_simple_wasm_test {
 }
 
 define_simple_wasm_test!(test_wasm_custom_metric_filter, "custom_metric_filter");
-define_simple_wasm_test!(test_wasm_metadata_filter, "metadata_filter");
+
+#[tokio::test]
+#[test_log::test]
+async fn test_wasm_metadata_filter() {
+    let builder = WasmBuilder::new()
+        .name("metadata_filter")
+        .root_id("metadata_root_id")
+        .vm_id("metadata_vm_id")
+        .code_filename(get_wasm_path("metadata_filter"));
+
+    let (mut backend, _orion, client, _cfg) = setup_wasm(builder).await;
+    backend.set_default_response(PreConfiguredResponse::with_body("backend response")).await;
+
+    let response = client
+        .send(RequestBuilder::get("/test"))
+        .await
+        .expect("request");
+
+    response.assert_status(StatusCode::OK);
+    response.assert_body("backend response");
+
+    let captured = backend.await_request().await.expect("backend request");
+    
+    // Test that the wasm filter successfully injected the metadata into headers
+    assert_eq!(captured.header("x-listener-name"), Some("http"));
+    // Connection metadata was split into peer and local
+    assert!(captured.header("x-connection-peer").is_some());
+    assert!(captured.header("x-connection-local").is_some());
+    // SNI is None in our plaintext HTTP E2E tests, so x-sni should not be set
+    assert_eq!(captured.header("x-sni"), None);
+}
+
+#[tokio::test]
+#[test_log::test]
+async fn test_wasm_metadata_filter_sni() {
+    let mut backend = TestBackend::start().await.expect("Failed to start backend");
+    backend.set_default_response(PreConfiguredResponse::with_body("backend response")).await;
+
+    let certs = TestCerts::new();
+    let cert_path = TestCerts::path_to_string(&certs.beefcake_dublin_cert());
+    let key_path = TestCerts::path_to_string(&certs.beefcake_dublin_key());
+
+    let tls = DownstreamTlsBuilder::new().cert_files(&cert_path, &key_path);
+
+    let wasm_builder = WasmBuilder::new()
+        .name("metadata_filter")
+        .root_id("metadata_root_id")
+        .vm_id("metadata_vm_id")
+        .code_filename(get_wasm_path("metadata_filter"));
+
+    let listener = ListenerBuilder::new("https")
+        .port(0)
+        .with_tls_inspector()
+        .filter_chain(
+            FilterChainBuilder::new("main")
+                .downstream_tls(tls)
+                .hcm(
+                    HcmBuilder::new().http1().wasm(wasm_builder).route_config(
+                        RouteConfigBuilder::new("routes").virtual_host(
+                            VirtualHostBuilder::new("default").route(RouteBuilder::new().match_prefix("/").cluster("backend")),
+                        ),
+                    ),
+                ),
+        );
+
+    let bootstrap = BootstrapBuilder::new()
+        .listener(listener)
+        .cluster(ClusterBuilder::with_endpoint("backend", backend.addr()));
+
+    let config_path = bootstrap.build_to_temp().expect("build config");
+
+    let orion = OrionInstance::spawn_auto_port(&config_path, "https", SpawnOptions::default())
+        .await
+        .expect("Failed to spawn Orion");
+
+    let client = TlsTestClientBuilder::new(orion.listener_addr().unwrap())
+        .server_name("dublin.beefcake.example.com")
+        .root_ca(certs.beefcake_ca_chain())
+        .build()
+        .expect("Failed to build client");
+
+    let response = client.get("/test").await.expect("Failed to send request");
+    response.assert_status(StatusCode::OK);
+    response.assert_body("backend response");
+
+    let captured = backend.await_request().await.expect("backend request");
+    
+    assert_eq!(captured.header("x-listener-name"), Some("https"));
+    assert_eq!(captured.header("x-sni"), Some("dublin.beefcake.example.com"));
+    assert!(captured.header("x-connection-peer").is_some());
+    assert!(captured.header("x-connection-local").is_some());
+}
 define_simple_wasm_test!(test_wasm_config_logger_filter, "config_logger_filter");
 define_simple_wasm_test!(test_wasm_sleep_timeout_filter, "sleep_timeout_filter");
 define_simple_wasm_test!(test_wasm_access_log_operator_filter, "access_log_operator_filter");
