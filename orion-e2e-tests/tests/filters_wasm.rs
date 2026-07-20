@@ -353,6 +353,26 @@ async fn test_wasm_callout_body_filter() {
 
     let captured = backend.await_request().await.expect("backend request");
     assert_eq!(captured.body_str(), Some("callout response"));
+
+    // ── Test Failure Scenario (Callout returns 500) ──
+    // In this case, the filter should keep the original body
+    callout_backend.set_default_response(PreConfiguredResponse::with_status(StatusCode::INTERNAL_SERVER_ERROR)).await;
+
+    let response = client
+        .send(
+            RequestBuilder::post("/test").body("original client request")
+        )
+        .await
+        .expect("request");
+
+    response.assert_status(StatusCode::OK);
+    response.assert_body("backend response");
+
+    let captured_callout = callout_backend.await_request().await.expect("callout request");
+    assert_eq!(captured_callout.body_str(), Some("original client request"));
+
+    let captured = backend.await_request().await.expect("backend request");
+    assert_eq!(captured.body_str(), Some("original client request"));
 }
 
 macro_rules! define_simple_wasm_test {
