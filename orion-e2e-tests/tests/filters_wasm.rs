@@ -442,6 +442,37 @@ async fn test_wasm_metadata_filter_sni() {
     assert!(captured.header("x-connection-local").is_some());
 }
 define_simple_wasm_test!(test_wasm_config_logger_filter, "config_logger_filter");
-define_simple_wasm_test!(test_wasm_sleep_timeout_filter, "sleep_timeout_filter");
+#[tokio::test]
+#[test_log::test]
+async fn test_wasm_sleep_timeout_filter() {
+    let builder = WasmBuilder::new()
+        .name("sleep_timeout_filter")
+        .root_id("sleep_timeout_root_id")
+        .vm_id("sleep_timeout_vm_id")
+        .code_filename(get_wasm_path("sleep_timeout_filter"));
+
+    let (mut backend, _orion, client, _cfg) = setup_wasm(builder).await;
+    backend.set_default_response(PreConfiguredResponse::with_body("backend response")).await;
+
+    let start = std::time::Instant::now();
+    let response = client
+        .send(RequestBuilder::get("/test"))
+        .await
+        .expect("request");
+    let elapsed = start.elapsed();
+
+    response.assert_status(StatusCode::OK);
+    response.assert_body("backend response");
+
+    let captured = backend.await_request().await.expect("backend request");
+    
+    assert_eq!(captured.header("x-timeout-test"), Some("passed"));
+
+    // The filter sleeps for 1 second, sets 1 second IO timeout, then tries to sleep 10 seconds.
+    // It should timeout after 1 second, so the total time should be roughly 2 seconds.
+    // Allow some buffer for execution overhead (between 1.5s and 4.0s)
+    assert!(elapsed.as_secs_f64() > 1.5, "Elapsed time too short: {:?}", elapsed);
+    assert!(elapsed.as_secs_f64() < 4.0, "Elapsed time too long: {:?}", elapsed);
+}
 define_simple_wasm_test!(test_wasm_access_log_operator_filter, "access_log_operator_filter");
 

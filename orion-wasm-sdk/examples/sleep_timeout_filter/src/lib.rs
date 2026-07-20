@@ -35,9 +35,27 @@ impl Plugin for SleepTimeoutFilter {
 
         info!("Step 3: Attempting to sleep for 10 seconds (should timeout)...");
         match sleep(Duration::from_secs(10)) {
-            Ok(_) => error!("Step 3: Sleep completed completely, but it should have timed out!"),
-            Err(OrionWasmError::Timeout) => info!("Step 3: Sleep timed out exactly as expected!"),
-            Err(e) => error!("Step 3: Sleep failed with unexpected error: {:?}", e),
+            Ok(_) => {
+                error!("Step 3: Sleep completed completely, but it should have timed out!");
+                let _ = _ctx.set_header(
+                    http::header::HeaderName::from_static("x-timeout-test"),
+                    http::header::HeaderValue::from_static("failed-did-not-timeout"),
+                );
+            }
+            Err(OrionWasmError::Timeout) => {
+                info!("Step 3: Sleep timed out exactly as expected!");
+                let _ = _ctx.set_header(
+                    http::header::HeaderName::from_static("x-timeout-test"),
+                    http::header::HeaderValue::from_static("passed"),
+                );
+            }
+            Err(e) => {
+                error!("Step 3: Sleep failed with unexpected error: {:?}", e);
+                let _ = _ctx.set_header(
+                    http::header::HeaderName::from_static("x-timeout-test"),
+                    http::header::HeaderValue::from_static("failed-unexpected-error"),
+                );
+            }
         }
 
         // We continue the filter chain

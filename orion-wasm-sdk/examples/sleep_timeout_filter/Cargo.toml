@@ -7,5 +7,6 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
+http = "1.4.2"
 orion_wasm_sdk = { path = "../../" }
 tracing = "0.1"
