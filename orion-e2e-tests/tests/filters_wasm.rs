@@ -554,7 +554,8 @@ async fn test_wasm_sleep_timeout_filter() {
 #[tokio::test]
 #[test_log::test]
 async fn test_wasm_access_log_operator_filter() {
-    let backend = TestBackend::start().await.expect("backend start");
+    let mut backend = TestBackend::start().await.expect("backend start");
+    backend.set_default_response(PreConfiguredResponse::with_body("backend response")).await;
     let backend_addr = backend.addr();
 
     let log_dir = std::env::temp_dir();
@@ -650,7 +651,8 @@ fn custom_metric_filter_builder() -> WasmBuilder {
 #[tokio::test]
 #[test_log::test]
 async fn test_wasm_custom_metric_filter() {
-    let backend = TestBackend::start().await.expect("backend start");
+    let mut backend = TestBackend::start().await.expect("backend start");
+    backend.set_default_response(PreConfiguredResponse::with_body("backend response")).await;
     let backend_addr = backend.addr();
 
     let port_block = PortBlock::reserve().expect("Failed to reserve port block");
