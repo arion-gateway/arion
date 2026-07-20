@@ -61,6 +61,8 @@ use {
 
 use smol_str::ToSmolStr;
 use std::net::SocketAddr;
+#[cfg(feature = "metrics")]
+use std::time::Instant;
 use tracing::debug;
 
 pub struct RouteContext<'a> {
@@ -99,6 +101,13 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
             )
             .into_response(request.version()));
         };
+
+        #[cfg(feature = "metrics")]
+        {
+            let mut state = trans_context.trans_state.lock();
+            state.upstream_start_instant = Some(Instant::now());
+            state.upstream_cluster_name = Some(cluster_id);
+        }
 
         let priority = self.priority;
         #[allow(unused_variables)]
