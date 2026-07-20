@@ -474,5 +474,85 @@ async fn test_wasm_sleep_timeout_filter() {
     assert!(elapsed.as_secs_f64() > 1.5, "Elapsed time too short: {:?}", elapsed);
     assert!(elapsed.as_secs_f64() < 4.0, "Elapsed time too long: {:?}", elapsed);
 }
-define_simple_wasm_test!(test_wasm_access_log_operator_filter, "access_log_operator_filter");
+#[tokio::test]
+#[test_log::test]
+async fn test_wasm_access_log_operator_filter() {
+    let backend = TestBackend::start().await.expect("backend start");
+    let backend_addr = backend.addr();
+
+    let log_dir = std::env::temp_dir();
+    let log_path = log_dir.join(format!("orion-test-access-log-wasm-{}.txt", std::process::id()));
+    
+    // We want to test that our Wasm filter injects these custom operators
+    let log_format = "op1=%op_1%||op2=%op_2%||op3=%op_3%||op4=%op_4%\n";
+
+    let builder = WasmBuilder::new()
+        .name("access_log_operator_filter")
+        .root_id("access_log_root")
+        .vm_id("access_log_vm")
+        .code_filename(get_wasm_path("access_log_operator_filter"));
+
+    let bootstrap = BootstrapBuilder::new()
+        .listener(ListenerBuilder::new("http").port(0).filter_chain(FilterChainBuilder::new("main").hcm(
+            HcmBuilder::new().http1().access_log_file(log_path.to_str().unwrap(), log_format).wasm(builder).route_config(
+                RouteConfigBuilder::new("routes").virtual_host(
+                    VirtualHostBuilder::new("default").route(RouteBuilder::new().match_prefix("/").cluster("backend")),
+                ),
+            ),
+        )))
+        .cluster(ClusterBuilder::with_endpoint("backend", backend_addr))
+        .access_log(orion_configuration::config::log::AccessLogConfig { 
+            blocking: true, 
+            custom_operators: vec![
+                smol_str::SmolStr::new("op_1"),
+                smol_str::SmolStr::new("op_2"),
+                smol_str::SmolStr::new("op_3"),
+                smol_str::SmolStr::new("op_4"),
+            ],
+            ..orion_configuration::config::log::AccessLogConfig::default() 
+        });
+
+    let config_path = bootstrap.build_to_temp().expect("build config");
+    let orion = OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default().with_verbose()).await.expect("spawn orion");
+    let listener_addr = orion.listener_addr().unwrap();
+    let raw_req = orion_e2e_tests::RawHttpRequestBuilder::new()
+        .method("GET")
+        .uri("/")
+        .host("localhost")
+        .header("Connection", "close")
+        .build();
+
+    let mut stream = tokio::net::TcpStream::connect(listener_addr).await.expect("Failed to connect");
+    tokio::io::AsyncWriteExt::write_all(&mut stream, &raw_req).await.expect("Failed to write");
+    let mut resp = Vec::new();
+    tokio::io::AsyncReadExt::read_to_end(&mut stream, &mut resp).await.expect("Failed to read");
+    
+    // Give it a moment to flush the access log
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    orion.shutdown();
+
+    let mut content = String::new();
+    for _ in 0..20 {
+        if let Ok(c) = std::fs::read_to_string(&log_path) {
+            if !c.trim().is_empty() {
+                content = c;
+                break;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(!content.is_empty(), "Failed to read log file or it was empty");
+    
+    // The filter sets:
+    // op_1: "\"value_from_request_phase\""
+    // op_2: "42"
+    // op_3: "{\"nested\": true}"
+    // op_4: "\"value_from_response_phase\""
+    assert!(content.contains("op1=\"value_from_request_phase\""));
+    assert!(content.contains("op2=42"));
+    assert!(content.contains("op3={\"nested\": true}"));
+    assert!(content.contains("op4=\"value_from_response_phase\""));
+    
+    let _ = std::fs::remove_file(log_path);
+}
 
