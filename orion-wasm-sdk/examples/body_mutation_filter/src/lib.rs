@@ -3,7 +3,10 @@ use orion_wasm_sdk::{init_tracing, orion_plugin, FilterAction, HttpBody, Plugin,
 use tracing::{error, info};
 
 #[derive(Default)]
-struct BodyMutationFilter;
+struct BodyMutationFilter {
+    req_action: String,
+    res_action: String,
+}
 
 #[orion_plugin]
 impl Plugin for BodyMutationFilter {
@@ -12,51 +15,51 @@ impl Plugin for BodyMutationFilter {
         info!(version = "1.0", "BodyMutationFilter Wasm: Instance initialized!");
     }
 
-    fn on_request_body(&mut self, ctx: &RequestHandle<HttpBody>) -> FilterAction {
-        info!("--- Processing Request Body ---");
-
-        match ctx.get_body() {
-            Ok(body_bytes) => {
-                info!("Original request body ({} bytes)", body_bytes.len());
-
-                let mut new_body = body_bytes.clone();
-                new_body.extend_from_slice(b" [appended by wasm on request]");
-
-                if let Err(e) = ctx.set_body(&new_body) {
-                    error!("Failed to set new request body: {:?}", e);
-                } else {
-                    info!("Successfully mutated request body!");
-                }
-            },
-            Err(e) => {
-                error!("Failed to read request body: {:?}", e);
-            },
+    fn on_request_headers(&mut self, ctx: &orion_wasm_sdk::RequestHandle<orion_wasm_sdk::HttpHeaders>) -> FilterAction {
+        if let Ok(Some(action)) = ctx.get_header("x-req-mutation") {
+            self.req_action = action.to_str().unwrap_or("").to_string();
         }
+        if let Ok(Some(action)) = ctx.get_header("x-res-mutation") {
+            self.res_action = action.to_str().unwrap_or("").to_string();
+        }
+        FilterAction::PauseAndBufferBody
+    }
 
+    fn on_request_body(&mut self, ctx: &RequestHandle<HttpBody>) -> FilterAction {
+        if let Ok(body_bytes) = ctx.get_body() {
+            let mut new_body = body_bytes.clone();
+            match self.req_action.as_str() {
+                "append" => new_body.extend_from_slice(b" [appended]"),
+                "prepend" => {
+                    new_body = b"[prepended] ".to_vec();
+                    new_body.extend_from_slice(&body_bytes);
+                },
+                "replace" => new_body = b"[replaced]".to_vec(),
+                _ => {}, // no mutation
+            }
+            if self.req_action != "" {
+                let _ = ctx.set_body(&new_body);
+            }
+        }
         FilterAction::Continue
     }
 
     fn on_response_body(&mut self, ctx: &ResponseHandle<HttpBody>) -> FilterAction {
-        info!("--- Processing Response Body ---");
-
-        match ctx.get_body() {
-            Ok(body_bytes) => {
-                info!("Original response body ({} bytes)", body_bytes.len());
-
-                let mut new_body = b"[prepended by wasm on response] ".to_vec();
-                new_body.extend_from_slice(&body_bytes);
-
-                if let Err(e) = ctx.set_body(&new_body) {
-                    error!("Failed to set new response body: {:?}", e);
-                } else {
-                    info!("Successfully mutated response body!");
-                }
-            },
-            Err(e) => {
-                error!("Failed to read response body: {:?}", e);
-            },
+        if let Ok(body_bytes) = ctx.get_body() {
+            let mut new_body = body_bytes.clone();
+            match self.res_action.as_str() {
+                "append" => new_body.extend_from_slice(b" [appended]"),
+                "prepend" => {
+                    new_body = b"[prepended] ".to_vec();
+                    new_body.extend_from_slice(&body_bytes);
+                },
+                "replace" => new_body = b"[replaced]".to_vec(),
+                _ => {}, // no mutation
+            }
+            if self.res_action != "" {
+                let _ = ctx.set_body(&new_body);
+            }
         }
-
         FilterAction::Continue
     }
 }

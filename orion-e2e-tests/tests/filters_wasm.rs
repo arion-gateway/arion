@@ -257,18 +257,50 @@ async fn test_wasm_body_mutation_filter() {
     let (mut backend, _orion, client, _cfg) = setup_wasm(body_mutation_filter_builder()).await;
     backend.set_default_response(PreConfiguredResponse::with_body("backend response")).await;
 
+    // Test Append on both
     let response = client
         .send(
-            RequestBuilder::post("/test").body("client request")
+            RequestBuilder::post("/test")
+                .header("x-req-mutation", "append")
+                .header("x-res-mutation", "append")
+                .body("client request")
         )
         .await
         .expect("request");
-
     response.assert_status(StatusCode::OK);
-    response.assert_body("[prepended by wasm on response] backend response");
-
+    response.assert_body("backend response [appended]");
     let captured = backend.await_request().await.expect("backend request");
-    assert_eq!(captured.body_str(), Some("client request [appended by wasm on request]"));
+    assert_eq!(captured.body_str(), Some("client request [appended]"));
+
+    // Test Prepend on both
+    let response = client
+        .send(
+            RequestBuilder::post("/test")
+                .header("x-req-mutation", "prepend")
+                .header("x-res-mutation", "prepend")
+                .body("client request")
+        )
+        .await
+        .expect("request");
+    response.assert_status(StatusCode::OK);
+    response.assert_body("[prepended] backend response");
+    let captured = backend.await_request().await.expect("backend request");
+    assert_eq!(captured.body_str(), Some("[prepended] client request"));
+
+    // Test Replace on both
+    let response = client
+        .send(
+            RequestBuilder::post("/test")
+                .header("x-req-mutation", "replace")
+                .header("x-res-mutation", "replace")
+                .body("client request")
+        )
+        .await
+        .expect("request");
+    response.assert_status(StatusCode::OK);
+    response.assert_body("[replaced]");
+    let captured = backend.await_request().await.expect("backend request");
+    assert_eq!(captured.body_str(), Some("[replaced]"));
 }
 
 fn callout_body_filter_builder() -> WasmBuilder {
