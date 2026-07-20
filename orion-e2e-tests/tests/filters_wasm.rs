@@ -400,7 +400,6 @@ macro_rules! define_simple_wasm_test {
     };
 }
 
-define_simple_wasm_test!(test_wasm_custom_metric_filter, "custom_metric_filter");
 
 #[tokio::test]
 #[test_log::test]
@@ -634,3 +633,91 @@ async fn test_wasm_access_log_operator_filter() {
     let _ = std::fs::remove_file(log_path);
 }
 
+
+// Helper for metrics custom filter tests
+use orion_configuration::config::metrics::{CustomMetric, CustomMetrics, MetricsConfig};
+use http::HeaderName;
+use orion_e2e_tests::PortBlock;
+
+fn custom_metric_filter_builder() -> WasmBuilder {
+    WasmBuilder::new()
+        .name("custom_metric_filter")
+        .root_id("custom_metric_root_id")
+        .vm_id("custom_metric_vm_id")
+        .code_filename(get_wasm_path("custom_metric_filter"))
+}
+
+#[tokio::test]
+#[test_log::test]
+async fn test_wasm_custom_metric_filter() {
+    let backend = TestBackend::start().await.expect("backend start");
+    let backend_addr = backend.addr();
+
+    let port_block = PortBlock::reserve().expect("Failed to reserve port block");
+    let admin_port = port_block.allocate().expect("Failed to allocate admin port");
+    let admin_addr = std::net::SocketAddr::from(([127, 0, 0, 1], admin_port));
+
+    // Wasm custom metrics config uses `header_name` to match the keys from Wasm SDK
+    let custom_metrics = CustomMetrics {
+        wasm: vec![
+            CustomMetric::Counter {
+                name: "custom_wasm_counter".into(),
+                description: "A custom metric from Wasm".into(),
+                header_name: HeaderName::from_static("custom"),
+                attribute_name: Some("attr_custom".into()),
+            },
+            CustomMetric::Counter {
+                name: "custom_wasm_user_tier".into(),
+                description: "A custom metric from Wasm for user tier".into(),
+                header_name: HeaderName::from_static("user_tier"),
+                attribute_name: Some("tier".into()),
+            },
+            CustomMetric::Counter {
+                name: "custom_wasm_datacenter".into(),
+                description: "A custom metric from Wasm for datacenter".into(),
+                header_name: HeaderName::from_static("datacenter"),
+                attribute_name: Some("dc".into()),
+            },
+        ],
+        ..CustomMetrics::default()
+    };
+
+    let metrics_config = MetricsConfig {
+        user_key: None,
+        custom_keys: smallvec::smallvec![],
+        rename: std::collections::HashMap::new(),
+        custom_metrics,
+    };
+
+    let bootstrap = BootstrapBuilder::new()
+        .admin("127.0.0.1", admin_port)
+        .metrics(metrics_config)
+        .listener(ListenerBuilder::new("http").port(0).filter_chain(FilterChainBuilder::new("main").hcm(
+            HcmBuilder::new().http1().wasm(custom_metric_filter_builder()).route_config(
+                RouteConfigBuilder::new("routes").virtual_host(
+                    VirtualHostBuilder::new("default").route(RouteBuilder::new().match_prefix("/").cluster("backend")),
+                ),
+            ),
+        )))
+        .cluster(ClusterBuilder::with_endpoint("backend", backend_addr));
+
+    let config_path = bootstrap.build_to_temp().expect("build config");
+    let _orion =
+        OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default()).await.expect("spawn orion");
+    let client = TestClient::new(_orion.listener_addr().unwrap());
+    let admin_client = TestClient::new(admin_addr);
+
+    let response = client.send(RequestBuilder::get("/test")).await.expect("request");
+    response.assert_status(StatusCode::OK);
+
+    // Give it a moment to flush metrics
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let metrics_resp = admin_client.get("/stats/prometheus").await.expect("Failed to get metrics");
+    metrics_resp.assert_status(StatusCode::OK);
+    let metrics = metrics_resp.body_str().unwrap();
+
+    assert!(metrics.contains("custom_custom_wasm_counter{attr_custom=\"metric\"} 1"));
+    assert!(metrics.contains("custom_custom_wasm_user_tier{tier=\"premium\"} 1"));
+    assert!(metrics.contains("custom_custom_wasm_datacenter{dc=\"eu-west-1\"} 1"));
+}
