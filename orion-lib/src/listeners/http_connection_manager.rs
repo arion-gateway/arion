@@ -565,23 +565,13 @@ impl TransactionContext {
 
             #[cfg(feature = "metrics")]
             if let Some(user_partition_key) = self.user_partition_key {
-                if status_code == 429 {
-                    with_metric!(
-                        user::THROTTLES,
-                        add,
-                        1,
-                        self.shard_id(),
-                        &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
-                    );
-                } else {
-                    with_metric!(
-                        user::INVOCATIONS,
-                        add,
-                        1,
-                        self.shard_id(),
-                        &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
-                    );
-                }
+                with_metric!(
+                    user::INVOCATIONS,
+                    add,
+                    1,
+                    self.shard_id(),
+                    &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
+                );
             }
 
             #[allow(clippy::match_same_arms)]
@@ -675,17 +665,33 @@ impl TransactionContext {
                             self.shard_id(),
                             &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
                         );
-                        if status_code == 404 {
-                            with_metric!(
-                                user::HTTP_404_RESPONSES,
-                                add,
-                                1,
-                                self.shard_id(),
-                                &[KeyValue::new(
-                                    metrics::USER_KEY.attribute_name().unwrap_or("user"),
-                                    user_partition_key
-                                )]
-                            );
+
+                        match status_code {
+                            404 => {
+                                with_metric!(
+                                    user::HTTP_404_RESPONSES,
+                                    add,
+                                    1,
+                                    self.shard_id(),
+                                    &[KeyValue::new(
+                                        metrics::USER_KEY.attribute_name().unwrap_or("user"),
+                                        user_partition_key
+                                    )]
+                                );
+                            },
+                            429 => {
+                                with_metric!(
+                                    user::THROTTLES,
+                                    add,
+                                    1,
+                                    self.shard_id(),
+                                    &[KeyValue::new(
+                                        metrics::USER_KEY.attribute_name().unwrap_or("user"),
+                                        user_partition_key
+                                    )]
+                                );
+                            },
+                            _ => (),
                         }
                     }
                 },
