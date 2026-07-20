@@ -36,12 +36,15 @@ impl Plugin for ConfigLoggerFilter {
         }
     }
 
-    fn on_request_headers(&mut self, _ctx: &RequestHandle<HttpHeaders>) -> FilterAction {
+    fn on_request_headers(&mut self, ctx: &RequestHandle<HttpHeaders>) -> FilterAction {
         // Retrieve the configuration string from our global static state.
         let current_config = GLOBAL_CONFIG.get().map(|s| s.as_str()).unwrap_or("<None>");
 
         info!("--- New Request Received ---");
         info!("The active global configuration is: {}", current_config);
+
+        // Inject into request header for testing verification
+        let _ = ctx.set_header("x-wasm-config".try_into().unwrap(), current_config.try_into().unwrap());
 
         FilterAction::Continue
     }

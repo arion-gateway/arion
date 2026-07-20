@@ -493,7 +493,33 @@ async fn test_wasm_metadata_filter_sni() {
     assert!(captured.header("x-connection-peer").is_some());
     assert!(captured.header("x-connection-local").is_some());
 }
-define_simple_wasm_test!(test_wasm_config_logger_filter, "config_logger_filter");
+fn config_logger_filter_builder() -> WasmBuilder {
+    WasmBuilder::new()
+        .name("config_logger_filter")
+        .root_id("config_logger_root_id")
+        .vm_id("config_logger_vm_id")
+        .configuration("my-custom-plugin-config-12345")
+        .code_filename(get_wasm_path("config_logger_filter"))
+}
+
+#[tokio::test]
+#[test_log::test]
+async fn test_wasm_config_logger_filter() {
+    let (mut backend, _orion, client, _cfg) = setup_wasm(config_logger_filter_builder()).await;
+    backend.set_default_response(PreConfiguredResponse::with_body("backend response")).await;
+
+    let response = client
+        .send(
+            RequestBuilder::get("/test")
+        )
+        .await
+        .expect("request");
+
+    response.assert_status(StatusCode::OK);
+
+    let captured = backend.await_request().await.expect("backend request");
+    assert_eq!(captured.header("x-wasm-config"), Some("my-custom-plugin-config-12345"));
+}
 #[tokio::test]
 #[test_log::test]
 async fn test_wasm_sleep_timeout_filter() {
