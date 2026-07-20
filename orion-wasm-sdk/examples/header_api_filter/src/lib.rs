@@ -58,6 +58,27 @@ impl Plugin for HeaderApiFilter {
             error!("Failed to set response header: {:?}", e);
         }
 
+        // 2. Add a response header (appends)
+        if let Err(e) = ctx.add_header(
+            http::header::HeaderName::from_static("x-response-add"),
+            http::header::HeaderValue::from_static("res-add-value"),
+        ) {
+            error!("Failed to add response header: {:?}", e);
+        }
+
+        // 3. Remove a response header
+        if let Err(e) = ctx.remove_header(&http::header::HeaderName::from_static("x-response-remove")) {
+            error!("Failed to remove response header: {:?}", e);
+        }
+
+        // 4. Replace an existing response header
+        if let Err(e) = ctx.replace_header(
+            http::header::HeaderName::from_static("x-response-set"),
+            http::header::HeaderValue::from_static("res-replaced-value"),
+        ) {
+            error!("Failed to replace response header: {:?}", e);
+        }
+
         FilterAction::Continue
     }
 }

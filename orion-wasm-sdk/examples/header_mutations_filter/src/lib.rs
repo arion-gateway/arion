@@ -43,10 +43,21 @@ impl Plugin for HeaderMutationsFilter {
     fn on_response_headers(&mut self, ctx: &ResponseHandle<HttpHeaders>) -> FilterAction {
         info!("--- Processing Response Headers with Batch API ---");
 
-        let mutations = vec![HeaderMutation::Set(
-            http::header::HeaderName::from_static("x-response-set"),
-            http::header::HeaderValue::from_static("res-set-value"),
-        )];
+        let mutations = vec![
+            HeaderMutation::Set(
+                http::header::HeaderName::from_static("x-response-set"),
+                http::header::HeaderValue::from_static("res-set-value"),
+            ),
+            HeaderMutation::Add(
+                http::header::HeaderName::from_static("x-response-add"),
+                http::header::HeaderValue::from_static("res-add-value"),
+            ),
+            HeaderMutation::Remove(http::header::HeaderName::from_static("x-response-remove")),
+            HeaderMutation::Replace(
+                http::header::HeaderName::from_static("x-response-set"),
+                http::header::HeaderValue::from_static("res-replaced-value"),
+            ),
+        ];
 
         if let Err(e) = ctx.apply_header_mutations(&mutations) {
             error!("Failed to apply response header mutations: {:?}", e);
