@@ -1,6 +1,6 @@
 //! Example using the Orion Wasm SDK to mutate HTTP headers.
 use orion_wasm_sdk::{init_tracing, orion_plugin, FilterAction, HttpHeaders, Plugin, RequestHandle};
-use tracing::{debug, error, info};
+use tracing::{error, info};
 
 #[derive(Default)]
 struct HeadersMapFilter;
@@ -20,7 +20,7 @@ impl Plugin for HeadersMapFilter {
 
         // 1. Remove user-agent
         headers.remove(http::header::HeaderName::from_static("user-agent"));
-        
+
         // 2. Insert (Set/Replace) x-custom-set
         headers.insert(
             http::header::HeaderName::from_static("x-custom-set"),
@@ -49,7 +49,7 @@ impl Plugin for HeadersMapFilter {
 
         // 1. Remove x-response-remove
         headers.remove(http::header::HeaderName::from_static("x-response-remove"));
-        
+
         // 2. Insert (Set/Replace) x-response-set
         headers.insert(
             http::header::HeaderName::from_static("x-response-set"),

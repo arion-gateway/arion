@@ -1,6 +1,6 @@
 //! Example using the Orion Wasm SDK to mutate HTTP bodies natively.
 use orion_wasm_sdk::{init_tracing, orion_plugin, FilterAction, HttpBody, Plugin, RequestHandle, ResponseHandle};
-use tracing::{error, info};
+use tracing::{info};
 
 #[derive(Default)]
 struct BodyMutationFilter {

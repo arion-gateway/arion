@@ -6,7 +6,7 @@
 //! Orion host imports.
 
 use orion_wasm_sdk::{init_tracing, orion_plugin, FilterAction, HttpBody, HttpHeaders, Plugin, RequestHandle};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 
 #[derive(Default)]
 struct DummyFilter;

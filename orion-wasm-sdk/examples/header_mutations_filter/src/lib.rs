@@ -2,7 +2,7 @@
 use orion_wasm_sdk::{
     init_tracing, orion_plugin, FilterAction, HeaderMutation, HttpHeaders, Plugin, RequestHandle, ResponseHandle,
 };
-use tracing::{debug, error, info};
+use tracing::{error, info};
 
 #[derive(Default)]
 struct HeaderMutationsFilter;

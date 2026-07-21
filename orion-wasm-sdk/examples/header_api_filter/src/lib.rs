@@ -1,6 +1,6 @@
 //! Example using the Orion Wasm SDK to mutate HTTP headers natively.
 use orion_wasm_sdk::{init_tracing, orion_plugin, FilterAction, HttpHeaders, Plugin, RequestHandle, ResponseHandle};
-use tracing::{debug, error, info};
+use tracing::{error, info};
 
 #[derive(Default)]
 struct HeaderApiFilter;
