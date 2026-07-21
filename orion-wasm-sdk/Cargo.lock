@@ -11,6 +11,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "benchmark_filter"
+version = "0.1.0"
+dependencies = [
+ "orion_wasm_sdk",
+]
+
+[[package]]
 name = "bincode-next"
 version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
