@@ -95,6 +95,8 @@ use orion_configuration::config::network_filters::http_connection_manager::{
     CodecType, ConfigSource, ConfigSourceSpecifier, HttpConnectionManager as HttpConnectionManagerConfig, RdsSpecifier,
     RouteSpecifier, UpgradeType,
 };
+#[cfg(feature = "metrics")]
+use orion_metrics::metrics::clusters;
 
 use std::fmt::Write;
 
@@ -419,6 +421,8 @@ pub struct TransactionState {
     bytes: u64, // either the request or response body size, depending which one has completed first
     flags: ResponseFlags,
     event: Option<EventKind>,
+    pub upstream_start_instant: Option<std::time::Instant>,
+    pub upstream_cluster_name: Option<&'static str>,
     #[cfg(feature = "access-log")]
     loggers: Vec<LogFormatter>,
 }
@@ -430,6 +434,8 @@ impl TransactionState {
             bytes: 0,
             flags: ResponseFlags::default(),
             event: None,
+            upstream_start_instant: None,
+            upstream_cluster_name: None,
             #[cfg(feature = "access-log")]
             loggers: access_log.iter().map(|al| al.get_logger().clone()).collect::<Vec<_>>(),
         }
@@ -565,23 +571,13 @@ impl TransactionContext {
 
             #[cfg(feature = "metrics")]
             if let Some(user_partition_key) = self.user_partition_key {
-                if status_code == 429 {
-                    with_metric!(
-                        user::THROTTLES,
-                        add,
-                        1,
-                        self.shard_id(),
-                        &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
-                    );
-                } else {
-                    with_metric!(
-                        user::INVOCATIONS,
-                        add,
-                        1,
-                        self.shard_id(),
-                        &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
-                    );
-                }
+                with_metric!(
+                    user::INVOCATIONS,
+                    add,
+                    1,
+                    self.shard_id(),
+                    &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
+                );
             }
 
             #[allow(clippy::match_same_arms)]
@@ -675,17 +671,33 @@ impl TransactionContext {
                             self.shard_id(),
                             &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
                         );
-                        if status_code == 404 {
-                            with_metric!(
-                                user::HTTP_404_RESPONSES,
-                                add,
-                                1,
-                                self.shard_id(),
-                                &[KeyValue::new(
-                                    metrics::USER_KEY.attribute_name().unwrap_or("user"),
-                                    user_partition_key
-                                )]
-                            );
+
+                        match status_code {
+                            404 => {
+                                with_metric!(
+                                    user::HTTP_404_RESPONSES,
+                                    add,
+                                    1,
+                                    self.shard_id(),
+                                    &[KeyValue::new(
+                                        metrics::USER_KEY.attribute_name().unwrap_or("user"),
+                                        user_partition_key
+                                    )]
+                                );
+                            },
+                            429 => {
+                                with_metric!(
+                                    user::THROTTLES,
+                                    add,
+                                    1,
+                                    self.shard_id(),
+                                    &[KeyValue::new(
+                                        metrics::USER_KEY.attribute_name().unwrap_or("user"),
+                                        user_partition_key
+                                    )]
+                                );
+                            },
+                            _ => (),
                         }
                     }
                 },
@@ -883,6 +895,35 @@ impl Service<PipelineRequest<Request<OrionRequestBody>>> for HttpPipelineSvc {
                                 let duration = first_byte_instant.saturating_duration_since(trans_ctx.start_instant);
                                 #[allow(unused_variables)]
                                 let tx_duration = Instant::now().saturating_duration_since(first_byte_instant);
+
+                                #[cfg(feature = "metrics")]
+                                {
+                                    if let (Some(start_time), Some(cluster)) =
+                                        (trans_state.upstream_start_instant, trans_state.upstream_cluster_name)
+                                    {
+                                        let elapsed_ms = start_time.elapsed().as_millis() as u64;
+                                        let shard_id = trans_ctx.shard_id();
+                                        crate::with_histogram!(
+                                            clusters::UPSTREAM_RQ_TIME,
+                                            record,
+                                            elapsed_ms,
+                                            shard_id,
+                                            &[opentelemetry::KeyValue::new("cluster", cluster)]
+                                        );
+                                        if let Some(user_key) = trans_ctx.user_partition_key {
+                                            crate::with_histogram!(
+                                                user::UPSTREAM_RQ_TIME,
+                                                record,
+                                                elapsed_ms,
+                                                shard_id,
+                                                &[opentelemetry::KeyValue::new(
+                                                    crate::metrics::USER_KEY.attribute_name().unwrap_or("user"),
+                                                    user_key
+                                                )]
+                                            );
+                                        }
+                                    }
+                                }
 
                                 #[cfg(feature = "access-log")]
                                 with_access_log!(

@@ -29,6 +29,8 @@ pub static HTTP_404_RESPONSES: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock
 pub static HTTP_502_RESPONSES: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 pub static HTTP_504_RESPONSES: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 
+pub static UPSTREAM_RQ_TIME: OnceLock<Metric<ShardedHistogram<ThreadId>>> = OnceLock::new();
+
 pub(crate) fn init_metrics(rename: &std::collections::HashMap<String, String>) {
     init_observable_counter!(
         INVOCATIONS,
@@ -94,6 +96,15 @@ pub(crate) fn init_metrics(rename: &std::collections::HashMap<String, String>) {
         "Latency of API calls in milliseconds",
         vec![5, 10, 50, 100, 500, 1000, 5000, 10000, u64::MAX]
     );
+
+    init_observable_histogram!(
+        UPSTREAM_RQ_TIME,
+        crate::metrics::PREFIX_USER,
+        crate::metrics::resolve_metric_name(rename, "upstream_rq_time"),
+        "Upstream request time in milliseconds",
+        vec![5, 10, 50, 100, 500, 1000, 5000, 10000, u64::MAX]
+    );
+
     init_observable_counter!(
         HTTP_1XX_RESPONSES,
         crate::metrics::PREFIX_USER,
@@ -169,6 +180,7 @@ pub fn reset_metrics() {
         &INBOUND_STREAMING_BYTES_PROCESSED,
         &OUTBOUND_STREAMING_BYTES_PROCESSED,
         &LATENCY,
+        &UPSTREAM_RQ_TIME,
         &CONNECTIONS,
         &CONNECTIONS_ACTIVE,
         &HTTP_1XX_RESPONSES,

@@ -215,6 +215,7 @@ You can combine both configurations to export metrics to OpenTelemetry and scrap
 | `upstream_cx_none_healthy` | Counter | | Total times connection not established due to no healthy hosts |  |
 | `upstream_rq_total` | Counter | ✅ | Total requests | `cluster` |
 | `upstream_rq_active` | Gauge |  ✅ | Total active requests | `cluster` |
+| `upstream_rq_time` | Histogram | ✅ | Upstream request time in milliseconds | `cluster` |
 | `upstream_rq_pending_total` | Counter | | Total requests pending a connection pool connection |  |
 | `upstream_rq_pending_overflow` | Counter | | Total requests that overflowed connection pool or requests (mainly for HTTP/2 and above) circuit breaking and were failed |  |
 | `upstream_rq_pending_failure_eject` | Counter | | Total requests that were failed due to a connection pool connection failure or remote connection termination |  |
@@ -337,6 +338,7 @@ metrics:
 | `user_errors` | Counter | ✅ | Total number of API calls that resulted in a user error | `<attribute_name>` |
 | `total_errors` | Counter | ✅ | Total number of API calls that resulted in any error | `<attribute_name>` |
 | `latency` | Histogram | ✅ | Latency of API calls in milliseconds | `<attribute_name>` |
+| `upstream_rq_time` | Histogram | ✅ | Upstream request time in milliseconds | `<attribute_name>` |
 | `bytes_tx` | Counter | ✅ | Total number of bytes transmitted in API calls (tcp,http,websockets) | `<attribute_name>`,listener |
 | `bytes_rx` | Counter | ✅ | Total number of bytes received in API calls (tcp,http,websockets) | `<attribute_name>`,listener |
 | `inbound_streaming_bytes_processed` | Counter | ✅ | Total number of bytes processed in inbound streaming API calls (websocket only) | `<attribute_name>` |

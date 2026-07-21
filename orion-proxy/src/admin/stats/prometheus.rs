@@ -249,6 +249,7 @@ fn build_prometheus_output() -> io::Result<String> {
     process_metric_as_counter(&mut out, &clusters::UPSTREAM_CX_OVERFLOW)?;
     process_metric_as_counter(&mut out, &clusters::UPSTREAM_RQ_OVERFLOW)?;
     process_metric_as_counter(&mut out, &clusters::UPSTREAM_RQ_RETRY_OVERFLOW)?;
+    process_histogram(&mut out, &clusters::UPSTREAM_RQ_TIME)?;
 
     // http metrics
     process_metric_as_counter(&mut out, &http::DOWNSTREAM_CX_TOTAL)?;
@@ -311,6 +312,7 @@ fn build_prometheus_output() -> io::Result<String> {
     process_metric_as_counter(&mut out, &user::HTTP_502_RESPONSES)?;
     process_metric_as_counter(&mut out, &user::HTTP_504_RESPONSES)?;
     process_histogram(&mut out, &user::LATENCY)?;
+    process_histogram(&mut out, &user::UPSTREAM_RQ_TIME)?;
 
     // filters
     process_metric_as_counter(&mut out, &filters::CONNECTION_RATE_LIMIT)?;
