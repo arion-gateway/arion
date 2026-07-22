@@ -17,6 +17,7 @@ use wasmtime::{Engine, Instance, Linker, Module, Store};
 
 mod hostcalls;
 mod types;
+mod shared;
 
 #[derive(Error, Debug)]
 pub enum WasmError {
@@ -78,6 +79,7 @@ pub struct WasmFilterInner {
     has_on_plugin_destroy: bool,
     has_on_transaction_start: bool,
     has_on_transaction_complete: bool,
+    shared_memory: Arc<shared::SharedMemory>,
 }
 
 impl std::fmt::Debug for WasmFilterInner {
@@ -158,6 +160,7 @@ impl WasmFilter {
                 has_on_plugin_destroy,
                 has_on_transaction_start,
                 has_on_transaction_complete,
+                shared_memory: Arc::new(shared::SharedMemory::new(1024)),
             }),
             state: Mutex::new(None),
         })
@@ -188,6 +191,7 @@ impl WasmFilter {
                             response_trailers: None,
                             access_log_operators: Vec::new(),
                             io_deadline: None,
+                            shared_memory: self.inner.shared_memory.clone(),
                         },
                     );
                     // Instantiate the module using the pre-resolved imports

@@ -22,6 +22,7 @@ pub struct WasmState {
     pub response_trailers: Option<http::HeaderMap>,
     pub access_log_operators: Vec<(SmolStr, SmolStr)>,
     pub io_deadline: Option<std::time::Instant>,
+    pub shared_memory: std::sync::Arc<super::shared::SharedMemory>,
 }
 
 fn orion_get_header(
@@ -1134,6 +1135,263 @@ fn orion_get_downstream_metadata(
     })
 }
 
+fn orion_shared_resolve(mut caller: Caller<'_, WasmState>, name_ptr: u32, name_len: u32, var_type: u32) -> u32 {
+    let memory = match caller.get_export("memory").and_then(|m| m.into_memory()) {
+        Some(mem) => mem,
+        None => return u32::MAX,
+    };
+    let data = memory.data(&caller);
+    let start = name_ptr as usize;
+    let end = start + name_len as usize;
+    if end > data.len() { return u32::MAX; }
+    let name = match std::str::from_utf8(&data[start..end]) {
+        Ok(s) => s.to_string(),
+        Err(_) => return u32::MAX,
+    };
+
+    let shared = caller.data().shared_memory.clone();
+    let map = &shared.name_to_id;
+    let pin = map.pin();
+
+    if let Some(&var_id) = pin.get(&name) {
+        return match (var_id, var_type) {
+            (super::shared::VarId::U64(id), 0) => id,
+            (super::shared::VarId::I64(id), 1) => id,
+            (super::shared::VarId::Blob(id), 2) => id,
+            _ => u32::MAX,
+        };
+    }
+
+    let (id, new_var_id) = match var_type {
+        0 => {
+            let id = shared.next_u64.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if id as usize >= shared.u64_vars.len() { return u32::MAX; }
+            (id, super::shared::VarId::U64(id))
+        },
+        1 => {
+            let id = shared.next_i64.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if id as usize >= shared.i64_vars.len() { return u32::MAX; }
+            (id, super::shared::VarId::I64(id))
+        },
+        2 => {
+            let id = shared.next_blob.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if id as usize >= shared.blob_vars.len() { return u32::MAX; }
+            (id, super::shared::VarId::Blob(id))
+        },
+        _ => return u32::MAX,
+    };
+
+    pin.insert(name, new_var_id);
+    id
+}
+
+#[inline]
+fn convert_ordering(order: u32) -> std::sync::atomic::Ordering {
+    match order {
+        0 => std::sync::atomic::Ordering::Relaxed,
+        1 => std::sync::atomic::Ordering::Release,
+        2 => std::sync::atomic::Ordering::Acquire,
+        3 => std::sync::atomic::Ordering::AcqRel,
+        _ => std::sync::atomic::Ordering::SeqCst,
+    }
+}
+
+macro_rules! get_shared_atomic {
+    ($caller:expr, $field:ident, $id:expr) => {{
+        let res = $caller.data().shared_memory.$field.get($id as usize);
+        if res.is_none() {
+            tracing::error!("Wasm shared variable index out of bounds: id {} on {}", $id, stringify!($field));
+        }
+        res
+    }}
+}
+
+macro_rules! get_shared_blob {
+    ($shared:expr, $id:expr) => {{
+        let res = $shared.blob_vars.get($id as usize);
+        if res.is_none() {
+            tracing::error!("Wasm shared variable index out of bounds: id {} on blob_vars", $id);
+        }
+        res
+    }}
+}
+
+
+// U64 Hostcalls
+fn ext_shared_u64_load(caller: Caller<'_, WasmState>, id: u32, order: u32) -> u64 {
+    get_shared_atomic!(caller, u64_vars, id).map(|v| v.load(convert_ordering(order))).unwrap_or(0)
+}
+fn ext_shared_u64_store(caller: Caller<'_, WasmState>, id: u32, val: u64, order: u32) {
+    if let Some(v) = get_shared_atomic!(caller, u64_vars, id) {
+        v.store(val, convert_ordering(order));
+    }
+}
+fn ext_shared_u64_swap(caller: Caller<'_, WasmState>, id: u32, val: u64, order: u32) -> u64 {
+    get_shared_atomic!(caller, u64_vars, id).map(|v| v.swap(val, convert_ordering(order))).unwrap_or(0)
+}
+fn ext_shared_u64_compare_exchange(caller: Caller<'_, WasmState>, id: u32, current: u64, new: u64, succ: u32, fail: u32) -> u64 {
+    get_shared_atomic!(caller, u64_vars, id).map(|v| {
+        match v.compare_exchange(current, new, convert_ordering(succ), convert_ordering(fail)) {
+            Ok(prev) => prev,
+            Err(prev) => prev,
+        }
+    }).unwrap_or(0)
+}
+fn ext_shared_u64_fetch_add(caller: Caller<'_, WasmState>, id: u32, val: u64, order: u32) -> u64 {
+    get_shared_atomic!(caller, u64_vars, id).map(|v| v.fetch_add(val, convert_ordering(order))).unwrap_or(0)
+}
+fn ext_shared_u64_fetch_sub(caller: Caller<'_, WasmState>, id: u32, val: u64, order: u32) -> u64 {
+    get_shared_atomic!(caller, u64_vars, id).map(|v| v.fetch_sub(val, convert_ordering(order))).unwrap_or(0)
+}
+fn ext_shared_u64_fetch_and(caller: Caller<'_, WasmState>, id: u32, val: u64, order: u32) -> u64 {
+    get_shared_atomic!(caller, u64_vars, id).map(|v| v.fetch_and(val, convert_ordering(order))).unwrap_or(0)
+}
+fn ext_shared_u64_fetch_nand(caller: Caller<'_, WasmState>, id: u32, val: u64, order: u32) -> u64 {
+    get_shared_atomic!(caller, u64_vars, id).map(|v| v.fetch_nand(val, convert_ordering(order))).unwrap_or(0)
+}
+fn ext_shared_u64_fetch_or(caller: Caller<'_, WasmState>, id: u32, val: u64, order: u32) -> u64 {
+    get_shared_atomic!(caller, u64_vars, id).map(|v| v.fetch_or(val, convert_ordering(order))).unwrap_or(0)
+}
+fn ext_shared_u64_fetch_xor(caller: Caller<'_, WasmState>, id: u32, val: u64, order: u32) -> u64 {
+    get_shared_atomic!(caller, u64_vars, id).map(|v| v.fetch_xor(val, convert_ordering(order))).unwrap_or(0)
+}
+fn ext_shared_u64_fetch_max(caller: Caller<'_, WasmState>, id: u32, val: u64, order: u32) -> u64 {
+    get_shared_atomic!(caller, u64_vars, id).map(|v| v.fetch_max(val, convert_ordering(order))).unwrap_or(0)
+}
+fn ext_shared_u64_fetch_min(caller: Caller<'_, WasmState>, id: u32, val: u64, order: u32) -> u64 {
+    get_shared_atomic!(caller, u64_vars, id).map(|v| v.fetch_min(val, convert_ordering(order))).unwrap_or(0)
+}
+
+// I64 Hostcalls
+fn ext_shared_i64_load(caller: Caller<'_, WasmState>, id: u32, order: u32) -> i64 {
+    get_shared_atomic!(caller, i64_vars, id).map(|v| v.load(convert_ordering(order))).unwrap_or(0)
+}
+fn ext_shared_i64_store(caller: Caller<'_, WasmState>, id: u32, val: i64, order: u32) {
+    if let Some(v) = get_shared_atomic!(caller, i64_vars, id) {
+        v.store(val, convert_ordering(order));
+    }
+}
+fn ext_shared_i64_swap(caller: Caller<'_, WasmState>, id: u32, val: i64, order: u32) -> i64 {
+    get_shared_atomic!(caller, i64_vars, id).map(|v| v.swap(val, convert_ordering(order))).unwrap_or(0)
+}
+fn ext_shared_i64_compare_exchange(caller: Caller<'_, WasmState>, id: u32, current: i64, new: i64, succ: u32, fail: u32) -> i64 {
+    get_shared_atomic!(caller, i64_vars, id).map(|v| {
+        match v.compare_exchange(current, new, convert_ordering(succ), convert_ordering(fail)) {
+            Ok(prev) => prev,
+            Err(prev) => prev,
+        }
+    }).unwrap_or(0)
+}
+fn ext_shared_i64_fetch_add(caller: Caller<'_, WasmState>, id: u32, val: i64, order: u32) -> i64 {
+    get_shared_atomic!(caller, i64_vars, id).map(|v| v.fetch_add(val, convert_ordering(order))).unwrap_or(0)
+}
+fn ext_shared_i64_fetch_sub(caller: Caller<'_, WasmState>, id: u32, val: i64, order: u32) -> i64 {
+    get_shared_atomic!(caller, i64_vars, id).map(|v| v.fetch_sub(val, convert_ordering(order))).unwrap_or(0)
+}
+fn ext_shared_i64_fetch_and(caller: Caller<'_, WasmState>, id: u32, val: i64, order: u32) -> i64 {
+    get_shared_atomic!(caller, i64_vars, id).map(|v| v.fetch_and(val, convert_ordering(order))).unwrap_or(0)
+}
+fn ext_shared_i64_fetch_nand(caller: Caller<'_, WasmState>, id: u32, val: i64, order: u32) -> i64 {
+    get_shared_atomic!(caller, i64_vars, id).map(|v| v.fetch_nand(val, convert_ordering(order))).unwrap_or(0)
+}
+fn ext_shared_i64_fetch_or(caller: Caller<'_, WasmState>, id: u32, val: i64, order: u32) -> i64 {
+    get_shared_atomic!(caller, i64_vars, id).map(|v| v.fetch_or(val, convert_ordering(order))).unwrap_or(0)
+}
+fn ext_shared_i64_fetch_xor(caller: Caller<'_, WasmState>, id: u32, val: i64, order: u32) -> i64 {
+    get_shared_atomic!(caller, i64_vars, id).map(|v| v.fetch_xor(val, convert_ordering(order))).unwrap_or(0)
+}
+fn ext_shared_i64_fetch_max(caller: Caller<'_, WasmState>, id: u32, val: i64, order: u32) -> i64 {
+    get_shared_atomic!(caller, i64_vars, id).map(|v| v.fetch_max(val, convert_ordering(order))).unwrap_or(0)
+}
+fn ext_shared_i64_fetch_min(caller: Caller<'_, WasmState>, id: u32, val: i64, order: u32) -> i64 {
+    get_shared_atomic!(caller, i64_vars, id).map(|v| v.fetch_min(val, convert_ordering(order))).unwrap_or(0)
+}
+
+// Blob Hostcalls
+fn ext_shared_blob_read(mut caller: Caller<'_, WasmState>, id: u32, buf_ptr: u32, buf_len: u32, out_version_ptr: u32) -> u32 {
+    let shared = caller.data().shared_memory.clone();
+    let blob_lock = match get_shared_blob!(shared, id) {
+        Some(b) => b,
+        None => return u32::MAX,
+    };
+    let blob = blob_lock.read().unwrap();
+
+    let memory = match caller.get_export("memory").and_then(|m| m.into_memory()) {
+        Some(mem) => mem,
+        None => return u32::MAX,
+    };
+    let data = memory.data_mut(&mut caller);
+
+    let ver_start = out_version_ptr as usize;
+    if ver_start + 8 <= data.len() {
+        data[ver_start..ver_start+8].copy_from_slice(&blob.version.to_le_bytes());
+    }
+
+    let actual_len = blob.data.len() as u32;
+    if actual_len <= buf_len {
+        let start = buf_ptr as usize;
+        if start + actual_len as usize <= data.len() {
+            data[start..start + actual_len as usize].copy_from_slice(&blob.data);
+        }
+    }
+    actual_len
+}
+
+fn ext_shared_blob_write(mut caller: Caller<'_, WasmState>, id: u32, buf_ptr: u32, buf_len: u32) -> u64 {
+    let shared = caller.data().shared_memory.clone();
+    let blob_lock = match get_shared_blob!(shared, id) {
+        Some(b) => b,
+        None => return 0,
+    };
+    let mut blob = blob_lock.write().unwrap();
+
+    let memory = match caller.get_export("memory").and_then(|m| m.into_memory()) {
+        Some(mem) => mem,
+        None => return 0,
+    };
+    let data = memory.data(&caller);
+    let start = buf_ptr as usize;
+    if start + buf_len as usize > data.len() { return 0; }
+
+    blob.data.clear();
+    blob.data.extend_from_slice(&data[start..start + buf_len as usize]);
+    blob.version += 1;
+    blob.version
+}
+
+fn ext_shared_blob_cas(mut caller: Caller<'_, WasmState>, id: u32, buf_ptr: u32, buf_len: u32, expected_version: u64, out_success_ptr: u32) -> u64 {
+    let shared = caller.data().shared_memory.clone();
+    let blob_lock = match get_shared_blob!(shared, id) {
+        Some(b) => b,
+        None => return 0,
+    };
+    let mut blob = blob_lock.write().unwrap();
+
+    let memory = match caller.get_export("memory").and_then(|m| m.into_memory()) {
+        Some(mem) => mem,
+        None => return 0,
+    };
+
+    let success = blob.version == expected_version;
+    if success {
+        let data = memory.data(&caller);
+        let start = buf_ptr as usize;
+        if start + buf_len as usize <= data.len() {
+            blob.data.clear();
+            blob.data.extend_from_slice(&data[start..start + buf_len as usize]);
+            blob.version += 1;
+        }
+    }
+
+    let data_mut = memory.data_mut(&mut caller);
+    let succ_start = out_success_ptr as usize;
+    if succ_start + 4 <= data_mut.len() {
+        data_mut[succ_start..succ_start+4].copy_from_slice(&(success as u32).to_le_bytes());
+    }
+
+    blob.version
+}
+
 pub fn register_hostcalls(linker: &mut Linker<WasmState>) -> Result<(), wasmtime::Error> {
     linker.func_wrap("env", "orion_get_plugin_config", orion_get_plugin_config)?;
     linker.func_wrap("env", "orion_get_header", orion_get_header)?;
@@ -1158,5 +1416,39 @@ pub fn register_hostcalls(linker: &mut Linker<WasmState>) -> Result<(), wasmtime
     linker.func_wrap("env", "orion_clear_io_timeout", orion_clear_io_timeout)?;
     linker.func_wrap_async("env", "orion_dispatch_http_call", orion_dispatch_http_call)?;
     linker.func_wrap_async("env", "orion_sleep", orion_sleep)?;
+
+    // Shared Memory Hostcalls
+    linker.func_wrap("env", "ext_shared_resolve", orion_shared_resolve)?;
+
+    linker.func_wrap("env", "ext_shared_u64_load", ext_shared_u64_load)?;
+    linker.func_wrap("env", "ext_shared_u64_store", ext_shared_u64_store)?;
+    linker.func_wrap("env", "ext_shared_u64_swap", ext_shared_u64_swap)?;
+    linker.func_wrap("env", "ext_shared_u64_compare_exchange", ext_shared_u64_compare_exchange)?;
+    linker.func_wrap("env", "ext_shared_u64_fetch_add", ext_shared_u64_fetch_add)?;
+    linker.func_wrap("env", "ext_shared_u64_fetch_sub", ext_shared_u64_fetch_sub)?;
+    linker.func_wrap("env", "ext_shared_u64_fetch_and", ext_shared_u64_fetch_and)?;
+    linker.func_wrap("env", "ext_shared_u64_fetch_nand", ext_shared_u64_fetch_nand)?;
+    linker.func_wrap("env", "ext_shared_u64_fetch_or", ext_shared_u64_fetch_or)?;
+    linker.func_wrap("env", "ext_shared_u64_fetch_xor", ext_shared_u64_fetch_xor)?;
+    linker.func_wrap("env", "ext_shared_u64_fetch_max", ext_shared_u64_fetch_max)?;
+    linker.func_wrap("env", "ext_shared_u64_fetch_min", ext_shared_u64_fetch_min)?;
+
+    linker.func_wrap("env", "ext_shared_i64_load", ext_shared_i64_load)?;
+    linker.func_wrap("env", "ext_shared_i64_store", ext_shared_i64_store)?;
+    linker.func_wrap("env", "ext_shared_i64_swap", ext_shared_i64_swap)?;
+    linker.func_wrap("env", "ext_shared_i64_compare_exchange", ext_shared_i64_compare_exchange)?;
+    linker.func_wrap("env", "ext_shared_i64_fetch_add", ext_shared_i64_fetch_add)?;
+    linker.func_wrap("env", "ext_shared_i64_fetch_sub", ext_shared_i64_fetch_sub)?;
+    linker.func_wrap("env", "ext_shared_i64_fetch_and", ext_shared_i64_fetch_and)?;
+    linker.func_wrap("env", "ext_shared_i64_fetch_nand", ext_shared_i64_fetch_nand)?;
+    linker.func_wrap("env", "ext_shared_i64_fetch_or", ext_shared_i64_fetch_or)?;
+    linker.func_wrap("env", "ext_shared_i64_fetch_xor", ext_shared_i64_fetch_xor)?;
+    linker.func_wrap("env", "ext_shared_i64_fetch_max", ext_shared_i64_fetch_max)?;
+    linker.func_wrap("env", "ext_shared_i64_fetch_min", ext_shared_i64_fetch_min)?;
+
+    linker.func_wrap("env", "ext_shared_blob_read", ext_shared_blob_read)?;
+    linker.func_wrap("env", "ext_shared_blob_write", ext_shared_blob_write)?;
+    linker.func_wrap("env", "ext_shared_blob_cas", ext_shared_blob_cas)?;
+
     Ok(())
 }

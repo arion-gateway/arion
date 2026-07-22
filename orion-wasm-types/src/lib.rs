@@ -323,3 +323,77 @@ pub struct DownstreamMetadata {
     pub sni: Option<String>,
     pub listener_name: String,
 }
+
+// ============================================================================
+// Shared Ordering for Atomics
+// ============================================================================
+
+#[repr(u32)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum SharedOrdering {
+    Relaxed = 0,
+    Release = 1,
+    Acquire = 2,
+    AcqRel = 3,
+    SeqCst = 4,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnknownSharedOrdering(pub u32);
+
+impl core::fmt::Display for UnknownSharedOrdering {
+    #[inline]
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "unknown SharedOrdering value: {}", self.0)
+    }
+}
+
+impl TryFrom<u32> for SharedOrdering {
+    type Error = UnknownSharedOrdering;
+
+    #[inline]
+    fn try_from(v: u32) -> Result<Self, Self::Error> {
+        match v {
+            0 => Ok(Self::Relaxed),
+            1 => Ok(Self::Release),
+            2 => Ok(Self::Acquire),
+            3 => Ok(Self::AcqRel),
+            4 => Ok(Self::SeqCst),
+            _ => Err(UnknownSharedOrdering(v)),
+        }
+    }
+}
+
+impl From<SharedOrdering> for u32 {
+    #[inline]
+    fn from(v: SharedOrdering) -> Self {
+        v as u32
+    }
+}
+
+impl From<core::sync::atomic::Ordering> for SharedOrdering {
+    #[inline]
+    fn from(order: core::sync::atomic::Ordering) -> Self {
+        match order {
+            core::sync::atomic::Ordering::Relaxed => Self::Relaxed,
+            core::sync::atomic::Ordering::Release => Self::Release,
+            core::sync::atomic::Ordering::Acquire => Self::Acquire,
+            core::sync::atomic::Ordering::AcqRel => Self::AcqRel,
+            core::sync::atomic::Ordering::SeqCst => Self::SeqCst,
+            _ => Self::SeqCst, // Fallback for any other exotic orderings
+        }
+    }
+}
+
+impl From<SharedOrdering> for core::sync::atomic::Ordering {
+    #[inline]
+    fn from(order: SharedOrdering) -> Self {
+        match order {
+            SharedOrdering::Relaxed => Self::Relaxed,
+            SharedOrdering::Release => Self::Release,
+            SharedOrdering::Acquire => Self::Acquire,
+            SharedOrdering::AcqRel => Self::AcqRel,
+            SharedOrdering::SeqCst => Self::SeqCst,
+        }
+    }
+}

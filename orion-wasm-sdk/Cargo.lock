@@ -302,6 +302,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "shared_atomic"
+version = "0.1.0"
+dependencies = [
+ "http",
+ "orion_wasm_sdk",
+ "tracing",
+]
+
+[[package]]
+name = "shared_blob"
+version = "0.1.0"
+dependencies = [
+ "http",
+ "orion_wasm_sdk",
+ "tracing",
+]
+
+[[package]]
 name = "sleep_timeout_filter"
 version = "0.1.0"
 dependencies = [

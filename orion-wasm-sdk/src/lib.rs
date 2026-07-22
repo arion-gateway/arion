@@ -36,6 +36,7 @@ pub mod request;
 pub mod response;
 pub mod tracing;
 pub mod typestate;
+pub mod shared;
 
 // ============================================================================
 // Prelude
@@ -55,6 +56,7 @@ pub use request::*;
 pub use response::*;
 pub use tracing::{init_tracing, OrionWasmSubscriber};
 pub use typestate::*;
+pub use shared::*;
 
 // ============================================================================
 // Allocator
