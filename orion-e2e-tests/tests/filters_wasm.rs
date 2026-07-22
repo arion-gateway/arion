@@ -723,3 +723,61 @@ async fn test_wasm_custom_metric_filter() {
     assert!(metrics.contains("custom_custom_wasm_user_tier{tier=\"premium\"} 1"));
     assert!(metrics.contains("custom_custom_wasm_datacenter{dc=\"eu-west-1\"} 1"));
 }
+
+fn shared_atomic_filter_builder() -> WasmBuilder {
+    WasmBuilder::new()
+        .name("shared_atomic")
+        .root_id("shared_atomic_root_id")
+        .vm_id("shared_atomic_vm_id")
+        .code_filename(get_wasm_path("shared_atomic"))
+}
+
+#[tokio::test]
+#[test_log::test]
+async fn test_wasm_shared_atomic_filter() {
+    let (mut backend, _orion, client, _cfg) = setup_wasm(shared_atomic_filter_builder()).await;
+
+    // First request
+    let response1 = client.send(RequestBuilder::get("/test1")).await.expect("request 1");
+    response1.assert_status(StatusCode::OK);
+    let captured1 = backend.await_request().await.expect("backend request 1");
+    assert_eq!(captured1.header("x-request-counter"), Some("1"));
+
+    // Second request
+    let response2 = client.send(RequestBuilder::get("/test2")).await.expect("request 2");
+    response2.assert_status(StatusCode::OK);
+    let captured2 = backend.await_request().await.expect("backend request 2");
+    assert_eq!(captured2.header("x-request-counter"), Some("2"));
+}
+
+fn shared_blob_filter_builder() -> WasmBuilder {
+    WasmBuilder::new()
+        .name("shared_blob")
+        .root_id("shared_blob_root_id")
+        .vm_id("shared_blob_vm_id")
+        .code_filename(get_wasm_path("shared_blob"))
+}
+
+#[tokio::test]
+#[test_log::test]
+async fn test_wasm_shared_blob_filter() {
+    let (mut backend, _orion, client, _cfg) = setup_wasm(shared_blob_filter_builder()).await;
+
+    // Send first request with Bob
+    let response1 = client.send(RequestBuilder::get("/test1").header("x-client-id", "Bob")).await.expect("request 1");
+    response1.assert_status(StatusCode::OK);
+    let captured1 = backend.await_request().await.expect("backend request 1");
+    assert_eq!(captured1.header("x-seen-clients"), Some("Bob"));
+
+    // Send second request with Alice
+    let response2 = client.send(RequestBuilder::get("/test2").header("x-client-id", "Alice")).await.expect("request 2");
+    response2.assert_status(StatusCode::OK);
+    let captured2 = backend.await_request().await.expect("backend request 2");
+    assert_eq!(captured2.header("x-seen-clients"), Some("Bob, Alice"));
+
+    // Send third request with Bob again
+    let response3 = client.send(RequestBuilder::get("/test3").header("x-client-id", "Bob")).await.expect("request 3");
+    response3.assert_status(StatusCode::OK);
+    let captured3 = backend.await_request().await.expect("backend request 3");
+    assert_eq!(captured3.header("x-seen-clients"), Some("Bob, Alice"));
+}
