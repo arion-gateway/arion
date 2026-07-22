@@ -1,0 +1,12 @@
+[package]
+name = "shared_blob"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+http = "1.4.2"
+orion_wasm_sdk = { path = "../../" }
+tracing = "0.1"
