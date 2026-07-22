@@ -236,6 +236,7 @@ Shared memory variables are identified by string names. When a plugin calls `try
 ```rust
 use orion_wasm_sdk::prelude::*;
 use orion_wasm_sdk::shared::AtomicU64;
+use orion_wasm_sdk::HeaderMutation;
 use std::sync::atomic::Ordering;
 use tracing::{info, error};
 
@@ -288,6 +289,7 @@ impl Plugin for RequestCounterFilter {
 ```rust
 use orion_wasm_sdk::prelude::*;
 use orion_wasm_sdk::shared::SharedBlob;
+use orion_wasm_sdk::HeaderMutation;
 use tracing::{info, error};
 
 #[derive(Default)]
@@ -423,6 +425,8 @@ impl Plugin for MaxInFlightRequestsFilter {
             if let Some(counter) = &self.active_requests {
                 counter.fetch_sub(1, Ordering::SeqCst);
             }
+            // Reset state for the next transaction handled by this instance
+            self.accepted = false;
         }
     }
 }
