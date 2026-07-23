@@ -1039,7 +1039,13 @@ fn orion_dispatch_grpc_call(
         };
 
         let mut client = tonic::client::Grpc::new(grpc_service);
-        let path = match http::uri::PathAndQuery::try_from(format!("/{}/{}", callout_req.service_name, callout_req.method_name)) {
+        let mut path_str = String::with_capacity(2 + callout_req.service_name.len() + callout_req.method_name.len());
+        path_str.push('/');
+        path_str.push_str(&callout_req.service_name);
+        path_str.push('/');
+        path_str.push_str(&callout_req.method_name);
+
+        let path = match http::uri::PathAndQuery::try_from(path_str) {
             Ok(p) => p,
             Err(e) => {
                 tracing::error!("gRPC Callout invalid path: {:?}", e);
@@ -1081,7 +1087,7 @@ fn orion_dispatch_grpc_call(
 
         let callout_resp = match response_res {
             Ok(response) => {
-                let mut initial_metadata = Vec::new();
+                let mut initial_metadata = Vec::with_capacity(response.metadata().len());
                 for kv in response.metadata().iter() {
                     if let tonic::metadata::KeyAndValueRef::Ascii(k, v) = kv {
                         initial_metadata.push((k.as_str().into(), v.to_str().unwrap_or("").into()));
@@ -1096,10 +1102,16 @@ fn orion_dispatch_grpc_call(
                 }
             },
             Err(status) => {
+                let mut trailing_metadata = Vec::with_capacity(status.metadata().len());
+                for kv in status.metadata().iter() {
+                    if let tonic::metadata::KeyAndValueRef::Ascii(k, v) = kv {
+                        trailing_metadata.push((k.as_str().into(), v.to_str().unwrap_or("").into()));
+                    }
+                }
                 GrpcCalloutResponse {
                     initial_metadata: Vec::new(),
                     message: Vec::new(),
-                    trailing_metadata: Vec::new(),
+                    trailing_metadata,
                     status: status.code() as u32,
                     status_message: status.message().into(),
                 }
@@ -1114,7 +1126,13 @@ fn orion_dispatch_grpc_call(
             },
         };
 
-        let memory = caller.get_export("memory").unwrap().into_memory().unwrap();
+        let memory = match caller.get_export("memory").and_then(|m| m.into_memory()) {
+            Some(mem) => mem,
+            None => {
+                tracing::error!("gRPC Callout failed: guest does not export memory");
+                return OrionWasmResult::InvalidMemoryAccess.into();
+            }
+        };
         let alloc_func = match caller.get_export("orion_malloc").and_then(|e| e.into_func()) {
             Some(func) => func,
             None => {

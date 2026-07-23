@@ -22,7 +22,6 @@ use bytes::Bytes;
 use http::{Request, Response, StatusCode};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
-use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, Mutex, Notify, RwLock};
