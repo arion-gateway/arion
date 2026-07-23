@@ -251,7 +251,7 @@ impl Address {
         match self {
             Address::Socket(address, port) => {
                 let ip_addr = address.parse::<std::net::IpAddr>().map_err(|e| {
-                    GenericError::from_msg_with_cause("failed to parse \"{address}\" as an ip address", e)
+                    GenericError::from_msg_with_cause(format!("failed to parse \"{address}\" as an ip address"), e)
                 })?;
                 Ok(SocketAddr::new(ip_addr, port))
             }
@@ -379,7 +379,7 @@ pub mod envoy_conversions {
         fn try_from(value: EnvoyCidrRange) -> Result<Self, Self::Error> {
             let EnvoyCidrRange { address_prefix, prefix_len } = value;
             let address_prefix = address_prefix.parse::<std::net::IpAddr>().map_err(|e| {
-                GenericError::from_msg_with_cause("failed to parse \"{address_prefix}\" as an ip address!", e)
+                GenericError::from_msg_with_cause(format!("failed to parse \"{address_prefix}\" as an ip address!"), e)
                     .with_node("address_prefix")
             })?;
             // defaults to 0 when unset
