@@ -1072,6 +1072,10 @@ fn orion_dispatch_grpc_call(
             None
         };
 
+        if let Some(duration) = timeout_duration {
+            grpc_req.set_timeout(duration);
+        }
+
         let request_fut = client.unary(grpc_req, path, RawBytesCodec);
 
         let response_res = match timeout_duration {
@@ -1089,10 +1093,17 @@ fn orion_dispatch_grpc_call(
             Ok(response) => {
                 let mut initial_metadata = Vec::with_capacity(response.metadata().len());
                 for kv in response.metadata().iter() {
-                    if let tonic::metadata::KeyAndValueRef::Ascii(k, v) = kv {
-                        initial_metadata.push((k.as_str().into(), v.to_str().unwrap_or("").into()));
+                    match kv {
+                        tonic::metadata::KeyAndValueRef::Ascii(k, v) => {
+                            initial_metadata.push((k.as_str().into(), v.to_str().unwrap_or("").into()));
+                        }
+                        tonic::metadata::KeyAndValueRef::Binary(k, v) => {
+                            use base64::prelude::*;
+                            initial_metadata.push((k.as_str().into(), BASE64_STANDARD.encode(v.to_bytes().unwrap_or_default()).into()));
+                        }
                     }
                 }
+
                 GrpcCalloutResponse {
                     initial_metadata,
                     message: response.into_inner(),
@@ -1104,8 +1115,14 @@ fn orion_dispatch_grpc_call(
             Err(status) => {
                 let mut trailing_metadata = Vec::with_capacity(status.metadata().len());
                 for kv in status.metadata().iter() {
-                    if let tonic::metadata::KeyAndValueRef::Ascii(k, v) = kv {
-                        trailing_metadata.push((k.as_str().into(), v.to_str().unwrap_or("").into()));
+                    match kv {
+                        tonic::metadata::KeyAndValueRef::Ascii(k, v) => {
+                            trailing_metadata.push((k.as_str().into(), v.to_str().unwrap_or("").into()));
+                        }
+                        tonic::metadata::KeyAndValueRef::Binary(k, v) => {
+                            use base64::prelude::*;
+                            trailing_metadata.push((k.as_str().into(), BASE64_STANDARD.encode(v.to_bytes().unwrap_or_default()).into()));
+                        }
                     }
                 }
                 GrpcCalloutResponse {
