@@ -40,6 +40,14 @@ extern "C" {
         resp_len_ptr: *mut u32,
     ) -> i32;
 
+    /// Dispatch an async gRPC call via the host cluster manager.
+    pub fn orion_dispatch_grpc_call(
+        req_ptr: *const u8,
+        req_len: u32,
+        resp_ptr_ptr: *mut *mut u8,
+        resp_len_ptr: *mut u32,
+    ) -> i32;
+
     /// Send a direct (local) HTTP response, short-circuiting the filter chain.
     pub fn orion_send_direct_response(request_handle: u64, status_code: u32, body_ptr: *const u8, body_len: u32)
         -> i32;

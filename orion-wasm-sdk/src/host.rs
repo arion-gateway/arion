@@ -1,6 +1,6 @@
 use crate::ffi;
 use crate::internal::DEFAULT_HEAP_BUF_SIZE;
-use orion_wasm_types::{CalloutRequest, CalloutResponse, OrionWasmError, OrionWasmResult};
+use orion_wasm_types::{CalloutRequest, CalloutResponse, GrpcCalloutRequest, GrpcCalloutResponse, OrionWasmError, OrionWasmResult};
 
 /// Read the plugin configuration.
 pub fn get_plugin_config() -> Result<Option<String>, OrionWasmError> {
@@ -68,6 +68,39 @@ pub fn dispatch_http_call(request: &CalloutRequest) -> Result<CalloutResponse, O
 
     let res = unsafe {
         ffi::orion_dispatch_http_call(
+            req_bytes.as_ptr(),
+            req_bytes.len() as u32,
+            &mut resp_ptr as *mut *mut u8,
+            &mut resp_len as *mut u32,
+        )
+    };
+
+    if res == 0 {
+        if resp_ptr.is_null() {
+            return Err(OrionWasmError::InternalError);
+        }
+        let resp_buf = unsafe { Vec::from_raw_parts(resp_ptr, resp_len as usize, resp_len as usize) };
+        match bincode_next::serde::decode_from_slice(&resp_buf, bincode_next::config::standard()) {
+            Ok((resp, _)) => Ok(resp),
+            Err(_) => Err(OrionWasmError::InternalError),
+        }
+    } else {
+        Err(OrionWasmResult::from_ffi(res).unwrap_err())
+    }
+}
+
+/// Dispatches an asynchronous gRPC call using the host's cluster manager.
+pub fn dispatch_grpc_call(request: &GrpcCalloutRequest) -> Result<GrpcCalloutResponse, OrionWasmError> {
+    let req_bytes = match bincode_next::serde::encode_to_vec(request, bincode_next::config::standard()) {
+        Ok(b) => b,
+        Err(_) => return Err(OrionWasmError::InternalError),
+    };
+
+    let mut resp_ptr: *mut u8 = std::ptr::null_mut();
+    let mut resp_len = 0u32;
+
+    let res = unsafe {
+        ffi::orion_dispatch_grpc_call(
             req_bytes.as_ptr(),
             req_bytes.len() as u32,
             &mut resp_ptr as *mut *mut u8,

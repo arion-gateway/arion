@@ -11,7 +11,7 @@ use http_body_util::Full;
 use smol_str::{SmolStr, ToSmolStr};
 use wasmtime::{Caller, Linker};
 
-use orion_wasm_types::{CalloutRequest, CalloutResponse, HeaderMutation, HeaderTarget, LogLevel};
+use orion_wasm_types::{CalloutRequest, CalloutResponse, HeaderMutation, HeaderTarget, LogLevel, GrpcCalloutRequest, GrpcCalloutResponse};
 pub struct WasmState {
     pub name: &'static str,
     pub plugin_config: Option<String>,
@@ -960,6 +960,208 @@ fn orion_dispatch_http_call(
     })
 }
 
+struct RawBytesCodec;
+
+impl tonic::codec::Codec for RawBytesCodec {
+    type Encode = Vec<u8>;
+    type Decode = Vec<u8>;
+    type Encoder = RawBytesEncoder;
+    type Decoder = RawBytesDecoder;
+
+    fn encoder(&mut self) -> Self::Encoder { RawBytesEncoder }
+    fn decoder(&mut self) -> Self::Decoder { RawBytesDecoder }
+}
+
+struct RawBytesEncoder;
+impl tonic::codec::Encoder for RawBytesEncoder {
+    type Item = Vec<u8>;
+    type Error = tonic::Status;
+
+    fn encode(&mut self, item: Self::Item, dst: &mut tonic::codec::EncodeBuf<'_>) -> Result<(), Self::Error> {
+        bytes::BufMut::put_slice(dst, &item);
+        Ok(())
+    }
+}
+
+struct RawBytesDecoder;
+impl tonic::codec::Decoder for RawBytesDecoder {
+    type Item = Vec<u8>;
+    type Error = tonic::Status;
+
+    fn decode(&mut self, src: &mut tonic::codec::DecodeBuf<'_>) -> Result<Option<Self::Item>, Self::Error> {
+        use bytes::Buf;
+        if !src.has_remaining() { return Ok(None); }
+        let bytes = src.copy_to_bytes(src.remaining()).to_vec();
+        Ok(Some(bytes))
+    }
+}
+
+fn orion_dispatch_grpc_call(
+    mut caller: Caller<'_, WasmState>,
+    (req_ptr, req_len, resp_ptr_ptr, resp_len_ptr): (u32, u32, u32, u32),
+) -> Box<dyn std::future::Future<Output = i32> + Send + '_> {
+    Box::new(async move {
+        let req_bytes = {
+            let memory = match caller.get_export("memory").and_then(|m| m.into_memory()) {
+                Some(mem) => mem,
+                None => return OrionWasmResult::InvalidMemoryAccess.into(),
+            };
+            let data = memory.data(&caller);
+            let start = req_ptr as usize;
+            let end = start + req_len as usize;
+            if end > data.len() {
+                return OrionWasmResult::InvalidMemoryAccess.into();
+            }
+            data[start..end].to_vec()
+        };
+
+        let callout_req: GrpcCalloutRequest =
+            match bincode_next::serde::decode_from_slice(&req_bytes, bincode_next::config::standard()) {
+                Ok((req, _)) => req,
+                Err(e) => {
+                    tracing::error!("gRPC Callout deserialization failed: {:?}", e);
+                    return OrionWasmResult::InternalError.into();
+                },
+            };
+
+        let cluster_spec = ClusterSpecifier::Cluster(callout_req.cluster_name.clone());
+        let cluster_id = match clusters_manager::resolve_cluster(&cluster_spec, None) {
+            Some(id) => id,
+            None => return OrionWasmResult::NotFound.into(),
+        };
+
+        let grpc_service = match clusters_manager::get_grpc_connection(cluster_id, RoutingContext::None) {
+            Ok(svc) => svc,
+            Err(e) => {
+                tracing::error!("gRPC Callout failed to get connection: {:?}", e);
+                return OrionWasmResult::InternalError.into();
+            },
+        };
+
+        let mut client = tonic::client::Grpc::new(grpc_service);
+        let path = match http::uri::PathAndQuery::try_from(format!("/{}/{}", callout_req.service_name, callout_req.method_name)) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::error!("gRPC Callout invalid path: {:?}", e);
+                return OrionWasmResult::InternalError.into();
+            }
+        };
+
+        let mut grpc_req = tonic::Request::new(callout_req.message);
+        for (k, v) in callout_req.initial_metadata {
+            if let Ok(metadata_name) = tonic::metadata::MetadataKey::from_bytes(k.as_bytes()) {
+                if let Ok(metadata_value) = tonic::metadata::MetadataValue::try_from(v.as_bytes()) {
+                    grpc_req.metadata_mut().insert(metadata_name, metadata_value);
+                }
+            }
+        }
+
+        let timeout_duration = if let Some(deadline) = caller.data().io_deadline {
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                return OrionWasmResult::Timeout.into();
+            }
+            Some(deadline.duration_since(now))
+        } else {
+            None
+        };
+
+        let request_fut = client.unary(grpc_req, path, RawBytesCodec);
+
+        let response_res = match timeout_duration {
+            Some(duration) => match pingora_timeout::fast_timeout::fast_timeout(duration, request_fut).await {
+                Ok(Ok(r)) => Ok(r),
+                Ok(Err(e)) => Err(e),
+                Err(_) => {
+                    return OrionWasmResult::Timeout.into();
+                },
+            },
+            None => request_fut.await,
+        };
+
+        let callout_resp = match response_res {
+            Ok(response) => {
+                let mut initial_metadata = Vec::new();
+                for kv in response.metadata().iter() {
+                    if let tonic::metadata::KeyAndValueRef::Ascii(k, v) = kv {
+                        initial_metadata.push((k.as_str().into(), v.to_str().unwrap_or("").into()));
+                    }
+                }
+                GrpcCalloutResponse {
+                    initial_metadata,
+                    message: response.into_inner(),
+                    trailing_metadata: Vec::new(),
+                    status: 0,
+                    status_message: "".into(),
+                }
+            },
+            Err(status) => {
+                GrpcCalloutResponse {
+                    initial_metadata: Vec::new(),
+                    message: Vec::new(),
+                    trailing_metadata: Vec::new(),
+                    status: status.code() as u32,
+                    status_message: status.message().into(),
+                }
+            }
+        };
+
+        let resp_bytes = match bincode_next::serde::encode_to_vec(&callout_resp, bincode_next::config::standard()) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::error!("gRPC Callout response serialization failed: {:?}", e);
+                return OrionWasmResult::InternalError.into();
+            },
+        };
+
+        let memory = caller.get_export("memory").unwrap().into_memory().unwrap();
+        let alloc_func = match caller.get_export("orion_malloc").and_then(|e| e.into_func()) {
+            Some(func) => func,
+            None => {
+                tracing::error!("gRPC Callout failed: guest does not export orion_malloc");
+                return OrionWasmResult::InternalError.into();
+            },
+        };
+
+        let mut results = [wasmtime::Val::I32(0)];
+        if let Err(e) =
+            alloc_func.call_async(&mut caller, &[wasmtime::Val::I32(resp_bytes.len() as i32)], &mut results).await
+        {
+            tracing::error!("gRPC Callout failed to call orion_malloc: {:?}", e);
+            return OrionWasmResult::InternalError.into();
+        }
+
+        let resp_ptr = match results[0] {
+            wasmtime::Val::I32(ptr) => ptr as u32,
+            _ => return OrionWasmResult::InternalError.into(),
+        };
+
+        let data = memory.data_mut(&mut caller);
+        let rb_start = resp_ptr as usize;
+        let rb_end = rb_start + resp_bytes.len();
+        if rb_end > data.len() {
+            return OrionWasmResult::InvalidMemoryAccess.into();
+        }
+        data[rb_start..rb_end].copy_from_slice(&resp_bytes);
+
+        let ptr_start = resp_ptr_ptr as usize;
+        let ptr_end = ptr_start + 4;
+        if ptr_end > data.len() {
+            return OrionWasmResult::InvalidMemoryAccess.into();
+        }
+        data[ptr_start..ptr_end].copy_from_slice(&resp_ptr.to_le_bytes());
+
+        let rl_start = resp_len_ptr as usize;
+        let rl_end = rl_start + 4;
+        if rl_end > data.len() {
+            return OrionWasmResult::InvalidMemoryAccess.into();
+        }
+        data[rl_start..rl_end].copy_from_slice(&(resp_bytes.len() as u32).to_le_bytes());
+
+        OrionWasmResult::Ok.into()
+    })
+}
+
 fn orion_set_io_timeout(mut caller: Caller<'_, WasmState>, microseconds: u64) -> i32 {
     let deadline = std::time::Instant::now() + std::time::Duration::from_micros(microseconds);
     caller.data_mut().io_deadline = Some(deadline);
@@ -1415,6 +1617,7 @@ pub fn register_hostcalls(linker: &mut Linker<WasmState>) -> Result<(), wasmtime
     linker.func_wrap("env", "orion_set_io_timeout", orion_set_io_timeout)?;
     linker.func_wrap("env", "orion_clear_io_timeout", orion_clear_io_timeout)?;
     linker.func_wrap_async("env", "orion_dispatch_http_call", orion_dispatch_http_call)?;
+    linker.func_wrap_async("env", "orion_dispatch_grpc_call", orion_dispatch_grpc_call)?;
     linker.func_wrap_async("env", "orion_sleep", orion_sleep)?;
 
     // Shared Memory Hostcalls
