@@ -6,6 +6,20 @@ This SDK hides the complexity of raw FFI (Foreign Function Interface) hostcalls 
 
 ---
 
+## 📋 Table of Contents
+
+- [🚀 Getting Started](#-getting-started)
+- [The Prelude & Core Types](#the-prelude--core-types)
+- [The `Plugin` Trait Lifecycle](#the-plugin-trait-lifecycle)
+- [Typestate Pattern](#typestate-pattern)
+- [Request and Response Context API](#request-and-response-context-api)
+- [Host API (Free Functions)](#host-api-free-functions)
+- [🧠 Shared Memory Primitives](#-shared-memory-primitives)
+- [💡 Shared Memory Use Cases & Code Examples](#-shared-memory-use-cases--code-examples)
+- [Tracing and Logging](#tracing-and-logging)
+
+---
+
 ## 🚀 Getting Started
 
 Writing a plugin for Orion requires two main steps:
@@ -41,7 +55,7 @@ impl Plugin for AuthFilter {
 
 ---
 
-## The Prelude
+## The Prelude & Core Types
 
 To minimize boilerplate, the SDK provides a prelude module that brings all essential traits, typestates, and macros into scope:
 
@@ -54,6 +68,12 @@ This imports:
 - **`RequestHandle` & `ResponseHandle`**: The primary context objects to inspect and manipulate HTTP traffic.
 - **`HttpHeaders` & `HttpBody`**: The typestate markers that guarantee compile-time safety.
 - **`#[orion_plugin]`**: The macro for FFI generation.
+
+Additionally, core types such as **`FilterAction`**, **`HeaderMutation`**, **`OrionWasmError`**, and shared memory primitives (**`AtomicU64`**, **`AtomicI64`**, **`SharedBlob`**) are re-exported at the root of `orion_wasm_sdk` for convenient importing:
+
+```rust
+use orion_wasm_sdk::{FilterAction, HeaderMutation, AtomicU64, SharedBlob};
+```
 
 ---
 
