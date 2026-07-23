@@ -781,3 +781,74 @@ async fn test_wasm_shared_blob_filter() {
     let captured3 = backend.await_request().await.expect("backend request 3");
     assert_eq!(captured3.header("x-seen-clients"), Some("Bob, Alice"));
 }
+
+fn grpc_callout_filter_builder() -> WasmBuilder {
+    WasmBuilder::new()
+        .name("grpc_callout_filter")
+        .root_id("grpc_callout_root_id")
+        .vm_id("grpc_callout_vm_id")
+        .code_filename(get_wasm_path("grpc_callout_filter"))
+}
+
+#[tokio::test]
+#[test_log::test]
+async fn test_wasm_grpc_callout_filter() {
+    let backend = TestBackend::start().await.expect("backend start");
+    let mut callout_backend = TestBackend::start_h2().await.expect("callout start");
+    
+    backend.set_default_response(PreConfiguredResponse::with_body("backend response")).await;
+    
+    // The Wasm module sends an EchoRequest with message="Hello from Wasm!"
+    // The callout_backend needs to return a valid gRPC response.
+    // 1 byte compressed flag (0), 4 bytes length, then protobuf encoded EchoResponse.
+    // Let's craft it manually since TestBackend is just an HTTP server:
+    // EchoResponse { message: "Hello from Host!", backend_id: "test" }
+    // Wire format for string: Tag 1 = 10, length 16, "Hello from Host!"
+    // Tag 2 = 18, length 4, "test"
+    let mut proto_payload = Vec::new();
+    proto_payload.extend_from_slice(&[10, 16]);
+    proto_payload.extend_from_slice(b"Hello from Host!");
+    proto_payload.extend_from_slice(&[18, 4]);
+    proto_payload.extend_from_slice(b"test");
+    
+    let mut grpc_frame = Vec::new();
+    grpc_frame.push(0); // uncompressed
+    grpc_frame.extend_from_slice(&(proto_payload.len() as u32).to_be_bytes());
+    grpc_frame.extend_from_slice(&proto_payload);
+
+    callout_backend.set_default_response(
+        PreConfiguredResponse::with_status(StatusCode::OK)
+            .header("content-type", "application/grpc")
+            .header("grpc-status", "0")
+            .body(grpc_frame)
+    ).await;
+
+    let bootstrap = BootstrapBuilder::new()
+        .listener(ListenerBuilder::new("http").port(0).filter_chain(FilterChainBuilder::new("main").hcm(
+            HcmBuilder::new().http1().wasm(grpc_callout_filter_builder()).route_config(
+                RouteConfigBuilder::new("routes").virtual_host(
+                    VirtualHostBuilder::new("default").route(RouteBuilder::new().match_prefix("/").cluster("backend")),
+                ),
+            ),
+        )))
+        .cluster(ClusterBuilder::with_endpoint("backend", backend.addr()))
+        // The Wasm plugin sends gRPC to "service" cluster
+        .cluster(orion_e2e_tests::config_builder::presets::ext_proc_cluster("service", callout_backend.addr()));
+
+    let config_path = bootstrap.build_to_temp().expect("build config");
+    let _orion =
+        OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default()).await.expect("spawn orion");
+    let client = TestClient::new(_orion.listener_addr().unwrap());
+
+    let response = client
+        .send(
+            RequestBuilder::get("/test")
+        )
+        .await
+        .expect("request");
+
+    // The plugin replaces the response body with "grpc callout success: Hello from Host!"
+    response.assert_status(StatusCode::OK);
+    response.assert_body("grpc callout success: Hello from Host!");
+}
+

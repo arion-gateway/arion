@@ -143,10 +143,23 @@ impl TestBackend {
         Self::start_with_listener_and_capacity(listener, DEFAULT_CHANNEL_CAPACITY)
     }
 
+    pub async fn start_h2() -> Result<Self> {
+        Self::start_with_capacity_h2(DEFAULT_CHANNEL_CAPACITY).await
+    }
+
+    pub async fn start_with_capacity_h2(channel_capacity: usize) -> Result<Self> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        Self::start_with_listener_and_capacity_impl(listener, channel_capacity, true)
+    }
+
     pub fn start_with_listener_and_capacity(listener: TcpListener, channel_capacity: usize) -> Result<Self> {
+        Self::start_with_listener_and_capacity_impl(listener, channel_capacity, false)
+    }
+
+    fn start_with_listener_and_capacity_impl(listener: TcpListener, channel_capacity: usize, is_h2: bool) -> Result<Self> {
         let addr = listener.local_addr()?;
 
-        info!(?addr, "Starting test backend server");
+        info!(?addr, "Starting test backend server (h2: {})", is_h2);
 
         let (request_tx, request_rx) = mpsc::channel(channel_capacity);
         let responses = Arc::new(Mutex::new(VecDeque::new()));
@@ -159,7 +172,7 @@ impl TestBackend {
             let shutdown = Arc::clone(&shutdown);
 
             tokio::spawn(async move {
-                Self::run_server(listener, request_tx, responses, default_response, shutdown).await;
+                Self::run_server(listener, request_tx, responses, default_response, shutdown, is_h2).await;
             })
         };
 
@@ -172,6 +185,7 @@ impl TestBackend {
         responses: Arc<Mutex<VecDeque<PreConfiguredResponse>>>,
         default_response: Arc<RwLock<PreConfiguredResponse>>,
         shutdown: Arc<Notify>,
+        is_h2: bool,
     ) {
         loop {
             tokio::select! {
@@ -194,11 +208,20 @@ impl TestBackend {
                                     }
                                 });
 
-                                if let Err(e) = http1::Builder::new()
-                                    .serve_connection(io, service)
-                                    .await
-                                {
-                                    warn!(?e, "Error serving connection");
+                                if is_h2 {
+                                    if let Err(e) = hyper::server::conn::http2::Builder::new(hyper_util::rt::TokioExecutor::new())
+                                        .serve_connection(io, service)
+                                        .await
+                                    {
+                                        warn!(?e, "Error serving h2 connection");
+                                    }
+                                } else {
+                                    if let Err(e) = hyper::server::conn::http1::Builder::new()
+                                        .serve_connection(io, service)
+                                        .await
+                                    {
+                                        warn!(?e, "Error serving http1 connection");
+                                    }
                                 }
                             });
                         }
