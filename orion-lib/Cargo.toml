@@ -90,8 +90,6 @@ rmcp = { version = "1.2.0", features = ["client", "transport-streamable-http-cli
 moka = { version = "0.12.12", features = ["sync"] }
 contatori = { version = "0.7.5", optional = true }
 quanta = { version = "0.12.6", optional = true }
-async-trait = { version = "0.1", optional = true }
-fastembed = { version = "4", optional = true, default-features = false, features = ["hf-hub-rustls-tls", "ort-download-binaries"] }
 hyperlocal = "0.9.1"
 jsonschema = "0.41.0"
 ctor = "0.6.3"
@@ -125,10 +123,6 @@ server = []
 macros = []
 elicitation = []
 base64 = []
-
-# MCP gateway semantic search subsystem. Off by default so deployments that do
-# not use semantic search avoid embeddings code and transitive dependencies.
-mcp-semantic-search = ["dep:async-trait", "dep:fastembed"]
 
 [lints]
 workspace = true

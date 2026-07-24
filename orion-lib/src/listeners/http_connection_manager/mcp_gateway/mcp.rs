@@ -39,6 +39,7 @@ use crate::{
     extensions_context::MetadataContext,
     listeners::{
         http_connection_manager::mcp_gateway::{
+            embeddings,
             tools::{CallToolError, ToolBuilderError, ToolEntry, ToolsRegistry},
             transcoder::{Transcoder, TranscoderType},
             transport::{
@@ -256,25 +257,19 @@ impl TryFrom<McpGatewayConfig> for McpGateway {
     type Error = ToolBuilderError;
 
     fn try_from(config: McpGatewayConfig) -> Result<Self, Self::Error> {
-        #[cfg(feature = "mcp-semantic-search")]
-        let embeddings_provider = match &config.semantic_search_tool {
-            Some(s) => Some(
-                crate::embeddings::resolve_service(&s.embeddings_service)
-                    .ok_or_else(|| ToolBuilderError::EmbeddingServiceNotFound(s.embeddings_service.clone()))?,
-            ),
+        let embeddings_client = match config.semantic_search_tool.as_ref().and_then(|s| s.embeddings.clone()) {
+            Some(cfg) => {
+                let cfg = cfg.normalized().map_err(ToolBuilderError::InvalidEmbeddingsConfig)?;
+                Some(Arc::new(embeddings::EmbeddingsClient::from_config(cfg)))
+            },
             None => None,
         };
-        #[cfg(not(feature = "mcp-semantic-search"))]
-        if config.semantic_search_tool.is_some() {
-            return Err(ToolBuilderError::SemanticSearchFeatureNotCompiledIn);
-        }
 
         let tools = Arc::new(ToolsRegistry::with_config(
             config.tools.clone(),
             config.dynamic_mcp_servers.clone(),
             config.semantic_search_tool.clone(),
-            #[cfg(feature = "mcp-semantic-search")]
-            embeddings_provider,
+            embeddings_client,
         )?);
 
         let tds_registration = if let Some(tds) = &config.tds {
@@ -1205,10 +1200,6 @@ impl McpGateway {
                             },
                             CallToolError::ValidationError(e) => {
                                 model::ErrorData::internal_error(format!("Json schema validation error: {e}"), None)
-                            },
-                            #[cfg(feature = "mcp-semantic-search")]
-                            CallToolError::EmbeddingFailure(ref e) => {
-                                model::ErrorData::internal_error(format!("Embedding failure: {e}"), None)
                             },
                         };
 

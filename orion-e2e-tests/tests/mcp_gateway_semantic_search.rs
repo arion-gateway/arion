@@ -14,7 +14,7 @@
 
 //! MCP Gateway semantic-search E2E tests.
 //!
-//! These tests intentionally use the remote embeddings provider with a service
+//! These tests intentionally use remote embeddings with a service
 //! supplied by the test harness instead of fastembed/local models so they remain offline-safe.
 
 use http::Method;
@@ -27,15 +27,14 @@ use orion_e2e_tests::{
     CallToolResult, CapturedEmbeddingsTestRequest, EmbeddingsTestService, McpTestClient, OrionInstance,
     PreConfiguredResponse, SpawnOptions, TestBackend,
 };
-use serde::Serialize;
 use serde_json::{json, Value};
+use std::time::Duration;
 
 const BACKEND_CLUSTER: &str = "backend_cluster";
 const EMBEDDINGS_CLUSTER: &str = "embedding_cluster";
-const TEST_EMBEDDINGS_SERVICE: &str = "mcp-semantic-test";
 const TEST_EMBEDDINGS_MODEL: &str = "test-embedding-model";
 const TEST_EMBEDDINGS_PATH: &str = "/v1/embeddings";
-const TEST_EMBEDDINGS_DIMENSIONS: usize = 3;
+const TEST_EMBEDDINGS_DIMENSIONS: u32 = 3;
 
 #[derive(Clone, Copy)]
 struct TestTool {
@@ -268,17 +267,19 @@ fn mcp_gateway_with_remote_semantic_search_bootstrap(
     top_k: u32,
 ) -> BootstrapBuilder {
     let gateway = McpGatewayBuilder::new("test-gateway", "1.0.0").tools(tools).semantic_search(
-        McpSemanticSearchBuilder::new(TEST_EMBEDDINGS_SERVICE)
+        McpSemanticSearchBuilder::new()
+            .remote_embeddings(EMBEDDINGS_CLUSTER, TEST_EMBEDDINGS_MODEL)
+            .embeddings_path(TEST_EMBEDDINGS_PATH)
+            .embeddings_timeout(Duration::from_secs(5))
+            .embeddings_dimensions(TEST_EMBEDDINGS_DIMENSIONS)
             .assisted_discovery(enable_assisted_discovery)
             .top_k(top_k),
     );
 
-    McpGatewayHttpConfigBuilder::new(gateway)
-        .build_bootstrap(vec![
-            ClusterBuilder::new(BACKEND_CLUSTER).endpoint(EndpointBuilder::from_socket_addr(backend.addr())),
-            ClusterBuilder::new(EMBEDDINGS_CLUSTER).endpoint(EndpointBuilder::from_socket_addr(embeddings.addr())),
-        ])
-        .embeddings_service(remote_embeddings_service_config(EMBEDDINGS_CLUSTER))
+    McpGatewayHttpConfigBuilder::new(gateway).build_bootstrap(vec![
+        ClusterBuilder::new(BACKEND_CLUSTER).endpoint(EndpointBuilder::from_socket_addr(backend.addr())),
+        ClusterBuilder::new(EMBEDDINGS_CLUSTER).endpoint(EndpointBuilder::from_socket_addr(embeddings.addr())),
+    ])
 }
 
 fn semantic_spawn_options() -> SpawnOptions {
@@ -287,35 +288,6 @@ fn semantic_spawn_options() -> SpawnOptions {
 
 fn tool_configs(tools: impl IntoIterator<Item = TestTool>) -> Vec<OrionMcpTool> {
     tools.into_iter().map(TestTool::into_config).collect()
-}
-
-#[derive(Serialize)]
-struct RemoteEmbeddingsServiceConfig<'a> {
-    cluster: &'a str,
-    model_id: &'a str,
-    path: &'a str,
-    timeout: &'a str,
-    dimensions: usize,
-}
-
-#[derive(Serialize)]
-struct EmbeddingsServiceConfig<'a> {
-    name: &'a str,
-    remote: RemoteEmbeddingsServiceConfig<'a>,
-}
-
-fn remote_embeddings_service_config(cluster: &str) -> String {
-    serde_yaml::to_string(&EmbeddingsServiceConfig {
-        name: TEST_EMBEDDINGS_SERVICE,
-        remote: RemoteEmbeddingsServiceConfig {
-            cluster,
-            model_id: TEST_EMBEDDINGS_MODEL,
-            path: TEST_EMBEDDINGS_PATH,
-            timeout: "5s",
-            dimensions: TEST_EMBEDDINGS_DIMENSIONS,
-        },
-    })
-    .expect("remote embeddings service config should serialize")
 }
 
 fn semantic_result_tool_names(result: &CallToolResult) -> Vec<String> {

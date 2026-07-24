@@ -56,8 +56,6 @@ instrumentation = ["orion-lib/instrumentation"]
 tracing     = ["orion-lib/tracing"]
 access-log  = ["orion-lib/access-log"]
 prometheus  = ["metrics"]
-mcp-semantic-search = ["orion-lib/mcp-semantic-search"]
-
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = { version = "0.6", optional = true }

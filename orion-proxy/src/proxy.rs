@@ -23,8 +23,7 @@ use crate::{
 };
 use futures::future::join_all;
 use orion_configuration::config::{
-    bootstrap::Node, embeddings::EmbeddingsService, log::AccessLogConfig, metrics::MetricsConfig, runtime::Affinity,
-    Bootstrap,
+    bootstrap::Node, log::AccessLogConfig, metrics::MetricsConfig, runtime::Affinity, Bootstrap,
 };
 
 #[cfg(feature = "tracing")]
@@ -55,16 +54,11 @@ use std::{
 
 use tracing::{debug, error, info, warn};
 
-pub fn run_orion(
-    bootstrap: Bootstrap,
-    metrics: Option<MetricsConfig>,
-    access_log_config: Option<AccessLogConfig>,
-    embeddings_services: Vec<EmbeddingsService>,
-) {
+pub fn run_orion(bootstrap: Bootstrap, metrics: Option<MetricsConfig>, access_log_config: Option<AccessLogConfig>) {
     debug!("Starting on thread {:?}", std::thread::current().name());
 
     // launch the runtimes...
-    if let Err(e) = launch_runtimes(bootstrap, metrics, access_log_config, embeddings_services) {
+    if let Err(e) = launch_runtimes(bootstrap, metrics, access_log_config) {
         error!("Failed to launch runtimes: {e:?}");
         std::process::exit(1);
     }
@@ -119,7 +113,6 @@ fn launch_runtimes(
     bootstrap: Bootstrap,
     #[allow(unused_variables)] metrics_config: Option<MetricsConfig>,
     _access_log_config: Option<AccessLogConfig>,
-    embeddings_services: Vec<EmbeddingsService>,
 ) -> Result<SenderGuards> {
     let rt_config = runtime_config();
     let num_runtimes = rt_config.num_runtimes();
@@ -165,7 +158,6 @@ fn launch_runtimes(
 
     let (secret_manager, clusters) =
         get_secrets_and_clusters(&bootstrap).with_context_msg("Failed to get secrets and clusters")?;
-    start_embeddings_services(embeddings_services)?;
     let listener_factories = build_listener_factories(bootstrap.static_resources.listeners.clone(), &secret_manager)
         .with_context_msg("failed to build listener factories")?;
     let secret_manager = Arc::new(RwLock::new(secret_manager));
@@ -433,21 +425,6 @@ async fn spawn_services(info: ServiceInfo) -> Result<()> {
 
 fn register_initial_clusters(clusters: Vec<PartialClusterType>) -> Result<Vec<ClusterType>> {
     clusters.into_iter().map(orion_lib::clusters::add_cluster).collect::<Result<_>>()
-}
-
-fn start_embeddings_services(services: Vec<EmbeddingsService>) -> Result<()> {
-    #[cfg(feature = "mcp-semantic-search")]
-    {
-        orion_lib::embeddings::start_services(services).map_err(Into::into)
-    }
-    #[cfg(not(feature = "mcp-semantic-search"))]
-    {
-        if services.is_empty() {
-            Ok(())
-        } else {
-            Err("embeddings_services configured but Orion was built without the `mcp-semantic-search` feature".into())
-        }
-    }
 }
 
 async fn push_initial_listeners(

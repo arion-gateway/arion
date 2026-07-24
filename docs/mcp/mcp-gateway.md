@@ -207,7 +207,7 @@ Every static tool has:
 | `description` | Human-readable description. Also used by semantic search. |
 | `input_schema` | JSON Schema for tool call arguments. Empty means no validation. |
 | `output_schema` | JSON Schema for REST response validation. Empty means raw response text is returned. |
-| `rest_backend`, `mcp_server_backend`, or `function_graph_backend` | Exactly one backend. |
+| `rest_backend`, `mcp_server_backend` | Exactly one backend. |
 | `rbac` | Optional per-tool JWT RBAC policy. |
 | `embedding` | Optional precomputed semantic-search vector. |
 
@@ -299,9 +299,6 @@ For a static MCP-server backend, the exposed tool name is also the upstream tool
 
 The upstream MCP server is authoritative for its tool schemas and result shape. Orion does not apply REST-style input or output schema validation to MCP-server backend calls.
 
-### FunctionGraph Backend
-
-`function_graph_backend` is present in the proto but is not fully implemented. Ultimately, it will work very similarly to the REST backend, but optionally may have a simpler configuration to support the CloudEvent based API of FunctionGraph.
 
 ## Dynamic MCP Servers
 
@@ -403,22 +400,11 @@ Semantic search is an important feature when providing a large catalog of tools 
 
 This is really important when a tenant or platform team has hundreds of tools, but any single task for an agent only needs a small subset.
 
-### Build And Bootstrap Requirements
+### Configuration
 
-Semantic search requires Orion to be built with the `mcp-semantic-search` feature:
-
-```bash
-cargo build -p orion-proxy --features mcp-semantic-search
-```
-
-It also requires a named top-level `embeddings_services` entry. The MCP gateway references that service by name:
+Semantic search is built into the MCP Gateway. With no `embeddings` block, Orion ranks tools locally with BM25 over each tool's name and description. Tool-name terms are weighted higher than description terms:
 
 ```yaml
-embeddings_services:
-  - name: mcp-tools
-    local:
-      model_id: BAAI/bge-small-en-v1.5
-
 envoy_bootstrap:
   static_resources:
     listeners:
@@ -439,23 +425,16 @@ envoy_bootstrap:
                           version: "1.0.0"
                         cluster_header: x-mcp-target-cluster
                         semantic_search_tool:
-                          embeddings_service: mcp-tools
                           enable_assisted_discovery: false
                           similarity:
                             top_k: 5
 ```
 
-If `semantic_search_tool` is configured without the feature or without a resolvable embeddings provider, Orion rejects the configuration. If top-level `embeddings_services` are configured without the feature, Orion also rejects startup.
+To use vector ranking, add an optional `embeddings` block directly under `semantic_search_tool`. The remote endpoint is reached through a normal Orion cluster and must accept OpenAI-compatible embeddings requests.
 
 ### Runnable Demo
 
-The repository includes a semantic-search demo at `orion-e2e-tests/examples/mcp_semantic_search.rs`. It starts Orion, four local REST backends, a local FastEmbed embeddings provider, and a generated MCP gateway config.
-
-Build the Orion binary with semantic search enabled:
-
-```bash
-cargo build -p orion-proxy --features mcp-semantic-search
-```
+The repository includes a semantic-search demo at `orion-e2e-tests/examples/mcp_semantic_search.rs`. It starts Orion, four local REST backends, and a generated MCP gateway config using built-in BM25 ranking.
 
 Run the demo:
 
@@ -474,63 +453,11 @@ cargo run -p orion-e2e-tests --example mcp_semantic_search -- \
 
 # Keep the generated YAML so you can inspect or reuse the exact config.
 cargo run -p orion-e2e-tests --example mcp_semantic_search -- --keep-config
-
-# Load a pre-staged FastEmbed model snapshot instead of allowing a first-run download.
-cargo run -p orion-e2e-tests --example mcp_semantic_search -- \
-  --model-dir /path/to/fastembed/model/snapshot
 ```
-
-Without `--model-dir`, FastEmbed may download model files before Orion starts listening. In offline environments, pre-stage the model files and pass `--model-dir`, or set `ORION_MCP_EMBEDDINGS_MODEL_DIR`.
-
-### Local Embeddings
-
-Local embeddings use FastEmbed in the Orion process.
-
-```yaml
-embeddings_services:
-  - name: mcp-local
-    local:
-      model_id: BAAI/bge-small-en-v1.5
-      model_dir: /var/lib/orion/models/bge-small-en-v1.5
-      dimensions: 384
-```
-
-Supported local model IDs:
-
-| Canonical ID | Short alias |
-|--------------|-------------|
-| `BAAI/bge-small-en-v1.5` | `bge-small-en-v1.5` |
-| `sentence-transformers/all-MiniLM-L6-v2` | `all-MiniLM-L6-v2` |
-| `BAAI/bge-small-zh-v1.5` | `bge-small-zh-v1.5` |
-
-`model_dir` is optional. If it is omitted, FastEmbed may download model files on first use. If it is set, Orion loads the model files from that directory instead.
-
-#### Offline FastEmbed Deployments
-
-For environments where Orion does not have direct internet access, configure local embeddings with `model_dir` and pre-stage the model files before Orion starts. Without `model_dir`, FastEmbed may attempt a runtime model download and fail in offline deployments.
-
-```yaml
-embeddings_services:
-  - name: mcp-offline
-    local:
-      model_id: BAAI/bge-small-en-v1.5
-      model_dir: /opt/orion/models/bge-small-en-v1.5
-      dimensions: 384
-```
-
-Operationally:
-
-- Download or build the FastEmbed model snapshot on a machine with network access.
-- Bake the snapshot into the Orion image or mount it into the Orion host/container before startup.
-- Point `model_dir` at the snapshot directory for the selected model, not at the parent cache directory.
-- Ensure the Orion process can read the directory and files.
-- Keep `model_id` set to the supported local model ID that matches the staged snapshot. `dimensions` is optional; if set, it should match the model output dimensions unless you intentionally need an override.
-
-The directory must contain the files FastEmbed needs for the selected model, including `tokenizer.json`, `config.json`, `special_tokens_map.json`, `tokenizer_config.json`, and the model's ONNX file.
 
 ### Remote Embeddings
 
-Remote embeddings call an Orion cluster with an OpenAI-compatible shape:
+Remote embeddings call an Orion cluster with an OpenAI-compatible request shape:
 
 Request:
 
@@ -552,15 +479,6 @@ Response:
 Config:
 
 ```yaml
-embeddings_services:
-  - name: mcp-remote
-    remote:
-      cluster: embeddings_api
-      model_id: text-embedding-model
-      path: /v1/embeddings
-      timeout: 5s
-      dimensions: 384
-
 envoy_bootstrap:
   static_resources:
     clusters:
@@ -576,18 +494,36 @@ envoy_bootstrap:
                       socket_address:
                         address: 127.0.0.1
                         port_value: 8081
+
+# Inside the MCP gateway typed_config:
+semantic_search_tool:
+  embeddings:
+    cluster: embeddings_api
+    model_id: text-embedding-model
+    path: /v1/embeddings
+    timeout: 5s
+    dimensions: 384
+    allow_bm25_fallback: true
+  enable_assisted_discovery: false
+  similarity:
+    top_k: 5
 ```
+
+`path` defaults to `/v1/embeddings` when omitted. `dimensions` is optional; if it is omitted, Orion records the dimension from the first successful response and validates later responses against it.
+`allow_bm25_fallback` defaults to `true`; when set to `false`, Orion does not build BM25 term statistics and semantic-search calls fail if cosine ranking is unavailable.
 
 ### Search Text And Embeddings
 
-For each tool, Orion builds semantic-search text from:
+For remote embeddings, Orion builds semantic-search text from:
 
 - tool name
 - tool description
 - input schema property names
 - input schema property descriptions
 
-If `embedding` is supplied on a tool, Orion uses that vector instead of generating one. The vector must match the configured provider dimensions.
+If `embedding` is supplied on a tool, Orion uses that vector instead of generating one. When remote dimensions are known from config or a previous response, Orion validates supplied vectors against that dimension.
+
+BM25 fallback intentionally uses a narrower field set: tool name and tool description only, with tool-name tokens counted twice. Input-schema argument names and descriptions are ignored by BM25 so call-shape metadata does not dominate intent matching.
 
 ```yaml
 tools:
@@ -602,7 +538,7 @@ tools:
       path: /weather/{{city}}
 ```
 
-Ranking uses cosine similarity when query and tool embeddings are available. If query embedding fails, or a tool has no embedding available, Orion falls back to keyword overlap scoring.
+Ranking uses cosine similarity only when the query embedding succeeds and every candidate tool has an embedding. If query embedding fails or any candidate lacks a vector, Orion ranks the whole candidate set with BM25 over tool names and descriptions unless `allow_bm25_fallback` is `false`. TDS/xDS tool updates are not rejected because an embeddings endpoint is unavailable; when fallback is enabled, the tool is inserted and can be ranked by BM25 until vectors are available.
 
 ### Direct Mode
 
@@ -619,7 +555,6 @@ The direct-mode result is an MCP `CallToolResult` whose first text content item 
 
 ```yaml
 semantic_search_tool:
-  embeddings_service: mcp-tools
   enable_assisted_discovery: false
   similarity:
     top_k: 3
@@ -649,7 +584,6 @@ Flow:
 
 ```yaml
 semantic_search_tool:
-  embeddings_service: mcp-tools
   enable_assisted_discovery: true
   similarity:
     top_k: 5
@@ -735,7 +669,7 @@ For `Tool` resources, Orion treats `resource_name` as canonical. If the payload'
 - Converts it through the same validation path as static config.
 - Adds or replaces a provided tool in the scoped registry.
 - Can overwrite a static tool with the same tool name.
-- If semantic search is enabled and no embedding is supplied, Orion embeds the tool after the update.
+- If remote embeddings are configured and no embedding is supplied, Orion attempts to embed the tool after the update. If embedding fails, the update still succeeds and search uses BM25 until vectors are available.
 
 `Tool` remove:
 
@@ -836,11 +770,6 @@ dynamic_mcp_servers:
 ### Semantic Search Direct Mode
 
 ```yaml
-embeddings_services:
-  - name: tenant-a-tools
-    local:
-      model_id: BAAI/bge-small-en-v1.5
-
 envoy_bootstrap:
   static_resources:
     listeners:
@@ -861,7 +790,6 @@ envoy_bootstrap:
                           version: "1.0.0"
                         cluster_header: x-mcp-target-cluster
                         semantic_search_tool:
-                          embeddings_service: tenant-a-tools
                           enable_assisted_discovery: false
                           similarity:
                             top_k: 5
@@ -871,7 +799,6 @@ envoy_bootstrap:
 
 ```yaml
 semantic_search_tool:
-  embeddings_service: tenant-a-tools
   enable_assisted_discovery: true
   similarity:
     top_k: 5
@@ -1067,6 +994,5 @@ Both resources can carry a `Tool` named `search_customer`, but they update diffe
 - Static tools and xDS-provided tools share the same provided-tool namespace; xDS can replace a static tool with the same name.
 - Dynamic tools are owned by their dynamic server and are removed by removing or replacing that server.
 - Configure upstream MCP server communication as Streamable HTTP by design.
-- Do not configure `function_graph_backend`; it is not implemented.
-- If semantic search is enabled, build Orion with `mcp-semantic-search` and configure a matching `embeddings_services` entry.
-- For offline semantic search with local FastEmbed, pre-stage the model snapshot and set `model_dir`; otherwise FastEmbed may attempt a runtime model download.
+- If semantic search is enabled without `semantic_search_tool.embeddings`, Orion uses BM25 ranking locally.
+- If remote embeddings are configured, keep the embeddings endpoint behind a normal Orion cluster.

@@ -21,8 +21,6 @@
 extern crate assert_matches;
 
 pub mod configuration;
-#[cfg(feature = "mcp-semantic-search")]
-pub mod embeddings;
 pub mod event_error;
 pub mod extensions_context;
 

@@ -49,7 +49,6 @@ tracing-test.workspace = true
 default = []
 fastembed-service = ["dep:fastembed"]
 mcp-tests = []
-mcp-semantic-search = []
 
 [[example]]
 name = "fastembed_embedding_service"
@@ -59,7 +58,6 @@ required-features = ["fastembed-service"]
 [[test]]
 name = "mcp_gateway_semantic_search"
 path = "tests/mcp_gateway_semantic_search.rs"
-required-features = ["mcp-semantic-search"]
 
 [build-dependencies]
 tonic-prost-build.workspace = true

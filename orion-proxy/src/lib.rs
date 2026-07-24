@@ -29,7 +29,7 @@ pub fn run() -> Result<()> {
     let mut tracing_manager = proxy_tracing::TracingManager::new();
 
     let options = Options::parse_options();
-    let Config { runtime, logging, access_logging, metrics, embeddings_services, bootstrap } = Config::new(&options)?;
+    let Config { runtime, logging, access_logging, metrics, bootstrap } = Config::new(&options)?;
 
     RUNTIME_CONFIG.set(runtime).map_err(|_e| "runtime config was somehow set before we had a chance to set it")?;
 
@@ -74,7 +74,7 @@ pub fn run() -> Result<()> {
         tracing::warn!("CAP_NET_RAW is NOT available, SO_BINDTODEVICE will not work");
     }
 
-    proxy::run_orion(bootstrap, metrics, access_logging, embeddings_services);
+    proxy::run_orion(bootstrap, metrics, access_logging);
     Ok(())
 }
 
