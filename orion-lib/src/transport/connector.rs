@@ -200,7 +200,7 @@ impl LocalConnectorWithDNSResolver {
                         })
                         .map_into()
                 })?,
-                std::net::SocketAddr::V6(_) => TcpSocket::new_v4().map_err(|e| {
+                std::net::SocketAddr::V6(_) => TcpSocket::new_v6().map_err(|e| {
                     ContextualError::new(e)
                         .with_context_data(TcpErrorContext {
                             upstream_addr: addr,
