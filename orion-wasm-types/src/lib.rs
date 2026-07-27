@@ -85,47 +85,6 @@ impl From<FilterAction> for i32 {
 
 #[repr(u32)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum HeaderTarget {
-    Request = 0,
-    Response = 1,
-    RequestTrailers = 2,
-    ResponseTrailers = 3,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct UnknownHeaderTarget(pub u32);
-
-impl core::fmt::Display for UnknownHeaderTarget {
-    #[inline]
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "unknown HeaderTarget value: {}", self.0)
-    }
-}
-
-impl TryFrom<u32> for HeaderTarget {
-    type Error = UnknownHeaderTarget;
-
-    #[inline]
-    fn try_from(v: u32) -> Result<Self, Self::Error> {
-        match v {
-            0 => Ok(Self::Request),
-            1 => Ok(Self::Response),
-            2 => Ok(Self::RequestTrailers),
-            3 => Ok(Self::ResponseTrailers),
-            _ => Err(UnknownHeaderTarget(v)),
-        }
-    }
-}
-
-impl From<HeaderTarget> for u32 {
-    #[inline]
-    fn from(v: HeaderTarget) -> Self {
-        v as u32
-    }
-}
-
-#[repr(u32)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum LogLevel {
     Error = 1,
     Warn = 2,

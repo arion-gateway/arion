@@ -34,8 +34,7 @@ pub(crate) const DEFAULT_HEAP_BUF_SIZE: usize = 4096;
 
 /// Read an HTTP header by name.
 pub(crate) fn get_http_header(
-    handle: u64,
-    target: ffi::HeaderTarget,
+    is_trailer: u32,
     name: &str,
 ) -> Result<Option<HeaderValue>, OrionWasmError> {
     let mut stack_buf = [0u8; DEFAULT_HEADER_STACK_BUF_SIZE];
@@ -43,8 +42,7 @@ pub(crate) fn get_http_header(
 
     let res = unsafe {
         ffi::orion_get_header(
-            handle,
-            target as u32,
+            is_trailer,
             name.as_ptr(),
             name.len() as u32,
             stack_buf.as_mut_ptr(),
@@ -66,8 +64,7 @@ pub(crate) fn get_http_header(
             loop {
                 let res = unsafe {
                     ffi::orion_get_header(
-                        handle,
-                        target as u32,
+                        is_trailer,
                         name.as_ptr(),
                         name.len() as u32,
                         heap_buf.as_mut_ptr(),
@@ -100,15 +97,14 @@ pub(crate) fn get_http_header(
 }
 
 /// Read the buffered body.
-pub(crate) fn get_http_body(handle: u64, target: ffi::HeaderTarget) -> Result<Vec<u8>, OrionWasmError> {
+pub(crate) fn get_http_body(is_trailer: u32) -> Result<Vec<u8>, OrionWasmError> {
     let mut buf: Vec<u8> = Vec::with_capacity(DEFAULT_HEAP_BUF_SIZE);
     let mut written_len: u32 = 0;
 
     loop {
         let res = unsafe {
             ffi::orion_get_body(
-                handle,
-                target as u32,
+                is_trailer,
                 buf.as_mut_ptr(),
                 buf.capacity() as u32,
                 &mut written_len as *mut u32,
@@ -135,34 +131,32 @@ pub(crate) fn get_http_body(handle: u64, target: ffi::HeaderTarget) -> Result<Ve
 }
 
 /// Replace the buffered body.
-pub(crate) fn set_http_body(handle: u64, target: ffi::HeaderTarget, body: &[u8]) -> Result<(), OrionWasmError> {
-    let res = unsafe { ffi::orion_set_body(handle, target as u32, body.as_ptr(), body.len() as u32) };
+pub(crate) fn set_http_body(is_trailer: u32, body: &[u8]) -> Result<(), OrionWasmError> {
+    let res = unsafe { ffi::orion_set_body(is_trailer, body.as_ptr(), body.len() as u32) };
 
     OrionWasmError::from_ffi(res)
 }
 
 /// Send a direct (local) HTTP response and short-circuit the filter chain.
 pub(crate) fn send_http_direct_response(
-    request_handle: u64,
     status_code: u16,
     body: &[u8],
 ) -> Result<(), OrionWasmError> {
     let res = unsafe {
-        ffi::orion_send_direct_response(request_handle, status_code as u32, body.as_ptr(), body.len() as u32)
+        ffi::orion_send_direct_response(status_code as u32, body.as_ptr(), body.len() as u32)
     };
 
     OrionWasmError::from_ffi(res)
 }
 
-pub(crate) fn get_http_headers_map(handle: u64, target: ffi::HeaderTarget) -> Result<HeaderMap, OrionWasmError> {
+pub(crate) fn get_http_headers_map(is_trailer: u32) -> Result<HeaderMap, OrionWasmError> {
     let mut buf: Vec<u8> = Vec::with_capacity(DEFAULT_HEAP_BUF_SIZE);
     let mut written_len: u32 = 0;
 
     loop {
         let res = unsafe {
             ffi::orion_get_headers_map(
-                handle,
-                target as u32,
+                is_trailer,
                 buf.as_mut_ptr(),
                 buf.capacity() as u32,
                 &mut written_len as *mut u32,
@@ -194,20 +188,18 @@ pub(crate) fn get_http_headers_map(handle: u64, target: ffi::HeaderTarget) -> Re
 }
 
 pub(crate) fn set_http_headers_map(
-    handle: u64,
-    target: ffi::HeaderTarget,
+    is_trailer: u32,
     headers: &HeaderMap,
 ) -> Result<(), OrionWasmError> {
     let serialized = bincode_next::serde::encode_to_vec(SerHeaderMap(headers), bincode_next::config::standard())
         .map_err(|_| OrionWasmError::InternalError)?;
     let res =
-        unsafe { ffi::orion_set_headers_map(handle, target as u32, serialized.as_ptr(), serialized.len() as u32) };
+        unsafe { ffi::orion_set_headers_map(is_trailer, serialized.as_ptr(), serialized.len() as u32) };
     OrionWasmError::from_ffi(res)
 }
 
 pub(crate) fn set_http_header(
-    handle: u64,
-    target: ffi::HeaderTarget,
+    is_trailer: u32,
     name: &HeaderName,
     value: &HeaderValue,
 ) -> Result<(), OrionWasmError> {
@@ -215,8 +207,7 @@ pub(crate) fn set_http_header(
     let value_bytes = value.as_bytes();
     let res = unsafe {
         ffi::orion_set_header(
-            handle,
-            target as u32,
+            is_trailer,
             name_bytes.as_ptr(),
             name_bytes.len() as u32,
             value_bytes.as_ptr(),
@@ -227,8 +218,7 @@ pub(crate) fn set_http_header(
 }
 
 pub(crate) fn add_http_header(
-    handle: u64,
-    target: ffi::HeaderTarget,
+    is_trailer: u32,
     name: &HeaderName,
     value: &HeaderValue,
 ) -> Result<(), OrionWasmError> {
@@ -236,8 +226,7 @@ pub(crate) fn add_http_header(
     let value_bytes = value.as_bytes();
     let res = unsafe {
         ffi::orion_add_header(
-            handle,
-            target as u32,
+            is_trailer,
             name_bytes.as_ptr(),
             name_bytes.len() as u32,
             value_bytes.as_ptr(),
@@ -248,18 +237,16 @@ pub(crate) fn add_http_header(
 }
 
 pub(crate) fn remove_http_header(
-    handle: u64,
-    target: ffi::HeaderTarget,
+    is_trailer: u32,
     name: &HeaderName,
 ) -> Result<(), OrionWasmError> {
     let name_bytes = name.as_str().as_bytes();
-    let res = unsafe { ffi::orion_remove_header(handle, target as u32, name_bytes.as_ptr(), name_bytes.len() as u32) };
+    let res = unsafe { ffi::orion_remove_header(is_trailer, name_bytes.as_ptr(), name_bytes.len() as u32) };
     OrionWasmError::from_ffi(res)
 }
 
 pub(crate) fn replace_http_header(
-    handle: u64,
-    target: ffi::HeaderTarget,
+    is_trailer: u32,
     name: &HeaderName,
     value: &HeaderValue,
 ) -> Result<(), OrionWasmError> {
@@ -267,8 +254,7 @@ pub(crate) fn replace_http_header(
     let value_bytes = value.as_bytes();
     let res = unsafe {
         ffi::orion_replace_header(
-            handle,
-            target as u32,
+            is_trailer,
             name_bytes.as_ptr(),
             name_bytes.len() as u32,
             value_bytes.as_ptr(),
@@ -279,14 +265,13 @@ pub(crate) fn replace_http_header(
 }
 
 pub(crate) fn apply_header_mutations(
-    handle: u64,
-    target: ffi::HeaderTarget,
+    is_trailer: u32,
     mutations: &[HeaderMutation],
 ) -> Result<(), OrionWasmError> {
     let serialized = bincode_next::serde::encode_to_vec(mutations, bincode_next::config::standard())
         .map_err(|_| OrionWasmError::InternalError)?;
     let res = unsafe {
-        ffi::orion_apply_header_mutations(handle, target as u32, serialized.as_ptr(), serialized.len() as u32)
+        ffi::orion_apply_header_mutations(is_trailer, serialized.as_ptr(), serialized.len() as u32)
     };
     OrionWasmError::from_ffi(res)
 }

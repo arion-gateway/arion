@@ -19,8 +19,7 @@ use smol_str::{SmolStr, ToSmolStr};
 use wasmtime::{Caller, Linker};
 
 use orion_wasm_types::{
-    CalloutRequest, CalloutResponse, GrpcCalloutRequest, GrpcCalloutResponse, HeaderMutation, HeaderTarget, LogLevel,
-    OrionWasmError,
+    CalloutRequest, CalloutResponse, GrpcCalloutRequest, GrpcCalloutResponse, HeaderMutation, LogLevel, OrionWasmError,
 };
 pub struct WasmState {
     pub name: &'static str,
@@ -33,6 +32,8 @@ pub struct WasmState {
     pub access_log_operators: Vec<(SmolStr, SmolStr)>,
     pub io_deadline: Option<std::time::Instant>,
     pub shared_memory: std::sync::Arc<super::shared::SharedMemory>,
+    pub active_request_handle: Option<u64>,
+    pub active_response_handle: Option<u64>,
 }
 
 trait IntoWasmAbi {
@@ -51,8 +52,7 @@ impl<T> IntoWasmAbi for Result<T, OrionWasmError> {
 
 fn orion_get_header(
     mut caller: Caller<'_, WasmState>,
-    handle: u64,
-    handle_type: u32,
+    is_trailer: u32,
     name_ptr: u32,
     name_len: u32,
     value_ptr: u32,
@@ -73,20 +73,24 @@ fn orion_get_header(
         }
     };
 
-    let val_bytes = match HeaderTarget::try_from(handle_type) {
-        Ok(HeaderTarget::Request) => {
-            let request = unsafe { &*(handle as *const Request<OrionRequestBody>) };
+    let val_bytes = if is_trailer == 0 {
+        if let Some(req_ptr) = caller.data().active_request_handle {
+            let request = unsafe { &*(req_ptr as *const Request<OrionRequestBody>) };
             request.headers().get(name.as_str())
-        },
-        Ok(HeaderTarget::Response) => {
-            let response = unsafe { &*(handle as *const Response<OrionResponseBody>) };
+        } else if let Some(res_ptr) = caller.data().active_response_handle {
+            let response = unsafe { &*(res_ptr as *const Response<OrionResponseBody>) };
             response.headers().get(name.as_str())
-        },
-        Ok(HeaderTarget::RequestTrailers) => caller.data().request_trailers.as_ref().and_then(|t| t.get(name.as_str())),
-        Ok(HeaderTarget::ResponseTrailers) => {
+        } else {
+            return OrionWasmError::InternalError.into();
+        }
+    } else {
+        if caller.data().active_request_handle.is_some() {
+            caller.data().request_trailers.as_ref().and_then(|t| t.get(name.as_str()))
+        } else if caller.data().active_response_handle.is_some() {
             caller.data().response_trailers.as_ref().and_then(|t| t.get(name.as_str()))
-        },
-        Err(_) => return OrionWasmError::InternalError.into(),
+        } else {
+            return OrionWasmError::InternalError.into();
+        }
     }
     .map(|v| v.as_bytes().to_vec());
 
@@ -177,8 +181,7 @@ fn orion_get_plugin_config(
 
 fn orion_get_body(
     mut caller: Caller<'_, WasmState>,
-    _handle: u64,
-    handle_type: u32,
+    _is_trailer: u32,
     body_ptr: u32,
     max_len: u32,
     written_len_ptr: u32,
@@ -187,18 +190,18 @@ fn orion_get_body(
         return OrionWasmError::InvalidMemoryAccess.into();
     };
 
-    let body_bytes = match HeaderTarget::try_from(handle_type) {
-        Ok(HeaderTarget::Request) => match caller.data().buffered_request_body.as_ref() {
+    let body_bytes = if caller.data().active_request_handle.is_some() {
+        match caller.data().buffered_request_body.as_ref() {
             Some(b) => b.clone(),
             None => return OrionWasmError::NotFound.into(),
-        },
-        Ok(HeaderTarget::Response) => match caller.data().buffered_response_body.as_ref() {
+        }
+    } else if caller.data().active_response_handle.is_some() {
+        match caller.data().buffered_response_body.as_ref() {
             Some(b) => b.clone(),
             None => return OrionWasmError::NotFound.into(),
-        },
-        Ok(HeaderTarget::RequestTrailers | HeaderTarget::ResponseTrailers) | Err(_) => {
-            return OrionWasmError::InternalError.into()
-        },
+        }
+    } else {
+        return OrionWasmError::InternalError.into();
     };
 
     if body_bytes.len() > max_len as usize {
@@ -234,13 +237,7 @@ fn orion_get_body(
     0
 }
 
-fn orion_set_body(
-    mut caller: Caller<'_, WasmState>,
-    _handle: u64,
-    handle_type: u32,
-    body_ptr: u32,
-    body_len: u32,
-) -> i32 {
+fn orion_set_body(mut caller: Caller<'_, WasmState>, _is_trailer: u32, body_ptr: u32, body_len: u32) -> i32 {
     let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
         return OrionWasmError::InvalidMemoryAccess.into();
     };
@@ -257,12 +254,12 @@ fn orion_set_body(
         Bytes::new()
     };
 
-    match HeaderTarget::try_from(handle_type) {
-        Ok(HeaderTarget::Request) => caller.data_mut().buffered_request_body = Some(body_bytes),
-        Ok(HeaderTarget::Response) => caller.data_mut().buffered_response_body = Some(body_bytes),
-        Ok(HeaderTarget::RequestTrailers | HeaderTarget::ResponseTrailers) | Err(_) => {
-            return OrionWasmError::InternalError.into()
-        },
+    if caller.data().active_request_handle.is_some() {
+        caller.data_mut().buffered_request_body = Some(body_bytes);
+    } else if caller.data().active_response_handle.is_some() {
+        caller.data_mut().buffered_response_body = Some(body_bytes);
+    } else {
+        return OrionWasmError::InternalError.into();
     }
 
     0
@@ -270,7 +267,6 @@ fn orion_set_body(
 
 fn orion_send_direct_response(
     mut caller: Caller<'_, WasmState>,
-    request_handle: u64,
     status_code: u32,
     body_ptr: u32,
     body_len: u32,
@@ -281,7 +277,11 @@ fn orion_send_direct_response(
         return OrionWasmError::InvalidMemoryAccess.into();
     };
 
-    let request = unsafe { &*(request_handle as *const Request<OrionRequestBody>) };
+    let req_ptr = match caller.data().active_request_handle {
+        Some(p) => p,
+        None => return OrionWasmError::InternalError.into(),
+    };
+    let request = unsafe { &*(req_ptr as *const Request<OrionRequestBody>) };
 
     let body_bytes = if body_len > 0 {
         let data = memory.data(&caller);
@@ -424,8 +424,7 @@ impl<'de> Deserialize<'de> for DeHeaderMap {
 
 fn orion_get_headers_map(
     mut caller: Caller<'_, WasmState>,
-    handle: u64,
-    handle_type: u32,
+    is_trailer: u32,
     buf_ptr: u32,
     max_len: u32,
     written_len_ptr: u32,
@@ -436,19 +435,26 @@ fn orion_get_headers_map(
         return OrionWasmError::InvalidMemoryAccess.into();
     };
 
-    let headers = match HeaderTarget::try_from(handle_type) {
-        Ok(HeaderTarget::Request) => {
-            let request = unsafe { &*(handle as *const Request<OrionRequestBody>) };
+    let headers = if is_trailer == 0 {
+        if let Some(req_ptr) = caller.data().active_request_handle {
+            let request = unsafe { &*(req_ptr as *const Request<OrionRequestBody>) };
             request.headers()
-        },
-        Ok(HeaderTarget::Response) => {
-            let response = unsafe { &*(handle as *const Response<OrionResponseBody>) };
+        } else if let Some(res_ptr) = caller.data().active_response_handle {
+            let response = unsafe { &*(res_ptr as *const Response<OrionResponseBody>) };
             response.headers()
-        },
-        Ok(HeaderTarget::RequestTrailers) => caller.data().request_trailers.as_ref().unwrap_or(&EMPTY_MAP),
-        Ok(HeaderTarget::ResponseTrailers) => caller.data().response_trailers.as_ref().unwrap_or(&EMPTY_MAP),
-        Err(_) => return OrionWasmError::InternalError.into(),
+        } else {
+            return OrionWasmError::InternalError.into();
+        }
+    } else {
+        if caller.data().active_request_handle.is_some() {
+            caller.data().request_trailers.as_ref().unwrap_or(&EMPTY_MAP)
+        } else if caller.data().active_response_handle.is_some() {
+            caller.data().response_trailers.as_ref().unwrap_or(&EMPTY_MAP)
+        } else {
+            return OrionWasmError::InternalError.into();
+        }
     };
+
     let serialized = match bincode_next::serde::encode_to_vec(SerHeaderMap(headers), bincode_next::config::standard()) {
         Ok(b) => b,
         Err(_) => return OrionWasmError::InternalError.into(),
@@ -483,13 +489,7 @@ fn orion_get_headers_map(
     0
 }
 
-fn orion_set_headers_map(
-    mut caller: Caller<'_, WasmState>,
-    handle: u64,
-    handle_type: u32,
-    buf_ptr: u32,
-    buf_len: u32,
-) -> i32 {
+fn orion_set_headers_map(mut caller: Caller<'_, WasmState>, is_trailer: u32, buf_ptr: u32, buf_len: u32) -> i32 {
     let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
         return OrionWasmError::InvalidMemoryAccess.into();
     };
@@ -506,22 +506,24 @@ fn orion_set_headers_map(
             Err(_) => return OrionWasmError::InternalError.into(),
         };
 
-    match HeaderTarget::try_from(handle_type) {
-        Ok(HeaderTarget::Request) => {
-            let request = unsafe { &mut *(handle as *mut Request<OrionRequestBody>) };
+    if is_trailer == 0 {
+        if let Some(req_ptr) = caller.data().active_request_handle {
+            let request = unsafe { &mut *(req_ptr as *mut Request<OrionRequestBody>) };
             *request.headers_mut() = headers;
-        },
-        Ok(HeaderTarget::Response) => {
-            let response = unsafe { &mut *(handle as *mut Response<OrionResponseBody>) };
+        } else if let Some(res_ptr) = caller.data().active_response_handle {
+            let response = unsafe { &mut *(res_ptr as *mut Response<OrionResponseBody>) };
             *response.headers_mut() = headers;
-        },
-        Ok(HeaderTarget::RequestTrailers) => {
+        } else {
+            return OrionWasmError::InternalError.into();
+        }
+    } else {
+        if caller.data().active_request_handle.is_some() {
             caller.data_mut().request_trailers = Some(headers);
-        },
-        Ok(HeaderTarget::ResponseTrailers) => {
+        } else if caller.data().active_response_handle.is_some() {
             caller.data_mut().response_trailers = Some(headers);
-        },
-        Err(_) => return OrionWasmError::InternalError.into(),
+        } else {
+            return OrionWasmError::InternalError.into();
+        }
     }
 
     0
@@ -573,8 +575,7 @@ fn get_name_from_memory(
 
 fn orion_set_header(
     mut caller: Caller<'_, WasmState>,
-    handle: u64,
-    handle_type: u32,
+    is_trailer: u32,
     name_ptr: u32,
     name_len: u32,
     value_ptr: u32,
@@ -582,24 +583,29 @@ fn orion_set_header(
 ) -> i32 {
     let mut inner = || -> Result<(), OrionWasmError> {
         let (name, value) = get_name_value_from_memory(&mut caller, name_ptr, name_len, value_ptr, value_len)?;
-        match HeaderTarget::try_from(handle_type).map_err(|_e| OrionWasmError::InternalError)? {
-            HeaderTarget::Request => {
-                let request = unsafe { &mut *(handle as *mut Request<OrionRequestBody>) };
+
+        if is_trailer == 0 {
+            if let Some(req_ptr) = caller.data().active_request_handle {
+                let request = unsafe { &mut *(req_ptr as *mut Request<OrionRequestBody>) };
                 request.headers_mut().insert(name, value);
-            },
-            HeaderTarget::Response => {
-                let response = unsafe { &mut *(handle as *mut Response<OrionResponseBody>) };
+            } else if let Some(res_ptr) = caller.data().active_response_handle {
+                let response = unsafe { &mut *(res_ptr as *mut Response<OrionResponseBody>) };
                 response.headers_mut().insert(name, value);
-            },
-            HeaderTarget::RequestTrailers => {
+            } else {
+                return Err(OrionWasmError::InternalError);
+            }
+        } else {
+            if caller.data().active_request_handle.is_some() {
                 let trailers = caller.data_mut().request_trailers.get_or_insert_with(http::HeaderMap::new);
                 trailers.insert(name, value);
-            },
-            HeaderTarget::ResponseTrailers => {
+            } else if caller.data().active_response_handle.is_some() {
                 let trailers = caller.data_mut().response_trailers.get_or_insert_with(http::HeaderMap::new);
                 trailers.insert(name, value);
-            },
+            } else {
+                return Err(OrionWasmError::InternalError);
+            }
         }
+
         Ok(())
     };
 
@@ -608,8 +614,7 @@ fn orion_set_header(
 
 fn orion_add_header(
     mut caller: Caller<'_, WasmState>,
-    handle: u64,
-    handle_type: u32,
+    is_trailer: u32,
     name_ptr: u32,
     name_len: u32,
     value_ptr: u32,
@@ -617,59 +622,63 @@ fn orion_add_header(
 ) -> i32 {
     let mut inner = || -> Result<(), OrionWasmError> {
         let (name, value) = get_name_value_from_memory(&mut caller, name_ptr, name_len, value_ptr, value_len)?;
-        match HeaderTarget::try_from(handle_type).map_err(|_e| OrionWasmError::InternalError)? {
-            HeaderTarget::Request => {
-                let request = unsafe { &mut *(handle as *mut Request<OrionRequestBody>) };
+
+        if is_trailer == 0 {
+            if let Some(req_ptr) = caller.data().active_request_handle {
+                let request = unsafe { &mut *(req_ptr as *mut Request<OrionRequestBody>) };
                 request.headers_mut().append(name, value);
-            },
-            HeaderTarget::Response => {
-                let response = unsafe { &mut *(handle as *mut Response<OrionResponseBody>) };
+            } else if let Some(res_ptr) = caller.data().active_response_handle {
+                let response = unsafe { &mut *(res_ptr as *mut Response<OrionResponseBody>) };
                 response.headers_mut().append(name, value);
-            },
-            HeaderTarget::RequestTrailers => {
+            } else {
+                return Err(OrionWasmError::InternalError);
+            }
+        } else {
+            if caller.data().active_request_handle.is_some() {
                 let trailers = caller.data_mut().request_trailers.get_or_insert_with(http::HeaderMap::new);
                 trailers.append(name, value);
-            },
-            HeaderTarget::ResponseTrailers => {
+            } else if caller.data().active_response_handle.is_some() {
                 let trailers = caller.data_mut().response_trailers.get_or_insert_with(http::HeaderMap::new);
                 trailers.append(name, value);
-            },
+            } else {
+                return Err(OrionWasmError::InternalError);
+            }
         }
+
         Ok(())
     };
 
     inner().into_wasm_abi()
 }
 
-fn orion_remove_header(
-    mut caller: Caller<'_, WasmState>,
-    handle: u64,
-    handle_type: u32,
-    name_ptr: u32,
-    name_len: u32,
-) -> i32 {
+fn orion_remove_header(mut caller: Caller<'_, WasmState>, is_trailer: u32, name_ptr: u32, name_len: u32) -> i32 {
     let mut inner = || -> Result<(), OrionWasmError> {
         let name = get_name_from_memory(&mut caller, name_ptr, name_len)?;
-        match HeaderTarget::try_from(handle_type).map_err(|_e| OrionWasmError::InternalError)? {
-            HeaderTarget::Request => {
-                let request = unsafe { &mut *(handle as *mut Request<OrionRequestBody>) };
+
+        if is_trailer == 0 {
+            if let Some(req_ptr) = caller.data().active_request_handle {
+                let request = unsafe { &mut *(req_ptr as *mut Request<OrionRequestBody>) };
                 request.headers_mut().remove(&name);
-            },
-            HeaderTarget::Response => {
-                let response = unsafe { &mut *(handle as *mut Response<OrionResponseBody>) };
+            } else if let Some(res_ptr) = caller.data().active_response_handle {
+                let response = unsafe { &mut *(res_ptr as *mut Response<OrionResponseBody>) };
                 response.headers_mut().remove(&name);
-            },
-            HeaderTarget::RequestTrailers => {
+            } else {
+                return Err(OrionWasmError::InternalError);
+            }
+        } else {
+            if caller.data().active_request_handle.is_some() {
                 if let Some(trailers) = caller.data_mut().request_trailers.as_mut() {
                     trailers.remove(&name);
                 }
-            },
-            HeaderTarget::ResponseTrailers => {
+            } else if caller.data().active_response_handle.is_some() {
                 if let Some(trailers) = caller.data_mut().response_trailers.as_mut() {
                     trailers.remove(&name);
                 }
-            },
+            } else {
+                return Err(OrionWasmError::InternalError);
+            }
         }
+
         Ok(())
     };
 
@@ -678,8 +687,7 @@ fn orion_remove_header(
 
 fn orion_replace_header(
     mut caller: Caller<'_, WasmState>,
-    handle: u64,
-    handle_type: u32,
+    is_trailer: u32,
     name_ptr: u32,
     name_len: u32,
     value_ptr: u32,
@@ -687,32 +695,37 @@ fn orion_replace_header(
 ) -> i32 {
     let mut inner = || -> Result<(), OrionWasmError> {
         let (name, value) = get_name_value_from_memory(&mut caller, name_ptr, name_len, value_ptr, value_len)?;
-        match HeaderTarget::try_from(handle_type).map_err(|_e| OrionWasmError::InternalError)? {
-            HeaderTarget::Request => {
-                let request = unsafe { &mut *(handle as *mut Request<OrionRequestBody>) };
+
+        if is_trailer == 0 {
+            if let Some(req_ptr) = caller.data().active_request_handle {
+                let request = unsafe { &mut *(req_ptr as *mut Request<OrionRequestBody>) };
                 if request.headers().contains_key(&name) {
                     request.headers_mut().insert(name, value);
                 }
-            },
-            HeaderTarget::Response => {
-                let response = unsafe { &mut *(handle as *mut Response<OrionResponseBody>) };
+            } else if let Some(res_ptr) = caller.data().active_response_handle {
+                let response = unsafe { &mut *(res_ptr as *mut Response<OrionResponseBody>) };
                 if response.headers().contains_key(&name) {
                     response.headers_mut().insert(name, value);
                 }
-            },
-            HeaderTarget::RequestTrailers => {
+            } else {
+                return Err(OrionWasmError::InternalError);
+            }
+        } else {
+            if caller.data().active_request_handle.is_some() {
                 let trailers = caller.data_mut().request_trailers.get_or_insert_with(http::HeaderMap::new);
                 if trailers.contains_key(&name) {
                     trailers.insert(name, value);
                 }
-            },
-            HeaderTarget::ResponseTrailers => {
+            } else if caller.data().active_response_handle.is_some() {
                 let trailers = caller.data_mut().response_trailers.get_or_insert_with(http::HeaderMap::new);
                 if trailers.contains_key(&name) {
                     trailers.insert(name, value);
                 }
-            },
+            } else {
+                return Err(OrionWasmError::InternalError);
+            }
         }
+
         Ok(())
     };
 
@@ -744,13 +757,7 @@ fn apply_mutations_to_map(map: &mut http::HeaderMap, mutations: Vec<HeaderMutati
     }
 }
 
-fn orion_apply_header_mutations(
-    mut caller: Caller<'_, WasmState>,
-    handle: u64,
-    handle_type: u32,
-    buf_ptr: u32,
-    buf_len: u32,
-) -> i32 {
+fn orion_apply_header_mutations(mut caller: Caller<'_, WasmState>, is_trailer: u32, buf_ptr: u32, buf_len: u32) -> i32 {
     let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
         return OrionWasmError::InvalidMemoryAccess.into();
     };
@@ -766,24 +773,26 @@ fn orion_apply_header_mutations(
         None => return OrionWasmError::InternalError.into(),
     };
 
-    match HeaderTarget::try_from(handle_type) {
-        Ok(HeaderTarget::Request) => {
-            let request = unsafe { &mut *(handle as *mut Request<OrionRequestBody>) };
+    if is_trailer == 0 {
+        if let Some(req_ptr) = caller.data().active_request_handle {
+            let request = unsafe { &mut *(req_ptr as *mut Request<OrionRequestBody>) };
             apply_mutations_to_map(request.headers_mut(), mutations);
-        },
-        Ok(HeaderTarget::Response) => {
-            let response = unsafe { &mut *(handle as *mut Response<OrionResponseBody>) };
+        } else if let Some(res_ptr) = caller.data().active_response_handle {
+            let response = unsafe { &mut *(res_ptr as *mut Response<OrionResponseBody>) };
             apply_mutations_to_map(response.headers_mut(), mutations);
-        },
-        Ok(HeaderTarget::RequestTrailers) => {
+        } else {
+            return OrionWasmError::InternalError.into();
+        }
+    } else {
+        if caller.data().active_request_handle.is_some() {
             let trailers = caller.data_mut().request_trailers.get_or_insert_with(http::HeaderMap::new);
             apply_mutations_to_map(trailers, mutations);
-        },
-        Ok(HeaderTarget::ResponseTrailers) => {
+        } else if caller.data().active_response_handle.is_some() {
             let trailers = caller.data_mut().response_trailers.get_or_insert_with(http::HeaderMap::new);
             apply_mutations_to_map(trailers, mutations);
-        },
-        Err(_) => return OrionWasmError::InternalError.into(),
+        } else {
+            return OrionWasmError::InternalError.into();
+        }
     }
 
     0
@@ -1342,10 +1351,14 @@ fn orion_sleep(
 
 fn orion_get_downstream_metadata(
     mut caller: Caller<'_, WasmState>,
-    (request_handle, out_ptr_ptr, out_len_ptr): (u64, u32, u32),
+    (out_ptr_ptr, out_len_ptr): (u32, u32),
 ) -> Box<dyn std::future::Future<Output = i32> + Send + '_> {
     Box::new(async move {
-        let request = unsafe { &*(request_handle as *const Request<OrionRequestBody>) };
+        let req_ptr = match caller.data().active_request_handle {
+            Some(p) => p,
+            None => return OrionWasmError::InternalError.into(),
+        };
+        let request = unsafe { &*(req_ptr as *const Request<OrionRequestBody>) };
 
         let host_meta = match request.extensions().get::<Box<crate::listeners::metadata::DownstreamMetadata>>() {
             Some(m) => m,

@@ -13,9 +13,13 @@ impl Plugin for HeadersMapFilter {
     }
 
     fn on_request_headers(&mut self, ctx: &RequestHandle<HttpHeaders>) -> FilterAction {
+        info!("on_request_headers called");
         let mut headers = match ctx.get_headers_map() {
             Ok(h) => h,
-            Err(_) => return ctx.direct_response(500, b"Internal Server Error"),
+            Err(e) => {
+                error!("get_headers_map failed: {:?}", e);
+                return ctx.direct_response(500, b"Internal Server Error");
+            }
         };
 
         // 1. Remove user-agent
@@ -42,9 +46,13 @@ impl Plugin for HeadersMapFilter {
     }
 
     fn on_response_headers(&mut self, ctx: &orion_wasm_sdk::ResponseHandle<HttpHeaders>) -> FilterAction {
+        info!("on_response_headers called");
         let mut headers = match ctx.get_headers_map() {
             Ok(h) => h,
-            Err(_) => return FilterAction::Continue,
+            Err(e) => {
+                error!("get_headers_map failed: {:?}", e);
+                return FilterAction::Continue;
+            }
         };
 
         // 1. Remove x-response-remove

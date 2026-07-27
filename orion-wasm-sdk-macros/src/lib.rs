@@ -35,14 +35,14 @@ pub fn orion_plugin(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let req_headers_export = if has_req_headers {
         quote! {
             #[no_mangle]
-            pub extern "C" fn on_request_headers(request_handle: u64) -> i32 {
+            pub extern "C" fn on_request_headers() -> i32 {
                 let plugin = unsafe {
                     if PLUGIN.is_none() {
                         PLUGIN = ::std::option::Option::Some(<#self_ty as ::std::default::Default>::default());
                     }
                     PLUGIN.as_mut().unwrap()
                 };
-                let ctx = unsafe { ::orion_wasm_sdk::RequestHandle::<::orion_wasm_sdk::HttpHeaders>::new(request_handle) };
+                let ctx = ::orion_wasm_sdk::RequestHandle::<::orion_wasm_sdk::HttpHeaders>::new();
                 ::orion_wasm_sdk::Plugin::on_request_headers(plugin, &ctx).into()
             }
         }
@@ -53,14 +53,14 @@ pub fn orion_plugin(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let req_body_export = if has_req_body {
         quote! {
             #[no_mangle]
-            pub extern "C" fn on_request_body(request_handle: u64, _body_len: u32) -> i32 {
+            pub extern "C" fn on_request_body(_body_len: u32) -> i32 {
                 let plugin = unsafe {
                     if PLUGIN.is_none() {
                         PLUGIN = ::std::option::Option::Some(<#self_ty as ::std::default::Default>::default());
                     }
                     PLUGIN.as_mut().unwrap()
                 };
-                let ctx = unsafe { ::orion_wasm_sdk::RequestHandle::<::orion_wasm_sdk::HttpBody>::new(request_handle) };
+                let ctx = ::orion_wasm_sdk::RequestHandle::<::orion_wasm_sdk::HttpBody>::new();
                 ::orion_wasm_sdk::Plugin::on_request_body(plugin, &ctx).into()
             }
         }
@@ -71,14 +71,14 @@ pub fn orion_plugin(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let resp_headers_export = if has_resp_headers {
         quote! {
             #[no_mangle]
-            pub extern "C" fn on_response_headers(response_handle: u64) -> i32 {
+            pub extern "C" fn on_response_headers() -> i32 {
                 let plugin = unsafe {
                     if PLUGIN.is_none() {
                         PLUGIN = ::std::option::Option::Some(<#self_ty as ::std::default::Default>::default());
                     }
                     PLUGIN.as_mut().unwrap()
                 };
-                let ctx = unsafe { ::orion_wasm_sdk::ResponseHandle::<::orion_wasm_sdk::HttpHeaders>::new(response_handle) };
+                let ctx = ::orion_wasm_sdk::ResponseHandle::<::orion_wasm_sdk::HttpHeaders>::new();
                 ::orion_wasm_sdk::Plugin::on_response_headers(plugin, &ctx).into()
             }
         }
@@ -89,14 +89,14 @@ pub fn orion_plugin(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let resp_body_export = if has_resp_body {
         quote! {
             #[no_mangle]
-            pub extern "C" fn on_response_body(response_handle: u64, _body_len: u32) -> i32 {
+            pub extern "C" fn on_response_body(_body_len: u32) -> i32 {
                 let plugin = unsafe {
                     if PLUGIN.is_none() {
                         PLUGIN = ::std::option::Option::Some(<#self_ty as ::std::default::Default>::default());
                     }
                     PLUGIN.as_mut().unwrap()
                 };
-                let ctx = unsafe { ::orion_wasm_sdk::ResponseHandle::<::orion_wasm_sdk::HttpBody>::new(response_handle) };
+                let ctx = ::orion_wasm_sdk::ResponseHandle::<::orion_wasm_sdk::HttpBody>::new();
                 ::orion_wasm_sdk::Plugin::on_response_body(plugin, &ctx).into()
             }
         }

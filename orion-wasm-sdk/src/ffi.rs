@@ -11,8 +11,7 @@ extern "C" {
 
     /// Read an HTTP header by name.
     pub fn orion_get_header(
-        handle: u64,
-        handle_type: u32,
+        is_trailer: u32,
         name_ptr: *const u8,
         name_len: u32,
         value_ptr: *mut u8,
@@ -22,15 +21,14 @@ extern "C" {
 
     /// Read the buffered body.
     pub fn orion_get_body(
-        handle: u64,
-        handle_type: u32,
+        is_trailer: u32,
         body_ptr: *mut u8,
         max_len: u32,
         written_len_ptr: *mut u32,
     ) -> i32;
 
     /// Replace the buffered body.
-    pub fn orion_set_body(handle: u64, handle_type: u32, body_ptr: *const u8, body_len: u32) -> i32;
+    pub fn orion_set_body(is_trailer: u32, body_ptr: *const u8, body_len: u32) -> i32;
 
     /// Dispatch an async HTTP call via the host cluster manager.
     pub fn orion_dispatch_http_call(
@@ -49,53 +47,48 @@ extern "C" {
     ) -> i32;
 
     /// Send a direct (local) HTTP response, short-circuiting the filter chain.
-    pub fn orion_send_direct_response(request_handle: u64, status_code: u32, body_ptr: *const u8, body_len: u32)
+    pub fn orion_send_direct_response(status_code: u32, body_ptr: *const u8, body_len: u32)
         -> i32;
 
     /// Log a message via the host's tracing framework.
     pub fn orion_log(level: u32, msg_ptr: *const u8, msg_len: u32) -> i32;
 
     pub fn orion_get_downstream_metadata(
-        handle: u64,
         out_ptr_ptr: *mut *mut u8,
         out_len_ptr: *mut u32,
     ) -> i32;
 
     pub fn orion_get_headers_map(
-        handle: u64,
-        handle_type: u32,
+        is_trailer: u32,
         buf_ptr: *mut u8,
         max_len: u32,
         written_len_ptr: *mut u32,
     ) -> i32;
-    pub fn orion_set_headers_map(handle: u64, handle_type: u32, buf_ptr: *const u8, buf_len: u32) -> i32;
+    pub fn orion_set_headers_map(is_trailer: u32, buf_ptr: *const u8, buf_len: u32) -> i32;
 
     pub fn orion_set_header(
-        handle: u64,
-        handle_type: u32,
+        is_trailer: u32,
         name_ptr: *const u8,
         name_len: u32,
         value_ptr: *const u8,
         value_len: u32,
     ) -> i32;
     pub fn orion_add_header(
-        handle: u64,
-        handle_type: u32,
+        is_trailer: u32,
         name_ptr: *const u8,
         name_len: u32,
         value_ptr: *const u8,
         value_len: u32,
     ) -> i32;
-    pub fn orion_remove_header(handle: u64, handle_type: u32, name_ptr: *const u8, name_len: u32) -> i32;
+    pub fn orion_remove_header(is_trailer: u32, name_ptr: *const u8, name_len: u32) -> i32;
     pub fn orion_replace_header(
-        handle: u64,
-        handle_type: u32,
+        is_trailer: u32,
         name_ptr: *const u8,
         name_len: u32,
         value_ptr: *const u8,
         value_len: u32,
     ) -> i32;
-    pub fn orion_apply_header_mutations(handle: u64, handle_type: u32, buf_ptr: *const u8, buf_len: u32) -> i32;
+    pub fn orion_apply_header_mutations(is_trailer: u32, buf_ptr: *const u8, buf_len: u32) -> i32;
 
     pub fn orion_set_io_timeout(microseconds: u64) -> i32;
     pub fn orion_clear_io_timeout(remaining_us_ptr: *mut u64) -> i32;
@@ -134,4 +127,3 @@ extern "C" {
     pub fn ext_shared_blob_cas(id: u32, buf_ptr: *const u8, buf_len: u32, expected_version: u64, out_success_ptr: *mut u32) -> u64;
 }
 
-pub use orion_wasm_types::HeaderTarget;

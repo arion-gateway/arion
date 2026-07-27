@@ -205,6 +205,8 @@ impl WasmFilter {
                         access_log_operators: Vec::new(),
                         io_deadline: None,
                         shared_memory: Arc::clone(&self.inner.shared_memory),
+                        active_request_handle: None,
+                        active_response_handle: None,
                     },
                 );
                 // Instantiate the module using the pre-resolved imports
@@ -246,6 +248,10 @@ impl WasmFilter {
         }
 
         let req_handle = std::ptr::from_mut::<Request<OrionRequestBody>>(req) as u64;
+        if let Ok(s) = self.get_state().await {
+            s.store.data_mut().active_response_handle = None;
+            s.store.data_mut().active_request_handle = Some(req_handle);
+        }
 
         // PHASE 1: headers evaluation
         let action_code: Result<FilterAction, WasmError> = if self.inner.has_on_request_headers {
@@ -254,8 +260,8 @@ impl WasmFilter {
                 Err(e) => return FilterDecision::internal_server_error(&e.to_string(), req.version()),
             };
 
-            if let Ok(on_headers) = state.instance.get_typed_func::<u64, i32>(&mut state.store, "on_request_headers") {
-                let response = on_headers.call_async(&mut state.store, req_handle).await;
+            if let Ok(on_headers) = state.instance.get_typed_func::<(), i32>(&mut state.store, "on_request_headers") {
+                let response = on_headers.call_async(&mut state.store, ()).await;
                 response.map_err(WasmError::Wasmtime).and_then(|v| {
                     #[allow(clippy::map_err_ignore)]
                     FilterAction::try_from(v)
@@ -304,16 +310,13 @@ impl WasmFilter {
                     };
 
                     let response = if let Ok(on_body) =
-                        state.instance.get_typed_func::<(u64, u32), i32>(&mut state.store, "on_request_body")
+                        state.instance.get_typed_func::<u32, i32>(&mut state.store, "on_request_body")
                     {
                         state.store.data_mut().buffered_request_body = Some(full_body_bytes.clone());
                         state.store.data_mut().request_trailers = trailers;
 
                         let response = on_body
-                            .call_async(
-                                &mut state.store,
-                                (req_handle, u32::try_from(full_body_bytes.len()).unwrap_or(0)),
-                            )
+                            .call_async(&mut state.store, u32::try_from(full_body_bytes.len()).unwrap_or(0))
                             .await;
 
                         let mutated_body = state.store.data_mut().buffered_request_body.take();
@@ -444,6 +447,10 @@ impl WasmFilter {
         }
 
         let resp_handle = std::ptr::from_mut::<Response<OrionResponseBody>>(response) as u64;
+        if let Ok(s) = self.get_state().await {
+            s.store.data_mut().active_request_handle = None;
+            s.store.data_mut().active_response_handle = Some(resp_handle);
+        }
 
         // PHASE 1: headers evaluation
         let action_code: Result<FilterAction, WasmError> = if self.inner.has_on_response_headers {
@@ -453,9 +460,9 @@ impl WasmFilter {
             };
 
             if let Ok(on_response_headers) =
-                state.instance.get_typed_func::<u64, i32>(&mut state.store, "on_response_headers")
+                state.instance.get_typed_func::<(), i32>(&mut state.store, "on_response_headers")
             {
-                let res_val = on_response_headers.call_async(&mut state.store, resp_handle).await;
+                let res_val = on_response_headers.call_async(&mut state.store, ()).await;
                 res_val.map_err(WasmError::Wasmtime).and_then(|v| {
                     #[allow(clippy::map_err_ignore)]
                     FilterAction::try_from(v)
@@ -505,16 +512,13 @@ impl WasmFilter {
                     };
 
                     let res_val = if let Ok(on_body) =
-                        state.instance.get_typed_func::<(u64, u32), i32>(&mut state.store, "on_response_body")
+                        state.instance.get_typed_func::<u32, i32>(&mut state.store, "on_response_body")
                     {
                         state.store.data_mut().buffered_response_body = Some(full_body_bytes.clone());
                         state.store.data_mut().response_trailers = trailers;
 
                         let res_val = on_body
-                            .call_async(
-                                &mut state.store,
-                                (resp_handle, u32::try_from(full_body_bytes.len()).unwrap_or(0)),
-                            )
+                            .call_async(&mut state.store, u32::try_from(full_body_bytes.len()).unwrap_or(0))
                             .await;
 
                         let mutated_body = state.store.data_mut().buffered_response_body.take();
@@ -638,6 +642,8 @@ impl Drop for WasmFilter {
             data.buffered_request_body = None;
             data.buffered_response_body = None;
             data.io_deadline = None;
+            data.active_request_handle = None;
+            data.active_response_handle = None;
             _ = self.inner.instance_pool.push(state);
         }
     }
