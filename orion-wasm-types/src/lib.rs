@@ -11,22 +11,6 @@ use core::convert::TryFrom;
 /// Mirrored on the host side by
 /// `orion-lib/src/listeners/http_connection_manager/wasm/types.rs` (which
 /// simply re-exports this crate).
-#[repr(i32)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum OrionWasmResult {
-    /// Operation completed successfully.
-    Ok = 0,
-    /// The requested resource (e.g. a header) was not found.
-    NotFound = 1,
-    /// The caller-provided buffer was too small to hold the result.
-    BufferTooSmall = 2,
-    /// An invalid memory access was attempted (out-of-bounds Wasm memory).
-    InvalidMemoryAccess = 3,
-    /// An internal host error occurred.
-    InternalError = 4,
-    /// The operation timed out.
-    Timeout = 5,
-}
 
 /// Error returned when converting a raw `i32` into [`OrionWasmResult`] and the
 /// value does not match any known variant.
@@ -53,62 +37,6 @@ impl core::fmt::Display for OrionWasmError {
 }
 
 impl std::error::Error for OrionWasmError {}
-
-impl OrionWasmResult {
-    #[inline]
-    pub fn into_result(self) -> Result<(), OrionWasmError> {
-        match self {
-            Self::Ok => Ok(()),
-            Self::NotFound => Err(OrionWasmError::NotFound),
-            Self::BufferTooSmall => Err(OrionWasmError::BufferTooSmall),
-            Self::InvalidMemoryAccess => Err(OrionWasmError::InvalidMemoryAccess),
-            Self::InternalError => Err(OrionWasmError::InternalError),
-            Self::Timeout => Err(OrionWasmError::Timeout),
-        }
-    }
-
-    #[inline]
-    pub fn from_ffi(v: i32) -> Result<(), OrionWasmError> {
-        match Self::try_from(v) {
-            Ok(res) => res.into_result(),
-            Err(_) => Err(OrionWasmError::InternalError),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct UnknownOrionWasmResult(pub i32);
-
-impl core::fmt::Display for UnknownOrionWasmResult {
-    #[inline]
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "unknown OrionWasmResult value: {}", self.0)
-    }
-}
-
-impl TryFrom<i32> for OrionWasmResult {
-    type Error = UnknownOrionWasmResult;
-
-    #[inline]
-    fn try_from(v: i32) -> Result<Self, Self::Error> {
-        match v {
-            0 => Ok(Self::Ok),
-            1 => Ok(Self::NotFound),
-            2 => Ok(Self::BufferTooSmall),
-            3 => Ok(Self::InvalidMemoryAccess),
-            4 => Ok(Self::InternalError),
-            5 => Ok(Self::Timeout),
-            _ => Err(UnknownOrionWasmResult(v)),
-        }
-    }
-}
-
-impl From<OrionWasmResult> for i32 {
-    #[inline]
-    fn from(v: OrionWasmResult) -> Self {
-        v as i32
-    }
-}
 
 /// Action codes that a plugin returns to the host to control filter flow.
 ///
@@ -412,6 +340,34 @@ impl From<SharedOrdering> for core::sync::atomic::Ordering {
             SharedOrdering::Acquire => Self::Acquire,
             SharedOrdering::AcqRel => Self::AcqRel,
             SharedOrdering::SeqCst => Self::SeqCst,
+        }
+    }
+}
+
+impl From<OrionWasmError> for i32 {
+    #[inline]
+    fn from(e: OrionWasmError) -> Self {
+        match e {
+            OrionWasmError::NotFound => 1,
+            OrionWasmError::BufferTooSmall => 2,
+            OrionWasmError::InvalidMemoryAccess => 3,
+            OrionWasmError::InternalError => 4,
+            OrionWasmError::Timeout => 5,
+        }
+    }
+}
+
+impl OrionWasmError {
+    #[inline]
+    pub fn from_ffi(v: i32) -> Result<(), Self> {
+        match v {
+            0 => Ok(()),
+            1 => Err(Self::NotFound),
+            2 => Err(Self::BufferTooSmall),
+            3 => Err(Self::InvalidMemoryAccess),
+            4 => Err(Self::InternalError),
+            5 => Err(Self::Timeout),
+            _ => Err(Self::InternalError),
         }
     }
 }

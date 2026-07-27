@@ -1,6 +1,6 @@
 use papaya::HashMap;
+use parking_lot::RwLock;
 use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU64};
-use std::sync::RwLock;
 
 #[derive(Clone, Copy, Debug)]
 pub enum VarId {

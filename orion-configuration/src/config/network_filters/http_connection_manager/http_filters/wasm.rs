@@ -60,9 +60,7 @@ mod envoy_conversions {
             )?;
 
             let vm = required!(vm)?;
-            let vm_config = match vm {
-                EnvoyVm::VmConfig(config) => config,
-            };
+            let EnvoyVm::VmConfig(vm_config) = vm;
 
             let environment_variables = vm_config.environment_variables;
             unsupported_field!(environment_variables)?;
@@ -101,7 +99,7 @@ mod envoy_conversions {
                 runtime: vm_config.runtime.into(),
                 code,
                 configuration: config_string,
-                allow_precompiled: if vm_config.allow_precompiled { Some(true) } else { None },
+                allow_precompiled: vm_config.allow_precompiled.then_some(true),
             })
         }
     }

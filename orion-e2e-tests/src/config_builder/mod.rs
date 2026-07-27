@@ -33,8 +33,8 @@ pub mod serialize;
 mod tcp_proxy;
 mod tls;
 mod virtual_host;
-pub mod xds;
 pub mod wasm;
+pub mod xds;
 
 pub use bootstrap::BootstrapBuilder;
 pub use cedar_policy::CedarPolicyBuilder;

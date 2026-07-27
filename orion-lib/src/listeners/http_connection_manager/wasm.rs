@@ -16,8 +16,8 @@ use tracing::{debug, warn};
 use wasmtime::{Engine, Instance, Linker, Module, Store};
 
 mod hostcalls;
-mod types;
 mod shared;
+mod types;
 
 #[derive(Error, Debug)]
 pub enum WasmError {
@@ -76,6 +76,7 @@ pub struct WasmFilterInner {
     has_on_response_headers: bool,
     has_on_response_body: bool,
     has_on_plugin_start: bool,
+    #[allow(unused)]
     has_on_plugin_destroy: bool,
     has_on_transaction_start: bool,
     has_on_transaction_complete: bool,
@@ -215,6 +216,7 @@ impl WasmFilter {
         state_opt.as_mut().ok_or_else(|| WasmError::InitError("Wasm state is uninitialized".to_string()))
     }
 
+    #[allow(clippy::too_many_lines)]
     pub async fn apply_request(&mut self, req: &mut Request<OrionRequestBody>) -> FilterDecision {
         debug!("WasFilter::apply_request: {:?}", self.inner.config);
 
@@ -244,6 +246,7 @@ impl WasmFilter {
             if let Ok(on_headers) = state.instance.get_typed_func::<u64, i32>(&mut state.store, "on_request_headers") {
                 let response = on_headers.call_async(&mut state.store, req_handle).await;
                 response.map_err(WasmError::Wasmtime).and_then(|v| {
+                    #[allow(clippy::map_err_ignore)]
                     FilterAction::try_from(v)
                         .map_err(|_| WasmError::InitError(format!("Invalid Wasm FilterAction code: {}", v)))
                 })
@@ -329,6 +332,7 @@ impl WasmFilter {
                     };
 
                     response.and_then(|v| {
+                        #[allow(clippy::map_err_ignore)]
                         FilterAction::try_from(v)
                             .map_err(|_| WasmError::InitError(format!("Invalid body action code: {}", v)))
                     })
@@ -419,6 +423,7 @@ impl WasmFilter {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     pub async fn apply_response(&mut self, response: &mut Response<OrionResponseBody>) -> FilterDecision {
         debug!("WasFilter::apply_response: {:?}", self.inner.config);
         if !self.inner.has_on_response_headers && !self.inner.has_on_response_body {
@@ -439,6 +444,7 @@ impl WasmFilter {
             {
                 let res_val = on_response_headers.call_async(&mut state.store, resp_handle).await;
                 res_val.map_err(WasmError::Wasmtime).and_then(|v| {
+                    #[allow(clippy::map_err_ignore)]
                     FilterAction::try_from(v)
                         .map_err(|_| WasmError::InitError(format!("Invalid Wasm response FilterAction code: {}", v)))
                 })
@@ -524,6 +530,7 @@ impl WasmFilter {
                     };
 
                     res_val.and_then(|v| {
+                        #[allow(clippy::map_err_ignore)]
                         FilterAction::try_from(v)
                             .map_err(|_| WasmError::InitError(format!("Invalid response body action code: {}", v)))
                     })

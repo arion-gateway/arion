@@ -4,10 +4,13 @@ use std::path::PathBuf;
 
 use http::StatusCode;
 use orion_e2e_tests::config_builder::{
-    BootstrapBuilder, ClusterBuilder, FilterChainBuilder, HcmBuilder, ListenerBuilder, RouteBuilder,
-    RouteConfigBuilder, VirtualHostBuilder, WasmBuilder, DownstreamTlsBuilder
+    BootstrapBuilder, ClusterBuilder, DownstreamTlsBuilder, FilterChainBuilder, HcmBuilder, ListenerBuilder,
+    RouteBuilder, RouteConfigBuilder, VirtualHostBuilder, WasmBuilder,
 };
-use orion_e2e_tests::{OrionInstance, PreConfiguredResponse, RequestBuilder, SpawnOptions, TestBackend, TestClient, TestCerts, TlsTestClientBuilder};
+use orion_e2e_tests::{
+    OrionInstance, PreConfiguredResponse, RequestBuilder, SpawnOptions, TestBackend, TestCerts, TestClient,
+    TlsTestClientBuilder,
+};
 
 async fn setup_wasm(wasm_builder: WasmBuilder) -> (TestBackend, OrionInstance, TestClient, PathBuf) {
     let backend = TestBackend::start().await.expect("backend start");
@@ -15,11 +18,9 @@ async fn setup_wasm(wasm_builder: WasmBuilder) -> (TestBackend, OrionInstance, T
 
     let bootstrap = BootstrapBuilder::new()
         .listener(ListenerBuilder::new("http").port(0).filter_chain(FilterChainBuilder::new("main").hcm(
-            HcmBuilder::new().http1().wasm(wasm_builder).route_config(
-                RouteConfigBuilder::new("routes").virtual_host(
-                    VirtualHostBuilder::new("default").route(RouteBuilder::new().match_prefix("/").cluster("backend")),
-                ),
-            ),
+            HcmBuilder::new().http1().wasm(wasm_builder).route_config(RouteConfigBuilder::new("routes").virtual_host(
+                VirtualHostBuilder::new("default").route(RouteBuilder::new().match_prefix("/").cluster("backend")),
+            )),
         )))
         .cluster(ClusterBuilder::with_endpoint("backend", backend.addr()));
 
@@ -40,7 +41,7 @@ fn get_wasm_path(filter_name: &str) -> String {
     path.push("target");
     path.push("wasm32-unknown-unknown");
     path.push("debug");
-    path.push(format!("{}.wasm", filter_name));
+    path.push(format!("{filter_name}.wasm"));
     path.to_string_lossy().into_owned()
 }
 
@@ -67,7 +68,8 @@ async fn test_wasm_dummy_filter_missing_authorization() {
 async fn test_wasm_dummy_filter_invalid_authorization() {
     let (_backend, _orion, client, _cfg) = setup_wasm(dummy_filter_builder()).await;
 
-    let response = client.send(RequestBuilder::get("/test").header("Authorization", "Bearer invalid")).await.expect("request");
+    let response =
+        client.send(RequestBuilder::get("/test").header("Authorization", "Bearer invalid")).await.expect("request");
     response.assert_status(StatusCode::UNAUTHORIZED);
     response.assert_body("401 Unauthorized: invalid credentials");
 }
@@ -77,7 +79,10 @@ async fn test_wasm_dummy_filter_invalid_authorization() {
 async fn test_wasm_dummy_filter_authorized() {
     let (mut backend, _orion, client, _cfg) = setup_wasm(dummy_filter_builder()).await;
 
-    let response = client.send(RequestBuilder::get("/test").header("Authorization", "Bearer secret-token")).await.expect("request");
+    let response = client
+        .send(RequestBuilder::get("/test").header("Authorization", "Bearer secret-token"))
+        .await
+        .expect("request");
     response.assert_status(StatusCode::OK);
     response.assert_body("backend response");
 
@@ -98,25 +103,23 @@ fn header_mutations_filter_builder() -> WasmBuilder {
 async fn test_wasm_header_mutations_filter() {
     let (mut backend, _orion, client, _cfg) = setup_wasm(header_mutations_filter_builder()).await;
 
-    backend.set_default_response(
-        PreConfiguredResponse::default()
-            .header("x-response-add", "initial-res-value")
-            .header("x-response-remove", "to-be-removed")
-            .header("x-response-set", "will-be-replaced")
-    ).await;
+    backend
+        .set_default_response(
+            PreConfiguredResponse::default()
+                .header("x-response-add", "initial-res-value")
+                .header("x-response-remove", "to-be-removed")
+                .header("x-response-set", "will-be-replaced"),
+        )
+        .await;
 
     let response = client
-        .send(
-            RequestBuilder::get("/test")
-                .header("user-agent", "my-agent")
-                .header("x-custom-add", "initial-value")
-        )
+        .send(RequestBuilder::get("/test").header("user-agent", "my-agent").header("x-custom-add", "initial-value"))
         .await
         .expect("request");
 
     response.assert_status(StatusCode::OK);
     response.assert_header("x-response-set", "res-replaced-value");
-    
+
     let added_headers: Vec<_> = response.header_all("x-response-add");
     assert_eq!(added_headers, vec!["initial-res-value", "res-add-value"]);
 
@@ -133,7 +136,10 @@ async fn test_wasm_header_mutations_filter() {
 async fn test_wasm_dummy_filter_buffer_body_valid() {
     let (mut backend, _orion, client, _cfg) = setup_wasm(dummy_filter_builder()).await;
 
-    let response = client.send(RequestBuilder::post("/test").header("Authorization", "Bearer buffer-me").body("valid")).await.expect("request");
+    let response = client
+        .send(RequestBuilder::post("/test").header("Authorization", "Bearer buffer-me").body("valid"))
+        .await
+        .expect("request");
     response.assert_status(StatusCode::OK);
     response.assert_body("backend response");
 
@@ -146,7 +152,10 @@ async fn test_wasm_dummy_filter_buffer_body_valid() {
 async fn test_wasm_dummy_filter_buffer_body_invalid() {
     let (_backend, _orion, client, _cfg) = setup_wasm(dummy_filter_builder()).await;
 
-    let response = client.send(RequestBuilder::post("/test").header("Authorization", "Bearer buffer-me").body("invalid-body")).await.expect("request");
+    let response = client
+        .send(RequestBuilder::post("/test").header("Authorization", "Bearer buffer-me").body("invalid-body"))
+        .await
+        .expect("request");
     response.assert_status(StatusCode::FORBIDDEN);
     response.assert_body("403 Forbidden: body did not contain the magic word 'valid'");
 }
@@ -164,30 +173,28 @@ fn header_api_filter_builder() -> WasmBuilder {
 async fn test_wasm_header_api_filter() {
     let (mut backend, _orion, client, _cfg) = setup_wasm(header_api_filter_builder()).await;
 
-    backend.set_default_response(
-        PreConfiguredResponse::default()
-            .header("x-response-add", "initial-res-value")
-            .header("x-response-remove", "to-be-removed")
-            .header("x-response-set", "will-be-replaced")
-    ).await;
+    backend
+        .set_default_response(
+            PreConfiguredResponse::default()
+                .header("x-response-add", "initial-res-value")
+                .header("x-response-remove", "to-be-removed")
+                .header("x-response-set", "will-be-replaced"),
+        )
+        .await;
 
     let response = client
-        .send(
-            RequestBuilder::get("/test")
-                .header("user-agent", "my-agent")
-                .header("x-custom-add", "initial-value")
-        )
+        .send(RequestBuilder::get("/test").header("user-agent", "my-agent").header("x-custom-add", "initial-value"))
         .await
         .expect("request");
 
     response.assert_status(StatusCode::OK);
     // 1. set_header
-    // wait, replace_header in our plugin uses x-response-set. 
+    // wait, replace_header in our plugin uses x-response-set.
     // The plugin does:
     // ctx.set_header("x-response-set", "res-set-value")
     // ctx.replace_header("x-response-set", "res-replaced-value")
     response.assert_header("x-response-set", "res-replaced-value");
-    
+
     // 2. add_header
     assert_eq!(response.header_all("x-response-add"), vec!["initial-res-value", "res-add-value"]);
 
@@ -213,25 +220,23 @@ fn headers_map_filter_builder() -> WasmBuilder {
 async fn test_wasm_headers_map_filter() {
     let (mut backend, _orion, client, _cfg) = setup_wasm(headers_map_filter_builder()).await;
 
-    backend.set_default_response(
-        PreConfiguredResponse::default()
-            .header("x-response-add", "initial-res-value")
-            .header("x-response-remove", "to-be-removed")
-            .header("x-response-set", "will-be-replaced")
-    ).await;
+    backend
+        .set_default_response(
+            PreConfiguredResponse::default()
+                .header("x-response-add", "initial-res-value")
+                .header("x-response-remove", "to-be-removed")
+                .header("x-response-set", "will-be-replaced"),
+        )
+        .await;
 
     let response = client
-        .send(
-            RequestBuilder::get("/test")
-                .header("user-agent", "my-agent")
-                .header("x-custom-add", "initial-value")
-        )
+        .send(RequestBuilder::get("/test").header("user-agent", "my-agent").header("x-custom-add", "initial-value"))
         .await
         .expect("request");
 
     response.assert_status(StatusCode::OK);
     response.assert_header("x-response-set", "res-replaced-value");
-    
+
     let added_headers: Vec<_> = response.header_all("x-response-add");
     assert_eq!(added_headers, vec!["initial-res-value", "res-add-value"]);
 
@@ -263,7 +268,7 @@ async fn test_wasm_body_mutation_filter() {
             RequestBuilder::post("/test")
                 .header("x-req-mutation", "append")
                 .header("x-res-mutation", "append")
-                .body("client request")
+                .body("client request"),
         )
         .await
         .expect("request");
@@ -278,7 +283,7 @@ async fn test_wasm_body_mutation_filter() {
             RequestBuilder::post("/test")
                 .header("x-req-mutation", "prepend")
                 .header("x-res-mutation", "prepend")
-                .body("client request")
+                .body("client request"),
         )
         .await
         .expect("request");
@@ -293,7 +298,7 @@ async fn test_wasm_body_mutation_filter() {
             RequestBuilder::post("/test")
                 .header("x-req-mutation", "replace")
                 .header("x-res-mutation", "replace")
-                .body("client request")
+                .body("client request"),
         )
         .await
         .expect("request");
@@ -316,7 +321,7 @@ fn callout_body_filter_builder() -> WasmBuilder {
 async fn test_wasm_callout_body_filter() {
     let mut backend = TestBackend::start().await.expect("backend start");
     let mut callout_backend = TestBackend::start().await.expect("callout start");
-    
+
     backend.set_default_response(PreConfiguredResponse::with_body("backend response")).await;
     callout_backend.set_default_response(PreConfiguredResponse::with_body("callout response")).await;
 
@@ -332,17 +337,12 @@ async fn test_wasm_callout_body_filter() {
         .cluster(ClusterBuilder::with_endpoint("service", callout_backend.addr()));
 
     let config_path = bootstrap.build_to_temp().expect("build config");
-    let _orion =
+    let orion_instance =
         OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default()).await.expect("spawn orion");
     #[allow(clippy::unwrap_used)]
-    let client = TestClient::new(_orion.listener_addr().unwrap());
+    let client = TestClient::new(orion_instance.listener_addr().unwrap());
 
-    let response = client
-        .send(
-            RequestBuilder::post("/test").body("client request")
-        )
-        .await
-        .expect("request");
+    let response = client.send(RequestBuilder::post("/test").body("client request")).await.expect("request");
 
     response.assert_status(StatusCode::OK);
     response.assert_body("backend response");
@@ -358,12 +358,7 @@ async fn test_wasm_callout_body_filter() {
     // In this case, the filter should keep the original body
     callout_backend.set_default_response(PreConfiguredResponse::with_status(StatusCode::INTERNAL_SERVER_ERROR)).await;
 
-    let response = client
-        .send(
-            RequestBuilder::post("/test").body("original client request")
-        )
-        .await
-        .expect("request");
+    let response = client.send(RequestBuilder::post("/test").body("original client request")).await.expect("request");
 
     response.assert_status(StatusCode::OK);
     response.assert_body("backend response");
@@ -374,32 +369,6 @@ async fn test_wasm_callout_body_filter() {
     let captured = backend.await_request().await.expect("backend request");
     assert_eq!(captured.body_str(), Some("original client request"));
 }
-
-macro_rules! define_simple_wasm_test {
-    ($test_name:ident, $filter_name:expr) => {
-        #[tokio::test]
-        #[test_log::test]
-        async fn $test_name() {
-            let builder = WasmBuilder::new()
-                .name($filter_name)
-                .root_id(format!("{}_root_id", $filter_name))
-                .vm_id(format!("{}_vm_id", $filter_name))
-                .code_filename(get_wasm_path($filter_name));
-
-            let (backend, _orion, client, _cfg) = setup_wasm(builder).await;
-            backend.set_default_response(PreConfiguredResponse::with_body("backend response")).await;
-
-            let response = client
-                .send(RequestBuilder::get("/test"))
-                .await
-                .expect("request");
-
-            response.assert_status(StatusCode::OK);
-            response.assert_body("backend response");
-        }
-    };
-}
-
 
 #[tokio::test]
 #[test_log::test]
@@ -413,16 +382,13 @@ async fn test_wasm_metadata_filter() {
     let (mut backend, _orion, client, _cfg) = setup_wasm(builder).await;
     backend.set_default_response(PreConfiguredResponse::with_body("backend response")).await;
 
-    let response = client
-        .send(RequestBuilder::get("/test"))
-        .await
-        .expect("request");
+    let response = client.send(RequestBuilder::get("/test")).await.expect("request");
 
     response.assert_status(StatusCode::OK);
     response.assert_body("backend response");
 
     let captured = backend.await_request().await.expect("backend request");
-    
+
     // Test that the wasm filter successfully injected the metadata into headers
     assert_eq!(captured.header("x-listener-name"), Some("http"));
     // Connection metadata was split into peer and local
@@ -450,24 +416,16 @@ async fn test_wasm_metadata_filter_sni() {
         .vm_id("metadata_vm_id")
         .code_filename(get_wasm_path("metadata_filter"));
 
-    let listener = ListenerBuilder::new("https")
-        .port(0)
-        .with_tls_inspector()
-        .filter_chain(
-            FilterChainBuilder::new("main")
-                .downstream_tls(tls)
-                .hcm(
-                    HcmBuilder::new().http1().wasm(wasm_builder).route_config(
-                        RouteConfigBuilder::new("routes").virtual_host(
-                            VirtualHostBuilder::new("default").route(RouteBuilder::new().match_prefix("/").cluster("backend")),
-                        ),
-                    ),
-                ),
-        );
+    let listener = ListenerBuilder::new("https").port(0).with_tls_inspector().filter_chain(
+        FilterChainBuilder::new("main").downstream_tls(tls).hcm(
+            HcmBuilder::new().http1().wasm(wasm_builder).route_config(RouteConfigBuilder::new("routes").virtual_host(
+                VirtualHostBuilder::new("default").route(RouteBuilder::new().match_prefix("/").cluster("backend")),
+            )),
+        ),
+    );
 
-    let bootstrap = BootstrapBuilder::new()
-        .listener(listener)
-        .cluster(ClusterBuilder::with_endpoint("backend", backend.addr()));
+    let bootstrap =
+        BootstrapBuilder::new().listener(listener).cluster(ClusterBuilder::with_endpoint("backend", backend.addr()));
 
     let config_path = bootstrap.build_to_temp().expect("build config");
 
@@ -486,7 +444,7 @@ async fn test_wasm_metadata_filter_sni() {
     response.assert_body("backend response");
 
     let captured = backend.await_request().await.expect("backend request");
-    
+
     assert_eq!(captured.header("x-listener-name"), Some("https"));
     assert_eq!(captured.header("x-sni"), Some("dublin.beefcake.example.com"));
     assert!(captured.header("x-connection-peer").is_some());
@@ -507,12 +465,7 @@ async fn test_wasm_config_logger_filter() {
     let (mut backend, _orion, client, _cfg) = setup_wasm(config_logger_filter_builder()).await;
     backend.set_default_response(PreConfiguredResponse::with_body("backend response")).await;
 
-    let response = client
-        .send(
-            RequestBuilder::get("/test")
-        )
-        .await
-        .expect("request");
+    let response = client.send(RequestBuilder::get("/test")).await.expect("request");
 
     response.assert_status(StatusCode::OK);
 
@@ -532,35 +485,32 @@ async fn test_wasm_sleep_timeout_filter() {
     backend.set_default_response(PreConfiguredResponse::with_body("backend response")).await;
 
     let start = std::time::Instant::now();
-    let response = client
-        .send(RequestBuilder::get("/test"))
-        .await
-        .expect("request");
+    let response = client.send(RequestBuilder::get("/test")).await.expect("request");
     let elapsed = start.elapsed();
 
     response.assert_status(StatusCode::OK);
     response.assert_body("backend response");
 
     let captured = backend.await_request().await.expect("backend request");
-    
+
     assert_eq!(captured.header("x-timeout-test"), Some("passed"));
 
     // The filter sleeps for 1 second, sets 1 second IO timeout, then tries to sleep 10 seconds.
     // It should timeout after 1 second, so the total time should be roughly 2 seconds.
     // Allow some buffer for execution overhead (between 1.5s and 4.0s)
-    assert!(elapsed.as_secs_f64() > 1.5, "Elapsed time too short: {:?}", elapsed);
-    assert!(elapsed.as_secs_f64() < 4.0, "Elapsed time too long: {:?}", elapsed);
+    assert!(elapsed.as_secs_f64() > 1.5, "Elapsed time too short: {elapsed:?}");
+    assert!(elapsed.as_secs_f64() < 4.0, "Elapsed time too long: {elapsed:?}");
 }
 #[tokio::test]
 #[test_log::test]
 async fn test_wasm_access_log_operator_filter() {
-    let mut backend = TestBackend::start().await.expect("backend start");
+    let backend = TestBackend::start().await.expect("backend start");
     backend.set_default_response(PreConfiguredResponse::with_body("backend response")).await;
     let backend_addr = backend.addr();
 
     let log_dir = std::env::temp_dir();
     let log_path = log_dir.join(format!("orion-test-access-log-wasm-{}.txt", std::process::id()));
-    
+
     // We want to test that our Wasm filter injects these custom operators
     let log_format = "op1=%op_1%||op2=%op_2%||op3=%op_3%||op4=%op_4%\n";
 
@@ -571,27 +521,38 @@ async fn test_wasm_access_log_operator_filter() {
         .code_filename(get_wasm_path("access_log_operator_filter"));
 
     let bootstrap = BootstrapBuilder::new()
-        .listener(ListenerBuilder::new("http").port(0).filter_chain(FilterChainBuilder::new("main").hcm(
-            HcmBuilder::new().http1().access_log_file(log_path.to_str().unwrap(), log_format).wasm(builder).route_config(
-                RouteConfigBuilder::new("routes").virtual_host(
-                    VirtualHostBuilder::new("default").route(RouteBuilder::new().match_prefix("/").cluster("backend")),
+        .listener(
+            ListenerBuilder::new("http").port(0).filter_chain(
+                FilterChainBuilder::new("main").hcm(
+                    HcmBuilder::new()
+                        .http1()
+                        .access_log_file(log_path.to_str().unwrap(), log_format)
+                        .wasm(builder)
+                        .route_config(
+                            RouteConfigBuilder::new("routes").virtual_host(
+                                VirtualHostBuilder::new("default")
+                                    .route(RouteBuilder::new().match_prefix("/").cluster("backend")),
+                            ),
+                        ),
                 ),
             ),
-        )))
+        )
         .cluster(ClusterBuilder::with_endpoint("backend", backend_addr))
-        .access_log(orion_configuration::config::log::AccessLogConfig { 
-            blocking: true, 
+        .access_log(orion_configuration::config::log::AccessLogConfig {
+            blocking: true,
             custom_operators: vec![
                 smol_str::SmolStr::new("op_1"),
                 smol_str::SmolStr::new("op_2"),
                 smol_str::SmolStr::new("op_3"),
                 smol_str::SmolStr::new("op_4"),
             ],
-            ..orion_configuration::config::log::AccessLogConfig::default() 
+            ..orion_configuration::config::log::AccessLogConfig::default()
         });
 
     let config_path = bootstrap.build_to_temp().expect("build config");
-    let orion = OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default().with_verbose()).await.expect("spawn orion");
+    let orion = OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default().with_verbose())
+        .await
+        .expect("spawn orion");
     let listener_addr = orion.listener_addr().unwrap();
     let raw_req = orion_e2e_tests::RawHttpRequestBuilder::new()
         .method("GET")
@@ -604,7 +565,7 @@ async fn test_wasm_access_log_operator_filter() {
     tokio::io::AsyncWriteExt::write_all(&mut stream, &raw_req).await.expect("Failed to write");
     let mut resp = Vec::new();
     tokio::io::AsyncReadExt::read_to_end(&mut stream, &mut resp).await.expect("Failed to read");
-    
+
     // Give it a moment to flush the access log
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     orion.shutdown();
@@ -620,7 +581,7 @@ async fn test_wasm_access_log_operator_filter() {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
     assert!(!content.is_empty(), "Failed to read log file or it was empty");
-    
+
     // The filter sets:
     // op_1: "\"value_from_request_phase\""
     // op_2: "42"
@@ -630,14 +591,13 @@ async fn test_wasm_access_log_operator_filter() {
     assert!(content.contains("op2=42"));
     assert!(content.contains("op3={\"nested\": true}"));
     assert!(content.contains("op4=\"value_from_response_phase\""));
-    
-    let _ = std::fs::remove_file(log_path);
+
+    _ = std::fs::remove_file(log_path);
 }
 
-
 // Helper for metrics custom filter tests
-use orion_configuration::config::metrics::{CustomMetric, CustomMetrics, MetricsConfig};
 use http::HeaderName;
+use orion_configuration::config::metrics::{CustomMetric, CustomMetrics, MetricsConfig};
 use orion_e2e_tests::PortBlock;
 
 fn custom_metric_filter_builder() -> WasmBuilder {
@@ -651,7 +611,7 @@ fn custom_metric_filter_builder() -> WasmBuilder {
 #[tokio::test]
 #[test_log::test]
 async fn test_wasm_custom_metric_filter() {
-    let mut backend = TestBackend::start().await.expect("backend start");
+    let backend = TestBackend::start().await.expect("backend start");
     backend.set_default_response(PreConfiguredResponse::with_body("backend response")).await;
     let backend_addr = backend.addr();
 
@@ -704,9 +664,9 @@ async fn test_wasm_custom_metric_filter() {
         .cluster(ClusterBuilder::with_endpoint("backend", backend_addr));
 
     let config_path = bootstrap.build_to_temp().expect("build config");
-    let _orion =
+    let orion_instance =
         OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default()).await.expect("spawn orion");
-    let client = TestClient::new(_orion.listener_addr().unwrap());
+    let client = TestClient::new(orion_instance.listener_addr().unwrap());
     let admin_client = TestClient::new(admin_addr);
 
     let response = client.send(RequestBuilder::get("/test")).await.expect("request");
@@ -794,10 +754,10 @@ fn grpc_callout_filter_builder() -> WasmBuilder {
 #[test_log::test]
 async fn test_wasm_grpc_callout_filter() {
     let backend = TestBackend::start().await.expect("backend start");
-    let mut callout_backend = TestBackend::start_h2().await.expect("callout start");
-    
+    let callout_backend = TestBackend::start_h2().await.expect("callout start");
+
     backend.set_default_response(PreConfiguredResponse::with_body("backend response")).await;
-    
+
     // The Wasm module sends an EchoRequest with message="Hello from Wasm!"
     // The callout_backend needs to return a valid gRPC response.
     // 1 byte compressed flag (0), 4 bytes length, then protobuf encoded EchoResponse.
@@ -810,18 +770,22 @@ async fn test_wasm_grpc_callout_filter() {
     proto_payload.extend_from_slice(b"Hello from Host!");
     proto_payload.extend_from_slice(&[18, 4]);
     proto_payload.extend_from_slice(b"test");
-    
+
     let mut grpc_frame = Vec::new();
     grpc_frame.push(0); // uncompressed
+
+    #[allow(clippy::cast_possible_truncation)]
     grpc_frame.extend_from_slice(&(proto_payload.len() as u32).to_be_bytes());
     grpc_frame.extend_from_slice(&proto_payload);
 
-    callout_backend.set_default_response(
-        PreConfiguredResponse::with_status(StatusCode::OK)
-            .header("content-type", "application/grpc")
-            .header("grpc-status", "0")
-            .body(grpc_frame)
-    ).await;
+    callout_backend
+        .set_default_response(
+            PreConfiguredResponse::with_status(StatusCode::OK)
+                .header("content-type", "application/grpc")
+                .header("grpc-status", "0")
+                .body(grpc_frame),
+        )
+        .await;
 
     let bootstrap = BootstrapBuilder::new()
         .listener(ListenerBuilder::new("http").port(0).filter_chain(FilterChainBuilder::new("main").hcm(
@@ -836,19 +800,13 @@ async fn test_wasm_grpc_callout_filter() {
         .cluster(orion_e2e_tests::config_builder::presets::ext_proc_cluster("service", callout_backend.addr()));
 
     let config_path = bootstrap.build_to_temp().expect("build config");
-    let _orion =
+    let orion_instance =
         OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default()).await.expect("spawn orion");
-    let client = TestClient::new(_orion.listener_addr().unwrap());
+    let client = TestClient::new(orion_instance.listener_addr().unwrap());
 
-    let response = client
-        .send(
-            RequestBuilder::get("/test")
-        )
-        .await
-        .expect("request");
+    let response = client.send(RequestBuilder::get("/test")).await.expect("request");
 
     // The plugin replaces the response body with "grpc callout success: Hello from Host!"
     response.assert_status(StatusCode::OK);
     response.assert_body("grpc callout success: Hello from Host!");
 }
-

@@ -2,7 +2,7 @@ use crate::ffi;
 use crate::internal::*;
 use crate::typestate::{HttpBody, State};
 use http::{header::{HeaderName, HeaderValue}, HeaderMap};
-use orion_wasm_types::{FilterAction, HeaderMutation, OrionWasmError, OrionWasmResult};
+use orion_wasm_types::{FilterAction, HeaderMutation, OrionWasmError};
 
 /// Typestate wrapper around a request handle.
 pub struct RequestHandle<S: State> {
@@ -42,7 +42,7 @@ impl<S: State> RequestHandle<S> {
         } else if res == 1 { // NotFound
             Ok(None)
         } else {
-            Err(OrionWasmResult::from_ffi(res).unwrap_err())
+            Err(OrionWasmError::from_ffi(res).unwrap_err())
         }
     }
 

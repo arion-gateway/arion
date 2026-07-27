@@ -1,5 +1,5 @@
 use crate::ffi;
-use crate::{HeaderMutation, OrionWasmError, OrionWasmResult};
+use crate::{HeaderMutation, OrionWasmError};
 use http::{header::HeaderName, header::HeaderValue, HeaderMap};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -53,7 +53,7 @@ pub(crate) fn get_http_header(
         )
     };
 
-    match OrionWasmResult::from_ffi(res) {
+    match OrionWasmError::from_ffi(res) {
         Ok(()) => {
             let len = written_len as usize;
             Ok(HeaderValue::from_bytes(&stack_buf[..len]).ok())
@@ -76,7 +76,7 @@ pub(crate) fn get_http_header(
                     )
                 };
 
-                match OrionWasmResult::from_ffi(res) {
+                match OrionWasmError::from_ffi(res) {
                     Ok(()) => {
                         unsafe {
                             heap_buf.set_len(written_len as usize);
@@ -115,7 +115,7 @@ pub(crate) fn get_http_body(handle: u64, target: ffi::HeaderTarget) -> Result<Ve
             )
         };
 
-        match OrionWasmResult::from_ffi(res) {
+        match OrionWasmError::from_ffi(res) {
             Ok(()) => {
                 unsafe {
                     buf.set_len(written_len as usize);
@@ -138,7 +138,7 @@ pub(crate) fn get_http_body(handle: u64, target: ffi::HeaderTarget) -> Result<Ve
 pub(crate) fn set_http_body(handle: u64, target: ffi::HeaderTarget, body: &[u8]) -> Result<(), OrionWasmError> {
     let res = unsafe { ffi::orion_set_body(handle, target as u32, body.as_ptr(), body.len() as u32) };
 
-    OrionWasmResult::from_ffi(res)
+    OrionWasmError::from_ffi(res)
 }
 
 /// Send a direct (local) HTTP response and short-circuit the filter chain.
@@ -151,7 +151,7 @@ pub(crate) fn send_http_direct_response(
         ffi::orion_send_direct_response(request_handle, status_code as u32, body.as_ptr(), body.len() as u32)
     };
 
-    OrionWasmResult::from_ffi(res)
+    OrionWasmError::from_ffi(res)
 }
 
 pub(crate) fn get_http_headers_map(handle: u64, target: ffi::HeaderTarget) -> Result<HeaderMap, OrionWasmError> {
@@ -169,7 +169,7 @@ pub(crate) fn get_http_headers_map(handle: u64, target: ffi::HeaderTarget) -> Re
             )
         };
 
-        match OrionWasmResult::from_ffi(res) {
+        match OrionWasmError::from_ffi(res) {
             Ok(()) => {
                 unsafe {
                     buf.set_len(written_len as usize);
@@ -202,7 +202,7 @@ pub(crate) fn set_http_headers_map(
         .map_err(|_| OrionWasmError::InternalError)?;
     let res =
         unsafe { ffi::orion_set_headers_map(handle, target as u32, serialized.as_ptr(), serialized.len() as u32) };
-    OrionWasmResult::from_ffi(res)
+    OrionWasmError::from_ffi(res)
 }
 
 pub(crate) fn set_http_header(
@@ -223,7 +223,7 @@ pub(crate) fn set_http_header(
             value_bytes.len() as u32,
         )
     };
-    OrionWasmResult::from_ffi(res)
+    OrionWasmError::from_ffi(res)
 }
 
 pub(crate) fn add_http_header(
@@ -244,7 +244,7 @@ pub(crate) fn add_http_header(
             value_bytes.len() as u32,
         )
     };
-    OrionWasmResult::from_ffi(res)
+    OrionWasmError::from_ffi(res)
 }
 
 pub(crate) fn remove_http_header(
@@ -254,7 +254,7 @@ pub(crate) fn remove_http_header(
 ) -> Result<(), OrionWasmError> {
     let name_bytes = name.as_str().as_bytes();
     let res = unsafe { ffi::orion_remove_header(handle, target as u32, name_bytes.as_ptr(), name_bytes.len() as u32) };
-    OrionWasmResult::from_ffi(res)
+    OrionWasmError::from_ffi(res)
 }
 
 pub(crate) fn replace_http_header(
@@ -275,7 +275,7 @@ pub(crate) fn replace_http_header(
             value_bytes.len() as u32,
         )
     };
-    OrionWasmResult::from_ffi(res)
+    OrionWasmError::from_ffi(res)
 }
 
 pub(crate) fn apply_header_mutations(
@@ -288,5 +288,5 @@ pub(crate) fn apply_header_mutations(
     let res = unsafe {
         ffi::orion_apply_header_mutations(handle, target as u32, serialized.as_ptr(), serialized.len() as u32)
     };
-    OrionWasmResult::from_ffi(res)
+    OrionWasmError::from_ffi(res)
 }

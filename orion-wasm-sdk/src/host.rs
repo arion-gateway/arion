@@ -1,6 +1,6 @@
 use crate::ffi;
 use crate::internal::DEFAULT_HEAP_BUF_SIZE;
-use orion_wasm_types::{CalloutRequest, CalloutResponse, GrpcCalloutRequest, GrpcCalloutResponse, OrionWasmError, OrionWasmResult};
+use orion_wasm_types::{CalloutRequest, CalloutResponse, GrpcCalloutRequest, GrpcCalloutResponse, OrionWasmError};
 
 /// Read the plugin configuration.
 pub fn get_plugin_config() -> Result<Option<String>, OrionWasmError> {
@@ -12,7 +12,7 @@ pub fn get_plugin_config() -> Result<Option<String>, OrionWasmError> {
             ffi::orion_get_plugin_config(buf.as_mut_ptr(), buf.capacity() as u32, &mut written_len as *mut u32)
         };
 
-        match OrionWasmResult::from_ffi(res) {
+        match OrionWasmError::from_ffi(res) {
             Ok(()) => {
                 unsafe {
                     buf.set_len(written_len as usize);
@@ -41,7 +41,7 @@ where
     let buf = bincode_next::serde::encode_to_vec(pairs.as_slice(), bincode_next::config::standard())
         .map_err(|_| OrionWasmError::InternalError)?;
     let res = unsafe { ffi::orion_set_custom_metrics(buf.as_ptr(), buf.len() as u32) };
-    OrionWasmResult::from_ffi(res)
+    OrionWasmError::from_ffi(res)
 }
 
 /// Set multiple access log operators at once.
@@ -53,7 +53,7 @@ where
     let buf = bincode_next::serde::encode_to_vec(pairs.as_slice(), bincode_next::config::standard())
         .map_err(|_| OrionWasmError::InternalError)?;
     let res = unsafe { ffi::orion_set_access_log_operators(buf.as_ptr(), buf.len() as u32) };
-    OrionWasmResult::from_ffi(res)
+    OrionWasmError::from_ffi(res)
 }
 
 /// Dispatches an asynchronous HTTP call using the host's cluster manager.
@@ -85,7 +85,7 @@ pub fn dispatch_http_call(request: &CalloutRequest) -> Result<CalloutResponse, O
             Err(_) => Err(OrionWasmError::InternalError),
         }
     } else {
-        Err(OrionWasmResult::from_ffi(res).unwrap_err())
+        Err(OrionWasmError::from_ffi(res).unwrap_err())
     }
 }
 
@@ -118,7 +118,7 @@ pub fn dispatch_grpc_call(request: &GrpcCalloutRequest) -> Result<GrpcCalloutRes
             Err(_) => Err(OrionWasmError::InternalError),
         }
     } else {
-        Err(OrionWasmResult::from_ffi(res).unwrap_err())
+        Err(OrionWasmError::from_ffi(res).unwrap_err())
     }
 }
 
@@ -129,7 +129,7 @@ pub fn dispatch_grpc_call(request: &GrpcCalloutRequest) -> Result<GrpcCalloutRes
 pub fn set_io_timeout(duration: std::time::Duration) -> Result<(), OrionWasmError> {
     let microseconds = duration.as_micros().try_into().unwrap_or(u64::MAX);
     let res = unsafe { ffi::orion_set_io_timeout(microseconds) };
-    OrionWasmResult::from_ffi(res)
+    OrionWasmError::from_ffi(res)
 }
 
 /// Disarms the current IO timeout and returns the remaining time.
@@ -138,7 +138,7 @@ pub fn set_io_timeout(duration: std::time::Duration) -> Result<(), OrionWasmErro
 pub fn clear_io_timeout() -> Result<std::time::Duration, OrionWasmError> {
     let mut remaining_us = 0u64;
     let res = unsafe { ffi::orion_clear_io_timeout(&mut remaining_us as *mut u64) };
-    OrionWasmResult::from_ffi(res)?;
+    OrionWasmError::from_ffi(res)?;
     Ok(std::time::Duration::from_micros(remaining_us))
 }
 
@@ -149,5 +149,5 @@ pub fn clear_io_timeout() -> Result<std::time::Duration, OrionWasmError> {
 pub fn sleep(duration: std::time::Duration) -> Result<(), OrionWasmError> {
     let microseconds = duration.as_micros().try_into().unwrap_or(u64::MAX);
     let res = unsafe { ffi::orion_sleep(microseconds) };
-    OrionWasmResult::from_ffi(res)
+    OrionWasmError::from_ffi(res)
 }

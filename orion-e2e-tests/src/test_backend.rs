@@ -155,7 +155,11 @@ impl TestBackend {
         Self::start_with_listener_and_capacity_impl(listener, channel_capacity, false)
     }
 
-    fn start_with_listener_and_capacity_impl(listener: TcpListener, channel_capacity: usize, is_h2: bool) -> Result<Self> {
+    fn start_with_listener_and_capacity_impl(
+        listener: TcpListener,
+        channel_capacity: usize,
+        is_h2: bool,
+    ) -> Result<Self> {
         let addr = listener.local_addr()?;
 
         info!(?addr, "Starting test backend server (h2: {})", is_h2);
@@ -178,6 +182,7 @@ impl TestBackend {
         Ok(Self { addr, request_rx, responses, default_response, shutdown, _server_handle: server_handle })
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn run_server(
         listener: TcpListener,
         request_tx: mpsc::Sender<CapturedRequest>,

@@ -9,11 +9,11 @@
 //! `get_request_body`, `send_http_direct_response`, ...) are wrapped by the
 //! SDK so user code never touches raw FFI.
 //!
-//! The ABI types (`OrionWasmResult`, `FilterAction`) are shared with the host
+//! The ABI types (e.g. `FilterAction`) are shared with the host
 //! via the standalone [`orion_wasm_types`] crate.
 
 pub use orion_wasm_types::{
-    CalloutRequest, CalloutResponse, FilterAction, HeaderMutation, OrionWasmError, OrionWasmResult, LogLevel
+    CalloutRequest, CalloutResponse, FilterAction, HeaderMutation, OrionWasmError, LogLevel
 };
 pub use http::{header::HeaderName, header::HeaderValue, HeaderMap};
 

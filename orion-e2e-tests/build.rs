@@ -21,9 +21,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 2. Build Wasm filters for E2E testing
     // Cargo sets variables for build.rs that can interfere with a nested cross-compilation cargo build.
-    let mut cmd = std::process::Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string()));
-    cmd.args(["build", "--target", "wasm32-unknown-unknown", "--workspace"])
-        .current_dir("../orion-wasm-sdk");
+    let mut cmd = std::process::Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned()));
+    cmd.args(["build", "--target", "wasm32-unknown-unknown", "--workspace"]).current_dir("../orion-wasm-sdk");
 
     // Remove conflicting environment variables injected by Cargo into build.rs
     for (key, _) in std::env::vars() {

@@ -127,7 +127,7 @@ pub fn evaluate_plain_access_log_hook(
 
     // Apply directly to loggers without intermediate allocations
     for logger in loggers {
-        for (k, v) in headers.iter() {
+        for (k, v) in headers {
             logger.with_custom_value(k, v);
         }
     }

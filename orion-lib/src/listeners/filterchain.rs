@@ -240,6 +240,7 @@ impl FilterchainType {
     }
 
     #[allow(clippy::used_underscore_binding)]
+    #[allow(clippy::too_many_lines)]
     pub async fn start_filterchain(
         &self,
         stream: AsyncInstrumentedStream,

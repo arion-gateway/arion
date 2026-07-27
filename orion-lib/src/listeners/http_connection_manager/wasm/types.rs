@@ -2,4 +2,3 @@
 //
 // This keeps a single source of truth for the Wasm ABI contract shared between
 // the host (orion-lib) and the guest SDK (orion-wasm-sdk).
-pub(crate) use orion_wasm_types::{OrionWasmResult};
