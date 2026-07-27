@@ -1,4 +1,11 @@
 #![allow(clippy::similar_names)]
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::missing_safety_doc)]
+#![allow(clippy::undocumented_unsafe_blocks)]
+#![allow(clippy::needless_pass_by_value)]
+#![allow(clippy::manual_let_else)]
+#![allow(clippy::too_many_lines)]
+
 use std::sync::LazyLock;
 
 use crate::body::timeout_body::TimeoutBody;
@@ -52,9 +59,8 @@ fn orion_get_header(
     value_max_len: u32,
     written_len_ptr: u32,
 ) -> i32 {
-    let memory = match caller.get_export("memory").and_then(wasmtime::Extern::into_memory) {
-        Some(mem) => mem,
-        None => return OrionWasmError::InvalidMemoryAccess.into(),
+    let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
+        return OrionWasmError::InvalidMemoryAccess.into();
     };
 
     let name = {
@@ -109,7 +115,7 @@ fn orion_get_header(
             return OrionWasmError::InvalidMemoryAccess.into();
         }
         if let Some(slice) = data.get_mut(len_start..len_end) {
-            slice.copy_from_slice(&(val_bytes.len() as u32).to_le_bytes());
+            slice.copy_from_slice(&(u32::try_from(val_bytes.len()).unwrap_or(0)).to_le_bytes());
         } else {
             tracing::error!("Invalid memory index");
             return OrionWasmError::InvalidMemoryAccess.into();
@@ -127,9 +133,8 @@ fn orion_get_plugin_config(
     max_len: u32,
     written_len_ptr: u32,
 ) -> i32 {
-    let memory = match caller.get_export("memory").and_then(wasmtime::Extern::into_memory) {
-        Some(mem) => mem,
-        None => return OrionWasmError::InvalidMemoryAccess.into(),
+    let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
+        return OrionWasmError::InvalidMemoryAccess.into();
     };
 
     let config_string = match caller.data().plugin_config.as_ref() {
@@ -161,7 +166,7 @@ fn orion_get_plugin_config(
         return OrionWasmError::InvalidMemoryAccess.into();
     }
     if let Some(slice) = data.get_mut(len_start..len_end) {
-        slice.copy_from_slice(&(config_bytes.len() as u32).to_le_bytes());
+        slice.copy_from_slice(&(u32::try_from(config_bytes.len()).unwrap_or(0)).to_le_bytes());
     } else {
         tracing::error!("Invalid memory index");
         return OrionWasmError::InvalidMemoryAccess.into();
@@ -178,9 +183,8 @@ fn orion_get_body(
     max_len: u32,
     written_len_ptr: u32,
 ) -> i32 {
-    let memory = match caller.get_export("memory").and_then(wasmtime::Extern::into_memory) {
-        Some(mem) => mem,
-        None => return OrionWasmError::InvalidMemoryAccess.into(),
+    let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
+        return OrionWasmError::InvalidMemoryAccess.into();
     };
 
     let body_bytes = match HeaderTarget::try_from(handle_type) {
@@ -221,7 +225,7 @@ fn orion_get_body(
         return OrionWasmError::InvalidMemoryAccess.into();
     }
     if let Some(slice) = data.get_mut(len_start..len_end) {
-        slice.copy_from_slice(&(body_bytes.len() as u32).to_le_bytes());
+        slice.copy_from_slice(&(u32::try_from(body_bytes.len()).unwrap_or(0)).to_le_bytes());
     } else {
         tracing::error!("Invalid memory index");
         return OrionWasmError::InvalidMemoryAccess.into();
@@ -237,9 +241,8 @@ fn orion_set_body(
     body_ptr: u32,
     body_len: u32,
 ) -> i32 {
-    let memory = match caller.get_export("memory").and_then(wasmtime::Extern::into_memory) {
-        Some(mem) => mem,
-        None => return OrionWasmError::InvalidMemoryAccess.into(),
+    let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
+        return OrionWasmError::InvalidMemoryAccess.into();
     };
 
     let body_bytes = if body_len > 0 {
@@ -272,9 +275,10 @@ fn orion_send_direct_response(
     body_ptr: u32,
     body_len: u32,
 ) -> i32 {
-    let memory = match caller.get_export("memory").and_then(wasmtime::Extern::into_memory) {
-        Some(mem) => mem,
-        None => return OrionWasmError::InvalidMemoryAccess.into(),
+    use crate::body::poly_body::PolyBody;
+
+    let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
+        return OrionWasmError::InvalidMemoryAccess.into();
     };
 
     let request = unsafe { &*(request_handle as *const Request<OrionRequestBody>) };
@@ -291,12 +295,11 @@ fn orion_send_direct_response(
         Bytes::new()
     };
 
-    let status = match StatusCode::from_u16(status_code as u16) {
+    let status = match StatusCode::from_u16(u16::try_from(status_code).unwrap_or(500)) {
         Ok(s) => s,
         Err(_) => return OrionWasmError::InternalError.into(),
     };
 
-    use crate::body::poly_body::PolyBody;
     let mut response = Response::new(TimeoutBody::new(None, PolyBody::from(Full::from(body_bytes))));
     *response.status_mut() = status;
     *response.version_mut() = request.version();
@@ -308,9 +311,8 @@ fn orion_send_direct_response(
 
 #[allow(unused_variables)]
 fn orion_set_custom_metrics(mut caller: Caller<'_, WasmState>, buffer_ptr: u32, buffer_len: u32) -> i32 {
-    let memory = match caller.get_export("memory").and_then(wasmtime::Extern::into_memory) {
-        Some(mem) => mem,
-        None => return OrionWasmError::InvalidMemoryAccess.into(),
+    let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
+        return OrionWasmError::InvalidMemoryAccess.into();
     };
 
     #[cfg(feature = "metrics")]
@@ -347,9 +349,8 @@ fn orion_set_custom_metrics(mut caller: Caller<'_, WasmState>, buffer_ptr: u32, 
 }
 
 fn orion_set_access_log_operators(mut caller: Caller<'_, WasmState>, buffer_ptr: u32, buffer_len: u32) -> i32 {
-    let memory = match caller.get_export("memory").and_then(wasmtime::Extern::into_memory) {
-        Some(mem) => mem,
-        None => return OrionWasmError::InvalidMemoryAccess.into(),
+    let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
+        return OrionWasmError::InvalidMemoryAccess.into();
     };
 
     let data = memory.data(&caller);
@@ -373,9 +374,8 @@ fn orion_set_access_log_operators(mut caller: Caller<'_, WasmState>, buffer_ptr:
 }
 
 fn orion_log(mut caller: Caller<'_, WasmState>, level: u32, msg_ptr: u32, msg_len: u32) -> i32 {
-    let memory = match caller.get_export("memory").and_then(wasmtime::Extern::into_memory) {
-        Some(mem) => mem,
-        None => return OrionWasmError::InvalidMemoryAccess.into(),
+    let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
+        return OrionWasmError::InvalidMemoryAccess.into();
     };
 
     let data = memory.data(&caller);
@@ -408,8 +408,8 @@ struct SerHeaderMap<'a>(&'a HeaderMap);
 
 impl Serialize for SerHeaderMap<'_> {
     #[inline]
-    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        http_serde_ext::header_map::serialize(self.0, s)
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        http_serde_ext::header_map::serialize(self.0, serializer)
     }
 }
 
@@ -417,8 +417,8 @@ struct DeHeaderMap(HeaderMap);
 
 impl<'de> Deserialize<'de> for DeHeaderMap {
     #[inline]
-    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        http_serde_ext::header_map::deserialize(d).map(DeHeaderMap)
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        http_serde_ext::header_map::deserialize(deserializer).map(DeHeaderMap)
     }
 }
 
@@ -430,12 +430,11 @@ fn orion_get_headers_map(
     max_len: u32,
     written_len_ptr: u32,
 ) -> i32 {
-    let memory = match caller.get_export("memory").and_then(wasmtime::Extern::into_memory) {
-        Some(mem) => mem,
-        None => return OrionWasmError::InvalidMemoryAccess.into(),
-    };
-
     static EMPTY_MAP: LazyLock<http::HeaderMap> = LazyLock::new(http::HeaderMap::new);
+
+    let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
+        return OrionWasmError::InvalidMemoryAccess.into();
+    };
 
     let headers = match HeaderTarget::try_from(handle_type) {
         Ok(HeaderTarget::Request) => {
@@ -476,7 +475,7 @@ fn orion_get_headers_map(
         return OrionWasmError::InvalidMemoryAccess.into();
     }
     if let Some(slice) = data.get_mut(len_start..len_end) {
-        slice.copy_from_slice(&(serialized.len() as u32).to_le_bytes());
+        slice.copy_from_slice(&(u32::try_from(serialized.len()).unwrap_or(0)).to_le_bytes());
     } else {
         tracing::error!("Invalid memory index");
         return OrionWasmError::InvalidMemoryAccess.into();
@@ -491,9 +490,8 @@ fn orion_set_headers_map(
     buf_ptr: u32,
     buf_len: u32,
 ) -> i32 {
-    let memory = match caller.get_export("memory").and_then(wasmtime::Extern::into_memory) {
-        Some(mem) => mem,
-        None => return OrionWasmError::InvalidMemoryAccess.into(),
+    let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
+        return OrionWasmError::InvalidMemoryAccess.into();
     };
     let data = memory.data(&caller);
     let start = buf_ptr as usize;
@@ -536,23 +534,22 @@ fn get_name_value_from_memory(
     value_ptr: u32,
     value_len: u32,
 ) -> Result<(http::header::HeaderName, http::header::HeaderValue), OrionWasmError> {
-    let memory = match caller.get_export("memory").and_then(wasmtime::Extern::into_memory) {
-        Some(mem) => mem,
-        None => return Err(OrionWasmError::InvalidMemoryAccess),
+    let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
+        return Err(OrionWasmError::InvalidMemoryAccess);
     };
     let data = memory.data(caller);
 
     let n_start = name_ptr as usize;
     let n_end = n_start + name_len as usize;
     let name_str = std::str::from_utf8(data.get(n_start..n_end).ok_or(OrionWasmError::InvalidMemoryAccess)?)
-        .map_err(|_| OrionWasmError::InvalidMemoryAccess)?;
-    let name = http::header::HeaderName::try_from(name_str).map_err(|_| OrionWasmError::InternalError)?;
+        .map_err(|_e| OrionWasmError::InvalidMemoryAccess)?;
+    let name = http::header::HeaderName::try_from(name_str).map_err(|_e| OrionWasmError::InternalError)?;
 
     let v_start = value_ptr as usize;
     let v_end = v_start + value_len as usize;
     let value =
         http::header::HeaderValue::from_bytes(data.get(v_start..v_end).ok_or(OrionWasmError::InvalidMemoryAccess)?)
-            .map_err(|_| OrionWasmError::InternalError)?;
+            .map_err(|_e| OrionWasmError::InternalError)?;
 
     Ok((name, value))
 }
@@ -562,17 +559,16 @@ fn get_name_from_memory(
     name_ptr: u32,
     name_len: u32,
 ) -> Result<http::header::HeaderName, OrionWasmError> {
-    let memory = match caller.get_export("memory").and_then(wasmtime::Extern::into_memory) {
-        Some(mem) => mem,
-        None => return Err(OrionWasmError::InvalidMemoryAccess),
+    let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
+        return Err(OrionWasmError::InvalidMemoryAccess);
     };
     let data = memory.data(caller);
 
     let n_start = name_ptr as usize;
     let n_end = n_start + name_len as usize;
     let name_str = std::str::from_utf8(data.get(n_start..n_end).ok_or(OrionWasmError::InvalidMemoryAccess)?)
-        .map_err(|_| OrionWasmError::InvalidMemoryAccess)?;
-    http::header::HeaderName::try_from(name_str).map_err(|_| OrionWasmError::InternalError)
+        .map_err(|_e| OrionWasmError::InvalidMemoryAccess)?;
+    http::header::HeaderName::try_from(name_str).map_err(|_e| OrionWasmError::InternalError)
 }
 
 fn orion_set_header(
@@ -586,7 +582,7 @@ fn orion_set_header(
 ) -> i32 {
     let mut inner = || -> Result<(), OrionWasmError> {
         let (name, value) = get_name_value_from_memory(&mut caller, name_ptr, name_len, value_ptr, value_len)?;
-        match HeaderTarget::try_from(handle_type).map_err(|_| OrionWasmError::InternalError)? {
+        match HeaderTarget::try_from(handle_type).map_err(|_e| OrionWasmError::InternalError)? {
             HeaderTarget::Request => {
                 let request = unsafe { &mut *(handle as *mut Request<OrionRequestBody>) };
                 request.headers_mut().insert(name, value);
@@ -621,7 +617,7 @@ fn orion_add_header(
 ) -> i32 {
     let mut inner = || -> Result<(), OrionWasmError> {
         let (name, value) = get_name_value_from_memory(&mut caller, name_ptr, name_len, value_ptr, value_len)?;
-        match HeaderTarget::try_from(handle_type).map_err(|_| OrionWasmError::InternalError)? {
+        match HeaderTarget::try_from(handle_type).map_err(|_e| OrionWasmError::InternalError)? {
             HeaderTarget::Request => {
                 let request = unsafe { &mut *(handle as *mut Request<OrionRequestBody>) };
                 request.headers_mut().append(name, value);
@@ -654,7 +650,7 @@ fn orion_remove_header(
 ) -> i32 {
     let mut inner = || -> Result<(), OrionWasmError> {
         let name = get_name_from_memory(&mut caller, name_ptr, name_len)?;
-        match HeaderTarget::try_from(handle_type).map_err(|_| OrionWasmError::InternalError)? {
+        match HeaderTarget::try_from(handle_type).map_err(|_e| OrionWasmError::InternalError)? {
             HeaderTarget::Request => {
                 let request = unsafe { &mut *(handle as *mut Request<OrionRequestBody>) };
                 request.headers_mut().remove(&name);
@@ -691,7 +687,7 @@ fn orion_replace_header(
 ) -> i32 {
     let mut inner = || -> Result<(), OrionWasmError> {
         let (name, value) = get_name_value_from_memory(&mut caller, name_ptr, name_len, value_ptr, value_len)?;
-        match HeaderTarget::try_from(handle_type).map_err(|_| OrionWasmError::InternalError)? {
+        match HeaderTarget::try_from(handle_type).map_err(|_e| OrionWasmError::InternalError)? {
             HeaderTarget::Request => {
                 let request = unsafe { &mut *(handle as *mut Request<OrionRequestBody>) };
                 if request.headers().contains_key(&name) {
@@ -755,9 +751,8 @@ fn orion_apply_header_mutations(
     buf_ptr: u32,
     buf_len: u32,
 ) -> i32 {
-    let memory = match caller.get_export("memory").and_then(wasmtime::Extern::into_memory) {
-        Some(mem) => mem,
-        None => return OrionWasmError::InvalidMemoryAccess.into(),
+    let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
+        return OrionWasmError::InvalidMemoryAccess.into();
     };
     let data = memory.data(&caller);
     let start = buf_ptr as usize;
@@ -805,9 +800,8 @@ fn orion_dispatch_http_call(
     Box::new(async move {
         // 1. Read the serialized request from Wasm memory
         let req_bytes = {
-            let memory = match caller.get_export("memory").and_then(wasmtime::Extern::into_memory) {
-                Some(mem) => mem,
-                None => return OrionWasmError::InvalidMemoryAccess.into(),
+            let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
+                return OrionWasmError::InvalidMemoryAccess.into();
             };
             let data = memory.data(&caller);
             let start = req_ptr as usize;
@@ -957,15 +951,16 @@ fn orion_dispatch_http_call(
 
         // Call orion_malloc on the guest
         let mut results = [wasmtime::Val::I32(0)];
-        if let Err(e) =
-            alloc_func.call_async(&mut caller, &[wasmtime::Val::I32(resp_bytes.len() as i32)], &mut results).await
+        if let Err(e) = alloc_func
+            .call_async(&mut caller, &[wasmtime::Val::I32(i32::try_from(resp_bytes.len()).unwrap_or(0))], &mut results)
+            .await
         {
             tracing::error!("Callout failed to call orion_malloc: {:?}", e);
             return OrionWasmError::InternalError.into();
         }
 
         let resp_ptr = match results[0] {
-            wasmtime::Val::I32(ptr) => ptr as u32,
+            wasmtime::Val::I32(ptr) => u32::try_from(ptr).unwrap_or(0),
             _ => return OrionWasmError::InternalError.into(),
         };
 
@@ -1001,7 +996,7 @@ fn orion_dispatch_http_call(
             return OrionWasmError::InvalidMemoryAccess.into();
         }
         if let Some(slice) = data.get_mut(rl_start..rl_end) {
-            slice.copy_from_slice(&(resp_bytes.len() as u32).to_le_bytes());
+            slice.copy_from_slice(&(u32::try_from(resp_bytes.len()).unwrap_or(0)).to_le_bytes());
         } else {
             tracing::error!("Invalid memory index");
             return OrionWasmError::InvalidMemoryAccess.into();
@@ -1059,9 +1054,8 @@ fn orion_dispatch_grpc_call(
 ) -> Box<dyn std::future::Future<Output = i32> + Send + '_> {
     Box::new(async move {
         let req_bytes = {
-            let memory = match caller.get_export("memory").and_then(wasmtime::Extern::into_memory) {
-                Some(mem) => mem,
-                None => return OrionWasmError::InvalidMemoryAccess.into(),
+            let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
+                return OrionWasmError::InvalidMemoryAccess.into();
             };
             let data = memory.data(&caller);
             let start = req_ptr as usize;
@@ -1220,15 +1214,16 @@ fn orion_dispatch_grpc_call(
         };
 
         let mut results = [wasmtime::Val::I32(0)];
-        if let Err(e) =
-            alloc_func.call_async(&mut caller, &[wasmtime::Val::I32(resp_bytes.len() as i32)], &mut results).await
+        if let Err(e) = alloc_func
+            .call_async(&mut caller, &[wasmtime::Val::I32(i32::try_from(resp_bytes.len()).unwrap_or(0))], &mut results)
+            .await
         {
             tracing::error!("gRPC Callout failed to call orion_malloc: {:?}", e);
             return OrionWasmError::InternalError.into();
         }
 
         let resp_ptr = match results[0] {
-            wasmtime::Val::I32(ptr) => ptr as u32,
+            wasmtime::Val::I32(ptr) => u32::try_from(ptr).unwrap_or(0),
             _ => return OrionWasmError::InternalError.into(),
         };
 
@@ -1263,7 +1258,7 @@ fn orion_dispatch_grpc_call(
             return OrionWasmError::InvalidMemoryAccess.into();
         }
         if let Some(slice) = data.get_mut(rl_start..rl_end) {
-            slice.copy_from_slice(&(resp_bytes.len() as u32).to_le_bytes());
+            slice.copy_from_slice(&(u32::try_from(resp_bytes.len()).unwrap_or(0)).to_le_bytes());
         } else {
             tracing::error!("Invalid memory index");
             return OrionWasmError::InvalidMemoryAccess.into();
@@ -1280,15 +1275,14 @@ fn orion_set_io_timeout(mut caller: Caller<'_, WasmState>, microseconds: u64) ->
 }
 
 fn orion_clear_io_timeout(mut caller: Caller<'_, WasmState>, remaining_us_ptr: u32) -> i32 {
-    let memory = match caller.get_export("memory").and_then(wasmtime::Extern::into_memory) {
-        Some(mem) => mem,
-        None => return OrionWasmError::InvalidMemoryAccess.into(),
+    let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
+        return OrionWasmError::InvalidMemoryAccess.into();
     };
 
     let remaining_us: u64 = if let Some(deadline) = caller.data_mut().io_deadline.take() {
         let now = std::time::Instant::now();
         if deadline > now {
-            (deadline - now).as_micros() as u64
+            u64::try_from((deadline - now).as_micros()).unwrap_or(0)
         } else {
             0
         }
@@ -1408,27 +1402,26 @@ fn orion_get_downstream_metadata(
             },
         };
 
-        let alloc_func = match caller.get_export("orion_malloc").and_then(wasmtime::Extern::into_func) {
-            Some(func) => func,
-            None => return OrionWasmError::InternalError.into(),
+        let Some(alloc_func) = caller.get_export("orion_malloc").and_then(wasmtime::Extern::into_func) else {
+            return OrionWasmError::InternalError.into();
         };
 
         let mut results = [wasmtime::Val::I32(0)];
-        if let Err(e) =
-            alloc_func.call_async(&mut caller, &[wasmtime::Val::I32(encoded.len() as i32)], &mut results).await
+        if let Err(e) = alloc_func
+            .call_async(&mut caller, &[wasmtime::Val::I32(i32::try_from(encoded.len()).unwrap_or(0))], &mut results)
+            .await
         {
             tracing::error!("Failed to call orion_malloc async: {:?}", e);
             return OrionWasmError::InternalError.into();
         }
 
         let allocated_ptr = match results[0] {
-            wasmtime::Val::I32(ptr) => ptr as u32,
+            wasmtime::Val::I32(ptr) => u32::try_from(ptr).unwrap_or(0),
             _ => return OrionWasmError::InternalError.into(),
         };
 
-        let memory = match caller.get_export("memory").and_then(wasmtime::Extern::into_memory) {
-            Some(mem) => mem,
-            None => return OrionWasmError::InvalidMemoryAccess.into(),
+        let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
+            return OrionWasmError::InvalidMemoryAccess.into();
         };
 
         let data = memory.data_mut(&mut caller);
@@ -1460,7 +1453,7 @@ fn orion_get_downstream_metadata(
             return OrionWasmError::InvalidMemoryAccess.into();
         }
         if let Some(slice) = data.get_mut(len_start..len_start + 4) {
-            slice.copy_from_slice(&(encoded.len() as u32).to_le_bytes());
+            slice.copy_from_slice(&(u32::try_from(encoded.len()).unwrap_or(0)).to_le_bytes());
         } else {
             tracing::error!("Invalid memory index");
             return OrionWasmError::InvalidMemoryAccess.into();
@@ -1471,9 +1464,8 @@ fn orion_get_downstream_metadata(
 }
 
 fn orion_shared_resolve(mut caller: Caller<'_, WasmState>, name_ptr: u32, name_len: u32, var_type: u32) -> u32 {
-    let memory = match caller.get_export("memory").and_then(wasmtime::Extern::into_memory) {
-        Some(mem) => mem,
-        None => return u32::MAX,
+    let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
+        return u32::MAX;
     };
     let data = memory.data(&caller);
     let start = name_ptr as usize;
@@ -1483,15 +1475,15 @@ fn orion_shared_resolve(mut caller: Caller<'_, WasmState>, name_ptr: u32, name_l
         None => return u32::MAX,
     };
 
-    let shared = caller.data().shared_memory.clone();
+    let shared = std::sync::Arc::clone(&caller.data().shared_memory);
     let map = &shared.name_to_id;
     let pin = map.pin();
 
     if let Some(&var_id) = pin.get(&name) {
         return match (var_id, var_type) {
-            (super::shared::VarId::U64(id), 0) => id,
-            (super::shared::VarId::I64(id), 1) => id,
-            (super::shared::VarId::Blob(id), 2) => id,
+            (super::shared::VarId::U64(id), 0)
+            | (super::shared::VarId::I64(id), 1)
+            | (super::shared::VarId::Blob(id), 2) => id,
             _ => u32::MAX,
         };
     }
@@ -1580,8 +1572,7 @@ fn ext_shared_u64_compare_exchange(
 ) -> u64 {
     get_shared_atomic!(caller, u64_vars, id)
         .map(|v| match v.compare_exchange(current, new, convert_ordering(succ), convert_ordering(fail)) {
-            Ok(prev) => prev,
-            Err(prev) => prev,
+            Ok(prev) | Err(prev) => prev,
         })
         .unwrap_or(0)
 }
@@ -1632,8 +1623,7 @@ fn ext_shared_i64_compare_exchange(
 ) -> i64 {
     get_shared_atomic!(caller, i64_vars, id)
         .map(|v| match v.compare_exchange(current, new, convert_ordering(succ), convert_ordering(fail)) {
-            Ok(prev) => prev,
-            Err(prev) => prev,
+            Ok(prev) | Err(prev) => prev,
         })
         .unwrap_or(0)
 }
@@ -1670,16 +1660,14 @@ fn ext_shared_blob_read(
     buf_len: u32,
     out_version_ptr: u32,
 ) -> u32 {
-    let shared = caller.data().shared_memory.clone();
-    let blob_lock = match get_shared_blob!(shared, id) {
-        Some(b) => b,
-        None => return u32::MAX,
+    let shared = std::sync::Arc::clone(&caller.data().shared_memory);
+    let Some(blob_lock) = get_shared_blob!(shared, id) else {
+        return u32::MAX;
     };
     let blob = blob_lock.read();
 
-    let memory = match caller.get_export("memory").and_then(wasmtime::Extern::into_memory) {
-        Some(mem) => mem,
-        None => return u32::MAX,
+    let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
+        return u32::MAX;
     };
     let data = memory.data_mut(&mut caller);
 
@@ -1693,7 +1681,7 @@ fn ext_shared_blob_read(
         }
     }
 
-    let actual_len = blob.data.len() as u32;
+    let actual_len = u32::try_from(blob.data.len()).unwrap_or(0);
     if actual_len <= buf_len {
         let start = buf_ptr as usize;
         if start + actual_len as usize <= data.len() {
@@ -1709,16 +1697,14 @@ fn ext_shared_blob_read(
 }
 
 fn ext_shared_blob_write(mut caller: Caller<'_, WasmState>, id: u32, buf_ptr: u32, buf_len: u32) -> u64 {
-    let shared = caller.data().shared_memory.clone();
-    let blob_lock = match get_shared_blob!(shared, id) {
-        Some(b) => b,
-        None => return 0,
+    let shared = std::sync::Arc::clone(&caller.data().shared_memory);
+    let Some(blob_lock) = get_shared_blob!(shared, id) else {
+        return 0;
     };
     let mut blob = blob_lock.write();
 
-    let memory = match caller.get_export("memory").and_then(wasmtime::Extern::into_memory) {
-        Some(mem) => mem,
-        None => return 0,
+    let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
+        return 0;
     };
     let data = memory.data(&caller);
     let start = buf_ptr as usize;
@@ -1741,16 +1727,14 @@ fn ext_shared_blob_cas(
     expected_version: u64,
     out_success_ptr: u32,
 ) -> u64 {
-    let shared = caller.data().shared_memory.clone();
-    let blob_lock = match get_shared_blob!(shared, id) {
-        Some(b) => b,
-        None => return 0,
+    let shared = std::sync::Arc::clone(&caller.data().shared_memory);
+    let Some(blob_lock) = get_shared_blob!(shared, id) else {
+        return 0;
     };
     let mut blob = blob_lock.write();
 
-    let memory = match caller.get_export("memory").and_then(wasmtime::Extern::into_memory) {
-        Some(mem) => mem,
-        None => return 0,
+    let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
+        return 0;
     };
 
     let success = blob.version == expected_version;
