@@ -41,6 +41,8 @@ pub struct BootstrapBuilder {
     runtime_cpus: u32,
     runtime_count: u32,
     log_level: String,
+    log_file: Option<String>,
+    log_directory: Option<String>,
     xds_config: Option<XdsConfig>,
     admin_config: Option<Admin>,
     metrics: MetricsConfig,
@@ -62,6 +64,8 @@ impl BootstrapBuilder {
             runtime_cpus: 1,
             runtime_count: 1,
             log_level: "info".into(),
+            log_file: None,
+            log_directory: None,
             xds_config: None,
             admin_config: None,
             metrics: MetricsConfig::default(),
@@ -116,6 +120,13 @@ impl BootstrapBuilder {
     #[must_use]
     pub fn log_level(mut self, level: impl Into<String>) -> Self {
         self.log_level = level.into();
+        self
+    }
+
+    #[must_use]
+    pub fn log_file(mut self, directory: impl Into<String>, filename: impl Into<String>) -> Self {
+        self.log_directory = Some(directory.into());
+        self.log_file = Some(filename.into());
         self
     }
 
@@ -208,7 +219,11 @@ impl BootstrapBuilder {
 
         OrionConfig {
             runtime: RuntimeConfig { num_cpus: self.runtime_cpus, num_runtimes: self.runtime_count },
-            logging: LoggingConfig { log_level: self.log_level.clone() },
+            logging: LoggingConfig {
+                log_level: self.log_level.clone(),
+                log_file: self.log_file.clone(),
+                log_directory: self.log_directory.clone(),
+            },
             access_log_config: self.access_log_config.clone(),
             envoy_bootstrap: EnvoyBootstrap {
                 admin: self.admin_config.clone(),
@@ -287,9 +302,14 @@ struct RuntimeConfig {
     num_runtimes: u32,
 }
 
+#[allow(clippy::struct_field_names)] // prefix matches the YAML schema keys
 #[derive(Debug, Serialize, Deserialize)]
 struct LoggingConfig {
     log_level: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    log_file: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    log_directory: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
