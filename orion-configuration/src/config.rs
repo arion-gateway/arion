@@ -26,6 +26,7 @@ pub mod listener_filters;
 pub mod log;
 pub mod metrics;
 use log::AccessLogConfig;
+pub use log::DesensitizationConfig;
 pub use log::LogConfig;
 pub mod network_filters;
 pub mod runtime;

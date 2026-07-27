@@ -18,6 +18,7 @@
 use http::HeaderName;
 use orion_error::{Context, Error};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use smol_str::SmolStr;
 use std::num::NonZeroUsize;
 use tracing_rolling_file::RollingFrequency;
 use tracing_subscriber::EnvFilter;
@@ -60,6 +61,48 @@ impl Default for RollingFrequencyConfig {
         RollingFrequencyConfig(RollingFrequency::EveryDay)
     }
 }
+/// Configures the log-desensitization pipeline. All fields are optional;
+/// omitting them leaves the built-in defaults in effect.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct DesensitizationConfig {
+    /// Maximum byte length of a log line before it is truncated (default 2000).
+    #[serde(default = "desensitization_defaults::log_max_length")]
+    pub log_max_length: usize,
+    /// Number of characters replaced with '*' after each sensitive keyword (default 20).
+    #[serde(default = "desensitization_defaults::replace_length")]
+    pub replace_length: usize,
+    /// Line prefix that disables desensitization for that line (default "[Ignore]").
+    #[serde(default = "desensitization_defaults::ignore_tag")]
+    pub ignore_tag: SmolStr,
+    /// Keywords whose values are never redacted even if they appear in the sensitive list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allow_list: Vec<SmolStr>,
+}
+
+mod desensitization_defaults {
+    use smol_str::SmolStr;
+    pub fn log_max_length() -> usize {
+        2000
+    }
+    pub fn replace_length() -> usize {
+        20
+    }
+    pub fn ignore_tag() -> SmolStr {
+        SmolStr::new("[Ignore]")
+    }
+}
+
+impl Default for DesensitizationConfig {
+    fn default() -> Self {
+        Self {
+            log_max_length: desensitization_defaults::log_max_length(),
+            replace_length: desensitization_defaults::replace_length(),
+            ignore_tag: desensitization_defaults::ignore_tag(),
+            allow_list: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize, Default)]
 pub struct LogConfig {
     #[serde(deserialize_with = "deserialize_log_level", serialize_with = "serialize_log_level")]
@@ -69,6 +112,8 @@ pub struct LogConfig {
     pub log_directory: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default = "Default::default")]
     pub log_file: Option<String>,
+    #[serde(default)]
+    pub desensitization: DesensitizationConfig,
 }
 
 pub fn nonzero_usize<const N: usize>() -> NonZeroUsize {
@@ -83,6 +128,7 @@ impl PartialEq for LogConfig {
     fn eq(&self, other: &Self) -> bool {
         self.log_file == other.log_file
             && self.log_directory == other.log_directory
+            && self.desensitization == other.desensitization
             && self.log_level.as_ref().map(EnvFilter::to_string) == other.log_level.as_ref().map(EnvFilter::to_string)
     }
 }

@@ -254,7 +254,7 @@ impl Address {
                     GenericError::from_msg_with_cause(format!("failed to parse \"{address}\" as an ip address"), e)
                 })?;
                 Ok(SocketAddr::new(ip_addr, port))
-            }
+            },
             Address::Pipe(_, _) => Err(GenericError::from_msg("cannot convert pipe address to socket address")),
             Address::Internal(_) => Err(GenericError::from_msg("cannot convert internal address to socket address")),
         }
