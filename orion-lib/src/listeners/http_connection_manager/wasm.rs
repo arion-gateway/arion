@@ -111,13 +111,13 @@ impl WasmFilter {
             DataSource::InlineBytes(bytes) => Module::from_binary(engine, bytes).map_err(WasmError::Wasmtime)?,
             DataSource::InlineString(wat) => Module::new(engine, wat.as_str()).map_err(WasmError::Wasmtime)?,
             DataSource::EnvironmentVariable(env) => {
-                return Err(WasmError::UnsupportedDataSource(format!("EnvVar: {}", env)));
+                return Err(WasmError::UnsupportedDataSource(format!("EnvVar: {env}")));
             },
         };
 
         let mut linker = Linker::new(engine);
         if let Err(e) = hostcalls::register_hostcalls(&mut linker) {
-            return Err(WasmError::InitError(format!("failed to register hostcalls: {}", e)));
+            return Err(WasmError::InitError(format!("failed to register hostcalls: {e}")));
         }
 
         let instance_pre = linker.instantiate_pre(&module).map_err(WasmError::Wasmtime)?;
@@ -174,46 +174,45 @@ impl WasmFilter {
 
         if state_opt.is_none() {
             // Lock-free extraction from the pool
-            let state = match self.inner.instance_pool.pop() {
-                Some(s) => s,
-                None => {
-                    let engine = &*GLOBAL_ENGINE;
-                    let plugin_config = self.inner.config.configuration.as_ref().cloned();
+            let state = if let Some(s) = self.inner.instance_pool.pop() {
+                s
+            } else {
+                let engine = &*GLOBAL_ENGINE;
+                let plugin_config = self.inner.config.configuration.clone();
 
-                    let mut store = Store::new(
-                        engine,
-                        hostcalls::WasmState {
-                            name: self.inner.config.name.to_static_str(),
-                            plugin_config,
-                            direct_response: None,
-                            buffered_request_body: None,
-                            buffered_response_body: None,
-                            request_trailers: None,
-                            response_trailers: None,
-                            access_log_operators: Vec::new(),
-                            io_deadline: None,
-                            shared_memory: self.inner.shared_memory.clone(),
-                        },
-                    );
-                    // Instantiate the module using the pre-resolved imports
-                    let instance = match self.inner.instance_pre.instantiate_async(&mut store).await {
-                        Ok(inst) => inst,
-                        Err(e) => return Err(WasmError::InitError(format!("failed to instantiate module: {}", e))),
-                    };
+                let mut store = Store::new(
+                    engine,
+                    hostcalls::WasmState {
+                        name: self.inner.config.name.to_static_str(),
+                        plugin_config,
+                        direct_response: None,
+                        buffered_request_body: None,
+                        buffered_response_body: None,
+                        request_trailers: None,
+                        response_trailers: None,
+                        access_log_operators: Vec::new(),
+                        io_deadline: None,
+                        shared_memory: self.inner.shared_memory.clone(),
+                    },
+                );
+                // Instantiate the module using the pre-resolved imports
+                let instance = match self.inner.instance_pre.instantiate_async(&mut store).await {
+                    Ok(inst) => inst,
+                    Err(e) => return Err(WasmError::InitError(format!("failed to instantiate module: {e}"))),
+                };
 
-                    if self.inner.has_on_plugin_start {
-                        if let Ok(on_start) = instance.get_typed_func::<(), ()>(&mut store, "on_plugin_start") {
-                            let _ = on_start.call_async(&mut store, ()).await;
-                        }
+                if self.inner.has_on_plugin_start {
+                    if let Ok(on_start) = instance.get_typed_func::<(), ()>(&mut store, "on_plugin_start") {
+                        let _ = on_start.call_async(&mut store, ()).await;
                     }
+                }
 
-                    WasmFilterState { store, instance }
-                },
+                WasmFilterState { store, instance }
             };
             *state_opt = Some(state);
         }
 
-        state_opt.as_mut().ok_or_else(|| WasmError::InitError("Wasm state is uninitialized".to_string()))
+        state_opt.as_mut().ok_or_else(|| WasmError::InitError("Wasm state is uninitialized".to_owned()))
     }
 
     #[allow(clippy::too_many_lines)]
@@ -234,7 +233,7 @@ impl WasmFilter {
             return FilterDecision::Continue;
         }
 
-        let req_handle = req as *mut Request<OrionRequestBody> as u64;
+        let req_handle = std::ptr::from_mut::<Request<OrionRequestBody>>(req) as u64;
 
         // PHASE 1: headers evaluation
         let action_code: Result<FilterAction, WasmError> = if self.inner.has_on_request_headers {
@@ -248,7 +247,7 @@ impl WasmFilter {
                 response.map_err(WasmError::Wasmtime).and_then(|v| {
                     #[allow(clippy::map_err_ignore)]
                     FilterAction::try_from(v)
-                        .map_err(|_| WasmError::InitError(format!("Invalid Wasm FilterAction code: {}", v)))
+                        .map_err(|_| WasmError::InitError(format!("Invalid Wasm FilterAction code: {v}")))
                 })
             } else {
                 Ok(FilterAction::Continue)
@@ -334,7 +333,7 @@ impl WasmFilter {
                     response.and_then(|v| {
                         #[allow(clippy::map_err_ignore)]
                         FilterAction::try_from(v)
-                            .map_err(|_| WasmError::InitError(format!("Invalid body action code: {}", v)))
+                            .map_err(|_| WasmError::InitError(format!("Invalid body action code: {v}")))
                     })
                 } else {
                     Ok(FilterAction::Continue)
@@ -365,7 +364,7 @@ impl WasmFilter {
                         }
                     },
                     Ok(action) => FilterDecision::internal_server_error(
-                        &format!("Invalid body action code: {:?}", action),
+                        &format!("Invalid body action code: {action:?}"),
                         req.version(),
                     ),
                     Err(e) => FilterDecision::internal_server_error(&e.to_string(), req.version()),
@@ -401,6 +400,7 @@ impl WasmFilter {
         decision
     }
 
+    #[allow(unused_variables)]
     fn extract_and_apply_access_log_operators(&mut self, extensions: &http::Extensions) {
         if let Some(state) = self.state.get_mut() {
             let ops = std::mem::take(&mut state.store.data_mut().access_log_operators);
@@ -430,7 +430,7 @@ impl WasmFilter {
             return FilterDecision::Continue;
         }
 
-        let resp_handle = response as *mut Response<OrionResponseBody> as u64;
+        let resp_handle = std::ptr::from_mut::<Response<OrionResponseBody>>(response) as u64;
 
         // PHASE 1: headers evaluation
         let action_code: Result<FilterAction, WasmError> = if self.inner.has_on_response_headers {
@@ -446,7 +446,7 @@ impl WasmFilter {
                 res_val.map_err(WasmError::Wasmtime).and_then(|v| {
                     #[allow(clippy::map_err_ignore)]
                     FilterAction::try_from(v)
-                        .map_err(|_| WasmError::InitError(format!("Invalid Wasm response FilterAction code: {}", v)))
+                        .map_err(|_| WasmError::InitError(format!("Invalid Wasm response FilterAction code: {v}")))
                 })
             } else {
                 Ok(FilterAction::Continue)
@@ -532,7 +532,7 @@ impl WasmFilter {
                     res_val.and_then(|v| {
                         #[allow(clippy::map_err_ignore)]
                         FilterAction::try_from(v)
-                            .map_err(|_| WasmError::InitError(format!("Invalid response body action code: {}", v)))
+                            .map_err(|_| WasmError::InitError(format!("Invalid response body action code: {v}")))
                     })
                 } else {
                     Ok(FilterAction::Continue)
@@ -563,7 +563,7 @@ impl WasmFilter {
                         }
                     },
                     Ok(action) => FilterDecision::internal_server_error(
-                        &format!("Invalid response body action code: {:?}", action),
+                        &format!("Invalid response body action code: {action:?}"),
                         response.version(),
                     ),
                     Err(e) => FilterDecision::internal_server_error(&e.to_string(), response.version()),

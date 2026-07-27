@@ -349,6 +349,7 @@ impl FilterchainType {
                     shard_id,
                     &[KeyValue::new("listener", metadata.listener_name)]
                 );
+                #[allow(unused_variables)]
                 let listener_name = metadata.listener_name;
                 defer! {
                     with_metric!(tcp::DOWNSTREAM_CX_DESTROY, add, 1, shard_id, &[KeyValue::new("listener", listener_name)]);
