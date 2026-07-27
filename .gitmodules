@@ -30,4 +30,4 @@
 	url = https://internal.invalid/orion-auth.git
 [submodule "orion-log"]
 	path = orion-log
-	url = ssh://internal.invalid/orion-log.git
+	url = https://internal.invalid/orion-log.git
