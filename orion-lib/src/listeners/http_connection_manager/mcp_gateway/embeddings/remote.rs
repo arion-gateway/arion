@@ -106,7 +106,7 @@ impl EmbeddingsClient {
         let request_context =
             RequestContext { route_timeout: Some(self.timeout), retry_policy: None, ..Default::default() };
         let response = (&channels)
-            .to_response(&TransactionContext::default(), request, request_context)
+            .to_response(&Arc::new(TransactionContext::default()), request, request_context)
             .await
             .map_err(|e| EmbeddingError::Service(format!("upstream call failed: {e}")))?;
 

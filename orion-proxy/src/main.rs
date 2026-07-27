@@ -26,8 +26,10 @@ static GLOBAL: Jemalloc = Jemalloc;
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
 
-fn main() -> orion_error::Result<()> {
+fn main() {
     #[cfg(all(feature = "dhat-heap", not(feature = "jemalloc")))]
     let _profiler = dhat::Profiler::new_heap();
-    orion_proxy::run()
+    if !orion_proxy::run() {
+        std::process::exit(1);
+    }
 }

@@ -162,3 +162,30 @@ pub(crate) fn init_metrics(rename: &std::collections::HashMap<String, String>) {
         "Total upgrade requests rejected by non upgrade routes"
     );
 }
+
+pub fn reset_metrics() {
+    use crate::sharded::Clearable;
+    let metrics: &[&dyn Clearable] = &[
+        &DOWNSTREAM_CX_TOTAL,
+        &DOWNSTREAM_CX_SSL_TOTAL,
+        &DOWNSTREAM_CX_SSL_ACTIVE,
+        &DOWNSTREAM_CX_DESTROY,
+        &DOWNSTREAM_CX_ACTIVE,
+        &DOWNSTREAM_CX_LENGTH_MS,
+        &DOWNSTREAM_CX_WS_UPGRADES_TOTAL,
+        &DOWNSTREAM_CX_WS_UPGRADES_ACTIVE,
+        &DOWNSTREAM_RQ_WS_ON_NON_WS_ROUTE,
+        &DOWNSTREAM_RQ_1XX,
+        &DOWNSTREAM_RQ_2XX,
+        &DOWNSTREAM_RQ_3XX,
+        &DOWNSTREAM_RQ_4XX,
+        &DOWNSTREAM_RQ_5XX,
+        &DOWNSTREAM_RQ_TOTAL,
+        &DOWNSTREAM_RQ_ACTIVE,
+        &DOWNSTREAM_CX_RX_BYTES_TOTAL,
+        &DOWNSTREAM_CX_TX_BYTES_TOTAL,
+    ];
+    for metric in metrics {
+        metric.clear();
+    }
+}

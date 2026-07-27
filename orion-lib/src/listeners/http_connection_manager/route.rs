@@ -1,3 +1,4 @@
+use std::sync::Arc;
 // Copyright 2025 The kmesh Authors
 //
 //
@@ -43,7 +44,7 @@ use orion_configuration::config::network_filters::http_connection_manager::{
 };
 use orion_error::Context;
 #[cfg(feature = "metrics")]
-use orion_metrics::metrics::clusters;
+use orion_metrics::metrics::{clusters, http as http_metrics};
 use scopeguard::defer;
 
 #[cfg(feature = "access-log")]
@@ -60,6 +61,8 @@ use {
 
 use smol_str::ToSmolStr;
 use std::net::SocketAddr;
+#[cfg(feature = "metrics")]
+use std::time::Instant;
 use tracing::debug;
 
 pub struct RouteContext<'a> {
@@ -75,7 +78,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
     #[allow(unused_variables)]
     async fn to_response(
         self,
-        trans_context: &TransactionContext,
+        trans_context: &Arc<TransactionContext>,
         request: Request<OrionRequestBody>,
         (route_context, connection_manager): (RouteContext<'a>, &HttpConnectionManager),
     ) -> Result<Response<OrionResponseBody>> {
@@ -98,6 +101,13 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
             )
             .into_response(request.version()));
         };
+
+        #[cfg(feature = "metrics")]
+        {
+            let mut state = trans_context.trans_state.lock();
+            state.upstream_start_instant = Some(Instant::now());
+            state.upstream_cluster_name = Some(cluster_id);
+        }
 
         let priority = self.priority;
         #[allow(unused_variables)]
@@ -145,7 +155,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
             Ok(svc_channel) => {
                 #[cfg(feature = "access-log")]
                 with_access_log!(
-                    &mut trans_context.trans_ctx.lock().loggers,
+                    &mut trans_context.trans_state.lock().loggers,
                     UpstreamContext {
                         authority: Some(svc_channel.upstream_authority()),
                         cluster_name: Some(svc_channel.cluster_name()),
@@ -206,7 +216,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
 
                 #[cfg(feature = "access-log")]
                 with_access_log!(
-                    &mut trans_context.trans_ctx.lock().loggers,
+                    &mut trans_context.trans_state.lock().loggers,
                     UpstreamRequestContext(&upstream_request)
                 );
 
@@ -215,28 +225,51 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
                 } else {
                     websocket_enabled_by_default
                 };
-                let should_upgrade_websocket = if websocket_enabled {
+
+                // Check if this is a valid WebSocket upgrade request (called only once)
+                let is_ws_upgrade_request =
                     match upgrade_utils::is_valid_websocket_upgrade_request(upstream_request.headers()) {
                         Ok(maybe_upgrade) => maybe_upgrade,
                         Err(upgrade_error) => {
                             debug!("Failed to upgrade to websockets {upgrade_error}");
-                            return Ok(SyntheticHttpResponse::bad_request(EventFailure::UpgradeFailed.into())
-                                .into_response(ver));
+                            match upgrade_error {
+                                upgrade_utils::UpgradeError::UnsupportedProtocol(_) => {
+                                    return Ok(SyntheticHttpResponse::forbidden(
+                                        EventFailure::UpgradeFailed.into(),
+                                        "Unsupported upgrade protocol",
+                                    )
+                                    .into_response(ver));
+                                },
+                                _ => {
+                                    return Ok(SyntheticHttpResponse::bad_request(EventFailure::UpgradeFailed.into())
+                                        .into_response(ver));
+                                },
+                            }
                         },
-                    }
-                } else {
-                    false
-                };
+                    };
 
-                if should_upgrade_websocket {
-                    return upgrade_utils::handle_websocket_upgrade(
-                        trans_context,
-                        upstream_request,
-                        &svc_channel,
-                        #[cfg(feature = "metrics")]
-                        connection_manager.listener_name,
-                    )
-                    .await;
+                if is_ws_upgrade_request {
+                    if websocket_enabled {
+                        return upgrade_utils::handle_websocket_upgrade(
+                            trans_context,
+                            upstream_request,
+                            &svc_channel,
+                            #[cfg(feature = "metrics")]
+                            connection_manager.listener_name,
+                        )
+                        .await;
+                    }
+                    #[cfg(feature = "metrics")]
+                    with_metric!(
+                        http_metrics::DOWNSTREAM_RQ_WS_ON_NON_WS_ROUTE,
+                        add,
+                        1,
+                        trans_context.shard_id(),
+                        &[KeyValue::new("listener", connection_manager.listener_name)]
+                    );
+                    return Ok(
+                        SyntheticHttpResponse::bad_request(EventFailure::UpgradeFailed.into()).into_response(ver)
+                    );
                 }
 
                 if let Some(direct_response) = http_modifiers::apply_preflight_functions(&mut upstream_request) {

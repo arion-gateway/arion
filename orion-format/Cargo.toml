@@ -16,21 +16,22 @@ thiserror.workspace = true
 smol_str.workspace = true
 ahash.workspace = true
 
-bitflags        = { version = "2.10.0", features = ["serde"] }
-chrono         = "0.4.42"
-criterion      = "0.5.1"
-dhat           = "0.3.3"
-http-serde-ext = "1.0.2"
-hyper          = { version = "1" }
-itoa           = "1.0.15"
-ptrie          = "0.7.2"
-serde          = { workspace = true, features = ["rc"] }
-smallvec       = { workspace = true }
-thread_local   = "1.1.9"
-traceparent    = "0.0.3"
-uuid           = { version = "1.18.1", features = ["v4"] }
-blake3         = "1.8.3"
-arrayvec = { version = "0.7.6", features = ["serde"] }
+bitflags = { workspace = true, features = ["serde"] }
+chrono.workspace = true
+criterion.workspace = true
+dhat.workspace = true
+http-serde-ext.workspace = true
+hyper = { workspace = true }
+itoa.workspace = true
+ptrie.workspace = true
+serde = { workspace = true, features = ["rc"] }
+serde_json = { workspace = true }
+smallvec = { workspace = true }
+thread_local.workspace = true
+traceparent.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+blake3.workspace = true
+arrayvec = { workspace = true, features = ["serde"] }
 
 [features]
 dhat-heap = []

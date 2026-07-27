@@ -1,5 +1,4 @@
 [workspace]
-exclude = ["hyper-util"]
 members = [
   "envoy-data-plane-api",
   "orion-configuration",
@@ -11,7 +10,9 @@ members = [
   "orion-interner",
   "orion-format",
   "orion-lib",
+  "orion-log",
   "orion-metrics",
+  "orion-stats",
   "orion-proxy",
   "orion-tracing",
   "orion-xds",
@@ -28,62 +29,154 @@ license-file = "./LICENSE"
 rust-version = "1.89"
 version      = "0.1.0"
 
-[patch.crates-io]
-hyper-util   = { path = "./hyper-util" }
-
 [workspace.dependencies]
-envoy-data-plane-api    = { path = "envoy-data-plane-api" }
-orion-configuration     = { path = "orion-configuration" }
-orion-data-plane-api    = { path = "orion-data-plane-api" }
-orion-error             = { path = "orion-error" }
-orion-auth              = { path = "orion-auth" }
-orion-format            = { path = "orion-format" }
-orion-http-header       = { path = "orion-http-header" }
-orion-e2e-tests         = { path = "orion-e2e-tests" }
-orion-interner          = { path = "orion-interner" }
-orion-lib               = { path = "orion-lib" }
-orion-metrics           = { path = "orion-metrics" }
-orion-tracing           = { path = "orion-tracing" }
-orion-xds               = { path = "orion-xds" }
+# --- Orion Internal Crates ---
+envoy-data-plane-api     = { path = "envoy-data-plane-api" }
+orion-auth               = { path = "orion-auth" }
+orion-configuration      = { path = "orion-configuration" }
+orion-data-plane-api     = { path = "orion-data-plane-api" }
+orion-e2e-tests          = { path = "orion-e2e-tests" }
+orion-error              = { path = "orion-error" }
+orion-format             = { path = "orion-format" }
+orion-http-header        = { path = "orion-http-header" }
+orion-interner           = { path = "orion-interner" }
+orion-lib                = { path = "orion-lib" }
+orion-log                = { path = "orion-log" }
+orion-metrics            = { path = "orion-metrics" }
+orion-stats              = { path = "orion-stats" }
+orion-tracing            = { path = "orion-tracing" }
+orion-xds                = { path = "orion-xds" }
 
-dashmap             = "6.1.0"
-papaya              = "0.2.4"
-abort-on-drop       = "0.2"
-bounded-integer     = "0.6.1"
-bytes               = "1"
-smallvec            = { version = "1", features = ["union"] }
-smol_str            = { version = "0.3.4", features = ["serde"] }
-exponential-backoff = "2.1"
-futures             = "0.3"
-http                = "1.3"
-http-body           = "1.0"
-http-body-util      = "0.1.3"
-num_cpus            = "1"
-ppp                 = "2.3"
-prost               = "0.14"
-prost-build         = "0.14"
-atomic_enum         = "0.3.0"
-prost-reflect       = { version = "0.16", features = ["derive", "serde"] }
-regex               = "1.12.2"
-serde               = { version = "1", features = ["derive", "rc"] }
-serde_json          = { version = "1" }
-serde_yaml          = "0.9.34"
-thiserror           = "2.0.17"
-tokio               = { version = "1.48", features = ["full"] }
-tokio-stream        = { version = "0.1.17", features = ["net", "sync"] }
-tonic               = "0.14"
-tonic-build         = "0.14"
-tonic-prost         = "0.14"
-tonic-prost-build   = "0.14"
-tonic-health        = "0.14"
-tower               = { version = "0.5.2", features = ["make"] }
-tracing             = "0.1"
-tracing-subscriber  = "0.3"
-tracing-test        = { version = "0.2", features = ["no-env-filter"] }
-url                 = "2"
-hyper-util          = { version = "0.1.17",   features = ["full"] }
-tracing-rolling-file = { version = "0.1.3", features = ["non-blocking"] }
-ahash               = "0.8.12"
+# --- Third-party Dependencies ---
+abort-on-drop            = "0.2"
+affinity                 = "0.1.2"
+ahash                    = "0.8.12"
+anyhow                   = "1"
+arc-swap                 = "1.7.1"
+arrayvec                 = "0.7.6"
+assert_matches           = "1.5.0"
+async-stream             = "0.3"
+atomic-take              = "1.1.0"
+atomic-time              = "0.1.5"
+atomic_enum              = "0.3.0"
+atomicoption             = "0.2.0"
+axum                     = "0.8.6"
+axum-test                = "17.3.0"
+base64                   = "0.22.1"
+base64-serde             = "0.7.0"
+bitflags                 = { version = "2.10.0", features = ["serde"] }
+blake3                   = "1.8.3"
+bounded-integer          = "0.6.1"
+bytes                    = "1"
+caps                     = "0.5"
+cedar-policy             = "4.11"
+chrono                   = { version = "0.4.42", features = ["serde"] }
+clap                     = { version = "4.5.51", features = ["derive"] }
+const-str                = "1.1.0"
+const_format             = "0.2.36"
+contatori                = "0.7.5"
+criterion                = "0.5.1"
+chrono-tz                = "0.10.4"
+ctor                     = "0.2"
+ctor_0_6                 = { package = "ctor", version = "0.6.3" }
+dashmap                  = "6.1.0"
+dhat                     = "0.3.3"
+enum_dispatch            = "0.3.13"
+exponential-backoff      = "2.1"
+futures                  = "0.3"
+futures-util             = "0.3"
+glob                     = "0.3"
+h2                       = "0.4.12"
+hickory-resolver         = { version = "0.24", features = ["system-config"] }
+http                     = "1.4.0"
+http-body                = "1.0"
+http-body-util           = "0.1.3"
+http-serde-ext           = "1.0.2"
+humantime-serde          = "1.1.1"
+hyper                    = { version = "1", features = ["full"] }
+hyper-util               = { version = "0.1.20", features = ["full"] }
+hyper-rustls             = { version = "0.27.7", features = ["default", "http2"] }
+hyperlocal               = "0.9.1"
+ipnet                    = "2.11"
+itertools                = "0.14.0"
+itoa                     = "1.0.15"
+jsonschema               = "0.42.1"
+jsonwebtoken             = { version = "10.3.0", features = ["rust_crypto"] }
+lasso                    = { version = "0.7.3", features = ["ahash", "ahasher", "dashmap", "multi-threaded"] }
+lru_time_cache           = "0.11.11"
+maud                     = "0.26"
+memory-stats             = "1.2.0"
+moka                     = { version = "0.12.12", features = ["sync"] }
+nohash                   = "0.2.0"
+num_cpus                 = "1"
+opentelemetry            = "0.29.0"
+opentelemetry-otlp       = { version = "0.29.0", features = ["grpc-tonic", "http-json", "hyper-client", "serde", "serde_json", "serialize", "tokio", "tonic"] }
+opentelemetry_sdk        = "0.29.0"
+owning_ref               = "0.4.1"
+papaya                   = "0.2.4"
+parking_lot              = "0.12.5"
+pastey                   = "0.2.1"
+percent-encoding         = "2.3.2"
+pin-project              = "1.1.10"
+pingora                  = { version = "0.8.0", features = ["time"] }
+pingora-timeout          = "0.3.0"
+ppp                      = "2.3"
+pretty-duration          = "0.1.1"
+prost                    = "0.14"
+prost-build              = "0.14"
+prost-reflect            = { version = "0.16", features = ["derive", "serde"] }
+ptrie                    = "0.7.2"
+quanta                   = "0.12.6"
+rand                     = "0.8.5"
+rand_0_9                 = { package = "rand", version = "0.9.2" }
+ref-cast                 = "1.0.25"
+regex                    = "1.12.2"
+rmcp                     = { version = "1.2.0", features = ["client", "transport-streamable-http-client-reqwest"] }
+rustc-hash               = "1.1.0"
+rustls                   = { version = "0.23", features = ["aws-lc-rs"] }
+rustls-pemfile           = "2.2"
+rustls-platform-verifier = "0.3"
+rustls-webpki            = "0.102"
+schemars                 = { version = "1.1.0", features = ["std", "derive", "chrono04"] }
+scopeguard               = "1.2.0"
+serde                    = { version = "1.0.228", features = ["derive", "rc"] }
+serde_json               = "1.0.149"
+serde_path_to_error      = "0.1.20"
+serde_regex              = "1.1.0"
+serde_yaml               = "0.9.34"
+smallvec                 = { version = "1", features = ["union"] }
+smol_str                 = { version = "0.3.5", features = ["serde"] }
+tempfile                 = "3.23"
+test-log                 = { version = "0.2.19", features = ["trace"] }
+thiserror                = "2.0.17"
+thread-id                = "5.0.0"
+thread_local             = "1.1.9"
+tikv-jemalloc-ctl        = { version = "0.6.1", features = ["stats"] }
+tikv-jemallocator        = { version = "0.6" }
+tokio                    = { version = "1.48", features = ["full"] }
+tokio-rustls             = "0.26"
+tokio-stream             = { version = "0.1.17", features = ["net", "sync"] }
+tokio-util               = { version = "0.7.17", features = ["rt"] }
+tonic                    = "0.14"
+tonic-build              = "0.14"
+tonic-health             = "0.14"
+tonic-prost              = "0.14"
+tonic-prost-build        = "0.14"
+tower                    = { version = "0.5.2", features = ["make"] }
+tower-service            = "0.3.3"
+traceparent              = "0.0.3"
+tracing                  = { version = "0.1.44", features = ["release_max_level_info"] }
+tracing-appender         = "0.2.4"
+tracing-rolling-file     = { version = "0.1.3", features = ["non-blocking"] }
+tracing-subscriber       = "0.3"
+tracing-test             = { version = "0.2", features = ["no-env-filter"] }
+twox-hash                = "1.6.3"
+typed-builder            = "0.18.2"
+time                     = { version = "0.3.53", features = ["local-offset"]}
+upon                     = "0.8"
+url                      = "2"
+uuid                     = { version = "1.18.1", features = ["v4"] }
+x509-parser              = { version = "0.17", features = ["default"] }
 
 [profile.release]
 codegen-units    = 1
@@ -109,6 +202,10 @@ inherits = "release"
 
 [profile.bench]
 inherits = "release"
+
+# avoid
+[profile.dev.package."*"]
+debug = 0
 
 [workspace.lints.rust]
 ambiguous_negative_literals         = "warn"

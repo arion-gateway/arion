@@ -31,3 +31,11 @@ pub(crate) fn init_metrics(rename: &std::collections::HashMap<String, String>) {
         "User rate limit filter invocations"
     );
 }
+
+pub fn reset_metrics() {
+    use crate::sharded::Clearable;
+    let metrics: &[&dyn Clearable] = &[&CONNECTION_RATE_LIMIT, &LOCAL_RATE_LIMIT, &USER_RATE_LIMIT];
+    for metric in metrics {
+        metric.clear();
+    }
+}

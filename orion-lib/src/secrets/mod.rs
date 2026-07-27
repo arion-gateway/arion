@@ -18,5 +18,5 @@
 mod no_cert_verification;
 mod secrets_manager;
 mod tls_configurator;
-pub use secrets_manager::{CertificateSecret, SecretManager, TransportSecret};
+pub use secrets_manager::{CertInfo, CertificateSecret, SecretManager, TransportSecret};
 pub use tls_configurator::{TlsConfigurator, WantsToBuildClient, WantsToBuildServer};

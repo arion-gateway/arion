@@ -19,18 +19,18 @@ tokio.workspace   = true
 tower.workspace   = true
 tracing.workspace = true
 
-async-stream = "0.3"
-atomic-take  = "1.1.0"
+async-stream.workspace = true
+atomic-take.workspace = true
 
-thiserror              = "2.0.17"
+thiserror.workspace = true
 tokio-stream.workspace = true
-uuid                   = { version = "1.18.1", features = ["v4"] }
+uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
 orion-data-plane-api.workspace = true
 serde_yaml.workspace = true
 tokio.workspace      = true
-tracing-subscriber   = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [lints]
 workspace = true

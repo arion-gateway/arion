@@ -29,7 +29,7 @@ use crate::{
         synthetic_http_response::SyntheticHttpResponse,
     },
     secrets::{TlsConfigurator, WantsToBuildClient},
-    thread_local::{LocalBuilder, LocalObject},
+    thread_local::{LocalBuilder, ThreadLocalObject},
     transport::timer::PingoraTimer,
     Error, OrionRequestBody, OrionResponseBody, RequestContext, Result,
 };
@@ -61,19 +61,16 @@ use {crate::get_shard_id, opentelemetry::KeyValue, orion_metrics::metrics::clust
 use pingora_timeout::fast_timeout::fast_timeout;
 use pretty_duration::pretty_duration;
 use rustls::ClientConfig;
+#[cfg(feature = "metrics")]
+use smallvec::SmallVec;
 use smol_str::ToSmolStr;
 use std::{io, mem, sync::Arc, time::Duration};
 use tracing::debug;
 use webpki::types::ServerName;
 
 #[cfg(feature = "metrics")]
-use {
-    hyper_util::client::legacy::pool::{EventHandler, PoolEvent},
-    hyper_util::client::legacy::PoolKey,
-    scopeguard::defer,
-    std::any::Any,
-};
-const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+use scopeguard::defer;
+pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 type HttpClient = Client<UnifiedConnector, OrionRequestBody>;
 type HttpsClient = Client<HttpsConnector<UnifiedConnector>, OrionRequestBody>;
@@ -82,14 +79,14 @@ type HttpsClient = Client<HttpsConnector<UnifiedConnector>, OrionRequestBody>;
 // The inner Arc, instead, is used to pass the client to async code, so it's already wrapped by the Arc.
 
 #[derive(Clone, Debug)]
-pub struct ClientContext {
+pub struct HttpsClientExt {
     configured_upstream_http_version: Codec,
-    client: Arc<LocalObject<Arc<HttpsClient>, Builder, HttpsConnector<UnifiedConnector>>>,
+    client: Arc<ThreadLocalObject<Arc<HttpsClient>, Builder, HttpsConnector<UnifiedConnector>>>,
 }
-impl ClientContext {
+impl HttpsClientExt {
     fn new(
         configured_upstream_http_version: Codec,
-        client: Arc<LocalObject<Arc<HttpsClient>, Builder, HttpsConnector<UnifiedConnector>>>,
+        client: Arc<ThreadLocalObject<Arc<HttpsClient>, Builder, HttpsConnector<UnifiedConnector>>>,
     ) -> Self {
         Self { configured_upstream_http_version, client }
     }
@@ -132,8 +129,8 @@ pub struct HttpChannel {
 
 #[derive(Clone, Debug)]
 pub enum HttpChannelClient {
-    Plain(Arc<LocalObject<Arc<HttpClient>, Builder, UnifiedConnector>>),
-    Tls(ClientContext),
+    Plain(Arc<ThreadLocalObject<Arc<HttpClient>, Builder, UnifiedConnector>>),
+    Tls(HttpsClientExt),
     Unix(hyper::Uri, Arc<Client<UnixConnector, InstrumentedBody<TimeoutBody<PolyBody>>>>),
 }
 
@@ -207,12 +204,6 @@ impl HttpChannelBuilder {
 
         self.configure_http2_if_needed(&mut client_builder, configured_upstream_http_version);
 
-        #[cfg(feature = "metrics")]
-        {
-            let cluster_name = self.cluster_name.unwrap_or_default();
-            client_builder.pool_event_handler(EventHandler::new(update_upstream_stats, cluster_name))
-        };
-
         client_builder
     }
 
@@ -231,13 +222,10 @@ impl HttpChannelBuilder {
 
             client_builder.http2_initial_connection_window_size(http2_options.initial_connection_window_size());
             client_builder.http2_initial_stream_window_size(http2_options.initial_stream_window_size());
-            client_builder.http2_connection_sharing(true);
 
             if let Some(max) = http2_options.max_concurrent_streams() {
                 client_builder.http2_initial_max_send_streams(max);
-                if let Ok(max) = u32::try_from(max) {
-                    client_builder.http2_max_concurrent_streams(max);
-                }
+                client_builder.http2_max_concurrent_reset_streams(max);
             }
         }
     }
@@ -273,9 +261,9 @@ impl HttpChannelBuilder {
             };
 
             Ok(HttpChannel {
-                channel_client: HttpChannelClient::Tls(ClientContext::new(
+                channel_client: HttpChannelClient::Tls(HttpsClientExt::new(
                     self.http_protocol_options.codec,
-                    Arc::new(LocalObject::new(client_builder, http_connector)),
+                    Arc::new(ThreadLocalObject::new(client_builder, http_connector)),
                 )),
                 http_version: self.http_protocol_options.codec,
                 enable_trailers,
@@ -287,7 +275,7 @@ impl HttpChannelBuilder {
                 UnifiedConnector::from((&self.connect_using, self.cluster_name.unwrap_or_default(), is_http2));
 
             Ok(HttpChannel {
-                channel_client: HttpChannelClient::Plain(Arc::new(LocalObject::new(client_builder, connector))),
+                channel_client: HttpChannelClient::Plain(Arc::new(ThreadLocalObject::new(client_builder, connector))),
                 http_version: self.http_protocol_options.codec,
                 enable_trailers,
                 upstream_authority: authority,
@@ -306,100 +294,10 @@ impl HttpChannelBuilder {
     }
 }
 
-#[cfg(feature = "metrics")]
-#[allow(clippy::needless_pass_by_value)]
-fn update_upstream_stats(event: PoolEvent, tag: &dyn Any, keys: &[&PoolKey]) {
-    use tracing::debug;
-    let cluster_name = *(tag.downcast_ref::<&str>().unwrap_or(&""));
-    #[cfg(feature = "metrics")]
-    let shard_id = get_shard_id!();
-
-    for key in keys {
-        debug!("HttpClient: {:?} for cluster {:?} (pool_key: {:?})", event, cluster_name, key);
-    }
-
-    let num_events = keys.len() as u64;
-    match event {
-        PoolEvent::NewConnection => {
-            with_metric!(
-                clusters::UPSTREAM_CX_TOTAL,
-                add,
-                num_events,
-                shard_id,
-                &[KeyValue::new("cluster", cluster_name)]
-            );
-            with_metric!(
-                clusters::UPSTREAM_CX_ACTIVE,
-                add,
-                num_events,
-                shard_id,
-                &[KeyValue::new("cluster", cluster_name)]
-            );
-        },
-        PoolEvent::IdleConnectionClosed => {
-            with_metric!(
-                clusters::UPSTREAM_CX_DESTROY,
-                add,
-                num_events,
-                shard_id,
-                &[KeyValue::new("cluster", cluster_name)]
-            );
-            with_metric!(
-                clusters::UPSTREAM_CX_IDLE_TIMEOUT,
-                add,
-                num_events,
-                shard_id,
-                &[KeyValue::new("cluster", cluster_name)]
-            );
-            with_metric!(
-                clusters::UPSTREAM_CX_ACTIVE,
-                sub,
-                num_events,
-                shard_id,
-                &[KeyValue::new("cluster", cluster_name)]
-            );
-        },
-        PoolEvent::ConnectionError => {
-            with_metric!(
-                clusters::UPSTREAM_CX_CONNECT_FAIL,
-                add,
-                num_events,
-                shard_id,
-                &[KeyValue::new("cluster", cluster_name)]
-            );
-        },
-        PoolEvent::ConnectionTimeout => {
-            with_metric!(
-                clusters::UPSTREAM_CX_CONNECT_TIMEOUT,
-                add,
-                num_events,
-                shard_id,
-                &[KeyValue::new("cluster", cluster_name)]
-            );
-        },
-        PoolEvent::ConnectionClosed => {
-            with_metric!(
-                clusters::UPSTREAM_CX_DESTROY,
-                add,
-                num_events,
-                shard_id,
-                &[KeyValue::new("cluster", cluster_name)]
-            );
-            with_metric!(
-                clusters::UPSTREAM_CX_ACTIVE,
-                sub,
-                num_events,
-                shard_id,
-                &[KeyValue::new("cluster", cluster_name)]
-            );
-        },
-    }
-}
-
 impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &HttpChannels {
     async fn to_response(
         self,
-        trans_context: &TransactionContext,
+        trans_context: &Arc<TransactionContext>,
         request: Request<OrionRequestBody>,
         arg: RequestContext<'a>,
     ) -> Result<Response<OrionResponseBody>> {
@@ -408,12 +306,13 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
             HttpChannels::Single(channel) => channel.to_response(trans_context, request, ctx).await,
             HttpChannels::MultiWithFailover { channel, failover_channels } => {
                 let RequestContext { route_timeout, priority, .. } = ctx;
-                let (parts, mut body) = request.into_parts();
-                let free_body = std::mem::take(&mut body.inner);
-                let InstrumentedBody { body_kind, body_bytes, ref stream_metrics, ref on_complete, .. } = body;
+                let (parts, body) = request.into_parts();
+                let body_kind = body.body_kind;
+                let stream_metrics = Clone::clone(&body.stream_metrics);
+                let on_complete = Clone::clone(&body.on_complete);
 
-                let body_timeout = free_body.timeout;
-                let collected = free_body.collect().await.map_err(Error::from)?;
+                let body_timeout = body.inner.timeout;
+                let collected = body.collect().await.map_err(Error::from)?;
                 let replay_body = http_body_util::Full::new(collected.to_bytes());
 
                 let mut last_error: Option<Error> = None;
@@ -423,9 +322,9 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
                     let cloned_body = InstrumentedBody {
                         inner: TimeoutBody::new(body_timeout, replay_body.clone().into()),
                         body_kind,
-                        body_bytes,
-                        stream_metrics: Clone::clone(stream_metrics),
-                        on_complete: Clone::clone(on_complete),
+                        body_bytes: 0,
+                        stream_metrics: Clone::clone(&stream_metrics),
+                        on_complete: Clone::clone(&on_complete),
                     };
                     let rebuilt_req = Request::from_parts(parts.clone(), cloned_body);
                     let attempt_ctx = RequestContext { route_timeout, retry_policy: None, priority };
@@ -472,7 +371,7 @@ pub struct Retries {
 impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &HttpChannel {
     async fn to_response(
         self,
-        #[allow(unused_variables)] trans_context: &TransactionContext,
+        #[allow(unused_variables)] trans_context: &Arc<TransactionContext>,
         request: Request<OrionRequestBody>,
         arg: RequestContext<'a>,
     ) -> Result<Response<OrionResponseBody>> {
@@ -498,10 +397,29 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
             use crate::metrics;
             use orion_metrics::metrics::custom::MetricsHook;
 
-            let attr = metrics::extract_custom_partition_key(request.headers(), metrics::CUSTOM_KEY.source())
-                .map(|id| KeyValue::new(metrics::CUSTOM_KEY.attribute_name().unwrap_or("custom"), id));
-            custom_metrics.with_headers(MetricsHook::UpstreamRequest, request.headers(), attr.as_slice());
+            let mut attrs = SmallVec::<[KeyValue; 2]>::new();
+            if let Some(custom_keys) = metrics::CUSTOM_KEYS.get() {
+                for key in custom_keys {
+                    if let Some(source) = key.source() {
+                        if let Some(id) = metrics::extract_custom_partition_key(request.headers(), Some(source)) {
+                            attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
+                        }
+                    }
+                }
+            }
+            custom_metrics.with_headers(MetricsHook::UpstreamRequest, request.headers(), attrs.as_slice());
         }
+
+        #[cfg(feature = "access-log")]
+        trans_context.with_loggers(|loggers| {
+            if let Err(err) = crate::access_log::evaluate_access_log_hook(
+                crate::access_log::AccessLogHook::UpstreamRequest,
+                request.headers(),
+                loggers,
+            ) {
+                tracing::warn!("Failed to process access log header for UpstreamRequest: {err}");
+            }
+        });
 
         let RequestContext { route_timeout, retry_policy, priority } = ctx;
 
@@ -547,6 +465,18 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
             &[KeyValue::new("cluster", self.cluster_name)]
         );
 
+        if let Err(ref err) = result {
+            if let Some(UpstreamError::RouteTimeout) = UpstreamError::try_infer_from(err.as_ref()) {
+                with_metric!(
+                    clusters::UPSTREAM_RQ_TIMEOUT,
+                    add,
+                    1,
+                    shard_id,
+                    &[KeyValue::new("cluster", self.cluster_name)]
+                );
+            }
+        }
+
         HttpChannel::map_upstream_result(result, start_time.elapsed(), route_timeout, version)
     }
 }
@@ -564,7 +494,7 @@ impl HttpChannel {
     ) -> Result<Response<Incoming>> {
         match &self.channel_client {
             HttpChannelClient::Plain(sender) => {
-                let client = sender.get_or_build();
+                let client = sender.get_local();
                 let req = maybe_normalize_uri(request, false)?;
                 self.send_with_policy(
                     req,
@@ -579,9 +509,9 @@ impl HttpChannel {
                 .await
             },
             HttpChannelClient::Tls(context) => {
-                let ClientContext { configured_upstream_http_version, client: sender } = context;
+                let HttpsClientExt { configured_upstream_http_version, client: sender } = context;
                 let configured_version = *configured_upstream_http_version;
-                let client = sender.get_or_build();
+                let client = sender.get_local();
                 let req = maybe_normalize_uri(request, true)?;
                 //FIXME(hayley): apply http protocol translation for plaintext too
                 let req = maybe_change_http_protocol_version(req, configured_version)?;
@@ -665,7 +595,7 @@ impl HttpChannel {
         };
 
         if let Some(t) = timeout {
-            fast_timeout(t, fut).await?
+            fast_timeout(t, fut).await.map_err(|_e| Error::from(UpstreamError::RouteTimeout))?
         } else {
             fut.await
         }
@@ -689,14 +619,15 @@ impl HttpChannel {
             crate::instrumentation::metrics::SEND_REQUEST_WITH_RETRY.observe(nanos as usize)
         });
 
-        let (parts, mut body) = req.into_parts();
-        let free_body = std::mem::take(&mut body.inner);
-        let InstrumentedBody { body_kind, body_bytes, ref stream_metrics, ref on_complete, .. } = body;
+        let (parts, body) = req.into_parts();
+        let body_kind = body.body_kind;
+        let stream_metrics = Clone::clone(&body.stream_metrics);
+        let on_complete = Clone::clone(&body.on_complete);
 
-        let collected_bytes = if http_body::Body::size_hint(&free_body).exact() == Some(0) {
+        let collected_bytes = if http_body::Body::size_hint(&body).exact() == Some(0) {
             bytes::Bytes::new()
         } else {
-            free_body.collect().await?.to_bytes()
+            body.collect().await.map_err(Error::from)?.to_bytes()
         };
 
         let body = http_body_util::Full::new(collected_bytes);
@@ -712,9 +643,9 @@ impl HttpChannel {
             let cloned_body = InstrumentedBody {
                 inner: TimeoutBody::new(None, body.clone().into()),
                 body_kind,
-                body_bytes,
-                stream_metrics: Clone::clone(stream_metrics),
-                on_complete: Clone::clone(on_complete),
+                body_bytes: 0,
+                stream_metrics: Clone::clone(&stream_metrics),
+                on_complete: Clone::clone(&on_complete),
             };
 
             // avoid to clone parts on the last attempt

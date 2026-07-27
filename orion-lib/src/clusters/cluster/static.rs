@@ -18,7 +18,7 @@
 use super::{ClusterOps, ClusterType};
 use crate::{
     clusters::{
-        circuit_breaker::ClusterCircuitBreaker,
+        circuit_breaker::{CircuitBreakerCounters, ClusterCircuitBreaker},
         clusters_manager::{RoutingContext, RoutingRequirement},
         load_assignment::{ClusterLoadAssignment, ClusterLoadAssignmentBuilder},
         GrpcService,
@@ -29,6 +29,7 @@ use crate::{
 };
 use http::uri::Authority;
 use orion_configuration::config::cluster::{HealthCheck, HealthStatus};
+use std::sync::Arc;
 use tracing::debug;
 
 #[derive(Debug, Clone)]
@@ -38,42 +39,53 @@ pub struct StaticClusterBuilder {
     pub transport_socket: UpstreamTransportSocketConfigurator,
     pub health_check: Option<HealthCheck>,
     pub config: Box<orion_configuration::config::cluster::Cluster>,
-    pub circuit_breaker: ClusterCircuitBreaker,
+    pub circuit_breaker: Option<Arc<ClusterCircuitBreaker>>,
 }
 
 impl StaticClusterBuilder {
-    pub fn build(self) -> Result<ClusterType> {
+    pub fn build(
+        self,
+        def_counters: Option<Arc<CircuitBreakerCounters>>,
+        high_counters: Option<Arc<CircuitBreakerCounters>>,
+    ) -> Result<ClusterType> {
         let StaticClusterBuilder { name, load_assignment, transport_socket, health_check, config, circuit_breaker } =
             self;
+
+        // we are rebuilding the circuit breaker re-using the passed counters (usually taken from a pre-existing cluster entry in global map)
+        let circuit_breaker =
+            circuit_breaker.map(|cb| Arc::new(Arc::unwrap_or_clone(cb).with_counters(def_counters, high_counters)));
+
         let load_assignment = load_assignment.build()?;
         Ok(ClusterType::Static(StaticCluster {
-            name,
-            load_assignment,
+            global: Arc::new(GlobalStaticCluster { name, health_check, config, circuit_breaker }),
             transport_socket,
-            health_check,
-            config,
-            circuit_breaker,
+            load_assignment,
         }))
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct StaticCluster {
+pub struct GlobalStaticCluster {
     pub name: &'static str,
-    pub load_assignment: ClusterLoadAssignment,
-    pub(super) transport_socket: UpstreamTransportSocketConfigurator,
     pub health_check: Option<HealthCheck>,
     pub config: Box<orion_configuration::config::cluster::Cluster>,
-    pub circuit_breaker: ClusterCircuitBreaker,
+    pub circuit_breaker: Option<Arc<ClusterCircuitBreaker>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct StaticCluster {
+    pub global: Arc<GlobalStaticCluster>,
+    pub(super) transport_socket: UpstreamTransportSocketConfigurator,
+    pub load_assignment: ClusterLoadAssignment,
 }
 
 impl ClusterOps for StaticCluster {
     fn get_name(&self) -> &'static str {
-        self.name
+        self.global.name
     }
 
     fn into_health_check(self) -> Option<HealthCheck> {
-        self.health_check
+        self.global.health_check.clone()
     }
 
     fn all_http_channels(&mut self) -> Vec<(Authority, HttpChannel)> {
@@ -102,7 +114,7 @@ impl ClusterOps for StaticCluster {
     }
 
     fn get_http_connection(&mut self, context: RoutingContext) -> Result<HttpChannels> {
-        debug!("{} : Getting connection", self.name);
+        debug!("{} : Getting connection", self.global.name);
         self.load_assignment.get_http_channel(context)
     }
 
@@ -118,7 +130,7 @@ impl ClusterOps for StaticCluster {
         self.load_assignment.get_routing_requirements()
     }
 
-    fn circuit_breaker(&self) -> &ClusterCircuitBreaker {
-        &self.circuit_breaker
+    fn circuit_breaker(&self) -> Option<&ClusterCircuitBreaker> {
+        self.global.circuit_breaker.as_deref()
     }
 }

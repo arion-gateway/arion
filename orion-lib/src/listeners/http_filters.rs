@@ -5,6 +5,7 @@ use crate::{
     event_error::EventFailure,
     listeners::{
         http_connection_manager::{
+            cedar_policy::CedarHttpFilter,
             cors::Cors,
             ext_proc::ExternalProcessor,
             jwt_authn::{JwtAuthentication, JwtAuthenticationBuilder},
@@ -17,7 +18,7 @@ use crate::{
     },
     OrionRequestBody, OrionResponseBody,
 };
-use http::{Request, Response, StatusCode};
+use http::{HeaderMap, HeaderValue, Request, Response, StatusCode};
 use orion_format::types::ResponseFlags as FmtResponseFlags;
 use smol_str::SmolStr;
 use tracing::debug;
@@ -41,6 +42,18 @@ pub enum FilterDecision {
 }
 
 impl FilterDecision {
+    // extract http headers from filter decision. Note that if the variant is Continue or Reroute,
+    // headers must be extracted from the original request or response.
+    #[inline]
+    #[allow(unused)]
+    pub fn headers(&self) -> Option<&HeaderMap<HeaderValue>> {
+        match self {
+            FilterDecision::Continue | FilterDecision::Reroute => None,
+            FilterDecision::DirectResponse(response) => Some(response.headers()),
+            FilterDecision::AsyncRequest(_, request) => request.as_ref().map(|r| r.headers()),
+        }
+    }
+
     #[inline]
     pub fn internal_server_error(msg: &str, ver: http::Version) -> FilterDecision {
         FilterDecision::DirectResponse(Box::new(
@@ -132,6 +145,7 @@ pub enum HttpFilterValue {
     Cors(Cors),
     McpGateway(Box<McpGateway>),
     UserRateLimit(UserRateLimiter),
+    CedarPolicy(CedarHttpFilter),
 }
 
 pub trait FilterFactory {
@@ -148,6 +162,7 @@ impl FilterFactory for HttpFilterValue {
             HttpFilterValue::McpGateway(conf) => HttpFilterValue::McpGateway(Box::new(conf.new_from())),
             HttpFilterValue::Cors(conf) => HttpFilterValue::Cors(conf.clone()),
             HttpFilterValue::UserRateLimit(conf) => HttpFilterValue::UserRateLimit(conf.clone()),
+            HttpFilterValue::CedarPolicy(conf) => HttpFilterValue::CedarPolicy(conf.clone()),
         }
     }
 }
@@ -176,6 +191,7 @@ impl TryFrom<HttpFilterConfig> for HttpFilter {
             HttpFilterType::UserRateLimit(user_rate_limit) => {
                 HttpFilterValue::UserRateLimit(user_rate_limit.try_into()?)
             },
+            HttpFilterType::CedarPolicy(conf) => HttpFilterValue::CedarPolicy(CedarHttpFilter::try_from_config(conf)?),
         };
         Ok(Self { name, disabled, filter: Some(filter), filter_config: hcm_config.map(Box::new) })
     }
@@ -191,6 +207,7 @@ impl HttpFilterValue {
             HttpFilterValue::Cors(cors) => cors.apply_request(request),
             HttpFilterValue::McpGateway(mcp) => mcp.apply_request(request).await,
             HttpFilterValue::UserRateLimit(user_rate_limiter) => user_rate_limiter.apply_request(request),
+            HttpFilterValue::CedarPolicy(cedar) => cedar.apply_request(request),
         }
     }
     pub async fn apply_response(&mut self, response: &mut Response<OrionResponseBody>) -> FilterDecision {
@@ -202,7 +219,8 @@ impl HttpFilterValue {
             HttpFilterValue::Rbac(_)
             | HttpFilterValue::RateLimit(_)
             | HttpFilterValue::UserRateLimit(_)
-            | HttpFilterValue::JwtAuthentication(_) => FilterDecision::Continue,
+            | HttpFilterValue::JwtAuthentication(_)
+            | HttpFilterValue::CedarPolicy(_) => FilterDecision::Continue,
         }
     }
     pub(crate) fn from_filter_override(

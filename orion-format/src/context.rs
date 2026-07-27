@@ -15,6 +15,7 @@
 //
 //
 
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::{
     net::SocketAddr,
     time::{Duration, SystemTime},
@@ -28,14 +29,13 @@ use crate::{
 use arrayvec::ArrayString;
 use chrono::{DateTime, Datelike, Timelike, Utc};
 use http::{uri::Authority, Request, Response};
-use orion_http_header::{X_ENVOY_ORIGINAL_PATH, X_REQUEST_ID};
+use orion_http_header::X_ENVOY_ORIGINAL_PATH;
 use orion_interner::StringInterner;
 use smol_str::ToSmolStr;
-use smol_str::{format_smolstr, SmolStr, SmolStrBuilder};
-use uuid::Uuid;
+use smol_str::{format_smolstr, SmolStr};
 
 pub trait Context {
-    fn eval_part(&self, op: &Operator) -> StringType;
+    fn eval_op(&self, op: &Operator) -> StringType;
 }
 
 #[derive(Debug, Clone, Default)]
@@ -47,7 +47,7 @@ pub struct SocketAddrContext {
 }
 
 impl Context for SocketAddrContext {
-    fn eval_part(&self, op: &Operator) -> StringType {
+    fn eval_op(&self, op: &Operator) -> StringType {
         match op {
             Operator::UpstreamHost | Operator::UpstreamRemoteAddress => {
                 self.upstream_peer_addr.map_or(StringType::None, |addr| StringType::Smol(addr.to_smolstr()))
@@ -107,12 +107,12 @@ pub struct TcpContext<'a> {
 }
 
 impl Context for TcpContext<'_> {
-    fn eval_part(&self, op: &Operator) -> StringType {
+    fn eval_op(&self, op: &Operator) -> StringType {
         match op {
             Operator::UpstreamCluster | Operator::UpstreamClusterRaw => {
                 StringType::Smol(SmolStr::new(self.cluster_name))
             },
-            _ => self.socket_address.eval_part(op),
+            _ => self.socket_address.eval_op(op),
         }
     }
 }
@@ -172,7 +172,7 @@ pub struct UpstreamContext<'a> {
 }
 
 impl Context for UpstreamContext<'_> {
-    fn eval_part(&self, op: &Operator) -> StringType {
+    fn eval_op(&self, op: &Operator) -> StringType {
         match op {
             Operator::UpstreamCluster | Operator::UpstreamClusterRaw => {
                 self.cluster_name.map_or(StringType::None, |cluster_name| StringType::Smol(SmolStr::new(cluster_name)))
@@ -198,9 +198,9 @@ pub struct InitContext {
 }
 
 impl Context for InitContext {
-    fn eval_part(&self, op: &Operator) -> StringType {
+    fn eval_op(&self, op: &Operator) -> StringType {
         match op {
-            Operator::StartTime => StringType::Smol(format_system_time(self.start_time)),
+            Operator::StartTime => StringType::Array(format_system_time(self.start_time)),
             _ => StringType::None,
         }
     }
@@ -217,9 +217,9 @@ pub struct InitHttpContext<'a, T> {
 }
 
 impl<T> Context for InitHttpContext<'_, T> {
-    fn eval_part(&self, op: &Operator) -> StringType {
+    fn eval_op(&self, op: &Operator) -> StringType {
         match op {
-            Operator::StartTime => StringType::Smol(format_system_time(self.start_time)),
+            Operator::StartTime => StringType::Array(format_system_time(self.start_time)),
             _ => DownstreamContext {
                 request: self.downstream_request,
                 trace_id: self.trace_id,
@@ -227,7 +227,7 @@ impl<T> Context for InitHttpContext<'_, T> {
                 server_name: self.server_name,
                 socket_address: self.socket_address.clone(),
             }
-            .eval_part(op),
+            .eval_op(op),
         }
     }
 }
@@ -239,7 +239,7 @@ pub struct HttpRequestDurationContext {
 }
 
 impl Context for HttpRequestDurationContext {
-    fn eval_part(&self, op: &Operator) -> StringType {
+    fn eval_op(&self, op: &Operator) -> StringType {
         match op {
             Operator::RequestDuration => {
                 let mut buffer = itoa::Buffer::new();
@@ -261,7 +261,7 @@ pub struct HttpResponseDurationContext {
 }
 
 impl Context for HttpResponseDurationContext {
-    fn eval_part(&self, op: &Operator) -> StringType {
+    fn eval_op(&self, op: &Operator) -> StringType {
         match op {
             Operator::ResponseDuration => {
                 let mut buffer = itoa::Buffer::new();
@@ -288,7 +288,7 @@ pub struct FinishContext {
 }
 
 impl Context for FinishContext {
-    fn eval_part(&self, op: &Operator) -> StringType {
+    fn eval_op(&self, op: &Operator) -> StringType {
         match op {
             Operator::ResponseFlags => StringType::Smol(ResponseFlagsShort(&self.response_flags).to_smolstr()),
             Operator::ResponseFlagsLong => StringType::Smol(ResponseFlagsLong(&self.response_flags).to_smolstr()),
@@ -325,7 +325,7 @@ pub struct WireContext {
 }
 
 impl Context for WireContext {
-    fn eval_part(&self, op: &Operator) -> StringType {
+    fn eval_op(&self, op: &Operator) -> StringType {
         match op {
             Operator::DownstreamWireBytesReceived => {
                 let mut buffer = itoa::Buffer::new();
@@ -350,9 +350,9 @@ pub struct ConnectionContext<'a> {
 }
 
 impl Context for ConnectionContext<'_> {
-    fn eval_part(&self, op: &Operator) -> StringType {
+    fn eval_op(&self, op: &Operator) -> StringType {
         match op {
-            Operator::StartTime => StringType::Smol(format_system_time(self.start_time)),
+            Operator::StartTime => StringType::Array(format_system_time(self.start_time)),
             Operator::BytesReceived | Operator::DownstreamWireBytesReceived => {
                 let mut buffer = itoa::Buffer::new();
                 StringType::Smol(SmolStr::new(buffer.format(self.wire_bytes_received)))
@@ -390,7 +390,7 @@ pub struct UpstreamRequestContext<'a, T>(pub &'a Request<T>);
 pub struct UpstreamResponseContext<'a, T>(pub &'a Response<T>);
 
 impl<T> Context for DownstreamContext<'_, T> {
-    fn eval_part(&self, op: &Operator) -> StringType {
+    fn eval_op(&self, op: &Operator) -> StringType {
         match op {
             Operator::RequestHeadersBytes => {
                 let mut buffer = itoa::Buffer::new();
@@ -434,27 +434,19 @@ impl<T> Context for DownstreamContext<'_, T> {
             Operator::RequestedServerName => {
                 self.server_name.map_or(StringType::None, |sni| StringType::Smol(SmolStr::new(sni)))
             },
-            _ => self.socket_address.eval_part(op),
+            _ => self.socket_address.eval_op(op),
         }
     }
 }
 
 impl<T> Context for UpstreamRequestContext<'_, T> {
-    fn eval_part(&self, op: &Operator) -> StringType {
+    fn eval_op(&self, op: &Operator) -> StringType {
         match op {
             Operator::UpstreamProtocol => StringType::Smol(SmolStr::new_static(self.0.version().to_static_str())),
             Operator::UniqueId => {
-                let uuid = self
-                    .0
-                    .headers()
-                    .get(X_REQUEST_ID)
-                    .and_then(|id| id.to_str().ok())
-                    .filter(|s| Uuid::parse_str(s).is_ok())
-                    .map(SmolStr::new);
-                match uuid {
-                    Some(value) => StringType::Smol(value),
-                    None => StringType::None,
-                }
+                let mut buffer = [0u8; 36];
+                let new_id_str = uuid::Uuid::new_v4().hyphenated().encode_lower(&mut buffer);
+                StringType::Smol(SmolStr::new(new_id_str))
             },
             _ => StringType::None,
         }
@@ -462,7 +454,7 @@ impl<T> Context for UpstreamRequestContext<'_, T> {
 }
 
 impl<T> Context for DownstreamResponseContext<'_, T> {
-    fn eval_part(&self, op: &Operator) -> StringType {
+    fn eval_op(&self, op: &Operator) -> StringType {
         match op {
             Operator::ResponseHeadersBytes => {
                 let mut buffer = itoa::Buffer::new();
@@ -506,33 +498,70 @@ const TWO_DIGITS: [&str; 100] = [
     "95", "96", "97", "98", "99",
 ];
 
-pub fn format_system_time(time: SystemTime) -> SmolStr {
-    let datetime: DateTime<Utc> = time.into();
+static LOCAL_OFFSET_SEC: AtomicI32 = AtomicI32::new(0);
 
-    let mut builder = SmolStrBuilder::new();
+pub fn set_local_offset_sec(offset: i32) {
+    LOCAL_OFFSET_SEC.store(offset, Ordering::Relaxed);
+}
+
+// 3. High-performance formatter for the Critical Path
+pub fn format_system_time(time: SystemTime) -> ArrayString<64> {
+    let offset_sec = LOCAL_OFFSET_SEC.load(Ordering::Relaxed);
+
+    let mut datetime: DateTime<Utc> = time.into();
+
+    // Apply the mathematical offset
+    if offset_sec != 0 {
+        datetime += chrono::Duration::seconds(i64::from(offset_sec));
+    }
+
+    let mut builder = ArrayString::<64>::new();
     let mut buffer = itoa::Buffer::new();
 
     builder.push_str(buffer.format(datetime.year()));
     builder.push('-');
-    // SAFETY: datetime.month() is guaranteed to return a valid index within the bounds of the TWO_DIGITS array.
+    // SAFETY: datetime.month() always returns a valid value (1-12)
     builder.push_str(unsafe { TWO_DIGITS.get_unchecked(datetime.month() as usize) });
     builder.push('-');
-    // SAFETY: datetime.month() is guaranteed to return a valid index within the bounds of the TWO_DIGITS array.
+    // SAFETY: datetime.day() always returns a valid value (1-31)
     builder.push_str(unsafe { TWO_DIGITS.get_unchecked(datetime.day() as usize) });
     builder.push('T');
-    // SAFETY: datetime.month() is guaranteed to return a valid index within the bounds of the TWO_DIGITS array.
+    // SAFETY: datetime.hour() always returns a valid value (0-23)
     builder.push_str(unsafe { TWO_DIGITS.get_unchecked(datetime.hour() as usize) });
     builder.push(':');
-    // SAFETY: datetime.month() is guaranteed to return a valid index within the bounds of the TWO_DIGITS array.
+    // SAFETY: datetime.minute() always returns a valid value (0-59)
     builder.push_str(unsafe { TWO_DIGITS.get_unchecked(datetime.minute() as usize) });
     builder.push(':');
-    // SAFETY: datetime.month() is guaranteed to return a valid index within the bounds of the TWO_DIGITS array.
+    // SAFETY: datetime.second() always returns a valid value (0-59)
     builder.push_str(unsafe { TWO_DIGITS.get_unchecked(datetime.second() as usize) });
-    builder.push(':');
-    builder.push_str(buffer.format(datetime.nanosecond() / 1_000_000));
-    builder.push('Z');
+    builder.push('.');
 
-    builder.finish()
+    // Format milliseconds securely
+    let millis = datetime.nanosecond() / 1_000_000;
+    if millis < 10 {
+        builder.push_str("00");
+    } else if millis < 100 {
+        builder.push('0');
+    }
+    builder.push_str(buffer.format(millis));
+
+    // Append the timezone string
+    if offset_sec == 0 {
+        builder.push('Z');
+    } else {
+        let abs_offset = offset_sec.abs().cast_unsigned();
+        let h = (abs_offset / 3600) as usize;
+        let m = ((abs_offset % 3600) / 60) as usize;
+
+        builder.push(if offset_sec > 0 { '+' } else { '-' });
+        // SAFETY: Hours and minutes are always within TWO_DIGITS bounds
+        builder.push_str(unsafe { TWO_DIGITS.get_unchecked(h) });
+        builder.push(':');
+        // SAFETY: Hours and minutes are always within TWO_DIGITS bounds
+        builder.push_str(unsafe { TWO_DIGITS.get_unchecked(m) });
+    }
+
+    builder
 }
 
 #[cfg(any())]

@@ -13,6 +13,7 @@
 // limitations under the License.
 
 mod bootstrap;
+pub mod cedar_policy;
 mod cluster;
 mod endpoint;
 mod ext_proc;
@@ -36,6 +37,7 @@ mod virtual_host;
 pub mod xds;
 
 pub use bootstrap::BootstrapBuilder;
+pub use cedar_policy::CedarPolicyBuilder;
 pub use cluster::{Cluster, ClusterBuilder, HttpVersion, LbPolicy, UpstreamProxyProtocolBuilder};
 pub use endpoint::{Endpoint, EndpointBuilder, HealthStatus};
 pub use ext_proc::ExtProcBuilder;

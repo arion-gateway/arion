@@ -1,3 +1,5 @@
+#![allow(clippy::similar_names)]
+
 use super::*;
 use crate::{
     body::{

@@ -15,6 +15,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use orion_configuration::config::log::AccessLogConfig;
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
 
@@ -23,6 +24,7 @@ use crate::{Error, Result};
 use super::cluster::Cluster;
 use super::listener::Listener;
 use super::serialize::proto_to_yaml_value;
+use orion_configuration::config::metrics::MetricsConfig;
 
 static CONFIG_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -39,7 +41,12 @@ pub struct BootstrapBuilder {
     runtime_cpus: u32,
     runtime_count: u32,
     log_level: String,
+    log_file: Option<String>,
+    log_directory: Option<String>,
     xds_config: Option<XdsConfig>,
+    admin_config: Option<Admin>,
+    metrics: MetricsConfig,
+    access_log_config: Option<AccessLogConfig>,
 }
 
 impl Default for BootstrapBuilder {
@@ -57,7 +64,12 @@ impl BootstrapBuilder {
             runtime_cpus: 1,
             runtime_count: 1,
             log_level: "info".into(),
+            log_file: None,
+            log_directory: None,
             xds_config: None,
+            admin_config: None,
+            metrics: MetricsConfig::default(),
+            access_log_config: None,
         }
     }
 
@@ -112,8 +124,35 @@ impl BootstrapBuilder {
     }
 
     #[must_use]
+    pub fn log_file(mut self, directory: impl Into<String>, filename: impl Into<String>) -> Self {
+        self.log_directory = Some(directory.into());
+        self.log_file = Some(filename.into());
+        self
+    }
+
+    #[must_use]
     pub fn xds(mut self, address: impl Into<String>, port: u16) -> Self {
         self.xds_config = Some(XdsConfig { address: address.into(), port });
+        self
+    }
+
+    #[must_use]
+    pub fn admin(mut self, address: impl Into<String>, port: u16) -> Self {
+        self.admin_config = Some(Admin {
+            address: Address { socket_address: SocketAddress { address: address.into(), port_value: port } },
+        });
+        self
+    }
+
+    #[must_use]
+    pub fn metrics(mut self, metrics: MetricsConfig) -> Self {
+        self.metrics = metrics;
+        self
+    }
+
+    #[must_use]
+    pub fn access_log(mut self, access_log_config: AccessLogConfig) -> Self {
+        self.access_log_config = Some(access_log_config);
         self
     }
 
@@ -180,11 +219,18 @@ impl BootstrapBuilder {
 
         Ok(OrionConfig {
             runtime: RuntimeConfig { num_cpus: self.runtime_cpus, num_runtimes: self.runtime_count },
-            logging: LoggingConfig { log_level: self.log_level.clone() },
+            logging: LoggingConfig {
+                log_level: self.log_level.clone(),
+                log_file: self.log_file.clone(),
+                log_directory: self.log_directory.clone(),
+            },
+            access_log_config: self.access_log_config.clone(),
             envoy_bootstrap: EnvoyBootstrap {
+                admin: self.admin_config.clone(),
                 dynamic_resources,
                 static_resources: StaticResources { listeners, clusters: all_clusters, secrets: vec![] },
             },
+            metrics: self.metrics.clone(),
         })
     }
 }
@@ -244,7 +290,10 @@ fn build_xds_cluster(address: &str, port: u16) -> Value {
 struct OrionConfig {
     runtime: RuntimeConfig,
     logging: LoggingConfig,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "access_logging")]
+    access_log_config: Option<AccessLogConfig>,
     envoy_bootstrap: EnvoyBootstrap,
+    metrics: MetricsConfig,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -253,16 +302,41 @@ struct RuntimeConfig {
     num_runtimes: u32,
 }
 
+#[allow(clippy::struct_field_names)] // prefix matches the YAML schema keys
 #[derive(Debug, Serialize, Deserialize)]
 struct LoggingConfig {
     log_level: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    log_file: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    log_directory: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 struct EnvoyBootstrap {
     #[serde(skip_serializing_if = "Option::is_none")]
+    admin: Option<Admin>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     dynamic_resources: Option<DynamicResources>,
     static_resources: StaticResources,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Admin {
+    address: Address,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Address {
+    socket_address: SocketAddress,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SocketAddress {
+    address: String,
+    port_value: u16,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

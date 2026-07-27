@@ -18,8 +18,10 @@ pub static CUSTOM_METRICS: OnceLock<CustomMetrics> = OnceLock::new();
 
 pub fn init_metrics(config: &orion_configuration::config::metrics::CustomMetrics) {
     if !config.incoming_request.is_empty()
+        || !config.ext_proc_request.is_empty()
         || !config.upstream_request.is_empty()
         || !config.incoming_response.is_empty()
+        || !config.ext_proc_response.is_empty()
         || !config.downstream_response.is_empty()
     {
         _ = CUSTOM_METRICS.set(CustomMetrics::new(config));
@@ -58,16 +60,20 @@ impl CustomMetricCounters {
 
 pub struct CustomMetrics {
     incoming_request: CustomMetricCounters,
+    ext_proc_request: CustomMetricCounters,
     upstream_request: CustomMetricCounters,
     incoming_response: CustomMetricCounters,
+    ext_proc_response: CustomMetricCounters,
     downstream_response: CustomMetricCounters,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum MetricsHook {
     IncomingRequest,
+    ExtProcRequest,
     UpstreamRequest,
     IncomingResponse,
+    ExtProcResponse,
     DownstreamResponse,
 }
 
@@ -203,8 +209,10 @@ impl CustomMetrics {
     pub fn new(config: &orion_configuration::config::metrics::CustomMetrics) -> Self {
         Self {
             incoming_request: CustomMetricCounters::new(&config.incoming_request),
+            ext_proc_request: CustomMetricCounters::new(&config.ext_proc_request),
             upstream_request: CustomMetricCounters::new(&config.upstream_request),
             incoming_response: CustomMetricCounters::new(&config.incoming_response),
+            ext_proc_response: CustomMetricCounters::new(&config.ext_proc_response),
             downstream_response: CustomMetricCounters::new(&config.downstream_response),
         }
     }
@@ -225,8 +233,10 @@ impl CustomMetrics {
     {
         let counters = match hook {
             MetricsHook::IncomingRequest => &self.incoming_request,
+            MetricsHook::ExtProcRequest => &self.ext_proc_request,
             MetricsHook::UpstreamRequest => &self.upstream_request,
             MetricsHook::IncomingResponse => &self.incoming_response,
+            MetricsHook::ExtProcResponse => &self.ext_proc_response,
             MetricsHook::DownstreamResponse => &self.downstream_response,
         };
 
@@ -270,8 +280,10 @@ impl CustomMetrics {
         self.incoming_request
             .counters()
             .iter()
+            .chain(self.ext_proc_request.counters().iter())
             .chain(self.upstream_request.counters().iter())
             .chain(self.incoming_response.counters().iter())
+            .chain(self.ext_proc_response.counters().iter())
             .chain(self.downstream_response.counters().iter())
     }
 
@@ -279,8 +291,10 @@ impl CustomMetrics {
         self.incoming_request
             .histograms()
             .iter()
+            .chain(self.ext_proc_request.histograms().iter())
             .chain(self.upstream_request.histograms().iter())
             .chain(self.incoming_response.histograms().iter())
+            .chain(self.ext_proc_response.histograms().iter())
             .chain(self.downstream_response.histograms().iter())
     }
 
@@ -288,8 +302,29 @@ impl CustomMetrics {
         self.incoming_request
             .gauges()
             .iter()
+            .chain(self.ext_proc_request.gauges().iter())
             .chain(self.upstream_request.gauges().iter())
             .chain(self.incoming_response.gauges().iter())
+            .chain(self.ext_proc_response.gauges().iter())
             .chain(self.downstream_response.gauges().iter())
     }
+}
+
+impl crate::sharded::Clearable for CustomMetrics {
+    fn clear(&self) {
+        for counter in self.counters() {
+            counter.metric.value.clear();
+        }
+        for histogram in self.histograms() {
+            histogram.metric.value.clear();
+        }
+        for gauge in self.gauges() {
+            gauge.metric.value.clear();
+        }
+    }
+}
+
+pub fn reset_metrics() {
+    use crate::sharded::Clearable;
+    CUSTOM_METRICS.clear();
 }

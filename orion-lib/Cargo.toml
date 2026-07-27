@@ -17,7 +17,6 @@ http-body.workspace = true
 http-body-util.workspace = true
 hyper-util.workspace = true
 orion-configuration.workspace = true
-orion-data-plane-api.workspace = true
 orion-error.workspace = true
 orion-format.workspace = true
 orion-http-header.workspace = true
@@ -41,71 +40,76 @@ serde_json.workspace = true
 tracing-rolling-file.workspace = true
 ahash.workspace = true
 tonic.workspace = true
-arc-swap = "1.7.1"
-arrayvec = "0.7.6"
-async-stream = "0.3"
-atomic-time = "0.1.5"
-enum_dispatch = "0.3.13"
-futures-util = { version = "0.3", default-features = false }
-h2 = "0.4.12"
-hickory-resolver = { version = "0.24", features = ["system-config"] }
-hyper = { version = "1", features = ["full"] }
-hyper-rustls = { version = "0.27.7", features = ["default", "http2"] }
-ipnet = "2.11"
-lru_time_cache = "0.11.11"
-opentelemetry = "0.29.0"
+chrono-tz.workspace = true
+cedar-policy.workspace = true
+orion-data-plane-api.workspace = true
+time.workspace = true
+
+arc-swap.workspace = true
+arrayvec.workspace = true
+async-stream.workspace = true
+atomic-time.workspace = true
+enum_dispatch.workspace = true
+futures-util.workspace = true
+h2.workspace = true
+hyper-rustls.workspace = true
+ipnet.workspace = true
+lru_time_cache.workspace = true
+opentelemetry.workspace = true
+parking_lot.workspace = true
+pin-project.workspace = true
+pingora-timeout.workspace = true
+pretty-duration.workspace = true
+rustc-hash.workspace = true
+rustls-pemfile.workspace = true
+rustls-webpki.workspace = true
+scopeguard.workspace = true
+thread-id.workspace = true
+thread_local.workspace = true
+tokio-rustls.workspace = true
+tower-service.workspace = true
+traceparent.workspace = true
+tracing-appender.workspace = true
+twox-hash.workspace = true
+typed-builder.workspace = true
+ref-cast.workspace = true
+smallvec.workspace = true
+assert_matches.workspace = true
+base64.workspace = true
+pastey.workspace = true
+owning_ref.workspace = true
+quanta.workspace = true
+hyperlocal.workspace = true
+jsonschema.workspace = true
+ctor_0_6.workspace = true
+upon.workspace = true
+percent-encoding.workspace = true
+atomicoption.workspace = true
+papaya.workspace = true
+const-str.workspace = true
+hickory-resolver = { workspace = true, features = ["system-config"] }
+hyper = { workspace = true, features = ["full"] }
 orion-metrics = { workspace = true, optional = true }
-parking_lot = "0.12.5"
-pin-project = "1.1.10"
-pingora-timeout = "0.3.0"
-pretty-duration = "0.1.1"
-rand = { version = "0.8.5", features = ["small_rng"] }
-rustc-hash = "1.1.0"
-rustls = { version = "0.23", features = ["aws-lc-rs"] }
-rustls-pemfile = "2.2"
-rustls-platform-verifier = { version = "0.3" }
-rustls-webpki = "0.102"
-scopeguard = "1.2.0"
-thread-id = "5.0.0"
-thread_local = "1.1.9"
-tokio-rustls = "0.26"
-tower-service = "0.3.3"
-traceparent = "0.0.3"
-tracing-appender = "0.2.3"
-twox-hash = "1.6.3"
-typed-builder = "0.18.2"
-uuid = { version = "1.18.1", features = ["v4"] }
-x509-parser = { version = "0.17", features = ["default"] }
-ref-cast = "1.0.25"
-smallvec = "1.15.1"
-assert_matches = "1.5.0"
-tokio-util = { version = "0.7.17", features = ["rt"] }
-jsonwebtoken = { version = "10.2.0", features = ["aws_lc_rs"] }
-chrono = { version = "0.4.42", features = ["serde"] }
-base64 = "0.22.1"
-schemars = { version = "1.1.0", features = ["std", "derive", "chrono04"] }
-pastey = "0.2.1"
-owning_ref = "0.4.1"
-rmcp = { version = "1.2.0", features = ["client", "transport-streamable-http-client-reqwest"] }
-moka = { version = "0.12.12", features = ["sync"] }
-contatori = { version = "0.7.5", optional = true }
-quanta = { version = "0.12.6", optional = true }
-hyperlocal = "0.9.1"
-jsonschema = "0.41.0"
-ctor = "0.6.3"
-upon = "0.8"
-percent-encoding = "2.3.2"
-atomicoption = "0.2.0"
-papaya = "0.2.4"
-const-str = "1.1.0"
-pingora = { version = "0.8.0", features = ["time"] }
+rand = { workspace = true, features = ["small_rng"] }
+rustls = { workspace = true, features = ["aws-lc-rs"] }
+uuid = { workspace = true, features = ["v4"] }
+x509-parser = { workspace = true, features = ["default"] }
+tokio-util = { workspace = true, features = ["rt"] }
+jsonwebtoken = { workspace = true, features = ["aws_lc_rs"] }
+chrono = { workspace = true, features = ["serde"] }
+schemars = { workspace = true, features = ["std", "derive", "chrono04"] }
+rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }
+moka = { workspace = true, features = ["sync"] }
+rustls-platform-verifier = { workspace = true }
+contatori = { workspace = true, optional = true }
+pingora = { workspace = true, features = ["time"] }
 
 
 [dev-dependencies]
 orion-data-plane-api.workspace = true
 serde_yaml.workspace           = true
 tracing-test.workspace         = true
-test-log                       = { version = "0.2.18", features = ["trace"] }
+test-log = { workspace = true, features = ["trace"] }
 
 [features]
 default   = ["server", "macros", "elicitation", "base64", "schemars"]
@@ -114,7 +118,7 @@ tracing   = []
 access-log = []
 
 # performance instrumentation
-instrumentation = ["dep:contatori", "dep:quanta"]
+instrumentation = ["dep:contatori"]
 
 # mcp gateway model features:
 

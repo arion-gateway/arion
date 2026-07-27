@@ -15,12 +15,16 @@
 //
 //
 
-use crate::{metrics::Metric, sharded::ShardedU64};
+use crate::{
+    metrics::Metric,
+    sharded::{ShardedHistogram, ShardedU64},
+};
 use opentelemetry::global;
 use std::{sync::OnceLock, thread::ThreadId};
 
 pub static UPSTREAM_RQ_TOTAL: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 pub static UPSTREAM_RQ_ACTIVE: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
+pub static UPSTREAM_RQ_TIME: OnceLock<Metric<ShardedHistogram<ThreadId>>> = OnceLock::new();
 
 pub static UPSTREAM_RQ_TIMEOUT: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 pub static UPSTREAM_RQ_PER_TRY_TIMEOUT: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
@@ -55,6 +59,13 @@ pub(crate) fn init_metrics(rename: &std::collections::HashMap<String, String>) {
         crate::metrics::PREFIX_CLUSTER,
         crate::metrics::resolve_metric_name(rename, "upstream_rq_active"),
         "Number of active upstream requests"
+    );
+    init_observable_histogram!(
+        UPSTREAM_RQ_TIME,
+        crate::metrics::PREFIX_CLUSTER,
+        crate::metrics::resolve_metric_name(rename, "upstream_rq_time"),
+        "Upstream request time in milliseconds",
+        vec![5, 10, 50, 100, 500, 1000, 5000, 10000, u64::MAX]
     );
     init_observable_counter!(
         UPSTREAM_RQ_TIMEOUT,
@@ -141,4 +152,30 @@ pub(crate) fn init_metrics(rename: &std::collections::HashMap<String, String>) {
         crate::metrics::resolve_metric_name(rename, "upstream_cx_tx_bytes_total"),
         "Total upstream bytes sent"
     );
+}
+
+pub fn reset_metrics() {
+    use crate::sharded::Clearable;
+    let metrics: &[&dyn Clearable] = &[
+        &UPSTREAM_RQ_TOTAL,
+        &UPSTREAM_RQ_ACTIVE,
+        &UPSTREAM_RQ_TIMEOUT,
+        &UPSTREAM_RQ_PER_TRY_TIMEOUT,
+        &UPSTREAM_RQ_RETRY,
+        &UPSTREAM_CX_TOTAL,
+        &UPSTREAM_CX_ACTIVE,
+        &UPSTREAM_CX_DESTROY,
+        &UPSTREAM_CX_IDLE_TIMEOUT,
+        &UPSTREAM_CX_CONNECT_FAIL,
+        &UPSTREAM_CX_CONNECT_TIMEOUT,
+        &UPSTREAM_CX_RX_BYTES_TOTAL,
+        &UPSTREAM_CX_TX_BYTES_TOTAL,
+        &UPSTREAM_CX_OVERFLOW,
+        &UPSTREAM_RQ_OVERFLOW,
+        &UPSTREAM_RQ_RETRY_OVERFLOW,
+        &UPSTREAM_RQ_TIME,
+    ];
+    for metric in metrics {
+        metric.clear();
+    }
 }

@@ -33,6 +33,7 @@ use orion_configuration::config::cluster::{Cluster as ClusterConfig, ClusterSpec
 use orion_interner::StringInterner;
 use rand::{prelude::SliceRandom, thread_rng};
 use smol_str::SmolStr;
+use std::sync::Arc;
 use std::{
     cell::RefCell,
     collections::{btree_map::Entry as BTreeEntry, BTreeMap},
@@ -167,9 +168,9 @@ pub fn change_cluster_load_assignment(name: &str, cla: &PartialClusterLoadAssign
                     let cla = ClusterLoadAssignmentBuilder::builder()
                         .with_cla(cla.clone())
                         .with_transport_socket(dynamic_cluster.transport_socket.clone())
-                        .with_cluster_name(dynamic_cluster.name)
-                        .with_bind_device(dynamic_cluster.bind_device.clone())
-                        .with_lb_policy(dynamic_cluster.load_balancing_policy.clone())
+                        .with_cluster_name(dynamic_cluster.global.name)
+                        .with_bind_device(dynamic_cluster.global.bind_device.clone())
+                        .with_lb_policy(dynamic_cluster.global.load_balancing_policy.clone())
                         .prepare();
                     cla.build().map(|cla| dynamic_cluster.change_load_assignment(Some(cla)))?;
                     Ok(cluster.clone())
@@ -241,15 +242,21 @@ pub fn update_tls_context(secret_id: &str, secret: &TransportSecret) -> Result<V
 }
 
 pub fn add_cluster(partial_cluster: PartialClusterType) -> Result<ClusterType> {
-    let cluster = partial_cluster.build()?;
-    let cluster_name = cluster.get_name();
+    let cluster_name = partial_cluster.get_name();
 
     CLUSTERS_MAP.update(|current| match current.entry(cluster_name) {
         BTreeEntry::Vacant(entry) => {
+            let cluster = partial_cluster.build(None, None)?;
             entry.insert(cluster.clone());
             Ok(cluster)
         },
         BTreeEntry::Occupied(mut entry) => {
+            let counters = entry
+                .get()
+                .circuit_breaker()
+                .map(|cb| (Arc::clone(&cb.default_priority.counters), Arc::clone(&cb.high_priority.counters)))
+                .unzip();
+            let cluster = partial_cluster.build(counters.0, counters.1)?;
             *(entry.get_mut()) = cluster.clone();
             Ok(cluster)
         },
@@ -303,23 +310,50 @@ where
 
 pub use super::circuit_breaker::{CircuitBreakerDenial, RoutingPriority};
 
+pub fn try_increment_connections(
+    cluster_id: ClusterID,
+    priority: RoutingPriority,
+) -> std::result::Result<(), CircuitBreakerDenial> {
+    CLUSTERS_MAP_CACHE.with_borrow_mut(|watcher| {
+        if let Some(cluster) = watcher.cached_or_latest().get_mut(cluster_id) {
+            if let Some(cb) = cluster.circuit_breaker() {
+                return cb.try_increment_connections(priority);
+            }
+        }
+        Ok(())
+    })
+}
+
+pub fn decrement_connections(cluster_id: ClusterID, priority: RoutingPriority) {
+    CLUSTERS_MAP_CACHE.with_borrow_mut(|watcher| {
+        if let Some(cluster) = watcher.cached_or_latest().get_mut(cluster_id) {
+            if let Some(cb) = cluster.circuit_breaker() {
+                cb.decrement_connections(priority);
+            }
+        }
+    });
+}
+
 pub fn try_increment_requests(
     cluster_id: ClusterID,
     priority: RoutingPriority,
 ) -> std::result::Result<(), CircuitBreakerDenial> {
     CLUSTERS_MAP_CACHE.with_borrow_mut(|watcher| {
         if let Some(cluster) = watcher.cached_or_latest().get_mut(cluster_id) {
-            cluster.circuit_breaker().try_increment_requests(priority)
-        } else {
-            Ok(())
+            if let Some(cb) = cluster.circuit_breaker() {
+                return cb.try_increment_requests(priority);
+            }
         }
+        Ok(())
     })
 }
 
 pub fn decrement_requests(cluster_id: ClusterID, priority: RoutingPriority) {
     CLUSTERS_MAP_CACHE.with_borrow_mut(|watcher| {
         if let Some(cluster) = watcher.cached_or_latest().get_mut(cluster_id) {
-            cluster.circuit_breaker().decrement_requests(priority);
+            if let Some(cb) = cluster.circuit_breaker() {
+                cb.decrement_requests(priority);
+            }
         }
     });
 }
@@ -330,17 +364,135 @@ pub fn try_increment_retries(
 ) -> std::result::Result<(), CircuitBreakerDenial> {
     CLUSTERS_MAP_CACHE.with_borrow_mut(|watcher| {
         if let Some(cluster) = watcher.cached_or_latest().get_mut(cluster_id) {
-            cluster.circuit_breaker().try_increment_retries(priority)
-        } else {
-            Ok(())
+            if let Some(cb) = cluster.circuit_breaker() {
+                return cb.try_increment_retries(priority);
+            }
         }
+        Ok(())
     })
 }
 
 pub fn decrement_retries(cluster_id: ClusterID, priority: RoutingPriority) {
     CLUSTERS_MAP_CACHE.with_borrow_mut(|watcher| {
         if let Some(cluster) = watcher.cached_or_latest().get_mut(cluster_id) {
-            cluster.circuit_breaker().decrement_retries(priority);
+            if let Some(cb) = cluster.circuit_breaker() {
+                cb.decrement_retries(priority);
+            }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::secrets::SecretManager;
+    use orion_configuration::config::cluster::{
+        CircuitBreakerThresholds, CircuitBreakers, ClusterDiscoveryType, LbPolicy, OriginalDstConfig,
+        OriginalDstRoutingMethod, StandardLbPolicy,
+    };
+    use orion_configuration::config::cluster::{Cluster as ClusterConfig, HttpProtocolOptions};
+    use std::sync::atomic::Ordering;
+
+    fn make_cluster_config(name: &str, max_requests: u32) -> ClusterConfig {
+        ClusterConfig {
+            name: name.into(),
+            discovery_settings: ClusterDiscoveryType::OriginalDst(OriginalDstConfig {
+                routing_method: OriginalDstRoutingMethod::HttpHeader { http_header_name: None },
+                upstream_port_override: None,
+            }),
+            cleanup_interval: None,
+            transport_socket: None,
+            bind_device: None,
+            load_balancing_policy: LbPolicy::Standard(StandardLbPolicy::ClusterProvided),
+            http_protocol_options: HttpProtocolOptions::default(),
+            health_check: None,
+            connect_timeout: None,
+            circuit_breakers: Some(CircuitBreakers {
+                thresholds: vec![CircuitBreakerThresholds { max_requests, ..Default::default() }],
+            }),
+        }
+    }
+
+    fn build_partial(config: ClusterConfig) -> PartialClusterType {
+        let secrets = SecretManager::new();
+        PartialClusterType::try_from((Box::new(config), &secrets)).unwrap()
+    }
+
+    #[test]
+    fn circuit_breaker_survives_cluster_replacement() {
+        let name = "cb-replace-test";
+        let partial = build_partial(make_cluster_config(name, 10));
+        let cluster = add_cluster(partial).unwrap();
+
+        let cb = cluster.circuit_breaker().expect("CB should be present");
+        cb.try_increment_requests(RoutingPriority::Default).unwrap();
+        let counter = cb.get_state(RoutingPriority::Default).counters.active_requests.load(Ordering::Relaxed);
+        assert_eq!(counter, 1);
+
+        let partial2 = build_partial(make_cluster_config(name, 20));
+        let replaced = add_cluster(partial2).unwrap();
+
+        let cb_after = replaced.circuit_breaker().expect("CB should be present after replacement");
+        let counter_after =
+            cb_after.get_state(RoutingPriority::Default).counters.active_requests.load(Ordering::Relaxed);
+        assert_eq!(counter_after, 1, "replacement must preserve in-flight counter");
+
+        cb_after.decrement_requests(RoutingPriority::Default);
+        let counter_final =
+            cb_after.get_state(RoutingPriority::Default).counters.active_requests.load(Ordering::Relaxed);
+        assert_eq!(counter_final, 0, "decrement after replacement must reach zero");
+
+        remove_cluster(name).unwrap();
+    }
+
+    #[test]
+    fn simulated_race_increment_replace_decrement() {
+        let name = "cb-race-test";
+        let partial = build_partial(make_cluster_config(name, 5));
+        add_cluster(partial).unwrap();
+
+        try_increment_requests(name, RoutingPriority::Default).unwrap();
+
+        let partial2 = build_partial(make_cluster_config(name, 5));
+        add_cluster(partial2).unwrap();
+
+        decrement_requests(name, RoutingPriority::Default);
+
+        CLUSTERS_MAP_CACHE.with_borrow_mut(|watcher| {
+            let cluster = watcher.cached_or_latest().get_mut(name).unwrap();
+            let cb = cluster.circuit_breaker().unwrap();
+            let counter = cb.get_state(RoutingPriority::Default).counters.active_requests.load(Ordering::Relaxed);
+            assert_eq!(counter, 0, "counter must be zero, not underflowed to u32::MAX");
+        });
+
+        remove_cluster(name).unwrap();
+    }
+
+    #[test]
+    fn replacement_inherits_thresholds_from_new_config() {
+        let name = "cb-threshold-test";
+        let partial = build_partial(make_cluster_config(name, 5));
+        add_cluster(partial).unwrap();
+
+        let partial2 = build_partial(make_cluster_config(name, 20));
+        let replaced = add_cluster(partial2).unwrap();
+
+        let cb = replaced.circuit_breaker().unwrap();
+        let thresholds = &cb.get_state(RoutingPriority::Default).thresholds;
+        assert_eq!(thresholds.max_requests, 20, "preserved CB adopts new thresholds");
+
+        remove_cluster(name).unwrap();
+    }
+
+    #[test]
+    fn first_add_does_not_panic() {
+        let name = "cb-first-add-test";
+        let partial = build_partial(make_cluster_config(name, 10));
+        let cluster = add_cluster(partial).unwrap();
+
+        let cb = cluster.circuit_breaker().expect("CB should exist on first add");
+        assert_eq!(cb.get_state(RoutingPriority::Default).counters.active_requests.load(Ordering::Relaxed), 0);
+
+        remove_cluster(name).unwrap();
+    }
 }

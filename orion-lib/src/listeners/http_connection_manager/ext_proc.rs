@@ -12,8 +12,12 @@ use crate::body::channel_body::{BodyType, ChannelBody, FrameBridge};
 use crate::body::timeout_body::TimeoutBody;
 use crate::event_error::EventFailure;
 use crate::listeners::http_connection_manager::ext_proc::kind::{MessageType, RequestMsg, ResponseMsg};
+#[cfg(feature = "access-log")]
+use crate::listeners::http_connection_manager::TransactionContext;
 use crate::{OrionRequestBody, OrionResponseBody};
 use http_body_util::{BodyExt, Collected, LengthLimitError, Limited};
+#[cfg(feature = "metrics")]
+use orion_metrics::metrics::custom::CUSTOM_METRICS;
 
 use crate::listeners::http_connection_manager::ext_proc::mutation::{
     apply_request_header_mutations, apply_response_header_mutations,
@@ -68,7 +72,7 @@ use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::{sync::Arc, time::Duration};
 use tokio::sync::mpsc::error::SendError;
-use tokio::sync::{mpsc, oneshot, Semaphore};
+use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
 
 /// The total number of frames to prefetch before sending the request to the upstream service.
@@ -111,20 +115,6 @@ const EXT_PROC_FRAME_MERGE_LIMIT: u32 = parse!(
     },
     u32
 );
-
-/// The number of max concurrent `ext_proc` requests per core. This limits the number of concurrent requests to avoid
-/// overloading the external processor and spawning too many tasks.
-const EXT_PROC_MAX_CONCURRENT_REQUESTS: usize = parse!(
-    match option_env!("EXT_PROC_MAX_CONCURRENT_REQUESTS") {
-        Some(s) => s,
-        None => "24",
-    },
-    usize
-);
-
-thread_local! {
-    static EXT_PROC_CONCURRENT_PERMIT: Arc<Semaphore> = Arc::new(Semaphore::new(EXT_PROC_MAX_CONCURRENT_REQUESTS));
-}
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum ExtProcError {
@@ -181,7 +171,6 @@ impl From<(ExternalProcessorConfig, Option<ExtProcPerRoute>, Option<ExternalProc
         info!(target: "ext_proc", "const EXT_PROC_BUFFERED_BODY_LIMIT: {EXT_PROC_BUFFERED_BODY_LIMIT}");
         info!(target: "ext_proc", "const EXT_PROC_MERGE_WINDOW: {EXT_PROC_MERGE_WINDOW:?}");
         info!(target: "ext_proc", "const EXT_PROC_FRAME_MERGE_LIMIT: {EXT_PROC_FRAME_MERGE_LIMIT}");
-        info!(target: "ext_proc", "const EXT_PROC_MAX_CONCURRENT_REQUESTS: {EXT_PROC_MAX_CONCURRENT_REQUESTS}");
         let forward_rules = initial_config.forward_rules.clone();
         let worker_config = ExternalProcessingWorkerConfig::from((initial_config, per_route_config, ext_config));
         let overridable_modes = Arc::new(OverridableGlobalModes::from(&worker_config));
@@ -475,11 +464,6 @@ impl ExternalProcessor {
 
         let ver = request.version();
 
-        // Acquire permit before proceeding. This reduces the pressure on Tokio, reducing the number of tasks spawned.
-        // Note: It's safe the call unwrap here, since the semaphore is never closed explicitly.
-        #[allow(clippy::unwrap_used)]
-        let _permit = EXT_PROC_CONCURRENT_PERMIT.with(Clone::clone).acquire_owned().await.unwrap();
-
         let Ok(response_rx) = self.send_processing_data(processing_data, ver).await else {
             if self.inner.worker_config.failure_mode_allow {
                 return FilterDecision::Continue;
@@ -492,7 +476,7 @@ impl ExternalProcessor {
             );
         };
 
-        let res = match response_rx.await {
+        let filter_decision = match response_rx.await {
             Ok(status) => self.apply_modification_on_request(request, status),
             Err(e) => self.on_filter_error(
                 format!("External processor: {e:?}").as_str(),
@@ -502,9 +486,43 @@ impl ExternalProcessor {
             ),
         };
 
-        debug!(target: "ext_proc", "apply_request completed: {res:?}!");
+        #[cfg(any(feature = "metrics", feature = "access-log"))]
+        let headers = filter_decision.headers().unwrap_or(request.headers());
+
+        #[cfg(feature = "metrics")]
+        if let Some(custom_metrics) = CUSTOM_METRICS.get() {
+            use crate::metrics;
+            use opentelemetry::KeyValue;
+            use orion_metrics::metrics::custom::MetricsHook;
+
+            let mut attrs = smallvec::SmallVec::<[KeyValue; 2]>::new();
+            if let Some(custom_keys) = metrics::CUSTOM_KEYS.get() {
+                for key in custom_keys {
+                    if let Some(source) = key.source() {
+                        if let Some(id) = metrics::extract_custom_partition_key(headers, Some(source)) {
+                            attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
+                        }
+                    }
+                }
+            }
+            custom_metrics.with_headers(MetricsHook::ExtProcRequest, headers, attrs.as_slice());
+        }
+
+        #[cfg(feature = "access-log")]
+        if let Some(trans_ctx) = request.extensions().get::<Arc<TransactionContext>>() {
+            use crate::access_log;
+            trans_ctx.with_loggers(|loggers| {
+                if let Err(err) =
+                    access_log::evaluate_access_log_hook(access_log::AccessLogHook::ExtProcRequest, headers, loggers)
+                {
+                    warn!("Failed to process access log header for ExtProcRequest: {err}");
+                }
+            });
+        }
+
+        debug!(target: "ext_proc", "apply_request completed: {filter_decision:?}!");
         request.body_mut().inner.inner.prefetch_frames().await;
-        res
+        filter_decision
     }
 
     #[allow(clippy::too_many_lines)]
@@ -681,11 +699,6 @@ impl ExternalProcessor {
 
         let ver = response.version();
 
-        // Acquire permit before proceeding. This reduces the pressure on Tokio, reducing the number of tasks spawned.
-        // Note: It's safe the call unwrap here, since the semaphore is never closed explicitly.
-        #[allow(clippy::unwrap_used)]
-        let _permit = EXT_PROC_CONCURRENT_PERMIT.with(Clone::clone).acquire_owned().await.unwrap();
-
         let Ok(response_rx) = self.send_processing_data(processing_data, ver).await else {
             if self.inner.worker_config.failure_mode_allow {
                 return FilterDecision::Continue;
@@ -698,7 +711,7 @@ impl ExternalProcessor {
             );
         };
 
-        let res = match response_rx.await {
+        let filter_decision = match response_rx.await {
             Ok(status) => self.apply_modification_on_response(response, status),
             Err(e) => self.on_filter_error(
                 format!("External processor response processing: {e:?}").as_str(),
@@ -708,7 +721,41 @@ impl ExternalProcessor {
             ),
         };
 
-        debug!(target: "ext_proc", "apply_response completed: {res:?}!");
+        #[cfg(any(feature = "metrics", feature = "access-log"))]
+        let headers = filter_decision.headers().unwrap_or(response.headers());
+
+        #[cfg(feature = "metrics")]
+        if let Some(custom_metrics) = CUSTOM_METRICS.get() {
+            use crate::metrics;
+            use opentelemetry::KeyValue;
+            use orion_metrics::metrics::custom::MetricsHook;
+
+            let mut attrs = smallvec::SmallVec::<[KeyValue; 2]>::new();
+            if let Some(custom_keys) = metrics::CUSTOM_KEYS.get() {
+                for key in custom_keys {
+                    if let Some(source) = key.source() {
+                        if let Some(id) = metrics::extract_custom_partition_key(headers, Some(source)) {
+                            attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
+                        }
+                    }
+                }
+            }
+            custom_metrics.with_headers(MetricsHook::ExtProcResponse, headers, attrs.as_slice());
+        }
+
+        #[cfg(feature = "access-log")]
+        if let Some(trans_ctx) = response.extensions().get::<Arc<TransactionContext>>() {
+            use crate::access_log;
+            trans_ctx.with_loggers(|loggers| {
+                if let Err(err) =
+                    access_log::evaluate_access_log_hook(access_log::AccessLogHook::ExtProcResponse, headers, loggers)
+                {
+                    warn!("Failed to process access log header for ExtProcResponse: {err}");
+                }
+            });
+        }
+
+        debug!(target: "ext_proc", "apply_response completed: {filter_decision:?}!");
 
         // Delay sending the response until the first frame is ready. This ensures
         // better performance when streaming bodies from the external processor.
@@ -718,7 +765,7 @@ impl ExternalProcessor {
         // cycles.
 
         response.body_mut().inner.prefetch_frames().await;
-        res
+        filter_decision
     }
 
     pub async fn send_processing_data(

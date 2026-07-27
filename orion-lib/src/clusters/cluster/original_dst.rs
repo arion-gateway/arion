@@ -37,9 +37,11 @@ use smol_str::SmolStr;
 use tracing::debug;
 use webpki::types::ServerName;
 
+use std::sync::Arc;
+
 use crate::{
     clusters::{
-        circuit_breaker::ClusterCircuitBreaker,
+        circuit_breaker::{CircuitBreakerCounters, ClusterCircuitBreaker},
         clusters_manager::{MetadataKey, RoutingContext, RoutingRequirement},
         health::HealthStatus,
     },
@@ -73,11 +75,15 @@ pub struct OriginalDstClusterBuilder {
     pub connect_timeout: Option<Duration>,
     pub server_name: Option<ServerName<'static>>,
     pub config: Box<orion_configuration::config::cluster::Cluster>,
-    pub circuit_breaker: ClusterCircuitBreaker,
+    pub circuit_breaker: Option<Arc<ClusterCircuitBreaker>>,
 }
 
 impl OriginalDstClusterBuilder {
-    pub fn build(self) -> ClusterType {
+    pub fn build(
+        self,
+        def_counters: Option<Arc<CircuitBreakerCounters>>,
+        high_counters: Option<Arc<CircuitBreakerCounters>>,
+    ) -> ClusterType {
         let OriginalDstClusterBuilder {
             name,
             bind_device,
@@ -87,6 +93,11 @@ impl OriginalDstClusterBuilder {
             config,
             circuit_breaker,
         } = self;
+
+        // we are rebuilding the circuit breaker re-using the passed counters (usually taken from a pre-existing cluster entry in global map)
+        let circuit_breaker =
+            circuit_breaker.map(|cb| Arc::new(Arc::unwrap_or_clone(cb).with_counters(def_counters, high_counters)));
+
         let (routing_requirements, upstream_port_override) =
             if let ClusterDiscoveryType::OriginalDst(ref original_dst_config) = config.discovery_settings {
                 let routing_req = match &original_dst_config.routing_method {
@@ -105,6 +116,7 @@ impl OriginalDstClusterBuilder {
             } else {
                 (RoutingRequirement::Authority, None)
             };
+        let config_cleanup_interval = config.cleanup_interval.unwrap_or(DEFAULT_CLEANUP_INTERVAL);
         let http_config = HttpChannelConfig {
             tls_configurator: transport_socket.tls_configurator().cloned(),
             connect_timeout,
@@ -112,18 +124,17 @@ impl OriginalDstClusterBuilder {
             http_protocol_options: config.http_protocol_options.clone(),
         };
         ClusterType::OnDemand(OriginalDstCluster {
-            name,
+            global: Arc::new(GlobalOriginalDstCluster {
+                name,
+                transport_socket,
+                bind_device,
+                routing_requirements,
+                upstream_port_override,
+                config,
+                circuit_breaker,
+            }),
             http_config,
-            transport_socket,
-            bind_device,
-            endpoints: LruCache::with_expiry_duration_and_capacity(
-                config.cleanup_interval.unwrap_or(DEFAULT_CLEANUP_INTERVAL),
-                MAXIMUM_ENDPOINTS,
-            ),
-            routing_requirements,
-            upstream_port_override,
-            config,
-            circuit_breaker,
+            endpoints: LruCache::with_expiry_duration_and_capacity(config_cleanup_interval, MAXIMUM_ENDPOINTS),
         })
     }
 }
@@ -140,21 +151,26 @@ struct HttpChannelConfig {
 pub struct DynamicDest(pub SmolStr);
 
 #[derive(Clone)]
-pub struct OriginalDstCluster {
+pub struct GlobalOriginalDstCluster {
     pub name: &'static str,
-    http_config: HttpChannelConfig,
     transport_socket: UpstreamTransportSocketConfigurator,
     bind_device: Option<BindDevice>,
-    endpoints: LruCache<EndpointAddress, Endpoint>,
     routing_requirements: RoutingRequirement,
     upstream_port_override: Option<u16>,
     pub config: Box<orion_configuration::config::cluster::Cluster>,
-    pub circuit_breaker: ClusterCircuitBreaker,
+    pub circuit_breaker: Option<Arc<ClusterCircuitBreaker>>,
+}
+
+#[derive(Clone)]
+pub struct OriginalDstCluster {
+    pub global: Arc<GlobalOriginalDstCluster>,
+    endpoints: LruCache<EndpointAddress, Endpoint>,
+    http_config: HttpChannelConfig,
 }
 
 impl ClusterOps for OriginalDstCluster {
     fn get_name(&self) -> &'static str {
-        self.name
+        self.global.name
     }
 
     fn into_health_check(self) -> Option<HealthCheck> {
@@ -202,41 +218,42 @@ impl ClusterOps for OriginalDstCluster {
                 debug!("get HTTP connection by {dynamic_dest:?}...");
                 self.get_http_connection_by_dynamic_dest(dynamic_dest).map(HttpChannels::Single)
             },
-            _ => Err(format!("ORIGINAL_DST cluster {} requires authority or header routing context", self.name).into()),
+            _ => Err(format!("ORIGINAL_DST cluster {} requires authority or header routing context", self.global.name)
+                .into()),
         }
     }
 
     fn get_tcp_connection(&mut self, context: RoutingContext) -> Result<TcpChannelConnector> {
         match context {
             RoutingContext::Authority(authority) => self.get_tcp_connection_by_authority(authority),
-            _ => Err(format!("ORIGINAL_DST cluster {} requires authority routing context", self.name).into()),
+            _ => Err(format!("ORIGINAL_DST cluster {} requires authority routing context", self.global.name).into()),
         }
     }
 
     fn get_grpc_connection(&mut self, context: RoutingContext) -> Result<GrpcService> {
         match context {
             RoutingContext::Authority(authority) => self.get_grpc_connection_by_authority(authority),
-            _ => Err(format!("ORIGINAL_DST cluster {} requires authority routing context", self.name).into()),
+            _ => Err(format!("ORIGINAL_DST cluster {} requires authority routing context", self.global.name).into()),
         }
     }
 
     fn get_routing_requirements(&self) -> RoutingRequirement {
-        self.routing_requirements.clone()
+        self.global.routing_requirements.clone()
     }
 
-    fn circuit_breaker(&self) -> &ClusterCircuitBreaker {
-        &self.circuit_breaker
+    fn circuit_breaker(&self) -> Option<&ClusterCircuitBreaker> {
+        self.global.circuit_breaker.as_deref()
     }
 }
 
 impl OriginalDstCluster {
     fn apply_port_override<'a>(&self, authority: &'a Authority) -> Result<Cow<'a, Authority>> {
-        match self.upstream_port_override {
+        match self.global.upstream_port_override {
             Some(port_override) => {
                 let host = authority.host();
                 let upd_auth = format!("{host}:{port_override}").parse::<Authority>().with_context_msg(format!(
                     "Failed to apply port override {port_override} for cluster {}",
-                    self.name
+                    self.global.name
                 ))?;
 
                 Ok(Cow::Owned(upd_auth))
@@ -253,10 +270,11 @@ impl OriginalDstCluster {
         }
 
         let endpoint = Endpoint::try_new(
+            self.global.name,
             &endpoint_addr.0,
             &self.http_config,
-            self.bind_device.clone(),
-            self.transport_socket.clone(),
+            self.global.bind_device.clone(),
+            self.global.transport_socket.clone(),
         )?;
 
         let grpc_service = endpoint.grpc_service()?;
@@ -272,10 +290,11 @@ impl OriginalDstCluster {
         }
 
         let endpoint = Endpoint::try_new(
+            self.global.name,
             &endpoint_addr.0,
             &self.http_config,
-            self.bind_device.clone(),
-            self.transport_socket.clone(),
+            self.global.bind_device.clone(),
+            self.global.transport_socket.clone(),
         )?;
 
         let tcp_connector = endpoint.tcp_channel.clone();
@@ -288,7 +307,7 @@ impl OriginalDstCluster {
         let authority = Authority::try_from(dynamic_dest.0.as_str()).map_err(|_e| {
             format!(
                 "Invalid Authority in dynamic_dest metadata ({}) for ORIGINAL_DST cluster {}",
-                dynamic_dest.0, self.name
+                dynamic_dest.0, self.global.name
             )
         })?;
         self.get_http_connection_by_authority(&authority)
@@ -297,7 +316,7 @@ impl OriginalDstCluster {
     #[inline]
     fn get_http_connection_by_header(&mut self, header_value: &HeaderValue) -> Result<HttpChannel> {
         let authority = Authority::try_from(header_value.as_bytes())
-            .map_err(|_e| format!("Invalid authority in header for ORIGINAL_DST cluster {}", self.name))?;
+            .map_err(|_e| format!("Invalid authority in header for ORIGINAL_DST cluster {}", self.global.name))?;
         self.get_http_connection_by_authority(&authority)
     }
 
@@ -309,10 +328,11 @@ impl OriginalDstCluster {
         }
 
         let endpoint = Endpoint::try_new(
+            self.global.name,
             &endpoint_addr.0,
             &self.http_config,
-            self.bind_device.clone(),
-            self.transport_socket.clone(),
+            self.global.bind_device.clone(),
+            self.global.transport_socket.clone(),
         )?;
 
         let http_channel = endpoint.http_channel.clone();
@@ -352,6 +372,7 @@ struct Endpoint {
 
 impl Endpoint {
     fn try_new(
+        cluster_name: &'static str,
         authority: &Authority,
         http_config: &HttpChannelConfig,
         bind_device: Option<BindDevice>,
@@ -359,10 +380,14 @@ impl Endpoint {
     ) -> Result<Self> {
         use crate::transport::connector::ConnectUsing;
 
-        let connect_using =
-            ConnectUsing::Socket { authority: authority.clone(), bind_device, timeout: http_config.connect_timeout };
+        let connect_using = ConnectUsing::Socket {
+            authority: authority.clone(),
+            bind_device,
+            connect_timeout: http_config.connect_timeout,
+            idle_timeout: http_config.http_protocol_options.common.idle_timeout,
+        };
 
-        let builder = HttpChannelBuilder::new(connect_using.clone());
+        let builder = HttpChannelBuilder::new(connect_using.clone()).with_cluster_name(cluster_name);
         let builder = if let Some(tls_conf) = &http_config.tls_configurator {
             if let Some(server_name) = &http_config.server_name {
                 builder.with_tls(Some(tls_conf.clone())).with_server_name(server_name.clone())
@@ -373,7 +398,7 @@ impl Endpoint {
             builder
         };
         let http_channel = builder.with_http_protocol_options(http_config.http_protocol_options.clone()).build()?;
-        let tcp_channel = TcpChannelConnector::new(&connect_using, "original_dst_cluster", transport_socket);
+        let tcp_channel = TcpChannelConnector::new(&connect_using, cluster_name, transport_socket);
 
         Ok(Endpoint { http_channel, tcp_channel })
     }
@@ -537,7 +562,7 @@ mod tests {
     fn build_original_dst_cluster(config: ClusterConfig) -> OriginalDstCluster {
         let secrets_man = SecretManager::new();
         let partial = super::super::PartialClusterType::try_from((Box::new(config), &secrets_man)).unwrap();
-        match partial.build().unwrap() {
+        match partial.build(None, None).unwrap() {
             ClusterType::OnDemand(cluster) => cluster,
             _ => unreachable!("expected OriginalDstCluster config"),
         }
@@ -610,5 +635,73 @@ mod tests {
 
         let grpc_no_dest = cluster.get_grpc_connection(RoutingContext::None);
         grpc_no_dest.unwrap_err();
+    }
+
+    fn create_test_cluster_config_with_circuit_breaker(
+        name: &str,
+        routing_method: OriginalDstRoutingMethod,
+        max_connections: u32,
+    ) -> ClusterConfig {
+        use orion_configuration::config::cluster::{CircuitBreakerThresholds, CircuitBreakers};
+        ClusterConfig {
+            circuit_breakers: Some(CircuitBreakers {
+                thresholds: vec![CircuitBreakerThresholds { max_connections, ..Default::default() }],
+            }),
+            ..create_test_cluster_config(name, routing_method, None, None)
+        }
+    }
+
+    #[test]
+    fn http_channel_has_correct_cluster_name() {
+        let config = create_test_cluster_config(
+            "my-original-dst",
+            OriginalDstRoutingMethod::HttpHeader { http_header_name: None },
+            None,
+            None,
+        );
+        let mut cluster = build_original_dst_cluster(config);
+
+        let authority = Authority::from_str("localhost:52000").unwrap();
+        let channel = cluster.get_http_connection_by_authority(&authority).unwrap();
+        assert_eq!(channel.cluster_name, "my-original-dst");
+    }
+
+    #[test]
+    fn circuit_breaker_is_present_when_configured() {
+        let config = create_test_cluster_config_with_circuit_breaker(
+            "cb-cluster",
+            OriginalDstRoutingMethod::HttpHeader { http_header_name: None },
+            5,
+        );
+        let cluster = build_original_dst_cluster(config);
+
+        let cb = cluster.circuit_breaker().expect("circuit breaker should be present");
+        let state = cb.get_state(orion_configuration::config::cluster::RoutingPriority::Default);
+        assert_eq!(state.thresholds.max_connections, 5);
+    }
+
+    #[test]
+    fn circuit_breaker_is_shared_across_clones() {
+        use crate::clusters::circuit_breaker::CircuitBreakerDenial;
+
+        let config = create_test_cluster_config_with_circuit_breaker(
+            "shared-cb",
+            OriginalDstRoutingMethod::HttpHeader { http_header_name: None },
+            1,
+        );
+        let cluster = build_original_dst_cluster(config);
+        let clone = cluster.clone();
+
+        let cb = cluster.circuit_breaker().unwrap();
+        cb.try_increment_connections(orion_configuration::config::cluster::RoutingPriority::Default).unwrap();
+
+        let clone_cb = clone.circuit_breaker().unwrap();
+        assert_eq!(
+            clone_cb
+                .try_increment_connections(orion_configuration::config::cluster::RoutingPriority::Default)
+                .unwrap_err(),
+            CircuitBreakerDenial::MaxConnections,
+            "Clone should share circuit breaker state"
+        );
     }
 }

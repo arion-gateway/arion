@@ -1,0 +1,65 @@
+
+runtime:
+  num_cpus: 2
+  num_runtimes: 2
+
+logging:
+  log_level: "info"
+  log_directory: "/var/log/orion"
+  log_file: "orion.log"
+  desensitization:
+    # Maximum byte length of a log line before it is truncated (default 2000).
+    log_max_length: 2000
+    # Number of characters replaced with '*' after each sensitive keyword (default 20).
+    replace_length: 20
+    # Lines starting with this tag bypass desensitization (default "[Ignore]").
+    ignore_tag: "[Ignore]"
+    # Keywords whose following values are never redacted (even if they match a sensitive pattern).
+    allow_list:
+      - "correlation-id"
+
+envoy_bootstrap:
+  static_resources:
+    listeners:
+      - name: listener_http
+        address:
+          socket_address: { address: 0.0.0.0, port_value: 8000 }
+        filterChains:
+          - name: filter_chain_http
+            filter_chain_match:
+              destination_port: 8000
+            filters:
+              - name: http_gateway
+                typedConfig:
+                  "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                  statPrefix: ingress_http
+                  codecType: HTTP1
+                  httpFilters:
+                    - name: envoy.filters.http.router
+                      typedConfig:
+                        "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                        start_child_span: false
+                  routeConfig:
+                    name: basic_http_route
+                    virtual_hosts:
+                      - name: backend
+                        domains: ["*"]
+                        routes:
+                          - match:
+                              prefix: "/"
+                            route:
+                              cluster: cluster_http
+
+    clusters:
+      - name: cluster_http
+        connect_timeout: 0.25s
+        type: STATIC
+        lb_policy: ROUND_ROBIN
+        load_assignment:
+          endpoints:
+            - lb_endpoints:
+                - endpoint:
+                    address:
+                      socket_address:
+                        address: 127.0.0.1
+                        port_value: 4001

@@ -2,15 +2,27 @@ use std::{
     io,
     pin::Pin,
     sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc, LazyLock,
     },
     task::{Context, Poll},
+    time::Duration,
 };
 
 use atomicoption::AtomicOption;
+
+#[cfg(feature = "metrics")]
+use opentelemetry::KeyValue;
+#[cfg(feature = "metrics")]
+use orion_metrics::metrics::user;
+use parking_lot::Mutex;
 use pin_project::pin_project;
+use quanta::Clock;
+use smallvec::SmallVec;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+
+#[cfg(feature = "metrics")]
+use crate::{get_shard_id, metrics, with_metric};
 
 use crate::{transport::AsyncReadWriteInstrumented, utils::rewindable_stream::RewindableHeadAsyncStream};
 
@@ -21,16 +33,50 @@ pub enum ErrorSource {
     Write(io::Error),
 }
 
+type Callback = Box<dyn FnOnce() + Send>;
+
+pub struct CallbackQueue {
+    has_pending: AtomicBool,
+    queue: Mutex<SmallVec<[Callback; 4]>>,
+}
+
+impl CallbackQueue {
+    pub fn new() -> Self {
+        Self { has_pending: AtomicBool::new(false), queue: Mutex::new(SmallVec::new()) }
+    }
+
+    pub fn push(&self, cb: Callback) {
+        let mut queue = self.queue.lock();
+        queue.push(cb);
+        self.has_pending.store(true, Ordering::Release);
+    }
+
+    pub fn drain(&self) -> Option<SmallVec<[Callback; 4]>> {
+        if self.has_pending.load(Ordering::Acquire) {
+            let mut queue = self.queue.lock();
+            let rc = queue.drain(..).collect();
+            self.has_pending.store(false, Ordering::Release);
+            return Some(rc);
+        }
+        None
+    }
+}
+
+static WALL_CLOCK: LazyLock<Clock> = LazyLock::new(Clock::new);
+
 pub struct StreamMetrics {
     total_bytes_read: AtomicU64,
     total_bytes_written: AtomicU64,
     txn_bytes_read_start: AtomicU64,
     txn_bytes_written_start: AtomicU64,
+    raw_clock: AtomicU64,
     requests_counter: AtomicU64,
     error: AtomicOption<ErrorSource>,
     #[allow(clippy::type_complexity)]
-    drop_fn: AtomicOption<Box<dyn FnOnce(&StreamMetrics) + Send>>,
-    txn_fn: AtomicOption<Box<dyn FnOnce(u64, u64) + Send>>,
+    drop_fn: AtomicOption<Box<dyn FnOnce(&StreamMetrics, Duration) + Send>>,
+    #[allow(clippy::type_complexity)]
+    flush_callbacks: CallbackQueue,
+    user_partition_key: AtomicOption<&'static str>,
 }
 
 impl Default for StreamMetrics {
@@ -45,23 +91,38 @@ impl std::fmt::Debug for StreamMetrics {
             None => None,
             Some(ErrorSource::Read(err) | ErrorSource::Write(err)) => Some(err.to_string()),
         };
+        let user_partition_key = self.user_partition_key.as_ref(Ordering::Relaxed).map(|s| *s);
         f.debug_struct("StreamMetrics")
             .field("total_bytes_read", &self.total_bytes_read)
             .field("total_bytes_written", &self.total_bytes_written)
             .field("txn_bytes_read_start", &self.txn_bytes_read_start)
             .field("txn_bytes_written_start", &self.txn_bytes_written_start)
+            .field("raw_clock", &self.raw_clock)
             .field("requests_counter", &self.requests_counter)
-            .field("drop_fn", &self.drop_fn.is_some(Ordering::Relaxed))
-            .field("txn_fn", &self.txn_fn.is_some(Ordering::Relaxed))
             .field("error", &error)
+            .field("drop_fn", &self.drop_fn.is_some(Ordering::Relaxed))
+            .field("flush_callbacks", &"...")
+            .field("user_partition_key", &user_partition_key)
             .finish()
     }
 }
 
 impl Drop for StreamMetrics {
     fn drop(&mut self) {
-        if let Some(log_fn) = self.drop_fn.take(Ordering::Acquire) {
-            log_fn(self);
+        self.on_flush();
+        if let Some(drop_fn) = self.drop_fn.take(Ordering::Acquire) {
+            drop_fn(self, WALL_CLOCK.delta(self.raw_clock.load(Ordering::Relaxed), WALL_CLOCK.raw()));
+        }
+
+        #[cfg(feature = "metrics")]
+        if let Some(user_partition_key) = self.user_partition_key.as_ref(Ordering::Relaxed) {
+            with_metric!(
+                user::CONNECTIONS_ACTIVE,
+                sub,
+                1,
+                get_shard_id!(),
+                &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), *user_partition_key)]
+            );
         }
     }
 }
@@ -73,21 +134,41 @@ impl StreamMetrics {
             total_bytes_written: AtomicU64::new(0),
             txn_bytes_read_start: AtomicU64::new(0),
             txn_bytes_written_start: AtomicU64::new(0),
+            raw_clock: AtomicU64::new(0),
             requests_counter: AtomicU64::new(0),
             error: AtomicOption::none(),
             drop_fn: AtomicOption::none(),
-            txn_fn: AtomicOption::none(),
+            flush_callbacks: CallbackQueue::new(),
+            user_partition_key: AtomicOption::none(),
         }
     }
 
     #[inline]
-    pub fn with_drop_fn(&self, drop_fn: Box<dyn FnOnce(&StreamMetrics) + Send>) {
+    pub fn add_flush_callback(&self, cb: Box<dyn FnOnce() + Send>) {
+        self.flush_callbacks.push(cb);
+    }
+
+    #[inline]
+    pub fn on_flush(&self) {
+        if let Some(callbacks) = self.flush_callbacks.drain() {
+            for cb in callbacks {
+                cb();
+            }
+        }
+    }
+
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn with_drop_fn(&self, drop_fn: Box<dyn FnOnce(&StreamMetrics, Duration) + Send>) {
         self.drop_fn.store(Ordering::Release, drop_fn);
     }
 
     #[inline]
-    pub fn on_flush(&self, flush_fn: Box<dyn FnOnce(u64, u64) + Send>) {
-        self.txn_fn.store(Ordering::Release, flush_fn);
+    pub fn txn_take_metrics(&self) -> (u64, u64) {
+        let read = self.txn_bytes_read();
+        let written = self.txn_bytes_written();
+        self.reset_txn();
+        (read, written)
     }
 
     #[inline]
@@ -120,6 +201,16 @@ impl StreamMetrics {
         self.requests_counter.fetch_add(1, Ordering::Relaxed)
     }
 
+    #[inline]
+    pub fn update_raw_clock(&self) {
+        self.raw_clock.store(WALL_CLOCK.raw(), Ordering::Relaxed)
+    }
+
+    #[inline]
+    pub fn set_user_partition_key(&self, key: &'static str) {
+        self.user_partition_key.store(Ordering::Release, key);
+    }
+
     pub fn error(&self) -> Option<&io::Error> {
         let err = self.error.as_ref(Ordering::Relaxed);
         match err {
@@ -128,6 +219,7 @@ impl StreamMetrics {
         }
     }
 
+    #[inline]
     fn reset_txn(&self) {
         self.txn_bytes_read_start.store(self.bytes_read(), Ordering::Relaxed);
         self.txn_bytes_written_start.store(self.bytes_written(), Ordering::Relaxed);
@@ -151,11 +243,6 @@ impl StreamMetrics {
     #[inline]
     fn on_write_error(&self, err: &io::Error) {
         self.error.store(Ordering::Release, ErrorSource::Write(Self::clone_io_error(err)));
-    }
-
-    #[inline]
-    fn take_txn_fn(&self, ord: Ordering) -> Option<Box<dyn FnOnce(u64, u64) + Send>> {
-        self.txn_fn.take(ord)
     }
 
     fn clone_io_error(err: &io::Error) -> io::Error {
@@ -200,11 +287,13 @@ impl<S> InstrumentedStream<S> {
 impl<S: AsyncRead> AsyncRead for InstrumentedStream<S> {
     fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<std::io::Result<()>> {
         let this = self.project();
+        this.metrics.on_flush();
         let before = buf.filled().len();
         match this.inner.poll_read(cx, buf) {
             res @ Poll::Ready(Ok(())) => {
                 let bytes = buf.filled().len() - before;
                 this.metrics.on_read(bytes as u64);
+                this.metrics.update_raw_clock();
                 res
             },
             Poll::Ready(Err(e)) => {
@@ -220,9 +309,10 @@ impl<S: AsyncWrite> AsyncWrite for InstrumentedStream<S> {
     fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<std::io::Result<usize>> {
         let this = self.project();
         match this.inner.poll_write(cx, buf) {
-            Poll::Ready(Ok(n)) => {
-                this.metrics.on_write(n as u64);
-                Poll::Ready(Ok(n))
+            Poll::Ready(Ok(bytes)) => {
+                this.metrics.on_write(bytes as u64);
+                this.metrics.update_raw_clock();
+                Poll::Ready(Ok(bytes))
             },
             Poll::Ready(Err(e)) => {
                 this.metrics.on_write_error(&e);
@@ -234,13 +324,9 @@ impl<S: AsyncWrite> AsyncWrite for InstrumentedStream<S> {
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         let this = self.project();
-
         match this.inner.poll_flush(cx) {
             Poll::Ready(Ok(())) => {
-                if let Some(log_access) = this.metrics.take_txn_fn(Ordering::Acquire) {
-                    log_access(this.metrics.txn_bytes_read(), this.metrics.txn_bytes_written());
-                    this.metrics.reset_txn();
-                }
+                this.metrics.on_flush();
                 Poll::Ready(Ok(()))
             },
             Poll::Ready(Err(e)) => {
@@ -254,11 +340,15 @@ impl<S: AsyncWrite> AsyncWrite for InstrumentedStream<S> {
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         let this = self.project();
         match this.inner.poll_shutdown(cx) {
+            Poll::Ready(Ok(())) => {
+                this.metrics.on_flush();
+                Poll::Ready(Ok(()))
+            },
             Poll::Ready(Err(e)) => {
                 this.metrics.on_write_error(&e);
                 Poll::Ready(Err(e))
             },
-            res => res,
+            Poll::Pending => Poll::Pending,
         }
     }
 }

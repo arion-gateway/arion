@@ -66,12 +66,12 @@ pub trait Context: Sized {
 
 // A wrapper for a concrete error that carries additional context information (ErrorInfo)
 // This is useful for attaching additional information to an error generated with thiserror library.
-pub struct WithContext<E: ErrorTrait + Send + Sync + 'static> {
+pub struct ContextualError<E: ErrorTrait + Send + Sync + 'static> {
     inner: E,
     context: ErrorInfo,
 }
 
-impl<E: ErrorTrait + Send + Sync + 'static> WithContext<E> {
+impl<E: ErrorTrait + Send + Sync + 'static> ContextualError<E> {
     pub fn new(value: E) -> Self {
         Self { inner: value, context: ErrorInfo::default() }
     }
@@ -88,29 +88,29 @@ impl<E: ErrorTrait + Send + Sync + 'static> WithContext<E> {
         }
     }
 
-    pub fn map_into<E2>(self) -> WithContext<E2>
+    pub fn map_into<E2>(self) -> ContextualError<E2>
     where
         E2: ErrorTrait + Send + Sync + 'static,
         E: Into<E2>,
     {
-        WithContext { inner: self.inner.into(), context: self.context }
+        ContextualError { inner: self.inner.into(), context: self.context }
     }
 }
 
-impl<E: ErrorTrait + Send + Sync + 'static> Context for WithContext<E> {
+impl<E: ErrorTrait + Send + Sync + 'static> Context for ContextualError<E> {
     type Target = Self;
     fn with_context(self, ctx: ErrorInfo) -> Self::Target {
         Self { inner: self.inner, context: self.context.with_context(ctx) }
     }
 }
 
-impl<E: ErrorTrait + Send + Sync + 'static> AsRef<E> for WithContext<E> {
+impl<E: ErrorTrait + Send + Sync + 'static> AsRef<E> for ContextualError<E> {
     fn as_ref(&self) -> &E {
         &self.inner
     }
 }
 
-impl<E: ErrorTrait + Send + Sync + 'static> Debug for WithContext<E> {
+impl<E: ErrorTrait + Send + Sync + 'static> Debug for ContextualError<E> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let Some(msg) = self.context.message.as_ref() {
             f.write_str(msg)?
@@ -138,19 +138,19 @@ impl<E: ErrorTrait + Send + Sync + 'static> Debug for WithContext<E> {
     }
 }
 
-impl<E: ErrorTrait + Send + Sync + 'static> Display for WithContext<E> {
+impl<E: ErrorTrait + Send + Sync + 'static> Display for ContextualError<E> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let Some(msg) = self.context.message.as_ref() {
-            f.write_str(msg)
+            write!(f, "{}: {}", msg, self.inner)
         } else {
             <E as Display>::fmt(&self.inner, f)
         }
     }
 }
 
-impl<E: ErrorTrait + Send + Sync + 'static> ErrorTrait for WithContext<E> {
+impl<E: ErrorTrait + Send + Sync + 'static> ErrorTrait for ContextualError<E> {
     fn source(&self) -> Option<&(dyn ErrorTrait + 'static)> {
-        self.inner.source()
+        Some(&self.inner)
     }
 }
 
@@ -197,11 +197,20 @@ impl Error {
     }
 
     pub fn get_context_data<T: 'static>(&self) -> Option<&T> {
-        if let ErrorImpl::Context(ErrorInfo { any: Some(val), .. }, _) = &self.0 {
-            val.downcast_ref::<T>()
-        } else {
-            None
+        let mut current = &self.0;
+        while let ErrorImpl::Context(info, next) = current {
+            if let Some(val) = info.any.as_ref().and_then(|v| v.downcast_ref::<T>()) {
+                return Some(val);
+            }
+            // Try to downcast the inner BoxedErr to WithContext<E> or ErrorImpl
+            // Since BoxedErr is a dyn ErrorTrait, we can try to downcast it to ErrorImpl
+            if let Some(next_impl) = next.downcast_ref::<ErrorImpl>() {
+                current = next_impl;
+            } else {
+                break;
+            }
         }
+        None
     }
 }
 
@@ -442,7 +451,7 @@ mod tests {
     #[test]
     fn test_concrete_error_with_context() {
         let my_context = MyContext { value: 42 };
-        let err = WithContext::new(ReadConfigError { path: "/etc/config.toml".to_owned() });
+        let err = ContextualError::new(ReadConfigError { path: "/etc/config.toml".to_owned() });
         let err = err.with_context_data(my_context);
         let ctx = err.get_context_data::<MyContext>().expect("Expected context to be present");
         assert_eq!(ctx.value, 42);

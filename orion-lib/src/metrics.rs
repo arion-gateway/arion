@@ -3,7 +3,7 @@ use http::HeaderMap;
 use orion_configuration::config::metrics::{PartitionKeySource, SourceHeaderName, SourceHeaderNameOrSni};
 use orion_interner::StringInterner;
 use smol_str::SmolStr;
-use std::sync::atomic::Ordering;
+use std::sync::{atomic::Ordering, OnceLock};
 
 #[macro_export]
 macro_rules! with_metric {
@@ -83,7 +83,7 @@ where
 }
 
 pub static USER_KEY: PartitionKey<SourceHeaderNameOrSni> = PartitionKey::new();
-pub static CUSTOM_KEY: PartitionKey<SourceHeaderName> = PartitionKey::new();
+pub static CUSTOM_KEYS: OnceLock<Vec<PartitionKey<SourceHeaderName>>> = std::sync::OnceLock::new();
 
 #[inline]
 /// Return the user partition key, extracting it from either headers or sni, if one is present.
@@ -102,9 +102,7 @@ pub fn extract_user_partition_key(
 #[inline]
 /// Return the custom partition key from headers
 pub fn extract_custom_partition_key(headers: &HeaderMap, source: Option<&SourceHeaderName>) -> Option<&'static str> {
-    source.and_then(|source| match source {
-        SourceHeaderName::HeaderName(keym) => {
-            headers.get(keym).map(|value| value.to_str()).transpose().ok().flatten().map(|s| s.to_static_str())
-        },
-    })
+    // Extracts the custom partition key from headers based on the provided source name.
+    let SourceHeaderName::HeaderName(keym) = source?;
+    headers.get(keym)?.to_str().ok()?.to_static_str().into()
 }

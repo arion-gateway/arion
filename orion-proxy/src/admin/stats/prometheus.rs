@@ -219,6 +219,7 @@ fn process_histogram<S: Eq + Hash + Clone + Copy>(
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 fn build_prometheus_output() -> io::Result<String> {
     debug!(target: "prometheus", "prometheus_handler: running");
     let mut out: Vec<u8> = Vec::with_capacity(16384);
@@ -238,11 +239,17 @@ fn build_prometheus_output() -> io::Result<String> {
     process_metric_as_counter(&mut out, &clusters::UPSTREAM_RQ_RETRY)?;
 
     process_metric_as_counter(&mut out, &clusters::UPSTREAM_CX_TOTAL)?;
+    process_metric_as_gauge(&mut out, &clusters::UPSTREAM_CX_ACTIVE)?;
+    process_metric_as_counter(&mut out, &clusters::UPSTREAM_CX_DESTROY)?;
     process_metric_as_counter(&mut out, &clusters::UPSTREAM_CX_IDLE_TIMEOUT)?;
     process_metric_as_counter(&mut out, &clusters::UPSTREAM_CX_CONNECT_FAIL)?;
     process_metric_as_counter(&mut out, &clusters::UPSTREAM_CX_CONNECT_TIMEOUT)?;
-    process_metric_as_counter(&mut out, &clusters::UPSTREAM_CX_DESTROY)?;
-    process_metric_as_gauge(&mut out, &clusters::UPSTREAM_CX_ACTIVE)?;
+    process_metric_as_counter(&mut out, &clusters::UPSTREAM_CX_RX_BYTES_TOTAL)?;
+    process_metric_as_counter(&mut out, &clusters::UPSTREAM_CX_TX_BYTES_TOTAL)?;
+    process_metric_as_counter(&mut out, &clusters::UPSTREAM_CX_OVERFLOW)?;
+    process_metric_as_counter(&mut out, &clusters::UPSTREAM_RQ_OVERFLOW)?;
+    process_metric_as_counter(&mut out, &clusters::UPSTREAM_RQ_RETRY_OVERFLOW)?;
+    process_histogram(&mut out, &clusters::UPSTREAM_RQ_TIME)?;
 
     // http metrics
     process_metric_as_counter(&mut out, &http::DOWNSTREAM_CX_TOTAL)?;
@@ -284,7 +291,7 @@ fn build_prometheus_output() -> io::Result<String> {
     process_metric_as_gauge(&mut out, &http::DOWNSTREAM_CX_WS_UPGRADES_ACTIVE)?;
     process_metric_as_counter(&mut out, &http::DOWNSTREAM_RQ_WS_ON_NON_WS_ROUTE)?;
 
-    // user/agentrun
+    // user
     process_metric_as_counter(&mut out, &user::INVOCATIONS)?;
     process_metric_as_counter(&mut out, &user::THROTTLES)?;
     process_metric_as_counter(&mut out, &user::SYSTEM_ERRORS)?;
@@ -294,12 +301,18 @@ fn build_prometheus_output() -> io::Result<String> {
     process_metric_as_counter(&mut out, &user::BYTES_RX)?;
     process_metric_as_counter(&mut out, &user::INBOUND_STREAMING_BYTES_PROCESSED)?;
     process_metric_as_counter(&mut out, &user::OUTBOUND_STREAMING_BYTES_PROCESSED)?;
+    process_metric_as_counter(&mut out, &user::CONNECTIONS)?;
+    process_metric_as_gauge(&mut out, &user::CONNECTIONS_ACTIVE)?;
     process_metric_as_counter(&mut out, &user::HTTP_1XX_RESPONSES)?;
     process_metric_as_counter(&mut out, &user::HTTP_2XX_RESPONSES)?;
     process_metric_as_counter(&mut out, &user::HTTP_3XX_RESPONSES)?;
     process_metric_as_counter(&mut out, &user::HTTP_4XX_RESPONSES)?;
     process_metric_as_counter(&mut out, &user::HTTP_5XX_RESPONSES)?;
+    process_metric_as_counter(&mut out, &user::HTTP_404_RESPONSES)?;
+    process_metric_as_counter(&mut out, &user::HTTP_502_RESPONSES)?;
+    process_metric_as_counter(&mut out, &user::HTTP_504_RESPONSES)?;
     process_histogram(&mut out, &user::LATENCY)?;
+    process_histogram(&mut out, &user::UPSTREAM_RQ_TIME)?;
 
     // filters
     process_metric_as_counter(&mut out, &filters::CONNECTION_RATE_LIMIT)?;
@@ -339,7 +352,7 @@ fn build_prometheus_output() -> io::Result<String> {
         }
     }
 
-    String::from_utf8(out).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    Ok(String::from_utf8_lossy(&out).into_owned())
 }
 
 pub(crate) async fn prometheus_handler(

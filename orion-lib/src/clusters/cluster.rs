@@ -21,9 +21,10 @@ pub(crate) mod r#static;
 
 use enum_dispatch::enum_dispatch;
 use http::uri::Authority;
+use std::sync::Arc;
 
 use crate::clusters::{
-    circuit_breaker::ClusterCircuitBreaker,
+    circuit_breaker::{CircuitBreakerCounters, ClusterCircuitBreaker},
     clusters_manager::{RoutingContext, RoutingRequirement},
 };
 use orion_configuration::config::cluster::{
@@ -57,7 +58,7 @@ impl TryFrom<(Box<ClusterConfig>, &SecretManager)> for PartialClusterType {
 
         let transport_socket = UpstreamTransportSocketConfigurator::try_from((transport_socket_config, secrets))?;
 
-        let circuit_breaker = cluster.circuit_breakers.as_ref().map(ClusterCircuitBreaker::from).unwrap_or_default();
+        let circuit_breaker = cluster.circuit_breakers.as_ref().map(|cb| Arc::new(ClusterCircuitBreaker::from(cb)));
 
         let health_check = cluster.health_check;
         debug!("Cluster {} type {:?} ", cluster.name, cluster.discovery_settings);
@@ -78,6 +79,7 @@ impl TryFrom<(Box<ClusterConfig>, &SecretManager)> for PartialClusterType {
                     .with_bind_device(bind_device)
                     .with_lb_policy(load_balancing_policy)
                     .with_connection_timeout(cluster.connect_timeout)
+                    .with_idle_timeout(protocol_options.common.idle_timeout)
                     .with_transport_socket(transport_socket.clone())
                     .with_server_name(server_name)
                     .with_protocol_options(Some(protocol_options))
@@ -106,6 +108,7 @@ impl TryFrom<(Box<ClusterConfig>, &SecretManager)> for PartialClusterType {
                     .with_bind_device(bind_device)
                     .with_lb_policy(load_balancing_policy)
                     .with_connection_timeout(cluster.connect_timeout)
+                    .with_idle_timeout(protocol_options.common.idle_timeout)
                     .with_transport_socket(transport_socket.clone())
                     .with_server_name(server_name)
                     .with_protocol_options(Some(protocol_options))
@@ -167,7 +170,7 @@ pub trait ClusterOps {
     fn get_tcp_connection(&mut self, context: RoutingContext) -> Result<TcpChannelConnector>;
     fn get_grpc_connection(&mut self, context: RoutingContext) -> Result<GrpcService>;
     fn get_routing_requirements(&self) -> RoutingRequirement;
-    fn circuit_breaker(&self) -> &ClusterCircuitBreaker;
+    fn circuit_breaker(&self) -> Option<&ClusterCircuitBreaker>;
 }
 
 #[derive(Clone)]
@@ -178,18 +181,39 @@ pub enum ClusterType {
     OnDemand(OriginalDstCluster),
 }
 
+//impl ClusterType {
+//    pub fn preserve_circuit_breaker_counters_from(&mut self, old: &Self) {
+//        match self {
+//            ClusterType::Static(static_cluster) => {
+//                if let Some(orig) = old.circuit_breaker() {
+//
+//                }
+//            },
+//            ClusterType::Dynamic(dynamic_cluster) => todo!(),
+//            ClusterType::OnDemand(original_dst_cluster) => todo!(),
+//        }
+//        //if let Some(old_cb) = old.take_circuit_breaker() {
+//        //    if let Some(new_cb) = self.circuit_breaker() {
+//        //        self.set_circuit_breaker(Arc::new(old_cb.with_updated_thresholds(new_cb)));
+//        //    } else {
+//        //        self.set_circuit_breaker(old_cb);
+//        //    }
+//        //}
+//    }
+//}
+
 impl TryFrom<&ClusterType> for ClusterConfig {
     type Error = Error;
     fn try_from(cluster: &ClusterType) -> Result<Self> {
         match cluster {
-            ClusterType::Static(static_cluster) => Ok((*static_cluster.config).clone()),
+            ClusterType::Static(static_cluster) => Ok((*static_cluster.global.config).clone()),
             ClusterType::Dynamic(dynamic_cluster) => {
                 let cla: ClusterLoadAssignmentConfig = dynamic_cluster.try_into()?;
-                let mut config = (*dynamic_cluster.config).clone();
+                let mut config = (*dynamic_cluster.global.config).clone();
                 config.discovery_settings = ClusterDiscoveryType::Eds(Some(cla));
                 Ok(config)
             },
-            ClusterType::OnDemand(original_dst_cluster) => Ok((*original_dst_cluster.config).clone()),
+            ClusterType::OnDemand(original_dst_cluster) => Ok((*original_dst_cluster.global.config).clone()),
         }
     }
 }
@@ -202,11 +226,15 @@ pub enum PartialClusterType {
 }
 
 impl PartialClusterType {
-    pub fn build(self) -> Result<ClusterType> {
+    pub fn build(
+        self,
+        def_counters: Option<Arc<CircuitBreakerCounters>>,
+        high_counters: Option<Arc<CircuitBreakerCounters>>,
+    ) -> Result<ClusterType> {
         match self {
-            PartialClusterType::Static(cluster_builder) => cluster_builder.build(),
-            PartialClusterType::Dynamic(cluster_builder) => Ok(cluster_builder.build()),
-            PartialClusterType::OnDemand(cluster_builder) => Ok(cluster_builder.build()),
+            PartialClusterType::Static(cluster_builder) => cluster_builder.build(def_counters, high_counters),
+            PartialClusterType::Dynamic(cluster_builder) => Ok(cluster_builder.build(def_counters, high_counters)),
+            PartialClusterType::OnDemand(cluster_builder) => Ok(cluster_builder.build(def_counters, high_counters)),
         }
     }
 
@@ -244,7 +272,7 @@ mod tests {
         let cla = match c {
             ClusterType::Static(s) => Some(&s.load_assignment),
             ClusterType::Dynamic(d) => {
-                assert_eq!(&d.bind_device, &expected_bind_device);
+                assert_eq!(&d.global.bind_device, &expected_bind_device);
                 d.load_assignment.as_ref()
             },
             ClusterType::OnDemand(_) => unreachable!("OnDemand cluster has no load assignment"),
@@ -290,7 +318,7 @@ load_assignment:
         let envoy_cluster: EnvoyCluster = from_yaml(CLUSTER).unwrap();
         let cluster = ClusterConfig::try_from(envoy_cluster).unwrap();
         let c = PartialClusterType::try_from((Box::new(cluster), &secrets_man)).unwrap();
-        let c = c.build().unwrap();
+        let c = c.build(None, None).unwrap();
 
         check_bind_device(&c, "virt1");
     }
@@ -314,7 +342,7 @@ upstream_bind_config:
         let cluster = ClusterConfig::try_from(envoy_cluster).unwrap();
         let c = PartialClusterType::try_from((Box::new(cluster), &secrets_man)).unwrap();
         println!("{c:#?}");
-        let c = c.build().unwrap();
+        let c = c.build(None, None).unwrap();
         check_bind_device(&c, "virt1");
     }
 

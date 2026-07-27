@@ -16,6 +16,7 @@
 //
 
 #![recursion_limit = "128"]
+extern crate ctor_0_6 as ctor;
 #[allow(unused_imports)]
 #[macro_use]
 extern crate assert_matches;
@@ -26,6 +27,7 @@ pub mod extensions_context;
 
 pub mod access_log;
 mod body;
+pub(crate) mod cedar;
 pub mod clusters;
 pub mod instrumentation;
 mod listeners;
@@ -33,6 +35,7 @@ pub mod metrics;
 pub mod runtime_context;
 mod secrets;
 pub(crate) mod thread_local;
+pub mod timezone;
 pub mod tracing_attributes;
 pub(crate) mod transport;
 mod utils;
@@ -64,7 +67,7 @@ use orion_configuration::config::{
     secret::Secret,
     Bootstrap, Cluster, Listener as ListenerConfig,
 };
-pub use secrets::SecretManager;
+pub use secrets::{CertInfo, SecretManager};
 pub(crate) use transport::AsyncInstrumentedStream;
 
 pub type Error = orion_error::Error;

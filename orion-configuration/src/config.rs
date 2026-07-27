@@ -26,6 +26,7 @@ pub mod listener_filters;
 pub mod log;
 pub mod metrics;
 use log::AccessLogConfig;
+pub use log::DesensitizationConfig;
 pub use log::LogConfig;
 pub mod access_log;
 pub mod common;
@@ -33,11 +34,16 @@ pub mod grpc;
 pub mod network_filters;
 pub mod runtime;
 pub mod secret;
+pub mod timezone;
 pub mod transport;
 pub use runtime::Runtime;
 
 pub use crate::config::common::*;
-use crate::{config::metrics::MetricsConfig, options::Options, Result};
+use crate::{
+    config::{metrics::MetricsConfig, timezone::TimeZone},
+    options::Options,
+    Result,
+};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{fs::File, path::Path};
 
@@ -47,10 +53,12 @@ pub struct Config {
     pub runtime: Runtime,
     #[serde(skip_serializing_if = "is_default", default)]
     pub logging: LogConfig,
-    #[serde(skip_serializing_if = "Option::is_none", default = "Default::default")]
-    pub access_logging: Option<AccessLogConfig>,
+    #[serde(skip_serializing_if = "Option::is_none", default = "Default::default", rename = "access_logging")]
+    pub access_log_config: Option<AccessLogConfig>,
     #[serde(skip_serializing_if = "Option::is_none", default = "Default::default")]
     pub metrics: Option<MetricsConfig>,
+    #[serde(skip_serializing_if = "Option::is_none", default = "Default::default")]
+    pub timezone: Option<TimeZone>,
     #[serde(skip_serializing_if = "is_default", default)]
     pub bootstrap: Bootstrap,
 }
@@ -93,7 +101,7 @@ mod envoy_conversions {
 
     use super::{deserialize_yaml, log::AccessLogConfig, Bootstrap, Config};
     use crate::{
-        config::{log::LogConfig, metrics::MetricsConfig, runtime::Runtime},
+        config::{log::LogConfig, metrics::MetricsConfig, runtime::Runtime, timezone::TimeZone},
         options::Options,
         Result,
     };
@@ -111,10 +119,12 @@ mod envoy_conversions {
         pub runtime: Runtime,
         #[serde(default)]
         pub logging: LogConfig,
-        #[serde(default)]
-        pub access_logging: Option<AccessLogConfig>,
+        #[serde(default, rename = "access_logging")]
+        pub access_log_config: Option<AccessLogConfig>,
         #[serde(default)]
         pub metrics: Option<MetricsConfig>,
+        #[serde(default)]
+        pub timezone: Option<TimeZone>,
         #[serde(default)]
         pub bootstrap: Option<Bootstrap>,
         pub envoy_bootstrap: Option<Wrapper>,
@@ -146,16 +156,33 @@ mod envoy_conversions {
                     Self {
                         runtime: Runtime::default(),
                         logging: LogConfig::default(),
-                        access_logging: None,
+                        access_log_config: None,
+                        timezone: None,
                         metrics: None,
                         bootstrap,
                     }
                 },
                 (Some(config), maybe_override) => {
-                    let ShimConfig { runtime, logging, access_logging, bootstrap, metrics, envoy_bootstrap } =
-                        deserialize_yaml(config).with_context_fn(|| {
-                            ErrorInfo::default().with_message(format!("failed to deserialize \"{}\"", config.display()))
-                        })?;
+                    let ShimConfig {
+                        runtime,
+                        logging,
+                        access_log_config,
+                        bootstrap,
+                        metrics,
+                        timezone,
+                        envoy_bootstrap,
+                    } = deserialize_yaml(config).with_context_fn(|| {
+                        ErrorInfo::default().with_message(format!("failed to deserialize \"{}\"", config.display()))
+                    })?;
+
+                    if let Some(ref conf) = access_log_config {
+                        let mut custom_ops = std::collections::HashSet::new();
+                        for op in &conf.custom_operators {
+                            custom_ops.insert(op.clone());
+                        }
+                        orion_format::set_custom_operators(custom_ops)?;
+                    }
+
                     let mut bootstrap = match (bootstrap, envoy_bootstrap) {
                         (None, None) => Bootstrap::default(),
                         (Some(b), None) => b,
@@ -168,7 +195,7 @@ mod envoy_conversions {
                     if let Some(bootstrap_override) = maybe_override {
                         bootstrap = bootstrap_from_path_to_envoy_bootstrap(bootstrap_override)?;
                     }
-                    Self { runtime, logging, access_logging, metrics, bootstrap }
+                    Self { runtime, logging, access_log_config, metrics, timezone, bootstrap }
                 },
             };
             Ok(config.validate()?.apply_options(opt))

@@ -22,14 +22,92 @@ mod log_writer;
 pub mod logger;
 mod pool;
 
+use base64::{prelude::BASE64_STANDARD, Engine};
+use http::HeaderName;
 use logger::AccessLogger;
-use orion_configuration::config::access_log::{AccessLogConf, AccessLogTarget};
+use orion_configuration::config::access_log::{AccessLogSink, AccessLogTarget};
 use orion_format::FormattedMessage;
 use pool::LoggerPool;
 use smol_str::SmolStr;
 use std::sync::OnceLock;
 use tokio::sync::mpsc::error::TrySendError;
 use tracing_rolling_file::RollingFrequency;
+
+#[derive(Debug, Clone, Default)]
+pub struct AccessLogHeaders {
+    pub incoming_request_header: Option<HeaderName>,
+    pub ext_proc_request_header: Option<HeaderName>,
+    pub upstream_request_header: Option<HeaderName>,
+    pub incoming_response_header: Option<HeaderName>,
+    pub ext_proc_response_header: Option<HeaderName>,
+    pub downstream_response_header: Option<HeaderName>,
+}
+
+pub static ACCESS_LOG_HEADERS: OnceLock<AccessLogHeaders> = OnceLock::new();
+
+#[derive(Debug, thiserror::Error)]
+pub enum AccessLogHeaderError {
+    #[error("Header value is not a valid string: {0}")]
+    InvalidHeaderValue(#[from] http::header::ToStrError),
+    #[error("Failed to decode base64 header value: {0}")]
+    Base64DecodeError(#[from] base64::DecodeError),
+    #[error("Failed to parse JSON from header value: {0}")]
+    JsonParseError(#[from] serde_json::Error),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccessLogHook {
+    IncomingRequest,
+    ExtProcRequest,
+    UpstreamRequest,
+    IncomingResponse,
+    ExtProcResponse,
+    DownstreamResponse,
+}
+
+/// Evaluates the access log hook by extracting the configured header,
+/// base64-decoding it, parsing it as JSON, and applying it to the loggers.
+/// Returns `Ok(())` if the header is not configured or not found (no-op).
+/// Returns an error only in case of actual data malformation.
+pub fn evaluate_access_log_hook(
+    hook: AccessLogHook,
+    headers: &http::HeaderMap,
+    loggers: &mut [orion_format::LogFormatter],
+) -> Result<(), AccessLogHeaderError> {
+    let Some(headers_config) = ACCESS_LOG_HEADERS.get() else {
+        return Ok(());
+    };
+
+    let Some(header_name) = (match hook {
+        AccessLogHook::IncomingRequest => headers_config.incoming_request_header.as_ref(),
+        AccessLogHook::ExtProcRequest => headers_config.ext_proc_request_header.as_ref(),
+        AccessLogHook::UpstreamRequest => headers_config.upstream_request_header.as_ref(),
+        AccessLogHook::IncomingResponse => headers_config.incoming_response_header.as_ref(),
+        AccessLogHook::ExtProcResponse => headers_config.ext_proc_response_header.as_ref(),
+        AccessLogHook::DownstreamResponse => headers_config.downstream_response_header.as_ref(),
+    }) else {
+        return Ok(());
+    };
+
+    let Some(header_value) = headers.get(header_name) else {
+        return Ok(());
+    };
+
+    let header_str = header_value.to_str()?;
+
+    // Base64 decode
+    let decoded_bytes = BASE64_STANDARD.decode(header_str)?;
+
+    // Parse JSON
+    let json_val = serde_json::from_slice::<serde_json::Value>(&decoded_bytes)?;
+
+    // Apply to loggers
+    for logger in loggers {
+        logger.with_value(&json_val);
+    }
+
+    Ok(())
+}
 
 use std::{fmt::Display, hash::Hash};
 use tokio::{sync::mpsc::Sender, task::JoinSet};
@@ -94,7 +172,7 @@ impl Display for Target {
 ///   to all sinks configured for the given [`Target`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AccessLogMessage {
-    Configure(Target, Vec<AccessLogConf>),
+    Configure(Target, Vec<AccessLogSink>),
     Message(Target, Vec<FormattedMessage>),
 }
 
@@ -227,6 +305,7 @@ pub fn start_access_loggers(
     max_file_size: Option<u64>,
     max_log_files: usize,
     blocking: bool,
+    headers: AccessLogHeaders,
 ) -> JoinSet<()> {
     let (mut senders, mut receivers) = (Vec::with_capacity(num_instances), Vec::with_capacity(num_instances));
     for _ in 0..num_instances {
@@ -236,6 +315,10 @@ pub fn start_access_loggers(
     }
 
     info!("Initializing access loggers...");
+
+    if ACCESS_LOG_HEADERS.set(headers).is_err() {
+        error!("Unable to initialize access log headers!");
+    }
 
     if SENDER_POOL.set(LoggerPool { senders, blocking }).is_err() {
         error!("Unable to initialize logger pool!");
@@ -286,7 +369,7 @@ fn is_blocking() -> bool {
 /// that every logger applies the new [`AccessLogConf`] list. Returns
 /// `Ok(())` if all sends succeed, or [`LoggerError::SenderError`] on the
 /// first failure.
-pub async fn update_configuration(target: Target, init: Vec<AccessLogConf>) -> Result<(), LoggerError> {
+pub async fn update_configuration(target: Target, init: Vec<AccessLogSink>) -> Result<(), LoggerError> {
     let pool =
         SENDER_POOL.get().ok_or_else(|| LoggerError::InitializationError("Logger pool not initialized".into()))?;
     for (i, senders) in pool.senders.iter().enumerate() {
@@ -358,12 +441,12 @@ mod tests {
         let message = fmt.into_message();
 
         // initialize the logger pool with one channel for access log messages
-        let handles = start_access_loggers(1, 100, None, None, 3, true);
+        let handles = start_access_loggers(1, 100, None, None, 3, true, AccessLogHeaders::default());
 
         // send a new configuration for the logger(s)
         update_configuration(
             Target::Listener("test".into()),
-            vec![AccessLogConf::File("test-access.log".into()), AccessLogConf::Stderr],
+            vec![AccessLogSink::File("test-access.log".into()), AccessLogSink::Stderr],
         )
         .await
         .unwrap();

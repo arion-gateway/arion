@@ -211,25 +211,34 @@ impl TraceInfo {
 
         // Check for B3 header
         //
+        // Format per spec: b3={TraceId}-{SpanId}-{SamplingState}-{ParentSpanId}
+        // Last two fields are optional. When sampling is absent ("defer"),
+        // the receiver should accept.
         if let Some(value) = headers.get(B3).and_then(|v| v.to_str().ok()) {
             let parts: Vec<&str> = value.split('-').collect();
-            if parts.len() >= 3 {
-                // let mut rng = rand::rng();
-                // B3 trace ID is the first part, parent ID is the second part
+            if parts.len() == 1 {
+                match parts[0] {
+                    "0" | "1" | "d" => return Ok(None),
+                    _ => return Err(TraceError::InvalidFormat),
+                }
+            }
+            if parts.len() >= 2 && parts.len() <= 4 {
                 let trace_id = u128::from_str_radix(parts[0], 16).map_err(|_e| TraceError::InvalidFormat)?;
                 let span_id = Some(u64::from_str_radix(parts[1], 16).map_err(|_e| TraceError::InvalidFormat)?);
-                let sampled: bool = match parts[2] {
-                    "1" => Ok(true),
-                    "0" => Ok(false),
-                    _ => Err(TraceError::InvalidFormat), // Invalid sampled value
-                }?;
-
+                let sampled = if parts.len() >= 3 {
+                    match parts[2] {
+                        "1" | "d" => true,
+                        "0" => false,
+                        _ => return Err(TraceError::InvalidFormat),
+                    }
+                } else {
+                    true // defer: receiver decides to accept
+                };
                 let parent_id = if parts.len() == 4 {
                     Some(u64::from_str_radix(parts[3], 16).map_err(|_e| TraceError::InvalidFormat)?)
                 } else {
                     None
                 };
-
                 return Ok(Some(TraceInfo { trace_id, span_id, parent_id, provider: TraceProvider::B3, sampled }));
             }
             return Err(TraceError::InvalidFormat);
@@ -267,12 +276,23 @@ impl TraceInfo {
                     .transpose()?;
 
                 // Parse Sampled (optional)
-                let sampled =
-                    headers.get(X_B3_SAMPLED).and_then(|v| v.to_str().ok()).map_or(Ok(false), |s| match s {
+                // Per spec, if X-B3-Flags is 1 (debug), it implies sampled=true.
+                // If both are absent (defer), the receiver should decide (default to true).
+                let has_debug = headers
+                    .get(X_ENVOY_FORCE_TRACE) // or X-B3-Flags
+                    .or_else(|| headers.get(http::HeaderName::from_static("x-b3-flags")))
+                    .and_then(|v| v.to_str().ok())
+                    == Some("1");
+
+                let sampled = if has_debug {
+                    true
+                } else {
+                    headers.get(X_B3_SAMPLED).and_then(|v| v.to_str().ok()).map_or(Ok(true), |s| match s {
                         "1" => Ok(true),
                         "0" => Ok(false),
                         _ => Err(TraceError::InvalidFormat), // Invalid sampled value
-                    })?;
+                    })?
+                };
 
                 // Return the successfully parsed context
                 return Ok(Some(TraceInfo { trace_id, parent_id, span_id, provider: TraceProvider::B3Multi, sampled }));

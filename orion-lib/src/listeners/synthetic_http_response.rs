@@ -147,6 +147,7 @@ impl SyntheticHttpResponse {
         }
     }
 
+    #[allow(dead_code)]
     pub fn not_allowed(event_kind: EventKind, response_flags: ResponseFlags) -> Self {
         Self {
             http_status: StatusCode::METHOD_NOT_ALLOWED,

@@ -17,38 +17,38 @@
 
 use thread_local::ThreadLocal;
 
-pub trait LocalBuilder<A, T> {
-    fn build(&self, arg: A) -> T;
-}
-
 /// Provides a thread-local instance of an object. When a thread requests the local copy
 /// through [`LocalObject::get()`], the first time constructs it using the builder
 /// and arguments provided in [`LocalObject::new()`]. In subsequent requests a reference
 /// to this thread-local object is provided.
 #[derive(Debug)]
-pub struct LocalObject<T, B, A>
+pub struct ThreadLocalObject<T, B, A>
 where
     T: Sync + Send,
     B: LocalBuilder<A, T>,
     A: Clone,
 {
-    tls: ThreadLocal<T>,
+    storage: ThreadLocal<T>,
     builder: B,
     arg: A,
 }
 
-impl<T, A, B> LocalObject<T, B, A>
+pub trait LocalBuilder<A, T> {
+    fn build(&self, arg: A) -> T;
+}
+
+impl<T, A, B> ThreadLocalObject<T, B, A>
 where
     T: Sync + Send,
     B: LocalBuilder<A, T>,
     A: Clone,
 {
     pub fn new(builder: B, arg: A) -> Self {
-        let tls = ThreadLocal::new();
-        LocalObject { tls, builder, arg }
+        let storage = ThreadLocal::new();
+        ThreadLocalObject { storage, builder, arg }
     }
 
-    pub fn get_or_build(&self) -> &T {
-        self.tls.get_or(|| self.builder.build(self.arg.clone()))
+    pub fn get_local(&self) -> &T {
+        self.storage.get_or(|| self.builder.build(self.arg.clone()))
     }
 }

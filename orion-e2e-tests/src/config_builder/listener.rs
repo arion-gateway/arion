@@ -17,16 +17,26 @@ use std::net::{IpAddr, Ipv4Addr};
 use orion_data_plane_api::envoy_data_plane_api::{
     envoy::{
         config::{
-            core::v3::{address::Address as AddressType, socket_address::PortSpecifier, Address, SocketAddress},
+            accesslog::v3::{access_log::ConfigType as AccessLogConfigType, AccessLog as EnvoyAccessLog},
+            core::v3::{
+                address::Address as AddressType, socket_address::PortSpecifier,
+                substitution_format_string::Format as SubstitutionFormat, Address, SocketAddress,
+                SubstitutionFormatString,
+            },
             listener::v3::{
                 listener::{InternalListenerConfig, ListenerSpecifier},
                 listener_filter::ConfigType,
                 FilterChain, Listener as EnvoyListener, ListenerFilter,
             },
         },
-        extensions::filters::listener::{
-            local_ratelimit::v3::LocalRateLimit as EnvoyListenerLocalRateLimit,
-            proxy_protocol::v3::ProxyProtocol as EnvoyProxyProtocol, tls_inspector::v3::TlsInspector,
+        extensions::{
+            access_loggers::file::v3::{
+                file_access_log::AccessLogFormat as FileAccessLogFormat, FileAccessLog as EnvoyFileAccessLog,
+            },
+            filters::listener::{
+                local_ratelimit::v3::LocalRateLimit as EnvoyListenerLocalRateLimit,
+                proxy_protocol::v3::ProxyProtocol as EnvoyProxyProtocol, tls_inspector::v3::TlsInspector,
+            },
         },
         r#type::v3::TokenBucket as EnvoyTokenBucket,
     },
@@ -222,6 +232,31 @@ impl ListenerBuilder {
         };
         self.proto.listener_filters.push(listener_filter);
         self
+    }
+
+    #[must_use]
+    #[allow(deprecated)]
+    pub fn access_log_file(self, path: impl Into<String>, text_format: impl Into<String>) -> Self {
+        let file_access_log = EnvoyFileAccessLog {
+            path: path.into(),
+            access_log_format: Some(FileAccessLogFormat::LogFormat(SubstitutionFormatString {
+                format: Some(SubstitutionFormat::TextFormat(text_format.into())),
+                ..Default::default()
+            })),
+        };
+
+        let typed_config = Any {
+            type_url: "type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog".into(),
+            value: file_access_log.encode_to_vec(),
+        };
+
+        let access_log = EnvoyAccessLog {
+            name: "envoy.access_loggers.file".into(),
+            config_type: Some(AccessLogConfigType::TypedConfig(typed_config)),
+            ..Default::default()
+        };
+
+        self.with_proto(move |proto| proto.access_log.push(access_log))
     }
 
     #[must_use]

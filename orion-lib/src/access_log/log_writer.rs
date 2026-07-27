@@ -15,7 +15,7 @@
 //
 //
 
-use orion_configuration::config::access_log::AccessLogConf;
+use orion_configuration::config::access_log::AccessLogSink;
 use tracing_appender::non_blocking::{NonBlocking, WorkerGuard};
 use tracing_rolling_file::{RollingConditionBase, RollingFileAppender, RollingFrequency};
 
@@ -23,30 +23,30 @@ use super::{deferred_init, LoggerError};
 use deferred_init::DeferredInit;
 
 pub(crate) struct LogWriter {
-    conf: AccessLogConf,
+    conf: AccessLogSink,
     handle: DeferredInit<Result<(NonBlocking, WorkerGuard), LoggerError>>,
 }
 
 impl LogWriter {
-    pub(crate) fn config(&self) -> &AccessLogConf {
+    pub(crate) fn sink(&self) -> &AccessLogSink {
         &self.conf
     }
 
     pub(crate) fn new(
         index: usize,
-        conf: AccessLogConf,
+        conf: AccessLogSink,
         rolling_frequency: Option<RollingFrequency>,
         max_file_size: Option<u64>,
         max_log_files: usize,
     ) -> Self {
         let handle = match conf {
-            AccessLogConf::Stdout => DeferredInit::new(|| {
+            AccessLogSink::Stdout => DeferredInit::new(|| {
                 Ok(tracing_appender::non_blocking::NonBlockingBuilder::default().lossy(false).finish(std::io::stdout()))
             }),
-            AccessLogConf::Stderr => DeferredInit::new(|| {
+            AccessLogSink::Stderr => DeferredInit::new(|| {
                 Ok(tracing_appender::non_blocking::NonBlockingBuilder::default().lossy(false).finish(std::io::stderr()))
             }),
-            AccessLogConf::File(ref path) => {
+            AccessLogSink::File(ref path) => {
                 let path = path.clone();
                 DeferredInit::new(move || {
                     let filename = if index == 0 { path.clone() } else { format!("{path}-{index}") };

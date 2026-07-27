@@ -16,12 +16,20 @@ pub static BYTES_RX: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 pub static INBOUND_STREAMING_BYTES_PROCESSED: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 pub static OUTBOUND_STREAMING_BYTES_PROCESSED: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 pub static LATENCY: OnceLock<Metric<ShardedHistogram<ThreadId>>> = OnceLock::new();
+pub static CONNECTIONS: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
+pub static CONNECTIONS_ACTIVE: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 
 pub static HTTP_1XX_RESPONSES: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 pub static HTTP_2XX_RESPONSES: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 pub static HTTP_3XX_RESPONSES: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 pub static HTTP_4XX_RESPONSES: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 pub static HTTP_5XX_RESPONSES: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
+
+pub static HTTP_404_RESPONSES: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
+pub static HTTP_502_RESPONSES: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
+pub static HTTP_504_RESPONSES: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
+
+pub static UPSTREAM_RQ_TIME: OnceLock<Metric<ShardedHistogram<ThreadId>>> = OnceLock::new();
 
 pub(crate) fn init_metrics(rename: &std::collections::HashMap<String, String>) {
     init_observable_counter!(
@@ -88,6 +96,15 @@ pub(crate) fn init_metrics(rename: &std::collections::HashMap<String, String>) {
         "Latency of API calls in milliseconds",
         vec![5, 10, 50, 100, 500, 1000, 5000, 10000, u64::MAX]
     );
+
+    init_observable_histogram!(
+        UPSTREAM_RQ_TIME,
+        crate::metrics::PREFIX_USER,
+        crate::metrics::resolve_metric_name(rename, "upstream_rq_time"),
+        "Upstream request time in milliseconds",
+        vec![5, 10, 50, 100, 500, 1000, 5000, 10000, u64::MAX]
+    );
+
     init_observable_counter!(
         HTTP_1XX_RESPONSES,
         crate::metrics::PREFIX_USER,
@@ -118,4 +135,64 @@ pub(crate) fn init_metrics(rename: &std::collections::HashMap<String, String>) {
         crate::metrics::resolve_metric_name(rename, "http_5xx_response"),
         "Total number of API calls that resulted in a 5xx HTTP response"
     );
+    init_observable_counter!(
+        HTTP_404_RESPONSES,
+        crate::metrics::PREFIX_USER,
+        crate::metrics::resolve_metric_name(rename, "http_404_response"),
+        "Total number of API calls that resulted in a 404 HTTP response"
+    );
+    init_observable_counter!(
+        HTTP_502_RESPONSES,
+        crate::metrics::PREFIX_USER,
+        crate::metrics::resolve_metric_name(rename, "http_502_response"),
+        "Total number of API calls that resulted in a 502 HTTP response"
+    );
+    init_observable_counter!(
+        HTTP_504_RESPONSES,
+        crate::metrics::PREFIX_USER,
+        crate::metrics::resolve_metric_name(rename, "http_504_response"),
+        "Total number of API calls that resulted in a 504 HTTP response"
+    );
+    init_observable_counter!(
+        CONNECTIONS,
+        crate::metrics::PREFIX_USER,
+        crate::metrics::resolve_metric_name(rename, "connections"),
+        "Number of total connections established"
+    );
+    init_observable_gauge!(
+        CONNECTIONS_ACTIVE,
+        crate::metrics::PREFIX_USER,
+        crate::metrics::resolve_metric_name(rename, "connections_active"),
+        "Number of active connections"
+    );
+}
+
+pub fn reset_metrics() {
+    use crate::sharded::Clearable;
+    let metrics: &[&dyn Clearable] = &[
+        &INVOCATIONS,
+        &THROTTLES,
+        &SYSTEM_ERRORS,
+        &USER_ERRORS,
+        &TOTAL_ERRORS,
+        &BYTES_TX,
+        &BYTES_RX,
+        &INBOUND_STREAMING_BYTES_PROCESSED,
+        &OUTBOUND_STREAMING_BYTES_PROCESSED,
+        &LATENCY,
+        &UPSTREAM_RQ_TIME,
+        &CONNECTIONS,
+        &CONNECTIONS_ACTIVE,
+        &HTTP_1XX_RESPONSES,
+        &HTTP_2XX_RESPONSES,
+        &HTTP_3XX_RESPONSES,
+        &HTTP_4XX_RESPONSES,
+        &HTTP_5XX_RESPONSES,
+        &HTTP_404_RESPONSES,
+        &HTTP_502_RESPONSES,
+        &HTTP_504_RESPONSES,
+    ];
+    for metric in metrics {
+        metric.clear();
+    }
 }

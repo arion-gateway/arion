@@ -13,7 +13,11 @@ use crate::{body::response_flags::ResponseFlags, clusters::retry_policy::RetryCo
 #[derive(Debug, thiserror::Error)]
 pub enum UpstreamError {
     #[error("I/O Error: {0:?}")]
-    Io(#[from] io::Error),
+    Io(
+        #[source]
+        #[from]
+        io::Error,
+    ),
     #[error("ConnectTimeout")]
     ConnectTimeout(#[from] Elapsed),
     #[error("PerTryTimeout)")]
@@ -34,7 +38,11 @@ pub enum UpstreamError {
 #[derive(Debug, thiserror::Error)]
 pub enum DownstreamError {
     #[error("I/O Error: {0:?}")]
-    Io(#[from] io::Error),
+    Io(
+        #[source]
+        #[from]
+        io::Error,
+    ),
     #[error("Reset")]
     Reset,
 }
@@ -50,6 +58,7 @@ pub enum EventFailure {
     RouteNotFound,
     UpgradeFailed,
     RbacAccessDenied(SmolStr),
+    CedarAccessDenied(SmolStr),
     RateLimited,
     ExtProcError,
     ViaUpstream,
@@ -112,6 +121,9 @@ impl EventKind {
                 EventFailure::UpgradeFailed => Some(ResponseCodeDetails("upgrade_failed")),
                 EventFailure::RbacAccessDenied(id) => {
                     Some(ResponseCodeDetails(format!("rbac_access_denied[{id}]").to_static_str()))
+                },
+                EventFailure::CedarAccessDenied(id) => {
+                    Some(ResponseCodeDetails(format!("cedar_access_denied[{id}]").to_static_str()))
                 },
                 EventFailure::RateLimited => Some(ResponseCodeDetails("rate_limited")),
                 EventFailure::ExtProcError => Some(ResponseCodeDetails("ext_proc_error")),
@@ -359,5 +371,33 @@ impl<'a> TryInferFrom<&'a (dyn std::error::Error + 'static)> for UpstreamError {
 
         // the rest of the errors are remapped to Reset
         Some(UpstreamError::Reset)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::transport::connector::ConnectError;
+    use orion_error::ContextualError;
+
+    #[test]
+    fn test_error_chain_debug() {
+        let io_err = io::Error::new(io::ErrorKind::ConnectionRefused, "Connection refused");
+        let upstream_err = UpstreamError::Io(io_err);
+        let connect_err = ConnectError::Event(upstream_err);
+        let with_ctx = ContextualError::new(connect_err);
+        let err: orion_error::Error = with_ctx.into();
+
+        println!("DEBUG TEST: err = {err:?}");
+        println!("DEBUG TEST: err.inner() = {:?}", err.inner());
+
+        let mut temp_err: Option<&dyn std::error::Error> = Some(err.inner());
+        while let Some(e) = temp_err {
+            println!("DEBUG TEST: cause = {}, type = {:?}", e, e.source().map(|_| "has_source"));
+            temp_err = e.source();
+        }
+
+        let found = find_error_in_chain::<io::Error>(err.inner());
+        assert!(found.is_some(), "Should find std::io::Error in chain!");
     }
 }

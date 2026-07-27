@@ -26,7 +26,8 @@ use orion_e2e_tests::config_builder::{
     RouteConfigBuilder, VirtualHostBuilder,
 };
 use orion_e2e_tests::{
-    cleanup_config_file, OrionInstance, PreConfiguredResponse, SpawnOptions, TestBackend, TestClient, XdsEnabledHarness,
+    cleanup_config_file, OrionInstance, PreConfiguredResponse, RequestBuilder, SpawnOptions, TestBackend, TestClient,
+    XdsEnabledHarness,
 };
 
 #[tokio::test]
@@ -381,4 +382,83 @@ async fn test_circuit_breaker_xds_config() {
     }
 
     harness.shutdown();
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_circuit_breaker_max_connections_static_cluster() {
+    let backend = TestBackend::start().await.unwrap();
+    backend.set_default_response(PreConfiguredResponse::with_body("ok").delay(Duration::from_secs(2))).await;
+
+    let cluster = ClusterBuilder::with_endpoint("backend", backend.addr()).circuit_breaker_max_connections(1).build();
+
+    let bootstrap = presets::routed_proxy([RouteBuilder::new().match_prefix("/").cluster("backend")], [cluster]);
+    let config_path = bootstrap.build_to_temp().unwrap();
+    let orion = OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default()).await.unwrap();
+    let client = Arc::new(TestClient::new(orion.listener_addr().unwrap()));
+
+    let handles: Vec<_> = (0..3)
+        .map(|_| {
+            let client = Arc::clone(&client);
+            tokio::spawn(async move { client.get("/test").await })
+        })
+        .collect();
+
+    let results: Vec<_> = join_all(handles)
+        .await
+        .into_iter()
+        .filter_map(std::result::Result::ok)
+        .filter_map(std::result::Result::ok)
+        .collect();
+
+    let ok_count = results.iter().filter(|r| r.status == StatusCode::OK).count();
+    let denied_count = results.iter().filter(|r| r.status == StatusCode::BAD_GATEWAY).count();
+
+    assert_eq!(ok_count, 1, "Expected exactly 1 request to succeed, got {ok_count}");
+    assert_eq!(denied_count, 2, "Expected 2 connection-denied responses, got {denied_count}");
+
+    orion.shutdown();
+    cleanup_config_file(&config_path);
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_circuit_breaker_max_connections_original_dst_cluster() {
+    let backend = TestBackend::start().await.unwrap();
+    backend.set_default_response(PreConfiguredResponse::with_body("ok").delay(Duration::from_secs(2))).await;
+
+    let cluster =
+        ClusterBuilder::new("backend").original_dst_via_default_header().circuit_breaker_max_connections(1).build();
+
+    let bootstrap = presets::routed_proxy([RouteBuilder::new().match_prefix("/").cluster("backend")], [cluster]);
+    let config_path = bootstrap.build_to_temp().unwrap();
+    let orion = OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default()).await.unwrap();
+    let client = Arc::new(TestClient::new(orion.listener_addr().unwrap()));
+
+    let dst = format!("127.0.0.1:{}", backend.addr().port());
+    let handles: Vec<_> = (0..3)
+        .map(|_| {
+            let client = Arc::clone(&client);
+            let dst = dst.clone();
+            tokio::spawn(async move {
+                client.send(RequestBuilder::get("/test").header("x-envoy-original-dst-host", dst)).await
+            })
+        })
+        .collect();
+
+    let results: Vec<_> = join_all(handles)
+        .await
+        .into_iter()
+        .filter_map(std::result::Result::ok)
+        .filter_map(std::result::Result::ok)
+        .collect();
+
+    let ok_count = results.iter().filter(|r| r.status == StatusCode::OK).count();
+    let denied_count = results.iter().filter(|r| r.status == StatusCode::BAD_GATEWAY).count();
+
+    assert_eq!(ok_count, 1, "Expected exactly 1 request to succeed, got {ok_count}");
+    assert_eq!(denied_count, 2, "Expected 2 connection-denied responses, got {denied_count}");
+
+    orion.shutdown();
+    cleanup_config_file(&config_path);
 }

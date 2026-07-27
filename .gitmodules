@@ -25,9 +25,9 @@
 [submodule "envoy-data-plane-api/protobuf"]
 	path = envoy-data-plane-api/protobuf
 	url = https://internal.invalid/protobuf.git
-[submodule "hyper-util"]
-	path = hyper-util
-	url = https://internal.invalid/hyper-util.git
 [submodule "orion-auth"]
 	path = orion-auth
 	url = https://internal.invalid/orion-auth.git
+[submodule "orion-log"]
+	path = orion-log
+	url = https://internal.invalid/orion-log.git

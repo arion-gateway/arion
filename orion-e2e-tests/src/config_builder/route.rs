@@ -429,6 +429,19 @@ impl RouteBuilder {
     }
 
     #[must_use]
+    pub fn disable_websocket_upgrade(mut self) -> Self {
+        use orion_data_plane_api::envoy_data_plane_api::envoy::config::route::v3::route_action::UpgradeConfig as EnvoyUpgradeConfig;
+        if let Some(Action::Route(ref mut route_action)) = self.proto.action {
+            route_action.upgrade_configs.push(EnvoyUpgradeConfig {
+                upgrade_type: "websocket".into(),
+                enabled: Some(BoolValue { value: false }),
+                ..Default::default()
+            });
+        }
+        self
+    }
+
+    #[must_use]
     pub fn add_response_header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
         self.proto.response_headers_to_add.push(HeaderValueOption {
             header: Some(HeaderValue { key: name.into(), value: value.into(), ..Default::default() }),

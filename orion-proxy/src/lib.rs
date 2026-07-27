@@ -17,6 +17,7 @@
 
 use orion_configuration::{config::Config, options::Options};
 use orion_lib::{metrics, Result, RUNTIME_CONFIG};
+use orion_stats::{set_proxy_state, ProxyState};
 
 #[macro_use]
 mod admin;
@@ -25,78 +26,105 @@ mod proxy;
 mod runtime;
 mod xds_configurator;
 
-pub fn run() -> Result<()> {
-    let mut tracing_manager = proxy_tracing::TracingManager::new();
+pub fn run() -> bool {
+    let Ok(mut tracing_manager) = proxy_tracing::TracingManager::new() else {
+        return false;
+    };
 
-    let options = Options::parse_options();
-    let Config { runtime, logging, access_logging, metrics, bootstrap } = Config::new(&options)?;
+    let result = (|| -> Result<()> {
+        let options = Options::parse_options();
+        let Config { runtime, logging, access_log_config, metrics, timezone, bootstrap } = Config::new(&options)?;
 
-    RUNTIME_CONFIG.set(runtime).map_err(|_e| "runtime config was somehow set before we had a chance to set it")?;
+        tracing_manager.update(logging)?;
 
-    // Set the header_name from which to extract the user_id
-    //
-    if let Some(source) = metrics.as_ref().and_then(|metrics| metrics.user_key.as_ref()).map(|key| &key.source).cloned()
-    {
-        metrics::USER_KEY.set_source(source);
+        set_proxy_state(ProxyState::Initializing);
+
+        RUNTIME_CONFIG.set(runtime).map_err(|_e| "runtime config was somehow set before we had a chance to set it")?;
+
+        // Set the header_name from which to extract the user_id
+        if let Some(source) =
+            metrics.as_ref().and_then(|metrics| metrics.user_key.as_ref()).map(|key| &key.source).cloned()
+        {
+            metrics::USER_KEY.set_source(source);
+        }
+
+        // Set the header_names and attribute_names from which to extract the custom keys
+        if let Some(metrics_config) = metrics.as_ref() {
+            let mut custom_keys = Vec::with_capacity(metrics_config.custom_keys.len());
+            for key in &metrics_config.custom_keys {
+                let pk = metrics::PartitionKey::new();
+                pk.set_source(key.source.clone());
+                if let Some(attribute_name) = &key.attribute_name {
+                    pk.set_attribute_name(attribute_name.clone());
+                }
+                custom_keys.push(pk);
+            }
+            let _ = metrics::CUSTOM_KEYS.set(custom_keys).ok();
+        }
+
+        // Set the attribute key value used to partition user metrics.
+        if let Some(attribute_name) = metrics
+            .as_ref()
+            .and_then(|metrics| metrics.user_key.as_ref())
+            .and_then(|key| key.attribute_name.as_ref())
+            .cloned()
+        {
+            metrics::USER_KEY.set_attribute_name(attribute_name);
+        }
+
+        #[cfg(target_os = "linux")]
+        if !(caps::has_cap(None, caps::CapSet::Permitted, caps::Capability::CAP_NET_RAW)?) {
+            tracing::warn!("CAP_NET_RAW is NOT available, SO_BINDTODEVICE will not work");
+        }
+
+        proxy::run_orion(bootstrap, metrics, access_log_config, timezone)?;
+        Ok(())
+    })();
+
+    if let Err(e) = result {
+        tracing::error!("Orion proxy terminated with error: {e:?}");
+        return false;
     }
-
-    // Set the header_name from which to extract the custom key
-    if let Some(source) =
-        metrics.as_ref().and_then(|metrics| metrics.custom_key.as_ref()).map(|key| &key.source).cloned()
-    {
-        metrics::CUSTOM_KEY.set_source(source);
-    }
-
-    // Set the attribute key value used to partition user metrics.
-    if let Some(attribute_name) = metrics
-        .as_ref()
-        .and_then(|metrics| metrics.user_key.as_ref())
-        .and_then(|key| key.attribute_name.as_ref())
-        .cloned()
-    {
-        metrics::USER_KEY.set_attribute_name(attribute_name);
-    }
-
-    // Set the attribute key value used to partition custom metrics.
-    if let Some(attribute_name) = metrics
-        .as_ref()
-        .and_then(|metrics| metrics.custom_key.as_ref())
-        .and_then(|key| key.attribute_name.as_ref())
-        .cloned()
-    {
-        metrics::CUSTOM_KEY.set_attribute_name(attribute_name);
-    }
-
-    tracing_manager.update(logging)?;
-
-    #[cfg(target_os = "linux")]
-    if !(caps::has_cap(None, caps::CapSet::Permitted, caps::Capability::CAP_NET_RAW)?) {
-        tracing::warn!("CAP_NET_RAW is NOT available, SO_BINDTODEVICE will not work");
-    }
-
-    proxy::run_orion(bootstrap, metrics, access_logging);
-    Ok(())
+    true
 }
 
 mod proxy_tracing {
     use tracing_appender::non_blocking::{NonBlocking, WorkerGuard};
     use tracing_subscriber::{
-        fmt,
-        fmt::format::{DefaultFields, Format},
-        layer::Layered,
-        reload,
-        reload::Handle,
-        EnvFilter, Registry,
+        fmt, fmt::format::DefaultFields, layer::Layered, reload, reload::Handle, EnvFilter, Registry,
     };
 
-    use orion_configuration::config::LogConfig as LogConf;
+    use orion_configuration::config::{DesensitizationConfig, LogConfig as LogConf};
     use orion_lib::Result;
+    use orion_log::{Desensitizer, MakeWriterType, RedactingMakeWriter};
 
-    type RegistryLayer =
-        fmt::Layer<Layered<reload::Layer<EnvFilter, Registry>, Registry>, DefaultFields, Format, NonBlocking>;
+    #[derive(Clone, Default)]
+    struct CustomTime;
+
+    impl fmt::time::FormatTime for CustomTime {
+        fn format_time(&self, w: &mut fmt::format::Writer<'_>) -> std::fmt::Result {
+            let offset_sec = orion_lib::timezone::local_offset_sec().unwrap_or(0);
+            let tz =
+                chrono::FixedOffset::east_opt(offset_sec).unwrap_or_else(|| chrono::FixedOffset::east_opt(0).unwrap());
+            let now = chrono::Utc::now().with_timezone(&tz);
+            write!(w, "{}", now.format("%Y-%m-%dT%H:%M:%S%.6f%z"))
+        }
+    }
+
+    type RegistryLayer = fmt::Layer<
+        Layered<reload::Layer<EnvFilter, Registry>, Registry>,
+        DefaultFields,
+        fmt::format::Format<fmt::format::Full, CustomTime>,
+        MakeWriterType<NonBlocking>,
+    >;
     type FilterReloadHandle = Handle<EnvFilter, Registry>;
     type LayerReloadHandle = Handle<
-        fmt::Layer<Layered<reload::Layer<EnvFilter, Registry>, Registry>, DefaultFields, Format, NonBlocking>,
+        fmt::Layer<
+            Layered<reload::Layer<EnvFilter, Registry>, Registry>,
+            DefaultFields,
+            fmt::format::Format<fmt::format::Full, CustomTime>,
+            MakeWriterType<NonBlocking>,
+        >,
         Layered<reload::Layer<EnvFilter, Registry>, Registry>,
     >;
 
@@ -107,32 +135,38 @@ mod proxy_tracing {
     }
 
     impl TracingManager {
-        pub fn new() -> Self {
+        pub fn new() -> Result<Self> {
             let level = EnvFilter::builder()
                 .with_default_directive(tracing_subscriber::filter::LevelFilter::INFO.into())
                 .parse_lossy("");
-            let (guard, layer_reload_handle, filter_reload_handle) = Self::init_tracing(Registry::default(), level);
-            TracingManager { guard, filter_reload_handle, layer_reload_handle }
+            let (guard, layer_reload_handle, filter_reload_handle) =
+                Self::init_tracing(Registry::default(), level, &DesensitizationConfig::default())?;
+            Ok(TracingManager { guard, filter_reload_handle, layer_reload_handle })
         }
 
         pub fn update(&mut self, log_conf: LogConf) -> Result<()> {
-            // Update log level
+            let LogConf { log_level, log_directory, log_file, desensitization } = log_conf;
+
             self.filter_reload_handle.modify(|filter| {
-                *filter = EnvFilter::try_from_default_env().ok().or(log_conf.log_level).unwrap_or_else(|| {
+                *filter = EnvFilter::try_from_default_env().ok().or(log_level).unwrap_or_else(|| {
                     EnvFilter::builder()
                         .with_default_directive(tracing_subscriber::filter::LevelFilter::ERROR.into())
                         .parse_lossy("")
                 });
             })?;
 
-            // Update tracing layer if necessary (stdout -> file)
-            if let Some(log_file) = log_conf.log_file {
-                self.layer_reload_handle.modify(|layer| {
-                    let (new_guard, new_layer) = Self::file_layer(&log_file, log_conf.log_directory.as_ref());
-                    *layer = new_layer;
-                    self.guard = new_guard;
-                })?;
-            }
+            // Build the new layer before entering the modify closure so that
+            // errors from Desensitizer::build() can be propagated with `?`.
+            let (new_guard, new_layer) = if let Some(ref file) = log_file {
+                Self::file_layer(file, log_directory.as_ref(), &desensitization)?
+            } else {
+                Self::stdout_layer(&desensitization)?
+            };
+
+            self.layer_reload_handle.modify(|layer| {
+                *layer = new_layer;
+            })?;
+            self.guard = new_guard;
 
             Ok(())
         }
@@ -140,7 +174,8 @@ mod proxy_tracing {
         fn init_tracing(
             registry: Registry,
             log_level: EnvFilter,
-        ) -> (WorkerGuard, LayerReloadHandle, FilterReloadHandle) {
+            desensitization: &DesensitizationConfig,
+        ) -> Result<(WorkerGuard, LayerReloadHandle, FilterReloadHandle)> {
             use tracing_subscriber::{layer::SubscriberExt as _, util::SubscriberInitExt as _};
 
             let env_filter = EnvFilter::try_from_default_env().ok().or(Some(log_level)).unwrap_or_else(|| {
@@ -149,35 +184,57 @@ mod proxy_tracing {
                     .parse_lossy("")
             });
 
-            // Start as an stdout layer by default, after reading the configuration this can be upgraded to a file layer
-            let (guard, layer) = Self::stdout_layer();
+            let (guard, layer) = Self::stdout_layer(desensitization)?;
             let (layer, layer_reload_handle) = reload::Layer::new(layer);
-
             let (env_filter, filter_reload_handle) = reload::Layer::new(env_filter);
 
             registry.with(env_filter).with(layer).init();
-            (guard, layer_reload_handle, filter_reload_handle)
+            Ok((guard, layer_reload_handle, filter_reload_handle))
         }
 
-        fn stdout_layer() -> (WorkerGuard, RegistryLayer) {
+        fn make_writer(
+            desensitization: &DesensitizationConfig,
+            inner: NonBlocking,
+        ) -> Result<MakeWriterType<NonBlocking>> {
+            if std::env::var_os("ORION_DEBUG").is_some() {
+                return Ok(MakeWriterType::passthrough(inner));
+            }
+            let desensitizer = Desensitizer::builder(
+                desensitization.log_max_length,
+                desensitization.replace_length,
+                desensitization.ignore_tag.clone(),
+            )
+            .allow_list(desensitization.allow_list.clone())
+            .build()?;
+            Ok(MakeWriterType::Redacting(RedactingMakeWriter::with_desensitizer(inner, desensitizer)))
+        }
+
+        fn stdout_layer(desensitization: &DesensitizationConfig) -> Result<(WorkerGuard, RegistryLayer)> {
             let out = std::io::stdout();
             let is_terminal = std::io::IsTerminal::is_terminal(&out);
             let (non_blocking, guard) = tracing_appender::non_blocking(out);
-            let mut std_layer = fmt::layer().with_writer(non_blocking).with_thread_names(true);
+            let writer = Self::make_writer(desensitization, non_blocking)?;
+            let mut std_layer = fmt::layer().with_timer(CustomTime).with_writer(writer).with_thread_names(true);
 
             if !is_terminal {
                 std_layer = std_layer.with_ansi(false);
             }
 
-            (guard, std_layer)
+            Ok((guard, std_layer))
         }
 
-        fn file_layer(filename: &str, log_directory: Option<&String>) -> (WorkerGuard, RegistryLayer) {
+        fn file_layer(
+            filename: &str,
+            log_directory: Option<&String>,
+            desensitization: &DesensitizationConfig,
+        ) -> Result<(WorkerGuard, RegistryLayer)> {
             let file_appender = tracing_appender::rolling::hourly(log_directory.unwrap_or(&".".into()), filename);
             let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
-            let file_layer = fmt::layer().with_ansi(false).with_writer(non_blocking).with_thread_names(true);
+            let writer = Self::make_writer(desensitization, non_blocking)?;
+            let file_layer =
+                fmt::layer().with_timer(CustomTime).with_ansi(false).with_writer(writer).with_thread_names(true);
 
-            (guard, file_layer)
+            Ok((guard, file_layer))
         }
     }
 }

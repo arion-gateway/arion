@@ -101,7 +101,7 @@ where
 
     let host = protocol_config.host(&endpoint.cluster)?;
     let host_name = host.to_string();
-    let uri = build_uri(scheme, host, protocol_config.path.unwrap_or(PathAndQuery::from_static("")))?;
+    let uri = build_uri(scheme, host, protocol_config.path.unwrap_or(PathAndQuery::from_static("/")))?;
 
     let checker = HttpChecker {
         expected_statuses: protocol_config.expected_statuses,
@@ -137,7 +137,7 @@ where
 
     async fn check(&mut self) -> Result<Self::Response, Error> {
         let request = create_request(self.http_version, &self.method, &self.host, &self.uri)?;
-        self.client.to_response(&TransactionContext::default(), request, RequestContext::default()).await
+        self.client.to_response(&Arc::new(TransactionContext::default()), request, RequestContext::default()).await
     }
 
     fn process_response(
