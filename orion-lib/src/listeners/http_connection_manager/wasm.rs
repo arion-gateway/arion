@@ -58,7 +58,7 @@ impl Drop for WasmFilterState {
             if let Ok(handle) = tokio::runtime::Handle::try_current() {
                 tokio::task::block_in_place(|| {
                     handle.block_on(async {
-                        let _ = on_destroy.call_async(&mut self.store, ()).await;
+                        _ = on_destroy.call_async(&mut self.store, ()).await;
                     });
                 });
             }
@@ -66,6 +66,7 @@ impl Drop for WasmFilterState {
     }
 }
 
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Clone)]
 pub struct WasmFilterInner {
     config: WasmConfig,
@@ -85,7 +86,18 @@ pub struct WasmFilterInner {
 
 impl std::fmt::Debug for WasmFilterInner {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("WasmFilterInner").field("config", &self.config).finish()
+        f.debug_struct("WasmFilterInner")
+            .field("config", &self.config)
+            .field("instance_pool", &self.instance_pool)
+            .field("has_on_request_headers", &self.has_on_request_headers)
+            .field("has_on_request_body", &self.has_on_request_body)
+            .field("has_on_response_headers", &self.has_on_response_headers)
+            .field("has_on_response_body", &self.has_on_response_body)
+            .field("has_on_plugin_start", &self.has_on_plugin_start)
+            .field("has_on_plugin_destroy", &self.has_on_plugin_destroy)
+            .field("has_on_transaction_start", &self.has_on_transaction_start)
+            .field("has_on_transaction_complete", &self.has_on_transaction_complete)
+            .finish_non_exhaustive()
     }
 }
 
@@ -99,7 +111,7 @@ pub struct WasmFilter {
 
 impl Clone for WasmFilter {
     fn clone(&self) -> Self {
-        Self { inner: self.inner.clone(), state: Mutex::new(None) }
+        Self { inner: Arc::clone(&self.inner), state: Mutex::new(None) }
     }
 }
 
@@ -192,7 +204,7 @@ impl WasmFilter {
                         response_trailers: None,
                         access_log_operators: Vec::new(),
                         io_deadline: None,
-                        shared_memory: self.inner.shared_memory.clone(),
+                        shared_memory: Arc::clone(&self.inner.shared_memory),
                     },
                 );
                 // Instantiate the module using the pre-resolved imports
@@ -203,7 +215,7 @@ impl WasmFilter {
 
                 if self.inner.has_on_plugin_start {
                     if let Ok(on_start) = instance.get_typed_func::<(), ()>(&mut store, "on_plugin_start") {
-                        let _ = on_start.call_async(&mut store, ()).await;
+                        _ = on_start.call_async(&mut store, ()).await;
                     }
                 }
 
@@ -225,7 +237,7 @@ impl WasmFilter {
                 Err(e) => return FilterDecision::internal_server_error(&e.to_string(), req.version()),
             };
             if let Ok(on_tx_start) = state.instance.get_typed_func::<(), ()>(&mut state.store, "on_transaction_start") {
-                let _ = on_tx_start.call_async(&mut state.store, ()).await;
+                _ = on_tx_start.call_async(&mut state.store, ()).await;
             }
         }
 
@@ -265,11 +277,8 @@ impl WasmFilter {
                 use http_body_util::{BodyExt, Full};
 
                 // 1. Buffer the entire body asynchronously
-                let collected = match req.body_mut().collect().await {
-                    Ok(c) => c,
-                    Err(_) => {
-                        return FilterDecision::internal_server_error("Failed to collect body", req.version());
-                    },
+                let Ok(collected) = req.body_mut().collect().await else {
+                    return FilterDecision::internal_server_error("Failed to collect body", req.version());
                 };
                 let trailers = collected.trailers().cloned();
                 let full_body_bytes = collected.to_bytes();
@@ -300,8 +309,12 @@ impl WasmFilter {
                         state.store.data_mut().buffered_request_body = Some(full_body_bytes.clone());
                         state.store.data_mut().request_trailers = trailers;
 
-                        let response =
-                            on_body.call_async(&mut state.store, (req_handle, full_body_bytes.len() as u32)).await;
+                        let response = on_body
+                            .call_async(
+                                &mut state.store,
+                                (req_handle, u32::try_from(full_body_bytes.len()).unwrap_or(0)),
+                            )
+                            .await;
 
                         let mutated_body = state.store.data_mut().buffered_request_body.take();
                         let mutated_trailers = state.store.data_mut().request_trailers.take();
@@ -410,10 +423,10 @@ impl WasmFilter {
                     extensions.get::<std::sync::Arc<crate::listeners::http_connection_manager::TransactionContext>>()
                 {
                     let mut kv = orion_metrics::key_value::KeyValueMap::default();
-                    for (k, v) in ops.iter() {
+                    for (k, v) in &ops {
                         kv.insert(k.as_str(), v.as_str());
                     }
-                    let _ = crate::access_log::evaluate_plain_access_log_hook(
+                    _ = crate::access_log::evaluate_plain_access_log_hook(
                         crate::access_log::AccessLogHook::Wasm,
                         &kv,
                         &mut ctx.trans_state.lock().loggers,
@@ -464,14 +477,11 @@ impl WasmFilter {
                 use http_body_util::{BodyExt, Full};
 
                 // 1. Buffer response body
-                let collected = match response.body_mut().collect().await {
-                    Ok(c) => c,
-                    Err(_) => {
-                        return FilterDecision::internal_server_error(
-                            "Failed to collect response body",
-                            response.version(),
-                        );
-                    },
+                let Ok(collected) = response.body_mut().collect().await else {
+                    return FilterDecision::internal_server_error(
+                        "Failed to collect response body",
+                        response.version(),
+                    );
                 };
                 let trailers = collected.trailers().cloned();
                 let full_body_bytes = collected.to_bytes();
@@ -500,8 +510,12 @@ impl WasmFilter {
                         state.store.data_mut().buffered_response_body = Some(full_body_bytes.clone());
                         state.store.data_mut().response_trailers = trailers;
 
-                        let res_val =
-                            on_body.call_async(&mut state.store, (resp_handle, full_body_bytes.len() as u32)).await;
+                        let res_val = on_body
+                            .call_async(
+                                &mut state.store,
+                                (resp_handle, u32::try_from(full_body_bytes.len()).unwrap_or(0)),
+                            )
+                            .await;
 
                         let mutated_body = state.store.data_mut().buffered_response_body.take();
                         let mutated_trailers = state.store.data_mut().response_trailers.take();
@@ -613,7 +627,7 @@ impl Drop for WasmFilter {
                     if let Ok(handle) = tokio::runtime::Handle::try_current() {
                         tokio::task::block_in_place(|| {
                             handle.block_on(async {
-                                let _ = on_tx_comp.call_async(&mut state.store, ()).await;
+                                _ = on_tx_comp.call_async(&mut state.store, ()).await;
                             });
                         });
                     }
@@ -624,7 +638,7 @@ impl Drop for WasmFilter {
             data.buffered_request_body = None;
             data.buffered_response_body = None;
             data.io_deadline = None;
-            let _ = self.inner.instance_pool.push(state);
+            _ = self.inner.instance_pool.push(state);
         }
     }
 }

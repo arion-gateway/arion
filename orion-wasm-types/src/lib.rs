@@ -6,13 +6,7 @@
 
 use core::convert::TryFrom;
 
-/// Result codes returned by Orion hostcalls.
-///
-/// Mirrored on the host side by
-/// `orion-lib/src/listeners/http_connection_manager/wasm/types.rs` (which
-/// simply re-exports this crate).
-
-/// Error returned when converting a raw `i32` into [`OrionWasmResult`] and the
+/// Error returned when converting a raw `i32` into [`OrionWasmError`] and the
 /// value does not match any known variant.
 /// Idiomatic Rust error type for Orion SDK.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
