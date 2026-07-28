@@ -79,13 +79,23 @@ impl<S: State> RequestHandle<S> {
         apply_header_mutations( 0, mutations)
     }
 
-    pub fn send_direct_response(&self, status_code: u16, body: &[u8]) -> Result<(), OrionWasmError> {
-        send_http_direct_response( status_code, body)
+    /// Schedule a direct HTTP response payload in host memory for the current transaction.
+    ///
+    /// Calling this method stages the direct response on the host. The response will be sent to the client
+    /// when the plugin hook returns [`FilterAction::DirectResponse`].
+    pub fn schedule_direct_response(&self, status_code: u16, body: &[u8]) -> Result<(), OrionWasmError> {
+        send_http_direct_response(status_code, body)
     }
 
-    /// Convenience wrapper around `send_direct_response`.
+    /// Alias for [`schedule_direct_response`].
+    #[deprecated(note = "use `schedule_direct_response` instead")]
+    pub fn send_direct_response(&self, status_code: u16, body: &[u8]) -> Result<(), OrionWasmError> {
+        self.schedule_direct_response(status_code, body)
+    }
+
+    /// Convenience wrapper around `schedule_direct_response`.
     pub fn direct_response(&self, status_code: u16, body: &[u8]) -> FilterAction {
-        match self.send_direct_response(status_code, body) {
+        match self.schedule_direct_response(status_code, body) {
             Ok(()) => FilterAction::DirectResponse,
             Err(_) => FilterAction::Continue,
         }

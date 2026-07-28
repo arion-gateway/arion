@@ -1,4 +1,3 @@
-use crate::ffi;
 use crate::internal::*;
 use crate::typestate::{HttpBody, State};
 use http::{header::{HeaderName, HeaderValue}, HeaderMap};

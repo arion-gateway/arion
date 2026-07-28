@@ -45,7 +45,7 @@ pub enum FilterAction {
     /// Pause and ask the host to buffer the full request body, then invoke
     /// `on_request_body`.
     PauseAndBufferBody = 1,
-    /// A direct response has been produced via `send_direct_response`; the
+    /// A direct response has been produced via `schedule_direct_response`; the
     /// host should short-circuit and return it to the client.
     DirectResponse = 2,
 }

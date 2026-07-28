@@ -1,32 +1,107 @@
 # Orion WebAssembly SDK
 
-The Orion WebAssembly SDK provides a high-level, idiomatic Rust API for writing WebAssembly plugins that run inside the Orion proxy via the Wasmtime runtime.
+The **Orion WebAssembly SDK** provides a high-level, idiomatic Rust API for writing WebAssembly plugins that run inside the **Orion Proxy** via the Wasmtime runtime.
 
-This SDK hides the complexity of raw FFI (Foreign Function Interface) hostcalls behind a safe, strongly-typed Rust interface. This allows you to focus purely on your business logic—like traffic filtering, authentication, request routing, distributed metrics, or shared state synchronization—without worrying about underlying Wasm memory management or ABI constraints.
+The SDK abstracts the raw Foreign Function Interface (FFI) and Wasm ABI constraints behind a safe, strongly-typed Rust interface. Plugin authors can focus purely on business logic—such as custom HTTP request routing, OAuth2/JWT authentication, body mutations, gRPC callouts, dynamic rate-limiting, custom metrics export, and thread-safe shared memory synchronization across worker instances—without handling unsafe Wasm memory allocations or ABI serialization details.
 
 ---
 
-## 📋 Table of Contents
+## Table of Contents
 
-- [🚀 Getting Started](#-getting-started)
-- [The Prelude & Core Types](#the-prelude--core-types)
-- [The `Plugin` Trait Lifecycle](#the-plugin-trait-lifecycle)
+- [Architecture & Crates](#architecture--crates)
+- [🚀 Quick Start & Building](#-quick-start--building)
+  - [Cargo Configuration](#cargo-configuration)
+  - [Building Wasm Binaries](#building-wasm-binaries)
+  - [A Minimal Auth Plugin](#a-minimal-auth-plugin)
+- [Proc-Macro & FFI Code Generation (`#[orion_plugin]`)](#proc-macro--ffi-code-generation-orion_plugin)
+- [Plugin Trait & Lifecycle Hooks](#plugin-trait--lifecycle-hooks)
+  - [Module Lifecycle](#module-lifecycle)
+  - [Transaction Lifecycle](#transaction-lifecycle)
+  - [Lifecycle Diagram](#lifecycle-diagram)
 - [Typestate Pattern](#typestate-pattern)
-- [Request and Response Context API](#request-and-response-context-api)
-- [Host API (Free Functions)](#host-api-free-functions)
-- [🧠 Shared Memory Primitives](#-shared-memory-primitives)
-- [💡 Shared Memory Use Cases & Code Examples](#-shared-memory-use-cases--code-examples)
-- [Tracing and Logging](#tracing-and-logging)
+- [HTTP Context Manipulation API](#http-context-manipulation-api)
+  - [Headers API](#headers-api)
+  - [Trailers API](#trailers-api)
+  - [Body API](#body-api)
+  - [Direct Local Responses](#direct-local-responses)
+  - [Downstream Connection Metadata](#downstream-connection-metadata)
+- [Host Calls & Out-of-Band Operations](#host-calls--out-of-band-operations)
+  - [Plugin Configuration (`get_plugin_config`)](#plugin-configuration-get_plugin_config)
+  - [Async HTTP Callouts (`dispatch_http_call`)](#async-http-callouts-dispatch_http_call)
+  - [Async gRPC Callouts (`dispatch_grpc_call`)](#async-grpc-callouts-dispatch_grpc_call)
+  - [Non-Blocking Sleep (`sleep`)](#non-blocking-sleep-sleep)
+  - [I/O Timeouts (`set_io_timeout` & `clear_io_timeout`)](#io-timeouts-set_io_timeout--clear_io_timeout)
+  - [Custom Metrics & Access Log Operators](#custom-metrics--access-log-operators)
+- [Host-Backed Shared Memory Primitives](#host-backed-shared-memory-primitives)
+  - [Atomic Variables (`AtomicU64` / `AtomicI64`)](#1-atomic-variables-atomicu64--atomici64)
+  - [Shared Blobs & Versioned Compare-And-Swap (`SharedBlob`)](#2-shared-blobs--versioned-compare-and-swap-sharedblob)
+- [Real-World Use Cases & Complete Examples](#real-world-use-cases--complete-examples)
+  - [Use Case 1: Inter-Instance Request Counter (`AtomicU64`)](#use-case-1-inter-instance-request-counter-atomicu64)
+  - [Use Case 2: Synchronized Shared Whitelist (`SharedBlob` CAS)](#use-case-2-synchronized-shared-whitelist-sharedblob-cas)
+  - [Use Case 3: Distributed Concurrency Bulkhead (`fetch_update`)](#use-case-3-distributed-concurrency-bulkhead-fetch_update)
+  - [Use Case 4: Asynchronous gRPC Authentication Callout](#use-case-4-asynchronous-grpc-authentication-callout)
+- [Tracing, Telemetry & Logging](#tracing-telemetry--logging)
+- [Error Handling & ABI Stability](#error-handling--abi-stability)
+- [Included Examples Directory](#included-examples-directory)
 
 ---
 
-## 🚀 Getting Started
+## Architecture & Crates
 
-Writing a plugin for Orion requires two main steps:
-1. Implementing the `Plugin` trait for your stateful or stateless struct.
-2. Exporting your struct using the `#[orion_plugin]` macro so the Orion proxy host can discover and invoke it.
+The Orion WebAssembly ecosystem is divided into three focused crates:
 
-### Example: A Simple Authentication Filter
+```mermaid
+graph TD
+    A["orion-wasm-sdk<br/>(Guest SDK Facade)"] --> B["orion-wasm-sdk-macros<br/>(proc-macro #[orion_plugin])"]
+    A --> C["orion-wasm-types<br/>(Shared ABI & Types)"]
+    D["Orion Proxy Host<br/>(Wasmtime Engine)"] <== "Wasm FFI / ABI (bincode)" ==> A
+```
+
+1. **`orion-wasm-sdk`**: The primary guest-side SDK crate. It provides safe wrappers around hostcalls, context handles (`RequestHandle`, `ResponseHandle`), tracing subscribers, and shared memory primitives.
+2. **`orion-wasm-sdk-macros`**: Contains the `#[orion_plugin]` proc-macro. It inspects your `Plugin` trait implementation and selectively emits `#[no_mangle] pub extern "C"` ABI functions for only the hooks you override.
+3. **`orion-wasm-types`**: The standalone ABI crate shared between host and guest. It defines binary types (`CalloutRequest`, `GrpcCalloutRequest`, `DownstreamMetadata`, `HeaderMutation`, `FilterAction`, `OrionWasmError`, etc.) serialized via `bincode_next` across the host-guest boundary.
+
+---
+
+## 🚀 Quick Start & Building
+
+### Cargo Configuration
+
+Add `orion-wasm-sdk` and `orion-wasm-types` to your Wasm plugin's `Cargo.toml`:
+
+```toml
+[package]
+name = "my-orion-filter"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+orion-wasm-sdk = { path = "../orion-wasm-sdk" }
+orion-wasm-types = { path = "../orion-wasm-types" }
+http = "1.0"
+tracing = "0.1"
+```
+
+### Building Wasm Binaries
+
+Compile your plugin targeting WebAssembly:
+
+```bash
+# Build Wasm target
+cargo build --target wasm32-unknown-unknown --release
+
+# Alternatively using WASI target
+cargo build --target wasm32-wasip1 --release
+```
+
+The resulting `.wasm` binary in `target/wasm32-unknown-unknown/release/my_orion_filter.wasm` is ready to be loaded by Orion Proxy.
+
+### A Minimal Auth Plugin
+
+Every plugin struct **must implement `Default`** (e.g. via `#[derive(Default)]`).
 
 ```rust
 use orion_wasm_sdk::prelude::*;
@@ -38,16 +113,9 @@ struct AuthFilter;
 #[orion_plugin]
 impl Plugin for AuthFilter {
     fn on_request_headers(&mut self, ctx: &RequestHandle<HttpHeaders>) -> FilterAction {
-        // Read a header from the incoming HTTP request
         match ctx.get_header("Authorization") {
-            Ok(Some(v)) if v == "Bearer secret-token" => {
-                // The token is valid, allow the request to proceed downstream
-                FilterAction::Continue
-            }
-            _ => {
-                // Missing or invalid token, short-circuit the request with a 401
-                ctx.direct_response(401, b"Unauthorized access")
-            }
+            Ok(Some(v)) if v == "Bearer secret-token" => FilterAction::Continue,
+            _ => ctx.direct_response(401, b"Unauthorized access: Invalid or missing token"),
         }
     }
 }
@@ -55,246 +123,414 @@ impl Plugin for AuthFilter {
 
 ---
 
-## The Prelude & Core Types
+## Proc-Macro & FFI Code Generation (`#[orion_plugin]`)
 
-To minimize boilerplate, the SDK provides a prelude module that brings all essential traits, typestates, and macros into scope:
+The `#[orion_plugin]` attribute proc-macro automates FFI code generation.
 
-```rust
-use orion_wasm_sdk::prelude::*;
-```
+When attached to an `impl Plugin for MyStruct` block:
+1. It creates a thread-local static singleton instance of `MyStruct`:
+   ```rust
+   static mut PLUGIN: Option<MyStruct> = None;
+   ```
+   On the first call, it lazily instantiates `MyStruct::default()`.
+2. It inspects which `Plugin` methods were implemented and generates `#[no_mangle] pub extern "C"` functions **only** for those methods. If a plugin only implements `on_request_headers`, unused FFI entry points (like `on_response_body`) are omitted from the compiled `.wasm` binary.
 
-This imports:
-- **`Plugin`**: The core trait representing the plugin lifecycle and filter hooks.
-- **`RequestHandle` & `ResponseHandle`**: The primary context objects to inspect and manipulate HTTP traffic.
-- **`HttpHeaders` & `HttpBody`**: The typestate markers that guarantee compile-time safety.
-- **`#[orion_plugin]`**: The macro for FFI generation.
-
-Additionally, core types such as **`FilterAction`**, **`HeaderMutation`**, **`OrionWasmError`**, and shared memory primitives (**`AtomicU64`**, **`AtomicI64`**, **`SharedBlob`**) are re-exported at the root of `orion_wasm_sdk` for convenient importing:
-
-```rust
-use orion_wasm_sdk::{FilterAction, HeaderMutation, AtomicU64, SharedBlob};
-```
+Generated entry point mappings:
+| Trait Method | Generated FFI Export |
+|---|---|
+| `on_plugin_start` | `pub extern "C" fn on_plugin_start()` |
+| `on_plugin_destroy` | `pub extern "C" fn on_plugin_destroy()` |
+| `on_transaction_start` | `pub extern "C" fn on_transaction_start()` |
+| `on_request_headers` | `pub extern "C" fn on_request_headers() -> i32` |
+| `on_request_body` | `pub extern "C" fn on_request_body(body_len: u32) -> i32` |
+| `on_response_headers` | `pub extern "C" fn on_response_headers() -> i32` |
+| `on_response_body` | `pub extern "C" fn on_response_body(body_len: u32) -> i32` |
+| `on_transaction_complete` | `pub extern "C" fn on_transaction_complete()` |
 
 ---
 
-## The `Plugin` Trait Lifecycle
+## Plugin Trait & Lifecycle Hooks
 
-The `Plugin` trait exposes several hooks for the lifecycle of the Wasm module and for handling individual HTTP transactions. You only need to implement the methods you require; all methods have default, no-op implementations (usually returning `FilterAction::Continue`).
+The `Plugin` trait exposes hooks for Wasm module initialization and individual HTTP request transactions. All methods provide default no-op implementations (returning `FilterAction::Continue`).
 
-### Module Lifecycle Hooks
-- `fn on_plugin_start(&mut self)`: Invoked exactly once when the Wasm module is instantiated. Useful for one-time initialization, such as parsing plugin configurations, initializing shared memory variables, or setting up tracing/logging.
-- `fn on_plugin_destroy(&mut self)`: Invoked when the host destroys the Wasm module instance. 
+### Module Lifecycle
+- **`fn on_plugin_start(&mut self)`**: Invoked once when the Wasm module is instantiated. Use this to parse static plugin configuration (`get_plugin_config()`), open shared memory handles (`AtomicU64`, `SharedBlob`), or initialize tracing (`init_tracing()`).
+- **`fn on_plugin_destroy(&mut self)`**: Invoked when the host tears down the Wasm instance.
 
-### Transaction Lifecycle Hooks
-- `fn on_transaction_start(&mut self)`: Invoked when a new HTTP request is received.
-- `fn on_request_headers(&mut self, ctx: &RequestHandle<HttpHeaders>) -> FilterAction`: Invoked when the request headers arrive, but before the body is processed.
-- `fn on_request_body(&mut self, ctx: &RequestHandle<HttpBody>) -> FilterAction`: Invoked only if the plugin previously paused the request to buffer the body.
-- `fn on_response_headers(&mut self, ctx: &ResponseHandle<HttpHeaders>) -> FilterAction`: Invoked when the upstream service returns response headers, before the response body is processed.
-- `fn on_response_body(&mut self, ctx: &ResponseHandle<HttpBody>) -> FilterAction`: Invoked only if the plugin previously paused the response to buffer the body.
-- `fn on_transaction_complete(&mut self)`: Invoked when the entire request/response cycle is fully processed. Ideal for transaction-specific cleanup or logging metrics.
+### Transaction Lifecycle
+- **`fn on_transaction_start(&mut self)`**: Invoked when a new downstream HTTP connection or request arrives.
+- **`fn on_request_headers(&mut self, ctx: &RequestHandle<HttpHeaders>) -> FilterAction`**: Invoked when request headers arrive. Return `FilterAction::PauseAndBufferBody` if body inspection or mutation is required.
+- **`fn on_request_body(&mut self, ctx: &RequestHandle<HttpBody>) -> FilterAction`**: Invoked after the host has buffered the full request body.
+- **`fn on_response_headers(&mut self, ctx: &ResponseHandle<HttpHeaders>) -> FilterAction`**: Invoked when upstream response headers are received.
+- **`fn on_response_body(&mut self, ctx: &ResponseHandle<HttpBody>) -> FilterAction`**: Invoked after the host has buffered the full response body.
+- **`fn on_transaction_complete(&mut self)`**: Invoked after the complete HTTP transaction finishes. Use this for cleanup or metrics aggregation.
+
+### Lifecycle Diagram
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Host as Orion Proxy Host
+    participant Wasm as Wasm Plugin (Guest)
+
+    Note over Host, Wasm: Module Instantiation Phase
+    Host->>Wasm: on_plugin_start()
+    
+    Note over Host, Wasm: Request Transaction Phase
+    Host->>Wasm: on_transaction_start()
+    Host->>Wasm: on_request_headers(ctx)
+    alt Return FilterAction::Continue
+        Host->>Host: Stream body to upstream
+    else Return FilterAction::PauseAndBufferBody
+        Host->>Host: Buffer complete request body
+        Host->>Wasm: on_request_body(ctx)
+    else Return FilterAction::DirectResponse
+        Host->>Host: Short-circuit & respond to client
+    end
+
+    Note over Host, Wasm: Response Transaction Phase
+    Host->>Wasm: on_response_headers(ctx)
+    alt Return FilterAction::PauseAndBufferBody
+        Host->>Host: Buffer complete response body
+        Host->>Wasm: on_response_body(ctx)
+    end
+    Host->>Wasm: on_transaction_complete()
+```
 
 ---
 
 ## Typestate Pattern
 
-The SDK strictly enforces a **typestate pattern** to prevent invalid operations at compile-time. This guarantees you can only perform actions that make sense for the current phase of the HTTP transaction.
+The SDK strictly enforces compile-time state checking through Rust's **typestate pattern**:
 
-For example:
-- `RequestHandle<HttpHeaders>` allows you to manipulate headers. However, if you try to call `.get_body()` on it, your code will fail to compile because the body hasn't been read or buffered yet.
-- To access the body, your `on_request_headers` method must return `FilterAction::PauseAndBufferBody`. The Orion proxy will then collect the entire payload and subsequently invoke `on_request_body`, passing you a `RequestHandle<HttpBody>`. At this stage, calling `.get_body()` is perfectly safe and valid.
+- `RequestHandle<HttpHeaders>` and `ResponseHandle<HttpHeaders>` allow header manipulation. Calling `.get_body()` or `.get_trailer(...)` on a header context causes a **compile error**.
+- `RequestHandle<HttpBody>` and `ResponseHandle<HttpBody>` permit body and trailer access. They are accessible only inside `on_request_body` and `on_response_body` after returning `FilterAction::PauseAndBufferBody`.
+
+```rust
+// Compile-time guaranteed safety:
+fn on_request_headers(&mut self, ctx: &RequestHandle<HttpHeaders>) -> FilterAction {
+    // Ok: Header operations are valid
+    let _ = ctx.get_header("user-agent");
+
+    // ERROR (does not compile!):
+    // ctx.get_body(); 
+
+    FilterAction::PauseAndBufferBody
+}
+
+fn on_request_body(&mut self, ctx: &RequestHandle<HttpBody>) -> FilterAction {
+    // Ok: Body and Trailer operations are valid
+    let body = ctx.get_body().unwrap_or_default();
+    FilterAction::Continue
+}
+```
 
 ---
 
-## Request and Response Context API
-
-The `RequestHandle<S>` and `ResponseHandle<S>` objects are your gateway to manipulating HTTP traffic.
+## HTTP Context Manipulation API
 
 ### Headers API
-*(Available on `RequestHandle<HttpHeaders>`, `RequestHandle<HttpBody>`, `ResponseHandle<HttpHeaders>`, and `ResponseHandle<HttpBody>`)*
+
+Available on `RequestHandle<HttpHeaders>`, `RequestHandle<HttpBody>`, `ResponseHandle<HttpHeaders>`, and `ResponseHandle<HttpBody>`:
 
 - **`get_header(name: &str) -> Result<Option<HeaderValue>, OrionWasmError>`**  
-  Reads a specific header by name. Returns `Ok(None)` if the header is missing.
+  Look up a single header by name.
 - **`set_header(name: HeaderName, value: HeaderValue) -> Result<(), OrionWasmError>`**  
-  Sets a header, completely replacing any existing header with the same name.
+  Overwrites any existing header with `name`.
 - **`add_header(name: HeaderName, value: HeaderValue) -> Result<(), OrionWasmError>`**  
-  Appends a header. If the header already exists, both values will be sent (useful for multi-value headers like `Set-Cookie`).
+  Appends a header value (useful for multi-valued headers like `Set-Cookie`).
 - **`remove_header(name: &HeaderName) -> Result<(), OrionWasmError>`**  
-  Removes all instances of a specific header.
+  Deletes all headers matching `name`.
 - **`replace_header(name: HeaderName, value: HeaderValue) -> Result<(), OrionWasmError>`**  
-  Replaces a header if it exists. If it does not exist, it may act similarly to `set_header` depending on the host implementation.
+  Replaces existing header instances.
 - **`get_headers_map() -> Result<HeaderMap, OrionWasmError>`**  
-  Retrieves all current headers as a standard `http::HeaderMap` for bulk inspection.
+  Retrieves all current HTTP headers into a standard `http::HeaderMap`.
 - **`set_headers_map(headers: &HeaderMap) -> Result<(), OrionWasmError>`**  
-  Replaces the entire set of headers with the provided `HeaderMap`.
+  Replaces all headers with the given `HeaderMap`.
 - **`apply_header_mutations(mutations: &[HeaderMutation]) -> Result<(), OrionWasmError>`**  
-  Efficiently applies a batch of header mutations (additions, removals, replacements) in a single FFI call. Highly recommended for performance if you need to perform multiple header modifications.
+  Executes a batch of header mutations in a single FFI hostcall for optimal performance.
 
 ### Trailers API
-*(Available only on `RequestHandle<HttpBody>` and `ResponseHandle<HttpBody>`)*
 
-Trailers behave exactly like headers but appear at the end of a chunked HTTP message. The API perfectly mirrors the Headers API:
+Available on `RequestHandle<HttpBody>` and `ResponseHandle<HttpBody>`:
+
 - `get_trailer`, `set_trailer`, `add_trailer`, `remove_trailer`, `replace_trailer`
 - `get_trailers_map`, `set_trailers_map`, `apply_trailer_mutations`
 
 ### Body API
-*(Available only on `RequestHandle<HttpBody>` and `ResponseHandle<HttpBody>`)*
+
+Available on `RequestHandle<HttpBody>` and `ResponseHandle<HttpBody>`:
 
 - **`get_body() -> Result<Vec<u8>, OrionWasmError>`**  
-  Retrieves the buffered HTTP body as raw bytes.
+  Retrieves the buffered body payload as raw bytes.
 - **`set_body(body: &[u8]) -> Result<(), OrionWasmError>`**  
-  Replaces the existing HTTP body payload entirely. If the new body size differs, the host will automatically adjust the `Content-Length` header for you.
+  Replaces the buffered body content. The Orion proxy automatically recalculates `Content-Length`.
 
-### Request-Specific Actions
-*(Available only on `RequestHandle`)*
+### Direct Local Responses
 
-- **`get_downstream_metadata() -> Result<Option<DownstreamMetadata>, OrionWasmError>`**  
-  Retrieves contextual metadata about the client connection that initiated the request, such as TLS cipher info or remote IP addresses.
-- **`send_direct_response(status_code: u16, body: &[u8]) -> Result<(), OrionWasmError>`**  
-  Short-circuits the proxy pipeline immediately and generates a local response to the client with the given HTTP status code and body. Upstream servers are completely bypassed.
+Available on `RequestHandle`:
+
+- **`schedule_direct_response(status_code: u16, body: &[u8]) -> Result<(), OrionWasmError>`**  
+  Prepares and schedules a direct HTTP response payload in host memory for the current transaction. Calling `schedule_direct_response` does **not** interrupt Wasm plugin execution immediately; the response is staged on the host and transmitted to the client once the plugin hook returns `FilterAction::DirectResponse`.
 - **`direct_response(status_code: u16, body: &[u8]) -> FilterAction`**  
-  A developer-friendly convenience wrapper around `send_direct_response` that automatically translates the result into `FilterAction::DirectResponse` or `FilterAction::Continue` on failure, ideal for return statements.
+  A convenience helper that schedules the response via `schedule_direct_response` and immediately returns `FilterAction::DirectResponse`. This signals the host to exit plugin processing, short-circuit the proxy filter chain, and deliver the staged response directly to the client.
+
+```rust
+fn on_request_headers(&mut self, ctx: &RequestHandle<HttpHeaders>) -> FilterAction {
+    if is_blacklisted(ctx) {
+        // Schedules a 403 response and returns FilterAction::DirectResponse to exit the plugin
+        return ctx.direct_response(403, b"Access Denied");
+    }
+    FilterAction::Continue
+}
+```
+
+### Downstream Connection Metadata
+
+Inspect transport and connection properties via `ctx.get_downstream_metadata()`:
+
+```rust
+use orion_wasm_types::{DownstreamMetadata, DownstreamConnectionMetadata};
+
+if let Ok(Some(meta)) = ctx.get_downstream_metadata() {
+    tracing::info!("Listener: {}", meta.listener_name);
+    if let Some(sni) = &meta.sni {
+        tracing::info!("TLS SNI: {}", sni);
+    }
+    match &meta.connection {
+        DownstreamConnectionMetadata::FromSocket { peer_address, local_address } => {
+            tracing::info!("Socket Remote IP: {}", peer_address);
+        }
+        DownstreamConnectionMetadata::FromProxyProtocol { proxy_peer_address, .. } => {
+            tracing::info!("Proxy Protocol IP: {}", proxy_peer_address);
+        }
+    }
+}
+```
 
 ---
 
-## Host API (Free Functions)
+## Host Calls & Out-of-Band Operations
 
-The `host` module (whose contents are re-exported at the root of the crate) provides "free functions" that communicate directly with the Orion proxy host. These allow your plugin to interact with the outside world, handle asynchronous IO, or configure its own environment.
+### Plugin Configuration (`get_plugin_config`)
 
-- **`get_plugin_config() -> Result<Option<String>, OrionWasmError>`**  
-  Retrieves the configuration string assigned to this specific plugin instance by the control plane. Call this inside `on_plugin_start` to parse your JSON/YAML config.
-- **`dispatch_http_call(request: &CalloutRequest) -> Result<CalloutResponse, OrionWasmError>`**  
-  Dispatches an asynchronous HTTP request to an external service (e.g., an auth server or rate-limiting redis) using the proxy's internal cluster manager. Because Orion utilizes an async Wasm engine, this function is seamlessly paused and resumed; it **does not block** the proxy server thread.
-- **`sleep(duration: std::time::Duration) -> Result<(), OrionWasmError>`**  
-  Suspends the current WebAssembly execution for a specified duration. Again, thanks to the async engine, this is a non-blocking operation on the host.
-- **`set_io_timeout(duration: std::time::Duration) -> Result<(), OrionWasmError>`**  
-  Sets an absolute deadline for subsequent blocking IO operations (such as `dispatch_http_call`). If the IO operation fails to complete before the deadline, it will return `OrionWasmError::Timeout`.
-- **`clear_io_timeout() -> Result<std::time::Duration, OrionWasmError>`**  
-  Disarms any currently active IO timeout and returns the remaining duration.
-- **`set_custom_metrics(metrics: I) -> Result<(), OrionWasmError>`**  
-  Exports custom metric key-value tags to the proxy’s telemetry system for monitoring and alerting.
-- **`set_access_log_operators(operators: I) -> Result<(), OrionWasmError>`**  
-  Injects custom variables and data into the proxy's access log for the current transaction. Useful for appending plugin-specific debug info to your SIEM logs.
+Retrieve the plugin's raw configuration string (JSON/YAML) assigned by the host control plane:
+
+```rust
+fn on_plugin_start(&mut self) {
+    if let Ok(Some(config_str)) = orion_wasm_sdk::get_plugin_config() {
+        tracing::info!("Loaded config: {}", config_str);
+    }
+}
+```
+
+### Async HTTP Callouts (`dispatch_http_call`)
+
+Dispatch out-of-band asynchronous HTTP requests to external clusters (e.g. auth servers or rate-limiting services). **Non-blocking** on proxy threads:
+
+```rust
+use orion_wasm_sdk::dispatch_http_call;
+use orion_wasm_types::{CalloutRequest, CalloutResponse};
+use smol_str::SmolStr;
+
+let req = CalloutRequest {
+    cluster_name: SmolStr::new("auth_cluster"),
+    path: SmolStr::new("/verify"),
+    method: http::Method::POST,
+    headers: http::HeaderMap::new(),
+    body: Some(b"token=xyz".to_vec()),
+};
+
+match dispatch_http_call(&req) {
+    Ok(resp) if resp.status.is_success() => {
+        tracing::info!("Auth successful!");
+    }
+    _ => tracing::error!("Auth failed or cluster unreachable"),
+}
+```
+
+### Async gRPC Callouts (`dispatch_grpc_call`)
+
+Dispatch native gRPC requests to upstream services:
+
+```rust
+use orion_wasm_sdk::dispatch_grpc_call;
+use orion_wasm_types::{GrpcCalloutRequest, GrpcCalloutResponse};
+use smol_str::SmolStr;
+
+let grpc_req = GrpcCalloutRequest {
+    cluster_name: SmolStr::new("grpc_service_cluster"),
+    service_name: SmolStr::new("my.package.AuthService"),
+    method_name: SmolStr::new("ValidateToken"),
+    initial_metadata: vec![(SmolStr::new("x-request-id"), SmolStr::new("12345"))],
+    message: protobuf_encoded_bytes,
+};
+
+match dispatch_grpc_call(&grpc_req) {
+    Ok(resp) if resp.status == 0 => {
+        // gRPC OK (status 0)
+        let response_payload = resp.message;
+    }
+    Ok(resp) => tracing::error!("gRPC call returned status {}", resp.status),
+    Err(e) => tracing::error!("gRPC dispatch error: {:?}", e),
+}
+```
+
+### Non-Blocking Sleep (`sleep`)
+
+The `sleep(duration)` function suspends the execution of the WebAssembly module for the requested `Duration`. Because Orion utilizes an asynchronous Wasm runtime engine, `sleep` yields execution back to the host event loop and **does not block** proxy server threads or concurrent HTTP traffic:
+
+```rust
+use std::time::Duration;
+use orion_wasm_sdk::sleep;
+
+// Suspend Wasm plugin execution for 500 milliseconds non-blockingly
+match sleep(Duration::from_millis(500)) {
+    Ok(_) => tracing::info!("Sleep completed, resuming execution"),
+    Err(e) => tracing::error!("Sleep failed: {:?}", e),
+}
+```
+
+### I/O Timeouts (`set_io_timeout` & `clear_io_timeout`)
+
+The `set_io_timeout(duration)` function sets an absolute execution deadline for subsequent asynchronous out-of-band I/O operations (such as `dispatch_http_call` or `dispatch_grpc_call`). If the external service fails to respond within the allocated deadline, the host aborts the operation and returns `Err(OrionWasmError::Timeout)`.
+
+Call `clear_io_timeout()` after the I/O operation finishes to disarm the deadline:
+
+```rust
+use std::time::Duration;
+use orion_wasm_sdk::{set_io_timeout, clear_io_timeout, dispatch_http_call, OrionWasmError};
+use orion_wasm_types::CalloutRequest;
+use smol_str::SmolStr;
+
+let req = CalloutRequest {
+    cluster_name: SmolStr::new("auth_cluster"),
+    path: SmolStr::new("/verify"),
+    method: http::Method::POST,
+    headers: http::HeaderMap::new(),
+    body: Some(b"token=xyz".to_vec()),
+};
+
+// Enforce a 2-second timeout for the upcoming HTTP callout
+if let Err(e) = set_io_timeout(Duration::from_secs(2)) {
+    tracing::error!("Failed to set IO timeout: {:?}", e);
+}
+
+// Dispatch the HTTP callout with active timeout safeguard
+match dispatch_http_call(&req) {
+    Ok(response) => {
+        tracing::info!("Received HTTP callout response: status {}", response.status);
+    }
+    Err(OrionWasmError::Timeout) => {
+        tracing::warn!("HTTP callout timed out after 2 seconds!");
+    }
+    Err(e) => {
+        tracing::error!("HTTP callout failed with error: {:?}", e);
+    }
+}
+
+// Disarm the IO timeout deadline
+let _remaining_time = clear_io_timeout();
+```
+
+### Custom Metrics & Access Log Operators
+
+Inject telemetry and custom fields into proxy logs:
+
+```rust
+// Export custom metrics key-value pairs
+orion_wasm_sdk::set_custom_metrics([
+    ("requests_authenticated", "1"),
+    ("auth_latency_ms", "12"),
+])?;
+
+// Inject access log variables
+orion_wasm_sdk::set_access_log_operators([
+    ("user_id", "user_12345"),
+    ("auth_tier", "premium"),
+])?;
+```
 
 ---
 
-## 🧠 Shared Memory Primitives
+## Host-Backed Shared Memory Primitives
 
-WebAssembly instances in Orion are isolated per worker thread or connection context; therefore, local struct variables are instance-private. To enable state synchronization across concurrent requests and across worker threads, the SDK provides host-backed **Shared Memory Primitives** under `orion_wasm_sdk::shared` (also re-exported at the crate root).
+Wasm module instances in Orion are isolated per thread/connection. To share state across concurrent requests and worker threads safely, the SDK provides host-backed **Shared Memory Primitives** under `orion_wasm_sdk::shared`.
 
-Shared memory variables are identified by string names. When a plugin calls `try_new("variable_name")`, the host resolves or allocates the requested shared variable in host memory and returns a handle bound to that variable.
+Shared variables are referenced by string names. When `try_new("name")` is invoked, the host resolves or allocates the underlying host-managed variable.
 
-### 1. Atomic Variables (`AtomicU64` and `AtomicI64`)
+```mermaid
+graph LR
+    WasmWorker1["Wasm Instance (Worker 1)"] -->|"Atomic / Blob Handle"| HostMemory[("Host Shared Memory<br/>Atomic Integers & Blobs")]
+    WasmWorker2["Wasm Instance (Worker 2)"] -->|"Atomic / Blob Handle"| HostMemory
+    WasmWorker3["Wasm Instance (Worker 3)"] -->|"Atomic / Blob Handle"| HostMemory
+```
 
-`AtomicU64` and `AtomicI64` provide thread-safe, atomic integer operations backed by host memory. They mirror Rust's standard `std::sync::atomic::AtomicU64` / `AtomicI64` types and accept standard `std::sync::atomic::Ordering` parameters (`Relaxed`, `Release`, `Acquire`, `AcqRel`, `SeqCst`).
+### 1. Atomic Variables (`AtomicU64` / `AtomicI64`)
 
-#### API Reference
+Provide thread-safe atomic operations mirroring `std::sync::atomic`.
 
-* **`AtomicU64::try_new(name: &str) -> Result<AtomicU64, SharedVarError>`**  
-  **`AtomicI64::try_new(name: &str) -> Result<AtomicI64, SharedVarError>`**  
-  Look up or allocate a named atomic variable. Returns `Err(SharedVarError::InitFailed)` if initialization fails.
+- **`AtomicU64::try_new(name: &str) -> Result<AtomicU64, SharedVarError>`**
+- **`load(order: Ordering) -> u64`**
+- **`store(val: u64, order: Ordering)`**
+- **`swap(val: u64, order: Ordering) -> u64`**
+- **`compare_exchange(current, new, success, failure) -> Result<u64, u64>`**
+- **`fetch_add(val, order)`**, **`fetch_sub`**, **`fetch_and`**, **`fetch_or`**, **`fetch_xor`**, **`fetch_max`**, **`fetch_min`**
+- **`fetch_update(set_order, fetch_order, closure) -> Result<u64, u64>`**
 
-* **`load(&self, order: Ordering) -> u64` / `(i64)`**  
-  Loads the current value atomically with the specified memory ordering.
+### 2. Shared Blobs & Versioned Compare-And-Swap (`SharedBlob`)
 
-* **`store(&self, val: u64, order: Ordering)` / `(i64)`**  
-  Stores a value into the atomic variable atomically.
+`SharedBlob` provides host-backed storage for dynamic byte buffers (`Vec<u8>`) synchronized via **Versioned Compare-And-Swap (CAS)** using a monotonic version counter (`u64`).
 
-* **`swap(&self, val: u64, order: Ordering) -> u64` / `(i64)`**  
-  Atomically stores `val` and returns the previous value.
+```rust
+pub struct BlobData {
+    pub data: Vec<u8>,
+    pub version: u64,
+}
+```
 
-* **`compare_exchange(&self, current: u64, new: u64, success: Ordering, failure: Ordering) -> Result<u64, u64>`**  
-  Atomically compares the current value with `current`. If equal, sets it to `new` and returns `Ok(previous)`. Otherwise, returns `Err(actual_current)`.
-
-* **`compare_exchange_weak(&self, current: u64, new: u64, success: Ordering, failure: Ordering) -> Result<u64, u64>`**  
-  Weak variant of `compare_exchange` (equivalent in this host implementation).
-
-* **`fetch_add(&self, val: u64, order: Ordering) -> u64` / `fetch_sub(...)`**  
-  Atomically adds (or subtracts) `val` and returns the previous value.
-
-* **`fetch_and`, `fetch_nand`, `fetch_or`, `fetch_xor`, `fetch_max`, `fetch_min`**  
-  Standard bitwise and arithmetic atomic operations.
-
-* **`fetch_update<F>(&self, set_order: Ordering, fetch_order: Ordering, mut f: F) -> Result<u64, u64>`**  
-  Fetches the value, applies the closure `f`, and attempts a `compare_exchange` in a retry loop until success or until the closure returns `None`.
-
----
-
-### 2. Shared Blobs (`SharedBlob`)
-
-`SharedBlob` provides host-backed storage for dynamic, arbitrary binary data (`Vec<u8>`) shared across Wasm instances. It utilizes **optimistic concurrency control (OCC)** via monotonic version numbers (`u64`), allowing concurrent readers and writers to synchronize safely without global lock contention.
-
-#### API Reference & Data Structures
-
-* **`BlobData`**:
-  ```rust
-  pub struct BlobData {
-      pub data: Vec<u8>,
-      pub version: u64,
-  }
-  ```
-
-* **`SharedBlob::try_new(name: &str) -> Result<SharedBlob, SharedVarError>`**  
-  Looks up or creates a named shared blob.
-
-* **`read(&self) -> BlobData`**  
-  Reads the current byte payload and its associated version counter. The SDK automatically resizes its internal buffers as needed to fetch the complete blob data.
-
-* **`write(&self, data: &[u8]) -> u64`**  
-  Unconditionally overwrites the blob content with `data` and increments the version, returning the new version.
-
-* **`compare_and_swap(&self, data: &[u8], expected_version: u64) -> Result<u64, ()>`**  
-  Performs an optimistic Compare-And-Swap (CAS) write. If the current host version matches `expected_version`, the host replaces the content with `data`, increments the version, and returns `Ok(new_version)`. If another worker has updated the blob in the meantime, it returns `Err(())`.
+- **`SharedBlob::try_new(name: &str) -> Result<SharedBlob, SharedVarError>`**
+- **`read(&self) -> BlobData`**: Reads data payload and its current version.
+- **`write(&self, data: &[u8]) -> u64`**: Unconditionally overwrites content and increments version.
+- **`compare_and_swap(&self, data: &[u8], expected_version: u64) -> Result<u64, ()>`**: Atomically updates content **only if** version matches `expected_version`.
 
 ---
 
-## Shared Memory Use Cases & Code Examples
+## Real-World Use Cases & Complete Examples
 
-### Use Case 1: Inter-Instance Global Request Counter & Metrics
+### Use Case 1: Inter-Instance Request Counter (`AtomicU64`)
 
-**Scenario**: You need to maintain a global request counter across all threads and Wasm worker instances, appending the request sequence number to upstream headers.
+Inject a global sequence counter header into all requests across all Wasm instances:
 
 ```rust
 use orion_wasm_sdk::prelude::*;
 use orion_wasm_sdk::shared::AtomicU64;
-use orion_wasm_sdk::HeaderMutation;
+use orion_wasm_types::HeaderMutation;
 use std::sync::atomic::Ordering;
-use tracing::{info, error};
 
 #[derive(Default)]
-struct RequestCounterFilter {
+struct GlobalCounterFilter {
     counter: Option<AtomicU64>,
 }
 
 #[orion_plugin]
-impl Plugin for RequestCounterFilter {
+impl Plugin for GlobalCounterFilter {
     fn on_plugin_start(&mut self) {
         let _ = orion_wasm_sdk::init_tracing();
-
-        // Resolve or create global shared atomic counter
-        match AtomicU64::try_new("global_request_counter") {
-            Ok(atomic) => self.counter = Some(atomic),
-            Err(e) => error!("Failed to open shared atomic counter: {:?}", e),
+        if let Ok(atomic) = AtomicU64::try_new("global_http_requests") {
+            self.counter = Some(atomic);
         }
     }
 
     fn on_request_headers(&mut self, ctx: &RequestHandle<HttpHeaders>) -> FilterAction {
         if let Some(counter) = &self.counter {
-            // Atomically increment counter across all worker threads
-            let prev = counter.fetch_add(1, Ordering::SeqCst);
-            let current = prev + 1;
-
-            info!("Request #{} processed by worker", current);
-
-            // Inject the counter into an HTTP header passed downstream/upstream
-            let header_val = http::HeaderValue::from_str(&current.to_string()).unwrap();
-            let _ = ctx.apply_header_mutations(&[
-                HeaderMutation::Set(
-                    http::HeaderName::from_static("x-request-counter"),
-                    header_val,
-                )
-            ]);
+            let req_num = counter.fetch_add(1, Ordering::SeqCst) + 1;
+            if let Ok(val) = http::HeaderValue::from_str(&req_num.to_string()) {
+                let _ = ctx.apply_header_mutations(&[
+                    HeaderMutation::Set(http::HeaderName::from_static("x-global-req-num"), val)
+                ]);
+            }
         }
-
         FilterAction::Continue
     }
 }
@@ -302,15 +538,13 @@ impl Plugin for RequestCounterFilter {
 
 ---
 
-### Use Case 2: Synchronized Shared State & Dynamic Whitelists (SharedBlob CAS)
+### Use Case 2: Synchronized Shared Whitelist (`SharedBlob` CAS)
 
-**Scenario**: You want to maintain a shared list of unique client IDs seen across all worker instances. Multiple worker threads process requests concurrently, so updates to the shared list must be synchronized using optimistic Compare-And-Swap (CAS).
+Maintain a thread-safe list of active client IDs synchronized using versioned Compare-And-Swap:
 
 ```rust
 use orion_wasm_sdk::prelude::*;
 use orion_wasm_sdk::shared::SharedBlob;
-use orion_wasm_sdk::HeaderMutation;
-use tracing::{info, error};
 
 #[derive(Default)]
 struct ClientTrackerFilter {
@@ -321,17 +555,12 @@ struct ClientTrackerFilter {
 impl Plugin for ClientTrackerFilter {
     fn on_plugin_start(&mut self) {
         let _ = orion_wasm_sdk::init_tracing();
-
-        match SharedBlob::try_new("active_clients_blob") {
-            Ok(blob) => {
-                // Initialize blob with empty data if uninitialized
-                let current = blob.read();
-                if current.version == 0 && current.data.is_empty() {
-                    blob.write(b"");
-                }
-                self.blob = Some(blob);
+        if let Ok(blob) = SharedBlob::try_new("active_clients") {
+            let current = blob.read();
+            if current.version == 0 && current.data.is_empty() {
+                blob.write(b"");
             }
-            Err(e) => error!("Failed to open active_clients_blob: {:?}", e),
+            self.blob = Some(blob);
         }
     }
 
@@ -343,47 +572,27 @@ impl Plugin for ClientTrackerFilter {
                 .and_then(|v| v.to_str().ok().map(String::from))
                 .unwrap_or_else(|| "anonymous".to_string());
 
-            let mut resolved_list = String::new();
-
-            // Retry loop for optimistic concurrency control (CAS)
             loop {
                 let current = blob.read();
                 let current_str = String::from_utf8_lossy(&current.data);
 
-                // If client_id is already present, no mutation required
                 if current_str.split(',').any(|s| s.trim() == client_id) {
-                    resolved_list = current_str.to_string();
-                    break;
+                    break; // Already recorded
                 }
 
-                // Append new client_id
-                let new_str = if current_str.is_empty() {
+                let updated = if current_str.is_empty() {
                     client_id.clone()
                 } else {
                     format!("{}, {}", current_str, client_id)
                 };
 
-                // Attempt optimistic compare-and-swap write using read version
-                if blob.compare_and_swap(new_str.as_bytes(), current.version).is_ok() {
-                    info!("Client list updated via CAS to version {}", current.version + 1);
-                    resolved_list = new_str;
+                if blob.compare_and_swap(updated.as_bytes(), current.version).is_ok() {
+                    tracing::info!("Added client {} (blob v{})", client_id, current.version + 1);
                     break;
                 }
-
-                // If CAS failed, another worker updated the blob concurrently — retry loop
-            }
-
-            // Expose updated seen clients list upstream
-            if let Ok(header_val) = http::HeaderValue::try_from(resolved_list) {
-                let _ = ctx.apply_header_mutations(&[
-                    HeaderMutation::Set(
-                        http::HeaderName::from_static("x-seen-clients"),
-                        header_val,
-                    )
-                ]);
+                // CAS failed due to concurrent update — retry loop
             }
         }
-
         FilterAction::Continue
     }
 }
@@ -391,62 +600,55 @@ impl Plugin for ClientTrackerFilter {
 
 ---
 
-### Use Case 3: Distributed Max Concurrent Requests Limiter (Bulkhead)
+### Use Case 3: Distributed Concurrency Bulkhead (`fetch_update`)
 
-**Scenario**: You want to enforce a global limit on the number of concurrent requests processed across all worker instances (a bulkhead pattern) to protect upstream services from being overwhelmed.
+Enforce a global maximum concurrent requests limit across proxy threads:
 
 ```rust
 use orion_wasm_sdk::prelude::*;
 use orion_wasm_sdk::shared::AtomicU64;
 use std::sync::atomic::Ordering;
 
+const MAX_CONCURRENT_REQUESTS: u64 = 500;
+
 #[derive(Default)]
-struct MaxInFlightRequestsFilter {
+struct BulkheadFilter {
     active_requests: Option<AtomicU64>,
-    accepted: bool,
+    incremented: bool,
 }
 
-const MAX_CONCURRENT_REQUESTS: u64 = 1000;
-
 #[orion_plugin]
-impl Plugin for MaxInFlightRequestsFilter {
+impl Plugin for BulkheadFilter {
     fn on_plugin_start(&mut self) {
-        if let Ok(atomic) = AtomicU64::try_new("active_request_counter") {
+        if let Ok(atomic) = AtomicU64::try_new("bulkhead_active_reqs") {
             self.active_requests = Some(atomic);
         }
     }
 
     fn on_request_headers(&mut self, ctx: &RequestHandle<HttpHeaders>) -> FilterAction {
         if let Some(counter) = &self.active_requests {
-            // Use fetch_update to atomically check and increment the limit
-            let res = counter.fetch_update(Ordering::SeqCst, Ordering::Relaxed, |current| {
-                if current < MAX_CONCURRENT_REQUESTS {
-                    Some(current + 1)
+            let res = counter.fetch_update(Ordering::SeqCst, Ordering::Relaxed, |curr| {
+                if curr < MAX_CONCURRENT_REQUESTS {
+                    Some(curr + 1)
                 } else {
-                    None // Reached maximum concurrent capacity!
+                    None
                 }
             });
 
             if res.is_err() {
-                // Return 429 Too Many Requests immediately
-                return ctx.direct_response(429, b"Server at capacity. Try again later.");
+                return ctx.direct_response(429, b"Bulkhead limit reached. Try again later.");
             }
-            
-            // Mark as accepted so we know to decrement it later
-            self.accepted = true;
+            self.incremented = true;
         }
-
         FilterAction::Continue
     }
 
     fn on_transaction_complete(&mut self) {
-        // Only decrement if we successfully incremented it
-        if self.accepted {
+        if self.incremented {
             if let Some(counter) = &self.active_requests {
                 counter.fetch_sub(1, Ordering::SeqCst);
             }
-            // Reset state for the next transaction handled by this instance
-            self.accepted = false;
+            self.incremented = false;
         }
     }
 }
@@ -454,28 +656,101 @@ impl Plugin for MaxInFlightRequestsFilter {
 
 ---
 
-## Tracing and Logging
+### Use Case 4: Asynchronous gRPC Authentication Callout
 
-The SDK integrates gracefully with the standard Rust `tracing` ecosystem. Instead of relying on `println!` (which wouldn't appear in proxy log files), you can wire `tracing` directly to the host logging system.
-
-To enable it, call `init_tracing()` exactly once in your `on_plugin_start` method.
+Verify request authorization against a remote gRPC service before allowing downstream transit:
 
 ```rust
 use orion_wasm_sdk::prelude::*;
+use orion_wasm_sdk::dispatch_grpc_call;
+use orion_wasm_types::GrpcCalloutRequest;
+use smol_str::SmolStr;
 
 #[derive(Default)]
-struct MyPlugin;
+struct GrpcAuthFilter;
 
 #[orion_plugin]
-impl Plugin for MyPlugin {
-    fn on_plugin_start(&mut self) {
-        // Wire up the tracing macros to the Orion proxy logger
-        let _ = orion_wasm_sdk::init_tracing();
-        
-        tracing::info!("My custom plugin initialized successfully!");
-        tracing::debug!("This debug log will only show if the host is configured for debug logs.");
+impl Plugin for GrpcAuthFilter {
+    fn on_request_headers(&mut self, ctx: &RequestHandle<HttpHeaders>) -> FilterAction {
+        let auth_token = match ctx.get_header("authorization") {
+            Ok(Some(val)) => val.to_str().unwrap_or("").to_string(),
+            _ => return ctx.direct_response(401, b"Missing authorization header"),
+        };
+
+        let grpc_req = GrpcCalloutRequest {
+            cluster_name: SmolStr::new("auth_grpc_cluster"),
+            service_name: SmolStr::new("auth.AuthService"),
+            method_name: SmolStr::new("VerifyToken"),
+            initial_metadata: vec![(SmolStr::new("authorization"), SmolStr::new(auth_token))],
+            message: vec![], // Protobuf message bytes
+        };
+
+        match dispatch_grpc_call(&grpc_req) {
+            Ok(resp) if resp.status == 0 => FilterAction::Continue,
+            Ok(resp) => {
+                let err_msg = format!("Auth service rejected token: {}", resp.status_message);
+                ctx.direct_response(403, err_msg.as_bytes())
+            }
+            Err(_) => ctx.direct_response(500, b"Internal auth service error"),
+        }
     }
 }
 ```
 
-Once initialized, all `tracing::error!`, `tracing::warn!`, `tracing::info!`, `tracing::debug!`, and `tracing::trace!` calls are seamlessly transmitted over FFI to the Orion proxy and emitted alongside the proxy's own native logs.
+---
+
+## Tracing, Telemetry & Logging
+
+The SDK bridges standard Rust `tracing` events directly to Orion's host logging framework over FFI.
+
+Initialize tracing **once** inside `on_plugin_start`:
+
+```rust
+fn on_plugin_start(&mut self) {
+    let _ = orion_wasm_sdk::init_tracing();
+
+    tracing::info!("Plugin initialized!");
+    tracing::warn!("Warning message");
+    tracing::error!(target: "security", "Security assertion triggered");
+}
+```
+
+Calls to `tracing::error!`, `warn!`, `info!`, `debug!`, and `trace!` are automatically formatted and forwarded to host logs with their respective severity levels.
+
+---
+
+## Error Handling & ABI Stability
+
+Functions return `Result<T, OrionWasmError>`. The `OrionWasmError` enum is part of the stable ABI:
+
+| Variant | Value | Description |
+|---|---|---|
+| `NotFound` | `1` | Requested resource, header, or variable was not found. |
+| `BufferTooSmall` | `2` | Provided FFI buffer size was insufficient. |
+| `InvalidMemoryAccess` | `3` | Memory pointer or length violation across host boundary. |
+| `InternalError` | `4` | Serialization error or host internal error. |
+| `Timeout` | `5` | I/O operation or sleep timed out. |
+
+---
+
+## Included Examples Directory
+
+The repository includes 15 ready-to-build, standalone example plugins under [`examples/`](./examples):
+
+| Example Directory | Focus / Feature Demonstrated |
+|---|---|
+| [`access_log_operator_filter`](./examples/access_log_operator_filter) | Dynamic access log operator injection (`set_access_log_operators`) |
+| [`benchmark_filter`](./examples/benchmark_filter) | High-performance header passing benchmark |
+| [`body_mutation_filter`](./examples/body_mutation_filter) | Request & response body buffering and content mutation (`set_body`) |
+| [`callout_body_filter`](./examples/callout_body_filter) | Async HTTP out-of-band callouts (`dispatch_http_call`) |
+| [`config_logger_filter`](./examples/config_logger_filter) | Reading and parsing Wasm configuration (`get_plugin_config`) |
+| [`custom_metric_filter`](./examples/custom_metric_filter) | Telemetry and custom metric exports (`set_custom_metrics`) |
+| [`dummy_filter`](./examples/dummy_filter) | Minimal no-op filter template |
+| [`grpc_callout_filter`](./examples/grpc_callout_filter) | Async gRPC out-of-band callouts with Protobuf (`dispatch_grpc_call`) |
+| [`header_api_filter`](./examples/header_api_filter) | Single header getters, setters, and removals |
+| [`header_mutations_filter`](./examples/header_mutations_filter) | Batch header mutations (`apply_header_mutations`) |
+| [`headers_map_filter`](./examples/headers_map_filter) | `HeaderMap` serialization & bulk header manipulation |
+| [`metadata_filter`](./examples/metadata_filter) | Downstream connection metadata, TLS SNI, and SocketAddr inspection |
+| [`shared_atomic`](./examples/shared_atomic) | Thread-safe shared atomic integers across Wasm instances (`AtomicU64`) |
+| [`shared_blob`](./examples/shared_blob) | Versioned Compare-And-Swap (CAS) shared memory blob storage (`SharedBlob`) |
+| [`sleep_timeout_filter`](./examples/sleep_timeout_filter) | Non-blocking sleep and I/O deadline enforcement (`sleep`, `set_io_timeout`) |
