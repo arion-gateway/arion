@@ -2,8 +2,8 @@ pub mod u64;
 pub mod i64;
 pub mod blob;
 
-pub use u64::AtomicU64;
-pub use i64::AtomicI64;
+pub use u64::SharedAtomicU64;
+pub use i64::SharedAtomicI64;
 pub use blob::{SharedBlob, BlobData};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -4,11 +4,11 @@ use std::sync::atomic::Ordering;
 
 use super::SharedVarError;
 
-pub struct AtomicU64 {
+pub struct SharedAtomicU64 {
     id: u32,
 }
 
-impl AtomicU64 {
+impl SharedAtomicU64 {
     pub fn try_new(name: &str) -> Result<Self, SharedVarError> {
         let id = unsafe { ffi::ext_shared_resolve(name.as_ptr(), name.len() as u32, 0) };
         if id == u32::MAX { Err(SharedVarError::InitFailed) } else { Ok(Self { id }) }

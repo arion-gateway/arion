@@ -33,10 +33,10 @@ The SDK abstracts the raw Foreign Function Interface (FFI) and Wasm ABI constrai
   - [I/O Timeouts (`set_io_timeout` & `clear_io_timeout`)](#io-timeouts-set_io_timeout--clear_io_timeout)
   - [Custom Metrics & Access Log Operators](#custom-metrics--access-log-operators)
 - [Host-Backed Shared Memory Primitives](#host-backed-shared-memory-primitives)
-  - [Atomic Variables (`AtomicU64` / `AtomicI64`)](#1-atomic-variables-atomicu64--atomici64)
+  - [Atomic Variables (`SharedAtomicU64` / `SharedAtomicI64`)](#1-atomic-variables-sharedatomicu64--sharedatomici64)
   - [Shared Blobs & Versioned Compare-And-Swap (`SharedBlob`)](#2-shared-blobs--versioned-compare-and-swap-sharedblob)
 - [Real-World Use Cases & Complete Examples](#real-world-use-cases--complete-examples)
-  - [Use Case 1: Inter-Instance Request Counter (`AtomicU64`)](#use-case-1-inter-instance-request-counter-atomicu64)
+  - [Use Case 1: Inter-Instance Request Counter (`SharedAtomicU64`)](#use-case-1-inter-instance-request-counter-sharedatomicu64)
   - [Use Case 2: Synchronized Shared Whitelist (`SharedBlob` CAS)](#use-case-2-synchronized-shared-whitelist-sharedblob-cas)
   - [Use Case 3: Distributed Concurrency Bulkhead (`fetch_update`)](#use-case-3-distributed-concurrency-bulkhead-fetch_update)
   - [Use Case 4: Asynchronous gRPC Authentication Callout](#use-case-4-asynchronous-grpc-authentication-callout)
@@ -154,7 +154,7 @@ Generated entry point mappings:
 The `Plugin` trait exposes hooks for Wasm module initialization and individual HTTP request transactions. All methods provide default no-op implementations (returning `FilterAction::Continue`).
 
 ### Module Lifecycle
-- **`fn on_plugin_start(&mut self)`**: Invoked once when the Wasm module is instantiated. Use this to parse static plugin configuration (`get_plugin_config()`), open shared memory handles (`AtomicU64`, `SharedBlob`), or initialize tracing (`init_tracing()`).
+- **`fn on_plugin_start(&mut self)`**: Invoked once when the Wasm module is instantiated. Use this to parse static plugin configuration (`get_plugin_config()`), open shared memory handles (`SharedAtomicU64`, `SharedBlob`), or initialize tracing (`init_tracing()`).
 - **`fn on_plugin_destroy(&mut self)`**: Invoked when the host tears down the Wasm instance.
 
 ### Transaction Lifecycle
@@ -466,11 +466,11 @@ graph LR
     WasmWorker3["Wasm Instance (Worker 3)"] -->|"Atomic / Blob Handle"| HostMemory
 ```
 
-### 1. Atomic Variables (`AtomicU64` / `AtomicI64`)
+### 1. Atomic Variables (`SharedAtomicU64` / `SharedAtomicI64`)
 
 Provide thread-safe atomic operations mirroring `std::sync::atomic`.
 
-- **`AtomicU64::try_new(name: &str) -> Result<AtomicU64, SharedVarError>`**
+- **`SharedAtomicU64::try_new(name: &str) -> Result<SharedAtomicU64, SharedVarError>`**
 - **`load(order: Ordering) -> u64`**
 - **`store(val: u64, order: Ordering)`**
 - **`swap(val: u64, order: Ordering) -> u64`**
@@ -498,26 +498,26 @@ pub struct BlobData {
 
 ## Real-World Use Cases & Complete Examples
 
-### Use Case 1: Inter-Instance Request Counter (`AtomicU64`)
+### Use Case 1: Inter-Instance Request Counter (`SharedAtomicU64`)
 
 Inject a global sequence counter header into all requests across all Wasm instances:
 
 ```rust
 use orion_wasm_sdk::prelude::*;
-use orion_wasm_sdk::shared::AtomicU64;
+use orion_wasm_sdk::shared::SharedAtomicU64;
 use orion_wasm_types::HeaderMutation;
 use std::sync::atomic::Ordering;
 
 #[derive(Default)]
 struct GlobalCounterFilter {
-    counter: Option<AtomicU64>,
+    counter: Option<SharedAtomicU64>,
 }
 
 #[orion_plugin]
 impl Plugin for GlobalCounterFilter {
     fn on_plugin_start(&mut self) {
         let _ = orion_wasm_sdk::init_tracing();
-        if let Ok(atomic) = AtomicU64::try_new("global_http_requests") {
+        if let Ok(atomic) = SharedAtomicU64::try_new("global_http_requests") {
             self.counter = Some(atomic);
         }
     }
@@ -606,21 +606,21 @@ Enforce a global maximum concurrent requests limit across proxy threads:
 
 ```rust
 use orion_wasm_sdk::prelude::*;
-use orion_wasm_sdk::shared::AtomicU64;
+use orion_wasm_sdk::shared::SharedAtomicU64;
 use std::sync::atomic::Ordering;
 
 const MAX_CONCURRENT_REQUESTS: u64 = 500;
 
 #[derive(Default)]
 struct BulkheadFilter {
-    active_requests: Option<AtomicU64>,
+    active_requests: Option<SharedAtomicU64>,
     incremented: bool,
 }
 
 #[orion_plugin]
 impl Plugin for BulkheadFilter {
     fn on_plugin_start(&mut self) {
-        if let Ok(atomic) = AtomicU64::try_new("bulkhead_active_reqs") {
+        if let Ok(atomic) = SharedAtomicU64::try_new("bulkhead_active_reqs") {
             self.active_requests = Some(atomic);
         }
     }
@@ -751,6 +751,6 @@ The repository includes 15 ready-to-build, standalone example plugins under [`ex
 | [`header_mutations_filter`](./examples/header_mutations_filter) | Batch header mutations (`apply_header_mutations`) |
 | [`headers_map_filter`](./examples/headers_map_filter) | `HeaderMap` serialization & bulk header manipulation |
 | [`metadata_filter`](./examples/metadata_filter) | Downstream connection metadata, TLS SNI, and SocketAddr inspection |
-| [`shared_atomic`](./examples/shared_atomic) | Thread-safe shared atomic integers across Wasm instances (`AtomicU64`) |
+| [`shared_atomic`](./examples/shared_atomic) | Thread-safe shared atomic integers across Wasm instances (`SharedAtomicU64`) |
 | [`shared_blob`](./examples/shared_blob) | Versioned Compare-And-Swap (CAS) shared memory blob storage (`SharedBlob`) |
 | [`sleep_timeout_filter`](./examples/sleep_timeout_filter) | Non-blocking sleep and I/O deadline enforcement (`sleep`, `set_io_timeout`) |

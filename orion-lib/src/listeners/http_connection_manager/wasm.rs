@@ -19,6 +19,9 @@ mod hostcalls;
 mod shared;
 mod types;
 
+const WASM_SHARED_MEMORY_VARIABLES: usize = 1024;
+const WASM_INSTANCE_POOL_SIZE: usize = 1024;
+
 #[derive(Error, Debug)]
 pub enum WasmError {
     #[error("Wasmtime compilation or execution error: {0}")]
@@ -157,8 +160,8 @@ impl WasmFilter {
             }
         }
 
-        // Pre-allocate a lock-free queue for hot instances (max 1024 capacity)
-        let pool = Arc::new(ArrayQueue::new(1024));
+        // Pre-allocate a lock-free queue for hot instances
+        let pool = Arc::new(ArrayQueue::new(WASM_INSTANCE_POOL_SIZE));
 
         Ok(Self {
             inner: Arc::new(WasmFilterInner {
@@ -173,7 +176,7 @@ impl WasmFilter {
                 has_on_plugin_destroy,
                 has_on_transaction_start,
                 has_on_transaction_complete,
-                shared_memory: Arc::new(shared::SharedMemory::new(1024)),
+                shared_memory: Arc::new(shared::SharedMemory::new(WASM_SHARED_MEMORY_VARIABLES)),
             }),
             state: Mutex::new(None),
         })

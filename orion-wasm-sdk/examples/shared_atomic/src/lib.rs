@@ -1,11 +1,11 @@
 use orion_wasm_sdk::{init_tracing, orion_plugin, FilterAction, HeaderMutation, HttpHeaders, Plugin, RequestHandle};
-use orion_wasm_sdk::shared::AtomicU64;
+use orion_wasm_sdk::shared::SharedAtomicU64;
 use tracing::{debug, error, info};
 use std::sync::atomic::Ordering;
 
 #[derive(Default)]
 struct SharedAtomicFilter {
-    counter: Option<AtomicU64>,
+    counter: Option<SharedAtomicU64>,
 }
 
 #[orion_plugin]
@@ -14,7 +14,7 @@ impl Plugin for SharedAtomicFilter {
         let _ = init_tracing();
         debug!("SharedAtomicFilter: on_plugin_start");
 
-        match AtomicU64::try_new("request_counter") {
+        match SharedAtomicU64::try_new("request_counter") {
             Ok(atomic) => {
                 info!("Successfully created/opened shared atomic variable 'request_counter'");
                 self.counter = Some(atomic);

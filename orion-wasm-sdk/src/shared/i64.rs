@@ -3,11 +3,11 @@ use orion_wasm_types::SharedOrdering;
 use std::sync::atomic::Ordering;
 use super::SharedVarError;
 
-pub struct AtomicI64 {
+pub struct SharedAtomicI64 {
     id: u32,
 }
 
-impl AtomicI64 {
+impl SharedAtomicI64 {
     pub fn try_new(name: &str) -> Result<Self, SharedVarError> {
         let id = unsafe { ffi::ext_shared_resolve(name.as_ptr(), name.len() as u32, 1) };
         if id == u32::MAX { Err(SharedVarError::InitFailed) } else { Ok(Self { id }) }
