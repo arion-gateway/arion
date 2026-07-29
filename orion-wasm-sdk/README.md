@@ -261,7 +261,7 @@ Available on `RequestHandle<HttpBody>` and `ResponseHandle<HttpBody>`:
 
 Available on `RequestHandle<HttpBody>` and `ResponseHandle<HttpBody>`:
 
-- **`get_body() -> Result<Vec<u8>, OrionWasmError>`**  
+- **`get_body() -> Result<bytes::Bytes, OrionWasmError>`**  
   Retrieves the buffered body payload as raw bytes.
 - **`set_body(body: &[u8]) -> Result<(), OrionWasmError>`**  
   Replaces the buffered body content. The Orion proxy automatically recalculates `Content-Length`.
@@ -330,19 +330,15 @@ Dispatch out-of-band asynchronous HTTP requests to external clusters (e.g. auth 
 
 ```rust
 use orion_wasm_sdk::dispatch_http_call;
-use orion_wasm_types::{CalloutRequest, CalloutResponse};
-use smol_str::SmolStr;
 
-let req = CalloutRequest {
-    cluster_name: SmolStr::new("auth_cluster"),
-    path: SmolStr::new("/verify"),
-    method: http::Method::POST,
-    headers: http::HeaderMap::new(),
-    body: Some(b"token=xyz".to_vec()),
-};
+let req = http::Request::builder()
+    .method(http::Method::POST)
+    .uri("/verify")
+    .body(bytes::Bytes::from("token=xyz"))
+    .unwrap();
 
-match dispatch_http_call(&req) {
-    Ok(resp) if resp.status.is_success() => {
+match dispatch_http_call("auth_cluster", req) {
+    Ok(resp) if resp.status().is_success() => {
         tracing::info!("Auth successful!");
     }
     _ => tracing::error!("Auth failed or cluster unreachable"),
@@ -363,7 +359,7 @@ let grpc_req = GrpcCalloutRequest {
     service_name: SmolStr::new("my.package.AuthService"),
     method_name: SmolStr::new("ValidateToken"),
     initial_metadata: vec![(SmolStr::new("x-request-id"), SmolStr::new("12345"))],
-    message: protobuf_encoded_bytes,
+    message: bytes::Bytes::from(protobuf_encoded_bytes),
 };
 
 match dispatch_grpc_call(&grpc_req) {
@@ -403,13 +399,11 @@ use orion_wasm_sdk::{set_io_timeout, clear_io_timeout, dispatch_http_call, Orion
 use orion_wasm_types::CalloutRequest;
 use smol_str::SmolStr;
 
-let req = CalloutRequest {
-    cluster_name: SmolStr::new("auth_cluster"),
-    path: SmolStr::new("/verify"),
-    method: http::Method::POST,
-    headers: http::HeaderMap::new(),
-    body: Some(b"token=xyz".to_vec()),
-};
+let req = http::Request::builder()
+    .method(http::Method::POST)
+    .uri("/verify")
+    .body(bytes::Bytes::from("token=xyz"))
+    .unwrap();
 
 // Enforce a 2-second timeout for the upcoming HTTP callout
 if let Err(e) = set_io_timeout(Duration::from_secs(2)) {
@@ -417,9 +411,9 @@ if let Err(e) = set_io_timeout(Duration::from_secs(2)) {
 }
 
 // Dispatch the HTTP callout with active timeout safeguard
-match dispatch_http_call(&req) {
+match dispatch_http_call("auth_cluster", req) {
     Ok(response) => {
-        tracing::info!("Received HTTP callout response: status {}", response.status);
+        tracing::info!("Received HTTP callout response: status {}", response.status());
     }
     Err(OrionWasmError::Timeout) => {
         tracing::warn!("HTTP callout timed out after 2 seconds!");
@@ -682,7 +676,7 @@ impl Plugin for GrpcAuthFilter {
             service_name: SmolStr::new("auth.AuthService"),
             method_name: SmolStr::new("VerifyToken"),
             initial_metadata: vec![(SmolStr::new("authorization"), SmolStr::new(auth_token))],
-            message: vec![], // Protobuf message bytes
+            message: bytes::Bytes::new(), // Protobuf message bytes
         };
 
         match dispatch_grpc_call(&grpc_req) {
