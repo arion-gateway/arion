@@ -328,18 +328,18 @@ impl HcmBuilder {
         let jwks_string = jwks_inline.into();
 
         let provider = JwtProvider {
-            issuer: "https://auth.example.com".to_string(),
+            issuer: "https://auth.example.com".to_owned(),
             audiences,
-            payload_in_metadata: "jwt_payload".to_string(),
-            header_in_metadata: "jwt_header".to_string(),
+            payload_in_metadata: "jwt_payload".to_owned(),
+            header_in_metadata: "jwt_header".to_owned(),
             from_headers: vec![JwtHeader {
-                name: "Authorization".to_string(),
-                value_prefix: "Bearer ".to_string(),
+                name: "Authorization".to_owned(),
+                value_prefix: "Bearer ".to_owned(),
             }],
             from_params: vec![],
             from_cookies: vec![],
             forward: false,
-            forward_payload_header: "".to_string(),
+            forward_payload_header: String::new(),
             pad_forward_payload_header: false,
             jwks_source_specifier: Some(jwt_provider::JwksSourceSpecifier::LocalJwks(
                 orion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::DataSource {
@@ -355,7 +355,7 @@ impl HcmBuilder {
             require_expiration: false,
             max_lifetime: None,
             normalize_payload_in_metadata: None,
-            failed_status_in_metadata: "".to_string(),
+            failed_status_in_metadata: String::new(),
             clock_skew_seconds: 60,
             claim_to_headers: vec![],
             clear_route_cache: false,
@@ -363,7 +363,7 @@ impl HcmBuilder {
         };
 
         let mut providers = std::collections::HashMap::new();
-        providers.insert("oauth_provider".to_string(), provider);
+        providers.insert("oauth_provider".to_owned(), provider);
 
         let jwt_auth = JwtAuthentication {
             providers,
@@ -371,7 +371,7 @@ impl HcmBuilder {
                 r#match: Some(RouteMatch {
                     path_specifier: Some(
                         orion_data_plane_api::envoy_data_plane_api::envoy::config::route::v3::route_match::PathSpecifier::Prefix(
-                            "/".to_string(),
+                            "/".to_owned(),
                         ),
                     ),
                     ..Default::default()
@@ -381,19 +381,18 @@ impl HcmBuilder {
                         JwtRequirement {
                             requires_type: Some(
                                 jwt_requirement::RequiresType::ProviderName(
-                                    "oauth_provider".to_string(),
+                                    "oauth_provider".to_owned(),
                                 ),
                             ),
                         },
                     ),
                 ),
-                ..Default::default()
             }],
             requirement_map: std::collections::HashMap::new(),
             filter_state_rules: None,
             bypass_cors_preflight: false,
             strip_failure_response: false,
-            stat_prefix: "".to_string(),
+            stat_prefix: String::new(),
         };
 
         let jwt_any = Any {

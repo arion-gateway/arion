@@ -17,6 +17,16 @@
 //! Covers fine-grained MCP filter updates delivered via the custom `Tool`
 //! and `DynamicMcpServer` extension resources on the ADS Delta stream.
 
+#![allow(
+    clippy::let_underscore_must_use,
+    clippy::indexing_slicing,
+    clippy::assertions_on_result_states,
+    clippy::expect_used,
+    clippy::str_to_string,
+    clippy::single_match,
+    clippy::manual_assert
+)]
+
 use std::net::SocketAddr;
 use std::time::Duration;
 

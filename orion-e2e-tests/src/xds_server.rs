@@ -238,7 +238,7 @@ impl AggregatedDiscoveryService for TrackedAggregateServer {
                         debug!("Completed ACK for nonce: {}", item.response_nonce);
                     }
                 } else if !item.resource_names_subscribe.is_empty() {
-                    let _ = event_tx.send(ServerEvent::Subscribed {
+                    _ = event_tx.send(ServerEvent::Subscribed {
                         type_url: item.type_url.clone(),
                         resource_names: item.resource_names_subscribe.clone(),
                     });

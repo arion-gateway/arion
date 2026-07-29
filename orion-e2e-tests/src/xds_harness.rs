@@ -75,7 +75,7 @@ pub struct XdsEnabledHarness {
     orion: OrionInstance,
     config_path: PathBuf,
     timeouts: HarnessTimeouts,
-    _xds_server: TrackedXdsServer,
+    xds_server: TrackedXdsServer,
     _stream_tx: mpsc::Sender<ServerAction>,
 }
 
@@ -111,7 +111,7 @@ impl XdsEnabledHarness {
             orion,
             config_path,
             timeouts: options.timeouts,
-            _xds_server: xds_server,
+            xds_server,
             _stream_tx: stream_tx,
         })
     }
@@ -205,7 +205,7 @@ impl XdsEnabledHarness {
 
     #[must_use]
     pub fn subscribe_events(&self) -> broadcast::Receiver<ServerEvent> {
-        self._xds_server.event_rx.resubscribe()
+        self.xds_server.event_rx.resubscribe()
     }
 
     #[must_use]

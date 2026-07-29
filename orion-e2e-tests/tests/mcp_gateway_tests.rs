@@ -20,6 +20,14 @@
 //! - MCP backend (mock MCP server)
 //! - Tool RBAC with JWT claims and headers
 
+#![allow(
+    clippy::let_underscore_must_use,
+    clippy::indexing_slicing,
+    clippy::uninlined_format_args,
+    clippy::assertions_on_result_states,
+    clippy::expect_used
+)]
+
 use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::mcp::mcp_gateway::v3::Tool as OrionMcpTool;
 use orion_e2e_tests::config_builder::{
     inline_string_data_source, ClusterBuilder, EndpointBuilder, McpGatewayBuilder, McpGatewayHttpConfigBuilder,

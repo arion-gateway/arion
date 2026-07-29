@@ -133,7 +133,7 @@ fn build_cluster_load_assignment_with_priorities(
     ClusterLoadAssignment { cluster_name: cluster_name.to_owned(), endpoints, ..Default::default() }
 }
 
-fn create_removal_resource(name: &str, type_url: TypeUrl) -> Resource {
+fn create_removal_resource(name: &str, type_url: &TypeUrl) -> Resource {
     let any = Any { type_url: type_url.to_string(), value: vec![] };
     Resource { name: name.to_owned(), resource: Some(any), ..Default::default() }
 }
@@ -201,17 +201,17 @@ impl ConfigPusher {
     }
 
     pub async fn remove_cluster(&self, name: &str, timeout: Duration) -> Result<PushResult, XdsError> {
-        let resource = create_removal_resource(name, TypeUrl::Cluster);
+        let resource = create_removal_resource(name, &TypeUrl::Cluster);
         self.send(ServerAction::Remove(resource), timeout).await
     }
 
     pub async fn remove_listener(&self, name: &str, timeout: Duration) -> Result<PushResult, XdsError> {
-        let resource = create_removal_resource(name, TypeUrl::Listener);
+        let resource = create_removal_resource(name, &TypeUrl::Listener);
         self.send(ServerAction::Remove(resource), timeout).await
     }
 
     pub async fn remove_route_config(&self, name: &str, timeout: Duration) -> Result<PushResult, XdsError> {
-        let resource = create_removal_resource(name, TypeUrl::RouteConfiguration);
+        let resource = create_removal_resource(name, &TypeUrl::RouteConfiguration);
         self.send(ServerAction::Remove(resource), timeout).await
     }
 
@@ -238,7 +238,7 @@ impl ConfigPusher {
     }
 
     pub async fn remove_endpoints(&self, cluster_name: &str, timeout: Duration) -> Result<PushResult, XdsError> {
-        let resource = create_removal_resource(cluster_name, TypeUrl::ClusterLoadAssignment);
+        let resource = create_removal_resource(cluster_name, &TypeUrl::ClusterLoadAssignment);
         self.send(ServerAction::Remove(resource), timeout).await
     }
 
@@ -253,7 +253,7 @@ impl ConfigPusher {
     }
 
     pub async fn remove_mcp_tool(&self, resource_id: &str, timeout: Duration) -> Result<PushResult, XdsError> {
-        let resource = create_removal_resource(resource_id, TypeUrl::Extension(MCP_TOOL_TYPE_URL.to_string()));
+        let resource = create_removal_resource(resource_id, &TypeUrl::Extension(MCP_TOOL_TYPE_URL.to_owned()));
         self.send(ServerAction::Remove(resource), timeout).await
     }
 
@@ -273,7 +273,7 @@ impl ConfigPusher {
         timeout: Duration,
     ) -> Result<PushResult, XdsError> {
         let resource =
-            create_removal_resource(resource_id, TypeUrl::Extension(MCP_DYNAMIC_SERVER_TYPE_URL.to_string()));
+            create_removal_resource(resource_id, &TypeUrl::Extension(MCP_DYNAMIC_SERVER_TYPE_URL.to_owned()));
         self.send(ServerAction::Remove(resource), timeout).await
     }
 
@@ -283,7 +283,7 @@ impl ConfigPusher {
     }
 
     pub async fn remove_secret(&self, name: &str, timeout: Duration) -> Result<PushResult, XdsError> {
-        let resource = create_removal_resource(name, TypeUrl::Secret);
+        let resource = create_removal_resource(name, &TypeUrl::Secret);
         self.send(ServerAction::Remove(resource), timeout).await
     }
 

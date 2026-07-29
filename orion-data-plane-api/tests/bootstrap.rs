@@ -14,6 +14,8 @@
 // limitations under the License.
 //
 
+#![allow(clippy::expect_used)]
+
 use envoy_data_plane_api::envoy::config::{
     bootstrap::v3::Bootstrap,
     core::v3::{address, socket_address::PortSpecifier, Address, SocketAddress},

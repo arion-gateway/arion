@@ -55,21 +55,23 @@ impl TestJwtClaims {
 
         Self {
             sub: sub.into(),
-            name: "Test User".to_string(),
+            name: "Test User".to_owned(),
             role: role.into(),
             iat: now,
             exp: now + 3600, // 1 hour
-            aud: vec!["mcp-gateway".to_string()],
-            iss: "https://auth.example.com".to_string(),
+            aud: vec!["mcp-gateway".to_owned()],
+            iss: "https://auth.example.com".to_owned(),
             extra: HashMap::new(),
         }
     }
 
+    #[must_use]
     pub fn with_claim(mut self, key: &str, value: impl Into<Value>) -> Self {
-        self.extra.insert(key.to_string(), value.into());
+        self.extra.insert(key.to_owned(), value.into());
         self
     }
 
+    #[must_use]
     pub fn with_audience(mut self, aud: impl Into<String>) -> Self {
         self.aud = vec![aud.into()];
         self
@@ -112,7 +114,7 @@ z/NIew06epFYIP1ZrAY+DUXgJIjK2vwxwlI1Die2REps7aE/HKc62li1ejjHA0ij
 fmFAOQc8ayw2/jjJHfQMKdmNLd9s1av6fFY31XsulfKakOBpFhtJAOEbpIz28r0P
 o2G9LxgDhY0dWG+u+9Rai7I=
 -----END PRIVATE KEY-----"#
-            .to_string();
+            .to_owned();
 
         let public_key = r#"-----BEGIN PUBLIC KEY-----
 MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwjNMIGRZheioI8WBdSVh
@@ -123,9 +125,9 @@ xUTfEfYx2H6DarxaIa3VtP5tJYQIskeqOb7mJEAyMH9mFQVDN6xgvWTAZyQNfsSj
 Ncy0m7hzEh0+Lb4fXWxkwAqxz2mp7O8616QztA353fACtMt3E1gY8Q8N/i8ahAYR
 UwIDAQAB
 -----END PUBLIC KEY-----"#
-            .to_string();
+            .to_owned();
 
-        Self { private_key, public_key, kid: "test-key-id".to_string() }
+        Self { private_key, public_key, kid: "test-key-id".to_owned() }
     }
 
     pub fn get_jwks(&self) -> Value {
@@ -148,7 +150,7 @@ UwIDAQAB
 
 pub fn generate_jwt_token(claims: &TestJwtClaims, private_key: &str) -> Result<String> {
     let mut header = Header::new(Algorithm::RS256);
-    header.kid = Some("test-key-id".to_string());
+    header.kid = Some("test-key-id".to_owned());
 
     let encoding_key = EncodingKey::from_rsa_pem(private_key.as_bytes())
         .map_err(|e| Error::Config(format!("Failed to load private key: {e}")))?;
@@ -230,11 +232,13 @@ impl McpTestClient {
         Self { http_client: TestClient::new(addr), session_id: None, jwt_token: None }
     }
 
+    #[must_use]
     pub fn with_jwt(mut self, token: impl Into<String>) -> Self {
         self.jwt_token = Some(token.into());
         self
     }
 
+    #[must_use]
     pub fn with_session_id(mut self, session_id: impl Into<String>) -> Self {
         self.session_id = Some(session_id.into());
         self
@@ -247,7 +251,7 @@ impl McpTestClient {
             .body(body);
 
         if let Some(ref token) = self.jwt_token {
-            builder = builder.header("Authorization", format!("Bearer {}", token));
+            builder = builder.header("Authorization", format!("Bearer {token}"));
         }
 
         if let Some(ref session_id) = self.session_id {
@@ -266,10 +270,10 @@ impl McpTestClient {
         let response = self.http_client.send(request_builder).await?;
 
         let status = response.status;
-        let session_id = response.header("mcp-session-id").map(|s| s.to_string());
-        let content_type = response.header("content-type").unwrap_or_default().to_string();
+        let session_id = response.header("mcp-session-id").map(str::to_owned);
+        let content_type = response.header("content-type").unwrap_or_default().to_owned();
         let body_text =
-            response.body_str().ok_or_else(|| Error::Http("Response body is not valid UTF-8".to_string()))?;
+            response.body_str().ok_or_else(|| Error::Http("Response body is not valid UTF-8".to_owned()))?;
 
         if !status.is_success() {
             return Err(Error::Http(format!("HTTP error: {status} - {body_text}")));
@@ -310,9 +314,9 @@ impl McpTestClient {
 
     pub async fn initialize(&mut self) -> Result<Value> {
         let request = McpJsonRpcRequest {
-            jsonrpc: "2.0".to_string(),
+            jsonrpc: "2.0".to_owned(),
             id: Some(1),
-            method: "initialize".to_string(),
+            method: "initialize".to_owned(),
             params: json!({
                 "protocolVersion": "2024-11-05",
                 "capabilities": {},
@@ -338,9 +342,9 @@ impl McpTestClient {
 
     pub async fn list_tools(&self) -> Result<ListToolsResult> {
         let request = McpJsonRpcRequest {
-            jsonrpc: "2.0".to_string(),
+            jsonrpc: "2.0".to_owned(),
             id: Some(2),
-            method: "tools/list".to_string(),
+            method: "tools/list".to_owned(),
             params: json!({}),
         };
 
@@ -350,15 +354,15 @@ impl McpTestClient {
             return Err(Error::Http(format!("List tools failed: {}", error.message)));
         }
 
-        let result = response.result.ok_or_else(|| Error::Http("No result in response".to_string()))?;
+        let result = response.result.ok_or_else(|| Error::Http("No result in response".to_owned()))?;
         serde_json::from_value(result).map_err(|e| Error::Http(format!("Failed to parse tools: {e}")))
     }
 
     pub async fn call_tool(&self, name: impl Into<String>, arguments: Value) -> Result<CallToolResult> {
         let request = McpJsonRpcRequest {
-            jsonrpc: "2.0".to_string(),
+            jsonrpc: "2.0".to_owned(),
             id: Some(3),
-            method: "tools/call".to_string(),
+            method: "tools/call".to_owned(),
             params: json!({
                 "name": name.into(),
                 "arguments": arguments
@@ -371,22 +375,18 @@ impl McpTestClient {
             return Err(Error::Http(format!("Call tool failed: {}", error.message)));
         }
 
-        let result = response.result.ok_or_else(|| Error::Http("No result in response".to_string()))?;
+        let result = response.result.ok_or_else(|| Error::Http("No result in response".to_owned()))?;
         serde_json::from_value(result).map_err(|e| Error::Http(format!("Failed to parse tool result: {e}")))
     }
 
     pub async fn ping(&self) -> Result<()> {
-        let request = McpJsonRpcRequest {
-            jsonrpc: "2.0".to_string(),
-            id: Some(4),
-            method: "ping".to_string(),
-            params: json!({}),
-        };
+        let request =
+            McpJsonRpcRequest { jsonrpc: "2.0".to_owned(), id: Some(4), method: "ping".to_owned(), params: json!({}) };
 
         let (response, _) = self.send_request(&request).await?;
 
         if response.error.is_some() {
-            return Err(Error::Http("Ping failed".to_string()));
+            return Err(Error::Http("Ping failed".to_owned()));
         }
 
         Ok(())
@@ -407,8 +407,8 @@ impl MockMcpServer {
 
         let tools = Arc::new(RwLock::new(vec![
             McpTool {
-                name: "mock_echo".to_string(),
-                description: "Echo back the input".to_string(),
+                name: "mock_echo".to_owned(),
+                description: "Echo back the input".to_owned(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -419,8 +419,8 @@ impl MockMcpServer {
                 output_schema: None,
             },
             McpTool {
-                name: "mock_add".to_string(),
-                description: "Add two numbers".to_string(),
+                name: "mock_add".to_owned(),
+                description: "Add two numbers".to_owned(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -448,9 +448,9 @@ impl MockMcpServer {
                                 async move { handle_mcp_request(req, tools).await }
                             });
 
-                            let _ = hyper::server::conn::http1::Builder::new()
+                            drop(hyper::server::conn::http1::Builder::new()
                                 .serve_connection(io, service)
-                                .await;
+                                .await);
                         });
                     }
                     _ = shutdown_rx.recv() => {
@@ -477,11 +477,12 @@ impl MockMcpServer {
 
     pub fn shutdown(&mut self) {
         if let Some(tx) = self.shutdown_tx.take() {
-            let _ = tx.try_send(());
+            _ = tx.try_send(());
         }
     }
 }
 
+#[allow(clippy::too_many_lines)]
 async fn handle_mcp_request(
     req: Request<hyper::body::Incoming>,
     tools: Arc<RwLock<Vec<McpTool>>>,
@@ -515,7 +516,7 @@ async fn handle_mcp_request(
 
     let response = match mcp_req.method.as_str() {
         "initialize" => McpJsonRpcResponse {
-            jsonrpc: "2.0".to_string(),
+            jsonrpc: "2.0".to_owned(),
             id: mcp_req.id,
             result: Some(json!({
                 "protocolVersion": "2024-11-05",
@@ -532,7 +533,7 @@ async fn handle_mcp_request(
         "tools/list" => {
             let tools_list = tools.read().await.clone();
             McpJsonRpcResponse {
-                jsonrpc: "2.0".to_string(),
+                jsonrpc: "2.0".to_owned(),
                 id: mcp_req.id,
                 result: Some(json!({ "tools": tools_list })),
                 error: None,
@@ -564,18 +565,18 @@ async fn handle_mcp_request(
                     let message = params.arguments.get("message").and_then(|v| v.as_str()).unwrap_or("no message");
                     CallToolResult {
                         content: vec![ToolContent {
-                            content_type: "text".to_string(),
-                            text: format!("Echo: {}", message),
+                            content_type: "text".to_owned(),
+                            text: format!("Echo: {message}"),
                         }],
                         is_error: Some(false),
                     }
                 },
                 "mock_add" => {
-                    let a = params.arguments.get("a").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                    let b = params.arguments.get("b").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let a = params.arguments.get("a").and_then(serde_json::Value::as_f64).unwrap_or(0.0);
+                    let b = params.arguments.get("b").and_then(serde_json::Value::as_f64).unwrap_or(0.0);
                     CallToolResult {
                         content: vec![ToolContent {
-                            content_type: "text".to_string(),
+                            content_type: "text".to_owned(),
                             text: format!("Result: {}", a + b),
                         }],
                         is_error: Some(false),
@@ -583,20 +584,20 @@ async fn handle_mcp_request(
                 },
                 _ => CallToolResult {
                     content: vec![ToolContent {
-                        content_type: "text".to_string(),
+                        content_type: "text".to_owned(),
                         text: format!("Unknown tool: {}", params.name),
                     }],
                     is_error: Some(true),
                 },
             };
 
-            McpJsonRpcResponse { jsonrpc: "2.0".to_string(), id: mcp_req.id, result: Some(json!(result)), error: None }
+            McpJsonRpcResponse { jsonrpc: "2.0".to_owned(), id: mcp_req.id, result: Some(json!(result)), error: None }
         },
         _ => McpJsonRpcResponse {
-            jsonrpc: "2.0".to_string(),
+            jsonrpc: "2.0".to_owned(),
             id: mcp_req.id,
             result: None,
-            error: Some(McpJsonRpcError { code: -32601, message: "Method not found".to_string(), data: None }),
+            error: Some(McpJsonRpcError { code: -32601, message: "Method not found".to_owned(), data: None }),
         },
     };
 
@@ -628,13 +629,13 @@ impl McpResultExt for crate::Result<CallToolResult> {
         match self {
             Err(e) => {
                 let error_str = e.to_string();
-                assert!(error_str.contains(expected), "Error '{}' doesn't contain '{}'", error_str, expected);
+                assert!(error_str.contains(expected), "Error '{error_str}' doesn't contain '{expected}'");
             },
             Ok(result) if result.is_error.unwrap_or(false) => {
                 let content = result.content.first().map(|c| c.text.as_str()).unwrap_or("");
-                assert!(content.contains(expected), "Error content '{}' doesn't contain '{}'", content, expected);
+                assert!(content.contains(expected), "Error content '{content}' doesn't contain '{expected}'");
             },
-            Ok(_) => panic!("Expected error containing '{}' but got success", expected),
+            Ok(_) => panic!("Expected error containing '{expected}' but got success"),
         }
     }
 

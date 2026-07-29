@@ -74,10 +74,10 @@ impl EmbeddingsTestService {
 
     pub async fn start_with_capacity(channel_capacity: usize) -> Result<Self> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
-        Self::start_with_listener_and_capacity(listener, channel_capacity).await
+        Self::start_with_listener_and_capacity(listener, channel_capacity)
     }
 
-    pub async fn start_with_listener_and_capacity(listener: TcpListener, channel_capacity: usize) -> Result<Self> {
+    pub fn start_with_listener_and_capacity(listener: TcpListener, channel_capacity: usize) -> Result<Self> {
         let addr = listener.local_addr()?;
         info!(?addr, "Starting embeddings test service");
 
@@ -242,17 +242,29 @@ impl EmbeddingsInput {
 
 fn embedding_for_text(text: &str) -> [f32; 3] {
     let text = text.to_ascii_lowercase();
-    if text.contains("weather") || text.contains("forecast") || text.contains("temperature") {
+    if text.contains("weather")
+        || text.contains("forecast")
+        || text.contains("temperature")
+        || text.contains("database")
+        || text.contains("sql")
+        || text.contains("records")
+    {
         [1.0, 0.0, 0.0]
-    } else if text.contains("database") || text.contains("sql") || text.contains("records") {
-        [1.0, 0.0, 0.0]
-    } else if text.contains("user") || text.contains("profile") || text.contains("account") {
+    } else if text.contains("user")
+        || text.contains("profile")
+        || text.contains("account")
+        || text.contains("analytics")
+        || text.contains("statistics")
+        || text.contains("reports")
+    {
         [0.0, 1.0, 0.0]
-    } else if text.contains("analytics") || text.contains("statistics") || text.contains("reports") {
-        [0.0, 1.0, 0.0]
-    } else if text.contains("payment") || text.contains("billing") || text.contains("transaction") {
-        [0.0, 0.0, 1.0]
-    } else if text.contains("email") || text.contains("notification") || text.contains("message") {
+    } else if text.contains("payment")
+        || text.contains("billing")
+        || text.contains("transaction")
+        || text.contains("email")
+        || text.contains("notification")
+        || text.contains("message")
+    {
         [0.0, 0.0, 1.0]
     } else {
         [0.577_350_26, 0.577_350_26, 0.577_350_26]

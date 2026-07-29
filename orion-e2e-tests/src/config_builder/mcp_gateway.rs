@@ -77,7 +77,7 @@ impl McpGatewayBuilder {
     pub fn new(server_name: impl Into<String>, server_version: impl Into<String>) -> Self {
         Self {
             proto: McpGateway {
-                cluster_header: Some(DEFAULT_MCP_CLUSTER_HEADER.to_string()),
+                cluster_header: Some(DEFAULT_MCP_CLUSTER_HEADER.to_owned()),
                 server_info: Some(ServerInfo { name: server_name.into(), version: server_version.into() }),
                 ..Default::default()
             },
@@ -545,6 +545,12 @@ impl McpSemanticSearchBuilder {
     }
 }
 
+impl Default for McpSemanticSearchBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl From<McpSemanticSearchBuilder> for SemanticSearch {
     fn from(builder: McpSemanticSearchBuilder) -> Self {
         builder.build()
@@ -572,10 +578,10 @@ impl McpGatewayHttpConfigBuilder {
     pub fn new(gateway: impl Into<McpGateway>) -> Self {
         Self {
             gateway: gateway.into(),
-            listener_name: DEFAULT_MCP_LISTENER_NAME.to_string(),
+            listener_name: DEFAULT_MCP_LISTENER_NAME.to_owned(),
             listener_port: 0,
-            route_config_name: DEFAULT_MCP_ROUTE_CONFIG_NAME.to_string(),
-            filter_chain_name: DEFAULT_MCP_FILTER_CHAIN_NAME.to_string(),
+            route_config_name: DEFAULT_MCP_ROUTE_CONFIG_NAME.to_owned(),
+            filter_chain_name: DEFAULT_MCP_FILTER_CHAIN_NAME.to_owned(),
             jwt_auth: None,
         }
     }
@@ -615,7 +621,7 @@ impl McpGatewayHttpConfigBuilder {
     #[must_use]
     pub fn build_listener(self) -> ListenerBuilder {
         let route_cluster_header =
-            self.gateway.cluster_header.clone().unwrap_or_else(|| DEFAULT_MCP_CLUSTER_HEADER.to_string());
+            self.gateway.cluster_header.clone().unwrap_or_else(|| DEFAULT_MCP_CLUSTER_HEADER.to_owned());
         let route_config = mcp_gateway_route_config(self.route_config_name, route_cluster_header);
         let mut hcm = HcmBuilder::new().route_config(route_config);
 
@@ -648,13 +654,13 @@ pub fn inline_string_data_source(value: impl Into<String>) -> DataSource {
 #[must_use]
 pub fn mcp_gateway_any(config: impl Into<McpGateway>) -> Any {
     let config = config.into();
-    Any { type_url: MCP_GATEWAY_TYPE_URL.to_string(), value: config.encode_to_vec() }
+    Any { type_url: MCP_GATEWAY_TYPE_URL.to_owned(), value: config.encode_to_vec() }
 }
 
 #[must_use]
 pub fn mcp_gateway_http_filter(config: impl Into<McpGateway>) -> HttpFilter {
     HttpFilter {
-        name: MCP_GATEWAY_FILTER_NAME.to_string(),
+        name: MCP_GATEWAY_FILTER_NAME.to_owned(),
         config_type: Some(HttpFilterConfigType::TypedConfig(mcp_gateway_any(config))),
         ..Default::default()
     }
@@ -678,12 +684,12 @@ pub fn mcp_resource_id(server_name: &str, config_name: &str, resource_name: &str
 
 #[must_use]
 pub fn mcp_tool_xds_resource(resource_id: impl Into<String>, tool: &Tool) -> XdsResource {
-    let any = Any { type_url: MCP_TOOL_TYPE_URL.to_string(), value: tool.encode_to_vec() };
+    let any = Any { type_url: MCP_TOOL_TYPE_URL.to_owned(), value: tool.encode_to_vec() };
     XdsResource { name: resource_id.into(), resource: Some(any), ..Default::default() }
 }
 
 #[must_use]
 pub fn dynamic_mcp_server_xds_resource(resource_id: impl Into<String>, server: &DynamicMcpServer) -> XdsResource {
-    let any = Any { type_url: MCP_DYNAMIC_SERVER_TYPE_URL.to_string(), value: server.encode_to_vec() };
+    let any = Any { type_url: MCP_DYNAMIC_SERVER_TYPE_URL.to_owned(), value: server.encode_to_vec() };
     XdsResource { name: resource_id.into(), resource: Some(any), ..Default::default() }
 }

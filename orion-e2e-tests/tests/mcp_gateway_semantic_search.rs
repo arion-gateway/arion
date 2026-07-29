@@ -17,6 +17,17 @@
 //! These tests intentionally use remote embeddings with a service
 //! supplied by the test harness instead of fastembed/local models so they remain offline-safe.
 
+#![allow(
+    clippy::let_underscore_must_use,
+    clippy::indexing_slicing,
+    clippy::assertions_on_result_states,
+    clippy::expect_used,
+    clippy::cast_precision_loss,
+    clippy::single_match,
+    clippy::manual_assert,
+    clippy::cast_possible_truncation
+)]
+
 use http::Method;
 use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::mcp::mcp_gateway::v3::Tool as OrionMcpTool;
 use orion_e2e_tests::config_builder::{

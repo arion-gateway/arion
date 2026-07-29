@@ -196,6 +196,7 @@ impl BootstrapBuilder {
         serde_yaml::to_string(&bootstrap).map_err(Error::from)
     }
 
+    #[allow(clippy::unnecessary_wraps)]
     fn build_bootstrap(&self) -> Result<OrionConfig> {
         let listeners: Vec<Value> = self.listeners.iter().filter_map(|l| proto_to_yaml_value(l).ok()).collect();
         let clusters: Vec<Value> = self.clusters.iter().filter_map(|c| proto_to_yaml_value(c).ok()).collect();

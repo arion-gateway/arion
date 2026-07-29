@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#![allow(clippy::let_underscore_must_use, clippy::str_to_string)]
+
 use std::io;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -172,7 +174,7 @@ impl DemoBackends {
 fn json_response(body: &'static str) -> PreConfiguredResponse {
     PreConfiguredResponse {
         status: StatusCode::OK,
-        headers: vec![("content-type".to_string(), "application/json".to_string())],
+        headers: vec![("content-type".to_owned(), "application/json".to_owned())],
         body: Bytes::from_static(body.as_bytes()),
         delay: None,
     }
@@ -308,7 +310,7 @@ fn semantic_result_tool_names(result: &CallToolResult) -> Vec<String> {
 fn format_names<'a>(names: impl IntoIterator<Item = &'a str>) -> String {
     let names: Vec<&str> = names.into_iter().collect();
     if names.is_empty() {
-        "(none)".to_string()
+        "(none)".to_owned()
     } else {
         names.join(", ")
     }
