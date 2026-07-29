@@ -126,10 +126,7 @@ impl From<LogLevel> for u32 {
     }
 }
 
-use http::{
-    header::{HeaderName, HeaderValue},
-    HeaderMap, Method, StatusCode,
-};
+use http::header::{HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
@@ -153,21 +150,14 @@ pub enum HeaderMutation {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct CalloutRequest {
     pub cluster_name: SmolStr,
-    pub path: SmolStr,
-    #[serde(with = "http_serde_ext::method")]
-    pub method: Method,
-    #[serde(with = "http_serde_ext::header_map")]
-    pub headers: HeaderMap,
-    pub body: Option<Vec<u8>>,
+    #[serde(with = "http_serde_ext::request")]
+    pub request: http::Request<bytes::Bytes>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct CalloutResponse {
-    #[serde(with = "http_serde_ext::status_code")]
-    pub status: StatusCode,
-    #[serde(with = "http_serde_ext::header_map")]
-    pub headers: HeaderMap,
-    pub body: Option<Vec<u8>>,
+    #[serde(with = "http_serde_ext::response")]
+    pub response: http::Response<bytes::Bytes>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

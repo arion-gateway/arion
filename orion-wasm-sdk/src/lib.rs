@@ -68,3 +68,5 @@ pub extern "C" fn orion_malloc(size: u32) -> *mut u8 {
     std::mem::forget(buf);
     ptr
 }
+mod test_serde;
+mod test_serde2;

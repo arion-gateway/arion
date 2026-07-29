@@ -9,9 +9,9 @@
 use std::sync::LazyLock;
 
 use crate::body::timeout_body::TimeoutBody;
+use crate::listeners::metadata::DownstreamMetadata;
 use crate::OrionRequestBody;
 use crate::OrionResponseBody;
-use crate::listeners::metadata::DownstreamMetadata;
 use bytes::Bytes;
 use http::StatusCode;
 use http::{Request, Response};
@@ -846,29 +846,16 @@ fn orion_dispatch_http_call(
             },
         };
 
-        let uri_str = if callout_req.path.starts_with("http://") || callout_req.path.starts_with("https://") {
-            callout_req.path.to_string()
-        } else {
-            format!("http://{}{}", callout_req.cluster_name, callout_req.path)
-        };
+        let (mut parts, body_bytes) = callout_req.request.into_parts();
 
-        let mut builder = http::Request::builder().method(callout_req.method).uri(uri_str);
-
-        let mut has_host = false;
-        for (k, v) in callout_req.headers {
-            if let Some(name) = k {
-                if name == http::header::HOST {
-                    has_host = true;
+        if !parts.headers.contains_key(http::header::HOST) {
+            if let Some(host) = parts.uri.host() {
+                if let Ok(host_val) = http::header::HeaderValue::from_str(host) {
+                    parts.headers.insert(http::header::HOST, host_val);
                 }
-                builder = builder.header(name, v);
             }
         }
 
-        if !has_host {
-            builder = builder.header(http::header::HOST, callout_req.cluster_name.as_str());
-        }
-
-        let body_bytes = callout_req.body.unwrap_or_default();
         let instrumented = crate::OrionRequestBody::default().map_inner(|_| {
             crate::body::timeout_body::TimeoutBody::new(
                 None,
@@ -876,14 +863,7 @@ fn orion_dispatch_http_call(
             )
         });
 
-        let request = match builder.body(instrumented) {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::error!("Callout failed to build request body: {:?}", e);
-                return OrionWasmError::InternalError.into();
-            },
-        };
-
+        let request = http::Request::from_parts(parts, instrumented);
         let channel = http_service.channel();
 
         let timeout_duration = if let Some(deadline) = caller.data().io_deadline {
@@ -932,16 +912,25 @@ fn orion_dispatch_http_call(
 
         let status = response.status();
         let resp_headers = response.headers().clone();
+        let version = response.version();
 
         let body_bytes = match response.into_body().collect().await {
-            Ok(collected) => collected.to_bytes().to_vec(),
+            Ok(collected) => collected.to_bytes(),
             Err(e) => {
                 tracing::error!("Callout failed to collect response body: {:?}", e);
                 return OrionWasmError::InternalError.into();
             },
         };
 
-        let callout_resp = CalloutResponse { status, headers: resp_headers, body: Some(body_bytes) };
+        let mut builder = http::Response::builder().status(status).version(version);
+        for (k, v) in resp_headers {
+            if let Some(name) = k {
+                builder = builder.header(name, v);
+            }
+        }
+        let http_resp = builder.body(body_bytes).unwrap_or_else(|_| http::Response::new(bytes::Bytes::new()));
+
+        let callout_resp = CalloutResponse { response: http_resp };
 
         let resp_bytes = match bincode_next::serde::encode_to_vec(&callout_resp, bincode_next::config::standard()) {
             Ok(b) => b,

@@ -10,3 +10,4 @@ http = "1.0"
 serde = { version = "1.0.228", features = ["derive"] }
 smol_str  = { version = "0.3.5", features = ["serde"] }
 http-serde-ext = { version = "1.0.2" }
+bytes = { workspace = true, features = ["serde"] }

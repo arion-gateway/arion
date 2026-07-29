@@ -33,23 +33,24 @@ impl Plugin for CalloutBodyFilter {
         callout_headers.insert("x-callout-id", "wasm-plugin-123".parse().unwrap());
         callout_headers.insert("accept", "application/json".parse().unwrap());
 
-        let req = CalloutRequest {
-            cluster_name: SmolStr::new("service"),
-            path: SmolStr::new("/"),
-            method: Method::POST,
-            headers: callout_headers,
-            body: Some(original_body),
-        };
+        let req = http::Request::builder()
+            .method(Method::POST)
+            .uri("/")
+            .header("x-callout-id", "wasm-plugin-123")
+            .header("accept", "application/json")
+            .header("host", "service")
+            .body(bytes::Bytes::from(original_body))
+            .unwrap();
 
         // 3. Perform the synchronous-looking asynchronous callout
         info!("Dispatching HTTP POST call to cluster 'service'...");
-        match dispatch_http_call(&req) {
+        match dispatch_http_call("service", req) {
             Ok(response) => {
-                info!("Callout completed with status: {}", response.status);
+                info!("Callout completed with status: {}", response.status());
 
-                if response.status.is_success() {
+                if response.status().is_success() {
                     // 4. Extract the body from the callout response and replace the original request body
-                    let new_body = response.body.unwrap_or_else(|| b"Fallback Body".to_vec());
+                    let new_body = response.into_body().to_vec();
 
                     if let Err(e) = ctx.set_body(&new_body) {
                         error!("Failed to replace the request body: {:?}", e);

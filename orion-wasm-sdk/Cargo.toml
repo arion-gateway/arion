@@ -20,3 +20,4 @@ smol_str  = { version = "0.3.5", features = ["serde"] }
 http-serde-ext = { version = "1.0.2" }
 
 bincode-next = { version = "3.1.1", features = ["serde"] }
+bytes = { version = "1.12.1", features = ["serde"] }
