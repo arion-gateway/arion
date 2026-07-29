@@ -115,7 +115,13 @@ impl Plugin for AuthFilter {
     fn on_request_headers(&mut self, ctx: &RequestHandle<HttpHeaders>) -> FilterAction {
         match ctx.get_header("Authorization") {
             Ok(Some(v)) if v == "Bearer secret-token" => FilterAction::Continue,
-            _ => ctx.direct_response(401, b"Unauthorized access: Invalid or missing token"),
+            _ => {
+                let response = http::Response::builder()
+                    .status(401)
+                    .body(bytes::Bytes::from_static(b"Unauthorized access: Invalid or missing token"))
+                    .unwrap();
+                ctx.direct_response(response)
+            }
         }
     }
 }
@@ -270,16 +276,20 @@ Available on `RequestHandle<HttpBody>` and `ResponseHandle<HttpBody>`:
 
 Available on `RequestHandle`:
 
-- **`schedule_direct_response(status_code: u16, body: &[u8]) -> Result<(), OrionWasmError>`**  
+- **`schedule_direct_response(response: http::Response<bytes::Bytes>) -> Result<(), OrionWasmError>`**  
   Prepares and schedules a direct HTTP response payload in host memory for the current transaction. Calling `schedule_direct_response` does **not** interrupt Wasm plugin execution immediately; the response is staged on the host and transmitted to the client once the plugin hook returns `FilterAction::DirectResponse`.
-- **`direct_response(status_code: u16, body: &[u8]) -> FilterAction`**  
+- **`direct_response(response: http::Response<bytes::Bytes>) -> FilterAction`**  
   A convenience helper that schedules the response via `schedule_direct_response` and immediately returns `FilterAction::DirectResponse`. This signals the host to exit plugin processing, short-circuit the proxy filter chain, and deliver the staged response directly to the client.
 
 ```rust
 fn on_request_headers(&mut self, ctx: &RequestHandle<HttpHeaders>) -> FilterAction {
     if is_blacklisted(ctx) {
         // Schedules a 403 response and returns FilterAction::DirectResponse to exit the plugin
-        return ctx.direct_response(403, b"Access Denied");
+        let response = http::Response::builder()
+            .status(403)
+            .body(bytes::Bytes::from_static(b"Access Denied"))
+            .unwrap();
+        return ctx.direct_response(response);
     }
     FilterAction::Continue
 }
@@ -347,7 +357,25 @@ match dispatch_http_call("auth_cluster", req) {
 
 ### Async gRPC Callouts (`dispatch_grpc_call`)
 
-Dispatch native gRPC requests to upstream services:
+Dispatch native gRPC requests to upstream services using the `GrpcCalloutRequest` and `GrpcCalloutResponse` structs:
+
+```rust
+pub struct GrpcCalloutRequest {
+    pub cluster_name: smol_str::SmolStr,
+    pub service_name: smol_str::SmolStr,
+    pub method_name: smol_str::SmolStr,
+    pub initial_metadata: Vec<(smol_str::SmolStr, smol_str::SmolStr)>,
+    pub message: bytes::Bytes,
+}
+
+pub struct GrpcCalloutResponse {
+    pub initial_metadata: Vec<(smol_str::SmolStr, smol_str::SmolStr)>,
+    pub message: bytes::Bytes,
+    pub trailing_metadata: Vec<(smol_str::SmolStr, smol_str::SmolStr)>,
+    pub status: u32, // gRPC status code
+    pub status_message: smol_str::SmolStr,
+}
+```
 
 ```rust
 use orion_wasm_sdk::dispatch_grpc_call;
@@ -630,7 +658,11 @@ impl Plugin for BulkheadFilter {
             });
 
             if res.is_err() {
-                return ctx.direct_response(429, b"Bulkhead limit reached. Try again later.");
+                let response = http::Response::builder()
+                    .status(429)
+                    .body(bytes::Bytes::from_static(b"Bulkhead limit reached. Try again later."))
+                    .unwrap();
+                return ctx.direct_response(response);
             }
             self.incremented = true;
         }
@@ -668,7 +700,10 @@ impl Plugin for GrpcAuthFilter {
     fn on_request_headers(&mut self, ctx: &RequestHandle<HttpHeaders>) -> FilterAction {
         let auth_token = match ctx.get_header("authorization") {
             Ok(Some(val)) => val.to_str().unwrap_or("").to_string(),
-            _ => return ctx.direct_response(401, b"Missing authorization header"),
+            _ => {
+                let response = http::Response::builder().status(401).body(bytes::Bytes::from_static(b"Missing authorization header")).unwrap();
+                return ctx.direct_response(response);
+            }
         };
 
         let grpc_req = GrpcCalloutRequest {
@@ -683,9 +718,13 @@ impl Plugin for GrpcAuthFilter {
             Ok(resp) if resp.status == 0 => FilterAction::Continue,
             Ok(resp) => {
                 let err_msg = format!("Auth service rejected token: {}", resp.status_message);
-                ctx.direct_response(403, err_msg.as_bytes())
+                let response = http::Response::builder().status(403).body(bytes::Bytes::from(err_msg)).unwrap();
+                ctx.direct_response(response)
             }
-            Err(_) => ctx.direct_response(500, b"Internal auth service error"),
+            Err(_) => {
+                let response = http::Response::builder().status(500).body(bytes::Bytes::from_static(b"Internal auth service error")).unwrap();
+                ctx.direct_response(response)
+            }
         }
     }
 }
