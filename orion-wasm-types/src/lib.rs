@@ -178,6 +178,12 @@ pub struct GrpcCalloutResponse {
     pub status_message: SmolStr,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct DirectResponse {
+    #[serde(with = "http_serde_ext::response")]
+    pub response: http::Response<bytes::Bytes>,
+}
+
 // ============================================================================
 // Downstream Metadata
 // ============================================================================

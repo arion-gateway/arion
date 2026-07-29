@@ -1,5 +1,5 @@
 //! Example using the Orion Wasm SDK to mutate HTTP headers.
-use orion_wasm_sdk::{init_tracing, orion_plugin, FilterAction, HttpHeaders, Plugin, RequestHandle};
+use orion_wasm_sdk::{init_tracing, orion_plugin, FilterAction, HttpHeaders, Plugin, RequestHandle, http, bytes};
 use tracing::{error, info};
 
 #[derive(Default)]
@@ -18,7 +18,7 @@ impl Plugin for HeadersMapFilter {
             Ok(h) => h,
             Err(e) => {
                 error!("get_headers_map failed: {:?}", e);
-                return ctx.direct_response(500, b"Internal Server Error");
+                return ctx.direct_response(http::Response::builder().status(500).body(bytes::Bytes::from_static(b"Internal Server Error")).unwrap());
             }
         };
 
@@ -39,7 +39,7 @@ impl Plugin for HeadersMapFilter {
 
         if let Err(e) = ctx.set_headers_map(&headers) {
             error!("Failed to set headers map: {:?}", e);
-            return ctx.direct_response(500, b"Internal Server Error");
+            return ctx.direct_response(http::Response::builder().status(500).body(bytes::Bytes::from_static(b"Internal Server Error")).unwrap());
         }
 
         FilterAction::Continue

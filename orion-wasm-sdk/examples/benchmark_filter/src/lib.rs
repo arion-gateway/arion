@@ -1,5 +1,5 @@
 use orion_wasm_sdk::prelude::*;
-use orion_wasm_sdk::FilterAction;
+use orion_wasm_sdk::{FilterAction, http, bytes};
 
 #[derive(Default)]
 struct BenchmarkFilter;
@@ -12,7 +12,7 @@ impl Plugin for BenchmarkFilter {
                 FilterAction::Continue
             }
             _ => {
-                ctx.direct_response(401, b"Unauthorized")
+                ctx.direct_response(http::Response::builder().status(401).body(bytes::Bytes::from_static(b"Unauthorized")).unwrap())
             }
         }
     }

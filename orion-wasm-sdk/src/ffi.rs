@@ -47,8 +47,7 @@ extern "C" {
     ) -> i32;
 
     /// Send a direct (local) HTTP response, short-circuiting the filter chain.
-    pub fn orion_send_direct_response(status_code: u32, body_ptr: *const u8, body_len: u32)
-        -> i32;
+    pub fn orion_send_direct_response(resp_ptr: *const u8, resp_len: u32) -> i32;
 
     /// Log a message via the host's tracing framework.
     pub fn orion_log(level: u32, msg_ptr: *const u8, msg_len: u32) -> i32;

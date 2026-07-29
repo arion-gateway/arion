@@ -15,7 +15,8 @@
 pub use orion_wasm_types::{
     CalloutRequest, CalloutResponse, FilterAction, HeaderMutation, OrionWasmError, LogLevel
 };
-pub use http::{header::HeaderName, header::HeaderValue, HeaderMap};
+pub use http::{self, header::HeaderName, header::HeaderValue, HeaderMap};
+pub use bytes;
 
 // ============================================================================
 // FFI declarations
@@ -68,5 +69,3 @@ pub extern "C" fn orion_malloc(size: u32) -> *mut u8 {
     std::mem::forget(buf);
     ptr
 }
-mod test_serde;
-mod test_serde2;

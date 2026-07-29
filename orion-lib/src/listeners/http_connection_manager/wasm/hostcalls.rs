@@ -13,7 +13,7 @@ use crate::listeners::metadata::DownstreamMetadata;
 use crate::OrionRequestBody;
 use crate::OrionResponseBody;
 use bytes::Bytes;
-use http::StatusCode;
+
 use http::{Request, Response};
 use http_body_util::Full;
 use smol_str::{SmolStr, ToSmolStr};
@@ -266,44 +266,31 @@ fn orion_set_body(mut caller: Caller<'_, WasmState>, _is_trailer: u32, body_ptr:
     0
 }
 
-fn orion_send_direct_response(
-    mut caller: Caller<'_, WasmState>,
-    status_code: u32,
-    body_ptr: u32,
-    body_len: u32,
-) -> i32 {
+fn orion_send_direct_response(mut caller: Caller<'_, WasmState>, resp_ptr: u32, resp_len: u32) -> i32 {
     use crate::body::poly_body::PolyBody;
 
     let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
         return OrionWasmError::InvalidMemoryAccess.into();
     };
 
-    let req_ptr = match caller.data().active_request_handle {
-        Some(p) => p,
-        None => return OrionWasmError::InternalError.into(),
-    };
-    let request = unsafe { &*(req_ptr as *const Request<OrionRequestBody>) };
-
-    let body_bytes = if body_len > 0 {
-        let data = memory.data(&caller);
-        let start = body_ptr as usize;
-        let end = start + body_len as usize;
-        match data.get(start..end) {
-            Some(s) => Bytes::copy_from_slice(s),
-            None => return OrionWasmError::InvalidMemoryAccess.into(),
-        }
-    } else {
-        Bytes::new()
+    let data = memory.data(&caller);
+    let start = resp_ptr as usize;
+    let end = start + resp_len as usize;
+    let slice = match data.get(start..end) {
+        Some(s) => s,
+        None => return OrionWasmError::InvalidMemoryAccess.into(),
     };
 
-    let status = match StatusCode::from_u16(u16::try_from(status_code).unwrap_or(500)) {
-        Ok(s) => s,
+    let direct_resp = match bincode_next::serde::decode_from_slice::<orion_wasm_types::DirectResponse, _>(
+        slice,
+        bincode_next::config::standard(),
+    ) {
+        Ok((r, _)) => r,
         Err(_) => return OrionWasmError::InternalError.into(),
     };
 
-    let mut response = Response::new(TimeoutBody::new(None, PolyBody::from(Full::from(body_bytes))));
-    *response.status_mut() = status;
-    *response.version_mut() = request.version();
+    let (parts, body) = direct_resp.response.into_parts();
+    let response = Response::from_parts(parts, TimeoutBody::new(None, PolyBody::from(Full::from(body))));
 
     caller.data_mut().direct_response = Some(response);
 

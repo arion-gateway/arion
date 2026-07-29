@@ -83,19 +83,13 @@ impl<S: State> RequestHandle<S> {
     ///
     /// Calling this method stages the direct response on the host. The response will be sent to the client
     /// when the plugin hook returns [`FilterAction::DirectResponse`].
-    pub fn schedule_direct_response(&self, status_code: u16, body: &[u8]) -> Result<(), OrionWasmError> {
-        send_http_direct_response(status_code, body)
-    }
-
-    /// Alias for [`schedule_direct_response`].
-    #[deprecated(note = "use `schedule_direct_response` instead")]
-    pub fn send_direct_response(&self, status_code: u16, body: &[u8]) -> Result<(), OrionWasmError> {
-        self.schedule_direct_response(status_code, body)
+    pub fn schedule_direct_response(&self, response: http::Response<bytes::Bytes>) -> Result<(), OrionWasmError> {
+        send_http_direct_response(response)
     }
 
     /// Convenience wrapper around `schedule_direct_response`.
-    pub fn direct_response(&self, status_code: u16, body: &[u8]) -> FilterAction {
-        match self.schedule_direct_response(status_code, body) {
+    pub fn direct_response(&self, response: http::Response<bytes::Bytes>) -> FilterAction {
+        match self.schedule_direct_response(response) {
             Ok(()) => FilterAction::DirectResponse,
             Err(_) => FilterAction::Continue,
         }

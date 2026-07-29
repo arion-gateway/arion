@@ -139,11 +139,13 @@ pub(crate) fn set_http_body(is_trailer: u32, body: &[u8]) -> Result<(), OrionWas
 
 /// Send a direct (local) HTTP response and short-circuit the filter chain.
 pub(crate) fn send_http_direct_response(
-    status_code: u16,
-    body: &[u8],
+    response: http::Response<bytes::Bytes>,
 ) -> Result<(), OrionWasmError> {
+    let direct_resp = orion_wasm_types::DirectResponse { response };
+    let serialized = bincode_next::serde::encode_to_vec(&direct_resp, bincode_next::config::standard())
+        .map_err(|_| OrionWasmError::InternalError)?;
     let res = unsafe {
-        ffi::orion_send_direct_response(status_code as u32, body.as_ptr(), body.len() as u32)
+        ffi::orion_send_direct_response(serialized.as_ptr(), serialized.len() as u32)
     };
 
     OrionWasmError::from_ffi(res)

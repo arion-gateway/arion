@@ -27,7 +27,7 @@ impl Plugin for BodyMutationFilter {
 
     fn on_request_body(&mut self, ctx: &RequestHandle<HttpBody>) -> FilterAction {
         if let Ok(body_bytes) = ctx.get_body() {
-            let mut new_body = body_bytes.clone();
+            let mut new_body = body_bytes.to_vec();
             match self.req_action.as_str() {
                 "append" => new_body.extend_from_slice(b" [appended]"),
                 "prepend" => {
@@ -46,7 +46,7 @@ impl Plugin for BodyMutationFilter {
 
     fn on_response_body(&mut self, ctx: &ResponseHandle<HttpBody>) -> FilterAction {
         if let Ok(body_bytes) = ctx.get_body() {
-            let mut new_body = body_bytes.clone();
+            let mut new_body = body_bytes.to_vec();
             match self.res_action.as_str() {
                 "append" => new_body.extend_from_slice(b" [appended]"),
                 "prepend" => {
