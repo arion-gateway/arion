@@ -29,6 +29,7 @@ pub fn release(runtime_id: usize, server_name: &str) {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::assertions_on_result_states)]
     use super::*;
 
     #[test]

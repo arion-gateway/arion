@@ -277,7 +277,7 @@ impl TryFrom<McpGatewayConfig> for McpGateway {
             let server_name: SmolStr = config.server_info.name.as_str().into();
             super::uniqueness::claim(runtime_id, server_name.clone()).map_err(ToolBuilderError::DuplicateServerName)?;
             let scope: SmolStr = format!("{server_name}/{config_name}", config_name = tds.config_name).into();
-            super::xds_handler::subscribe_for_updates(scope.clone(), Arc::clone(&tools));
+            super::xds_handler::subscribe_for_updates(scope.clone(), &tools);
             Some(TdsRegistration { runtime_id, server_name, scope })
         } else {
             None
@@ -413,68 +413,62 @@ impl McpGateway {
         let upstream_status = response.status();
         let body_string = McpGateway::extract_body_string(&body_bytes, upstream_status);
 
-        let structured_content = match self.current_tool.take().as_deref() {
-            Some(tool) => {
-                let value = match &tool.transcoder {
-                    TranscoderType::Rest(rest_transcoder) => {
-                        // For REST transcoder, decode upstream message only if
-                        // we have to validate it against an output_schema
-                        if tool.output_schema_validator.is_some() {
-                            match rest_transcoder.decode(body_bytes, upstream_status) {
-                                Ok(value) => Some(value),
-                                Err(e) => {
-                                    debug!(target: "mcp_gateway", "apply_response: transcoder decode error: {e}");
-                                    Some(json!({
-                                        "error": format!("Failed to decode upstream response: {e}"),
-                                            "status": upstream_status.as_u16()
-                                    }))
-                                },
-                            }
-                        } else {
-                            None
+        let structured_content = if let Some(tool) = self.current_tool.take().as_deref() {
+            let value = match &tool.transcoder {
+                TranscoderType::Rest(rest_transcoder) => {
+                    // For REST transcoder, decode upstream message only if
+                    // we have to validate it against an output_schema
+                    if tool.output_schema_validator.is_some() {
+                        match rest_transcoder.decode(body_bytes, upstream_status) {
+                            Ok(value) => Some(value),
+                            Err(e) => {
+                                debug!(target: "mcp_gateway", "apply_response: transcoder decode error: {e}");
+                                Some(json!({
+                                    "error": format!("Failed to decode upstream response: {e}"),
+                                        "status": upstream_status.as_u16()
+                                }))
+                            },
                         }
-                    },
-                    TranscoderType::FunctionGraph(_) => unimplemented!(),
-                    TranscoderType::NoTranscoder => None,
-                };
-                value.map(|value| match tool.validate_against_output_schema(&value) {
-                    Ok(()) => value,
-                    Err(e) => {
-                        debug!(target: "mcp_gateway", "apply_response: output schema validation error: {e}");
-                        json!({
-                            "error": format!("Failed to validate upstream response against output schema: {e}"),
-                                "status": upstream_status.as_u16()
-                        })
-                    },
-                })
-            },
-            None => {
-                error!(target: "mcp_gateway", "apply_response: no current tool recorded to process upstream response");
-                None
-            },
+                    } else {
+                        None
+                    }
+                },
+                TranscoderType::FunctionGraph(_) => unimplemented!(),
+                TranscoderType::NoTranscoder => None,
+            };
+            value.map(|value| match tool.validate_against_output_schema(&value) {
+                Ok(()) => value,
+                Err(e) => {
+                    debug!(target: "mcp_gateway", "apply_response: output schema validation error: {e}");
+                    json!({
+                        "error": format!("Failed to validate upstream response against output schema: {e}"),
+                            "status": upstream_status.as_u16()
+                    })
+                },
+            })
+        } else {
+            error!(target: "mcp_gateway", "apply_response: no current tool recorded to process upstream response");
+            None
         };
 
         // Build the CallToolResult with the raw response as content. If we are
         // here the response has been validated against the output schema.
         // The result_value will be injected as structured_content.
 
-        let tool_result = match structured_content {
-            Some(value) => {
-                if upstream_status.is_success() {
-                    CallToolResult::structured(value)
-                } else {
-                    CallToolResult::structured_error(value)
-                }
-            },
-            None => {
-                let content = RawContent::Text(RawTextContent { text: body_string, meta: None });
-                let content = vec![Annotated::new(content, None)];
-                if upstream_status.is_success() {
-                    CallToolResult::success(content)
-                } else {
-                    CallToolResult::error(content)
-                }
-            },
+        let tool_result = if let Some(value) = structured_content {
+            if upstream_status.is_success() {
+                CallToolResult::structured(value)
+            } else {
+                CallToolResult::structured_error(value)
+            }
+        } else {
+            let content = RawContent::Text(RawTextContent { text: body_string, meta: None });
+            let content = vec![Annotated::new(content, None)];
+            if upstream_status.is_success() {
+                CallToolResult::success(content)
+            } else {
+                CallToolResult::error(content)
+            }
         };
 
         let server_result = ServerResult::CallToolResult(tool_result);
@@ -626,7 +620,7 @@ impl McpGateway {
         let mut session_id = request.get_mcp_session_id();
 
         let mut session: Option<Arc<Session>> = match &session_id {
-            Some(session_id) => match (self.get_valid_session(ctx, session_id), &json_rpc_message, transport) {
+            Some(session_id) => match (Self::get_valid_session(ctx, session_id), &json_rpc_message, transport) {
                 (_, model::JsonRpcMessage::Request(r), Transport::StreamableHttp)
                     if r.request.method.as_str() == InitializeResultMethod::VALUE =>
                 {
@@ -907,7 +901,7 @@ impl McpGateway {
                 else {
                     return FilterDecision::internal_server_error("Failed to build response", self.version);
                 };
-                return FilterDecision::DirectResponse(Box::new(accepted));
+                FilterDecision::DirectResponse(Box::new(accepted))
             },
         }
     }
@@ -1224,16 +1218,16 @@ impl McpGateway {
         }
     }
 
-    fn get_valid_session(&mut self, ctx: &McpGatewayListenerContext, session_id: &SessionId) -> Option<Arc<Session>> {
+    fn get_valid_session(ctx: &McpGatewayListenerContext, session_id: &SessionId) -> Option<Arc<Session>> {
         let Some(session) = ctx.session_map.get(session_id) else {
             debug!(target: "mcp_gateway", "get_valid_session: session {} not found in session map", session_id);
             return None;
         };
 
         session.last_activity.store(std::time::Instant::now(), std::sync::atomic::Ordering::Relaxed);
-        let session: Arc<Session> = session.clone();
+        let session: Arc<Session> = Arc::clone(&session);
         debug!(target: "mcp_gateway", "get_valid_session: {session_id} -> {session:?}");
-        Some(session.clone())
+        Some(session)
     }
 
     async fn send_sse_message(

@@ -166,10 +166,10 @@ impl EmbeddingsClient {
     pub async fn embed_query(&self, text: &str) -> Result<Embedding, EmbeddingError> {
         #[cfg(test)]
         if let Some(mode) = &self.test_mode {
-            return self.test_embed_query(mode, text);
+            return Self::test_embed_query(mode, text);
         }
 
-        let mut vectors = self.post_for_embeddings(vec![text.to_string()]).await?;
+        let mut vectors = self.post_for_embeddings(vec![text.to_owned()]).await?;
         let v = vectors.pop().ok_or_else(|| EmbeddingError::Service("empty result".into()))?;
         self.finalize(v)
     }
@@ -177,7 +177,7 @@ impl EmbeddingsClient {
     pub async fn embed_batch(&self, texts: &[String]) -> Result<Vec<Embedding>, EmbeddingError> {
         #[cfg(test)]
         if let Some(mode) = &self.test_mode {
-            return self.test_embed_batch(mode, texts);
+            return Self::test_embed_batch(mode, texts);
         }
 
         if texts.is_empty() {
@@ -221,7 +221,7 @@ impl EmbeddingsClient {
     }
 
     #[cfg(test)]
-    fn test_embed_query(&self, mode: &TestMode, text: &str) -> Result<Embedding, EmbeddingError> {
+    fn test_embed_query(mode: &TestMode, text: &str) -> Result<Embedding, EmbeddingError> {
         match mode {
             TestMode::OneHot => Ok(Arc::new(one_hot_for(text))),
             TestMode::Failing => Err(EmbeddingError::Service("boom".into())),
@@ -230,7 +230,7 @@ impl EmbeddingsClient {
     }
 
     #[cfg(test)]
-    fn test_embed_batch(&self, mode: &TestMode, texts: &[String]) -> Result<Vec<Embedding>, EmbeddingError> {
+    fn test_embed_batch(mode: &TestMode, texts: &[String]) -> Result<Vec<Embedding>, EmbeddingError> {
         match mode {
             TestMode::OneHot => Ok(texts.iter().map(|text| Arc::new(one_hot_for(text))).collect()),
             TestMode::Failing => Err(EmbeddingError::Service("boom".into())),
@@ -271,6 +271,7 @@ enum TestMode {
 }
 
 #[cfg(test)]
+#[allow(clippy::indexing_slicing)]
 fn one_hot_for(text: &str) -> Vec<f32> {
     let lower = text.to_lowercase();
     let mut v = vec![0.0_f32; 3];
@@ -289,6 +290,7 @@ fn one_hot_for(text: &str) -> Vec<f32> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::indexing_slicing, clippy::assertions_on_result_states)]
     use super::*;
 
     #[test]

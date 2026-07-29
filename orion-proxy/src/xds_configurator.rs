@@ -142,7 +142,7 @@ impl XdsConfigurationHandler {
 
         let mut cluster_names = ads_cluster_names.into_iter().cycle();
         let (mut worker, client, subscription_manager) = loop {
-            let cluster_name = cluster_names.next().expect("cycle over non-empty vec");
+            let cluster_name = cluster_names.next().unwrap_or_else(|| unreachable!("cycle over non-empty vec"));
             if let Ok(val) = Self::resolve_endpoints(&cluster_name, node) {
                 break val;
             }

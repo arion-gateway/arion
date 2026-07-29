@@ -816,6 +816,11 @@ impl Service<PipelineRequest<Request<OrionRequestBody>>> for HttpPipelineSvc {
             let downstream_addr = downstream.connection.peer_address();
             let stream_metrics_clone = Arc::clone(&stream_metrics);
 
+            request.extensions_mut().insert(MetadataContext {
+                downstream: downstream.clone(),
+                stream_metrics: Arc::clone(&stream_metrics),
+            });
+
             // check if this is the first request on the stream, and if so, record it in the metrics.
             if stream_metrics.inc_requests() == 0 {
                 #[cfg(feature = "metrics")]
@@ -2121,8 +2126,8 @@ fn instrument_early_failure_response(
                         #[allow(unused_variables)]
                         let tx_duration = Instant::now().saturating_duration_since(first_byte_instant);
 
-                        with_access_log!(&mut log_ctx.loggers, HttpResponseDurationContext { duration, tx_duration });
-                    }
+                        with_access_log!(&mut log_ctx.loggers, HttpResponseDurationContext { duration, tx_duration })
+                    };
 
                     if trans_ctx.trans_phase.is_complete() {
                         let sm_arc = sm_for_cb2.clone().unwrap();

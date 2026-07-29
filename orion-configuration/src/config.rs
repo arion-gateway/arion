@@ -80,13 +80,9 @@ impl Config {
         Self { runtime, ..self }
     }
 
-    fn validate(self) -> Result<Self> {
-        Ok(self)
-    }
-
     #[cfg(not(feature = "envoy-conversions"))]
     pub fn new(opt: &Options) -> Result<Self> {
-        deserialize_yaml(&opt.config).and_then(Config::validate).map(|conf| conf.apply_options(opt))
+        deserialize_yaml(&opt.config).map(|conf| conf.apply_options(opt))
     }
 }
 
@@ -198,7 +194,7 @@ mod envoy_conversions {
                     Self { runtime, logging, access_log_config, metrics, timezone, bootstrap }
                 },
             };
-            Ok(config.validate()?.apply_options(opt))
+            Ok(config.apply_options(opt))
         }
     }
     #[cfg(test)]

@@ -252,7 +252,7 @@ mod envoy_conversions {
         type Error = GenericError;
         fn try_from(orion: OrionDynamicMcpServer) -> Result<Self, Self::Error> {
             let transport = orion.transport().into();
-            let OrionDynamicMcpServer { name, description, url, cache_duration, rbac, transport: _ } = orion;
+            let OrionDynamicMcpServer { name, description, url, cache_duration, rbac, .. } = orion;
             if name.is_empty() {
                 return Err(GenericError::from_msg("DynamicMcpServer.name must not be empty"));
             }
@@ -501,6 +501,7 @@ mod envoy_conversions {
 
     #[cfg(test)]
     mod tests {
+        #![allow(clippy::assertions_on_result_states)]
         use super::*;
 
         #[test]

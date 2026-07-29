@@ -275,7 +275,7 @@ impl ToolsRegistry {
     pub async fn bootstrap(&self) -> Result<(), CallToolError> {
         self.bootstrapped
             .get_or_init(|| async {
-                for server in self.dynamic_mcp_servers.iter() {
+                for server in &self.dynamic_mcp_servers {
                     self.fetch_and_materialise(server.value()).await;
                 }
             })
@@ -298,7 +298,7 @@ impl ToolsRegistry {
 
         let mut names: Vec<SmolStr> = Vec::new();
         let mut texts: Vec<String> = Vec::new();
-        for shard in self.tools.iter() {
+        for shard in &self.tools {
             let entry = shard.value();
             if let Some(allowed) = restrict_to {
                 if !allowed.contains(&entry.conf.name) {
@@ -424,7 +424,7 @@ impl ToolsRegistry {
         // - No semantic search: always fill all tools
         // - Assisted discovery mode: only fill tools after prompt is set (notification flow)
         // - Direct call mode: always fill all tools (client calls semantic search tool directly)
-        let should_fill_tools = self.semantic_search.as_ref().map_or(true, |ss| {
+        let should_fill_tools = self.semantic_search.as_ref().is_none_or(|ss| {
             if ss.enable_assisted_discovery {
                 session.as_ref().is_some_and(|s| s.prompt.lock().is_some())
             } else {
@@ -444,16 +444,13 @@ impl ToolsRegistry {
 
         let restrict_to_active = self.semantic_search.is_some() && session.is_some_and(|s| !s.active_tools.is_empty());
 
-        for entry in self.tools.iter() {
+        for entry in &self.tools {
             let entry = entry.value();
             if !entry.rbac.as_ref().is_none_or(|rbac| rbac.is_permitted(req_ext)) {
                 continue;
             }
-            if restrict_to_active {
-                let session = session.expect("restrict_to_active implies session");
-                if !session.active_tools.contains(&entry.conf.name) {
-                    continue;
-                }
+            if restrict_to_active && !session.is_some_and(|s| s.active_tools.contains(&entry.conf.name)) {
+                continue;
             }
             tools.push(tool_from_entry(entry));
         }
@@ -522,7 +519,7 @@ impl ToolsRegistry {
             .map(|tool| {
                 let upstream_tool_name: SmolStr = tool.name.as_ref().into();
                 let exposed_name: SmolStr = format!("{server_name}{DYNAMIC_TOOL_SEPARATOR}{upstream_tool_name}").into();
-                let description = tool.description.as_deref().map(ToString::to_string).unwrap_or_default();
+                let description = tool.description.as_deref().map(str::to_owned).unwrap_or_default();
                 let input_schema = tool.input_schema.as_ref().clone();
                 let conf = McpTool {
                     name: exposed_name,
@@ -612,8 +609,8 @@ impl ToolsRegistry {
         }
         {
             let mut session_prompt = session.prompt.lock();
-            *session_prompt = Some(prompt.clone());
-        }
+            *session_prompt = Some(prompt.clone())
+        };
 
         if semantic_search.enable_assisted_discovery {
             // Assisted discovery mode: send notification to trigger client re-list. The follow-up
@@ -642,7 +639,7 @@ impl ToolsRegistry {
             let tools_json = serde_json::to_value(&tools).unwrap_or_else(|_| serde_json::Value::Array(vec![]));
 
             let text_content = RawTextContent {
-                text: serde_json::to_string_pretty(&tools_json).unwrap_or_else(|_| "[]".to_string()),
+                text: serde_json::to_string_pretty(&tools_json).unwrap_or_else(|_| "[]".to_owned()),
                 meta: None,
             };
 
@@ -666,9 +663,9 @@ impl ToolsRegistry {
         user_query: &str,
     ) -> Result<Vec<Arc<ToolEntry>>, CallToolError> {
         let mut candidates: Vec<Arc<ToolEntry>> = Vec::with_capacity(self.tools.len());
-        for entry in self.tools.iter() {
+        for entry in &self.tools {
             let entry = Arc::clone(entry.value());
-            if !entry.rbac.as_ref().map_or(true, |r| r.is_permitted(req_ext)) {
+            if !entry.rbac.as_ref().is_none_or(|r| r.is_permitted(req_ext)) {
                 continue;
             }
             candidates.push(entry);
@@ -676,7 +673,7 @@ impl ToolsRegistry {
 
         let mut scored = match self.vector_scores(user_query, &candidates).await {
             Some(scored) => scored,
-            None => self.bm25_scores(user_query, &candidates),
+            None => Self::bm25_scores(user_query, &candidates),
         };
 
         scored.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.conf.name.cmp(&b.1.conf.name)));
@@ -737,7 +734,7 @@ impl ToolsRegistry {
         Some(scored)
     }
 
-    fn bm25_scores(&self, user_query: &str, candidates: &[Arc<ToolEntry>]) -> Vec<(f32, Arc<ToolEntry>)> {
+    fn bm25_scores(user_query: &str, candidates: &[Arc<ToolEntry>]) -> Vec<(f32, Arc<ToolEntry>)> {
         let documents: Vec<&Bm25Document> = candidates.iter().map(|entry| &entry.bm25_doc).collect();
         embeddings::bm25_scores(user_query, &documents)
             .into_iter()
@@ -758,10 +755,8 @@ impl ToolsRegistry {
         let name = rpc.request.params.get("name").and_then(Value::as_str).ok_or(CallToolError::NameNotString)?;
         debug!(target: "mcp_gateway", "call: method:{} tool '{name}'", rpc.request.method);
 
-        if name == SEMANTIC_SEARCH_TOOL_NAME {
-            if self.semantic_search.is_some() {
-                return self.call_semantic_search_tool(req_ext, rpc, session).await;
-            }
+        if name == SEMANTIC_SEARCH_TOOL_NAME && self.semantic_search.is_some() {
+            return self.call_semantic_search_tool(req_ext, rpc, session).await;
             // todo(francesco) we should send back an error if agent is invoking semantic_search tool and none is configured
         }
 
@@ -769,11 +764,11 @@ impl ToolsRegistry {
         let entry = self
             .get_tool_by_name(name)
             .filter(|_| !filter_by_active || session.active_tools.contains(name))
-            .ok_or_else(|| CallToolError::ToolNotFound(name.to_string()))?;
+            .ok_or_else(|| CallToolError::ToolNotFound(name.to_owned()))?;
 
         if let Some(rbac) = &entry.rbac {
             if !rbac.is_permitted(req_ext) {
-                return Err(CallToolError::RbacDenied(name.to_string()));
+                return Err(CallToolError::RbacDenied(name.to_owned()));
             }
         }
 
@@ -811,7 +806,7 @@ impl ToolsRegistry {
                 };
 
                 let call_params = match &rpc.request.params.get("arguments") {
-                    Some(&serde_json::Value::Object(ref args)) => {
+                    Some(serde_json::Value::Object(args)) => {
                         CallToolRequestParams::new(upstream_tool_name.to_string()).with_arguments(args.clone())
                     },
                     _ => CallToolRequestParams::new(upstream_tool_name.to_string()),
@@ -914,10 +909,10 @@ fn tool_from_entry(entry: &ToolEntry) -> Tool {
         entry.conf.description.clone(),
         Arc::new(entry.conf.input_schema.clone()),
     );
-    if !entry.conf.output_schema.is_empty() {
-        tool.with_raw_output_schema(Arc::new(entry.conf.output_schema.clone()))
-    } else {
+    if entry.conf.output_schema.is_empty() {
         tool
+    } else {
+        tool.with_raw_output_schema(Arc::new(entry.conf.output_schema.clone()))
     }
 }
 
@@ -980,6 +975,7 @@ fn convert_config_rbac_to_runtime(config_rbac: &McpToolRbac) -> ToolRbac {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::indexing_slicing, clippy::assertions_on_result_states)]
     use super::*;
     use serde_json::json;
 

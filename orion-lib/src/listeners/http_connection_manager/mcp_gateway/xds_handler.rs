@@ -44,16 +44,15 @@ pub fn get_mcp_xds_handler() -> Option<&'static Arc<McpXdsHandler>> {
     MCP_XDS_HANDLER.get()
 }
 
-pub fn subscribe_for_updates(scope: SmolStr, registry: Arc<ToolsRegistry>) {
-    match get_mcp_xds_handler() {
-        Some(handler) => handler.register(scope, registry),
-        None => {
-            debug!(target: "mcp_gateway", "xDS handler not initialized; queuing MCP filter TDS subscription for '{scope}'");
-            queue_subscription(pending_subscriptions(), scope, &registry);
-            if let Some(handler) = get_mcp_xds_handler() {
-                drain_pending_subscriptions(pending_subscriptions(), handler);
-            }
-        },
+pub fn subscribe_for_updates(scope: SmolStr, registry: &Arc<ToolsRegistry>) {
+    if let Some(handler) = get_mcp_xds_handler() {
+        handler.register(scope, registry);
+    } else {
+        debug!(target: "mcp_gateway", "xDS handler not initialized; queuing MCP filter TDS subscription for '{scope}'");
+        queue_subscription(pending_subscriptions(), scope, registry);
+        if let Some(handler) = get_mcp_xds_handler() {
+            drain_pending_subscriptions(pending_subscriptions(), handler);
+        }
     }
 }
 
@@ -90,7 +89,7 @@ fn drain_pending_subscriptions(subscriptions: &SubscriptionsByScope, handler: &M
     for scope in scopes {
         let Some((scope, registries)) = subscriptions.remove(scope.as_str()) else { continue };
         for registry in registries.into_iter().filter_map(|weak| weak.upgrade()) {
-            handler.register(scope.clone(), registry);
+            handler.register(scope.clone(), &registry);
         }
     }
 }
@@ -112,9 +111,9 @@ impl McpXdsHandler {
         }
     }
 
-    pub fn register(&self, scope: SmolStr, registry: Arc<ToolsRegistry>) {
+    pub fn register(&self, scope: SmolStr, registry: &Arc<ToolsRegistry>) {
         debug!(target: "mcp_gateway", "Registering TDS registry for scope: {scope}");
-        self.subscriptions_by_scope.entry(scope).or_default().push(Arc::downgrade(&registry));
+        self.subscriptions_by_scope.entry(scope).or_default().push(Arc::downgrade(registry));
         self.try_subscribe();
     }
 
@@ -123,7 +122,7 @@ impl McpXdsHandler {
             let sub = Arc::clone(&self.subscriber);
             tokio::spawn(async move {
                 for url in SUPPORTED_TYPE_URLS {
-                    if let Err(e) = sub.subscribe("*".to_owned(), TypeUrl::Extension((*url).to_string())).await {
+                    if let Err(e) = sub.subscribe("*".to_owned(), TypeUrl::Extension((*url).to_owned())).await {
                         warn!(target: "mcp_gateway", "Failed to subscribe to MCP extension type URL {url}: {e}");
                     } else {
                         debug!(target: "mcp_gateway", "Subscribed to MCP extension type URL {url}");
@@ -142,6 +141,7 @@ impl McpXdsHandler {
     // `(scope = "{server_name}/{config_name}", resource_name)`. Resource
     // name may contain `/`; server_name and config_name may not (enforced
     // at config parse time), so the boundary is unambiguous.
+    #[allow(clippy::string_slice)]
     fn split_resource_id(resource_id: &str) -> Result<(&str, &str), XdsExtensionError> {
         let mut parts = resource_id.splitn(3, '/');
         let (Some(server), Some(config), Some(name)) = (parts.next(), parts.next(), parts.next()) else {
@@ -292,6 +292,7 @@ impl XdsExtensionHandler for McpXdsHandler {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::indexing_slicing, clippy::assertions_on_result_states)]
     use super::*;
     use crate::listeners::http_connection_manager::mcp_gateway::embeddings;
     use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::mcp::mcp_gateway::v3::{
@@ -405,8 +406,8 @@ mod tests {
         let scope: SmolStr = "srv/cfg".into();
         let r1 = empty_registry();
         let r2 = empty_registry();
-        handler.register(scope.clone(), Arc::clone(&r1));
-        handler.register(scope.clone(), Arc::clone(&r2));
+        handler.register(scope.clone(), &r1);
+        handler.register(scope.clone(), &r2);
         assert_eq!(scope_len(&handler, &scope), 2);
 
         handler.unregister(&scope, &r1);
@@ -423,8 +424,8 @@ mod tests {
         let scope: SmolStr = "srv/cfg".into();
         let r1 = empty_registry();
         let r2 = empty_registry();
-        handler.register(scope.clone(), Arc::clone(&r1));
-        handler.register(scope.clone(), Arc::clone(&r2));
+        handler.register(scope.clone(), &r1);
+        handler.register(scope.clone(), &r2);
 
         drop(r1);
         let live = handler.live_registries(&scope);
@@ -446,7 +447,7 @@ mod tests {
     async fn tool_update_uses_resource_name_when_payload_name_differs() {
         let handler = stub_handler();
         let registry = empty_registry();
-        handler.register("srv/cfg".into(), Arc::clone(&registry));
+        handler.register("srv/cfg".into(), &registry);
 
         let proto = rest_tool_proto("payload_name");
         let payload = proto.encode_to_vec();
@@ -479,7 +480,7 @@ mod tests {
             )
             .unwrap(),
         );
-        handler.register("srv/cfg".into(), Arc::clone(&registry));
+        handler.register("srv/cfg".into(), &registry);
 
         let payload = rest_tool_proto("needs_embedding").encode_to_vec();
         let res = handler.handle_update(MCP_TOOL_TYPE_URL, "srv/cfg/needs_embedding", &payload).await;
@@ -514,14 +515,14 @@ mod tests {
         let (sub, mut rx) = test_sub_mgr();
         let handler = McpXdsHandler::new(sub);
 
-        handler.register("srv/cfg".into(), empty_registry());
+        handler.register("srv/cfg".into(), &empty_registry());
         let urls = drain_subscribes(&mut rx).await;
         assert_eq!(urls.len(), SUPPORTED_TYPE_URLS.len());
         for expected in SUPPORTED_TYPE_URLS {
             assert!(urls.iter().any(|u| u == expected));
         }
 
-        handler.register("srv/cfg2".into(), empty_registry());
+        handler.register("srv/cfg2".into(), &empty_registry());
         assert!(drain_subscribes(&mut rx).await.is_empty());
     }
 }

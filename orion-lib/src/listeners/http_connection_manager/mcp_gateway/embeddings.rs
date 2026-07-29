@@ -37,12 +37,7 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> Result<f32, EmbeddingError> {
     if a.len() != b.len() {
         return Err(EmbeddingError::DimensionMismatch { expected: a.len(), got: b.len() });
     }
-
-    let mut acc = 0.0f32;
-    for i in 0..a.len() {
-        acc += a[i] * b[i];
-    }
-    Ok(acc)
+    Ok(a.iter().zip(b.iter()).map(|(x, y)| x * y).sum())
 }
 
 #[inline]
@@ -113,7 +108,11 @@ impl Bm25Document {
     }
 }
 
+#[allow(clippy::cast_precision_loss)]
 pub fn bm25_scores(query: &str, documents: &[&Bm25Document]) -> Vec<f32> {
+    const K1: f32 = 1.2;
+    const B: f32 = 0.75;
+
     if documents.is_empty() {
         return Vec::new();
     }
@@ -128,8 +127,6 @@ pub fn bm25_scores(query: &str, documents: &[&Bm25Document]) -> Vec<f32> {
         return vec![0.0; documents.len()];
     }
 
-    const K1: f32 = 1.2;
-    const B: f32 = 0.75;
     let document_count = documents.len() as f32;
     let idfs: Vec<f32> = query_terms
         .iter()
@@ -174,6 +171,12 @@ fn tokenize(text: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::indexing_slicing,
+        clippy::assertions_on_result_states,
+        clippy::cast_precision_loss,
+        clippy::items_after_statements
+    )]
     use super::*;
     use serde_json::json;
 

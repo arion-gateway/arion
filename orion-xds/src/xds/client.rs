@@ -315,9 +315,9 @@ impl<C: bindings::TypedXdsBinding> DeltaClientBackgroundWorker<C> {
         let type_url = TypeUrl::from(response.type_url.as_str());
         let nonce = response.nonce.clone();
         info!(type_url = type_url.to_string(), size = response.resources.len(), "received config resources from xDS");
-        let for_removal = Self::process_resource_ids_for_removal(state, &response, type_url.clone());
+        let for_removal = Self::process_resource_ids_for_removal(state, &response, &type_url);
 
-        match Self::decode_pending_updates(&response, type_url.clone()) {
+        match Self::decode_pending_updates(&response, &type_url) {
             Ok(mut decoded_updates) => {
                 let (internal_ack_tx, internal_ack_rx) = oneshot::channel::<Vec<RejectedConfig>>();
 
@@ -433,14 +433,14 @@ impl<C: bindings::TypedXdsBinding> DeltaClientBackgroundWorker<C> {
     fn process_resource_ids_for_removal(
         state: &mut DiscoveryClientState,
         response: &DeltaDiscoveryResponse,
-        type_url: TypeUrl,
+        type_url: &TypeUrl,
     ) -> Vec<String> {
         response
             .removed_resources
             .iter()
             .map(|resource_id| {
                 debug!("received delete for config resource {}", resource_id);
-                if let Some(resources) = state.tracked.get_mut(&type_url) {
+                if let Some(resources) = state.tracked.get_mut(type_url) {
                     resources.remove(resource_id);
                 }
                 resource_id.clone()
@@ -450,7 +450,7 @@ impl<C: bindings::TypedXdsBinding> DeltaClientBackgroundWorker<C> {
 
     fn decode_pending_updates(
         response: &DeltaDiscoveryResponse,
-        type_url: TypeUrl,
+        type_url: &TypeUrl,
     ) -> Result<Vec<XdsResourceUpdate>, Vec<RejectedConfig>> {
         let mut decoding_errors = Vec::<RejectedConfig>::new();
         let decoded_updates = response
