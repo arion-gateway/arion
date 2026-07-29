@@ -101,7 +101,7 @@ ipnet                    = "2.11"
 itertools                = "0.14.0"
 itoa                     = "1.0.15"
 jsonschema               = "0.42.1"
-jsonwebtoken             = { version = "10.3.0", features = ["rust_crypto"] }
+jsonwebtoken             = { version = "10.3.0", features = ["aws_lc_rs"] }
 lasso                    = { version = "0.7.3", features = ["ahash", "ahasher", "dashmap", "multi-threaded"] }
 lru_time_cache           = "0.11.11"
 maud                     = "0.26"
