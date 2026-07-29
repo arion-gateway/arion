@@ -1008,8 +1008,8 @@ fn orion_dispatch_http_call(
 struct RawBytesCodec;
 
 impl tonic::codec::Codec for RawBytesCodec {
-    type Encode = Vec<u8>;
-    type Decode = Vec<u8>;
+    type Encode = bytes::Bytes;
+    type Decode = bytes::Bytes;
     type Encoder = RawBytesEncoder;
     type Decoder = RawBytesDecoder;
 
@@ -1023,7 +1023,7 @@ impl tonic::codec::Codec for RawBytesCodec {
 
 struct RawBytesEncoder;
 impl tonic::codec::Encoder for RawBytesEncoder {
-    type Item = Vec<u8>;
+    type Item = bytes::Bytes;
     type Error = tonic::Status;
 
     fn encode(&mut self, item: Self::Item, dst: &mut tonic::codec::EncodeBuf<'_>) -> Result<(), Self::Error> {
@@ -1034,7 +1034,7 @@ impl tonic::codec::Encoder for RawBytesEncoder {
 
 struct RawBytesDecoder;
 impl tonic::codec::Decoder for RawBytesDecoder {
-    type Item = Vec<u8>;
+    type Item = bytes::Bytes;
     type Error = tonic::Status;
 
     fn decode(&mut self, src: &mut tonic::codec::DecodeBuf<'_>) -> Result<Option<Self::Item>, Self::Error> {
@@ -1042,7 +1042,7 @@ impl tonic::codec::Decoder for RawBytesDecoder {
         if !src.has_remaining() {
             return Ok(None);
         }
-        let bytes = src.copy_to_bytes(src.remaining()).to_vec();
+        let bytes = src.copy_to_bytes(src.remaining());
         Ok(Some(bytes))
     }
 }
@@ -1183,7 +1183,7 @@ fn orion_dispatch_grpc_call(
                 }
                 GrpcCalloutResponse {
                     initial_metadata: Vec::new(),
-                    message: Vec::new(),
+                    message: bytes::Bytes::new(),
                     trailing_metadata,
                     status: status.code() as u32,
                     status_message: status.message().into(),

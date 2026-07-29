@@ -52,7 +52,7 @@ impl<S: State> ResponseHandle<S> {
 
 impl ResponseHandle<HttpBody> {
     /// Read the buffered response body.
-    pub fn get_body(&self) -> Result<Vec<u8>, OrionWasmError> {
+    pub fn get_body(&self) -> Result<bytes::Bytes, OrionWasmError> {
         get_http_body( 0)
     }
 

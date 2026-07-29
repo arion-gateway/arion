@@ -97,7 +97,7 @@ pub(crate) fn get_http_header(
 }
 
 /// Read the buffered body.
-pub(crate) fn get_http_body(is_trailer: u32) -> Result<Vec<u8>, OrionWasmError> {
+pub(crate) fn get_http_body(is_trailer: u32) -> Result<bytes::Bytes, OrionWasmError> {
     let mut buf: Vec<u8> = Vec::with_capacity(DEFAULT_HEAP_BUF_SIZE);
     let mut written_len: u32 = 0;
 
@@ -116,7 +116,7 @@ pub(crate) fn get_http_body(is_trailer: u32) -> Result<Vec<u8>, OrionWasmError> 
                 unsafe {
                     buf.set_len(written_len as usize);
                 }
-                return Ok(buf);
+                return Ok(buf.into());
             },
             Err(OrionWasmError::BufferTooSmall) => {
                 let new_cap = buf.capacity().saturating_mul(2);

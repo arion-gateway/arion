@@ -166,13 +166,13 @@ pub struct GrpcCalloutRequest {
     pub service_name: SmolStr,
     pub method_name: SmolStr,
     pub initial_metadata: Vec<(SmolStr, SmolStr)>,
-    pub message: Vec<u8>,
+    pub message: bytes::Bytes,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct GrpcCalloutResponse {
     pub initial_metadata: Vec<(SmolStr, SmolStr)>,
-    pub message: Vec<u8>,
+    pub message: bytes::Bytes,
     pub trailing_metadata: Vec<(SmolStr, SmolStr)>,
     pub status: u32,
     pub status_message: SmolStr,
