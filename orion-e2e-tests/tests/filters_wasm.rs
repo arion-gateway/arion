@@ -810,3 +810,30 @@ async fn test_wasm_grpc_callout_filter() {
     response.assert_status(StatusCode::OK);
     response.assert_body("grpc callout success: Hello from Host!");
 }
+
+fn direct_response_filter_builder() -> WasmBuilder {
+    WasmBuilder::new()
+        .name("direct_response_filter")
+        .root_id("direct_response_root_id")
+        .vm_id("direct_response_vm_id")
+        .code_filename(get_wasm_path("direct_response_filter"))
+}
+
+#[tokio::test]
+#[test_log::test]
+async fn test_wasm_direct_response_filter() {
+    let (mut backend, _orion, client, _cfg) = setup_wasm(direct_response_filter_builder()).await;
+    backend.set_default_response(PreConfiguredResponse::with_body("backend response")).await;
+
+    // Normal request should pass through
+    let response = client.send(RequestBuilder::get("/test")).await.expect("request");
+    response.assert_status(StatusCode::OK);
+    response.assert_body("backend response");
+
+    // Request with x-trigger-direct should be intercepted and return the DirectResponse
+    let response = client.send(RequestBuilder::get("/test").header("x-trigger-direct", "1")).await.expect("request");
+
+    response.assert_status(StatusCode::FORBIDDEN);
+    response.assert_header("x-custom-response-header", "was-intercepted");
+    response.assert_body("Intercepted by Wasm Direct Response!");
+}
