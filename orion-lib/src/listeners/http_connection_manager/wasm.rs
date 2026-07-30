@@ -13,7 +13,7 @@ use parking_lot::Mutex;
 use std::sync::{Arc, LazyLock};
 use thiserror::Error;
 use tracing::{debug, warn};
-use wasmtime::{Engine, Instance, Linker, Module, Store};
+use wasmtime::{Engine, Instance, Linker, Module, PoolingAllocationConfig, Store};
 
 mod hostcalls;
 mod shared;
@@ -35,7 +35,10 @@ pub enum WasmError {
 // Lazily initialize the global engine and registry on first use
 pub static GLOBAL_ENGINE: LazyLock<Engine> = LazyLock::new(|| {
     let mut config = wasmtime::Config::new();
-    config.allocation_strategy(wasmtime::InstanceAllocationStrategy::pooling());
+    let mut pooling_config = PoolingAllocationConfig::default();
+    pooling_config.total_stacks(1024);
+    pooling_config.total_core_instances(1024);
+    config.allocation_strategy(wasmtime::InstanceAllocationStrategy::Pooling(pooling_config));
     config.async_support(true);
     Engine::new(&config).unwrap_or_else(|e| {
         warn!("Failed to initialize Wasm Engine with pooling: {}. Falling back to default.", e);
