@@ -9,6 +9,16 @@ extern "C" {
     /// Set multiple access log operators at once.
     pub fn orion_set_access_log_operators(buffer_ptr: *const u8, buffer_len: u32) -> i32;
 
+    pub fn orion_get_uri(buf_ptr: *mut u8, max_len: u32, written_len_ptr: *mut u32) -> i32;
+    pub fn orion_set_uri(buf_ptr: *const u8, buf_len: u32) -> i32;
+    pub fn orion_get_status_code(out_status_ptr: *mut u32) -> i32;
+    pub fn orion_set_status_code(status_code: u32) -> i32;
+
+    pub fn orion_get_request(buf_ptr: *mut u8, max_len: u32, written_len_ptr: *mut u32) -> i32;
+    pub fn orion_set_request(buf_ptr: *const u8, buf_len: u32) -> i32;
+    pub fn orion_get_response(buf_ptr: *mut u8, max_len: u32, written_len_ptr: *mut u32) -> i32;
+    pub fn orion_set_response(buf_ptr: *const u8, buf_len: u32) -> i32;
+
     /// Read an HTTP header by name.
     pub fn orion_get_header(
         is_trailer: u32,

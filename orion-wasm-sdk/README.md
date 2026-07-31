@@ -256,6 +256,17 @@ Available on `RequestHandle<HttpHeaders>`, `RequestHandle<HttpBody>`, `ResponseH
 - **`apply_header_mutations(mutations: &[HeaderMutation]) -> Result<(), OrionWasmError>`**  
   Executes a batch of header mutations in a single FFI hostcall for optimal performance.
 
+### URI & Status API
+
+- **`get_uri() -> Result<http::Uri, OrionWasmError>`**  
+  *(Available on `RequestHandle`)* Retrieves the current request URI.
+- **`set_uri(uri: &http::Uri) -> Result<(), OrionWasmError>`**  
+  *(Available on `RequestHandle`)* Updates the request URI.
+- **`get_status_code() -> Result<Option<http::StatusCode>, OrionWasmError>`**  
+  *(Available on `ResponseHandle`)* Retrieves the current response status code.
+- **`set_status_code(status: http::StatusCode) -> Result<(), OrionWasmError>`**  
+  *(Available on `ResponseHandle`)* Updates the response status code.
+
 ### Trailers API
 
 Available on `RequestHandle<HttpBody>` and `ResponseHandle<HttpBody>`:
@@ -271,6 +282,21 @@ Available on `RequestHandle<HttpBody>` and `ResponseHandle<HttpBody>`:
   Retrieves the buffered body payload as raw bytes.
 - **`set_body(body: &[u8]) -> Result<(), OrionWasmError>`**  
   Replaces the buffered body content. The Orion proxy automatically recalculates `Content-Length`.
+
+### Full Materialization API
+
+For comprehensive mutations, you can materialize the entire request/response into standard `http` crate types, mutate them, and write them back in a single operation. This leverages optimized `bincode-next` serialization over FFI.
+
+Available on `RequestHandle<HttpBody>` and `ResponseHandle<HttpBody>`:
+
+- **`take_request() -> Result<http::Request<bytes::Bytes>, OrionWasmError>`**  
+  Materializes the full HTTP request (method, URI, version, headers, and body).
+- **`replace_request(req: &http::Request<bytes::Bytes>) -> Result<(), OrionWasmError>`**  
+  Replaces the entire HTTP request with the provided object.
+- **`take_response() -> Result<http::Response<bytes::Bytes>, OrionWasmError>`**  
+  Materializes the full HTTP response (status, version, headers, and body).
+- **`replace_response(res: &http::Response<bytes::Bytes>) -> Result<(), OrionWasmError>`**  
+  Replaces the entire HTTP response with the provided object.
 
 ### Direct Local Responses
 

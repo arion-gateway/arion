@@ -148,6 +148,24 @@ pub enum HeaderMutation {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct WasmUri {
+    #[serde(with = "http_serde_ext::uri")]
+    pub uri: http::Uri,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct WasmRequest {
+    #[serde(with = "http_serde_ext::request")]
+    pub request: http::Request<bytes::Bytes>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct WasmResponse {
+    #[serde(with = "http_serde_ext::response")]
+    pub response: http::Response<bytes::Bytes>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct CalloutRequest {
     pub cluster_name: SmolStr,
     #[serde(with = "http_serde_ext::request")]

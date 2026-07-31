@@ -306,6 +306,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
 
 [[package]]
+name = "materialize_filter"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "http",
+ "orion_wasm_sdk",
+]
+
+[[package]]
 name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -680,6 +689,15 @@ name = "unty-next"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "16062d030850f35054e37746427b9febb74a2f24c9c6dd6fa2d0c13c5f53221e"
+
+[[package]]
+name = "uri_status_filter"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "http",
+ "orion_wasm_sdk",
+]
 
 [[package]]
 name = "virtue-next"

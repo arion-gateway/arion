@@ -219,6 +219,90 @@ pub(crate) fn set_http_header(
     OrionWasmError::from_ffi(res)
 }
 
+pub(crate) fn set_http_header_str(
+    is_trailer: u32,
+    name: &str,
+    value: &str,
+) -> Result<(), OrionWasmError> {
+    let name_bytes = name.as_bytes();
+    let value_bytes = value.as_bytes();
+    let res = unsafe {
+        ffi::orion_set_header(
+            is_trailer,
+            name_bytes.as_ptr(),
+            name_bytes.len() as u32,
+            value_bytes.as_ptr(),
+            value_bytes.len() as u32,
+        )
+    };
+    OrionWasmError::from_ffi(res)
+}
+
+pub(crate) fn get_http_uri() -> Result<http::Uri, OrionWasmError> {
+    let mut buf: Vec<u8> = Vec::with_capacity(DEFAULT_HEAP_BUF_SIZE);
+    let mut written_len: u32 = 0;
+
+    loop {
+        let res = unsafe {
+            ffi::orion_get_uri(
+                buf.as_mut_ptr(),
+                buf.capacity() as u32,
+                &mut written_len as *mut u32,
+            )
+        };
+
+        match OrionWasmError::from_ffi(res) {
+            Ok(()) => {
+                unsafe {
+                    buf.set_len(written_len as usize);
+                }
+                return bincode_next::serde::decode_from_slice::<orion_wasm_types::WasmUri, _>(
+                    &buf,
+                    bincode_next::config::standard(),
+                )
+                .map(|(w, _)| w.uri)
+                .map_err(|_| OrionWasmError::InternalError);
+            },
+            Err(OrionWasmError::BufferTooSmall) => {
+                let new_cap = buf.capacity().saturating_mul(2);
+                if new_cap == buf.capacity() {
+                    return Err(OrionWasmError::BufferTooSmall);
+                }
+                buf.reserve_exact(new_cap);
+            },
+            Err(other) => return Err(other),
+        }
+    }
+}
+
+pub(crate) fn set_http_uri(uri: &http::Uri) -> Result<(), OrionWasmError> {
+    let wasm_uri = orion_wasm_types::WasmUri { uri: uri.clone() };
+    let serialized = bincode_next::serde::encode_to_vec(&wasm_uri, bincode_next::config::standard())
+        .map_err(|_| OrionWasmError::InternalError)?;
+    let res = unsafe { ffi::orion_set_uri(serialized.as_ptr(), serialized.len() as u32) };
+    OrionWasmError::from_ffi(res)
+}
+
+pub(crate) fn get_http_status_code() -> Result<http::StatusCode, OrionWasmError> {
+    let mut status_code: u32 = 0;
+    let res = unsafe {
+        ffi::orion_get_status_code(&mut status_code as *mut u32)
+    };
+
+    match OrionWasmError::from_ffi(res) {
+        Ok(()) => {
+            let code_u16 = u16::try_from(status_code).map_err(|_| OrionWasmError::InternalError)?;
+            http::StatusCode::from_u16(code_u16).map_err(|_| OrionWasmError::InternalError)
+        },
+        Err(e) => Err(e),
+    }
+}
+
+pub(crate) fn set_http_status_code(status_code: http::StatusCode) -> Result<(), OrionWasmError> {
+    let res = unsafe { ffi::orion_set_status_code(status_code.as_u16() as u32) };
+    OrionWasmError::from_ffi(res)
+}
+
 pub(crate) fn add_http_header(
     is_trailer: u32,
     name: &HeaderName,
