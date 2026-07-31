@@ -12,6 +12,10 @@ static COUNTER: AtomicUsize = AtomicUsize::new(0);
 struct SharedAtomicRoot;
 impl Context for SharedAtomicRoot {}
 impl RootContext for SharedAtomicRoot {
+    fn get_type(&self) -> Option<ContextType> {
+        Some(ContextType::HttpContext)
+    }
+
     fn create_http_context(&self, _context_id: u32) -> Option<Box<dyn HttpContext>> {
         Some(Box::new(SharedAtomicFilter))
     }

@@ -9,6 +9,10 @@ proxy_wasm::main! {{
 struct DirectResponseRoot;
 impl Context for DirectResponseRoot {}
 impl RootContext for DirectResponseRoot {
+    fn get_type(&self) -> Option<ContextType> {
+        Some(ContextType::HttpContext)
+    }
+
     fn create_http_context(&self, _context_id: u32) -> Option<Box<dyn HttpContext>> {
         Some(Box::new(DirectResponseFilter))
     }

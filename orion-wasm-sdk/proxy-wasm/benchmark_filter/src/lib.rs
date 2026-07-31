@@ -11,6 +11,10 @@ struct BenchmarkRoot;
 impl Context for BenchmarkRoot {}
 
 impl RootContext for BenchmarkRoot {
+    fn get_type(&self) -> Option<ContextType> {
+        Some(ContextType::HttpContext)
+    }
+
     fn create_http_context(&self, _context_id: u32) -> Option<Box<dyn HttpContext>> {
         Some(Box::new(BenchmarkFilter))
     }

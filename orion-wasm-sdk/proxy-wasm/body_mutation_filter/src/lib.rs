@@ -9,6 +9,10 @@ proxy_wasm::main! {{
 struct BodyMutationRoot;
 impl Context for BodyMutationRoot {}
 impl RootContext for BodyMutationRoot {
+    fn get_type(&self) -> Option<ContextType> {
+        Some(ContextType::HttpContext)
+    }
+
     fn on_configure(&mut self, _plugin_configuration_size: usize) -> bool {
         log::info!("BodyMutationFilter Wasm: Instance initialized!");
         true

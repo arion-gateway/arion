@@ -9,6 +9,10 @@ proxy_wasm::main! {{
 struct HeadersMapRoot;
 impl Context for HeadersMapRoot {}
 impl RootContext for HeadersMapRoot {
+    fn get_type(&self) -> Option<ContextType> {
+        Some(ContextType::HttpContext)
+    }
+
     fn create_http_context(&self, _context_id: u32) -> Option<Box<dyn HttpContext>> {
         Some(Box::new(HeadersMapFilter))
     }
