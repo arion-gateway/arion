@@ -837,3 +837,59 @@ async fn test_wasm_direct_response_filter() {
     response.assert_header("x-custom-response-header", "was-intercepted");
     response.assert_body("Intercepted by Wasm Direct Response!");
 }
+
+fn uri_status_filter_builder() -> WasmBuilder {
+    WasmBuilder::new()
+        .name("uri_status_filter")
+        .root_id("uri_status_root_id")
+        .vm_id("uri_status_vm_id")
+        .code_filename(get_wasm_path("uri_status_filter"))
+}
+
+#[tokio::test]
+#[test_log::test]
+async fn test_wasm_uri_status_filter() {
+    let (mut backend, _orion, client, _cfg) = setup_wasm(uri_status_filter_builder()).await;
+    backend.set_default_response(PreConfiguredResponse::with_status(StatusCode::NOT_FOUND)).await;
+
+    // Normal request
+    let response = client.send(RequestBuilder::get("/test")).await.expect("request");
+    response.assert_status(StatusCode::IM_A_TEAPOT); // Backend returns 404, Wasm changes to 418
+    let captured1 = backend.await_request().await.expect("backend request");
+    assert_eq!(captured1.path(), "/test");
+
+    // Request to /old-path
+    let response = client.send(RequestBuilder::get("/old-path")).await.expect("request");
+    response.assert_status(StatusCode::IM_A_TEAPOT);
+    
+    let captured2 = backend.await_request().await.expect("backend request");
+    // Should be rewritten to /new-path
+    assert_eq!(captured2.path(), "/new-path");
+}
+
+fn materialize_filter_builder() -> WasmBuilder {
+    WasmBuilder::new()
+        .name("materialize_filter")
+        .root_id("materialize_root_id")
+        .vm_id("materialize_vm_id")
+        .code_filename(get_wasm_path("materialize_filter"))
+}
+
+#[tokio::test]
+#[test_log::test]
+async fn test_wasm_materialize_filter() {
+    let (mut backend, _orion, client, _cfg) = setup_wasm(materialize_filter_builder()).await;
+    backend.set_default_response(PreConfiguredResponse::with_body("backend body")).await;
+
+    // Request to /transform-me
+    let response = client.send(RequestBuilder::post("/transform-me").body("client request")).await.expect("request");
+    
+    response.assert_status(StatusCode::OK);
+    response.assert_body("backend body [materialized res]");
+    response.assert_header("x-materialized-res", "true");
+
+    let captured = backend.await_request().await.expect("backend request");
+    assert_eq!(captured.path(), "/transform-me");
+    assert_eq!(captured.body_str(), Some("client request [materialized req]"));
+    assert_eq!(captured.header("x-materialized-req"), Some("true"));
+}
