@@ -10,6 +10,8 @@ proxy_wasm::main! {{
 
 static DISPATCHED: AtomicU32 = AtomicU32::new(0);
 static RESPONDED: AtomicU32 = AtomicU32::new(0);
+static CREATED: AtomicU32 = AtomicU32::new(0);
+static LOGGED: AtomicU32 = AtomicU32::new(0);
 
 struct CalloutBodyRoot;
 impl Context for CalloutBodyRoot {}
@@ -31,6 +33,7 @@ impl RootContext for CalloutBodyRoot {
     }
 
     fn create_http_context(&self, _context_id: u32) -> Option<Box<dyn HttpContext>> {
+        CREATED.fetch_add(1, Ordering::Relaxed);
         Some(Box::new(CalloutBodyFilter))
     }
 }
@@ -44,7 +47,9 @@ impl Context for CalloutBodyFilter {
     fn on_http_call_response(&mut self, _token_id: u32, _num_headers: usize, body_size: usize, _num_trailers: usize) {
         let r = RESPONDED.fetch_add(1, Ordering::Relaxed) + 1;
         let d = DISPATCHED.load(Ordering::Relaxed);
-        log::warn!("callout stats: dispatched={} responded={} pending={}", d, r, d.wrapping_sub(r));
+        let c = CREATED.load(Ordering::Relaxed);
+        let l = LOGGED.load(Ordering::Relaxed);
+        log::warn!("callout stats: dispatched={} responded={} pending={} created={} logged={} leaked_ctx={}", d, r, d.wrapping_sub(r), c, l, c.wrapping_sub(l));
         if let Some(status) = self.get_http_call_response_header(":status") {
             if !status.starts_with('2') {
                 log::error!("Callout returned non-success status");
@@ -56,6 +61,10 @@ impl Context for CalloutBodyFilter {
 }
 
 impl HttpContext for CalloutBodyFilter {
+    fn on_log(&mut self) {
+        LOGGED.fetch_add(1, Ordering::Relaxed);
+    }
+
     fn on_http_request_body(&mut self, body_size: usize, end_of_stream: bool) -> Action {
         if !end_of_stream {
             return Action::Pause;
