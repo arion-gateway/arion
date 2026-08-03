@@ -861,7 +861,7 @@ async fn test_wasm_uri_status_filter() {
     // Request to /old-path
     let response = client.send(RequestBuilder::get("/old-path")).await.expect("request");
     response.assert_status(StatusCode::IM_A_TEAPOT);
-    
+
     let captured2 = backend.await_request().await.expect("backend request");
     // Should be rewritten to /new-path
     assert_eq!(captured2.path(), "/new-path");
@@ -883,7 +883,7 @@ async fn test_wasm_materialize_filter() {
 
     // Request to /transform-me
     let response = client.send(RequestBuilder::post("/transform-me").body("client request")).await.expect("request");
-    
+
     response.assert_status(StatusCode::OK);
     response.assert_body("backend body [materialized res]");
     response.assert_header("x-materialized-res", "true");
