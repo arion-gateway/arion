@@ -22,14 +22,20 @@ struct HeadersMapFilter;
 impl Context for HeadersMapFilter {}
 impl HttpContext for HeadersMapFilter {
     fn on_http_request_headers(&mut self, _num_headers: usize, _end_of_stream: bool) -> Action {
-        let mut headers = self.get_http_request_headers();
+        let mut headers: Vec<(String, String)> = self.get_http_request_headers()
+            .into_iter()
+            .filter(|(k, _)| k != "user-agent")
+            .collect();
         headers.push(("x-custom-set".to_string(), "replaced-value".to_string()));
         headers.push(("x-custom-add".to_string(), "add-value".to_string()));
         self.set_http_request_headers(headers.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect::<Vec<_>>());
         Action::Continue
     }
     fn on_http_response_headers(&mut self, _num_headers: usize, _end_of_stream: bool) -> Action {
-        let mut headers = self.get_http_response_headers();
+        let mut headers: Vec<(String, String)> = self.get_http_response_headers()
+            .into_iter()
+            .filter(|(k, _)| k != "x-response-remove")
+            .collect();
         headers.push(("x-response-set".to_string(), "res-replaced-value".to_string()));
         headers.push(("x-response-add".to_string(), "res-add-value".to_string()));
         self.set_http_response_headers(headers.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect::<Vec<_>>());

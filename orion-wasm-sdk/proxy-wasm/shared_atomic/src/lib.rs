@@ -25,8 +25,9 @@ struct SharedAtomicFilter;
 impl Context for SharedAtomicFilter {}
 impl HttpContext for SharedAtomicFilter {
     fn on_http_request_headers(&mut self, _num_headers: usize, _end_of_stream: bool) -> Action {
-        let count = COUNTER.fetch_add(1, Ordering::SeqCst);
-        self.set_http_request_header("x-request-count", Some(&count.to_string()));
+        let prev = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let current = prev + 1;
+        self.set_http_request_header("x-request-counter", Some(&current.to_string()));
         Action::Continue
     }
 }
