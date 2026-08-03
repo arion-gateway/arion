@@ -1,17 +1,10 @@
 use proxy_wasm::traits::*;
 use proxy_wasm::types::*;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::time::Duration;
 
 proxy_wasm::main! {{
     proxy_wasm::set_log_level(LogLevel::Warn);
     proxy_wasm::set_root_context(|_| -> Box<dyn RootContext> { Box::new(CalloutBodyRoot) });
 }}
-
-static DISPATCHED: AtomicU32 = AtomicU32::new(0);
-static RESPONDED: AtomicU32 = AtomicU32::new(0);
-static CREATED: AtomicU32 = AtomicU32::new(0);
-static LOGGED: AtomicU32 = AtomicU32::new(0);
 
 struct CalloutBodyRoot;
 impl Context for CalloutBodyRoot {}
@@ -21,19 +14,10 @@ impl RootContext for CalloutBodyRoot {
     }
 
     fn on_configure(&mut self, _plugin_configuration_size: usize) -> bool {
-        log::warn!("CalloutBodyFilter: initialized");
-        self.set_tick_period(Duration::from_secs(1));
         true
     }
 
-    fn on_tick(&mut self) {
-        let d = DISPATCHED.load(Ordering::Relaxed);
-        let r = RESPONDED.load(Ordering::Relaxed);
-        log::warn!("callout stats: dispatched={} responded={} pending={}", d, r, d.wrapping_sub(r));
-    }
-
     fn create_http_context(&self, _context_id: u32) -> Option<Box<dyn HttpContext>> {
-        CREATED.fetch_add(1, Ordering::Relaxed);
         Some(Box::new(CalloutBodyFilter))
     }
 }
@@ -45,11 +29,6 @@ struct CalloutBodyFilter;
 // still performed to preserve the latency and throughput characteristics of the filter.
 impl Context for CalloutBodyFilter {
     fn on_http_call_response(&mut self, _token_id: u32, _num_headers: usize, body_size: usize, _num_trailers: usize) {
-        let r = RESPONDED.fetch_add(1, Ordering::Relaxed) + 1;
-        let d = DISPATCHED.load(Ordering::Relaxed);
-        let c = CREATED.load(Ordering::Relaxed);
-        let l = LOGGED.load(Ordering::Relaxed);
-        log::warn!("callout stats: dispatched={} responded={} pending={} created={} logged={} leaked_ctx={}", d, r, d.wrapping_sub(r), c, l, c.wrapping_sub(l));
         if let Some(status) = self.get_http_call_response_header(":status") {
             if !status.starts_with('2') {
                 log::error!("Callout returned non-success status");
@@ -61,10 +40,6 @@ impl Context for CalloutBodyFilter {
 }
 
 impl HttpContext for CalloutBodyFilter {
-    fn on_log(&mut self) {
-        LOGGED.fetch_add(1, Ordering::Relaxed);
-    }
-
     fn on_http_request_body(&mut self, body_size: usize, end_of_stream: bool) -> Action {
         if !end_of_stream {
             return Action::Pause;
@@ -83,10 +58,7 @@ impl HttpContext for CalloutBodyFilter {
             vec![],
             std::time::Duration::from_secs(5),
         ) {
-            Ok(_) => {
-                DISPATCHED.fetch_add(1, Ordering::Relaxed);
-                Action::Pause
-            }
+            Ok(_) => Action::Pause,
             Err(e) => {
                 log::error!("dispatch_http_call failed: {:?}", e);
                 Action::Continue
