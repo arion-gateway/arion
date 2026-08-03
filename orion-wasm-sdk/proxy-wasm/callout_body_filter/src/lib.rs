@@ -19,6 +19,7 @@ impl RootContext for CalloutBodyRoot {
     }
 
     fn on_configure(&mut self, _plugin_configuration_size: usize) -> bool {
+        log::warn!("CalloutBodyFilter: initialized");
         self.set_tick_period(Duration::from_secs(1));
         true
     }
@@ -41,7 +42,9 @@ struct CalloutBodyFilter;
 // still performed to preserve the latency and throughput characteristics of the filter.
 impl Context for CalloutBodyFilter {
     fn on_http_call_response(&mut self, _token_id: u32, _num_headers: usize, body_size: usize, _num_trailers: usize) {
-        RESPONDED.fetch_add(1, Ordering::Relaxed);
+        let r = RESPONDED.fetch_add(1, Ordering::Relaxed) + 1;
+        let d = DISPATCHED.load(Ordering::Relaxed);
+        log::warn!("callout stats: dispatched={} responded={} pending={}", d, r, d.wrapping_sub(r));
         if let Some(status) = self.get_http_call_response_header(":status") {
             if !status.starts_with('2') {
                 log::error!("Callout returned non-success status");
