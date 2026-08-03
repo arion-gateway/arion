@@ -1,6 +1,7 @@
 use proxy_wasm::traits::*;
 use proxy_wasm::types::*;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Duration;
 
 proxy_wasm::main! {{
     proxy_wasm::set_log_level(LogLevel::Warn);
@@ -18,6 +19,7 @@ impl RootContext for CalloutBodyRoot {
     }
 
     fn on_configure(&mut self, _plugin_configuration_size: usize) -> bool {
+        self.set_tick_period(Duration::from_secs(1));
         true
     }
 
