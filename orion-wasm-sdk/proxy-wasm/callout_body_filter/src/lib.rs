@@ -19,18 +19,20 @@ impl RootContext for CalloutBodyRoot {
     }
 
     fn create_http_context(&self, _context_id: u32) -> Option<Box<dyn HttpContext>> {
-        Some(Box::new(CalloutBodyFilter))
+        Some(Box::new(CalloutBodyFilter::default()))
     }
 }
 
-struct CalloutBodyFilter;
+#[derive(Default)]
+struct CalloutBodyFilter {
+    new_body: Option<Vec<u8>>,
+}
 
 impl Context for CalloutBodyFilter {
     fn on_http_call_response(&mut self, _token_id: u32, _num_headers: usize, body_size: usize, _num_trailers: usize) {
         if let Some(status) = self.get_http_call_response_header(":status") {
             if status.starts_with('2') {
-                let new_body = self.get_http_call_response_body(0, body_size).unwrap_or_default();
-                self.set_http_request_body(0, new_body.len(), &new_body);
+                self.new_body = Some(self.get_http_call_response_body(0, body_size).unwrap_or_default());
             } else {
                 log::error!("Callout returned non-success status, keeping original body");
             }
@@ -44,6 +46,13 @@ impl HttpContext for CalloutBodyFilter {
         if !end_of_stream {
             return Action::Pause;
         }
+
+        // Second entry after callout completed: set the stored body and continue.
+        if let Some(new_body) = self.new_body.take() {
+            self.set_http_request_body(0, new_body.len(), &new_body);
+            return Action::Continue;
+        }
+
         log::info!("--- Processing Request Body with Callout ---");
         let body = self.get_http_request_body(0, body_size).unwrap_or_default();
         log::info!("Dispatching HTTP POST call to cluster 'service'...");
