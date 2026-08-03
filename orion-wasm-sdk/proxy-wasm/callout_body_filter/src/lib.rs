@@ -47,7 +47,7 @@ impl HttpContext for CalloutBodyFilter {
         log::info!("--- Processing Request Body with Callout ---");
         let body = self.get_http_request_body(0, body_size).unwrap_or_default();
         log::info!("Dispatching HTTP POST call to cluster 'service'...");
-        self.dispatch_http_call(
+        match self.dispatch_http_call(
             "service",
             vec![
                 (":method", "POST"),
@@ -59,7 +59,12 @@ impl HttpContext for CalloutBodyFilter {
             Some(&body),
             vec![],
             std::time::Duration::from_secs(5),
-        ).unwrap();
-        Action::Pause
+        ) {
+            Ok(_) => Action::Pause,
+            Err(e) => {
+                log::error!("dispatch_http_call failed: {:?}", e);
+                Action::Continue
+            }
+        }
     }
 }
