@@ -74,33 +74,33 @@ fn orion_get_header(
         }
     };
 
+    let (data, state) = memory.data_and_store_mut(&mut caller);
+
     let val_bytes = if is_trailer == 0 {
-        if let Some(req_ptr) = caller.data().active_request_handle {
+        if let Some(req_ptr) = state.active_request_handle {
             let request = unsafe { &*(req_ptr as *const Request<OrionRequestBody>) };
             request.headers().get(name.as_str())
-        } else if let Some(res_ptr) = caller.data().active_response_handle {
+        } else if let Some(res_ptr) = state.active_response_handle {
             let response = unsafe { &*(res_ptr as *const Response<OrionResponseBody>) };
             response.headers().get(name.as_str())
         } else {
             return OrionWasmError::InternalError.into();
         }
     } else {
-        if caller.data().active_request_handle.is_some() {
-            caller.data().request_trailers.as_ref().and_then(|t| t.get(name.as_str()))
-        } else if caller.data().active_response_handle.is_some() {
-            caller.data().response_trailers.as_ref().and_then(|t| t.get(name.as_str()))
+        if state.active_request_handle.is_some() {
+            state.request_trailers.as_ref().and_then(|t| t.get(name.as_str()))
+        } else if state.active_response_handle.is_some() {
+            state.response_trailers.as_ref().and_then(|t| t.get(name.as_str()))
         } else {
             return OrionWasmError::InternalError.into();
         }
     }
-    .map(|v| v.as_bytes().to_vec());
+    .map(|v| v.as_bytes());
 
     if let Some(val_bytes) = val_bytes {
         if val_bytes.len() > value_max_len as usize {
             return OrionWasmError::BufferTooSmall.into();
         }
-
-        let data = memory.data_mut(&mut caller);
 
         let val_start = value_ptr as usize;
         let val_end = val_start + val_bytes.len();
@@ -108,7 +108,7 @@ fn orion_get_header(
             return OrionWasmError::InvalidMemoryAccess.into();
         }
         if let Some(slice) = data.get_mut(val_start..val_end) {
-            slice.copy_from_slice(&val_bytes);
+            slice.copy_from_slice(val_bytes);
         } else {
             tracing::error!("Invalid memory index");
             return OrionWasmError::InvalidMemoryAccess.into();
