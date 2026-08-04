@@ -81,7 +81,7 @@ pub(crate) fn get_http_header(
                         unsafe {
                             heap_buf.set_len(written_len as usize);
                         }
-                        return Ok(Some(WasmHeaderValue::Owned(bytes::Bytes::copy_from_slice(&heap_buf))));
+                        return Ok(Some(WasmHeaderValue::Owned(bytes::Bytes::from(heap_buf))));
                     },
                     Err(OrionWasmError::NotFound) => return Ok(None),
                     Err(OrionWasmError::BufferTooSmall) => {
@@ -224,34 +224,58 @@ pub(crate) fn set_http_header(
 
 
 pub(crate) fn get_http_uri() -> Result<WasmUri<'static>, OrionWasmError> {
-    let mut buf: Vec<u8> = Vec::with_capacity(DEFAULT_HEAP_BUF_SIZE);
+    let mut stack_buf = [0u8; DEFAULT_HEADER_STACK_BUF_SIZE];
     let mut written_len: u32 = 0;
 
-    loop {
-        let res = unsafe {
-            ffi::orion_get_uri(
-                buf.as_mut_ptr(),
-                buf.capacity() as u32,
-                &mut written_len as *mut u32,
-            )
-        };
+    let res = unsafe {
+        ffi::orion_get_uri(
+            stack_buf.as_mut_ptr(),
+            stack_buf.len() as u32,
+            &mut written_len as *mut u32,
+        )
+    };
 
-        match OrionWasmError::from_ffi(res) {
-            Ok(()) => {
-                unsafe {
-                    buf.set_len(written_len as usize);
+    match OrionWasmError::from_ffi(res) {
+        Ok(()) => {
+            let len = written_len as usize;
+            let s = std::str::from_utf8(&stack_buf[..len])
+                .map_err(|_| OrionWasmError::InternalError)?;
+            Ok(WasmUri::Owned(smol_str::SmolStr::new(s)))
+        },
+        Err(OrionWasmError::BufferTooSmall) => {
+            let mut heap_buf: Vec<u8> = Vec::with_capacity(DEFAULT_HEAP_BUF_SIZE);
+            let mut written_len: u32 = 0;
+
+            loop {
+                let res = unsafe {
+                    ffi::orion_get_uri(
+                        heap_buf.as_mut_ptr(),
+                        heap_buf.capacity() as u32,
+                        &mut written_len as *mut u32,
+                    )
+                };
+
+                match OrionWasmError::from_ffi(res) {
+                    Ok(()) => {
+                        unsafe {
+                            heap_buf.set_len(written_len as usize);
+                        }
+                        let s = std::str::from_utf8(&heap_buf)
+                            .map_err(|_| OrionWasmError::InternalError)?;
+                        return Ok(WasmUri::Owned(smol_str::SmolStr::new(s)));
+                    },
+                    Err(OrionWasmError::BufferTooSmall) => {
+                        let new_cap = heap_buf.capacity().saturating_mul(2);
+                        if new_cap == heap_buf.capacity() {
+                            return Err(OrionWasmError::BufferTooSmall);
+                        }
+                        heap_buf.reserve_exact(new_cap);
+                    },
+                    Err(other) => return Err(other),
                 }
-                return String::from_utf8(buf).map(|s| WasmUri::Owned(smol_str::SmolStr::from(s))).map_err(|_| OrionWasmError::InternalError);
-            },
-            Err(OrionWasmError::BufferTooSmall) => {
-                let new_cap = buf.capacity().saturating_mul(2);
-                if new_cap == buf.capacity() {
-                    return Err(OrionWasmError::BufferTooSmall);
-                }
-                buf.reserve_exact(new_cap);
-            },
-            Err(other) => return Err(other),
-        }
+            }
+        },
+        Err(other) => Err(other),
     }
 }
 

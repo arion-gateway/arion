@@ -240,10 +240,22 @@ pub struct WasmRequest {
     pub request: http::Request<bytes::Bytes>,
 }
 
+#[derive(Serialize)]
+pub struct SerWasmRequest<'a> {
+    #[serde(with = "http_serde_ext::request")]
+    pub request: &'a http::Request<bytes::Bytes>,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct WasmResponse {
     #[serde(with = "http_serde_ext::response")]
     pub response: http::Response<bytes::Bytes>,
+}
+
+#[derive(Serialize)]
+pub struct SerWasmResponse<'a> {
+    #[serde(with = "http_serde_ext::response")]
+    pub response: &'a http::Response<bytes::Bytes>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

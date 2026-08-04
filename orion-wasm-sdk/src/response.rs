@@ -97,26 +97,27 @@ impl ResponseHandle<HttpBody> {
 
     /// Materialize the response (headers and body) into a standard http::Response<Bytes>.
     pub fn take_response(&self) -> Result<http::Response<bytes::Bytes>, OrionWasmError> {
-        let mut buf = vec![0u8; 1024 * 64];
+        let mut buf = Vec::with_capacity(1024 * 64);
         let mut written_len: u32 = 0;
         
         loop {
             let res = unsafe {
-                ffi::orion_get_response(buf.as_mut_ptr(), buf.len() as u32, &mut written_len as *mut u32)
+                ffi::orion_get_response(buf.as_mut_ptr(), buf.capacity() as u32, &mut written_len as *mut u32)
             };
             
             if res == 0 {
-                buf.truncate(written_len as usize);
+                unsafe { buf.set_len(written_len as usize) };
                 let wasm_res = match bincode_next::serde::decode_from_slice::<orion_wasm_types::WasmResponse, _>(&buf, bincode_next::config::standard()) {
                     Ok((w, _)) => w,
                     Err(_) => return Err(OrionWasmError::InternalError),
                 };
                 return Ok(wasm_res.response);
             } else if res == OrionWasmError::BufferTooSmall as i32 {
-                if buf.len() > 10 * 1024 * 1024 {
+                if buf.capacity() > 10 * 1024 * 1024 {
                     return Err(OrionWasmError::BufferTooSmall);
                 }
-                buf.resize(buf.len() * 2, 0);
+                let new_cap = buf.capacity() * 2;
+                buf.reserve_exact(new_cap - buf.capacity());
             } else {
                 return Err(OrionWasmError::from_ffi(res).err().unwrap_or(OrionWasmError::InternalError));
             }
@@ -125,7 +126,7 @@ impl ResponseHandle<HttpBody> {
 
     /// Replace the entire response (headers, status code, and body) from a given http::Response<Bytes>.
     pub fn replace_response(&self, res: &http::Response<bytes::Bytes>) -> Result<(), OrionWasmError> {
-        let wasm_res = orion_wasm_types::WasmResponse { response: res.clone() };
+        let wasm_res = orion_wasm_types::SerWasmResponse { response: res };
         let serialized = match bincode_next::serde::encode_to_vec(&wasm_res, bincode_next::config::standard()) {
             Ok(b) => b,
             Err(_) => return Err(OrionWasmError::InternalError),
