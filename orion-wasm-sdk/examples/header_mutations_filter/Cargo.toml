@@ -13,3 +13,5 @@ crate-type = ["cdylib"]
 orion_wasm_sdk = { path = "../../" }
 tracing = "0.1"
 http = "1.0"
+bytes = "1.12.1"
+smol_str = "0.3.6"

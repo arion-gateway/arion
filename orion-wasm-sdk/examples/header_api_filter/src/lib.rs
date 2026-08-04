@@ -32,7 +32,7 @@ impl Plugin for HeaderApiFilter {
         }
 
         // 3. Remove a header
-        if let Err(e) = ctx.remove_header(&http::header::HeaderName::from_static("user-agent")) {
+        if let Err(e) = ctx.remove_header("user-agent") {
             error!("Failed to remove header: {:?}", e);
         }
 
@@ -67,7 +67,7 @@ impl Plugin for HeaderApiFilter {
         }
 
         // 3. Remove a response header
-        if let Err(e) = ctx.remove_header(&http::header::HeaderName::from_static("x-response-remove")) {
+        if let Err(e) = ctx.remove_header("x-response-remove") {
             error!("Failed to remove response header: {:?}", e);
         }
 

@@ -42,11 +42,11 @@ impl Plugin for DummyFilter {
             },
         };
 
-        if auth == "Bearer secret-token" {
+        if auth.to_str().unwrap_or_default() == "Bearer secret-token" {
             // Authorized — let the request continue through the filter chain.
             debug!(version = "1.0", "DummyFilter: continue....");
             FilterAction::Continue
-        } else if auth == "Bearer buffer-me" {
+        } else if auth.to_str().unwrap_or_default() == "Bearer buffer-me" {
             // Ask the host to buffer the body and invoke `on_request_body`.
             debug!(version = "1.0", "DummyFilter: pause and buffer body....");
             FilterAction::PauseAndBufferBody

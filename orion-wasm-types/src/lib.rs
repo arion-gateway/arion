@@ -126,31 +126,112 @@ impl From<LogLevel> for u32 {
     }
 }
 
-use http::header::{HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
-use smol_str::SmolStr;
 
-#[derive(Serialize, Deserialize)]
-pub enum HeaderMutation {
-    Set(
-        #[serde(with = "http_serde_ext::header_name")] HeaderName,
-        #[serde(with = "http_serde_ext::header_value")] HeaderValue,
-    ),
-    Add(
-        #[serde(with = "http_serde_ext::header_name")] HeaderName,
-        #[serde(with = "http_serde_ext::header_value")] HeaderValue,
-    ),
-    Replace(
-        #[serde(with = "http_serde_ext::header_name")] HeaderName,
-        #[serde(with = "http_serde_ext::header_value")] HeaderValue,
-    ),
-    Remove(#[serde(with = "http_serde_ext::header_name")] HeaderName),
+use bytes::Bytes;
+
+/// A lightweight header name that can be borrowed or owned.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum WasmHeaderName<'a> {
+    Borrowed(&'a str),
+    Owned(SmolStr),
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct WasmUri {
-    #[serde(with = "http_serde_ext::uri")]
-    pub uri: http::Uri,
+impl<'a> WasmHeaderName<'a> {
+    pub fn as_bytes(&self) -> &[u8] {
+        match self {
+            Self::Borrowed(s) => s.as_bytes(),
+            Self::Owned(s) => s.as_bytes(),
+        }
+    }
+}
+
+impl<'a> From<&'a str> for WasmHeaderName<'a> {
+    fn from(s: &'a str) -> Self {
+        Self::Borrowed(s)
+    }
+}
+
+impl<'a> From<String> for WasmHeaderName<'a> {
+    fn from(s: String) -> Self {
+        Self::Owned(SmolStr::from(s))
+    }
+}
+
+impl<'a> From<SmolStr> for WasmHeaderName<'a> {
+    fn from(s: SmolStr) -> Self {
+        Self::Owned(s)
+    }
+}
+
+impl<'a> From<http::header::HeaderName> for WasmHeaderName<'a> {
+    fn from(name: http::header::HeaderName) -> Self {
+        Self::Owned(SmolStr::new(name.as_str()))
+    }
+}
+
+/// A lightweight header value that can be borrowed or owned.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum WasmHeaderValue<'a> {
+    Borrowed(&'a [u8]),
+    Owned(Bytes),
+}
+
+impl<'a> WasmHeaderValue<'a> {
+    pub fn as_bytes(&self) -> &[u8] {
+        match self {
+            Self::Borrowed(b) => b,
+            Self::Owned(b) => b.as_ref(),
+        }
+    }
+
+    pub fn to_str(&self) -> Result<&str, core::str::Utf8Error> {
+        core::str::from_utf8(self.as_bytes())
+    }
+}
+
+impl<'a> From<&'a [u8]> for WasmHeaderValue<'a> {
+    fn from(b: &'a [u8]) -> Self {
+        Self::Borrowed(b)
+    }
+}
+
+impl<'a> From<&'a str> for WasmHeaderValue<'a> {
+    fn from(s: &'a str) -> Self {
+        Self::Borrowed(s.as_bytes())
+    }
+}
+
+impl<'a> From<Vec<u8>> for WasmHeaderValue<'a> {
+    fn from(v: Vec<u8>) -> Self {
+        Self::Owned(Bytes::from(v))
+    }
+}
+
+impl<'a> From<String> for WasmHeaderValue<'a> {
+    fn from(s: String) -> Self {
+        Self::Owned(Bytes::from(s))
+    }
+}
+
+impl<'a> From<Bytes> for WasmHeaderValue<'a> {
+    fn from(b: Bytes) -> Self {
+        Self::Owned(b)
+    }
+}
+
+impl<'a> From<http::header::HeaderValue> for WasmHeaderValue<'a> {
+    fn from(val: http::header::HeaderValue) -> Self {
+        Self::Owned(Bytes::copy_from_slice(val.as_bytes()))
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub enum HeaderMutation<'a> {
+    Set(#[serde(borrow)] WasmHeaderName<'a>, #[serde(borrow)] WasmHeaderValue<'a>),
+    Add(#[serde(borrow)] WasmHeaderName<'a>, #[serde(borrow)] WasmHeaderValue<'a>),
+    Replace(#[serde(borrow)] WasmHeaderName<'a>, #[serde(borrow)] WasmHeaderValue<'a>),
+    Remove(#[serde(borrow)] WasmHeaderName<'a>),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -336,5 +417,57 @@ impl OrionWasmError {
             5 => Err(Self::Timeout),
             _ => Err(Self::InternalError),
         }
+    }
+}
+use smol_str::SmolStr;
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum WasmUri<'a> {
+    Borrowed(&'a str),
+    Owned(SmolStr),
+}
+
+impl<'a> WasmUri<'a> {
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Borrowed(s) => s,
+            Self::Owned(s) => s.as_str(),
+        }
+    }
+}
+
+impl<'a> From<&'a str> for WasmUri<'a> {
+    fn from(s: &'a str) -> Self {
+        Self::Borrowed(s)
+    }
+}
+
+impl<'a> From<String> for WasmUri<'a> {
+    fn from(s: String) -> Self {
+        Self::Owned(SmolStr::from(s))
+    }
+}
+
+impl<'a> From<&'a http::Uri> for WasmUri<'a> {
+    fn from(uri: &'a http::Uri) -> Self {
+        Self::Owned(smol_str::SmolStr::new(uri.to_string()))
+    }
+}
+
+impl<'a> From<http::Uri> for WasmUri<'a> {
+    fn from(uri: http::Uri) -> Self {
+        Self::Owned(smol_str::SmolStr::new(uri.to_string()))
+    }
+}
+
+impl<'a> core::borrow::Borrow<str> for WasmUri<'a> {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl<'a> WasmUri<'a> {
+    pub fn as_bytes(&self) -> &[u8] {
+        self.as_str().as_bytes()
     }
 }

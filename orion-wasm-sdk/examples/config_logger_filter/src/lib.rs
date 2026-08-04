@@ -44,7 +44,7 @@ impl Plugin for ConfigLoggerFilter {
         info!("The active global configuration is: {}", current_config);
 
         // Inject into request header for testing verification
-        let _ = ctx.set_header("x-wasm-config".try_into().unwrap(), current_config.try_into().unwrap());
+        let _ = ctx.set_header("x-wasm-config", current_config);
 
         FilterAction::Continue
     }

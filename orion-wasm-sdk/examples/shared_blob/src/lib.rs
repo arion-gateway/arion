@@ -1,3 +1,4 @@
+use orion_wasm_sdk::{WasmHeaderName, WasmHeaderValue};
 use orion_wasm_sdk::{init_tracing, orion_plugin, FilterAction, HeaderMutation, HttpHeaders, Plugin, RequestHandle};
 use orion_wasm_sdk::shared::SharedBlob;
 use tracing::{debug, error, info};
@@ -72,16 +73,15 @@ impl Plugin for SharedBlobFilter {
             }
 
             // Set the result as an HTTP header sent to the upstream using the exact string we resolved
-            if let Ok(header_value) = http::header::HeaderValue::try_from(list_for_upstream_header) {
-                let mutations = vec![
-                    HeaderMutation::Set(
-                        http::header::HeaderName::from_static("x-seen-clients"),
-                        header_value,
-                    )
-                ];
-                if let Err(e) = ctx.apply_header_mutations(&mutations) {
-                    error!("Failed to set x-seen-clients header: {:?}", e);
-                }
+            let header_value = bytes::Bytes::from(list_for_upstream_header);
+            let mutations = vec![
+                HeaderMutation::Set(
+                    WasmHeaderName::from("x-seen-clients"),
+                    WasmHeaderValue::from(header_value.to_vec()),
+                )
+            ];
+            if let Err(e) = ctx.apply_header_mutations(&mutations) {
+                error!("Failed to set x-seen-clients header: {:?}", e);
             }
         } else {
             error!("Shared blob is not initialized!");

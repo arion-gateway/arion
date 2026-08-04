@@ -222,8 +222,10 @@ dependencies = [
 name = "header_mutations_filter"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "http",
  "orion_wasm_sdk",
+ "smol_str",
  "tracing",
 ]
 
@@ -590,8 +592,10 @@ dependencies = [
 name = "shared_atomic"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "http",
  "orion_wasm_sdk",
+ "smol_str",
  "tracing",
 ]
 
@@ -599,8 +603,10 @@ dependencies = [
 name = "shared_blob"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "http",
  "orion_wasm_sdk",
+ "smol_str",
  "tracing",
 ]
 

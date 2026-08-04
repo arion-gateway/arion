@@ -84,12 +84,6 @@ struct BorrowedResHead<'a> {
     version: http::Version,
 }
 
-#[derive(serde::Serialize)]
-struct SerWasmUri<'a> {
-    #[serde(with = "http_serde_ext::uri")]
-    uri: &'a http::Uri,
-}
-
 impl<T> IntoWasmAbi for Result<T, OrionWasmError> {
     #[inline]
     fn into_wasm_abi(self) -> i32 {
@@ -581,7 +575,8 @@ fn orion_get_uri(mut caller: Caller<'_, WasmState>, buf_ptr: u32, max_len: u32, 
         return OrionWasmError::InternalError.into();
     };
 
-    let wasm_uri = SerWasmUri { uri };
+    let uri_str = uri.to_string();
+    let uri_bytes = uri_str.as_bytes();
 
     let start = buf_ptr as usize;
     let end = start + max_len as usize;
@@ -589,15 +584,16 @@ fn orion_get_uri(mut caller: Caller<'_, WasmState>, buf_ptr: u32, max_len: u32, 
         return OrionWasmError::InvalidMemoryAccess.into();
     }
 
-    let out_slice = match data.get_mut(start..end) {
+    if uri_bytes.len() > max_len as usize {
+        return OrionWasmError::BufferTooSmall.into();
+    }
+
+    let out_slice = match data.get_mut(start..start + uri_bytes.len()) {
         Some(slice) => slice,
         None => return OrionWasmError::InvalidMemoryAccess.into(),
     };
-
-    let written = match bincode_next::serde::encode_into_slice(&wasm_uri, out_slice, bincode_next::config::standard()) {
-        Ok(w) => w,
-        Err(_) => return OrionWasmError::BufferTooSmall.into(),
-    };
+    out_slice.copy_from_slice(uri_bytes);
+    let written = uri_bytes.len();
 
     let len_start = written_len_ptr as usize;
     let len_end = len_start + 4;
@@ -626,17 +622,19 @@ fn orion_set_uri(mut caller: Caller<'_, WasmState>, buf_ptr: u32, buf_len: u32) 
         None => return OrionWasmError::InvalidMemoryAccess.into(),
     };
 
-    let wasm_uri = match bincode_next::serde::decode_from_slice::<orion_wasm_types::WasmUri, _>(
-        slice,
-        bincode_next::config::standard(),
-    ) {
-        Ok((u, _)) => u,
+    let uri_str = match std::str::from_utf8(slice) {
+        Ok(s) => s,
+        Err(_) => return OrionWasmError::InternalError.into(),
+    };
+
+    let uri = match http::Uri::try_from(uri_str) {
+        Ok(u) => u,
         Err(_) => return OrionWasmError::InternalError.into(),
     };
 
     if let Some(req_ptr) = caller.data().active_request_handle {
         let request = unsafe { &mut *(req_ptr as *mut Request<OrionRequestBody>) };
-        *request.uri_mut() = wasm_uri.uri;
+        *request.uri_mut() = uri;
         0
     } else {
         OrionWasmError::InternalError.into()
@@ -887,27 +885,46 @@ fn orion_replace_header(
     inner().into_wasm_abi()
 }
 
-fn deserialize_header_mutations(data: &[u8]) -> Option<Vec<HeaderMutation>> {
-    bincode_next::serde::decode_from_slice::<Vec<HeaderMutation>, _>(data, bincode_next::config::standard())
+fn deserialize_header_mutations(data: &[u8]) -> Option<Vec<HeaderMutation<'_>>> {
+    bincode_next::serde::borrow_decode_from_slice::<Vec<HeaderMutation<'_>>, _>(data, bincode_next::config::standard())
         .ok()
         .map(|(mutations, _)| mutations)
 }
 
-fn apply_mutations_to_map(map: &mut http::HeaderMap, mutations: Vec<HeaderMutation>) {
+fn apply_mutations_to_map(map: &mut http::HeaderMap, mutations: Vec<HeaderMutation<'_>>) {
     for mutation in mutations {
         match mutation {
             HeaderMutation::Set(name, value) => {
-                map.insert(name, value);
-            },
-            HeaderMutation::Add(name, value) => {
-                map.append(name, value);
-            },
-            HeaderMutation::Replace(name, value) => {
-                if map.contains_key(&name) {
-                    map.insert(name, value);
+                if let (Ok(n), Ok(v)) = (
+                    http::header::HeaderName::from_bytes(name.as_bytes()),
+                    http::header::HeaderValue::from_bytes(value.as_bytes()),
+                ) {
+                    map.insert(n, v);
                 }
             },
-            HeaderMutation::Remove(name) => while map.remove(&name).is_some() {},
+            HeaderMutation::Add(name, value) => {
+                if let (Ok(n), Ok(v)) = (
+                    http::header::HeaderName::from_bytes(name.as_bytes()),
+                    http::header::HeaderValue::from_bytes(value.as_bytes()),
+                ) {
+                    map.append(n, v);
+                }
+            },
+            HeaderMutation::Replace(name, value) => {
+                if let (Ok(n), Ok(v)) = (
+                    http::header::HeaderName::from_bytes(name.as_bytes()),
+                    http::header::HeaderValue::from_bytes(value.as_bytes()),
+                ) {
+                    if map.contains_key(&n) {
+                        map.insert(n, v);
+                    }
+                }
+            },
+            HeaderMutation::Remove(name) => {
+                if let Ok(n) = http::header::HeaderName::from_bytes(name.as_bytes()) {
+                    map.remove(&n);
+                }
+            },
         }
     }
 }
@@ -916,14 +933,13 @@ fn orion_apply_header_mutations(mut caller: Caller<'_, WasmState>, is_trailer: u
     let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
         return OrionWasmError::InvalidMemoryAccess.into();
     };
-    let data = memory.data(&caller);
     let start = buf_ptr as usize;
     let end = start + buf_len as usize;
-    let slice = match data.get(start..end) {
-        Some(s) => s,
+    let slice = match memory.data(&caller).get(start..end) {
+        Some(s) => s.to_vec(),
         None => return OrionWasmError::InvalidMemoryAccess.into(),
     };
-    let mutations = match deserialize_header_mutations(slice) {
+    let mutations = match deserialize_header_mutations(&slice) {
         Some(m) => m,
         None => return OrionWasmError::InternalError.into(),
     };

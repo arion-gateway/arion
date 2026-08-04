@@ -1,3 +1,4 @@
+use orion_wasm_sdk::{WasmHeaderName, WasmHeaderValue};
 use orion_wasm_sdk::{init_tracing, orion_plugin, FilterAction, HeaderMutation, HttpHeaders, Plugin, RequestHandle};
 use orion_wasm_sdk::shared::SharedAtomicU64;
 use tracing::{debug, error, info};
@@ -34,18 +35,16 @@ impl Plugin for SharedAtomicFilter {
 
             // Set the result as an HTTP header sent to the upstream
             let header_value_str = format!("{}", current);
-            if let Ok(header_value) = http::header::HeaderValue::from_str(&header_value_str) {
+            let header_value = bytes::Bytes::from(header_value_str);
                 if let Err(e) = ctx.apply_header_mutations(&[
                     HeaderMutation::Set(
-                        http::header::HeaderName::from_static("x-request-counter"),
-                        header_value,
+                        WasmHeaderName::from("x-request-counter"),
+                        WasmHeaderValue::from(header_value.to_vec()),
                     )
                 ]) {
                     error!("Failed to set x-request-counter header: {:?}", e);
                 }
-            } else {
-                error!("Failed to create header value from counter");
-            }
+            
         } else {
             error!("Shared counter is not initialized!");
         }

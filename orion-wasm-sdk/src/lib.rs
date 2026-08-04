@@ -15,7 +15,7 @@
 pub use orion_wasm_types::{
     CalloutRequest, CalloutResponse, FilterAction, HeaderMutation, OrionWasmError, LogLevel
 };
-pub use http::{self, header::HeaderName, header::HeaderValue, HeaderMap};
+pub use http::{self, HeaderMap};
 pub use bytes;
 
 // ============================================================================
@@ -51,6 +51,7 @@ pub mod prelude {
 }
 
 // Re-export core types for backward compatibility
+pub use orion_wasm_types::{WasmHeaderName, WasmHeaderValue, WasmUri};
 pub use host::*;
 pub use plugin::*;
 pub use request::*;
