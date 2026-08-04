@@ -905,7 +905,7 @@ impl Service<PipelineRequest<Request<OrionRequestBody>>> for HttpPipelineSvc {
                                     if let (Some(start_time), Some(cluster)) =
                                         (trans_state.upstream_start_instant, trans_state.upstream_cluster_name)
                                     {
-                                        let elapsed_ms = start_time.elapsed().as_millis() as u64;
+                                        let elapsed_ms = u64::try_from(start_time.elapsed().as_millis()).unwrap_or(0);
                                         let shard_id = trans_ctx.shard_id();
                                         crate::with_histogram!(
                                             clusters::UPSTREAM_RQ_TIME,

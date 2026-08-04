@@ -14,6 +14,7 @@ use crate::OrionRequestBody;
 use crate::OrionResponseBody;
 use bytes::Bytes;
 
+use http::HeaderValue;
 use http::{Request, Response};
 use http_body_util::Full;
 use smol_str::{SmolStr, ToSmolStr};
@@ -143,7 +144,7 @@ fn orion_get_header(
             return OrionWasmError::InternalError.into();
         }
     }
-    .map(|v| v.as_bytes());
+    .map(HeaderValue::as_bytes);
 
     if let Some(val_bytes) = val_bytes {
         if val_bytes.len() > value_max_len as usize {
@@ -264,7 +265,7 @@ fn orion_get_body(
         return OrionWasmError::InvalidMemoryAccess.into();
     }
     if let Some(slice) = data.get_mut(start..end) {
-        slice.copy_from_slice(&body_bytes);
+        slice.copy_from_slice(body_bytes);
     } else {
         tracing::error!("Invalid memory index");
         return OrionWasmError::InvalidMemoryAccess.into();
@@ -360,13 +361,11 @@ fn orion_set_custom_metrics(mut caller: Caller<'_, WasmState>, buffer_ptr: u32, 
             None => return OrionWasmError::InvalidMemoryAccess.into(),
         };
 
-        let (pairs, _): (Vec<(&str, &str)>, _) = match bincode_next::borrow_decode_from_slice(
-            buf,
-            bincode_next::config::standard(),
-        ) {
-            Ok(res) => res,
-            Err(_) => return OrionWasmError::InvalidMemoryAccess.into(),
-        };
+        let (pairs, _): (Vec<(&str, &str)>, _) =
+            match bincode_next::borrow_decode_from_slice(buf, bincode_next::config::standard()) {
+                Ok(res) => res,
+                Err(_) => return OrionWasmError::InvalidMemoryAccess.into(),
+            };
 
         if let Some(custom_metrics) = orion_metrics::metrics::custom::CUSTOM_METRICS.get() {
             let mut kv = orion_metrics::key_value::KeyValueMap::default();
@@ -498,15 +497,18 @@ fn orion_get_headers_map(
         return OrionWasmError::InvalidMemoryAccess.into();
     }
 
-    let out_slice = match data.get_mut(start..end) {
-        Some(slice) => slice,
-        None => {
-            tracing::error!("Invalid memory index");
-            return OrionWasmError::InvalidMemoryAccess.into();
-        }
+    let out_slice = if let Some(slice) = data.get_mut(start..end) {
+        slice
+    } else {
+        tracing::error!("Invalid memory index");
+        return OrionWasmError::InvalidMemoryAccess.into();
     };
 
-    let written = match bincode_next::serde::encode_into_slice(SerHeaderMap(headers), out_slice, bincode_next::config::standard()) {
+    let written = match bincode_next::serde::encode_into_slice(
+        SerHeaderMap(headers),
+        out_slice,
+        bincode_next::config::standard(),
+    ) {
         Ok(w) => w,
         Err(_) => return OrionWasmError::BufferTooSmall.into(),
     };
@@ -648,7 +650,7 @@ fn orion_get_status_code(mut caller: Caller<'_, WasmState>, out_status_ptr: u32)
 
     let status_code = if let Some(res_ptr) = caller.data().active_response_handle {
         let response = unsafe { &*(res_ptr as *const Response<OrionResponseBody>) };
-        response.status().as_u16() as u32
+        u32::from(response.status().as_u16())
     } else {
         return OrionWasmError::InternalError.into();
     };
@@ -668,7 +670,7 @@ fn orion_get_status_code(mut caller: Caller<'_, WasmState>, out_status_ptr: u32)
     0
 }
 
-fn orion_set_status_code(mut caller: Caller<'_, WasmState>, status_code: u32) -> i32 {
+fn orion_set_status_code(caller: Caller<'_, WasmState>, status_code: u32) -> i32 {
     if let Some(res_ptr) = caller.data().active_response_handle {
         if let Ok(code) = u16::try_from(status_code) {
             if let Ok(status) = http::StatusCode::from_u16(code) {
@@ -697,8 +699,9 @@ fn get_name_value_from_memory(
 
     let n_start = name_ptr as usize;
     let n_end = n_start + name_len as usize;
-    let name = http::header::HeaderName::from_bytes(data.get(n_start..n_end).ok_or(OrionWasmError::InvalidMemoryAccess)?)
-        .map_err(|_e| OrionWasmError::InternalError)?;
+    let name =
+        http::header::HeaderName::from_bytes(data.get(n_start..n_end).ok_or(OrionWasmError::InvalidMemoryAccess)?)
+            .map_err(|_e| OrionWasmError::InternalError)?;
 
     let v_start = value_ptr as usize;
     let v_end = v_start + value_len as usize;
@@ -1510,7 +1513,10 @@ enum SerDownstreamConnectionMetadata<'a, K: Clone + Into<u8>> {
     },
 }
 
-fn serialize_tlv<K: Clone + Into<u8>, S: serde::Serializer>(tlv: &std::collections::HashMap<K, Vec<u8>>, s: S) -> Result<S::Ok, S::Error> {
+fn serialize_tlv<K: Clone + Into<u8>, S: serde::Serializer>(
+    tlv: &std::collections::HashMap<K, Vec<u8>>,
+    s: S,
+) -> Result<S::Ok, S::Error> {
     use serde::ser::SerializeMap;
     let mut map = s.serialize_map(Some(tlv.len()))?;
     for (k, v) in tlv {
@@ -1570,7 +1576,7 @@ fn orion_get_downstream_metadata(
         let guest_meta = SerDownstreamMetadata {
             connection: mapped_connection,
             sni: host_meta.sni.as_deref(),
-            listener_name: &host_meta.listener_name,
+            listener_name: host_meta.listener_name,
         };
 
         let encoded = match bincode_next::serde::encode_to_vec(&guest_meta, bincode_next::config::standard()) {
@@ -2045,11 +2051,7 @@ fn orion_get_response(mut caller: Caller<'_, WasmState>, buf_ptr: u32, max_len: 
     let body_bytes = state.buffered_response_body.clone().unwrap_or_default();
 
     let wasm_res = SerWasmResponse(SerResponse {
-        head: BorrowedResHead {
-            status: response.status(),
-            headers: response.headers(),
-            version: response.version(),
-        },
+        head: BorrowedResHead { status: response.status(), headers: response.headers(), version: response.version() },
         body: &body_bytes,
     });
 
