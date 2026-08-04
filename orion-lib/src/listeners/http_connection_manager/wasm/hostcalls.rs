@@ -312,7 +312,7 @@ fn orion_set_custom_metrics(mut caller: Caller<'_, WasmState>, buffer_ptr: u32, 
             None => return OrionWasmError::InvalidMemoryAccess.into(),
         };
 
-        let pairs = match bincode_next::serde::decode_from_slice::<Vec<(SmolStr, SmolStr)>, _>(
+        let pairs = match bincode_next::serde::decode_borrowed_from_slice::<Vec<(&str, &str)>, _>(
             buf,
             bincode_next::config::standard(),
         ) {
@@ -323,7 +323,7 @@ fn orion_set_custom_metrics(mut caller: Caller<'_, WasmState>, buffer_ptr: u32, 
         if let Some(custom_metrics) = orion_metrics::metrics::custom::CUSTOM_METRICS.get() {
             let mut kv = orion_metrics::key_value::KeyValueMap::default();
             for (k, v) in &pairs {
-                kv.insert(k.as_str(), v.as_str());
+                kv.insert(k, v);
             }
             custom_metrics.with_key_value(orion_metrics::metrics::custom::MetricsHook::Wasm, &kv, &[]);
         }
