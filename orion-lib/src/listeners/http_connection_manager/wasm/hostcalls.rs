@@ -190,14 +190,16 @@ fn orion_get_body(
         return OrionWasmError::InvalidMemoryAccess.into();
     };
 
-    let body_bytes = if caller.data().active_request_handle.is_some() {
-        match caller.data().buffered_request_body.as_ref() {
-            Some(b) => b.clone(),
+    let (data, state) = memory.data_and_store_mut(&mut caller);
+
+    let body_bytes = if state.active_request_handle.is_some() {
+        match state.buffered_request_body.as_ref() {
+            Some(b) => b.as_ref(),
             None => return OrionWasmError::NotFound.into(),
         }
-    } else if caller.data().active_response_handle.is_some() {
-        match caller.data().buffered_response_body.as_ref() {
-            Some(b) => b.clone(),
+    } else if state.active_response_handle.is_some() {
+        match state.buffered_response_body.as_ref() {
+            Some(b) => b.as_ref(),
             None => return OrionWasmError::NotFound.into(),
         }
     } else {
@@ -207,8 +209,6 @@ fn orion_get_body(
     if body_bytes.len() > max_len as usize {
         return OrionWasmError::BufferTooSmall.into();
     }
-
-    let data = memory.data_mut(&mut caller);
 
     let start = body_ptr as usize;
     let end = start + body_bytes.len();
