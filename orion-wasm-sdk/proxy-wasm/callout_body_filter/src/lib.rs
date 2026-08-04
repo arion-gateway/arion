@@ -24,49 +24,48 @@ impl RootContext for CalloutBodyRoot {
 
 struct CalloutBodyFilter;
 
-// ngx_wasm_module does not re-invoke on_http_request_body after resume_http_request(),
-// so body replacement from the callout response is not possible here. The callout is
-// still performed to preserve the latency and throughput characteristics of the filter.
 impl Context for CalloutBodyFilter {
     fn on_http_call_response(&mut self, _token_id: u32, _num_headers: usize, body_size: usize, num_trailers: usize) {
-        // Consume headers to prevent memory leaks in the host (ngx_wasm_module)
-        let _ = self.get_http_call_response_headers();
-        if let Some(status) = self.get_http_call_response_header(":status") {
-            if !status.starts_with('2') {
-                log::error!("Callout returned non-success status");
-            }
-        }
+        let headers = self.get_http_call_response_headers();
 
-        // Always consume the body to prevent memory leaks
+        let authorized = headers.iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("x-authorized"))
+            .map(|(_, v)| v == "true")
+            .unwrap_or(false);
+
         if body_size > 0 {
             let _ = self.get_http_call_response_body(0, body_size);
         }
-
-        // Consume trailers if any
         if num_trailers > 0 {
             let _ = self.get_http_call_response_trailers();
         }
 
-        self.resume_http_request();
+        if authorized {
+            self.resume_http_request();
+        } else {
+            self.send_http_response(403, vec![], Some(b"Forbidden"));
+        }
     }
 }
 
 impl HttpContext for CalloutBodyFilter {
-    fn on_http_request_body(&mut self, body_size: usize, end_of_stream: bool) -> Action {
-        if !end_of_stream {
-            return Action::Pause;
+    fn on_http_request_headers(&mut self, _num_headers: usize, _end_of_stream: bool) -> Action {
+        let request_headers = self.get_http_request_headers();
+        let mut callout_headers: Vec<(&str, &str)> = vec![
+            (":method", "GET"),
+            (":path", "/auth"),
+            (":authority", "service"),
+        ];
+        for (k, v) in &request_headers {
+            if !k.starts_with(':') {
+                callout_headers.push((k.as_str(), v.as_str()));
+            }
         }
-        let body = self.get_http_request_body(0, body_size).unwrap_or_default();
+
         match self.dispatch_http_call(
             "service",
-            vec![
-                (":method", "POST"),
-                (":path", "/"),
-                (":authority", "service"),
-                ("x-callout-id", "wasm-plugin-123"),
-                ("accept", "application/json"),
-            ],
-            Some(&body),
+            callout_headers,
+            None,
             vec![],
             std::time::Duration::from_secs(5),
         ) {
