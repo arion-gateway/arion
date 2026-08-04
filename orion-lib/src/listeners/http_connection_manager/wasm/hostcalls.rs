@@ -142,17 +142,16 @@ fn orion_get_plugin_config(
         return OrionWasmError::InvalidMemoryAccess.into();
     };
 
-    let config_string = match caller.data().plugin_config.as_ref() {
-        Some(s) => s.clone(),
+    let (data, state) = memory.data_and_store_mut(&mut caller);
+
+    let config_bytes = match state.plugin_config.as_ref() {
+        Some(s) => s.as_bytes(),
         None => return OrionWasmError::NotFound.into(),
     };
-    let config_bytes = config_string.as_bytes();
 
     if config_bytes.len() > max_len as usize {
         return OrionWasmError::BufferTooSmall.into();
     }
-
-    let data = memory.data_mut(&mut caller);
     let start = config_ptr as usize;
     let end = start + config_bytes.len();
     if end > data.len() {
