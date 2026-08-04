@@ -41,6 +41,54 @@ trait IntoWasmAbi {
     fn into_wasm_abi(self) -> i32;
 }
 
+#[derive(serde::Serialize)]
+struct SerWasmRequest<'a>(SerRequest<'a>);
+
+#[derive(serde::Serialize)]
+#[serde(rename = "Request")]
+struct SerRequest<'a> {
+    head: BorrowedReqHead<'a>,
+    body: &'a bytes::Bytes,
+}
+
+#[derive(serde::Serialize)]
+struct BorrowedReqHead<'a> {
+    #[serde(with = "http_serde_ext::method")]
+    method: &'a http::Method,
+    #[serde(with = "http_serde_ext::uri")]
+    uri: &'a http::Uri,
+    #[serde(with = "http_serde_ext::header_map")]
+    headers: &'a http::HeaderMap,
+    #[serde(with = "http_serde_ext::version")]
+    version: http::Version,
+}
+
+#[derive(serde::Serialize)]
+struct SerWasmResponse<'a>(SerResponse<'a>);
+
+#[derive(serde::Serialize)]
+#[serde(rename = "Response")]
+struct SerResponse<'a> {
+    head: BorrowedResHead<'a>,
+    body: &'a bytes::Bytes,
+}
+
+#[derive(serde::Serialize)]
+struct BorrowedResHead<'a> {
+    #[serde(with = "http_serde_ext::status_code")]
+    status: http::StatusCode,
+    #[serde(with = "http_serde_ext::header_map")]
+    headers: &'a http::HeaderMap,
+    #[serde(with = "http_serde_ext::version")]
+    version: http::Version,
+}
+
+#[derive(serde::Serialize)]
+struct SerWasmUri<'a> {
+    #[serde(with = "http_serde_ext::uri")]
+    uri: &'a http::Uri,
+}
+
 impl<T> IntoWasmAbi for Result<T, OrionWasmError> {
     #[inline]
     fn into_wasm_abi(self) -> i32 {
@@ -526,12 +574,12 @@ fn orion_get_uri(mut caller: Caller<'_, WasmState>, buf_ptr: u32, max_len: u32, 
 
     let uri = if let Some(req_ptr) = state.active_request_handle {
         let request = unsafe { &*(req_ptr as *const Request<OrionRequestBody>) };
-        request.uri().clone()
+        request.uri()
     } else {
         return OrionWasmError::InternalError.into();
     };
 
-    let wasm_uri = orion_wasm_types::WasmUri { uri };
+    let wasm_uri = SerWasmUri { uri };
 
     let start = buf_ptr as usize;
     let end = start + max_len as usize;
@@ -1438,6 +1486,40 @@ fn orion_sleep(
     })
 }
 
+#[derive(serde::Serialize)]
+struct SerDownstreamMetadata<'a, K: Clone + Into<u8>> {
+    connection: SerDownstreamConnectionMetadata<'a, K>,
+    sni: Option<&'a str>,
+    listener_name: &'a str,
+}
+
+#[derive(serde::Serialize)]
+enum SerDownstreamConnectionMetadata<'a, K: Clone + Into<u8>> {
+    FromSocket {
+        peer_address: std::net::SocketAddr,
+        local_address: std::net::SocketAddr,
+    },
+    FromProxyProtocol {
+        original_peer_address: Option<std::net::SocketAddr>,
+        original_destination_address: Option<std::net::SocketAddr>,
+        protocol: orion_wasm_types::ProxyProtocol,
+        #[serde(serialize_with = "serialize_tlv")]
+        tlv_data: &'a std::collections::HashMap<K, Vec<u8>>,
+        proxy_peer_address: std::net::SocketAddr,
+        proxy_local_address: std::net::SocketAddr,
+    },
+}
+
+fn serialize_tlv<K: Clone + Into<u8>, S: serde::Serializer>(tlv: &std::collections::HashMap<K, Vec<u8>>, s: S) -> Result<S::Ok, S::Error> {
+    use serde::ser::SerializeMap;
+    let mut map = s.serialize_map(Some(tlv.len()))?;
+    for (k, v) in tlv {
+        let k_u8: u8 = (*k).clone().into();
+        map.serialize_entry(&k_u8, v)?;
+    }
+    map.end()
+}
+
 fn orion_get_downstream_metadata(
     mut caller: Caller<'_, WasmState>,
     (out_ptr_ptr, out_len_ptr): (u32, u32),
@@ -1456,7 +1538,7 @@ fn orion_get_downstream_metadata(
 
         let mapped_connection = match &host_meta.connection {
             crate::listeners::metadata::DownstreamConnectionMetadata::FromSocket { peer_address, local_address } => {
-                orion_wasm_types::DownstreamConnectionMetadata::FromSocket {
+                SerDownstreamConnectionMetadata::FromSocket {
                     peer_address: *peer_address,
                     local_address: *local_address,
                 }
@@ -1474,26 +1556,21 @@ fn orion_get_downstream_metadata(
                     ppp::v2::Protocol::Datagram => orion_wasm_types::ProxyProtocol::Datagram,
                     ppp::v2::Protocol::Unspecified => orion_wasm_types::ProxyProtocol::Unspec,
                 };
-                let mut mapped_tlv = std::collections::HashMap::new();
-                for (k, v) in tlv_data {
-                    let k_u8: u8 = (*k).clone().into();
-                    mapped_tlv.insert(k_u8, v.clone());
-                }
-                orion_wasm_types::DownstreamConnectionMetadata::FromProxyProtocol {
-                    original_peer_address: *original_peer_address,
-                    original_destination_address: *original_destination_address,
+                SerDownstreamConnectionMetadata::FromProxyProtocol {
+                    original_peer_address: Some(*original_peer_address),
+                    original_destination_address: Some(*original_destination_address),
                     protocol: mapped_protocol,
-                    tlv_data: mapped_tlv,
+                    tlv_data,
                     proxy_peer_address: *proxy_peer_address,
                     proxy_local_address: *proxy_local_address,
                 }
             },
         };
 
-        let guest_meta = orion_wasm_types::DownstreamMetadata {
+        let guest_meta = SerDownstreamMetadata {
             connection: mapped_connection,
-            sni: host_meta.sni.as_ref().map(std::string::ToString::to_string),
-            listener_name: host_meta.listener_name.to_owned(),
+            sni: host_meta.sni.as_deref(),
+            listener_name: &host_meta.listener_name,
         };
 
         let encoded = match bincode_next::serde::encode_to_vec(&guest_meta, bincode_next::config::standard()) {
@@ -1875,18 +1952,15 @@ fn orion_get_request(mut caller: Caller<'_, WasmState>, buf_ptr: u32, max_len: u
 
     let body_bytes = state.buffered_request_body.clone().unwrap_or_default();
 
-    let mut builder =
-        http::Request::builder().method(request.method().clone()).uri(request.uri().clone()).version(request.version());
-
-    for (k, v) in request.headers() {
-        builder = builder.header(k, v);
-    }
-    let req = match builder.body(body_bytes) {
-        Ok(r) => r,
-        Err(_) => return OrionWasmError::InternalError.into(),
-    };
-
-    let wasm_req = orion_wasm_types::WasmRequest { request: req };
+    let wasm_req = SerWasmRequest(SerRequest {
+        head: BorrowedReqHead {
+            method: request.method(),
+            uri: request.uri(),
+            headers: request.headers(),
+            version: request.version(),
+        },
+        body: &body_bytes,
+    });
 
     let start = buf_ptr as usize;
     let end = start + max_len as usize;
@@ -1970,17 +2044,14 @@ fn orion_get_response(mut caller: Caller<'_, WasmState>, buf_ptr: u32, max_len: 
 
     let body_bytes = state.buffered_response_body.clone().unwrap_or_default();
 
-    let mut builder = http::Response::builder().status(response.status()).version(response.version());
-
-    for (k, v) in response.headers() {
-        builder = builder.header(k, v);
-    }
-    let res = match builder.body(body_bytes) {
-        Ok(r) => r,
-        Err(_) => return OrionWasmError::InternalError.into(),
-    };
-
-    let wasm_res = orion_wasm_types::WasmResponse { response: res };
+    let wasm_res = SerWasmResponse(SerResponse {
+        head: BorrowedResHead {
+            status: response.status(),
+            headers: response.headers(),
+            version: response.version(),
+        },
+        body: &body_bytes,
+    });
 
     let start = buf_ptr as usize;
     let end = start + max_len as usize;
