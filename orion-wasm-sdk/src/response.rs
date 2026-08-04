@@ -113,11 +113,11 @@ impl ResponseHandle<HttpBody> {
                 };
                 return Ok(wasm_res.response);
             } else if res == OrionWasmError::BufferTooSmall as i32 {
-                if buf.capacity() > 10 * 1024 * 1024 {
+                let exact_len = written_len as usize;
+                if exact_len <= buf.capacity() {
                     return Err(OrionWasmError::BufferTooSmall);
                 }
-                let new_cap = buf.capacity() * 2;
-                buf.reserve_exact(new_cap - buf.capacity());
+                buf.reserve_exact(exact_len - buf.len());
             } else {
                 return Err(OrionWasmError::from_ffi(res).err().unwrap_or(OrionWasmError::InternalError));
             }

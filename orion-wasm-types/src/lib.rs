@@ -483,3 +483,70 @@ impl<'a> WasmUri<'a> {
         self.as_str().as_bytes()
     }
 }
+
+pub struct ProxyWasmRequest<'a> {
+    pub method: &'a http::Method,
+    pub uri: &'a http::Uri,
+    pub headers: &'a http::HeaderMap,
+    pub version: http::Version,
+    pub body: &'a bytes::Bytes,
+}
+
+impl<'a> serde::Serialize for ProxyWasmRequest<'a> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        #[derive(Serialize)]
+        struct BorrowedReqHead<'a> {
+            #[serde(with = "http_serde_ext::method")]
+            method: &'a http::Method,
+            #[serde(with = "http_serde_ext::uri")]
+            uri: &'a http::Uri,
+            #[serde(with = "http_serde_ext::header_map")]
+            headers: &'a http::HeaderMap,
+            #[serde(with = "http_serde_ext::version")]
+            version: http::Version,
+        }
+
+        let head = BorrowedReqHead { method: self.method, uri: self.uri, headers: self.headers, version: self.version };
+
+        let mut state = serializer.serialize_struct("Request", 2)?;
+        state.serialize_field("head", &head)?;
+        state.serialize_field("body", self.body)?;
+        state.end()
+    }
+}
+
+pub struct ProxyWasmResponse<'a> {
+    pub status: http::StatusCode,
+    pub version: http::Version,
+    pub headers: &'a http::HeaderMap,
+    pub body: &'a bytes::Bytes,
+}
+
+impl<'a> serde::Serialize for ProxyWasmResponse<'a> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        #[derive(Serialize)]
+        struct BorrowedRespHead<'a> {
+            #[serde(with = "http_serde_ext::status_code")]
+            status: http::StatusCode,
+            #[serde(with = "http_serde_ext::version")]
+            version: http::Version,
+            #[serde(with = "http_serde_ext::header_map")]
+            headers: &'a http::HeaderMap,
+        }
+
+        let head = BorrowedRespHead { status: self.status, version: self.version, headers: self.headers };
+
+        let mut state = serializer.serialize_struct("Response", 2)?;
+        state.serialize_field("head", &head)?;
+        state.serialize_field("body", self.body)?;
+        state.end()
+    }
+}

@@ -42,48 +42,6 @@ trait IntoWasmAbi {
     fn into_wasm_abi(self) -> i32;
 }
 
-#[derive(serde::Serialize)]
-struct SerWasmRequest<'a>(SerRequest<'a>);
-
-#[derive(serde::Serialize)]
-#[serde(rename = "Request")]
-struct SerRequest<'a> {
-    head: BorrowedReqHead<'a>,
-    body: &'a bytes::Bytes,
-}
-
-#[derive(serde::Serialize)]
-struct BorrowedReqHead<'a> {
-    #[serde(with = "http_serde_ext::method")]
-    method: &'a http::Method,
-    #[serde(with = "http_serde_ext::uri")]
-    uri: &'a http::Uri,
-    #[serde(with = "http_serde_ext::header_map")]
-    headers: &'a http::HeaderMap,
-    #[serde(with = "http_serde_ext::version")]
-    version: http::Version,
-}
-
-#[derive(serde::Serialize)]
-struct SerWasmResponse<'a>(SerResponse<'a>);
-
-#[derive(serde::Serialize)]
-#[serde(rename = "Response")]
-struct SerResponse<'a> {
-    head: BorrowedResHead<'a>,
-    body: &'a bytes::Bytes,
-}
-
-#[derive(serde::Serialize)]
-struct BorrowedResHead<'a> {
-    #[serde(with = "http_serde_ext::status_code")]
-    status: http::StatusCode,
-    #[serde(with = "http_serde_ext::header_map")]
-    headers: &'a http::HeaderMap,
-    #[serde(with = "http_serde_ext::version")]
-    version: http::Version,
-}
-
 impl<T> IntoWasmAbi for Result<T, OrionWasmError> {
     #[inline]
     fn into_wasm_abi(self) -> i32 {
@@ -141,6 +99,18 @@ fn orion_get_header(
     .map(HeaderValue::as_bytes);
 
     if let Some(val_bytes) = val_bytes {
+        let len_start = written_len_ptr as usize;
+        let len_end = len_start + 4;
+        if len_end > data.len() {
+            return OrionWasmError::InvalidMemoryAccess.into();
+        }
+        if let Some(slice) = data.get_mut(len_start..len_end) {
+            slice.copy_from_slice(&(u32::try_from(val_bytes.len()).unwrap_or(0)).to_le_bytes());
+        } else {
+            tracing::error!("Invalid memory index");
+            return OrionWasmError::InvalidMemoryAccess.into();
+        }
+
         if val_bytes.len() > value_max_len as usize {
             return OrionWasmError::BufferTooSmall.into();
         }
@@ -152,18 +122,6 @@ fn orion_get_header(
         }
         if let Some(slice) = data.get_mut(val_start..val_end) {
             slice.copy_from_slice(val_bytes);
-        } else {
-            tracing::error!("Invalid memory index");
-            return OrionWasmError::InvalidMemoryAccess.into();
-        }
-
-        let len_start = written_len_ptr as usize;
-        let len_end = len_start + 4;
-        if len_end > data.len() {
-            return OrionWasmError::InvalidMemoryAccess.into();
-        }
-        if let Some(slice) = data.get_mut(len_start..len_end) {
-            slice.copy_from_slice(&(u32::try_from(val_bytes.len()).unwrap_or(0)).to_le_bytes());
         } else {
             tracing::error!("Invalid memory index");
             return OrionWasmError::InvalidMemoryAccess.into();
@@ -249,6 +207,18 @@ fn orion_get_body(
         return OrionWasmError::InternalError.into();
     };
 
+    let len_start = written_len_ptr as usize;
+    let len_end = len_start + 4;
+    if len_end > data.len() {
+        return OrionWasmError::InvalidMemoryAccess.into();
+    }
+    if let Some(slice) = data.get_mut(len_start..len_end) {
+        slice.copy_from_slice(&(u32::try_from(body_bytes.len()).unwrap_or(0)).to_le_bytes());
+    } else {
+        tracing::error!("Invalid memory index");
+        return OrionWasmError::InvalidMemoryAccess.into();
+    }
+
     if body_bytes.len() > max_len as usize {
         return OrionWasmError::BufferTooSmall.into();
     }
@@ -260,18 +230,6 @@ fn orion_get_body(
     }
     if let Some(slice) = data.get_mut(start..end) {
         slice.copy_from_slice(body_bytes);
-    } else {
-        tracing::error!("Invalid memory index");
-        return OrionWasmError::InvalidMemoryAccess.into();
-    }
-
-    let len_start = written_len_ptr as usize;
-    let len_end = len_start + 4;
-    if len_end > data.len() {
-        return OrionWasmError::InvalidMemoryAccess.into();
-    }
-    if let Some(slice) = data.get_mut(len_start..len_end) {
-        slice.copy_from_slice(&(u32::try_from(body_bytes.len()).unwrap_or(0)).to_le_bytes());
     } else {
         tracing::error!("Invalid memory index");
         return OrionWasmError::InvalidMemoryAccess.into();
@@ -584,17 +542,7 @@ fn orion_get_uri(mut caller: Caller<'_, WasmState>, buf_ptr: u32, max_len: u32, 
         return OrionWasmError::InvalidMemoryAccess.into();
     }
 
-    if uri_bytes.len() > max_len as usize {
-        return OrionWasmError::BufferTooSmall.into();
-    }
-
-    let out_slice = match data.get_mut(start..start + uri_bytes.len()) {
-        Some(slice) => slice,
-        None => return OrionWasmError::InvalidMemoryAccess.into(),
-    };
-    out_slice.copy_from_slice(uri_bytes);
     let written = uri_bytes.len();
-
     let len_start = written_len_ptr as usize;
     let len_end = len_start + 4;
     if len_end > data.len() {
@@ -605,6 +553,16 @@ fn orion_get_uri(mut caller: Caller<'_, WasmState>, buf_ptr: u32, max_len: u32, 
     } else {
         return OrionWasmError::InvalidMemoryAccess.into();
     }
+
+    if uri_bytes.len() > max_len as usize {
+        return OrionWasmError::BufferTooSmall.into();
+    }
+
+    let out_slice = match data.get_mut(start..start + uri_bytes.len()) {
+        Some(slice) => slice,
+        None => return OrionWasmError::InvalidMemoryAccess.into(),
+    };
+    out_slice.copy_from_slice(uri_bytes);
 
     0
 }
@@ -1974,15 +1932,13 @@ fn orion_get_request(mut caller: Caller<'_, WasmState>, buf_ptr: u32, max_len: u
 
     let body_bytes = state.buffered_request_body.clone().unwrap_or_default();
 
-    let wasm_req = SerWasmRequest(SerRequest {
-        head: BorrowedReqHead {
-            method: request.method(),
-            uri: request.uri(),
-            headers: request.headers(),
-            version: request.version(),
-        },
+    let wasm_req = orion_wasm_types::ProxyWasmRequest {
+        method: request.method(),
+        uri: request.uri(),
+        headers: request.headers(),
+        version: request.version(),
         body: &body_bytes,
-    });
+    };
 
     let start = buf_ptr as usize;
     let end = start + max_len as usize;
@@ -2066,10 +2022,12 @@ fn orion_get_response(mut caller: Caller<'_, WasmState>, buf_ptr: u32, max_len: 
 
     let body_bytes = state.buffered_response_body.clone().unwrap_or_default();
 
-    let wasm_res = SerWasmResponse(SerResponse {
-        head: BorrowedResHead { status: response.status(), headers: response.headers(), version: response.version() },
+    let wasm_res = orion_wasm_types::ProxyWasmResponse {
+        status: response.status(),
+        version: response.version(),
+        headers: response.headers(),
         body: &body_bytes,
-    });
+    };
 
     let start = buf_ptr as usize;
     let end = start + max_len as usize;

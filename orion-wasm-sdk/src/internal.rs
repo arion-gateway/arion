@@ -85,11 +85,11 @@ pub(crate) fn get_http_header(
                     },
                     Err(OrionWasmError::NotFound) => return Ok(None),
                     Err(OrionWasmError::BufferTooSmall) => {
-                        let new_cap = heap_buf.capacity().saturating_mul(2);
-                        if new_cap == heap_buf.capacity() {
+                        let exact_len = written_len as usize;
+                        if exact_len <= heap_buf.capacity() {
                             return Err(OrionWasmError::BufferTooSmall);
                         }
-                        heap_buf.reserve_exact(new_cap);
+                        heap_buf.reserve_exact(exact_len - heap_buf.len());
                     },
                     Err(other) => return Err(other),
                 }
@@ -122,11 +122,11 @@ pub(crate) fn get_http_body(is_trailer: u32) -> Result<bytes::Bytes, OrionWasmEr
                 return Ok(buf.into());
             },
             Err(OrionWasmError::BufferTooSmall) => {
-                let new_cap = buf.capacity().saturating_mul(2);
-                if new_cap == buf.capacity() {
+                let exact_len = written_len as usize;
+                if exact_len <= buf.capacity() {
                     return Err(OrionWasmError::BufferTooSmall);
                 }
-                buf.reserve_exact(new_cap);
+                buf.reserve_exact(exact_len - buf.len());
             },
             Err(other) => return Err(other),
         }
@@ -181,11 +181,11 @@ pub(crate) fn get_http_headers_map(is_trailer: u32) -> Result<HeaderMap, OrionWa
                 .map_err(|_| OrionWasmError::InternalError);
             },
             Err(OrionWasmError::BufferTooSmall) => {
-                let new_cap = buf.capacity().saturating_mul(2);
-                if new_cap == buf.capacity() {
+                let exact_len = written_len as usize;
+                if exact_len <= buf.capacity() {
                     return Err(OrionWasmError::BufferTooSmall);
                 }
-                buf.reserve_exact(new_cap);
+                buf.reserve_exact(exact_len - buf.len());
             },
             Err(other) => return Err(other),
         }
@@ -265,11 +265,11 @@ pub(crate) fn get_http_uri() -> Result<WasmUri<'static>, OrionWasmError> {
                         return Ok(WasmUri::Owned(smol_str::SmolStr::new(s)));
                     },
                     Err(OrionWasmError::BufferTooSmall) => {
-                        let new_cap = heap_buf.capacity().saturating_mul(2);
-                        if new_cap == heap_buf.capacity() {
+                        let exact_len = written_len as usize;
+                        if exact_len <= heap_buf.capacity() {
                             return Err(OrionWasmError::BufferTooSmall);
                         }
-                        heap_buf.reserve_exact(new_cap);
+                        heap_buf.reserve_exact(exact_len - heap_buf.len());
                     },
                     Err(other) => return Err(other),
                 }
