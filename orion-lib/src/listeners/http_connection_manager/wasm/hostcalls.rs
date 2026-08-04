@@ -312,11 +312,11 @@ fn orion_set_custom_metrics(mut caller: Caller<'_, WasmState>, buffer_ptr: u32, 
             None => return OrionWasmError::InvalidMemoryAccess.into(),
         };
 
-        let pairs = match bincode_next::serde::decode_borrowed_from_slice::<Vec<(&str, &str)>, _>(
+        let (pairs, _): (Vec<(&str, &str)>, _) = match bincode_next::borrow_decode_from_slice(
             buf,
             bincode_next::config::standard(),
         ) {
-            Ok((p, _)) => p,
+            Ok(res) => res,
             Err(_) => return OrionWasmError::InvalidMemoryAccess.into(),
         };
 
@@ -422,53 +422,54 @@ fn orion_get_headers_map(
         return OrionWasmError::InvalidMemoryAccess.into();
     };
 
+    let (data, state) = memory.data_and_store_mut(&mut caller);
+
     let headers = if is_trailer == 0 {
-        if let Some(req_ptr) = caller.data().active_request_handle {
+        if let Some(req_ptr) = state.active_request_handle {
             let request = unsafe { &*(req_ptr as *const Request<OrionRequestBody>) };
             request.headers()
-        } else if let Some(res_ptr) = caller.data().active_response_handle {
+        } else if let Some(res_ptr) = state.active_response_handle {
             let response = unsafe { &*(res_ptr as *const Response<OrionResponseBody>) };
             response.headers()
         } else {
             return OrionWasmError::InternalError.into();
         }
     } else {
-        if caller.data().active_request_handle.is_some() {
-            caller.data().request_trailers.as_ref().unwrap_or(&EMPTY_MAP)
-        } else if caller.data().active_response_handle.is_some() {
-            caller.data().response_trailers.as_ref().unwrap_or(&EMPTY_MAP)
+        if state.active_request_handle.is_some() {
+            state.request_trailers.as_ref().unwrap_or(&EMPTY_MAP)
+        } else if state.active_response_handle.is_some() {
+            state.response_trailers.as_ref().unwrap_or(&EMPTY_MAP)
         } else {
             return OrionWasmError::InternalError.into();
         }
     };
 
-    let serialized = match bincode_next::serde::encode_to_vec(SerHeaderMap(headers), bincode_next::config::standard()) {
-        Ok(b) => b,
-        Err(_) => return OrionWasmError::InternalError.into(),
-    };
-
-    if serialized.len() > max_len as usize {
-        return OrionWasmError::BufferTooSmall.into();
-    }
-    let data = memory.data_mut(&mut caller);
     let start = buf_ptr as usize;
-    let end = start + serialized.len();
+    let end = start + max_len as usize;
     if end > data.len() {
         return OrionWasmError::InvalidMemoryAccess.into();
     }
-    if let Some(slice) = data.get_mut(start..end) {
-        slice.copy_from_slice(&serialized);
-    } else {
-        tracing::error!("Invalid memory index");
-        return OrionWasmError::InvalidMemoryAccess.into();
-    }
+
+    let out_slice = match data.get_mut(start..end) {
+        Some(slice) => slice,
+        None => {
+            tracing::error!("Invalid memory index");
+            return OrionWasmError::InvalidMemoryAccess.into();
+        }
+    };
+
+    let written = match bincode_next::serde::encode_into_slice(SerHeaderMap(headers), out_slice, bincode_next::config::standard()) {
+        Ok(w) => w,
+        Err(_) => return OrionWasmError::BufferTooSmall.into(),
+    };
+
     let len_start = written_len_ptr as usize;
     let len_end = len_start + 4;
     if len_end > data.len() {
         return OrionWasmError::InvalidMemoryAccess.into();
     }
     if let Some(slice) = data.get_mut(len_start..len_end) {
-        slice.copy_from_slice(&(u32::try_from(serialized.len()).unwrap_or(0)).to_le_bytes());
+        slice.copy_from_slice(&(u32::try_from(written).unwrap_or(0)).to_le_bytes());
     } else {
         tracing::error!("Invalid memory index");
         return OrionWasmError::InvalidMemoryAccess.into();
@@ -521,7 +522,9 @@ fn orion_get_uri(mut caller: Caller<'_, WasmState>, buf_ptr: u32, max_len: u32, 
         return OrionWasmError::InvalidMemoryAccess.into();
     };
 
-    let uri = if let Some(req_ptr) = caller.data().active_request_handle {
+    let (data, state) = memory.data_and_store_mut(&mut caller);
+
+    let uri = if let Some(req_ptr) = state.active_request_handle {
         let request = unsafe { &*(req_ptr as *const Request<OrionRequestBody>) };
         request.uri().clone()
     } else {
@@ -529,25 +532,22 @@ fn orion_get_uri(mut caller: Caller<'_, WasmState>, buf_ptr: u32, max_len: u32, 
     };
 
     let wasm_uri = orion_wasm_types::WasmUri { uri };
-    let serialized = match bincode_next::serde::encode_to_vec(&wasm_uri, bincode_next::config::standard()) {
-        Ok(b) => b,
-        Err(_) => return OrionWasmError::InternalError.into(),
-    };
 
-    if serialized.len() > max_len as usize {
-        return OrionWasmError::BufferTooSmall.into();
-    }
-    let data = memory.data_mut(&mut caller);
     let start = buf_ptr as usize;
-    let end = start + serialized.len();
+    let end = start + max_len as usize;
     if end > data.len() {
         return OrionWasmError::InvalidMemoryAccess.into();
     }
-    if let Some(slice) = data.get_mut(start..end) {
-        slice.copy_from_slice(&serialized);
-    } else {
-        return OrionWasmError::InvalidMemoryAccess.into();
-    }
+
+    let out_slice = match data.get_mut(start..end) {
+        Some(slice) => slice,
+        None => return OrionWasmError::InvalidMemoryAccess.into(),
+    };
+
+    let written = match bincode_next::serde::encode_into_slice(&wasm_uri, out_slice, bincode_next::config::standard()) {
+        Ok(w) => w,
+        Err(_) => return OrionWasmError::BufferTooSmall.into(),
+    };
 
     let len_start = written_len_ptr as usize;
     let len_end = len_start + 4;
@@ -555,7 +555,7 @@ fn orion_get_uri(mut caller: Caller<'_, WasmState>, buf_ptr: u32, max_len: u32, 
         return OrionWasmError::InvalidMemoryAccess.into();
     }
     if let Some(slice) = data.get_mut(len_start..len_end) {
-        slice.copy_from_slice(&(u32::try_from(serialized.len()).unwrap_or(0)).to_le_bytes());
+        slice.copy_from_slice(&(u32::try_from(written).unwrap_or(0)).to_le_bytes());
     } else {
         return OrionWasmError::InvalidMemoryAccess.into();
     }
@@ -649,9 +649,8 @@ fn get_name_value_from_memory(
 
     let n_start = name_ptr as usize;
     let n_end = n_start + name_len as usize;
-    let name_str = std::str::from_utf8(data.get(n_start..n_end).ok_or(OrionWasmError::InvalidMemoryAccess)?)
-        .map_err(|_e| OrionWasmError::InvalidMemoryAccess)?;
-    let name = http::header::HeaderName::try_from(name_str).map_err(|_e| OrionWasmError::InternalError)?;
+    let name = http::header::HeaderName::from_bytes(data.get(n_start..n_end).ok_or(OrionWasmError::InvalidMemoryAccess)?)
+        .map_err(|_e| OrionWasmError::InternalError)?;
 
     let v_start = value_ptr as usize;
     let v_end = v_start + value_len as usize;
@@ -674,9 +673,8 @@ fn get_name_from_memory(
 
     let n_start = name_ptr as usize;
     let n_end = n_start + name_len as usize;
-    let name_str = std::str::from_utf8(data.get(n_start..n_end).ok_or(OrionWasmError::InvalidMemoryAccess)?)
-        .map_err(|_e| OrionWasmError::InvalidMemoryAccess)?;
-    http::header::HeaderName::try_from(name_str).map_err(|_e| OrionWasmError::InternalError)
+    http::header::HeaderName::from_bytes(data.get(n_start..n_end).ok_or(OrionWasmError::InvalidMemoryAccess)?)
+        .map_err(|_e| OrionWasmError::InternalError)
 }
 
 fn orion_set_header(
@@ -913,31 +911,28 @@ fn orion_dispatch_http_call(
     (req_ptr, req_len, resp_ptr_ptr, resp_len_ptr): (u32, u32, u32, u32),
 ) -> Box<dyn std::future::Future<Output = i32> + Send + '_> {
     Box::new(async move {
-        // 1. Read the serialized request from Wasm memory
-        let req_bytes = {
+        let mut callout_req: CalloutRequest = {
             let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
                 return OrionWasmError::InvalidMemoryAccess.into();
             };
             let data = memory.data(&caller);
             let start = req_ptr as usize;
             let end = start + req_len as usize;
-            match data.get(start..end) {
-                Some(s) => s.to_vec(),
+            let slice = match data.get(start..end) {
+                Some(s) => s,
                 None => return OrionWasmError::InvalidMemoryAccess.into(),
-            }
-        };
-
-        let callout_req: CalloutRequest =
-            match bincode_next::serde::decode_from_slice(&req_bytes, bincode_next::config::standard()) {
+            };
+            match bincode_next::serde::decode_from_slice(slice, bincode_next::config::standard()) {
                 Ok((req, _)) => req,
                 Err(e) => {
                     tracing::error!("Callout deserialization failed: {:?}", e);
                     return OrionWasmError::InternalError.into();
                 },
-            };
+            }
+        };
 
         // 2. Resolve cluster and acquire connection
-        let cluster_spec = ClusterSpecifier::Cluster(callout_req.cluster_name.clone());
+        let cluster_spec = ClusterSpecifier::Cluster(std::mem::take(&mut callout_req.cluster_name));
         let cluster_id = match clusters_manager::resolve_cluster(&cluster_spec, None) {
             Some(id) => id,
             None => return OrionWasmError::NotFound.into(),
@@ -1015,11 +1010,12 @@ fn orion_dispatch_http_call(
             },
         };
 
-        let status = response.status();
-        let resp_headers = response.headers().clone();
-        let version = response.version();
+        let (resp_parts, resp_body) = response.into_parts();
+        let status = resp_parts.status;
+        let resp_headers = resp_parts.headers;
+        let version = resp_parts.version;
 
-        let body_bytes = match response.into_body().collect().await {
+        let body_bytes = match resp_body.collect().await {
             Ok(collected) => collected.to_bytes(),
             Err(e) => {
                 tracing::error!("Callout failed to collect response body: {:?}", e);
@@ -1157,29 +1153,27 @@ fn orion_dispatch_grpc_call(
     (req_ptr, req_len, resp_ptr_ptr, resp_len_ptr): (u32, u32, u32, u32),
 ) -> Box<dyn std::future::Future<Output = i32> + Send + '_> {
     Box::new(async move {
-        let req_bytes = {
+        let mut callout_req: GrpcCalloutRequest = {
             let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
                 return OrionWasmError::InvalidMemoryAccess.into();
             };
             let data = memory.data(&caller);
             let start = req_ptr as usize;
             let end = start + req_len as usize;
-            match data.get(start..end) {
-                Some(s) => s.to_vec(),
+            let slice = match data.get(start..end) {
+                Some(s) => s,
                 None => return OrionWasmError::InvalidMemoryAccess.into(),
-            }
-        };
-
-        let callout_req: GrpcCalloutRequest =
-            match bincode_next::serde::decode_from_slice(&req_bytes, bincode_next::config::standard()) {
+            };
+            match bincode_next::serde::decode_from_slice(slice, bincode_next::config::standard()) {
                 Ok((req, _)) => req,
                 Err(e) => {
                     tracing::error!("gRPC Callout deserialization failed: {:?}", e);
                     return OrionWasmError::InternalError.into();
                 },
-            };
+            }
+        };
 
-        let cluster_spec = ClusterSpecifier::Cluster(callout_req.cluster_name.clone());
+        let cluster_spec = ClusterSpecifier::Cluster(std::mem::take(&mut callout_req.cluster_name));
         let cluster_id = match clusters_manager::resolve_cluster(&cluster_spec, None) {
             Some(id) => id,
             None => return OrionWasmError::NotFound.into(),
@@ -1578,8 +1572,8 @@ fn orion_shared_resolve(mut caller: Caller<'_, WasmState>, name_ptr: u32, name_l
     let data = memory.data(&caller);
     let start = name_ptr as usize;
     let end = start + name_len as usize;
-    let name = match data.get(start..end).and_then(|s| std::str::from_utf8(s).ok()) {
-        Some(s) => s.to_owned(),
+    let s = match data.get(start..end).and_then(|slice| std::str::from_utf8(slice).ok()) {
+        Some(s) => s,
         None => return u32::MAX,
     };
 
@@ -1587,7 +1581,7 @@ fn orion_shared_resolve(mut caller: Caller<'_, WasmState>, name_ptr: u32, name_l
     let map = &shared.name_to_id;
     let pin = map.pin();
 
-    if let Some(&var_id) = pin.get(&name) {
+    if let Some(&var_id) = pin.get(s) {
         return match (var_id, var_type) {
             (super::shared::VarId::U64(id), 0)
             | (super::shared::VarId::I64(id), 1)
@@ -1621,7 +1615,8 @@ fn orion_shared_resolve(mut caller: Caller<'_, WasmState>, name_ptr: u32, name_l
         _ => return u32::MAX,
     };
 
-    pin.insert(name, new_var_id);
+    let name_owned = s.to_owned();
+    pin.insert(name_owned, new_var_id);
     id
 }
 
@@ -1870,13 +1865,15 @@ fn orion_get_request(mut caller: Caller<'_, WasmState>, buf_ptr: u32, max_len: u
         return OrionWasmError::InvalidMemoryAccess.into();
     };
 
-    let req_ptr = match caller.data().active_request_handle {
+    let (data, state) = memory.data_and_store_mut(&mut caller);
+
+    let req_ptr = match state.active_request_handle {
         Some(ptr) => ptr,
         None => return OrionWasmError::InternalError.into(),
     };
     let request = unsafe { &*(req_ptr as *const Request<OrionRequestBody>) };
 
-    let body_bytes = caller.data().buffered_request_body.clone().unwrap_or_default();
+    let body_bytes = state.buffered_request_body.clone().unwrap_or_default();
 
     let mut builder =
         http::Request::builder().method(request.method().clone()).uri(request.uri().clone()).version(request.version());
@@ -1890,28 +1887,30 @@ fn orion_get_request(mut caller: Caller<'_, WasmState>, buf_ptr: u32, max_len: u
     };
 
     let wasm_req = orion_wasm_types::WasmRequest { request: req };
-    let serialized = match bincode_next::serde::encode_to_vec(&wasm_req, bincode_next::config::standard()) {
-        Ok(b) => b,
-        Err(_) => return OrionWasmError::InternalError.into(),
-    };
 
-    if serialized.len() > max_len as usize {
-        return OrionWasmError::BufferTooSmall.into();
-    }
-
-    let data = memory.data_mut(&mut caller);
     let start = buf_ptr as usize;
-    let end = start + serialized.len();
-    if let Some(slice) = data.get_mut(start..end) {
-        slice.copy_from_slice(&serialized);
-    } else {
+    let end = start + max_len as usize;
+    if end > data.len() {
         return OrionWasmError::InvalidMemoryAccess.into();
     }
 
+    let out_slice = match data.get_mut(start..end) {
+        Some(slice) => slice,
+        None => return OrionWasmError::InvalidMemoryAccess.into(),
+    };
+
+    let written = match bincode_next::serde::encode_into_slice(&wasm_req, out_slice, bincode_next::config::standard()) {
+        Ok(w) => w,
+        Err(_) => return OrionWasmError::BufferTooSmall.into(),
+    };
+
     let len_start = written_len_ptr as usize;
     let len_end = len_start + 4;
+    if len_end > data.len() {
+        return OrionWasmError::InvalidMemoryAccess.into();
+    }
     if let Some(slice) = data.get_mut(len_start..len_end) {
-        slice.copy_from_slice(&(u32::try_from(serialized.len()).unwrap_or(0)).to_le_bytes());
+        slice.copy_from_slice(&(u32::try_from(written).unwrap_or(0)).to_le_bytes());
     } else {
         return OrionWasmError::InvalidMemoryAccess.into();
     }
@@ -1961,13 +1960,15 @@ fn orion_get_response(mut caller: Caller<'_, WasmState>, buf_ptr: u32, max_len: 
         return OrionWasmError::InvalidMemoryAccess.into();
     };
 
-    let res_ptr = match caller.data().active_response_handle {
+    let (data, state) = memory.data_and_store_mut(&mut caller);
+
+    let res_ptr = match state.active_response_handle {
         Some(ptr) => ptr,
         None => return OrionWasmError::InternalError.into(),
     };
     let response = unsafe { &*(res_ptr as *const Response<OrionResponseBody>) };
 
-    let body_bytes = caller.data().buffered_response_body.clone().unwrap_or_default();
+    let body_bytes = state.buffered_response_body.clone().unwrap_or_default();
 
     let mut builder = http::Response::builder().status(response.status()).version(response.version());
 
@@ -1980,28 +1981,30 @@ fn orion_get_response(mut caller: Caller<'_, WasmState>, buf_ptr: u32, max_len: 
     };
 
     let wasm_res = orion_wasm_types::WasmResponse { response: res };
-    let serialized = match bincode_next::serde::encode_to_vec(&wasm_res, bincode_next::config::standard()) {
-        Ok(b) => b,
-        Err(_) => return OrionWasmError::InternalError.into(),
-    };
 
-    if serialized.len() > max_len as usize {
-        return OrionWasmError::BufferTooSmall.into();
-    }
-
-    let data = memory.data_mut(&mut caller);
     let start = buf_ptr as usize;
-    let end = start + serialized.len();
-    if let Some(slice) = data.get_mut(start..end) {
-        slice.copy_from_slice(&serialized);
-    } else {
+    let end = start + max_len as usize;
+    if end > data.len() {
         return OrionWasmError::InvalidMemoryAccess.into();
     }
 
+    let out_slice = match data.get_mut(start..end) {
+        Some(slice) => slice,
+        None => return OrionWasmError::InvalidMemoryAccess.into(),
+    };
+
+    let written = match bincode_next::serde::encode_into_slice(&wasm_res, out_slice, bincode_next::config::standard()) {
+        Ok(w) => w,
+        Err(_) => return OrionWasmError::BufferTooSmall.into(),
+    };
+
     let len_start = written_len_ptr as usize;
     let len_end = len_start + 4;
+    if len_end > data.len() {
+        return OrionWasmError::InvalidMemoryAccess.into();
+    }
     if let Some(slice) = data.get_mut(len_start..len_end) {
-        slice.copy_from_slice(&(u32::try_from(serialized.len()).unwrap_or(0)).to_le_bytes());
+        slice.copy_from_slice(&(u32::try_from(written).unwrap_or(0)).to_le_bytes());
     } else {
         return OrionWasmError::InvalidMemoryAccess.into();
     }
