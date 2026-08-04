@@ -242,17 +242,15 @@ impl LogFormatter {
             if let Template::Custom(name) = template {
                 if name.as_str() == key {
                     // SAFETY: `idx` is guaranteed to be valid for `format` vector by construction.
-                    if matches!(unsafe { self.format.get_unchecked(idx) }, StringType::None) {
-                        if value != "null" {
-                            let res = StringType::Smol(SmolStr::new(value));
-                            // SAFETY: `idx` is guaranteed to be valid for `format` vector, by construction.
-                            // SAFETY: ptr::write without dropping the old value, since it does not require destruction
-                            // (it is guaranteed to be StringType::None).
-                            #[allow(clippy::multiple_unsafe_ops_per_block)]
-                            unsafe {
-                                std::ptr::write(self.format.get_unchecked_mut(idx), res)
-                            };
-                        }
+                    if matches!(unsafe { self.format.get_unchecked(idx) }, StringType::None) && value != "null" {
+                        let res = StringType::Smol(SmolStr::new(value));
+                        // SAFETY: `idx` is guaranteed to be valid for `format` vector, by construction.
+                        // SAFETY: ptr::write without dropping the old value, since it does not require destruction
+                        // (it is guaranteed to be StringType::None).
+                        #[allow(clippy::multiple_unsafe_ops_per_block)]
+                        unsafe {
+                            std::ptr::write(self.format.get_unchecked_mut(idx), res)
+                        };
                     }
                 }
             }

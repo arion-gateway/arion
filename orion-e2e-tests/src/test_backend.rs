@@ -219,14 +219,12 @@ impl TestBackend {
                                     {
                                         warn!(?e, "Error serving h2 connection");
                                     }
-                                } else {
-                                    if let Err(e) = hyper::server::conn::http1::Builder::new()
+                                } else if let Err(e) = hyper::server::conn::http1::Builder::new()
                                         .serve_connection(io, service)
                                         .await
                                     {
                                         warn!(?e, "Error serving http1 connection");
                                     }
-                                }
                             });
                         }
                         Err(e) => {

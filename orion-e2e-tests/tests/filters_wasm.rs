@@ -822,7 +822,7 @@ fn direct_response_filter_builder() -> WasmBuilder {
 #[tokio::test]
 #[test_log::test]
 async fn test_wasm_direct_response_filter() {
-    let (mut backend, _orion, client, _cfg) = setup_wasm(direct_response_filter_builder()).await;
+    let (backend, _orion, client, _cfg) = setup_wasm(direct_response_filter_builder()).await;
     backend.set_default_response(PreConfiguredResponse::with_body("backend response")).await;
 
     // Normal request should pass through

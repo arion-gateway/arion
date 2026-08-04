@@ -113,7 +113,7 @@ pub fn evaluate_base64_access_log_hook(
 }
 
 /// Evaluates the access log hook by extracting the configured key from the given
-/// KeyValueMap, parsing it directly as JSON (without base64 decoding), and applying
+/// `KeyValueMap`, parsing it directly as JSON (without base64 decoding), and applying
 /// it to the loggers.
 #[cfg(feature = "metrics")]
 pub fn evaluate_plain_access_log_hook(
