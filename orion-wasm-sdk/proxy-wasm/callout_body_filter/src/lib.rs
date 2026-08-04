@@ -28,13 +28,25 @@ struct CalloutBodyFilter;
 // so body replacement from the callout response is not possible here. The callout is
 // still performed to preserve the latency and throughput characteristics of the filter.
 impl Context for CalloutBodyFilter {
-    fn on_http_call_response(&mut self, _token_id: u32, _num_headers: usize, body_size: usize, _num_trailers: usize) {
+    fn on_http_call_response(&mut self, _token_id: u32, _num_headers: usize, body_size: usize, num_trailers: usize) {
+        // Consume headers to prevent memory leaks in the host (ngx_wasm_module)
+        let _ = self.get_http_call_response_headers();
         if let Some(status) = self.get_http_call_response_header(":status") {
             if !status.starts_with('2') {
                 log::error!("Callout returned non-success status");
             }
+        }
+
+        // Always consume the body to prevent memory leaks
+        if body_size > 0 {
             let _ = self.get_http_call_response_body(0, body_size);
         }
+
+        // Consume trailers if any
+        if num_trailers > 0 {
+            let _ = self.get_http_call_response_trailers();
+        }
+
         self.resume_http_request();
     }
 }
