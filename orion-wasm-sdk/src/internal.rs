@@ -61,38 +61,28 @@ pub(crate) fn get_http_header(
         },
         Err(OrionWasmError::NotFound) => Ok(None),
         Err(OrionWasmError::BufferTooSmall) => {
-            let mut heap_buf: Vec<u8> = Vec::with_capacity(DEFAULT_HEAP_BUF_SIZE);
-            let mut written_len: u32 = 0;
+            let exact_len = written_len as usize;
+            let mut heap_buf: Vec<u8> = Vec::with_capacity(exact_len);
 
-            loop {
-                let res = unsafe {
-                    ffi::orion_get_header(
-                        is_trailer,
-                        name_bytes.as_ptr(),
-                        name_bytes.len() as u32,
-                        heap_buf.as_mut_ptr(),
-                        heap_buf.capacity() as u32,
-                        &mut written_len as *mut u32,
-                    )
-                };
+            let res = unsafe {
+                ffi::orion_get_header(
+                    is_trailer,
+                    name_bytes.as_ptr(),
+                    name_bytes.len() as u32,
+                    heap_buf.as_mut_ptr(),
+                    exact_len as u32,
+                    &mut written_len as *mut u32,
+                )
+            };
 
-                match OrionWasmError::from_ffi(res) {
-                    Ok(()) => {
-                        unsafe {
-                            heap_buf.set_len(written_len as usize);
-                        }
-                        return Ok(Some(WasmHeaderValue::Owned(bytes::Bytes::from(heap_buf))));
-                    },
-                    Err(OrionWasmError::NotFound) => return Ok(None),
-                    Err(OrionWasmError::BufferTooSmall) => {
-                        let exact_len = written_len as usize;
-                        if exact_len <= heap_buf.capacity() {
-                            return Err(OrionWasmError::BufferTooSmall);
-                        }
-                        heap_buf.reserve_exact(exact_len - heap_buf.len());
-                    },
-                    Err(other) => return Err(other),
-                }
+            match OrionWasmError::from_ffi(res) {
+                Ok(()) => {
+                    unsafe {
+                        heap_buf.set_len(written_len as usize);
+                    }
+                    Ok(Some(WasmHeaderValue::Owned(bytes::Bytes::from(heap_buf))))
+                },
+                Err(e) => Err(e),
             }
         },
         Err(other) => Err(other),
@@ -243,36 +233,26 @@ pub(crate) fn get_http_uri() -> Result<WasmUri<'static>, OrionWasmError> {
             Ok(WasmUri::Owned(smol_str::SmolStr::new(s)))
         },
         Err(OrionWasmError::BufferTooSmall) => {
-            let mut heap_buf: Vec<u8> = Vec::with_capacity(DEFAULT_HEAP_BUF_SIZE);
-            let mut written_len: u32 = 0;
+            let exact_len = written_len as usize;
+            let mut heap_buf: Vec<u8> = Vec::with_capacity(exact_len);
 
-            loop {
-                let res = unsafe {
-                    ffi::orion_get_uri(
-                        heap_buf.as_mut_ptr(),
-                        heap_buf.capacity() as u32,
-                        &mut written_len as *mut u32,
-                    )
-                };
+            let res = unsafe {
+                ffi::orion_get_uri(
+                    heap_buf.as_mut_ptr(),
+                    exact_len as u32,
+                    &mut written_len as *mut u32,
+                )
+            };
 
-                match OrionWasmError::from_ffi(res) {
-                    Ok(()) => {
-                        unsafe {
-                            heap_buf.set_len(written_len as usize);
-                        }
-                        let s = std::str::from_utf8(&heap_buf)
-                            .map_err(|_| OrionWasmError::InternalError)?;
-                        return Ok(WasmUri::Owned(smol_str::SmolStr::new(s)));
-                    },
-                    Err(OrionWasmError::BufferTooSmall) => {
-                        let exact_len = written_len as usize;
-                        if exact_len <= heap_buf.capacity() {
-                            return Err(OrionWasmError::BufferTooSmall);
-                        }
-                        heap_buf.reserve_exact(exact_len - heap_buf.len());
-                    },
-                    Err(other) => return Err(other),
-                }
+            match OrionWasmError::from_ffi(res) {
+                Ok(()) => {
+                    unsafe {
+                        heap_buf.set_len(written_len as usize);
+                    }
+                    let s = String::from_utf8(heap_buf).map_err(|_| OrionWasmError::InternalError)?;
+                    Ok(WasmUri::Owned(smol_str::SmolStr::new(s)))
+                },
+                Err(e) => Err(e),
             }
         },
         Err(other) => Err(other),

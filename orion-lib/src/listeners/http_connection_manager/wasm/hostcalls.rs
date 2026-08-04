@@ -1930,7 +1930,8 @@ fn orion_get_request(mut caller: Caller<'_, WasmState>, buf_ptr: u32, max_len: u
     };
     let request = unsafe { &*(req_ptr as *const Request<OrionRequestBody>) };
 
-    let body_bytes = state.buffered_request_body.clone().unwrap_or_default();
+    let empty_body = bytes::Bytes::new();
+    let body_bytes = state.buffered_request_body.as_ref().unwrap_or(&empty_body);
 
     let wasm_req = orion_wasm_types::ProxyWasmRequest {
         method: request.method(),
@@ -2020,7 +2021,8 @@ fn orion_get_response(mut caller: Caller<'_, WasmState>, buf_ptr: u32, max_len: 
     };
     let response = unsafe { &*(res_ptr as *const Response<OrionResponseBody>) };
 
-    let body_bytes = state.buffered_response_body.clone().unwrap_or_default();
+    let empty_body = bytes::Bytes::new();
+    let body_bytes = state.buffered_response_body.as_ref().unwrap_or(&empty_body);
 
     let wasm_res = orion_wasm_types::ProxyWasmResponse {
         status: response.status(),

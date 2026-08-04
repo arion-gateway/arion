@@ -536,10 +536,10 @@ impl<'a> serde::Serialize for ProxyWasmResponse<'a> {
         struct BorrowedRespHead<'a> {
             #[serde(with = "http_serde_ext::status_code")]
             status: http::StatusCode,
-            #[serde(with = "http_serde_ext::version")]
-            version: http::Version,
             #[serde(with = "http_serde_ext::header_map")]
             headers: &'a http::HeaderMap,
+            #[serde(with = "http_serde_ext::version")]
+            version: http::Version,
         }
 
         let head = BorrowedRespHead { status: self.status, version: self.version, headers: self.headers };
@@ -550,3 +550,4 @@ impl<'a> serde::Serialize for ProxyWasmResponse<'a> {
         state.end()
     }
 }
+
