@@ -89,6 +89,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "callout_authz_filter"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "http",
+ "orion_wasm_sdk",
+]
+
+[[package]]
 name = "callout_body_filter"
 version = "0.1.0"
 dependencies = [
