@@ -42,6 +42,24 @@ pub struct WasmState {
     pub orion_malloc: Option<Func>,
 }
 
+impl WasmState {
+    /// Clear all per-request / per-transaction fields before recycling into the pool.
+    ///
+    /// Keeps long-lived fields: `name`, `plugin_config`, `shared_memory`, `memory`, `orion_malloc`.
+    #[inline]
+    pub fn reset_ephemeral(&mut self) {
+        self.direct_response = None;
+        self.buffered_request_body = None;
+        self.buffered_response_body = None;
+        self.request_trailers = None;
+        self.response_trailers = None;
+        self.access_log_operators.clear();
+        self.io_deadline = None;
+        self.active_request_handle = None;
+        self.active_response_handle = None;
+    }
+}
+
 /// Return the guest linear memory handle cached on [`WasmState`].
 ///
 /// Falls back to a one-shot export lookup if the cache was not primed yet

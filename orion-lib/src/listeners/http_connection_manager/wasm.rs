@@ -740,13 +740,7 @@ impl Drop for WasmFilter {
                     });
                 }
             }
-            let data = state.store.data_mut();
-            data.direct_response = None;
-            data.buffered_request_body = None;
-            data.buffered_response_body = None;
-            data.io_deadline = None;
-            data.active_request_handle = None;
-            data.active_response_handle = None;
+            state.store.data_mut().reset_ephemeral();
             _ = self.inner.instance_pool.push(state);
         }
     }
