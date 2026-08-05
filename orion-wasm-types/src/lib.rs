@@ -550,4 +550,3 @@ impl<'a> serde::Serialize for ProxyWasmResponse<'a> {
         state.end()
     }
 }
-

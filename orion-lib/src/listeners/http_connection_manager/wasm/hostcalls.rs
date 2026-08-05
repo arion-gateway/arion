@@ -18,7 +18,7 @@ use http::HeaderValue;
 use http::{Request, Response};
 use http_body_util::Full;
 use smol_str::{SmolStr, ToSmolStr};
-use wasmtime::{Caller, Linker};
+use wasmtime::{Caller, Linker, Memory};
 
 use orion_wasm_types::{
     CalloutRequest, CalloutResponse, GrpcCalloutRequest, GrpcCalloutResponse, HeaderMutation, LogLevel, OrionWasmError,
@@ -36,6 +36,22 @@ pub struct WasmState {
     pub shared_memory: std::sync::Arc<super::shared::SharedMemory>,
     pub active_request_handle: Option<u64>,
     pub active_response_handle: Option<u64>,
+    /// Guest linear memory, resolved once at instantiate time.
+    pub memory: Option<Memory>,
+}
+
+/// Return the guest linear memory handle cached on [`WasmState`].
+///
+/// Falls back to a one-shot export lookup if the cache was not primed yet
+/// (should not happen on the normal instantiate path).
+#[inline]
+fn guest_memory(caller: &mut Caller<'_, WasmState>) -> Option<Memory> {
+    if let Some(memory) = caller.data().memory {
+        return Some(memory);
+    }
+    let memory = caller.get_export("memory").and_then(wasmtime::Extern::into_memory)?;
+    caller.data_mut().memory = Some(memory);
+    Some(memory)
 }
 
 trait IntoWasmAbi {
@@ -61,7 +77,7 @@ fn orion_get_header(
     value_max_len: u32,
     written_len_ptr: u32,
 ) -> i32 {
-    let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
+    let Some(memory) = guest_memory(&mut caller) else {
         return OrionWasmError::InvalidMemoryAccess.into();
     };
 
@@ -139,7 +155,7 @@ fn orion_get_plugin_config(
     max_len: u32,
     written_len_ptr: u32,
 ) -> i32 {
-    let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
+    let Some(memory) = guest_memory(&mut caller) else {
         return OrionWasmError::InvalidMemoryAccess.into();
     };
 
@@ -187,7 +203,7 @@ fn orion_get_body(
     max_len: u32,
     written_len_ptr: u32,
 ) -> i32 {
-    let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
+    let Some(memory) = guest_memory(&mut caller) else {
         return OrionWasmError::InvalidMemoryAccess.into();
     };
 
@@ -239,7 +255,7 @@ fn orion_get_body(
 }
 
 fn orion_set_body(mut caller: Caller<'_, WasmState>, _is_trailer: u32, body_ptr: u32, body_len: u32) -> i32 {
-    let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
+    let Some(memory) = guest_memory(&mut caller) else {
         return OrionWasmError::InvalidMemoryAccess.into();
     };
 
@@ -269,7 +285,7 @@ fn orion_set_body(mut caller: Caller<'_, WasmState>, _is_trailer: u32, body_ptr:
 fn orion_send_direct_response(mut caller: Caller<'_, WasmState>, resp_ptr: u32, resp_len: u32) -> i32 {
     use crate::body::poly_body::PolyBody;
 
-    let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
+    let Some(memory) = guest_memory(&mut caller) else {
         return OrionWasmError::InvalidMemoryAccess.into();
     };
 
@@ -299,7 +315,7 @@ fn orion_send_direct_response(mut caller: Caller<'_, WasmState>, resp_ptr: u32, 
 
 #[allow(unused_variables)]
 fn orion_set_custom_metrics(mut caller: Caller<'_, WasmState>, buffer_ptr: u32, buffer_len: u32) -> i32 {
-    let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
+    let Some(memory) = guest_memory(&mut caller) else {
         return OrionWasmError::InvalidMemoryAccess.into();
     };
 
@@ -335,7 +351,7 @@ fn orion_set_custom_metrics(mut caller: Caller<'_, WasmState>, buffer_ptr: u32, 
 }
 
 fn orion_set_access_log_operators(mut caller: Caller<'_, WasmState>, buffer_ptr: u32, buffer_len: u32) -> i32 {
-    let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
+    let Some(memory) = guest_memory(&mut caller) else {
         return OrionWasmError::InvalidMemoryAccess.into();
     };
 
@@ -360,7 +376,7 @@ fn orion_set_access_log_operators(mut caller: Caller<'_, WasmState>, buffer_ptr:
 }
 
 fn orion_log(mut caller: Caller<'_, WasmState>, level: u32, msg_ptr: u32, msg_len: u32) -> i32 {
-    let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
+    let Some(memory) = guest_memory(&mut caller) else {
         return OrionWasmError::InvalidMemoryAccess.into();
     };
 
@@ -417,7 +433,7 @@ fn orion_get_headers_map(
 ) -> i32 {
     static EMPTY_MAP: LazyLock<http::HeaderMap> = LazyLock::new(http::HeaderMap::new);
 
-    let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
+    let Some(memory) = guest_memory(&mut caller) else {
         return OrionWasmError::InvalidMemoryAccess.into();
     };
 
@@ -480,7 +496,7 @@ fn orion_get_headers_map(
 }
 
 fn orion_set_headers_map(mut caller: Caller<'_, WasmState>, is_trailer: u32, buf_ptr: u32, buf_len: u32) -> i32 {
-    let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
+    let Some(memory) = guest_memory(&mut caller) else {
         return OrionWasmError::InvalidMemoryAccess.into();
     };
     let data = memory.data(&caller);
@@ -520,7 +536,7 @@ fn orion_set_headers_map(mut caller: Caller<'_, WasmState>, is_trailer: u32, buf
 }
 
 fn orion_get_uri(mut caller: Caller<'_, WasmState>, buf_ptr: u32, max_len: u32, written_len_ptr: u32) -> i32 {
-    let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
+    let Some(memory) = guest_memory(&mut caller) else {
         return OrionWasmError::InvalidMemoryAccess.into();
     };
 
@@ -568,7 +584,7 @@ fn orion_get_uri(mut caller: Caller<'_, WasmState>, buf_ptr: u32, max_len: u32, 
 }
 
 fn orion_set_uri(mut caller: Caller<'_, WasmState>, buf_ptr: u32, buf_len: u32) -> i32 {
-    let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
+    let Some(memory) = guest_memory(&mut caller) else {
         return OrionWasmError::InvalidMemoryAccess.into();
     };
 
@@ -600,7 +616,7 @@ fn orion_set_uri(mut caller: Caller<'_, WasmState>, buf_ptr: u32, buf_len: u32) 
 }
 
 fn orion_get_status_code(mut caller: Caller<'_, WasmState>, out_status_ptr: u32) -> i32 {
-    let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
+    let Some(memory) = guest_memory(&mut caller) else {
         return OrionWasmError::InvalidMemoryAccess.into();
     };
 
@@ -648,7 +664,7 @@ fn get_name_value_from_memory(
     value_ptr: u32,
     value_len: u32,
 ) -> Result<(http::header::HeaderName, http::header::HeaderValue), OrionWasmError> {
-    let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
+    let Some(memory) = guest_memory(caller) else {
         return Err(OrionWasmError::InvalidMemoryAccess);
     };
     let data = memory.data(caller);
@@ -673,7 +689,7 @@ fn get_name_from_memory(
     name_ptr: u32,
     name_len: u32,
 ) -> Result<http::header::HeaderName, OrionWasmError> {
-    let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
+    let Some(memory) = guest_memory(caller) else {
         return Err(OrionWasmError::InvalidMemoryAccess);
     };
     let data = memory.data(caller);
@@ -888,7 +904,7 @@ fn apply_mutations_to_map(map: &mut http::HeaderMap, mutations: Vec<HeaderMutati
 }
 
 fn orion_apply_header_mutations(mut caller: Caller<'_, WasmState>, is_trailer: u32, buf_ptr: u32, buf_len: u32) -> i32 {
-    let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
+    let Some(memory) = guest_memory(&mut caller) else {
         return OrionWasmError::InvalidMemoryAccess.into();
     };
     let start = buf_ptr as usize;
@@ -937,7 +953,7 @@ fn orion_dispatch_http_call(
 ) -> Box<dyn std::future::Future<Output = i32> + Send + '_> {
     Box::new(async move {
         let mut callout_req: CalloutRequest = {
-            let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
+            let Some(memory) = guest_memory(&mut caller) else {
                 return OrionWasmError::InvalidMemoryAccess.into();
             };
             let data = memory.data(&caller);
@@ -1066,7 +1082,9 @@ fn orion_dispatch_http_call(
             },
         };
 
-        let memory = caller.get_export("memory").unwrap().into_memory().unwrap();
+        let Some(memory) = guest_memory(&mut caller) else {
+            return OrionWasmError::InvalidMemoryAccess.into();
+        };
         let alloc_func = if let Some(func) = caller.get_export("orion_malloc").and_then(wasmtime::Extern::into_func) {
             func
         } else {
@@ -1179,7 +1197,7 @@ fn orion_dispatch_grpc_call(
 ) -> Box<dyn std::future::Future<Output = i32> + Send + '_> {
     Box::new(async move {
         let mut callout_req: GrpcCalloutRequest = {
-            let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
+            let Some(memory) = guest_memory(&mut caller) else {
                 return OrionWasmError::InvalidMemoryAccess.into();
             };
             let data = memory.data(&caller);
@@ -1323,7 +1341,7 @@ fn orion_dispatch_grpc_call(
             },
         };
 
-        let memory = if let Some(mem) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) {
+        let memory = if let Some(mem) = guest_memory(&mut caller) {
             mem
         } else {
             tracing::error!("gRPC Callout failed: guest does not export memory");
@@ -1398,7 +1416,7 @@ fn orion_set_io_timeout(mut caller: Caller<'_, WasmState>, microseconds: u64) ->
 }
 
 fn orion_clear_io_timeout(mut caller: Caller<'_, WasmState>, remaining_us_ptr: u32) -> i32 {
-    let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
+    let Some(memory) = guest_memory(&mut caller) else {
         return OrionWasmError::InvalidMemoryAccess.into();
     };
 
@@ -1579,7 +1597,7 @@ fn orion_get_downstream_metadata(
             _ => return OrionWasmError::InternalError.into(),
         };
 
-        let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
+        let Some(memory) = guest_memory(&mut caller) else {
             return OrionWasmError::InvalidMemoryAccess.into();
         };
 
@@ -1623,7 +1641,7 @@ fn orion_get_downstream_metadata(
 }
 
 fn orion_shared_resolve(mut caller: Caller<'_, WasmState>, name_ptr: u32, name_len: u32, var_type: u32) -> u32 {
-    let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
+    let Some(memory) = guest_memory(&mut caller) else {
         return u32::MAX;
     };
     let data = memory.data(&caller);
@@ -1826,7 +1844,7 @@ fn ext_shared_blob_read(
     };
     let blob = blob_lock.read();
 
-    let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
+    let Some(memory) = guest_memory(&mut caller) else {
         return u32::MAX;
     };
     let data = memory.data_mut(&mut caller);
@@ -1863,7 +1881,7 @@ fn ext_shared_blob_write(mut caller: Caller<'_, WasmState>, id: u32, buf_ptr: u3
     };
     let mut blob = blob_lock.write();
 
-    let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
+    let Some(memory) = guest_memory(&mut caller) else {
         return 0;
     };
     let data = memory.data(&caller);
@@ -1893,7 +1911,7 @@ fn ext_shared_blob_cas(
     };
     let mut blob = blob_lock.write();
 
-    let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
+    let Some(memory) = guest_memory(&mut caller) else {
         return 0;
     };
 
@@ -1918,7 +1936,7 @@ fn ext_shared_blob_cas(
 }
 
 fn orion_get_request(mut caller: Caller<'_, WasmState>, buf_ptr: u32, max_len: u32, written_len_ptr: u32) -> i32 {
-    let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
+    let Some(memory) = guest_memory(&mut caller) else {
         return OrionWasmError::InvalidMemoryAccess.into();
     };
 
@@ -1972,7 +1990,7 @@ fn orion_get_request(mut caller: Caller<'_, WasmState>, buf_ptr: u32, max_len: u
 }
 
 fn orion_set_request(mut caller: Caller<'_, WasmState>, buf_ptr: u32, buf_len: u32) -> i32 {
-    let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
+    let Some(memory) = guest_memory(&mut caller) else {
         return OrionWasmError::InvalidMemoryAccess.into();
     };
 
@@ -2009,7 +2027,7 @@ fn orion_set_request(mut caller: Caller<'_, WasmState>, buf_ptr: u32, buf_len: u
 }
 
 fn orion_get_response(mut caller: Caller<'_, WasmState>, buf_ptr: u32, max_len: u32, written_len_ptr: u32) -> i32 {
-    let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
+    let Some(memory) = guest_memory(&mut caller) else {
         return OrionWasmError::InvalidMemoryAccess.into();
     };
 
@@ -2062,7 +2080,7 @@ fn orion_get_response(mut caller: Caller<'_, WasmState>, buf_ptr: u32, max_len: 
 }
 
 fn orion_set_response(mut caller: Caller<'_, WasmState>, buf_ptr: u32, buf_len: u32) -> i32 {
-    let Some(memory) = caller.get_export("memory").and_then(wasmtime::Extern::into_memory) else {
+    let Some(memory) = guest_memory(&mut caller) else {
         return OrionWasmError::InvalidMemoryAccess.into();
     };
 

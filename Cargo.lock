@@ -3729,6 +3729,7 @@ dependencies = [
  "atomicoption",
  "base64 0.22.1",
  "bincode-next",
+ "bitflags 2.13.0",
  "bounded-integer",
  "bytes",
  "cedar-policy",

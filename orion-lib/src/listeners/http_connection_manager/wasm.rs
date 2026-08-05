@@ -97,13 +97,7 @@ impl InstanceHooks {
     fn resolve(instance: &Instance, store: &mut Store<hostcalls::WasmState>, flags: HookFlags) -> Self {
         Self {
             on_plugin_start: resolve_hook(instance, store, flags, HookFlags::ON_PLUGIN_START, "on_plugin_start"),
-            on_plugin_destroy: resolve_hook(
-                instance,
-                store,
-                flags,
-                HookFlags::ON_PLUGIN_DESTROY,
-                "on_plugin_destroy",
-            ),
+            on_plugin_destroy: resolve_hook(instance, store, flags, HookFlags::ON_PLUGIN_DESTROY, "on_plugin_destroy"),
             on_transaction_start: resolve_hook(
                 instance,
                 store,
@@ -133,13 +127,7 @@ impl InstanceHooks {
                 HookFlags::ON_RESPONSE_HEADERS,
                 "on_response_headers",
             ),
-            on_response_body: resolve_hook(
-                instance,
-                store,
-                flags,
-                HookFlags::ON_RESPONSE_BODY,
-                "on_response_body",
-            ),
+            on_response_body: resolve_hook(instance, store, flags, HookFlags::ON_RESPONSE_BODY, "on_response_body"),
         }
     }
 }
@@ -280,6 +268,7 @@ impl WasmFilter {
                         shared_memory: Arc::clone(&self.inner.shared_memory),
                         active_request_handle: None,
                         active_response_handle: None,
+                        memory: None,
                     },
                 );
                 // Instantiate the module using the pre-resolved imports
@@ -287,6 +276,9 @@ impl WasmFilter {
                     Ok(inst) => inst,
                     Err(e) => return Err(WasmError::InitError(format!("failed to instantiate module: {e}"))),
                 };
+
+                // Cache guest linear memory once for all subsequent hostcalls.
+                store.data_mut().memory = instance.get_memory(&mut store, "memory");
 
                 let hooks = InstanceHooks::resolve(&instance, &mut store, self.inner.hooks);
 
@@ -327,26 +319,25 @@ impl WasmFilter {
         }
 
         // PHASE 1: headers evaluation
-        let action_code: Result<FilterAction, WasmError> =
-            if self.inner.hooks.contains(HookFlags::ON_REQUEST_HEADERS) {
-                let state = match self.get_state().await {
-                    Ok(s) => s,
-                    Err(e) => return FilterDecision::internal_server_error(&e.to_string(), req.version()),
-                };
-
-                if let Some(on_headers) = &state.hooks.on_request_headers {
-                    let response = on_headers.call_async(&mut state.store, ()).await;
-                    response.map_err(WasmError::Wasmtime).and_then(|v| {
-                        #[allow(clippy::map_err_ignore)]
-                        FilterAction::try_from(v)
-                            .map_err(|_| WasmError::InitError(format!("Invalid Wasm FilterAction code: {v}")))
-                    })
-                } else {
-                    Ok(FilterAction::Continue)
-                }
-            } else {
-                Ok(FilterAction::PauseAndBufferBody) // Implicitly return PauseAndBufferBody if the plugin only implements the body hook
+        let action_code: Result<FilterAction, WasmError> = if self.inner.hooks.contains(HookFlags::ON_REQUEST_HEADERS) {
+            let state = match self.get_state().await {
+                Ok(s) => s,
+                Err(e) => return FilterDecision::internal_server_error(&e.to_string(), req.version()),
             };
+
+            if let Some(on_headers) = &state.hooks.on_request_headers {
+                let response = on_headers.call_async(&mut state.store, ()).await;
+                response.map_err(WasmError::Wasmtime).and_then(|v| {
+                    #[allow(clippy::map_err_ignore)]
+                    FilterAction::try_from(v)
+                        .map_err(|_| WasmError::InitError(format!("Invalid Wasm FilterAction code: {v}")))
+                })
+            } else {
+                Ok(FilterAction::Continue)
+            }
+        } else {
+            Ok(FilterAction::PauseAndBufferBody) // Implicitly return PauseAndBufferBody if the plugin only implements the body hook
+        };
 
         let decision = match action_code {
             Ok(FilterAction::Continue) => FilterDecision::Continue,
@@ -408,7 +399,9 @@ impl WasmFilter {
                                     let old_timeout = old_timeout_body.timeout;
                                     let mut pb = PolyBody::from(Full::from(final_body.clone()));
                                     if let Some(t) = mutated_trailers {
-                                        pb = pb.with_trailers(t).unwrap_or_else(|_| PolyBody::from(Full::from(final_body)));
+                                        pb = pb
+                                            .with_trailers(t)
+                                            .unwrap_or_else(|_| PolyBody::from(Full::from(final_body)));
                                     }
                                     TimeoutBody::new(old_timeout, pb)
                                 });
@@ -526,26 +519,26 @@ impl WasmFilter {
         }
 
         // PHASE 1: headers evaluation
-        let action_code: Result<FilterAction, WasmError> =
-            if self.inner.hooks.contains(HookFlags::ON_RESPONSE_HEADERS) {
-                let state = match self.get_state().await {
-                    Ok(s) => s,
-                    Err(e) => return FilterDecision::internal_server_error(&e.to_string(), response.version()),
-                };
-
-                if let Some(on_response_headers) = &state.hooks.on_response_headers {
-                    let res_val = on_response_headers.call_async(&mut state.store, ()).await;
-                    res_val.map_err(WasmError::Wasmtime).and_then(|v| {
-                        #[allow(clippy::map_err_ignore)]
-                        FilterAction::try_from(v)
-                            .map_err(|_| WasmError::InitError(format!("Invalid Wasm response FilterAction code: {v}")))
-                    })
-                } else {
-                    Ok(FilterAction::Continue)
-                }
-            } else {
-                Ok(FilterAction::PauseAndBufferBody) // Implicitly return PauseAndBufferBody if the plugin only implements the body hook
+        let action_code: Result<FilterAction, WasmError> = if self.inner.hooks.contains(HookFlags::ON_RESPONSE_HEADERS)
+        {
+            let state = match self.get_state().await {
+                Ok(s) => s,
+                Err(e) => return FilterDecision::internal_server_error(&e.to_string(), response.version()),
             };
+
+            if let Some(on_response_headers) = &state.hooks.on_response_headers {
+                let res_val = on_response_headers.call_async(&mut state.store, ()).await;
+                res_val.map_err(WasmError::Wasmtime).and_then(|v| {
+                    #[allow(clippy::map_err_ignore)]
+                    FilterAction::try_from(v)
+                        .map_err(|_| WasmError::InitError(format!("Invalid Wasm response FilterAction code: {v}")))
+                })
+            } else {
+                Ok(FilterAction::Continue)
+            }
+        } else {
+            Ok(FilterAction::PauseAndBufferBody) // Implicitly return PauseAndBufferBody if the plugin only implements the body hook
+        };
 
         let decision = match action_code {
             Ok(FilterAction::Continue) => FilterDecision::Continue,
@@ -607,7 +600,9 @@ impl WasmFilter {
                                 *response.body_mut() = old_body.map_inner(|_old_poly_body| {
                                     let mut pb = PolyBody::from(Full::from(final_body.clone()));
                                     if let Some(t) = mutated_trailers {
-                                        pb = pb.with_trailers(t).unwrap_or_else(|_| PolyBody::from(Full::from(final_body)));
+                                        pb = pb
+                                            .with_trailers(t)
+                                            .unwrap_or_else(|_| PolyBody::from(Full::from(final_body)));
                                     }
                                     pb
                                 });
