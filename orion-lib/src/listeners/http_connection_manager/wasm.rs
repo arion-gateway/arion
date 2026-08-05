@@ -7,13 +7,14 @@ use bitflags::bitflags;
 use bytes::Bytes;
 use crossbeam_queue::ArrayQueue;
 use http::{Request, Response};
-use http_body_util::Full;
+use http_body_util::{BodyExt, Full};
 use orion_configuration::config::{
     core::DataSource, network_filters::http_connection_manager::http_filters::wasm::WasmConfig,
 };
 use orion_interner::StringInterner;
 use orion_wasm_types::FilterAction;
 use parking_lot::Mutex;
+use std::convert::Infallible;
 use std::sync::{Arc, LazyLock};
 use thiserror::Error;
 use tracing::{debug, warn};
@@ -28,27 +29,34 @@ const WASM_INSTANCE_POOL_SIZE: usize = 1024;
 
 /// Build a [`PolyBody`] from a fully-buffered payload + optional trailers.
 ///
-/// `Full` always accepts trailers, so this is infallible and does not need a
-/// defensive body clone for the error path.
+/// Built from [`Full`], which always accepts trailers — no `Result` / no panic.
 #[inline]
 fn poly_body_from_buffered(body: Bytes, trailers: Option<http::HeaderMap>) -> PolyBody {
-    let pb = PolyBody::from(Full::from(body));
+    let full = Full::from(body);
     match trailers {
-        Some(t) => pb.with_trailers(t).expect("PolyBody::Full always accepts trailers"),
-        None => pb,
+        None => PolyBody::from(full),
+        Some(t) => {
+            let ready = std::future::ready(Some(Ok::<_, Infallible>(t)));
+            PolyBody::from(full.with_trailers(ready))
+        },
     }
 }
 
 /// Update `Content-Length` only when the header is present and the length changed.
+///
+/// Infallible: `itoa` emits ASCII digits, which are always a valid `HeaderValue`.
+/// If construction ever failed we leave the previous value in place.
 #[inline]
 fn maybe_update_content_length(headers: &mut http::HeaderMap, old_len: usize, new_len: usize) {
-    if old_len != new_len && headers.contains_key(http::header::CONTENT_LENGTH) {
-        let mut buffer = itoa::Buffer::new();
-        headers.insert(
-            http::header::CONTENT_LENGTH,
-            http::header::HeaderValue::from_str(buffer.format(new_len))
-                .expect("usize length is always a valid header value"),
-        );
+    if old_len == new_len {
+        return;
+    }
+    let Some(slot) = headers.get_mut(http::header::CONTENT_LENGTH) else {
+        return;
+    };
+    let mut buffer = itoa::Buffer::new();
+    if let Ok(value) = http::header::HeaderValue::from_str(buffer.format(new_len)) {
+        *slot = value;
     }
 }
 
@@ -328,10 +336,7 @@ impl WasmFilter {
     /// Borrow the already-initialized request-local state without re-entering the async pool/instantiate path.
     #[inline]
     fn require_state(&mut self) -> Result<&mut WasmFilterState, WasmError> {
-        self.state
-            .get_mut()
-            .as_mut()
-            .ok_or_else(|| WasmError::InitError("Wasm state is uninitialized".to_owned()))
+        self.state.get_mut().as_mut().ok_or_else(|| WasmError::InitError("Wasm state is uninitialized".to_owned()))
     }
 
     #[allow(clippy::too_many_lines)]
@@ -394,7 +399,6 @@ impl WasmFilter {
             Ok(FilterAction::PauseAndBufferBody) => {
                 // PauseAndBufferBody
                 use crate::body::timeout_body::TimeoutBody;
-                use http_body_util::BodyExt;
 
                 // 1. Buffer the entire body once.
                 let Ok(collected) = req.body_mut().collect().await else {
@@ -420,8 +424,7 @@ impl WasmFilter {
 
                             let raw = on_body.call_async(&mut state.store, body_len).await;
 
-                            let final_body =
-                                state.store.data_mut().buffered_request_body.take().unwrap_or_default();
+                            let final_body = state.store.data_mut().buffered_request_body.take().unwrap_or_default();
                             let final_trailers = state.store.data_mut().request_trailers.take();
 
                             let action = raw.map_err(WasmError::Wasmtime).and_then(|v| {
@@ -433,36 +436,27 @@ impl WasmFilter {
                             // Skip re-install when the request is short-circuited by a direct response.
                             if !matches!(action, Ok(FilterAction::DirectResponse)) {
                                 maybe_update_content_length(req.headers_mut(), original_len, final_body.len());
+                                let poly = poly_body_from_buffered(final_body, final_trailers);
                                 let old_body = std::mem::take(req.body_mut());
-                                *req.body_mut() = old_body.map_inner(|old_timeout_body| {
-                                    let old_timeout = old_timeout_body.timeout;
-                                    TimeoutBody::new(
-                                        old_timeout,
-                                        poly_body_from_buffered(final_body, final_trailers),
-                                    )
-                                });
+                                *req.body_mut() = old_body
+                                    .map_inner(|old_timeout_body| TimeoutBody::new(old_timeout_body.timeout, poly));
                             }
 
                             action
                         } else {
                             // Hook flagged present but typed resolve failed: restore body once.
+                            let poly = poly_body_from_buffered(full_body_bytes, trailers);
                             let old_body = std::mem::take(req.body_mut());
-                            *req.body_mut() = old_body.map_inner(|old_timeout_body| {
-                                let old_timeout = old_timeout_body.timeout;
-                                TimeoutBody::new(
-                                    old_timeout,
-                                    poly_body_from_buffered(full_body_bytes, trailers),
-                                )
-                            });
+                            *req.body_mut() =
+                                old_body.map_inner(|old_timeout_body| TimeoutBody::new(old_timeout_body.timeout, poly));
                             Ok(FilterAction::Continue)
                         }
                     } else {
                         // No body hook: restore the buffered payload once and continue.
+                        let poly = poly_body_from_buffered(full_body_bytes, trailers);
                         let old_body = std::mem::take(req.body_mut());
-                        *req.body_mut() = old_body.map_inner(|old_timeout_body| {
-                            let old_timeout = old_timeout_body.timeout;
-                            TimeoutBody::new(old_timeout, poly_body_from_buffered(full_body_bytes, trailers))
-                        });
+                        *req.body_mut() =
+                            old_body.map_inner(|old_timeout_body| TimeoutBody::new(old_timeout_body.timeout, poly));
                         Ok(FilterAction::Continue)
                     };
 
@@ -600,7 +594,6 @@ impl WasmFilter {
 
             Ok(FilterAction::PauseAndBufferBody) => {
                 // PauseAndBufferBody for response
-                use http_body_util::BodyExt;
 
                 // 1. Buffer response body once.
                 let Ok(collected) = response.body_mut().collect().await else {
@@ -619,7 +612,9 @@ impl WasmFilter {
                     if self.inner.hooks.contains(HookFlags::ON_RESPONSE_BODY) {
                         let state = match self.require_state() {
                             Ok(s) => s,
-                            Err(e) => return FilterDecision::internal_server_error(&e.to_string(), response.version()),
+                            Err(e) => {
+                                return FilterDecision::internal_server_error(&e.to_string(), response.version());
+                            },
                         };
 
                         if let Some(on_body) = &state.hooks.on_response_body {
@@ -628,8 +623,7 @@ impl WasmFilter {
 
                             let raw = on_body.call_async(&mut state.store, body_len).await;
 
-                            let final_body =
-                                state.store.data_mut().buffered_response_body.take().unwrap_or_default();
+                            let final_body = state.store.data_mut().buffered_response_body.take().unwrap_or_default();
                             let final_trailers = state.store.data_mut().response_trailers.take();
 
                             let action = raw.map_err(WasmError::Wasmtime).and_then(|v| {
@@ -640,27 +634,23 @@ impl WasmFilter {
                             });
 
                             if !matches!(action, Ok(FilterAction::DirectResponse)) {
-                                maybe_update_content_length(
-                                    response.headers_mut(),
-                                    original_len,
-                                    final_body.len(),
-                                );
+                                maybe_update_content_length(response.headers_mut(), original_len, final_body.len());
+                                let poly = poly_body_from_buffered(final_body, final_trailers);
                                 let old_body = std::mem::take(response.body_mut());
-                                *response.body_mut() = old_body
-                                    .map_inner(|_old| poly_body_from_buffered(final_body, final_trailers));
+                                *response.body_mut() = old_body.map_inner(|_old| poly);
                             }
 
                             action
                         } else {
+                            let poly = poly_body_from_buffered(full_body_bytes, trailers);
                             let old_body = std::mem::take(response.body_mut());
-                            *response.body_mut() =
-                                old_body.map_inner(|_old| poly_body_from_buffered(full_body_bytes, trailers));
+                            *response.body_mut() = old_body.map_inner(|_old| poly);
                             Ok(FilterAction::Continue)
                         }
                     } else {
+                        let poly = poly_body_from_buffered(full_body_bytes, trailers);
                         let old_body = std::mem::take(response.body_mut());
-                        *response.body_mut() =
-                            old_body.map_inner(|_old| poly_body_from_buffered(full_body_bytes, trailers));
+                        *response.body_mut() = old_body.map_inner(|_old| poly);
                         Ok(FilterAction::Continue)
                     };
 

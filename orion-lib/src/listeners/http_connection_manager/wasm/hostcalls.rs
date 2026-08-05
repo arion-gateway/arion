@@ -1986,7 +1986,7 @@ fn orion_get_request(mut caller: Caller<'_, WasmState>, buf_ptr: u32, max_len: u
         uri: request.uri(),
         headers: request.headers(),
         version: request.version(),
-        body: &body_bytes,
+        body: body_bytes,
     };
 
     let start = buf_ptr as usize;
@@ -2076,7 +2076,7 @@ fn orion_get_response(mut caller: Caller<'_, WasmState>, buf_ptr: u32, max_len: 
         status: response.status(),
         version: response.version(),
         headers: response.headers(),
-        body: &body_bytes,
+        body: body_bytes,
     };
 
     let start = buf_ptr as usize;

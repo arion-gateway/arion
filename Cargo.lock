@@ -3755,6 +3755,7 @@ dependencies = [
  "hyper-util",
  "hyperlocal",
  "ipnet",
+ "itoa",
  "jsonschema",
  "jsonwebtoken",
  "lru_time_cache",
