@@ -322,6 +322,15 @@ impl WasmFilter {
         state_opt.as_mut().ok_or_else(|| WasmError::InitError("Wasm state is uninitialized".to_owned()))
     }
 
+    /// Borrow the already-initialized request-local state without re-entering the async pool/instantiate path.
+    #[inline]
+    fn require_state(&mut self) -> Result<&mut WasmFilterState, WasmError> {
+        self.state
+            .get_mut()
+            .as_mut()
+            .ok_or_else(|| WasmError::InitError("Wasm state is uninitialized".to_owned()))
+    }
+
     #[allow(clippy::too_many_lines)]
     pub async fn apply_request(&mut self, req: &mut Request<OrionRequestBody>) -> FilterDecision {
         debug!("WasFilter::apply_request: {:?}", self.inner.config);
@@ -340,15 +349,25 @@ impl WasmFilter {
             return FilterDecision::Continue;
         }
 
+        // Ensure state exists once (no-op if on_transaction_start already created it).
+        if self.state.get_mut().is_none() {
+            if let Err(e) = self.get_state().await {
+                return FilterDecision::internal_server_error(&e.to_string(), req.version());
+            }
+        }
+
         let req_handle = std::ptr::from_mut::<Request<OrionRequestBody>>(req) as u64;
-        if let Ok(s) = self.get_state().await {
-            s.store.data_mut().active_response_handle = None;
-            s.store.data_mut().active_request_handle = Some(req_handle);
+        match self.require_state() {
+            Ok(state) => {
+                state.store.data_mut().active_response_handle = None;
+                state.store.data_mut().active_request_handle = Some(req_handle);
+            },
+            Err(e) => return FilterDecision::internal_server_error(&e.to_string(), req.version()),
         }
 
         // PHASE 1: headers evaluation
         let action_code: Result<FilterAction, WasmError> = if self.inner.hooks.contains(HookFlags::ON_REQUEST_HEADERS) {
-            let state = match self.get_state().await {
+            let state = match self.require_state() {
                 Ok(s) => s,
                 Err(e) => return FilterDecision::internal_server_error(&e.to_string(), req.version()),
             };
@@ -387,7 +406,7 @@ impl WasmFilter {
                 //    `buffered_request_body` — the request body is restored once afterwards.
                 let body_action_code: Result<FilterAction, WasmError> =
                     if self.inner.hooks.contains(HookFlags::ON_REQUEST_BODY) {
-                        let state = match self.get_state().await {
+                        let state = match self.require_state() {
                             Ok(s) => s,
                             Err(e) => return FilterDecision::internal_server_error(&e.to_string(), req.version()),
                         };
@@ -448,7 +467,7 @@ impl WasmFilter {
                     Ok(FilterAction::Continue) => FilterDecision::Continue, // Continue
                     Ok(FilterAction::DirectResponse) => {
                         // DirectResponse
-                        let state = match self.get_state().await {
+                        let state = match self.require_state() {
                             Ok(s) => s,
                             Err(e) => return FilterDecision::internal_server_error(&e.to_string(), req.version()),
                         };
@@ -478,7 +497,7 @@ impl WasmFilter {
 
             Ok(FilterAction::DirectResponse) => {
                 // DirectResponse
-                let state = match self.get_state().await {
+                let state = match self.require_state() {
                     Ok(s) => s,
                     Err(e) => return FilterDecision::internal_server_error(&e.to_string(), req.version()),
                 };
@@ -535,16 +554,26 @@ impl WasmFilter {
             return FilterDecision::Continue;
         }
 
+        // Ensure state exists once (typically already created during apply_request).
+        if self.state.get_mut().is_none() {
+            if let Err(e) = self.get_state().await {
+                return FilterDecision::internal_server_error(&e.to_string(), response.version());
+            }
+        }
+
         let resp_handle = std::ptr::from_mut::<Response<OrionResponseBody>>(response) as u64;
-        if let Ok(s) = self.get_state().await {
-            s.store.data_mut().active_request_handle = None;
-            s.store.data_mut().active_response_handle = Some(resp_handle);
+        match self.require_state() {
+            Ok(s) => {
+                s.store.data_mut().active_request_handle = None;
+                s.store.data_mut().active_response_handle = Some(resp_handle);
+            },
+            Err(e) => return FilterDecision::internal_server_error(&e.to_string(), response.version()),
         }
 
         // PHASE 1: headers evaluation
         let action_code: Result<FilterAction, WasmError> = if self.inner.hooks.contains(HookFlags::ON_RESPONSE_HEADERS)
         {
-            let state = match self.get_state().await {
+            let state = match self.require_state() {
                 Ok(s) => s,
                 Err(e) => return FilterDecision::internal_server_error(&e.to_string(), response.version()),
             };
@@ -585,7 +614,7 @@ impl WasmFilter {
                 // 2. Hand the buffer to Wasm (move). Restore into the response once afterwards.
                 let body_action_code: Result<FilterAction, WasmError> =
                     if self.inner.hooks.contains(HookFlags::ON_RESPONSE_BODY) {
-                        let state = match self.get_state().await {
+                        let state = match self.require_state() {
                             Ok(s) => s,
                             Err(e) => return FilterDecision::internal_server_error(&e.to_string(), response.version()),
                         };
@@ -636,7 +665,7 @@ impl WasmFilter {
                     Ok(FilterAction::Continue) => FilterDecision::Continue,
                     Ok(FilterAction::DirectResponse) => {
                         // DirectResponse
-                        let state = match self.get_state().await {
+                        let state = match self.require_state() {
                             Ok(s) => s,
                             Err(e) => return FilterDecision::internal_server_error(&e.to_string(), response.version()),
                         };
@@ -666,7 +695,7 @@ impl WasmFilter {
 
             Ok(FilterAction::DirectResponse) => {
                 // DirectResponse
-                let state = match self.get_state().await {
+                let state = match self.require_state() {
                     Ok(s) => s,
                     Err(e) => return FilterDecision::internal_server_error(&e.to_string(), response.version()),
                 };
