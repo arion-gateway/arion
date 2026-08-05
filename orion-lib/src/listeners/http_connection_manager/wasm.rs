@@ -43,9 +43,10 @@ fn poly_body_from_buffered(body: Bytes, trailers: Option<http::HeaderMap>) -> Po
 #[inline]
 fn maybe_update_content_length(headers: &mut http::HeaderMap, old_len: usize, new_len: usize) {
     if old_len != new_len && headers.contains_key(http::header::CONTENT_LENGTH) {
+        let mut buffer = itoa::Buffer::new();
         headers.insert(
             http::header::CONTENT_LENGTH,
-            http::header::HeaderValue::from_str(&new_len.to_string())
+            http::header::HeaderValue::from_str(buffer.format(new_len))
                 .expect("usize length is always a valid header value"),
         );
     }

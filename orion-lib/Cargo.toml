@@ -109,6 +109,7 @@ crossbeam-queue = { workspace = true }
 http-serde-ext.workspace = true
 
 bincode-next = { version = "3.1.1", features = ["serde"] }
+itoa.workspace = true
 [dev-dependencies]
 orion-data-plane-api.workspace = true
 serde_yaml.workspace           = true
