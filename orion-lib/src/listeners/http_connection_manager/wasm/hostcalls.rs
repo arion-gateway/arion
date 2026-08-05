@@ -907,37 +907,40 @@ fn orion_apply_header_mutations(mut caller: Caller<'_, WasmState>, is_trailer: u
     let Some(memory) = guest_memory(&mut caller) else {
         return OrionWasmError::InvalidMemoryAccess.into();
     };
+
+    // `data_and_store_mut` splits guest linear memory from WasmState so we can
+    // zero-copy-decode `HeaderMutation<'_>` from the slice and still mutably
+    // reach trailers on the store.
+
+    let (data, state) = memory.data_and_store_mut(&mut caller);
     let start = buf_ptr as usize;
     let end = start + buf_len as usize;
-    let slice = match memory.data(&caller).get(start..end) {
-        Some(s) => s.to_vec(),
+    let slice = match data.get(start..end) {
+        Some(s) => s,
         None => return OrionWasmError::InvalidMemoryAccess.into(),
     };
-    let mutations = match deserialize_header_mutations(&slice) {
-        Some(m) => m,
-        None => return OrionWasmError::InternalError.into(),
+    let Some(mutations) = deserialize_header_mutations(slice) else {
+        return OrionWasmError::InternalError.into();
     };
 
     if is_trailer == 0 {
-        if let Some(req_ptr) = caller.data().active_request_handle {
+        if let Some(req_ptr) = state.active_request_handle {
             let request = unsafe { &mut *(req_ptr as *mut Request<OrionRequestBody>) };
             apply_mutations_to_map(request.headers_mut(), mutations);
-        } else if let Some(res_ptr) = caller.data().active_response_handle {
+        } else if let Some(res_ptr) = state.active_response_handle {
             let response = unsafe { &mut *(res_ptr as *mut Response<OrionResponseBody>) };
             apply_mutations_to_map(response.headers_mut(), mutations);
         } else {
             return OrionWasmError::InternalError.into();
         }
+    } else if state.active_request_handle.is_some() {
+        let trailers = state.request_trailers.get_or_insert_with(http::HeaderMap::new);
+        apply_mutations_to_map(trailers, mutations);
+    } else if state.active_response_handle.is_some() {
+        let trailers = state.response_trailers.get_or_insert_with(http::HeaderMap::new);
+        apply_mutations_to_map(trailers, mutations);
     } else {
-        if caller.data().active_request_handle.is_some() {
-            let trailers = caller.data_mut().request_trailers.get_or_insert_with(http::HeaderMap::new);
-            apply_mutations_to_map(trailers, mutations);
-        } else if caller.data().active_response_handle.is_some() {
-            let trailers = caller.data_mut().response_trailers.get_or_insert_with(http::HeaderMap::new);
-            apply_mutations_to_map(trailers, mutations);
-        } else {
-            return OrionWasmError::InternalError.into();
-        }
+        return OrionWasmError::InternalError.into();
     }
 
     0
