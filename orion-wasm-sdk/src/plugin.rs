@@ -23,9 +23,10 @@ pub trait Plugin {
         FilterAction::Continue
     }
 
-    /// Invoked after the plugin returned [`FilterAction::PauseAndBufferBody`]
-    /// from [`Plugin::on_request_headers`] and the host has buffered the full
-    /// request body.
+    /// Invoked after the host has buffered the full request body.
+    ///
+    /// Runs when headers returned [`FilterAction::PauseAndBufferBody`], or when
+    /// the plugin exports a body hook without a headers hook (host buffers implicitly).
     #[inline]
     fn on_request_body(&mut self, _ctx: &RequestHandle<HttpBody>) -> FilterAction {
         FilterAction::Continue
@@ -37,9 +38,8 @@ pub trait Plugin {
         FilterAction::Continue
     }
 
-    /// Invoked after the plugin returned [`FilterAction::PauseAndBufferBody`]
-    /// from [`Plugin::on_response_headers`] and the host has buffered the full
-    /// response body.
+    /// Invoked after the host has buffered the full response body
+    /// (same rules as [`Plugin::on_request_body`]).
     #[inline]
     fn on_response_body(&mut self, _ctx: &ResponseHandle<HttpBody>) -> FilterAction {
         FilterAction::Continue
@@ -54,7 +54,8 @@ pub trait Plugin {
 /// # Example
 ///
 /// ```no_run
-/// use orion_wasm_sdk::{Plugin, FilterAction, RequestHandle, HttpHeaders};
+/// use orion_wasm_sdk::prelude::*;
+/// use orion_wasm_types::FilterAction;
 ///
 /// #[derive(Default)]
 /// struct AuthFilter;
@@ -63,11 +64,16 @@ pub trait Plugin {
 /// impl Plugin for AuthFilter {
 ///     fn on_request_headers(&mut self, ctx: &RequestHandle<HttpHeaders>) -> FilterAction {
 ///         match ctx.get_header("Authorization") {
-///             Ok(Some(v)) if v == "Bearer secret-token" => FilterAction::Continue,
-///             _ => ctx.direct_response(401, b"unauthorized"),
+///             Ok(Some(v)) if v.as_bytes() == b"Bearer secret-token" => FilterAction::Continue,
+///             _ => {
+///                 let response = http::Response::builder()
+///                     .status(401)
+///                     .body(bytes::Bytes::from_static(b"unauthorized"))
+///                     .unwrap();
+///                 ctx.direct_response(response)
+///             }
 ///         }
 ///     }
 /// }
-///
 /// ```
 pub use orion_wasm_sdk_macros::orion_plugin;

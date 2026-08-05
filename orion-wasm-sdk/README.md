@@ -114,7 +114,7 @@ struct AuthFilter;
 impl Plugin for AuthFilter {
     fn on_request_headers(&mut self, ctx: &RequestHandle<HttpHeaders>) -> FilterAction {
         match ctx.get_header("Authorization") {
-            Ok(Some(v)) if v == "Bearer secret-token" => FilterAction::Continue,
+            Ok(Some(v)) if v.as_bytes() == b"Bearer secret-token" => FilterAction::Continue,
             _ => {
                 let response = http::Response::builder()
                     .status(401)
@@ -166,9 +166,11 @@ The `Plugin` trait exposes hooks for Wasm module initialization and individual H
 ### Transaction Lifecycle
 - **`fn on_transaction_start(&mut self)`**: Invoked when a new downstream HTTP connection or request arrives.
 - **`fn on_request_headers(&mut self, ctx: &RequestHandle<HttpHeaders>) -> FilterAction`**: Invoked when request headers arrive. Return `FilterAction::PauseAndBufferBody` if body inspection or mutation is required.
-- **`fn on_request_body(&mut self, ctx: &RequestHandle<HttpBody>) -> FilterAction`**: Invoked after the host has buffered the full request body.
+- **`fn on_request_body(&mut self, ctx: &RequestHandle<HttpBody>) -> FilterAction`**: Invoked after the host has buffered the full request body (only if headers returned `PauseAndBufferBody`, or if the plugin exports a body hook without a headers hook — the host then buffers implicitly).
 - **`fn on_response_headers(&mut self, ctx: &ResponseHandle<HttpHeaders>) -> FilterAction`**: Invoked when upstream response headers are received.
-- **`fn on_response_body(&mut self, ctx: &ResponseHandle<HttpBody>) -> FilterAction`**: Invoked after the host has buffered the full response body.
+- **`fn on_response_body(&mut self, ctx: &ResponseHandle<HttpBody>) -> FilterAction`**: Invoked after the host has buffered the full response body (same rules as request body).
+
+`on_request_body` / `on_response_body` receive a `body_len: u32` on the raw FFI export; the high-level SDK ignores that argument and reads the payload via `get_body()`.
 - **`fn on_transaction_complete(&mut self)`**: Invoked after the complete HTTP transaction finishes. Use this for cleanup or metrics aggregation.
 
 ### Lifecycle Diagram
@@ -276,12 +278,16 @@ Available on `RequestHandle<HttpBody>` and `ResponseHandle<HttpBody>`:
 
 ### Body API
 
-Available on `RequestHandle<HttpBody>` and `ResponseHandle<HttpBody>`:
+Available on `RequestHandle<HttpBody>` and `ResponseHandle<HttpBody>` (only after the host has buffered the body following `FilterAction::PauseAndBufferBody`):
 
 - **`get_body() -> Result<bytes::Bytes, OrionWasmError>`**  
   Retrieves the buffered body payload as raw bytes.
 - **`set_body(body: &[u8]) -> Result<(), OrionWasmError>`**  
-  Replaces the buffered body content. The Orion proxy automatically recalculates `Content-Length`.
+  Replaces the buffered body content.
+
+**`Content-Length`:** if the message already has a `Content-Length` header and the new body length differs, the host updates that header. It does **not** insert `Content-Length` when the header was absent (e.g. chunked transfer).
+
+**Trailers** are not part of the body hostcalls. Use the [Trailers API](#trailers-api) (`is_trailer` is only used on header-related FFI, not on `get_body` / `set_body`).
 
 ### Full Materialization API
 
@@ -790,26 +796,40 @@ Functions return `Result<T, OrionWasmError>`. The `OrionWasmError` enum is part 
 | `InternalError` | `4` | Serialization error or host internal error. |
 | `Timeout` | `5` | I/O operation or sleep timed out. |
 
+### Hostcall ABI notes (guest ↔ host)
+
+- **Header / trailer hostcalls** take an `is_trailer: u32` flag (`0` = headers, `1` = trailers): `orion_get_header`, `orion_set_header`, `orion_get_headers_map`, `orion_apply_header_mutations`, etc.
+- **Body hostcalls do not** take `is_trailer`:
+  - `orion_get_body(body_ptr, max_len, written_len_ptr)`
+  - `orion_set_body(body_ptr, body_len)`
+  Request vs response body is selected by the host from the active transaction phase (`active_request_handle` / `active_response_handle`), not by a guest flag.
+- **Guest must export `orion_malloc(size) -> *mut u8`** (provided by this SDK in `lib.rs`). The host uses it when writing callout responses and downstream metadata into guest linear memory.
+- Changing numeric enum values, hostcall signatures, or bincode layouts is a **breaking ABI change**: rebuild guest `.wasm` plugins against a matching host/SDK pair.
+
 ---
 
 ## Included Examples Directory
 
-The repository includes 15 ready-to-build, standalone example plugins under [`examples/`](./examples):
+Ready-to-build standalone example plugins under [`examples/`](./examples):
 
 | Example Directory | Focus / Feature Demonstrated |
 |---|---|
 | [`access_log_operator_filter`](./examples/access_log_operator_filter) | Dynamic access log operator injection (`set_access_log_operators`) |
 | [`benchmark_filter`](./examples/benchmark_filter) | High-performance header passing benchmark |
 | [`body_mutation_filter`](./examples/body_mutation_filter) | Request & response body buffering and content mutation (`set_body`) |
+| [`callout_authz_filter`](./examples/callout_authz_filter) | HTTP callout authorization gate |
 | [`callout_body_filter`](./examples/callout_body_filter) | Async HTTP out-of-band callouts (`dispatch_http_call`) |
 | [`config_logger_filter`](./examples/config_logger_filter) | Reading and parsing Wasm configuration (`get_plugin_config`) |
 | [`custom_metric_filter`](./examples/custom_metric_filter) | Telemetry and custom metric exports (`set_custom_metrics`) |
+| [`direct_response_filter`](./examples/direct_response_filter) | Short-circuit with `direct_response` / `FilterAction::DirectResponse` |
 | [`dummy_filter`](./examples/dummy_filter) | Minimal no-op filter template |
 | [`grpc_callout_filter`](./examples/grpc_callout_filter) | Async gRPC out-of-band callouts with Protobuf (`dispatch_grpc_call`) |
 | [`header_api_filter`](./examples/header_api_filter) | Single header getters, setters, and removals |
 | [`header_mutations_filter`](./examples/header_mutations_filter) | Batch header mutations (`apply_header_mutations`) |
 | [`headers_map_filter`](./examples/headers_map_filter) | `HeaderMap` serialization & bulk header manipulation |
+| [`materialize_filter`](./examples/materialize_filter) | Full request/response materialization (`take_request` / `replace_request`, …) |
 | [`metadata_filter`](./examples/metadata_filter) | Downstream connection metadata, TLS SNI, and SocketAddr inspection |
 | [`shared_atomic`](./examples/shared_atomic) | Thread-safe shared atomic integers across Wasm instances (`SharedAtomicU64`) |
 | [`shared_blob`](./examples/shared_blob) | Versioned Compare-And-Swap (CAS) shared memory blob storage (`SharedBlob`) |
 | [`sleep_timeout_filter`](./examples/sleep_timeout_filter) | Non-blocking sleep and I/O deadline enforcement (`sleep`, `set_io_timeout`) |
+| [`uri_status_filter`](./examples/uri_status_filter) | Request URI and response status get/set |

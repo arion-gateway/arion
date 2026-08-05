@@ -136,6 +136,9 @@ impl RequestHandle<HttpBody> {
     }
 
     /// Replace the buffered request body.
+    ///
+    /// If the request already has a `Content-Length` header and the length changes,
+    /// the host updates that header. It does not insert `Content-Length` when absent.
     pub fn set_body(&self, body: &[u8]) -> Result<(), OrionWasmError> {
         set_http_body(body)
     }

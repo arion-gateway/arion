@@ -22,7 +22,6 @@ use wasmtime::{Engine, Instance, Linker, Module, PoolingAllocationConfig, Store,
 
 mod hostcalls;
 mod shared;
-mod types;
 
 const WASM_SHARED_MEMORY_VARIABLES: usize = 1024;
 const WASM_INSTANCE_POOL_SIZE: usize = 1024;

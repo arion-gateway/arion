@@ -3,14 +3,16 @@
 //! This crate provides a high-level Rust API for writing WebAssembly plugins
 //! that run inside the Orion proxy via the Wasmtime runtime.
 //!
-//! Plugin authors implement the idiomatic [`Plugin`] trait and invoke the
-//! [`orion_plugin!`](crate::orion_plugin!) macro to generate the `extern "C"`
-//! entry points the host imports. The hostcalls (`get_request_header`,
-//! `get_request_body`, `send_http_direct_response`, ...) are wrapped by the
-//! SDK so user code never touches raw FFI.
+//! Plugin authors implement the idiomatic [`Plugin`] trait and annotate the
+//! impl with [`orion_plugin`](crate::orion_plugin) to generate the `extern "C"`
+//! entry points the host imports. Hostcalls such as `orion_get_header`,
+//! `orion_get_body`, `orion_set_body`, and `orion_send_direct_response` are
+//! wrapped by the SDK so user code never touches raw FFI.
 //!
-//! The ABI types (e.g. `FilterAction`) are shared with the host
-//! via the standalone [`orion_wasm_types`] crate.
+//! This crate also exports [`orion_malloc`] for the host (callouts, metadata).
+//!
+//! The ABI types (e.g. [`FilterAction`]) are shared with the host via the
+//! standalone [`orion_wasm_types`] crate. See the crate README for the full guide.
 
 pub use orion_wasm_types::{
     CalloutRequest, CalloutResponse, FilterAction, HeaderMutation, OrionWasmError, LogLevel
