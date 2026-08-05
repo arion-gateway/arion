@@ -1,10 +1,10 @@
-pub mod u64;
-pub mod i64;
 pub mod blob;
+pub mod i64;
+pub mod u64;
 
-pub use u64::SharedAtomicU64;
+pub use blob::{BlobData, SharedBlob};
 pub use i64::SharedAtomicI64;
-pub use blob::{SharedBlob, BlobData};
+pub use u64::SharedAtomicU64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SharedVarError {

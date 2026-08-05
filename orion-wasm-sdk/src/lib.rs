@@ -14,11 +14,9 @@
 //! The ABI types (e.g. [`FilterAction`]) are shared with the host via the
 //! standalone [`orion_wasm_types`] crate. See the crate README for the full guide.
 
-pub use orion_wasm_types::{
-    CalloutRequest, CalloutResponse, FilterAction, HeaderMutation, OrionWasmError, LogLevel
-};
-pub use http::{self, HeaderMap};
 pub use bytes;
+pub use http::{self, HeaderMap};
+pub use orion_wasm_types::{CalloutRequest, CalloutResponse, FilterAction, HeaderMutation, LogLevel, OrionWasmError};
 
 // ============================================================================
 // FFI declarations
@@ -37,9 +35,9 @@ pub mod host;
 pub mod plugin;
 pub mod request;
 pub mod response;
+pub mod shared;
 pub mod tracing;
 pub mod typestate;
-pub mod shared;
 
 // ============================================================================
 // Prelude
@@ -53,14 +51,14 @@ pub mod prelude {
 }
 
 // Re-export core types for backward compatibility
-pub use orion_wasm_types::{WasmHeaderName, WasmHeaderValue, WasmUri};
 pub use host::*;
+pub use orion_wasm_types::{WasmHeaderName, WasmHeaderValue, WasmUri};
 pub use plugin::*;
 pub use request::*;
 pub use response::*;
+pub use shared::*;
 pub use tracing::{init_tracing, OrionWasmSubscriber};
 pub use typestate::*;
-pub use shared::*;
 
 // ============================================================================
 // Allocator

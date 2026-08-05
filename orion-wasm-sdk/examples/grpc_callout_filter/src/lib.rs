@@ -1,6 +1,6 @@
 //! Example using the Orion Wasm SDK to perform a gRPC Callout
 use orion_wasm_sdk::{
-    dispatch_grpc_call, init_tracing, orion_plugin, FilterAction, HttpHeaders, Plugin, RequestHandle, http, bytes
+    bytes, dispatch_grpc_call, http, init_tracing, orion_plugin, FilterAction, HttpHeaders, Plugin, RequestHandle,
 };
 use orion_wasm_types::GrpcCalloutRequest;
 use prost::Message;
@@ -24,9 +24,7 @@ impl Plugin for GrpcCalloutFilter {
     fn on_request_headers(&mut self, ctx: &RequestHandle<HttpHeaders>) -> FilterAction {
         info!("--- Processing Request Headers with gRPC Callout ---");
 
-        let req = test_service::EchoRequest {
-            message: "Hello from Wasm!".to_string(),
-        };
+        let req = test_service::EchoRequest { message: "Hello from Wasm!".to_string() };
 
         let mut buf = Vec::new();
         req.encode(&mut buf).unwrap();
@@ -43,24 +41,34 @@ impl Plugin for GrpcCalloutFilter {
             Ok(response) => {
                 if response.status != 0 {
                     let msg = format!("gRPC Error: {}", response.status_message);
-                    return ctx.direct_response(http::Response::builder().status(500).body(bytes::Bytes::from(msg)).unwrap());
+                    return ctx
+                        .direct_response(http::Response::builder().status(500).body(bytes::Bytes::from(msg)).unwrap());
                 }
 
                 match test_service::EchoResponse::decode(&response.message[..]) {
                     Ok(echo_res) => {
                         let msg = format!("grpc callout success: {}", echo_res.message);
-                        return ctx.direct_response(http::Response::builder().status(200).body(bytes::Bytes::from(msg)).unwrap());
-                    }
+                        return ctx.direct_response(
+                            http::Response::builder().status(200).body(bytes::Bytes::from(msg)).unwrap(),
+                        );
+                    },
                     Err(e) => {
                         let msg = format!("gRPC Decode Error: {}", e);
-                        return ctx.direct_response(http::Response::builder().status(500).body(bytes::Bytes::from(msg)).unwrap());
-                    }
+                        return ctx.direct_response(
+                            http::Response::builder().status(500).body(bytes::Bytes::from(msg)).unwrap(),
+                        );
+                    },
                 }
-            }
+            },
             Err(e) => {
                 error!("Failed to dispatch gRPC call: {:?}", e);
-                return ctx.direct_response(http::Response::builder().status(500).body(bytes::Bytes::from_static(b"Failed to dispatch")).unwrap());
-            }
+                return ctx.direct_response(
+                    http::Response::builder()
+                        .status(500)
+                        .body(bytes::Bytes::from_static(b"Failed to dispatch"))
+                        .unwrap(),
+                );
+            },
         }
     }
 }

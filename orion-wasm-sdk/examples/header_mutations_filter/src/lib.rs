@@ -1,8 +1,8 @@
-use orion_wasm_sdk::{WasmHeaderName, WasmHeaderValue};
 /// Example using the Orion Wasm SDK to mutate HTTP headers natively using the batch API.
 use orion_wasm_sdk::{
     init_tracing, orion_plugin, FilterAction, HeaderMutation, HttpHeaders, Plugin, RequestHandle, ResponseHandle,
 };
+use orion_wasm_sdk::{WasmHeaderName, WasmHeaderValue};
 use tracing::{error, info};
 
 #[derive(Default)]
@@ -19,19 +19,10 @@ impl Plugin for HeaderMutationsFilter {
         info!("--- Processing Request Headers with Batch API ---");
 
         let mutations = vec![
-            HeaderMutation::Set(
-                WasmHeaderName::from("x-custom-set"),
-                WasmHeaderValue::from("set-value"),
-            ),
-            HeaderMutation::Add(
-                WasmHeaderName::from("x-custom-add"),
-                WasmHeaderValue::from("add-value"),
-            ),
+            HeaderMutation::Set(WasmHeaderName::from("x-custom-set"), WasmHeaderValue::from("set-value")),
+            HeaderMutation::Add(WasmHeaderName::from("x-custom-add"), WasmHeaderValue::from("add-value")),
             HeaderMutation::Remove(WasmHeaderName::from("user-agent")),
-            HeaderMutation::Replace(
-                WasmHeaderName::from("x-custom-set"),
-                WasmHeaderValue::from("replaced-value"),
-            ),
+            HeaderMutation::Replace(WasmHeaderName::from("x-custom-set"), WasmHeaderValue::from("replaced-value")),
         ];
 
         if let Err(e) = ctx.apply_header_mutations(&mutations) {
@@ -45,14 +36,8 @@ impl Plugin for HeaderMutationsFilter {
         info!("--- Processing Response Headers with Batch API ---");
 
         let mutations = vec![
-            HeaderMutation::Set(
-                WasmHeaderName::from("x-response-set"),
-                WasmHeaderValue::from("res-set-value"),
-            ),
-            HeaderMutation::Add(
-                WasmHeaderName::from("x-response-add"),
-                WasmHeaderValue::from("res-add-value"),
-            ),
+            HeaderMutation::Set(WasmHeaderName::from("x-response-set"), WasmHeaderValue::from("res-set-value")),
+            HeaderMutation::Add(WasmHeaderName::from("x-response-add"), WasmHeaderValue::from("res-add-value")),
             HeaderMutation::Remove(WasmHeaderName::from("x-response-remove")),
             HeaderMutation::Replace(
                 WasmHeaderName::from("x-response-set"),

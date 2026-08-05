@@ -1,5 +1,5 @@
 use orion_wasm_sdk::prelude::*;
-use orion_wasm_sdk::{FilterAction, http, bytes::Bytes};
+use orion_wasm_sdk::{bytes::Bytes, http, FilterAction};
 
 #[derive(Default)]
 struct MaterializeFilter;

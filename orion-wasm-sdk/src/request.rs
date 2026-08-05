@@ -2,13 +2,12 @@ use crate::ffi;
 use crate::internal::*;
 use crate::typestate::{HttpBody, State};
 use http::HeaderMap;
-use orion_wasm_types::{WasmHeaderName, WasmHeaderValue};
 use orion_wasm_types::WasmUri;
 use orion_wasm_types::{FilterAction, HeaderMutation, OrionWasmError};
+use orion_wasm_types::{WasmHeaderName, WasmHeaderValue};
 
 /// Typestate wrapper around a request handle.
 pub struct RequestHandle<S: State> {
-    
     _marker: core::marker::PhantomData<S>,
 }
 
@@ -24,13 +23,8 @@ impl<S: State> RequestHandle<S> {
         let mut resp_ptr: *mut u8 = std::ptr::null_mut();
         let mut resp_len = 0u32;
 
-        let res = unsafe {
-            ffi::orion_get_downstream_metadata(
-                
-                &mut resp_ptr as *mut *mut u8,
-                &mut resp_len as *mut u32,
-            )
-        };
+        let res =
+            unsafe { ffi::orion_get_downstream_metadata(&mut resp_ptr as *mut *mut u8, &mut resp_len as *mut u32) };
 
         if res == 0 {
             if resp_ptr.is_null() {
@@ -41,7 +35,8 @@ impl<S: State> RequestHandle<S> {
                 Ok((meta, _)) => Ok(Some(meta)),
                 Err(_) => Err(OrionWasmError::InternalError),
             }
-        } else if res == 1 { // NotFound
+        } else if res == 1 {
+            // NotFound
             Ok(None)
         } else {
             Err(OrionWasmError::from_ffi(res).unwrap_err())
@@ -66,7 +61,7 @@ impl<S: State> RequestHandle<S> {
     where
         N: Into<WasmHeaderName<'a>>,
     {
-        get_http_header( 0, &name.into())
+        get_http_header(0, &name.into())
     }
 
     pub fn set_header<'a, N, V>(&self, name: N, value: V) -> Result<(), OrionWasmError>
@@ -74,7 +69,7 @@ impl<S: State> RequestHandle<S> {
         N: Into<WasmHeaderName<'a>>,
         V: Into<WasmHeaderValue<'a>>,
     {
-        set_http_header( 0, &name.into(), &value.into())
+        set_http_header(0, &name.into(), &value.into())
     }
 
     pub fn add_header<'a, N, V>(&self, name: N, value: V) -> Result<(), OrionWasmError>
@@ -82,14 +77,14 @@ impl<S: State> RequestHandle<S> {
         N: Into<WasmHeaderName<'a>>,
         V: Into<WasmHeaderValue<'a>>,
     {
-        add_http_header( 0, &name.into(), &value.into())
+        add_http_header(0, &name.into(), &value.into())
     }
 
     pub fn remove_header<'a, N>(&self, name: N) -> Result<(), OrionWasmError>
     where
         N: Into<WasmHeaderName<'a>>,
     {
-        remove_http_header( 0, &name.into())
+        remove_http_header(0, &name.into())
     }
 
     pub fn replace_header<'a, N, V>(&self, name: N, value: V) -> Result<(), OrionWasmError>
@@ -97,19 +92,19 @@ impl<S: State> RequestHandle<S> {
         N: Into<WasmHeaderName<'a>>,
         V: Into<WasmHeaderValue<'a>>,
     {
-        replace_http_header( 0, &name.into(), &value.into())
+        replace_http_header(0, &name.into(), &value.into())
     }
 
     pub fn get_headers_map(&self) -> Result<HeaderMap, OrionWasmError> {
-        get_http_headers_map( 0)
+        get_http_headers_map(0)
     }
 
     pub fn set_headers_map(&self, headers: &HeaderMap) -> Result<(), OrionWasmError> {
-        set_http_headers_map( 0, headers)
+        set_http_headers_map(0, headers)
     }
 
     pub fn apply_header_mutations(&self, mutations: &[HeaderMutation<'_>]) -> Result<(), OrionWasmError> {
-        apply_header_mutations( 0, mutations)
+        apply_header_mutations(0, mutations)
     }
 
     /// Schedule a direct HTTP response payload in host memory for the current transaction.
@@ -147,15 +142,18 @@ impl RequestHandle<HttpBody> {
     pub fn take_request(&self) -> Result<http::Request<bytes::Bytes>, OrionWasmError> {
         let mut buf = Vec::with_capacity(1024 * 64);
         let mut written_len: u32 = 0;
-        
+
         loop {
             let res = unsafe {
                 ffi::orion_get_request(buf.as_mut_ptr(), buf.capacity() as u32, &mut written_len as *mut u32)
             };
-            
+
             if res == 0 {
                 unsafe { buf.set_len(written_len as usize) };
-                let wasm_req = match bincode_next::serde::decode_from_slice::<orion_wasm_types::WasmRequest, _>(&buf, bincode_next::config::standard()) {
+                let wasm_req = match bincode_next::serde::decode_from_slice::<orion_wasm_types::WasmRequest, _>(
+                    &buf,
+                    bincode_next::config::standard(),
+                ) {
                     Ok((w, _)) => w,
                     Err(_) => return Err(OrionWasmError::InternalError),
                 };
@@ -179,7 +177,7 @@ impl RequestHandle<HttpBody> {
             Ok(b) => b,
             Err(_) => return Err(OrionWasmError::InternalError),
         };
-        
+
         let res = unsafe { ffi::orion_set_request(serialized.as_ptr(), serialized.len() as u32) };
         if res == 0 {
             Ok(())
@@ -189,18 +187,18 @@ impl RequestHandle<HttpBody> {
     }
 
     pub fn get_trailers_map(&self) -> Result<HeaderMap, OrionWasmError> {
-        get_http_headers_map( 1)
+        get_http_headers_map(1)
     }
 
     pub fn set_trailers_map(&self, trailers: &HeaderMap) -> Result<(), OrionWasmError> {
-        set_http_headers_map( 1, trailers)
+        set_http_headers_map(1, trailers)
     }
 
     pub fn get_trailer<'a, N>(&self, name: N) -> Result<Option<WasmHeaderValue<'static>>, OrionWasmError>
     where
         N: Into<WasmHeaderName<'a>>,
     {
-        get_http_header( 1, &name.into())
+        get_http_header(1, &name.into())
     }
 
     pub fn set_trailer<'a, N, V>(&self, name: N, value: V) -> Result<(), OrionWasmError>
@@ -208,7 +206,7 @@ impl RequestHandle<HttpBody> {
         N: Into<WasmHeaderName<'a>>,
         V: Into<WasmHeaderValue<'a>>,
     {
-        set_http_header( 1, &name.into(), &value.into())
+        set_http_header(1, &name.into(), &value.into())
     }
 
     pub fn add_trailer<'a, N, V>(&self, name: N, value: V) -> Result<(), OrionWasmError>
@@ -216,14 +214,14 @@ impl RequestHandle<HttpBody> {
         N: Into<WasmHeaderName<'a>>,
         V: Into<WasmHeaderValue<'a>>,
     {
-        add_http_header( 1, &name.into(), &value.into())
+        add_http_header(1, &name.into(), &value.into())
     }
 
     pub fn remove_trailer<'a, N>(&self, name: N) -> Result<(), OrionWasmError>
     where
         N: Into<WasmHeaderName<'a>>,
     {
-        remove_http_header( 1, &name.into())
+        remove_http_header(1, &name.into())
     }
 
     pub fn replace_trailer<'a, N, V>(&self, name: N, value: V) -> Result<(), OrionWasmError>
@@ -231,10 +229,10 @@ impl RequestHandle<HttpBody> {
         N: Into<WasmHeaderName<'a>>,
         V: Into<WasmHeaderValue<'a>>,
     {
-        replace_http_header( 1, &name.into(), &value.into())
+        replace_http_header(1, &name.into(), &value.into())
     }
 
     pub fn apply_trailer_mutations(&self, mutations: &[HeaderMutation<'_>]) -> Result<(), OrionWasmError> {
-        apply_header_mutations( 1, mutations)
+        apply_header_mutations(1, mutations)
     }
 }

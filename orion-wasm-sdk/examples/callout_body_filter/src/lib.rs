@@ -1,6 +1,7 @@
 //! Example using the Orion Wasm SDK to perform an HTTP Callout and replace the request body.
-use orion_wasm_sdk::{http::HeaderMap, http::Method,
-    dispatch_http_call, init_tracing, orion_plugin, FilterAction, HttpBody, Plugin, RequestHandle,
+use orion_wasm_sdk::{
+    dispatch_http_call, http::HeaderMap, http::Method, init_tracing, orion_plugin, FilterAction, HttpBody, Plugin,
+    RequestHandle,
 };
 use tracing::{error, info};
 

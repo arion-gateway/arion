@@ -1,5 +1,5 @@
 //! Example using the Orion Wasm SDK to mutate HTTP headers.
-use orion_wasm_sdk::{init_tracing, orion_plugin, FilterAction, HttpHeaders, Plugin, RequestHandle, http, bytes};
+use orion_wasm_sdk::{bytes, http, init_tracing, orion_plugin, FilterAction, HttpHeaders, Plugin, RequestHandle};
 use tracing::{error, info};
 
 #[derive(Default)]
@@ -18,8 +18,13 @@ impl Plugin for HeadersMapFilter {
             Ok(h) => h,
             Err(e) => {
                 error!("get_headers_map failed: {:?}", e);
-                return ctx.direct_response(http::Response::builder().status(500).body(bytes::Bytes::from_static(b"Internal Server Error")).unwrap());
-            }
+                return ctx.direct_response(
+                    http::Response::builder()
+                        .status(500)
+                        .body(bytes::Bytes::from_static(b"Internal Server Error"))
+                        .unwrap(),
+                );
+            },
         };
 
         // 1. Remove user-agent
@@ -28,18 +33,23 @@ impl Plugin for HeadersMapFilter {
         // 2. Insert (Set/Replace) x-custom-set
         headers.insert(
             http::header::HeaderName::from_static("x-custom-set"),
-            http::header::HeaderValue::from_static("replaced-value")
+            http::header::HeaderValue::from_static("replaced-value"),
         );
 
         // 3. Append (Add) x-custom-add
         headers.append(
             http::header::HeaderName::from_static("x-custom-add"),
-            http::header::HeaderValue::from_static("add-value")
+            http::header::HeaderValue::from_static("add-value"),
         );
 
         if let Err(e) = ctx.set_headers_map(&headers) {
             error!("Failed to set headers map: {:?}", e);
-            return ctx.direct_response(http::Response::builder().status(500).body(bytes::Bytes::from_static(b"Internal Server Error")).unwrap());
+            return ctx.direct_response(
+                http::Response::builder()
+                    .status(500)
+                    .body(bytes::Bytes::from_static(b"Internal Server Error"))
+                    .unwrap(),
+            );
         }
 
         FilterAction::Continue
@@ -52,7 +62,7 @@ impl Plugin for HeadersMapFilter {
             Err(e) => {
                 error!("get_headers_map failed: {:?}", e);
                 return FilterAction::Continue;
-            }
+            },
         };
 
         // 1. Remove x-response-remove
@@ -61,13 +71,13 @@ impl Plugin for HeadersMapFilter {
         // 2. Insert (Set/Replace) x-response-set
         headers.insert(
             http::header::HeaderName::from_static("x-response-set"),
-            http::header::HeaderValue::from_static("res-replaced-value")
+            http::header::HeaderValue::from_static("res-replaced-value"),
         );
 
         // 3. Append (Add) x-response-add
         headers.append(
             http::header::HeaderName::from_static("x-response-add"),
-            http::header::HeaderValue::from_static("res-add-value")
+            http::header::HeaderValue::from_static("res-add-value"),
         );
 
         if let Err(e) = ctx.set_headers_map(&headers) {

@@ -5,10 +5,10 @@
 //! The second sleep should be interrupted by the timeout.
 
 use orion_wasm_sdk::{
-    init_tracing, orion_plugin, set_io_timeout, sleep, FilterAction, HttpHeaders, Plugin, RequestHandle, OrionWasmError
+    init_tracing, orion_plugin, set_io_timeout, sleep, FilterAction, HttpHeaders, OrionWasmError, Plugin, RequestHandle,
 };
-use tracing::{info, error};
 use std::time::Duration;
+use tracing::{error, info};
 
 #[derive(Default)]
 struct SleepTimeoutFilter;
@@ -41,21 +41,21 @@ impl Plugin for SleepTimeoutFilter {
                     http::header::HeaderName::from_static("x-timeout-test"),
                     http::header::HeaderValue::from_static("failed-did-not-timeout"),
                 );
-            }
+            },
             Err(OrionWasmError::Timeout) => {
                 info!("Step 3: Sleep timed out exactly as expected!");
                 let _ = _ctx.set_header(
                     http::header::HeaderName::from_static("x-timeout-test"),
                     http::header::HeaderValue::from_static("passed"),
                 );
-            }
+            },
             Err(e) => {
                 error!("Step 3: Sleep failed with unexpected error: {:?}", e);
                 let _ = _ctx.set_header(
                     http::header::HeaderName::from_static("x-timeout-test"),
                     http::header::HeaderValue::from_static("failed-unexpected-error"),
                 );
-            }
+            },
         }
 
         // We continue the filter chain

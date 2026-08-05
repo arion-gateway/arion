@@ -5,7 +5,9 @@
 //! and the `#[orion_plugin]` procedural macro generates the `extern "C"` entry points the
 //! Orion host imports.
 
-use orion_wasm_sdk::{init_tracing, orion_plugin, FilterAction, HttpBody, HttpHeaders, Plugin, RequestHandle, http, bytes};
+use orion_wasm_sdk::{
+    bytes, http, init_tracing, orion_plugin, FilterAction, HttpBody, HttpHeaders, Plugin, RequestHandle,
+};
 use tracing::{debug, error, warn};
 
 #[derive(Default)]
@@ -34,11 +36,21 @@ impl Plugin for DummyFilter {
             },
             Ok(None) => {
                 warn!("No header Authorization provided!");
-                return ctx.direct_response(http::Response::builder().status(401).body(bytes::Bytes::from_static(b"401 Unauthorized: missing Authorization header")).unwrap());
+                return ctx.direct_response(
+                    http::Response::builder()
+                        .status(401)
+                        .body(bytes::Bytes::from_static(b"401 Unauthorized: missing Authorization header"))
+                        .unwrap(),
+                );
             },
             Err(_) => {
                 error!("Could not read from HTTP headers");
-                return ctx.direct_response(http::Response::builder().status(500).body(bytes::Bytes::from_static(b"500 Internal Server Error")).unwrap());
+                return ctx.direct_response(
+                    http::Response::builder()
+                        .status(500)
+                        .body(bytes::Bytes::from_static(b"500 Internal Server Error"))
+                        .unwrap(),
+                );
             },
         };
 
@@ -51,20 +63,37 @@ impl Plugin for DummyFilter {
             debug!(version = "1.0", "DummyFilter: pause and buffer body....");
             FilterAction::PauseAndBufferBody
         } else {
-            ctx.direct_response(http::Response::builder().status(401).body(bytes::Bytes::from_static(b"401 Unauthorized: invalid credentials")).unwrap())
+            ctx.direct_response(
+                http::Response::builder()
+                    .status(401)
+                    .body(bytes::Bytes::from_static(b"401 Unauthorized: invalid credentials"))
+                    .unwrap(),
+            )
         }
     }
 
     fn on_request_body(&mut self, ctx: &RequestHandle<HttpBody>) -> FilterAction {
         let body = match ctx.get_body() {
             Ok(bytes) => bytes,
-            Err(_) => return ctx.direct_response(http::Response::builder().status(500).body(bytes::Bytes::from_static(b"500 Internal Server Error")).unwrap()),
+            Err(_) => {
+                return ctx.direct_response(
+                    http::Response::builder()
+                        .status(500)
+                        .body(bytes::Bytes::from_static(b"500 Internal Server Error"))
+                        .unwrap(),
+                )
+            },
         };
 
         if body.as_ref() == b"valid" {
             FilterAction::Continue
         } else {
-            ctx.direct_response(http::Response::builder().status(403).body(bytes::Bytes::from_static(b"403 Forbidden: body did not contain the magic word 'valid'")).unwrap())
+            ctx.direct_response(
+                http::Response::builder()
+                    .status(403)
+                    .body(bytes::Bytes::from_static(b"403 Forbidden: body did not contain the magic word 'valid'"))
+                    .unwrap(),
+            )
         }
     }
 

@@ -11,7 +11,11 @@ pub struct SharedAtomicU64 {
 impl SharedAtomicU64 {
     pub fn try_new(name: &str) -> Result<Self, SharedVarError> {
         let id = unsafe { ffi::ext_shared_resolve(name.as_ptr(), name.len() as u32, 0) };
-        if id == u32::MAX { Err(SharedVarError::InitFailed) } else { Ok(Self { id }) }
+        if id == u32::MAX {
+            Err(SharedVarError::InitFailed)
+        } else {
+            Ok(Self { id })
+        }
     }
 
     pub fn load(&self, order: Ordering) -> u64 {
@@ -33,10 +37,20 @@ impl SharedAtomicU64 {
         let succ: SharedOrdering = success.into();
         let fail: SharedOrdering = failure.into();
         let prev = unsafe { ffi::ext_shared_u64_compare_exchange(self.id, current, new, succ.into(), fail.into()) };
-        if prev == current { Ok(prev) } else { Err(prev) }
+        if prev == current {
+            Ok(prev)
+        } else {
+            Err(prev)
+        }
     }
 
-    pub fn compare_exchange_weak(&self, current: u64, new: u64, success: Ordering, failure: Ordering) -> Result<u64, u64> {
+    pub fn compare_exchange_weak(
+        &self,
+        current: u64,
+        new: u64,
+        success: Ordering,
+        failure: Ordering,
+    ) -> Result<u64, u64> {
         self.compare_exchange(current, new, success, failure)
     }
 

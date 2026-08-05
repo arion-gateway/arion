@@ -3,7 +3,7 @@
 //! This plugin demonstrates how to extract downstream connection metadata.
 
 use orion_wasm_sdk::{init_tracing, orion_plugin, FilterAction, HttpHeaders, Plugin, RequestHandle};
-use tracing::{info, error};
+use tracing::{error, info};
 
 #[derive(Default)]
 struct MetadataFilter;
@@ -21,7 +21,7 @@ impl Plugin for MetadataFilter {
             Ok(Some(metadata)) => {
                 info!("Successfully extracted downstream metadata:");
                 info!("  Listener Name: {}", metadata.listener_name);
-                
+
                 let _ = ctx.set_header(
                     http::header::HeaderName::from_static("x-listener-name"),
                     http::header::HeaderValue::from_str(&metadata.listener_name).unwrap(),
@@ -37,7 +37,7 @@ impl Plugin for MetadataFilter {
                     info!("  SNI: None");
                 }
                 info!("  Connection: {:?}", metadata.connection);
-                
+
                 match &metadata.connection {
                     orion_wasm_types::DownstreamConnectionMetadata::FromSocket { peer_address, local_address } => {
                         let _ = ctx.set_header(
@@ -48,8 +48,12 @@ impl Plugin for MetadataFilter {
                             http::header::HeaderName::from_static("x-connection-local"),
                             http::header::HeaderValue::from_str(&local_address.to_string()).unwrap(),
                         );
-                    }
-                    orion_wasm_types::DownstreamConnectionMetadata::FromProxyProtocol { proxy_peer_address, proxy_local_address, .. } => {
+                    },
+                    orion_wasm_types::DownstreamConnectionMetadata::FromProxyProtocol {
+                        proxy_peer_address,
+                        proxy_local_address,
+                        ..
+                    } => {
                         let _ = ctx.set_header(
                             http::header::HeaderName::from_static("x-connection-peer"),
                             http::header::HeaderValue::from_str(&proxy_peer_address.to_string()).unwrap(),
@@ -58,15 +62,15 @@ impl Plugin for MetadataFilter {
                             http::header::HeaderName::from_static("x-connection-local"),
                             http::header::HeaderValue::from_str(&proxy_local_address.to_string()).unwrap(),
                         );
-                    }
+                    },
                 }
-            }
+            },
             Ok(None) => {
                 info!("No downstream metadata found for this request.");
-            }
+            },
             Err(e) => {
                 error!("Error while extracting downstream metadata: {:?}", e);
-            }
+            },
         }
 
         FilterAction::Continue

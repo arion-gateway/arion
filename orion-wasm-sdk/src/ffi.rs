@@ -30,11 +30,7 @@ extern "C" {
     ) -> i32;
 
     /// Read the buffered body.
-    pub fn orion_get_body(
-        body_ptr: *mut u8,
-        max_len: u32,
-        written_len_ptr: *mut u32,
-    ) -> i32;
+    pub fn orion_get_body(body_ptr: *mut u8, max_len: u32, written_len_ptr: *mut u32) -> i32;
 
     /// Replace the buffered body.
     pub fn orion_set_body(body_ptr: *const u8, body_len: u32) -> i32;
@@ -61,17 +57,9 @@ extern "C" {
     /// Log a message via the host's tracing framework.
     pub fn orion_log(level: u32, msg_ptr: *const u8, msg_len: u32) -> i32;
 
-    pub fn orion_get_downstream_metadata(
-        out_ptr_ptr: *mut *mut u8,
-        out_len_ptr: *mut u32,
-    ) -> i32;
+    pub fn orion_get_downstream_metadata(out_ptr_ptr: *mut *mut u8, out_len_ptr: *mut u32) -> i32;
 
-    pub fn orion_get_headers_map(
-        is_trailer: u32,
-        buf_ptr: *mut u8,
-        max_len: u32,
-        written_len_ptr: *mut u32,
-    ) -> i32;
+    pub fn orion_get_headers_map(is_trailer: u32, buf_ptr: *mut u8, max_len: u32, written_len_ptr: *mut u32) -> i32;
     pub fn orion_set_headers_map(is_trailer: u32, buf_ptr: *const u8, buf_len: u32) -> i32;
 
     pub fn orion_set_header(
@@ -132,6 +120,11 @@ extern "C" {
 
     pub fn ext_shared_blob_read(id: u32, buf_ptr: *mut u8, buf_len: u32, out_version_ptr: *mut u64) -> u32;
     pub fn ext_shared_blob_write(id: u32, buf_ptr: *const u8, buf_len: u32) -> u64;
-    pub fn ext_shared_blob_cas(id: u32, buf_ptr: *const u8, buf_len: u32, expected_version: u64, out_success_ptr: *mut u32) -> u64;
+    pub fn ext_shared_blob_cas(
+        id: u32,
+        buf_ptr: *const u8,
+        buf_len: u32,
+        expected_version: u64,
+        out_success_ptr: *mut u32,
+    ) -> u64;
 }
-

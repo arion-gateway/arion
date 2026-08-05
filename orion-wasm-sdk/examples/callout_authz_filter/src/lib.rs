@@ -1,4 +1,4 @@
-use orion_wasm_sdk::{dispatch_http_call, orion_plugin, FilterAction, HttpHeaders, Plugin, RequestHandle, http, bytes};
+use orion_wasm_sdk::{bytes, dispatch_http_call, http, orion_plugin, FilterAction, HttpHeaders, Plugin, RequestHandle};
 
 #[derive(Default)]
 struct CalloutAuthzFilter;
@@ -6,10 +6,7 @@ struct CalloutAuthzFilter;
 #[orion_plugin]
 impl Plugin for CalloutAuthzFilter {
     fn on_request_headers(&mut self, ctx: &RequestHandle<HttpHeaders>) -> FilterAction {
-        let mut req = http::Request::builder()
-            .method(http::Method::GET)
-            .uri("/auth")
-            .header("host", "service");
+        let mut req = http::Request::builder().method(http::Method::GET).uri("/auth").header("host", "service");
 
         if let Ok(headers) = ctx.get_headers_map() {
             for (name, value) in &headers {
@@ -34,13 +31,10 @@ impl Plugin for CalloutAuthzFilter {
                     FilterAction::Continue
                 } else {
                     ctx.direct_response(
-                        http::Response::builder()
-                            .status(403)
-                            .body(bytes::Bytes::from_static(b"Forbidden"))
-                            .unwrap(),
+                        http::Response::builder().status(403).body(bytes::Bytes::from_static(b"Forbidden")).unwrap(),
                     )
                 }
-            }
+            },
             Err(_) => FilterAction::Continue,
         }
     }

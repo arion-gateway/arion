@@ -1,7 +1,7 @@
+use super::SharedVarError;
 use crate::ffi;
 use orion_wasm_types::SharedOrdering;
 use std::sync::atomic::Ordering;
-use super::SharedVarError;
 
 pub struct SharedAtomicI64 {
     id: u32,
@@ -10,7 +10,11 @@ pub struct SharedAtomicI64 {
 impl SharedAtomicI64 {
     pub fn try_new(name: &str) -> Result<Self, SharedVarError> {
         let id = unsafe { ffi::ext_shared_resolve(name.as_ptr(), name.len() as u32, 1) };
-        if id == u32::MAX { Err(SharedVarError::InitFailed) } else { Ok(Self { id }) }
+        if id == u32::MAX {
+            Err(SharedVarError::InitFailed)
+        } else {
+            Ok(Self { id })
+        }
     }
 
     pub fn load(&self, order: Ordering) -> i64 {
@@ -32,10 +36,20 @@ impl SharedAtomicI64 {
         let succ: SharedOrdering = success.into();
         let fail: SharedOrdering = failure.into();
         let prev = unsafe { ffi::ext_shared_i64_compare_exchange(self.id, current, new, succ.into(), fail.into()) };
-        if prev == current { Ok(prev) } else { Err(prev) }
+        if prev == current {
+            Ok(prev)
+        } else {
+            Err(prev)
+        }
     }
 
-    pub fn compare_exchange_weak(&self, current: i64, new: i64, success: Ordering, failure: Ordering) -> Result<i64, i64> {
+    pub fn compare_exchange_weak(
+        &self,
+        current: i64,
+        new: i64,
+        success: Ordering,
+        failure: Ordering,
+    ) -> Result<i64, i64> {
         self.compare_exchange(current, new, success, failure)
     }
 

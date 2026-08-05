@@ -1,5 +1,5 @@
 use orion_wasm_sdk::prelude::*;
-use orion_wasm_sdk::{FilterAction, http};
+use orion_wasm_sdk::{http, FilterAction};
 
 #[derive(Default)]
 struct UriStatusFilter;

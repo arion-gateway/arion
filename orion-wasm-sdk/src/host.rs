@@ -57,11 +57,11 @@ where
 }
 
 /// Dispatches an asynchronous HTTP call using the host's cluster manager.
-pub fn dispatch_http_call(cluster: &str, request: http::Request<bytes::Bytes>) -> Result<http::Response<bytes::Bytes>, OrionWasmError> {
-    let callout_req = CalloutRequest {
-        cluster_name: cluster.into(),
-        request,
-    };
+pub fn dispatch_http_call(
+    cluster: &str,
+    request: http::Request<bytes::Bytes>,
+) -> Result<http::Response<bytes::Bytes>, OrionWasmError> {
+    let callout_req = CalloutRequest { cluster_name: cluster.into(), request };
 
     let req_bytes = match bincode_next::serde::encode_to_vec(&callout_req, bincode_next::config::standard()) {
         Ok(b) => b,
@@ -85,10 +85,11 @@ pub fn dispatch_http_call(cluster: &str, request: http::Request<bytes::Bytes>) -
             return Err(OrionWasmError::InternalError);
         }
         let resp_buf = unsafe { Vec::from_raw_parts(resp_ptr, resp_len as usize, resp_len as usize) };
-        let callout_resp: CalloutResponse = match bincode_next::serde::decode_from_slice(&resp_buf, bincode_next::config::standard()) {
-            Ok((resp, _)) => resp,
-            Err(_) => return Err(OrionWasmError::InternalError),
-        };
+        let callout_resp: CalloutResponse =
+            match bincode_next::serde::decode_from_slice(&resp_buf, bincode_next::config::standard()) {
+                Ok((resp, _)) => resp,
+                Err(_) => return Err(OrionWasmError::InternalError),
+            };
         Ok(callout_resp.response)
     } else {
         Err(OrionWasmError::from_ffi(res).unwrap_err())
