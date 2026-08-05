@@ -1,10 +1,13 @@
 use crate::{
+    body::poly_body::PolyBody,
     listeners::http_filters::{FilterDecision, FilterFactory},
     OrionRequestBody, OrionResponseBody,
 };
 use bitflags::bitflags;
+use bytes::Bytes;
 use crossbeam_queue::ArrayQueue;
 use http::{Request, Response};
+use http_body_util::Full;
 use orion_configuration::config::{
     core::DataSource, network_filters::http_connection_manager::http_filters::wasm::WasmConfig,
 };
@@ -22,6 +25,31 @@ mod types;
 
 const WASM_SHARED_MEMORY_VARIABLES: usize = 1024;
 const WASM_INSTANCE_POOL_SIZE: usize = 1024;
+
+/// Build a [`PolyBody`] from a fully-buffered payload + optional trailers.
+///
+/// `Full` always accepts trailers, so this is infallible and does not need a
+/// defensive body clone for the error path.
+#[inline]
+fn poly_body_from_buffered(body: Bytes, trailers: Option<http::HeaderMap>) -> PolyBody {
+    let pb = PolyBody::from(Full::from(body));
+    match trailers {
+        Some(t) => pb.with_trailers(t).expect("PolyBody::Full always accepts trailers"),
+        None => pb,
+    }
+}
+
+/// Update `Content-Length` only when the header is present and the length changed.
+#[inline]
+fn maybe_update_content_length(headers: &mut http::HeaderMap, old_len: usize, new_len: usize) {
+    if old_len != new_len && headers.contains_key(http::header::CONTENT_LENGTH) {
+        headers.insert(
+            http::header::CONTENT_LENGTH,
+            http::header::HeaderValue::from_str(&new_len.to_string())
+                .expect("usize length is always a valid header value"),
+        );
+    }
+}
 
 #[derive(Error, Debug)]
 pub enum WasmError {
@@ -343,31 +371,20 @@ impl WasmFilter {
             Ok(FilterAction::Continue) => FilterDecision::Continue,
             Ok(FilterAction::PauseAndBufferBody) => {
                 // PauseAndBufferBody
-                use crate::body::poly_body::PolyBody;
                 use crate::body::timeout_body::TimeoutBody;
-                use http_body_util::{BodyExt, Full};
+                use http_body_util::BodyExt;
 
-                // 1. Buffer the entire body asynchronously
+                // 1. Buffer the entire body once.
                 let Ok(collected) = req.body_mut().collect().await else {
                     return FilterDecision::internal_server_error("Failed to collect body", req.version());
                 };
                 let trailers = collected.trailers().cloned();
                 let full_body_bytes = collected.to_bytes();
+                let original_len = full_body_bytes.len();
+                let body_len = u32::try_from(original_len).unwrap_or(0);
 
-                // 2. We consumed the inner stream, we need to swap the inner PolyBody
-                let old_body = std::mem::take(req.body_mut());
-
-                *req.body_mut() = old_body.map_inner(|old_timeout_body| {
-                    let old_timeout = old_timeout_body.timeout;
-                    let mut pb = PolyBody::from(Full::from(full_body_bytes.clone()));
-                    if let Some(t) = trailers.clone() {
-                        pb =
-                            pb.with_trailers(t).unwrap_or_else(|_| PolyBody::from(Full::from(full_body_bytes.clone())));
-                    }
-                    TimeoutBody::new(old_timeout, pb)
-                });
-
-                // 3. Re-enter the Wasm context to invoke on_request_body
+                // 2. Hand the buffer to Wasm (move, no clone). Hostcalls read/write
+                //    `buffered_request_body` — the request body is restored once afterwards.
                 let body_action_code: Result<FilterAction, WasmError> =
                     if self.inner.hooks.contains(HookFlags::ON_REQUEST_BODY) {
                         let state = match self.get_state().await {
@@ -375,49 +392,55 @@ impl WasmFilter {
                             Err(e) => return FilterDecision::internal_server_error(&e.to_string(), req.version()),
                         };
 
-                        let response = if let Some(on_body) = &state.hooks.on_request_body {
-                            state.store.data_mut().buffered_request_body = Some(full_body_bytes.clone());
+                        if let Some(on_body) = &state.hooks.on_request_body {
+                            state.store.data_mut().buffered_request_body = Some(full_body_bytes);
                             state.store.data_mut().request_trailers = trailers;
 
-                            let response = on_body
-                                .call_async(&mut state.store, u32::try_from(full_body_bytes.len()).unwrap_or(0))
-                                .await;
+                            let raw = on_body.call_async(&mut state.store, body_len).await;
 
-                            let mutated_body = state.store.data_mut().buffered_request_body.take();
-                            let mutated_trailers = state.store.data_mut().request_trailers.take();
+                            let final_body =
+                                state.store.data_mut().buffered_request_body.take().unwrap_or_default();
+                            let final_trailers = state.store.data_mut().request_trailers.take();
 
-                            if mutated_body.is_some() || mutated_trailers.is_some() {
-                                let final_body = mutated_body.unwrap_or_else(|| full_body_bytes.clone());
-                                if req.headers().contains_key(http::header::CONTENT_LENGTH) {
-                                    req.headers_mut().insert(
-                                        http::header::CONTENT_LENGTH,
-                                        http::header::HeaderValue::from_str(&final_body.len().to_string()).unwrap(),
-                                    );
-                                }
+                            let action = raw.map_err(WasmError::Wasmtime).and_then(|v| {
+                                #[allow(clippy::map_err_ignore)]
+                                FilterAction::try_from(v)
+                                    .map_err(|_| WasmError::InitError(format!("Invalid body action code: {v}")))
+                            });
+
+                            // Skip re-install when the request is short-circuited by a direct response.
+                            if !matches!(action, Ok(FilterAction::DirectResponse)) {
+                                maybe_update_content_length(req.headers_mut(), original_len, final_body.len());
                                 let old_body = std::mem::take(req.body_mut());
                                 *req.body_mut() = old_body.map_inner(|old_timeout_body| {
                                     let old_timeout = old_timeout_body.timeout;
-                                    let mut pb = PolyBody::from(Full::from(final_body.clone()));
-                                    if let Some(t) = mutated_trailers {
-                                        pb = pb
-                                            .with_trailers(t)
-                                            .unwrap_or_else(|_| PolyBody::from(Full::from(final_body)));
-                                    }
-                                    TimeoutBody::new(old_timeout, pb)
+                                    TimeoutBody::new(
+                                        old_timeout,
+                                        poly_body_from_buffered(final_body, final_trailers),
+                                    )
                                 });
                             }
 
-                            response.map_err(WasmError::Wasmtime)
+                            action
                         } else {
-                            Ok(FilterAction::Continue.into())
-                        };
-
-                        response.and_then(|v| {
-                            #[allow(clippy::map_err_ignore)]
-                            FilterAction::try_from(v)
-                                .map_err(|_| WasmError::InitError(format!("Invalid body action code: {v}")))
-                        })
+                            // Hook flagged present but typed resolve failed: restore body once.
+                            let old_body = std::mem::take(req.body_mut());
+                            *req.body_mut() = old_body.map_inner(|old_timeout_body| {
+                                let old_timeout = old_timeout_body.timeout;
+                                TimeoutBody::new(
+                                    old_timeout,
+                                    poly_body_from_buffered(full_body_bytes, trailers),
+                                )
+                            });
+                            Ok(FilterAction::Continue)
+                        }
                     } else {
+                        // No body hook: restore the buffered payload once and continue.
+                        let old_body = std::mem::take(req.body_mut());
+                        *req.body_mut() = old_body.map_inner(|old_timeout_body| {
+                            let old_timeout = old_timeout_body.timeout;
+                            TimeoutBody::new(old_timeout, poly_body_from_buffered(full_body_bytes, trailers))
+                        });
                         Ok(FilterAction::Continue)
                     };
 
@@ -545,10 +568,9 @@ impl WasmFilter {
 
             Ok(FilterAction::PauseAndBufferBody) => {
                 // PauseAndBufferBody for response
-                use crate::body::poly_body::PolyBody;
-                use http_body_util::{BodyExt, Full};
+                use http_body_util::BodyExt;
 
-                // 1. Buffer response body
+                // 1. Buffer response body once.
                 let Ok(collected) = response.body_mut().collect().await else {
                     return FilterDecision::internal_server_error(
                         "Failed to collect response body",
@@ -557,19 +579,10 @@ impl WasmFilter {
                 };
                 let trailers = collected.trailers().cloned();
                 let full_body_bytes = collected.to_bytes();
+                let original_len = full_body_bytes.len();
+                let body_len = u32::try_from(original_len).unwrap_or(0);
 
-                // 2. Swap response body
-                let old_body = std::mem::take(response.body_mut());
-                *response.body_mut() = old_body.map_inner(|_old_poly_body| {
-                    let mut pb = PolyBody::from(Full::from(full_body_bytes.clone()));
-                    if let Some(t) = trailers.clone() {
-                        pb =
-                            pb.with_trailers(t).unwrap_or_else(|_| PolyBody::from(Full::from(full_body_bytes.clone())));
-                    }
-                    pb
-                });
-
-                // 3. Invoke on_response_body
+                // 2. Hand the buffer to Wasm (move). Restore into the response once afterwards.
                 let body_action_code: Result<FilterAction, WasmError> =
                     if self.inner.hooks.contains(HookFlags::ON_RESPONSE_BODY) {
                         let state = match self.get_state().await {
@@ -577,48 +590,45 @@ impl WasmFilter {
                             Err(e) => return FilterDecision::internal_server_error(&e.to_string(), response.version()),
                         };
 
-                        let res_val = if let Some(on_body) = &state.hooks.on_response_body {
-                            state.store.data_mut().buffered_response_body = Some(full_body_bytes.clone());
+                        if let Some(on_body) = &state.hooks.on_response_body {
+                            state.store.data_mut().buffered_response_body = Some(full_body_bytes);
                             state.store.data_mut().response_trailers = trailers;
 
-                            let res_val = on_body
-                                .call_async(&mut state.store, u32::try_from(full_body_bytes.len()).unwrap_or(0))
-                                .await;
+                            let raw = on_body.call_async(&mut state.store, body_len).await;
 
-                            let mutated_body = state.store.data_mut().buffered_response_body.take();
-                            let mutated_trailers = state.store.data_mut().response_trailers.take();
+                            let final_body =
+                                state.store.data_mut().buffered_response_body.take().unwrap_or_default();
+                            let final_trailers = state.store.data_mut().response_trailers.take();
 
-                            if mutated_body.is_some() || mutated_trailers.is_some() {
-                                let final_body = mutated_body.unwrap_or_else(|| full_body_bytes.clone());
-                                if response.headers().contains_key(http::header::CONTENT_LENGTH) {
-                                    response.headers_mut().insert(
-                                        http::header::CONTENT_LENGTH,
-                                        http::header::HeaderValue::from_str(&final_body.len().to_string()).unwrap(),
-                                    );
-                                }
+                            let action = raw.map_err(WasmError::Wasmtime).and_then(|v| {
+                                #[allow(clippy::map_err_ignore)]
+                                FilterAction::try_from(v).map_err(|_| {
+                                    WasmError::InitError(format!("Invalid response body action code: {v}"))
+                                })
+                            });
+
+                            if !matches!(action, Ok(FilterAction::DirectResponse)) {
+                                maybe_update_content_length(
+                                    response.headers_mut(),
+                                    original_len,
+                                    final_body.len(),
+                                );
                                 let old_body = std::mem::take(response.body_mut());
-                                *response.body_mut() = old_body.map_inner(|_old_poly_body| {
-                                    let mut pb = PolyBody::from(Full::from(final_body.clone()));
-                                    if let Some(t) = mutated_trailers {
-                                        pb = pb
-                                            .with_trailers(t)
-                                            .unwrap_or_else(|_| PolyBody::from(Full::from(final_body)));
-                                    }
-                                    pb
-                                });
+                                *response.body_mut() = old_body
+                                    .map_inner(|_old| poly_body_from_buffered(final_body, final_trailers));
                             }
 
-                            res_val.map_err(WasmError::Wasmtime)
+                            action
                         } else {
-                            Ok(FilterAction::Continue.into())
-                        };
-
-                        res_val.and_then(|v| {
-                            #[allow(clippy::map_err_ignore)]
-                            FilterAction::try_from(v)
-                                .map_err(|_| WasmError::InitError(format!("Invalid response body action code: {v}")))
-                        })
+                            let old_body = std::mem::take(response.body_mut());
+                            *response.body_mut() =
+                                old_body.map_inner(|_old| poly_body_from_buffered(full_body_bytes, trailers));
+                            Ok(FilterAction::Continue)
+                        }
                     } else {
+                        let old_body = std::mem::take(response.body_mut());
+                        *response.body_mut() =
+                            old_body.map_inner(|_old| poly_body_from_buffered(full_body_bytes, trailers));
                         Ok(FilterAction::Continue)
                     };
 
