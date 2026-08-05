@@ -103,6 +103,7 @@ papaya.workspace = true
 const-str.workspace = true
 pingora = { workspace = true, features = ["time"] }
 wasmtime.workspace = true
+bitflags.workspace = true
 thread_local.workspace = true
 crossbeam-queue = { workspace = true }
 http-serde-ext.workspace = true

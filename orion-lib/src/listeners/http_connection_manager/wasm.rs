@@ -2,6 +2,7 @@ use crate::{
     listeners::http_filters::{FilterDecision, FilterFactory},
     OrionRequestBody, OrionResponseBody,
 };
+use bitflags::bitflags;
 use crossbeam_queue::ArrayQueue;
 use http::{Request, Response};
 use orion_configuration::config::{
@@ -13,7 +14,7 @@ use parking_lot::Mutex;
 use std::sync::{Arc, LazyLock};
 use thiserror::Error;
 use tracing::{debug, warn};
-use wasmtime::{Engine, Instance, Linker, Module, PoolingAllocationConfig, Store};
+use wasmtime::{Engine, Instance, Linker, Module, PoolingAllocationConfig, Store, TypedFunc};
 
 mod hostcalls;
 mod shared;
@@ -46,10 +47,107 @@ pub static GLOBAL_ENGINE: LazyLock<Engine> = LazyLock::new(|| {
     })
 });
 
+bitflags! {
+    /// Module-level export presence flags. Shared across all pooled instances of a plugin.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    struct HookFlags: u8 {
+        const ON_REQUEST_HEADERS      = 1 << 0;
+        const ON_REQUEST_BODY         = 1 << 1;
+        const ON_RESPONSE_HEADERS     = 1 << 2;
+        const ON_RESPONSE_BODY        = 1 << 3;
+        const ON_PLUGIN_START         = 1 << 4;
+        const ON_PLUGIN_DESTROY       = 1 << 5;
+        const ON_TRANSACTION_START    = 1 << 6;
+        const ON_TRANSACTION_COMPLETE = 1 << 7;
+    }
+}
+
+/// Per-instance resolved callback handles. Looked up once at instantiate time.
+struct InstanceHooks {
+    on_plugin_start: Option<TypedFunc<(), ()>>,
+    on_plugin_destroy: Option<TypedFunc<(), ()>>,
+    on_transaction_start: Option<TypedFunc<(), ()>>,
+    on_transaction_complete: Option<TypedFunc<(), ()>>,
+    on_request_headers: Option<TypedFunc<(), i32>>,
+    on_request_body: Option<TypedFunc<u32, i32>>,
+    on_response_headers: Option<TypedFunc<(), i32>>,
+    on_response_body: Option<TypedFunc<u32, i32>>,
+}
+
+fn resolve_hook<Params, Results>(
+    instance: &Instance,
+    store: &mut Store<hostcalls::WasmState>,
+    flags: HookFlags,
+    flag: HookFlags,
+    name: &'static str,
+) -> Option<TypedFunc<Params, Results>>
+where
+    Params: wasmtime::WasmParams,
+    Results: wasmtime::WasmResults,
+{
+    if flags.contains(flag) {
+        instance.get_typed_func(store, name).ok()
+    } else {
+        None
+    }
+}
+
+impl InstanceHooks {
+    /// Resolve every present export into a typed handle. Called once per instance lifetime.
+    fn resolve(instance: &Instance, store: &mut Store<hostcalls::WasmState>, flags: HookFlags) -> Self {
+        Self {
+            on_plugin_start: resolve_hook(instance, store, flags, HookFlags::ON_PLUGIN_START, "on_plugin_start"),
+            on_plugin_destroy: resolve_hook(
+                instance,
+                store,
+                flags,
+                HookFlags::ON_PLUGIN_DESTROY,
+                "on_plugin_destroy",
+            ),
+            on_transaction_start: resolve_hook(
+                instance,
+                store,
+                flags,
+                HookFlags::ON_TRANSACTION_START,
+                "on_transaction_start",
+            ),
+            on_transaction_complete: resolve_hook(
+                instance,
+                store,
+                flags,
+                HookFlags::ON_TRANSACTION_COMPLETE,
+                "on_transaction_complete",
+            ),
+            on_request_headers: resolve_hook(
+                instance,
+                store,
+                flags,
+                HookFlags::ON_REQUEST_HEADERS,
+                "on_request_headers",
+            ),
+            on_request_body: resolve_hook(instance, store, flags, HookFlags::ON_REQUEST_BODY, "on_request_body"),
+            on_response_headers: resolve_hook(
+                instance,
+                store,
+                flags,
+                HookFlags::ON_RESPONSE_HEADERS,
+                "on_response_headers",
+            ),
+            on_response_body: resolve_hook(
+                instance,
+                store,
+                flags,
+                HookFlags::ON_RESPONSE_BODY,
+                "on_response_body",
+            ),
+        }
+    }
+}
+
 // Request-local Wasm execution state
 struct WasmFilterState {
     store: Store<hostcalls::WasmState>,
-    instance: Instance,
+    hooks: InstanceHooks,
 }
 
 impl std::fmt::Debug for WasmFilterState {
@@ -60,7 +158,7 @@ impl std::fmt::Debug for WasmFilterState {
 
 impl Drop for WasmFilterState {
     fn drop(&mut self) {
-        if let Ok(on_destroy) = self.instance.get_typed_func::<(), ()>(&mut self.store, "on_plugin_destroy") {
+        if let Some(on_destroy) = self.hooks.on_plugin_destroy.clone() {
             if let Ok(handle) = tokio::runtime::Handle::try_current() {
                 tokio::task::block_in_place(|| {
                     handle.block_on(async {
@@ -72,21 +170,12 @@ impl Drop for WasmFilterState {
     }
 }
 
-#[allow(clippy::struct_excessive_bools)]
 #[derive(Clone)]
 pub struct WasmFilterInner {
     config: WasmConfig,
     instance_pre: wasmtime::InstancePre<hostcalls::WasmState>,
     instance_pool: Arc<ArrayQueue<WasmFilterState>>,
-    has_on_request_headers: bool,
-    has_on_request_body: bool,
-    has_on_response_headers: bool,
-    has_on_response_body: bool,
-    has_on_plugin_start: bool,
-    #[allow(unused)]
-    has_on_plugin_destroy: bool,
-    has_on_transaction_start: bool,
-    has_on_transaction_complete: bool,
+    hooks: HookFlags,
     shared_memory: Arc<shared::SharedMemory>,
 }
 
@@ -95,14 +184,7 @@ impl std::fmt::Debug for WasmFilterInner {
         f.debug_struct("WasmFilterInner")
             .field("config", &self.config)
             .field("instance_pool", &self.instance_pool)
-            .field("has_on_request_headers", &self.has_on_request_headers)
-            .field("has_on_request_body", &self.has_on_request_body)
-            .field("has_on_response_headers", &self.has_on_response_headers)
-            .field("has_on_response_body", &self.has_on_response_body)
-            .field("has_on_plugin_start", &self.has_on_plugin_start)
-            .field("has_on_plugin_destroy", &self.has_on_plugin_destroy)
-            .field("has_on_transaction_start", &self.has_on_transaction_start)
-            .field("has_on_transaction_complete", &self.has_on_transaction_complete)
+            .field("hooks", &self.hooks)
             .finish_non_exhaustive()
     }
 }
@@ -140,27 +222,19 @@ impl WasmFilter {
 
         let instance_pre = linker.instantiate_pre(&module).map_err(WasmError::Wasmtime)?;
 
-        let mut has_on_request_headers = false;
-        let mut has_on_request_body = false;
-        let mut has_on_response_headers = false;
-        let mut has_on_response_body = false;
-        let mut has_on_plugin_start = false;
-        let mut has_on_plugin_destroy = false;
-        let mut has_on_transaction_start = false;
-        let mut has_on_transaction_complete = false;
-
+        let mut hooks = HookFlags::empty();
         for export in module.exports() {
-            match export.name() {
-                "on_request_headers" => has_on_request_headers = true,
-                "on_request_body" => has_on_request_body = true,
-                "on_response_headers" => has_on_response_headers = true,
-                "on_response_body" => has_on_response_body = true,
-                "on_plugin_start" => has_on_plugin_start = true,
-                "on_plugin_destroy" => has_on_plugin_destroy = true,
-                "on_transaction_start" => has_on_transaction_start = true,
-                "on_transaction_complete" => has_on_transaction_complete = true,
-                _ => {},
-            }
+            hooks |= match export.name() {
+                "on_request_headers" => HookFlags::ON_REQUEST_HEADERS,
+                "on_request_body" => HookFlags::ON_REQUEST_BODY,
+                "on_response_headers" => HookFlags::ON_RESPONSE_HEADERS,
+                "on_response_body" => HookFlags::ON_RESPONSE_BODY,
+                "on_plugin_start" => HookFlags::ON_PLUGIN_START,
+                "on_plugin_destroy" => HookFlags::ON_PLUGIN_DESTROY,
+                "on_transaction_start" => HookFlags::ON_TRANSACTION_START,
+                "on_transaction_complete" => HookFlags::ON_TRANSACTION_COMPLETE,
+                _ => HookFlags::empty(),
+            };
         }
 
         // Pre-allocate a lock-free queue for hot instances
@@ -171,14 +245,7 @@ impl WasmFilter {
                 config,
                 instance_pre,
                 instance_pool: pool,
-                has_on_request_headers,
-                has_on_request_body,
-                has_on_response_headers,
-                has_on_response_body,
-                has_on_plugin_start,
-                has_on_plugin_destroy,
-                has_on_transaction_start,
-                has_on_transaction_complete,
+                hooks,
                 shared_memory: Arc::new(shared::SharedMemory::new(WASM_SHARED_MEMORY_VARIABLES)),
             }),
             state: Mutex::new(None),
@@ -221,13 +288,13 @@ impl WasmFilter {
                     Err(e) => return Err(WasmError::InitError(format!("failed to instantiate module: {e}"))),
                 };
 
-                if self.inner.has_on_plugin_start {
-                    if let Ok(on_start) = instance.get_typed_func::<(), ()>(&mut store, "on_plugin_start") {
-                        _ = on_start.call_async(&mut store, ()).await;
-                    }
+                let hooks = InstanceHooks::resolve(&instance, &mut store, self.inner.hooks);
+
+                if let Some(on_start) = &hooks.on_plugin_start {
+                    _ = on_start.call_async(&mut store, ()).await;
                 }
 
-                WasmFilterState { store, instance }
+                WasmFilterState { store, hooks }
             };
             *state_opt = Some(state);
         }
@@ -239,17 +306,17 @@ impl WasmFilter {
     pub async fn apply_request(&mut self, req: &mut Request<OrionRequestBody>) -> FilterDecision {
         debug!("WasFilter::apply_request: {:?}", self.inner.config);
 
-        if self.inner.has_on_transaction_start {
+        if self.inner.hooks.contains(HookFlags::ON_TRANSACTION_START) {
             let state = match self.get_state().await {
                 Ok(s) => s,
                 Err(e) => return FilterDecision::internal_server_error(&e.to_string(), req.version()),
             };
-            if let Ok(on_tx_start) = state.instance.get_typed_func::<(), ()>(&mut state.store, "on_transaction_start") {
+            if let Some(on_tx_start) = &state.hooks.on_transaction_start {
                 _ = on_tx_start.call_async(&mut state.store, ()).await;
             }
         }
 
-        if !self.inner.has_on_request_headers && !self.inner.has_on_request_body {
+        if !self.inner.hooks.intersects(HookFlags::ON_REQUEST_HEADERS | HookFlags::ON_REQUEST_BODY) {
             return FilterDecision::Continue;
         }
 
@@ -260,25 +327,26 @@ impl WasmFilter {
         }
 
         // PHASE 1: headers evaluation
-        let action_code: Result<FilterAction, WasmError> = if self.inner.has_on_request_headers {
-            let state = match self.get_state().await {
-                Ok(s) => s,
-                Err(e) => return FilterDecision::internal_server_error(&e.to_string(), req.version()),
-            };
+        let action_code: Result<FilterAction, WasmError> =
+            if self.inner.hooks.contains(HookFlags::ON_REQUEST_HEADERS) {
+                let state = match self.get_state().await {
+                    Ok(s) => s,
+                    Err(e) => return FilterDecision::internal_server_error(&e.to_string(), req.version()),
+                };
 
-            if let Ok(on_headers) = state.instance.get_typed_func::<(), i32>(&mut state.store, "on_request_headers") {
-                let response = on_headers.call_async(&mut state.store, ()).await;
-                response.map_err(WasmError::Wasmtime).and_then(|v| {
-                    #[allow(clippy::map_err_ignore)]
-                    FilterAction::try_from(v)
-                        .map_err(|_| WasmError::InitError(format!("Invalid Wasm FilterAction code: {v}")))
-                })
+                if let Some(on_headers) = &state.hooks.on_request_headers {
+                    let response = on_headers.call_async(&mut state.store, ()).await;
+                    response.map_err(WasmError::Wasmtime).and_then(|v| {
+                        #[allow(clippy::map_err_ignore)]
+                        FilterAction::try_from(v)
+                            .map_err(|_| WasmError::InitError(format!("Invalid Wasm FilterAction code: {v}")))
+                    })
+                } else {
+                    Ok(FilterAction::Continue)
+                }
             } else {
-                Ok(FilterAction::Continue)
-            }
-        } else {
-            Ok(FilterAction::PauseAndBufferBody) // Implicitly return PauseAndBufferBody if the plugin only implements the body hook
-        };
+                Ok(FilterAction::PauseAndBufferBody) // Implicitly return PauseAndBufferBody if the plugin only implements the body hook
+            };
 
         let decision = match action_code {
             Ok(FilterAction::Continue) => FilterDecision::Continue,
@@ -309,57 +377,56 @@ impl WasmFilter {
                 });
 
                 // 3. Re-enter the Wasm context to invoke on_request_body
-                let body_action_code: Result<FilterAction, WasmError> = if self.inner.has_on_request_body {
-                    let state = match self.get_state().await {
-                        Ok(s) => s,
-                        Err(e) => return FilterDecision::internal_server_error(&e.to_string(), req.version()),
-                    };
+                let body_action_code: Result<FilterAction, WasmError> =
+                    if self.inner.hooks.contains(HookFlags::ON_REQUEST_BODY) {
+                        let state = match self.get_state().await {
+                            Ok(s) => s,
+                            Err(e) => return FilterDecision::internal_server_error(&e.to_string(), req.version()),
+                        };
 
-                    let response = if let Ok(on_body) =
-                        state.instance.get_typed_func::<u32, i32>(&mut state.store, "on_request_body")
-                    {
-                        state.store.data_mut().buffered_request_body = Some(full_body_bytes.clone());
-                        state.store.data_mut().request_trailers = trailers;
+                        let response = if let Some(on_body) = &state.hooks.on_request_body {
+                            state.store.data_mut().buffered_request_body = Some(full_body_bytes.clone());
+                            state.store.data_mut().request_trailers = trailers;
 
-                        let response = on_body
-                            .call_async(&mut state.store, u32::try_from(full_body_bytes.len()).unwrap_or(0))
-                            .await;
+                            let response = on_body
+                                .call_async(&mut state.store, u32::try_from(full_body_bytes.len()).unwrap_or(0))
+                                .await;
 
-                        let mutated_body = state.store.data_mut().buffered_request_body.take();
-                        let mutated_trailers = state.store.data_mut().request_trailers.take();
+                            let mutated_body = state.store.data_mut().buffered_request_body.take();
+                            let mutated_trailers = state.store.data_mut().request_trailers.take();
 
-                        if mutated_body.is_some() || mutated_trailers.is_some() {
-                            let final_body = mutated_body.unwrap_or_else(|| full_body_bytes.clone());
-                            if req.headers().contains_key(http::header::CONTENT_LENGTH) {
-                                req.headers_mut().insert(
-                                    http::header::CONTENT_LENGTH,
-                                    http::header::HeaderValue::from_str(&final_body.len().to_string()).unwrap(),
-                                );
-                            }
-                            let old_body = std::mem::take(req.body_mut());
-                            *req.body_mut() = old_body.map_inner(|old_timeout_body| {
-                                let old_timeout = old_timeout_body.timeout;
-                                let mut pb = PolyBody::from(Full::from(final_body.clone()));
-                                if let Some(t) = mutated_trailers {
-                                    pb = pb.with_trailers(t).unwrap_or_else(|_| PolyBody::from(Full::from(final_body)));
+                            if mutated_body.is_some() || mutated_trailers.is_some() {
+                                let final_body = mutated_body.unwrap_or_else(|| full_body_bytes.clone());
+                                if req.headers().contains_key(http::header::CONTENT_LENGTH) {
+                                    req.headers_mut().insert(
+                                        http::header::CONTENT_LENGTH,
+                                        http::header::HeaderValue::from_str(&final_body.len().to_string()).unwrap(),
+                                    );
                                 }
-                                TimeoutBody::new(old_timeout, pb)
-                            });
-                        }
+                                let old_body = std::mem::take(req.body_mut());
+                                *req.body_mut() = old_body.map_inner(|old_timeout_body| {
+                                    let old_timeout = old_timeout_body.timeout;
+                                    let mut pb = PolyBody::from(Full::from(final_body.clone()));
+                                    if let Some(t) = mutated_trailers {
+                                        pb = pb.with_trailers(t).unwrap_or_else(|_| PolyBody::from(Full::from(final_body)));
+                                    }
+                                    TimeoutBody::new(old_timeout, pb)
+                                });
+                            }
 
-                        response.map_err(WasmError::Wasmtime)
+                            response.map_err(WasmError::Wasmtime)
+                        } else {
+                            Ok(FilterAction::Continue.into())
+                        };
+
+                        response.and_then(|v| {
+                            #[allow(clippy::map_err_ignore)]
+                            FilterAction::try_from(v)
+                                .map_err(|_| WasmError::InitError(format!("Invalid body action code: {v}")))
+                        })
                     } else {
-                        Ok(FilterAction::Continue.into())
+                        Ok(FilterAction::Continue)
                     };
-
-                    response.and_then(|v| {
-                        #[allow(clippy::map_err_ignore)]
-                        FilterAction::try_from(v)
-                            .map_err(|_| WasmError::InitError(format!("Invalid body action code: {v}")))
-                    })
-                } else {
-                    Ok(FilterAction::Continue)
-                };
 
                 match body_action_code {
                     Ok(FilterAction::Continue) => FilterDecision::Continue, // Continue
@@ -448,7 +515,7 @@ impl WasmFilter {
     #[allow(clippy::too_many_lines)]
     pub async fn apply_response(&mut self, response: &mut Response<OrionResponseBody>) -> FilterDecision {
         debug!("WasFilter::apply_response: {:?}", self.inner.config);
-        if !self.inner.has_on_response_headers && !self.inner.has_on_response_body {
+        if !self.inner.hooks.intersects(HookFlags::ON_RESPONSE_HEADERS | HookFlags::ON_RESPONSE_BODY) {
             return FilterDecision::Continue;
         }
 
@@ -459,27 +526,26 @@ impl WasmFilter {
         }
 
         // PHASE 1: headers evaluation
-        let action_code: Result<FilterAction, WasmError> = if self.inner.has_on_response_headers {
-            let state = match self.get_state().await {
-                Ok(s) => s,
-                Err(e) => return FilterDecision::internal_server_error(&e.to_string(), response.version()),
-            };
+        let action_code: Result<FilterAction, WasmError> =
+            if self.inner.hooks.contains(HookFlags::ON_RESPONSE_HEADERS) {
+                let state = match self.get_state().await {
+                    Ok(s) => s,
+                    Err(e) => return FilterDecision::internal_server_error(&e.to_string(), response.version()),
+                };
 
-            if let Ok(on_response_headers) =
-                state.instance.get_typed_func::<(), i32>(&mut state.store, "on_response_headers")
-            {
-                let res_val = on_response_headers.call_async(&mut state.store, ()).await;
-                res_val.map_err(WasmError::Wasmtime).and_then(|v| {
-                    #[allow(clippy::map_err_ignore)]
-                    FilterAction::try_from(v)
-                        .map_err(|_| WasmError::InitError(format!("Invalid Wasm response FilterAction code: {v}")))
-                })
+                if let Some(on_response_headers) = &state.hooks.on_response_headers {
+                    let res_val = on_response_headers.call_async(&mut state.store, ()).await;
+                    res_val.map_err(WasmError::Wasmtime).and_then(|v| {
+                        #[allow(clippy::map_err_ignore)]
+                        FilterAction::try_from(v)
+                            .map_err(|_| WasmError::InitError(format!("Invalid Wasm response FilterAction code: {v}")))
+                    })
+                } else {
+                    Ok(FilterAction::Continue)
+                }
             } else {
-                Ok(FilterAction::Continue)
-            }
-        } else {
-            Ok(FilterAction::PauseAndBufferBody) // Implicitly return PauseAndBufferBody if the plugin only implements the body hook
-        };
+                Ok(FilterAction::PauseAndBufferBody) // Implicitly return PauseAndBufferBody if the plugin only implements the body hook
+            };
 
         let decision = match action_code {
             Ok(FilterAction::Continue) => FilterDecision::Continue,
@@ -511,56 +577,55 @@ impl WasmFilter {
                 });
 
                 // 3. Invoke on_response_body
-                let body_action_code: Result<FilterAction, WasmError> = if self.inner.has_on_response_body {
-                    let state = match self.get_state().await {
-                        Ok(s) => s,
-                        Err(e) => return FilterDecision::internal_server_error(&e.to_string(), response.version()),
-                    };
+                let body_action_code: Result<FilterAction, WasmError> =
+                    if self.inner.hooks.contains(HookFlags::ON_RESPONSE_BODY) {
+                        let state = match self.get_state().await {
+                            Ok(s) => s,
+                            Err(e) => return FilterDecision::internal_server_error(&e.to_string(), response.version()),
+                        };
 
-                    let res_val = if let Ok(on_body) =
-                        state.instance.get_typed_func::<u32, i32>(&mut state.store, "on_response_body")
-                    {
-                        state.store.data_mut().buffered_response_body = Some(full_body_bytes.clone());
-                        state.store.data_mut().response_trailers = trailers;
+                        let res_val = if let Some(on_body) = &state.hooks.on_response_body {
+                            state.store.data_mut().buffered_response_body = Some(full_body_bytes.clone());
+                            state.store.data_mut().response_trailers = trailers;
 
-                        let res_val = on_body
-                            .call_async(&mut state.store, u32::try_from(full_body_bytes.len()).unwrap_or(0))
-                            .await;
+                            let res_val = on_body
+                                .call_async(&mut state.store, u32::try_from(full_body_bytes.len()).unwrap_or(0))
+                                .await;
 
-                        let mutated_body = state.store.data_mut().buffered_response_body.take();
-                        let mutated_trailers = state.store.data_mut().response_trailers.take();
+                            let mutated_body = state.store.data_mut().buffered_response_body.take();
+                            let mutated_trailers = state.store.data_mut().response_trailers.take();
 
-                        if mutated_body.is_some() || mutated_trailers.is_some() {
-                            let final_body = mutated_body.unwrap_or_else(|| full_body_bytes.clone());
-                            if response.headers().contains_key(http::header::CONTENT_LENGTH) {
-                                response.headers_mut().insert(
-                                    http::header::CONTENT_LENGTH,
-                                    http::header::HeaderValue::from_str(&final_body.len().to_string()).unwrap(),
-                                );
-                            }
-                            let old_body = std::mem::take(response.body_mut());
-                            *response.body_mut() = old_body.map_inner(|_old_poly_body| {
-                                let mut pb = PolyBody::from(Full::from(final_body.clone()));
-                                if let Some(t) = mutated_trailers {
-                                    pb = pb.with_trailers(t).unwrap_or_else(|_| PolyBody::from(Full::from(final_body)));
+                            if mutated_body.is_some() || mutated_trailers.is_some() {
+                                let final_body = mutated_body.unwrap_or_else(|| full_body_bytes.clone());
+                                if response.headers().contains_key(http::header::CONTENT_LENGTH) {
+                                    response.headers_mut().insert(
+                                        http::header::CONTENT_LENGTH,
+                                        http::header::HeaderValue::from_str(&final_body.len().to_string()).unwrap(),
+                                    );
                                 }
-                                pb
-                            });
-                        }
+                                let old_body = std::mem::take(response.body_mut());
+                                *response.body_mut() = old_body.map_inner(|_old_poly_body| {
+                                    let mut pb = PolyBody::from(Full::from(final_body.clone()));
+                                    if let Some(t) = mutated_trailers {
+                                        pb = pb.with_trailers(t).unwrap_or_else(|_| PolyBody::from(Full::from(final_body)));
+                                    }
+                                    pb
+                                });
+                            }
 
-                        res_val.map_err(WasmError::Wasmtime)
+                            res_val.map_err(WasmError::Wasmtime)
+                        } else {
+                            Ok(FilterAction::Continue.into())
+                        };
+
+                        res_val.and_then(|v| {
+                            #[allow(clippy::map_err_ignore)]
+                            FilterAction::try_from(v)
+                                .map_err(|_| WasmError::InitError(format!("Invalid response body action code: {v}")))
+                        })
                     } else {
-                        Ok(FilterAction::Continue.into())
+                        Ok(FilterAction::Continue)
                     };
-
-                    res_val.and_then(|v| {
-                        #[allow(clippy::map_err_ignore)]
-                        FilterAction::try_from(v)
-                            .map_err(|_| WasmError::InitError(format!("Invalid response body action code: {v}")))
-                    })
-                } else {
-                    Ok(FilterAction::Continue)
-                };
 
                 match body_action_code {
                     Ok(FilterAction::Continue) => FilterDecision::Continue,
@@ -630,17 +695,13 @@ impl WasmFilter {
 impl Drop for WasmFilter {
     fn drop(&mut self) {
         if let Some(mut state) = self.state.get_mut().take() {
-            if self.inner.has_on_transaction_complete {
-                if let Ok(on_tx_comp) =
-                    state.instance.get_typed_func::<(), ()>(&mut state.store, "on_transaction_complete")
-                {
-                    if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                        tokio::task::block_in_place(|| {
-                            handle.block_on(async {
-                                _ = on_tx_comp.call_async(&mut state.store, ()).await;
-                            });
+            if let Some(on_tx_comp) = state.hooks.on_transaction_complete.clone() {
+                if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                    tokio::task::block_in_place(|| {
+                        handle.block_on(async {
+                            _ = on_tx_comp.call_async(&mut state.store, ()).await;
                         });
-                    }
+                    });
                 }
             }
             let data = state.store.data_mut();
