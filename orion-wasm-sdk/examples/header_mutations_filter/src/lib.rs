@@ -12,13 +12,13 @@ struct HeaderMutationsFilter;
 impl Plugin for HeaderMutationsFilter {
     fn on_plugin_start(&mut self) {
         let _ = init_tracing();
-        info!(version = "1.0", "HeaderMutationsFilter Wasm: Instance initialized!");
+        //info!(version = "1.0", "HeaderMutationsFilter Wasm: Instance initialized!");
     }
 
     fn on_request_headers(&mut self, ctx: &RequestHandle<HttpHeaders>) -> FilterAction {
-        info!("--- Processing Request Headers with Batch API ---");
+        //info!("--- Processing Request Headers with Batch API ---");
 
-        let mutations = vec![
+        let mutations = [
             HeaderMutation::Set(WasmHeaderName::from("x-custom-set"), WasmHeaderValue::from("set-value")),
             HeaderMutation::Add(WasmHeaderName::from("x-custom-add"), WasmHeaderValue::from("add-value")),
             HeaderMutation::Remove(WasmHeaderName::from("user-agent")),
@@ -33,9 +33,9 @@ impl Plugin for HeaderMutationsFilter {
     }
 
     fn on_response_headers(&mut self, ctx: &ResponseHandle<HttpHeaders>) -> FilterAction {
-        info!("--- Processing Response Headers with Batch API ---");
+        //info!("--- Processing Response Headers with Batch API ---");
 
-        let mutations = vec![
+        let mutations = [
             HeaderMutation::Set(WasmHeaderName::from("x-response-set"), WasmHeaderValue::from("res-set-value")),
             HeaderMutation::Add(WasmHeaderName::from("x-response-add"), WasmHeaderValue::from("res-add-value")),
             HeaderMutation::Remove(WasmHeaderName::from("x-response-remove")),
