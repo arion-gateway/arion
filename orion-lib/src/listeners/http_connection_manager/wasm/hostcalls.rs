@@ -18,7 +18,7 @@ use http::HeaderValue;
 use http::{Request, Response};
 use http_body_util::Full;
 use smol_str::{SmolStr, ToSmolStr};
-use wasmtime::{Caller, Linker, Memory};
+use wasmtime::{Caller, Func, Linker, Memory};
 
 use orion_wasm_types::{
     CalloutRequest, CalloutResponse, GrpcCalloutRequest, GrpcCalloutResponse, HeaderMutation, LogLevel, OrionWasmError,
@@ -38,6 +38,8 @@ pub struct WasmState {
     pub active_response_handle: Option<u64>,
     /// Guest linear memory, resolved once at instantiate time.
     pub memory: Option<Memory>,
+    /// Guest allocator export, resolved once at instantiate time.
+    pub orion_malloc: Option<Func>,
 }
 
 /// Return the guest linear memory handle cached on [`WasmState`].
@@ -52,6 +54,17 @@ fn guest_memory(caller: &mut Caller<'_, WasmState>) -> Option<Memory> {
     let memory = caller.get_export("memory").and_then(wasmtime::Extern::into_memory)?;
     caller.data_mut().memory = Some(memory);
     Some(memory)
+}
+
+/// Return the guest `orion_malloc` export cached on [`WasmState`].
+#[inline]
+fn guest_malloc(caller: &mut Caller<'_, WasmState>) -> Option<Func> {
+    if let Some(func) = caller.data().orion_malloc {
+        return Some(func);
+    }
+    let func = caller.get_export("orion_malloc").and_then(wasmtime::Extern::into_func)?;
+    caller.data_mut().orion_malloc = Some(func);
+    Some(func)
 }
 
 trait IntoWasmAbi {
@@ -1088,9 +1101,7 @@ fn orion_dispatch_http_call(
         let Some(memory) = guest_memory(&mut caller) else {
             return OrionWasmError::InvalidMemoryAccess.into();
         };
-        let alloc_func = if let Some(func) = caller.get_export("orion_malloc").and_then(wasmtime::Extern::into_func) {
-            func
-        } else {
+        let Some(alloc_func) = guest_malloc(&mut caller) else {
             tracing::error!("Callout failed: guest does not export orion_malloc");
             return OrionWasmError::InternalError.into();
         };
@@ -1350,9 +1361,7 @@ fn orion_dispatch_grpc_call(
             tracing::error!("gRPC Callout failed: guest does not export memory");
             return OrionWasmError::InvalidMemoryAccess.into();
         };
-        let alloc_func = if let Some(func) = caller.get_export("orion_malloc").and_then(wasmtime::Extern::into_func) {
-            func
-        } else {
+        let Some(alloc_func) = guest_malloc(&mut caller) else {
             tracing::error!("gRPC Callout failed: guest does not export orion_malloc");
             return OrionWasmError::InternalError.into();
         };
@@ -1582,7 +1591,7 @@ fn orion_get_downstream_metadata(
             },
         };
 
-        let Some(alloc_func) = caller.get_export("orion_malloc").and_then(wasmtime::Extern::into_func) else {
+        let Some(alloc_func) = guest_malloc(&mut caller) else {
             return OrionWasmError::InternalError.into();
         };
 

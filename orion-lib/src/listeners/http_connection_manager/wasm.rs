@@ -297,6 +297,7 @@ impl WasmFilter {
                         active_request_handle: None,
                         active_response_handle: None,
                         memory: None,
+                        orion_malloc: None,
                     },
                 );
                 // Instantiate the module using the pre-resolved imports
@@ -305,8 +306,9 @@ impl WasmFilter {
                     Err(e) => return Err(WasmError::InitError(format!("failed to instantiate module: {e}"))),
                 };
 
-                // Cache guest linear memory once for all subsequent hostcalls.
+                // Cache guest linear memory + allocator once for all subsequent hostcalls.
                 store.data_mut().memory = instance.get_memory(&mut store, "memory");
+                store.data_mut().orion_malloc = instance.get_func(&mut store, "orion_malloc");
 
                 let hooks = InstanceHooks::resolve(&instance, &mut store, self.inner.hooks);
 
