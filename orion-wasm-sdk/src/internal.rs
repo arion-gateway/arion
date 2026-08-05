@@ -90,14 +90,13 @@ pub(crate) fn get_http_header(
 }
 
 /// Read the buffered body.
-pub(crate) fn get_http_body(is_trailer: u32) -> Result<bytes::Bytes, OrionWasmError> {
+pub(crate) fn get_http_body() -> Result<bytes::Bytes, OrionWasmError> {
     let mut buf: Vec<u8> = Vec::with_capacity(DEFAULT_HEAP_BUF_SIZE);
     let mut written_len: u32 = 0;
 
     loop {
         let res = unsafe {
             ffi::orion_get_body(
-                is_trailer,
                 buf.as_mut_ptr(),
                 buf.capacity() as u32,
                 &mut written_len as *mut u32,
@@ -124,8 +123,8 @@ pub(crate) fn get_http_body(is_trailer: u32) -> Result<bytes::Bytes, OrionWasmEr
 }
 
 /// Replace the buffered body.
-pub(crate) fn set_http_body(is_trailer: u32, body: &[u8]) -> Result<(), OrionWasmError> {
-    let res = unsafe { ffi::orion_set_body(is_trailer, body.as_ptr(), body.len() as u32) };
+pub(crate) fn set_http_body(body: &[u8]) -> Result<(), OrionWasmError> {
+    let res = unsafe { ffi::orion_set_body(body.as_ptr(), body.len() as u32) };
 
     OrionWasmError::from_ffi(res)
 }

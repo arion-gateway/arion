@@ -132,12 +132,12 @@ impl<S: State> RequestHandle<S> {
 impl RequestHandle<HttpBody> {
     /// Read the buffered request body.
     pub fn get_body(&self) -> Result<bytes::Bytes, OrionWasmError> {
-        get_http_body( 0)
+        get_http_body()
     }
 
     /// Replace the buffered request body.
     pub fn set_body(&self, body: &[u8]) -> Result<(), OrionWasmError> {
-        set_http_body( 0, body)
+        set_http_body(body)
     }
 
     /// Materialize the request (headers and body) into a standard http::Request<Bytes>.

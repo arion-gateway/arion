@@ -31,14 +31,13 @@ extern "C" {
 
     /// Read the buffered body.
     pub fn orion_get_body(
-        is_trailer: u32,
         body_ptr: *mut u8,
         max_len: u32,
         written_len_ptr: *mut u32,
     ) -> i32;
 
     /// Replace the buffered body.
-    pub fn orion_set_body(is_trailer: u32, body_ptr: *const u8, body_len: u32) -> i32;
+    pub fn orion_set_body(body_ptr: *const u8, body_len: u32) -> i32;
 
     /// Dispatch an async HTTP call via the host cluster manager.
     pub fn orion_dispatch_http_call(

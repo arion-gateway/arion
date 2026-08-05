@@ -229,7 +229,6 @@ fn orion_get_plugin_config(
 
 fn orion_get_body(
     mut caller: Caller<'_, WasmState>,
-    _is_trailer: u32,
     body_ptr: u32,
     max_len: u32,
     written_len_ptr: u32,
@@ -285,7 +284,7 @@ fn orion_get_body(
     0
 }
 
-fn orion_set_body(mut caller: Caller<'_, WasmState>, _is_trailer: u32, body_ptr: u32, body_len: u32) -> i32 {
+fn orion_set_body(mut caller: Caller<'_, WasmState>, body_ptr: u32, body_len: u32) -> i32 {
     let Some(memory) = guest_memory(&mut caller) else {
         return OrionWasmError::InvalidMemoryAccess.into();
     };
