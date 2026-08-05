@@ -672,9 +672,9 @@ impl WasmFilter {
                             Err(e) => return FilterDecision::internal_server_error(&e.to_string(), response.version()),
                         };
                         let direct_resp = state.store.data_mut().direct_response.take();
-                        if let Some(mut response) = direct_resp {
-                            *response.version_mut() = response.version();
-                            FilterDecision::DirectResponse(Box::new(response))
+                        if let Some(mut direct) = direct_resp {
+                            *direct.version_mut() = response.version();
+                            FilterDecision::DirectResponse(Box::new(direct))
                         } else {
                             warn!(
                                 "wasm plugin returned DirectResponse from \
@@ -703,9 +703,9 @@ impl WasmFilter {
                 };
                 let direct_resp = state.store.data_mut().direct_response.take();
 
-                if let Some(mut response) = direct_resp {
-                    *response.version_mut() = response.version();
-                    FilterDecision::DirectResponse(Box::new(response))
+                if let Some(mut direct) = direct_resp {
+                    *direct.version_mut() = response.version();
+                    FilterDecision::DirectResponse(Box::new(direct))
                 } else {
                     warn!(
                         "wasm plugin returned DirectResponse from \
