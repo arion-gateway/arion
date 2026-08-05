@@ -1,8 +1,8 @@
-use orion_wasm_sdk::{WasmHeaderName, WasmHeaderValue};
-use orion_wasm_sdk::{init_tracing, orion_plugin, FilterAction, HeaderMutation, HttpHeaders, Plugin, RequestHandle};
 use orion_wasm_sdk::shared::SharedAtomicU64;
-use tracing::{debug, error, info};
+use orion_wasm_sdk::{init_tracing, orion_plugin, FilterAction, HttpHeaders, Plugin, RequestHandle};
+use orion_wasm_sdk::{WasmHeaderName, WasmHeaderValue};
 use std::sync::atomic::Ordering;
+use tracing::{debug, error};
 
 #[derive(Default)]
 struct SharedAtomicFilter {
@@ -17,12 +17,12 @@ impl Plugin for SharedAtomicFilter {
 
         match SharedAtomicU64::try_new("request_counter") {
             Ok(atomic) => {
-                info!("Successfully created/opened shared atomic variable 'request_counter'");
+                //info!("Successfully created/opened shared atomic variable 'request_counter'");
                 self.counter = Some(atomic);
-            }
+            },
             Err(e) => {
                 error!("Failed to open shared atomic variable: {:?}", e);
-            }
+            },
         }
     }
 
@@ -31,20 +31,15 @@ impl Plugin for SharedAtomicFilter {
             // Increment the shared counter by 1
             let prev = counter.fetch_add(1, Ordering::SeqCst);
             let current = prev + 1;
-            info!("Shared counter incremented! Previous value: {}, New value: {}", prev, current);
+            // info!("Shared counter incremented! Previous value: {}, New value: {}", prev, current);
 
             // Set the result as an HTTP header sent to the upstream
-            let header_value_str = format!("{}", current);
-            let header_value = bytes::Bytes::from(header_value_str);
-                if let Err(e) = ctx.apply_header_mutations(&[
-                    HeaderMutation::Set(
-                        WasmHeaderName::from("x-request-counter"),
-                        WasmHeaderValue::from(header_value.to_vec()),
-                    )
-                ]) {
-                    error!("Failed to set x-request-counter header: {:?}", e);
-                }
-            
+            if let Err(e) = ctx.set_header(
+                WasmHeaderName::from("x-request-counter"),
+                WasmHeaderValue::from(current.to_string().as_str()),
+            ) {
+                error!("Failed to set x-request-counter header: {:?}", e);
+            }
         } else {
             error!("Shared counter is not initialized!");
         }
