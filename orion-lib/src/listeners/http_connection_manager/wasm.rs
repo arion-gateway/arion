@@ -198,7 +198,7 @@ impl Drop for WasmFilterState {
 pub struct WasmFilterInner {
     config: WasmConfig,
     instance_pre: wasmtime::InstancePre<hostcalls::WasmState>,
-    instance_pool: Arc<ArrayQueue<WasmFilterState>>,
+    instance_pool: Arc<ArrayQueue<Box<WasmFilterState>>>,
     hooks: HookFlags,
     shared_memory: Arc<shared::SharedMemory>,
 }
@@ -217,8 +217,8 @@ impl std::fmt::Debug for WasmFilterInner {
 pub struct WasmFilter {
     inner: Arc<WasmFilterInner>,
     // Mutex is strictly used to satisfy the `Sync` requirement of the compiler.
-    // Trick: wWe bypass the lock completely using `.get_mut()` at runtime.
-    state: Mutex<Option<WasmFilterState>>,
+    // Trick: we bypass the lock completely using `.get_mut()` at runtime.
+    state: Mutex<Option<Box<WasmFilterState>>>,
 }
 
 impl Clone for WasmFilter {
@@ -324,18 +324,18 @@ impl WasmFilter {
                     _ = on_start.call_async(&mut store, ()).await;
                 }
 
-                WasmFilterState { store, hooks }
+                Box::new(WasmFilterState { store, hooks })
             };
             *state_opt = Some(state);
         }
 
-        state_opt.as_mut().ok_or_else(|| WasmError::InitError("Wasm state is uninitialized".to_owned()))
+        state_opt.as_deref_mut().ok_or_else(|| WasmError::InitError("Wasm state is uninitialized".to_owned()))
     }
 
     /// Borrow the already-initialized request-local state without re-entering the async pool/instantiate path.
     #[inline]
     fn require_state(&mut self) -> Result<&mut WasmFilterState, WasmError> {
-        self.state.get_mut().as_mut().ok_or_else(|| WasmError::InitError("Wasm state is uninitialized".to_owned()))
+        self.state.get_mut().as_deref_mut().ok_or_else(|| WasmError::InitError("Wasm state is uninitialized".to_owned()))
     }
 
     #[allow(clippy::too_many_lines)]
