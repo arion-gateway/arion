@@ -1,6 +1,6 @@
 //! Example using the Orion Wasm SDK to mutate HTTP bodies natively.
 use orion_wasm_sdk::{init_tracing, orion_plugin, FilterAction, HttpBody, Plugin, RequestHandle, ResponseHandle};
-use tracing::info;
+use tracing::debug;
 
 #[derive(Default)]
 struct BodyMutationFilter {
@@ -12,7 +12,7 @@ struct BodyMutationFilter {
 impl Plugin for BodyMutationFilter {
     fn on_plugin_start(&mut self) {
         let _ = init_tracing();
-        info!(version = "1.0", "BodyMutationFilter Wasm: Instance initialized!");
+        debug!(version = "1.0", "BodyMutationFilter Wasm: Instance initialized!");
     }
 
     fn on_request_headers(&mut self, ctx: &orion_wasm_sdk::RequestHandle<orion_wasm_sdk::HttpHeaders>) -> FilterAction {

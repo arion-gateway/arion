@@ -17,7 +17,7 @@ impl Plugin for SharedAtomicFilter {
 
         match SharedAtomicU64::try_new("request_counter") {
             Ok(atomic) => {
-                //info!("Successfully created/opened shared atomic variable 'request_counter'");
+                debug!("Successfully created/opened shared atomic variable 'request_counter'");
                 self.counter = Some(atomic);
             },
             Err(e) => {
@@ -31,7 +31,7 @@ impl Plugin for SharedAtomicFilter {
             // Increment the shared counter by 1
             let prev = counter.fetch_add(1, Ordering::SeqCst);
             let current = prev + 1;
-            // info!("Shared counter incremented! Previous value: {}, New value: {}", prev, current);
+            debug!("Shared counter incremented! Previous value: {}, New value: {}", prev, current);
 
             // Set the result as an HTTP header sent to the upstream
             if let Err(e) = ctx.set_header(

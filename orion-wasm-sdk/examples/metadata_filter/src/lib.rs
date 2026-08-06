@@ -3,7 +3,7 @@
 //! This plugin demonstrates how to extract downstream connection metadata.
 
 use orion_wasm_sdk::{init_tracing, orion_plugin, FilterAction, HttpHeaders, Plugin, RequestHandle};
-use tracing::{error, info};
+use tracing::{error, debug};
 
 #[derive(Default)]
 struct MetadataFilter;
@@ -12,15 +12,15 @@ struct MetadataFilter;
 impl Plugin for MetadataFilter {
     fn on_plugin_start(&mut self) {
         let _ = init_tracing();
-        info!("MetadataFilter initialized!");
+        debug!("MetadataFilter initialized!");
     }
 
     fn on_request_headers(&mut self, ctx: &RequestHandle<HttpHeaders>) -> FilterAction {
-        info!("Extracting downstream metadata...");
+        debug!("Extracting downstream metadata...");
         match ctx.get_downstream_metadata() {
             Ok(Some(metadata)) => {
-                info!("Successfully extracted downstream metadata:");
-                info!("  Listener Name: {}", metadata.listener_name);
+                debug!("Successfully extracted downstream metadata:");
+                debug!("  Listener Name: {}", metadata.listener_name);
 
                 let _ = ctx.set_header(
                     http::header::HeaderName::from_static("x-listener-name"),
@@ -28,15 +28,15 @@ impl Plugin for MetadataFilter {
                 );
 
                 if let Some(sni) = &metadata.sni {
-                    info!("  SNI: {}", sni);
+                    debug!("  SNI: {}", sni);
                     let _ = ctx.set_header(
                         http::header::HeaderName::from_static("x-sni"),
                         http::header::HeaderValue::from_str(sni).unwrap(),
                     );
                 } else {
-                    info!("  SNI: None");
+                    debug!("  SNI: None");
                 }
-                info!("  Connection: {:?}", metadata.connection);
+                debug!("  Connection: {:?}", metadata.connection);
 
                 match &metadata.connection {
                     orion_wasm_types::DownstreamConnectionMetadata::FromSocket { peer_address, local_address } => {
@@ -66,7 +66,7 @@ impl Plugin for MetadataFilter {
                 }
             },
             Ok(None) => {
-                info!("No downstream metadata found for this request.");
+                debug!("No downstream metadata found for this request.");
             },
             Err(e) => {
                 error!("Error while extracting downstream metadata: {:?}", e);

@@ -3,7 +3,7 @@ use orion_wasm_sdk::{
     dispatch_http_call, http::HeaderMap, http::Method, init_tracing, orion_plugin, FilterAction, HttpBody, Plugin,
     RequestHandle,
 };
-use tracing::{error, info};
+use tracing::{error, debug};
 
 #[derive(Default)]
 struct CalloutBodyFilter;
@@ -12,11 +12,11 @@ struct CalloutBodyFilter;
 impl Plugin for CalloutBodyFilter {
     fn on_plugin_start(&mut self) {
         let _ = init_tracing();
-        info!(version = "1.0", "CalloutBodyFilter Wasm: Instance initialized!");
+        debug!(version = "1.0", "CalloutBodyFilter Wasm: Instance initialized!");
     }
 
     fn on_request_body(&mut self, ctx: &RequestHandle<HttpBody>) -> FilterAction {
-        info!("--- Processing Request Body with Callout ---");
+        debug!("--- Processing Request Body with Callout ---");
 
         // 1. Get the original body to send to the external service
         let original_body = match ctx.get_body() {
@@ -42,10 +42,10 @@ impl Plugin for CalloutBodyFilter {
             .unwrap();
 
         // 3. Perform the synchronous-looking asynchronous callout
-        info!("Dispatching HTTP POST call to cluster 'service'...");
+        debug!("Dispatching HTTP POST call to cluster 'service'...");
         match dispatch_http_call("service", req) {
             Ok(response) => {
-                info!("Callout completed with status: {}", response.status());
+                debug!("Callout completed with status: {}", response.status());
 
                 if response.status().is_success() {
                     // 4. Extract the body from the callout response and replace the original request body
@@ -54,7 +54,7 @@ impl Plugin for CalloutBodyFilter {
                     if let Err(e) = ctx.set_body(&new_body) {
                         error!("Failed to replace the request body: {:?}", e);
                     } else {
-                        info!("Successfully replaced request body with callout response! ({} bytes)", new_body.len());
+                        debug!("Successfully replaced request body with callout response! ({} bytes)", new_body.len());
                     }
                 } else {
                     error!("Callout returned non-success status, keeping original body");

@@ -1,6 +1,6 @@
 //! Example using the Orion Wasm SDK to mutate HTTP headers.
 use orion_wasm_sdk::{bytes, http, init_tracing, orion_plugin, FilterAction, HttpHeaders, Plugin, RequestHandle};
-use tracing::{error, info};
+use tracing::{error, debug};
 
 #[derive(Default)]
 struct HeadersMapFilter;
@@ -9,11 +9,11 @@ struct HeadersMapFilter;
 impl Plugin for HeadersMapFilter {
     fn on_plugin_start(&mut self) {
         let _ = init_tracing();
-        info!(version = "1.0", "HeadersMapFilter Wasm: Instance initialized!");
+        debug!(version = "1.0", "HeadersMapFilter Wasm: Instance initialized!");
     }
 
     fn on_request_headers(&mut self, ctx: &RequestHandle<HttpHeaders>) -> FilterAction {
-        info!("on_request_headers called");
+        debug!("on_request_headers called");
         let mut headers = match ctx.get_headers_map() {
             Ok(h) => h,
             Err(e) => {
@@ -56,7 +56,7 @@ impl Plugin for HeadersMapFilter {
     }
 
     fn on_response_headers(&mut self, ctx: &orion_wasm_sdk::ResponseHandle<HttpHeaders>) -> FilterAction {
-        info!("on_response_headers called");
+        debug!("on_response_headers called");
         let mut headers = match ctx.get_headers_map() {
             Ok(h) => h,
             Err(e) => {

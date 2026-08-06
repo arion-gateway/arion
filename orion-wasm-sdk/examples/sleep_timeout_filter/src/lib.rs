@@ -8,7 +8,7 @@ use orion_wasm_sdk::{
     init_tracing, orion_plugin, set_io_timeout, sleep, FilterAction, HttpHeaders, OrionWasmError, Plugin, RequestHandle,
 };
 use std::time::Duration;
-use tracing::{error, info};
+use tracing::{error, debug};
 
 #[derive(Default)]
 struct SleepTimeoutFilter;
@@ -17,23 +17,23 @@ struct SleepTimeoutFilter;
 impl Plugin for SleepTimeoutFilter {
     fn on_plugin_start(&mut self) {
         let _ = init_tracing();
-        info!("SleepTimeoutFilter initialized!");
+        debug!("SleepTimeoutFilter initialized!");
     }
 
     fn on_request_headers(&mut self, _ctx: &RequestHandle<HttpHeaders>) -> FilterAction {
-        info!("Step 1: Sleeping for 1 second...");
+        debug!("Step 1: Sleeping for 1 second...");
         match sleep(Duration::from_secs(1)) {
-            Ok(_) => info!("Step 1: Sleep completed successfully."),
+            Ok(_) => debug!("Step 1: Sleep completed successfully."),
             Err(e) => error!("Step 1: Sleep failed: {:?}", e),
         }
 
-        info!("Step 2: Setting IO timeout to 1 second...");
+        debug!("Step 2: Setting IO timeout to 1 second...");
         match set_io_timeout(Duration::from_secs(1)) {
-            Ok(_) => info!("Step 2: Timeout set successfully."),
+            Ok(_) => debug!("Step 2: Timeout set successfully."),
             Err(e) => error!("Step 2: Failed to set timeout: {:?}", e),
         }
 
-        info!("Step 3: Attempting to sleep for 10 seconds (should timeout)...");
+        debug!("Step 3: Attempting to sleep for 10 seconds (should timeout)...");
         match sleep(Duration::from_secs(10)) {
             Ok(_) => {
                 error!("Step 3: Sleep completed completely, but it should have timed out!");
@@ -43,7 +43,7 @@ impl Plugin for SleepTimeoutFilter {
                 );
             },
             Err(OrionWasmError::Timeout) => {
-                info!("Step 3: Sleep timed out exactly as expected!");
+                debug!("Step 3: Sleep timed out exactly as expected!");
                 let _ = _ctx.set_header(
                     http::header::HeaderName::from_static("x-timeout-test"),
                     http::header::HeaderValue::from_static("passed"),
@@ -59,7 +59,7 @@ impl Plugin for SleepTimeoutFilter {
         }
 
         // We continue the filter chain
-        info!("SleepTimeoutFilter: Resuming upstream request...");
+        debug!("SleepTimeoutFilter: Resuming upstream request...");
         FilterAction::Continue
     }
 }

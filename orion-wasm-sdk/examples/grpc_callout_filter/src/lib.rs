@@ -5,7 +5,7 @@ use orion_wasm_sdk::{
 use orion_wasm_types::GrpcCalloutRequest;
 use prost::Message;
 use smol_str::SmolStr;
-use tracing::{error, info};
+use tracing::{error, debug};
 
 pub mod test_service {
     include!(concat!(env!("OUT_DIR"), "/orion.test.rs"));
@@ -18,11 +18,11 @@ struct GrpcCalloutFilter;
 impl Plugin for GrpcCalloutFilter {
     fn on_plugin_start(&mut self) {
         let _ = init_tracing();
-        info!(version = "1.0", "GrpcCalloutFilter Wasm: Instance initialized!");
+        debug!(version = "1.0", "GrpcCalloutFilter Wasm: Instance initialized!");
     }
 
     fn on_request_headers(&mut self, ctx: &RequestHandle<HttpHeaders>) -> FilterAction {
-        info!("--- Processing Request Headers with gRPC Callout ---");
+        debug!("--- Processing Request Headers with gRPC Callout ---");
 
         let req = test_service::EchoRequest { message: "Hello from Wasm!".to_string() };
 

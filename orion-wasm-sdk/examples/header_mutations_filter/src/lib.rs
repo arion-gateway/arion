@@ -3,7 +3,7 @@ use orion_wasm_sdk::{
     init_tracing, orion_plugin, FilterAction, HeaderMutation, HttpHeaders, Plugin, RequestHandle, ResponseHandle,
 };
 use orion_wasm_sdk::{WasmHeaderName, WasmHeaderValue};
-use tracing::{error, info};
+use tracing::{error, debug};
 
 #[derive(Default)]
 struct HeaderMutationsFilter;
@@ -12,11 +12,11 @@ struct HeaderMutationsFilter;
 impl Plugin for HeaderMutationsFilter {
     fn on_plugin_start(&mut self) {
         let _ = init_tracing();
-        //info!(version = "1.0", "HeaderMutationsFilter Wasm: Instance initialized!");
+        debug!(version = "1.0", "HeaderMutationsFilter Wasm: Instance initialized!");
     }
 
     fn on_request_headers(&mut self, ctx: &RequestHandle<HttpHeaders>) -> FilterAction {
-        //info!("--- Processing Request Headers with Batch API ---");
+        debug!("--- Processing Request Headers with Batch API ---");
 
         let mutations = [
             HeaderMutation::Set(WasmHeaderName::from("x-custom-set"), WasmHeaderValue::from("set-value")),
@@ -33,7 +33,7 @@ impl Plugin for HeaderMutationsFilter {
     }
 
     fn on_response_headers(&mut self, ctx: &ResponseHandle<HttpHeaders>) -> FilterAction {
-        //info!("--- Processing Response Headers with Batch API ---");
+        debug!("--- Processing Response Headers with Batch API ---");
 
         let mutations = [
             HeaderMutation::Set(WasmHeaderName::from("x-response-set"), WasmHeaderValue::from("res-set-value")),

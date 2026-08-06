@@ -1,7 +1,7 @@
 use orion_wasm_sdk::shared::SharedBlob;
 use orion_wasm_sdk::{init_tracing, orion_plugin, FilterAction, HeaderMutation, HttpHeaders, Plugin, RequestHandle};
 use orion_wasm_sdk::{WasmHeaderName, WasmHeaderValue};
-use tracing::{debug, error, info};
+use tracing::{debug, error};
 
 #[derive(Default)]
 struct SharedBlobFilter {
@@ -16,7 +16,7 @@ impl Plugin for SharedBlobFilter {
 
         match SharedBlob::try_new("my_shared_blob") {
             Ok(blob) => {
-                info!("Successfully created/opened shared blob 'my_shared_blob'");
+                debug!("Successfully created/opened shared blob 'my_shared_blob'");
 
                 // Initialize with an empty list if it's empty
                 let current = blob.read();
@@ -59,14 +59,14 @@ impl Plugin for SharedBlobFilter {
 
                 // Try to write the new string safely
                 if blob.compare_and_swap(new_str.as_bytes(), current.version).is_ok() {
-                    info!("Blob successfully updated via CAS to version {}", current.version + 1);
+                    debug!("Blob successfully updated via CAS to version {}", current.version + 1);
                     // Save the value we just successfully wrote to avoid race conditions!
                     // If we did blob.read() here, we might read a newer value modified by another worker.
                     list_for_upstream_header = new_str;
                     break;
                 }
 
-                info!("CAS failed (version mismatch), retrying...");
+                debug!("CAS failed (version mismatch), retrying...");
             }
 
             // Set the result as an HTTP header sent to the upstream using the exact string we resolved

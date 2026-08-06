@@ -6,7 +6,7 @@
 use orion_wasm_sdk::{
     init_tracing, orion_plugin, set_custom_metrics, FilterAction, HttpHeaders, Plugin, RequestHandle,
 };
-use tracing::{debug, error, info};
+use tracing::{debug, error};
 
 #[derive(Default)]
 struct CustomMetricFilter;
@@ -15,7 +15,7 @@ struct CustomMetricFilter;
 impl Plugin for CustomMetricFilter {
     fn on_plugin_start(&mut self) {
         let _ = init_tracing();
-        info!("CustomMetricFilter: Wasm module initialized.");
+        debug!("CustomMetricFilter: Wasm module initialized.");
     }
 
     fn on_request_headers(&mut self, _ctx: &RequestHandle<HttpHeaders>) -> FilterAction {
