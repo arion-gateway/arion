@@ -1,0 +1,72 @@
+//! Orion WebAssembly SDK (Guest side)
+//!
+//! This crate provides a high-level Rust API for writing WebAssembly plugins
+//! that run inside the Orion proxy via the Wasmtime runtime.
+//!
+//! Plugin authors implement the idiomatic [`Plugin`] trait and annotate the
+//! impl with [`orion_plugin`](crate::orion_plugin) to generate the `extern "C"`
+//! entry points the host imports. Hostcalls such as `orion_get_header`,
+//! `orion_get_body`, `orion_set_body`, and `orion_send_direct_response` are
+//! wrapped by the SDK so user code never touches raw FFI.
+//!
+//! This crate also exports [`orion_malloc`] for the host (callouts, metadata).
+//!
+//! The ABI types (e.g. [`FilterAction`]) are shared with the host via the
+//! standalone [`orion_wasm_types`] crate. See the crate README for the full guide.
+
+pub use bytes;
+pub use http::{self, HeaderMap};
+pub use orion_wasm_types::{CalloutRequest, CalloutResponse, FilterAction, HeaderMutation, LogLevel, OrionWasmError};
+
+// ============================================================================
+// FFI declarations
+// ============================================================================
+pub mod ffi;
+
+// ============================================================================
+// Internal wrappers
+// ============================================================================
+mod internal;
+
+// ============================================================================
+// Modules
+// ============================================================================
+pub mod host;
+pub mod plugin;
+pub mod request;
+pub mod response;
+pub mod shared;
+pub mod tracing;
+pub mod typestate;
+
+// ============================================================================
+// Prelude
+// ============================================================================
+pub mod prelude {
+    pub use crate::plugin::Plugin;
+    pub use crate::request::RequestHandle;
+    pub use crate::response::ResponseHandle;
+    pub use crate::typestate::{HttpBody, HttpHeaders};
+    pub use orion_wasm_sdk_macros::orion_plugin;
+}
+
+// Re-export core types for backward compatibility
+pub use host::*;
+pub use orion_wasm_types::{WasmHeaderName, WasmHeaderValue, WasmUri};
+pub use plugin::*;
+pub use request::*;
+pub use response::*;
+pub use shared::*;
+pub use tracing::{init_tracing, OrionWasmSubscriber};
+pub use typestate::*;
+
+// ============================================================================
+// Allocator
+// ============================================================================
+#[no_mangle]
+pub extern "C" fn orion_malloc(size: u32) -> *mut u8 {
+    let mut buf = Vec::with_capacity(size as usize);
+    let ptr = buf.as_mut_ptr();
+    std::mem::forget(buf);
+    ptr
+}

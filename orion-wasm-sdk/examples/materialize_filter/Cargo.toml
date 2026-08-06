@@ -1,0 +1,13 @@
+[package]
+name = "materialize_filter"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+orion_wasm_sdk = { path = "../.." }
+http = "1.0"
+bytes = "1.0"

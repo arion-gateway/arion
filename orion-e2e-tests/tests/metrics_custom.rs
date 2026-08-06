@@ -112,6 +112,7 @@ async fn test_custom_metrics() {
         ext_proc_request: vec![],
         ext_proc_response: vec![],
         downstream_response: vec![],
+        wasm: vec![],
     };
 
     let metrics_config = MetricsConfig {
@@ -330,6 +331,7 @@ async fn test_custom_metrics_multiple_keys() {
         downstream_response: vec![],
         ext_proc_request: vec![],
         ext_proc_response: vec![],
+        wasm: vec![],
     };
 
     // Configure TWO custom partition keys

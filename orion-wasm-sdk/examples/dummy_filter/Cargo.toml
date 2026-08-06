@@ -1,0 +1,14 @@
+[package]
+name = "dummy_filter"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+# Keep this example crate out of the parent `orion_wasm_sdk` workspace so it
+# can be compiled standalone to `wasm32-unknown-unknown`.
+
+[dependencies]
+orion_wasm_sdk = { path = "../../" }
+tracing = "0.1"

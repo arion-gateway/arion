@@ -512,9 +512,11 @@ impl ExternalProcessor {
         if let Some(trans_ctx) = request.extensions().get::<Arc<TransactionContext>>() {
             use crate::access_log;
             trans_ctx.with_loggers(|loggers| {
-                if let Err(err) =
-                    access_log::evaluate_access_log_hook(access_log::AccessLogHook::ExtProcRequest, headers, loggers)
-                {
+                if let Err(err) = access_log::evaluate_base64_access_log_hook(
+                    access_log::AccessLogHook::ExtProcRequest,
+                    headers,
+                    loggers,
+                ) {
                     warn!("Failed to process access log header for ExtProcRequest: {err}");
                 }
             });
@@ -747,9 +749,11 @@ impl ExternalProcessor {
         if let Some(trans_ctx) = response.extensions().get::<Arc<TransactionContext>>() {
             use crate::access_log;
             trans_ctx.with_loggers(|loggers| {
-                if let Err(err) =
-                    access_log::evaluate_access_log_hook(access_log::AccessLogHook::ExtProcResponse, headers, loggers)
-                {
+                if let Err(err) = access_log::evaluate_base64_access_log_hook(
+                    access_log::AccessLogHook::ExtProcResponse,
+                    headers,
+                    loggers,
+                ) {
                     warn!("Failed to process access log header for ExtProcResponse: {err}");
                 }
             });

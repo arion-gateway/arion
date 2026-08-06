@@ -19,6 +19,7 @@ http-body-util.workspace = true
 hyper-util.workspace = true
 cedar-policy.workspace = true
 orion-configuration.workspace = true
+orion-wasm-types.workspace = true
 orion-data-plane-api.workspace = true
 orion-error.workspace = true
 orion-format.workspace = true
@@ -69,7 +70,6 @@ rustls-platform-verifier = { workspace = true }
 rustls-webpki.workspace = true
 scopeguard.workspace = true
 thread-id.workspace = true
-thread_local.workspace = true
 tokio-rustls.workspace = true
 tower-service.workspace = true
 traceparent.workspace = true
@@ -102,8 +102,14 @@ atomicoption.workspace = true
 papaya.workspace = true
 const-str.workspace = true
 pingora = { workspace = true, features = ["time"] }
+wasmtime.workspace = true
+bitflags.workspace = true
+thread_local.workspace = true
+crossbeam-queue = { workspace = true }
+http-serde-ext.workspace = true
 
-
+bincode-next = { version = "3.1.1", features = ["serde"] }
+itoa.workspace = true
 [dev-dependencies]
 orion-data-plane-api.workspace = true
 serde_yaml.workspace           = true

@@ -237,6 +237,27 @@ impl LogFormatter {
         self
     }
 
+    pub fn with_custom_value(&mut self, key: &str, value: &str) -> &mut Self {
+        for (idx, template) in self.conf.templates.iter().enumerate() {
+            if let Template::Custom(name) = template {
+                if name.as_str() == key {
+                    // SAFETY: `idx` is guaranteed to be valid for `format` vector by construction.
+                    if matches!(unsafe { self.format.get_unchecked(idx) }, StringType::None) && value != "null" {
+                        let res = StringType::Smol(SmolStr::new(value));
+                        // SAFETY: `idx` is guaranteed to be valid for `format` vector, by construction.
+                        // SAFETY: ptr::write without dropping the old value, since it does not require destruction
+                        // (it is guaranteed to be StringType::None).
+                        #[allow(clippy::multiple_unsafe_ops_per_block)]
+                        unsafe {
+                            std::ptr::write(self.format.get_unchecked_mut(idx), res)
+                        };
+                    }
+                }
+            }
+        }
+        self
+    }
+
     #[inline]
     pub fn into_message(self) -> FormattedMessage {
         FormattedMessage { format: self.format, omit_empty_values: self.conf.omit_empty_values }

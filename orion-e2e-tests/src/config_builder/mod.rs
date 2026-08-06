@@ -33,6 +33,7 @@ pub mod serialize;
 mod tcp_proxy;
 mod tls;
 mod virtual_host;
+pub mod wasm;
 pub mod xds;
 
 pub use bootstrap::BootstrapBuilder;
@@ -58,6 +59,7 @@ pub use secret::{Secret, SecretBuilder};
 pub use tcp_proxy::TcpProxyBuilder;
 pub use tls::{DownstreamTls, DownstreamTlsBuilder, TlsVersion, UpstreamTls, UpstreamTlsBuilder};
 pub use virtual_host::{VirtualHost, VirtualHostBuilder};
+pub use wasm::WasmBuilder;
 
 #[allow(
     clippy::cast_possible_wrap,

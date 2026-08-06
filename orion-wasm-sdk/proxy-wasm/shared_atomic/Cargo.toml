@@ -1,0 +1,14 @@
+[package]
+name = "shared_atomic_proxy_wasm"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+proxy-wasm = "0.2.2"
+log = "0.4"
+
+[workspace]

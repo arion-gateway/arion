@@ -1,0 +1,78 @@
+//! Metadata filter example using the Orion Wasm SDK.
+//!
+//! This plugin demonstrates how to extract downstream connection metadata.
+
+use orion_wasm_sdk::{init_tracing, orion_plugin, FilterAction, HttpHeaders, Plugin, RequestHandle};
+use tracing::{error, debug};
+
+#[derive(Default)]
+struct MetadataFilter;
+
+#[orion_plugin]
+impl Plugin for MetadataFilter {
+    fn on_plugin_start(&mut self) {
+        let _ = init_tracing();
+        debug!("MetadataFilter initialized!");
+    }
+
+    fn on_request_headers(&mut self, ctx: &RequestHandle<HttpHeaders>) -> FilterAction {
+        debug!("Extracting downstream metadata...");
+        match ctx.get_downstream_metadata() {
+            Ok(Some(metadata)) => {
+                debug!("Successfully extracted downstream metadata:");
+                debug!("  Listener Name: {}", metadata.listener_name);
+
+                let _ = ctx.set_header(
+                    http::header::HeaderName::from_static("x-listener-name"),
+                    http::header::HeaderValue::from_str(&metadata.listener_name).unwrap(),
+                );
+
+                if let Some(sni) = &metadata.sni {
+                    debug!("  SNI: {}", sni);
+                    let _ = ctx.set_header(
+                        http::header::HeaderName::from_static("x-sni"),
+                        http::header::HeaderValue::from_str(sni).unwrap(),
+                    );
+                } else {
+                    debug!("  SNI: None");
+                }
+                debug!("  Connection: {:?}", metadata.connection);
+
+                match &metadata.connection {
+                    orion_wasm_types::DownstreamConnectionMetadata::FromSocket { peer_address, local_address } => {
+                        let _ = ctx.set_header(
+                            http::header::HeaderName::from_static("x-connection-peer"),
+                            http::header::HeaderValue::from_str(&peer_address.to_string()).unwrap(),
+                        );
+                        let _ = ctx.set_header(
+                            http::header::HeaderName::from_static("x-connection-local"),
+                            http::header::HeaderValue::from_str(&local_address.to_string()).unwrap(),
+                        );
+                    },
+                    orion_wasm_types::DownstreamConnectionMetadata::FromProxyProtocol {
+                        proxy_peer_address,
+                        proxy_local_address,
+                        ..
+                    } => {
+                        let _ = ctx.set_header(
+                            http::header::HeaderName::from_static("x-connection-peer"),
+                            http::header::HeaderValue::from_str(&proxy_peer_address.to_string()).unwrap(),
+                        );
+                        let _ = ctx.set_header(
+                            http::header::HeaderName::from_static("x-connection-local"),
+                            http::header::HeaderValue::from_str(&proxy_local_address.to_string()).unwrap(),
+                        );
+                    },
+                }
+            },
+            Ok(None) => {
+                debug!("No downstream metadata found for this request.");
+            },
+            Err(e) => {
+                error!("Error while extracting downstream metadata: {:?}", e);
+            },
+        }
+
+        FilterAction::Continue
+    }
+}

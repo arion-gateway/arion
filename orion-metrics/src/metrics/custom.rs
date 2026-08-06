@@ -23,6 +23,7 @@ pub fn init_metrics(config: &orion_configuration::config::metrics::CustomMetrics
         || !config.incoming_response.is_empty()
         || !config.ext_proc_response.is_empty()
         || !config.downstream_response.is_empty()
+        || !config.wasm.is_empty()
     {
         _ = CUSTOM_METRICS.set(CustomMetrics::new(config));
     }
@@ -65,6 +66,7 @@ pub struct CustomMetrics {
     incoming_response: CustomMetricCounters,
     ext_proc_response: CustomMetricCounters,
     downstream_response: CustomMetricCounters,
+    wasm: CustomMetricCounters,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -75,6 +77,7 @@ pub enum MetricsHook {
     IncomingResponse,
     ExtProcResponse,
     DownstreamResponse,
+    Wasm,
 }
 
 impl CustomMetricCounters {
@@ -214,6 +217,7 @@ impl CustomMetrics {
             incoming_response: CustomMetricCounters::new(&config.incoming_response),
             ext_proc_response: CustomMetricCounters::new(&config.ext_proc_response),
             downstream_response: CustomMetricCounters::new(&config.downstream_response),
+            wasm: CustomMetricCounters::new(&config.wasm),
         }
     }
 
@@ -238,6 +242,7 @@ impl CustomMetrics {
             MetricsHook::IncomingResponse => &self.incoming_response,
             MetricsHook::ExtProcResponse => &self.ext_proc_response,
             MetricsHook::DownstreamResponse => &self.downstream_response,
+            MetricsHook::Wasm => &self.wasm,
         };
 
         if counters.empty() {
@@ -285,6 +290,7 @@ impl CustomMetrics {
             .chain(self.incoming_response.counters().iter())
             .chain(self.ext_proc_response.counters().iter())
             .chain(self.downstream_response.counters().iter())
+            .chain(self.wasm.counters().iter())
     }
 
     pub fn histograms(&self) -> impl Iterator<Item = &HeaderMetric<ShardedHistogram<ThreadId>>> {
@@ -296,6 +302,7 @@ impl CustomMetrics {
             .chain(self.incoming_response.histograms().iter())
             .chain(self.ext_proc_response.histograms().iter())
             .chain(self.downstream_response.histograms().iter())
+            .chain(self.wasm.histograms().iter())
     }
 
     pub fn gauges(&self) -> impl Iterator<Item = &HeaderMetric<Gauge>> {
@@ -307,6 +314,7 @@ impl CustomMetrics {
             .chain(self.incoming_response.gauges().iter())
             .chain(self.ext_proc_response.gauges().iter())
             .chain(self.downstream_response.gauges().iter())
+            .chain(self.wasm.gauges().iter())
     }
 }
 
