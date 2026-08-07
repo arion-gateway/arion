@@ -742,14 +742,23 @@ impl McpGateway {
             },
             model::JsonRpcMessage::Notification(json_rpc_notification) => {
                 debug!(target: "mcp_gateway", "handle_rpc_json_message: rpc Notification: {:#?}", json_rpc_notification);
+                if session.is_none() {
+                    return Err(FilterDecision::bad_request(req_version));
+                }
                 Ok(MessageResult::Nothing)
             },
             model::JsonRpcMessage::Response(json_rpc_response) => {
                 debug!(target: "mcp_gateway", "handle_rpc_json_message: rpc Response: {:#?}", json_rpc_response);
+                if session.is_none() {
+                    return Err(FilterDecision::bad_request(req_version));
+                }
                 Ok(MessageResult::Nothing)
             },
             model::JsonRpcMessage::Error(json_rpc_error) => {
                 debug!(target: "mcp_gateway", "handle_rpc_json_message: rpc Error: {:#?}", json_rpc_error);
+                if session.is_none() {
+                    return Err(FilterDecision::bad_request(req_version));
+                }
                 Ok(MessageResult::Nothing)
             },
         }
