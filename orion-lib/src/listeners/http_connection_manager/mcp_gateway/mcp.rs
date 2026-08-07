@@ -474,7 +474,7 @@ impl McpGateway {
     ) -> FilterDecision {
         let Some(session_id) = request.get_mcp_session_id() else {
             debug!(target: "mcp_gateway", "handle_mcp_delete_endpoint: session ID but none found in request");
-            return FilterDecision::bad_request(request.version());
+            return FilterDecision::bad_request("", request.version());
         };
 
         if !ctx.delete_session(&session_id) {
@@ -504,7 +504,9 @@ impl McpGateway {
         let accept = request.get_mcp_accepted_mime();
         if !matches!(accept, Some(AcceptedMime::EventStreamAndJson)) {
             debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: unsupported MIME type");
-            return FilterDecision::bad_request(self.version);
+            let err = self.build_json_rpc_error(model::ErrorData::invalid_request("Unsupported MIME type", None));
+            let body = serde_json::to_string(&err).unwrap_or_default();
+            return FilterDecision::bad_request(&body, self.version);
         }
 
         // collect the body of the request...
@@ -743,21 +745,36 @@ impl McpGateway {
             model::JsonRpcMessage::Notification(json_rpc_notification) => {
                 debug!(target: "mcp_gateway", "handle_rpc_json_message: rpc Notification: {:#?}", json_rpc_notification);
                 if session.is_none() {
-                    return Err(FilterDecision::bad_request(req_version));
+                    let err = self.build_json_rpc_error(model::ErrorData::invalid_request(
+                        "Missing or invalid mcp-session-id",
+                        None,
+                    ));
+                    let body = serde_json::to_string(&err).unwrap_or_default();
+                    return Err(FilterDecision::bad_request(&body, req_version));
                 }
                 Ok(MessageResult::Nothing)
             },
             model::JsonRpcMessage::Response(json_rpc_response) => {
                 debug!(target: "mcp_gateway", "handle_rpc_json_message: rpc Response: {:#?}", json_rpc_response);
                 if session.is_none() {
-                    return Err(FilterDecision::bad_request(req_version));
+                    let err = self.build_json_rpc_error(model::ErrorData::invalid_request(
+                        "Missing or invalid mcp-session-id",
+                        None,
+                    ));
+                    let body = serde_json::to_string(&err).unwrap_or_default();
+                    return Err(FilterDecision::bad_request(&body, req_version));
                 }
                 Ok(MessageResult::Nothing)
             },
             model::JsonRpcMessage::Error(json_rpc_error) => {
                 debug!(target: "mcp_gateway", "handle_rpc_json_message: rpc Error: {:#?}", json_rpc_error);
                 if session.is_none() {
-                    return Err(FilterDecision::bad_request(req_version));
+                    let err = self.build_json_rpc_error(model::ErrorData::invalid_request(
+                        "Missing or invalid mcp-session-id",
+                        None,
+                    ));
+                    let body = serde_json::to_string(&err).unwrap_or_default();
+                    return Err(FilterDecision::bad_request(&body, req_version));
                 }
                 Ok(MessageResult::Nothing)
             },
@@ -826,7 +843,12 @@ impl McpGateway {
 
         // check integrety session...
 
-        let Some(session) = session else { return Err(FilterDecision::bad_request(req_version)) };
+        let Some(session) = session else {
+            let err =
+                self.build_json_rpc_error(model::ErrorData::invalid_request("Missing or invalid mcp-session-id", None));
+            let body = serde_json::to_string(&err).unwrap_or_default();
+            return Err(FilterDecision::bad_request(&body, req_version));
+        };
 
         match rpc.request.method.as_str() {
             InitializedNotificationMethod::VALUE => {
