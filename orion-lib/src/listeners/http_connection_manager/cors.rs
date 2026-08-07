@@ -88,8 +88,9 @@ impl Cors {
                                 continue;
                             }
                             // Check if the requested header is in allowed headers (case-insensitive)
-                            let is_allowed =
-                                self.inner.allow_headers.iter().any(|h| h.to_ascii_lowercase() == requested_header);
+                            // We implicitly allow mcp-session-id to support the MCP Gateway
+                            let is_allowed = requested_header == "mcp-session-id"
+                                || self.inner.allow_headers.iter().any(|h| h.to_ascii_lowercase() == requested_header);
                             if !is_allowed {
                                 debug!(target: "cors", "Preflight failed: Header '{}' not allowed", requested_header);
                                 return FilterDecision::Continue;
@@ -132,8 +133,13 @@ impl Cors {
         }
 
         // 4. Set Access-Control-Expose-Headers
-        if !conf.expose_headers.is_empty() {
-            let expose_str = conf.expose_headers.join(", ");
+        let mut expose_headers = conf.expose_headers.clone();
+        if !expose_headers.iter().any(|h| h.eq_ignore_ascii_case("mcp-session-id")) {
+            expose_headers.push("mcp-session-id".into());
+        }
+
+        if !expose_headers.is_empty() {
+            let expose_str = expose_headers.join(", ");
             if let Ok(val) = HeaderValue::from_str(&expose_str) {
                 headers.insert(ACCESS_CONTROL_EXPOSE_HEADERS, val);
             }
@@ -176,12 +182,17 @@ impl Cors {
         // D. Headers
         // If wildcard is configured and credentials are disabled, return "*"
         // Otherwise, return the configured list
-        if !conf.allow_headers.is_empty() {
-            let has_headers_wildcard = !conf.allow_credentials && conf.allow_headers.iter().any(|h| h == "*");
+        let mut allow_headers = conf.allow_headers.clone();
+        if !allow_headers.iter().any(|h| h.eq_ignore_ascii_case("mcp-session-id")) {
+            allow_headers.push("mcp-session-id".into());
+        }
+
+        if !allow_headers.is_empty() {
+            let has_headers_wildcard = !conf.allow_credentials && allow_headers.iter().any(|h| h == "*");
             if has_headers_wildcard {
                 headers.insert(ACCESS_CONTROL_ALLOW_HEADERS, HeaderValue::from_static("*"));
             } else {
-                let headers_str = conf.allow_headers.join(", ");
+                let headers_str = allow_headers.join(", ");
                 if let Ok(val) = HeaderValue::from_str(&headers_str) {
                     headers.insert(ACCESS_CONTROL_ALLOW_HEADERS, val);
                 }
