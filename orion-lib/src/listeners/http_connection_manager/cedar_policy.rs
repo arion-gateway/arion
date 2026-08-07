@@ -80,10 +80,10 @@ impl CedarHttpFilter {
                             let policy_id =
                                 response.reason.and_then(|mut r| r.pop()).unwrap_or(SmolStr::new_static("cedar"));
                             FilterDecision::DirectResponse(Box::new(
-                                SyntheticHttpResponse::forbidden(
-                                    EventKind::Failure(EventFailure::CedarAccessDenied(policy_id)),
-                                    "Access denied",
-                                )
+                                SyntheticHttpResponse::forbidden(EventKind::Failure(EventFailure::CedarAccessDenied(
+                                    policy_id,
+                                )))
+                                .with_body("Access denied by policy")
                                 .into_response(req.version()),
                             ))
                         }
@@ -96,10 +96,10 @@ impl CedarHttpFilter {
 
                 match self.failure_mode {
                     FailureMode::FailClosed => FilterDecision::DirectResponse(Box::new(
-                        SyntheticHttpResponse::forbidden(
-                            EventKind::Failure(EventFailure::CedarAccessDenied(SmolStr::new_static("error"))),
-                            "Access denied",
-                        )
+                        SyntheticHttpResponse::forbidden(EventKind::Failure(EventFailure::CedarAccessDenied(
+                            SmolStr::new_static("error"),
+                        )))
+                        .with_body("Access denied due to policy evaluation error")
                         .into_response(req.version()),
                     )),
                     FailureMode::FailOpen => FilterDecision::Continue,

@@ -784,8 +784,8 @@ impl HttpChannel {
                         UpstreamError::Error(_) => Ok(SyntheticHttpResponse::internal_server_error(
                             EventKind::Upstream(event_error),
                             response_flags,
-                            "internal server error",
                         )
+                        .with_body("internal server error")
                         .into_response(version)),
                     }
                 } else {
