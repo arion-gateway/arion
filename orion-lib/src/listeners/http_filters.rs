@@ -74,15 +74,16 @@ impl FilterDecision {
 
     #[inline]
     #[allow(dead_code)]
-    pub fn not_found(ver: http::Version) -> Self {
+    pub fn not_found(msg: &str, ver: http::Version) -> Self {
         FilterDecision::DirectResponse(Box::new(
             SyntheticHttpResponse::not_found(EventFailure::DirectResponse.into(), ResponseFlags::default())
+                .with_body(msg.to_string())
                 .into_response(ver),
         ))
     }
 
     #[inline]
-    pub fn method_not_allowed(ver: http::Version) -> Self {
+    pub fn method_not_allowed(msg: &str, ver: http::Version) -> Self {
         FilterDecision::DirectResponse(Box::new(
             SyntheticHttpResponse::custom_error(
                 StatusCode::METHOD_NOT_ALLOWED,
@@ -90,23 +91,25 @@ impl FilterDecision {
                 EventFailure::RouteNotFound.into(),
                 ResponseFlags(FmtResponseFlags::NO_ROUTE_FOUND),
             )
+            .with_body(msg.to_string())
             .into_response(ver),
         ))
     }
 
     #[inline]
-    pub fn no_route_found(ver: http::Version) -> Self {
+    pub fn no_route_found(msg: &str, ver: http::Version) -> Self {
         FilterDecision::DirectResponse(Box::new(
             SyntheticHttpResponse::not_found(
                 EventFailure::RouteNotFound.into(),
                 ResponseFlags(FmtResponseFlags::NO_ROUTE_FOUND),
             )
+            .with_body(msg.to_string())
             .into_response(ver),
         ))
     }
 
     #[inline]
-    pub fn rate_limited(status: Option<StatusCode>, ver: http::Version) -> Self {
+    pub fn rate_limited(msg: &str, status: Option<StatusCode>, ver: http::Version) -> Self {
         FilterDecision::DirectResponse(Box::new(
             SyntheticHttpResponse::custom_error(
                 status.unwrap_or(http::StatusCode::TOO_MANY_REQUESTS),
@@ -114,6 +117,7 @@ impl FilterDecision {
                 EventFailure::RateLimited.into(),
                 ResponseFlags(FmtResponseFlags::RATE_LIMITED),
             )
+            .with_body(msg.to_string())
             .into_response(ver),
         ))
     }

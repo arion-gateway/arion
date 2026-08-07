@@ -314,7 +314,9 @@ impl McpGateway {
         ctx.start_cleanup_task();
 
         match (request.method(), request.uri().path()) {
-            (&Method::GET, MCP_MESSAGE_ENDPOINT) => FilterDecision::method_not_allowed(request.version()),
+            (&Method::GET, MCP_MESSAGE_ENDPOINT) => {
+                FilterDecision::method_not_allowed("Method not allowed", request.version())
+            },
             // (&Method::OPTIONS, SSE_MESSAGE_ENDPOINT) | (&Method::OPTIONS, MCP_MESSAGE_ENDPOINT) => {
             //     self.handle_cors_options(request).await
             // },
@@ -324,7 +326,7 @@ impl McpGateway {
             (&Method::DELETE, MCP_MESSAGE_ENDPOINT) => self.handle_mcp_delete_endpoint(&ctx, request),
             _ => {
                 debug!(target: "mcp_gateway", "apply_request: no route found");
-                FilterDecision::no_route_found(self.version)
+                FilterDecision::no_route_found("Route not found", self.version)
             },
         }
     }
@@ -474,12 +476,12 @@ impl McpGateway {
     ) -> FilterDecision {
         let Some(session_id) = request.get_mcp_session_id() else {
             debug!(target: "mcp_gateway", "handle_mcp_delete_endpoint: session ID but none found in request");
-            return FilterDecision::bad_request("", request.version());
+            return FilterDecision::bad_request("Missing session ID", request.version());
         };
 
         if !ctx.delete_session(&session_id) {
             debug!(target: "mcp_gateway", "handle_mcp_delete_endpoint: StreamableHttp session {} not found in session map", session_id);
-            return FilterDecision::not_found(request.version());
+            return FilterDecision::not_found("Session not found", request.version());
         }
 
         let builder = Response::builder()
@@ -514,7 +516,10 @@ impl McpGateway {
 
         let Ok(body) = request.body_mut().collect().await else {
             debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: failed to collect request body");
-            return FilterDecision::internal_server_error("Failed to collect request body", self.version);
+            let err =
+                self.build_json_rpc_error(model::ErrorData::internal_error("Failed to collect request body", None));
+            let body_str = serde_json::to_string(&err).unwrap_or_default();
+            return FilterDecision::internal_server_error(&body_str, self.version);
         };
 
         let body = body.to_bytes();
@@ -523,16 +528,9 @@ impl McpGateway {
             Ok(message) => message,
             Err(err) => {
                 info!(target: "mcp_gateway", "handle_rpc_json_message: failed to parse json message: {body:?} ({err:?})");
-
-                let headers = self.build_http_headers_with_content_type(None);
-                match self.build_mcp_http_response(
-                    StatusCode::BAD_REQUEST,
-                    Self::build_mcp_response_body(None),
-                    &headers,
-                ) {
-                    Ok(http_response) => return FilterDecision::DirectResponse(Box::new(http_response)),
-                    Err(e) => return e,
-                };
+                let err_data = self.build_json_rpc_error(model::ErrorData::parse_error("Parse error", None));
+                let body_str = serde_json::to_string(&err_data).unwrap_or_default();
+                return FilterDecision::bad_request(&body_str, self.version);
             },
         };
 
@@ -552,7 +550,9 @@ impl McpGateway {
         let session: Option<Arc<Session>> = match &session_id {
             Some(session_id) => {
                 let Ok(session) = Self::get_valid_session(ctx, session_id) else {
-                    return FilterDecision::not_found(self.version);
+                    let err = self.build_json_rpc_error(model::ErrorData::invalid_request("Session not found", None));
+                    let body_str = serde_json::to_string(&err).unwrap_or_default();
+                    return FilterDecision::not_found(&body_str, self.version);
                 };
 
                 Some(session)
@@ -635,11 +635,17 @@ impl McpGateway {
 
                 if let Err(e) = notif.write_to(&mut buf) {
                     debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: failed to serialize notification SSE event: {e}");
-                    return FilterDecision::internal_server_error("Failed to serialize SSE event", self.version);
+                    let err = self
+                        .build_json_rpc_error(model::ErrorData::internal_error("Failed to serialize SSE event", None));
+                    let body_str = serde_json::to_string(&err).unwrap_or_default();
+                    return FilterDecision::internal_server_error(&body_str, self.version);
                 }
                 if let Err(e) = resp.write_to(&mut buf) {
                     debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: failed to serialize response SSE event: {e}");
-                    return FilterDecision::internal_server_error("Failed to serialize SSE event", self.version);
+                    let err = self
+                        .build_json_rpc_error(model::ErrorData::internal_error("Failed to serialize SSE event", None));
+                    let body_str = serde_json::to_string(&err).unwrap_or_default();
+                    return FilterDecision::internal_server_error(&body_str, self.version);
                 }
                 let body = buf.freeze();
 
@@ -656,7 +662,9 @@ impl McpGateway {
                     debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: streamable http...");
                     if !ctx.try_start_async_request() {
                         debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: rate limited!");
-                        return FilterDecision::rate_limited(None, request.version());
+                        let err = self.build_json_rpc_error(model::ErrorData::internal_error("Rate limited", None));
+                        let body_str = serde_json::to_string(&err).unwrap_or_default();
+                        return FilterDecision::rate_limited(&body_str, None, request.version());
                     }
 
                     let (body, mut sender) = SinkBody::new();
@@ -666,14 +674,21 @@ impl McpGateway {
                     let mut buf = BytesMut::with_capacity(1024);
                     if let Err(e) = event.write_to(&mut buf) {
                         debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: failed to serialize priming event: {e}");
-                        return FilterDecision::internal_server_error(
+                        let err = self.build_json_rpc_error(model::ErrorData::internal_error(
                             "Failed to serialize priming event",
-                            self.version,
-                        );
+                            None,
+                        ));
+                        let body_str = serde_json::to_string(&err).unwrap_or_default();
+                        return FilterDecision::internal_server_error(&body_str, self.version);
                     }
                     if let Err(e) = sender.send(buf.freeze()).await {
                         debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: failed to send priming event: {e}");
-                        return FilterDecision::internal_server_error("Failed to send priming event", self.version);
+                        let err = self.build_json_rpc_error(model::ErrorData::internal_error(
+                            "Failed to send priming event",
+                            None,
+                        ));
+                        let body_str = serde_json::to_string(&err).unwrap_or_default();
+                        return FilterDecision::internal_server_error(&body_str, self.version);
                     }
 
                     // save the sender for use on response
@@ -688,7 +703,10 @@ impl McpGateway {
                             (http::header::CACHE_CONTROL, "no-cache"),
                         ],
                     ) else {
-                        return FilterDecision::internal_server_error("Failed to build response", self.version);
+                        let err = self
+                            .build_json_rpc_error(model::ErrorData::internal_error("Failed to build response", None));
+                        let body_str = serde_json::to_string(&err).unwrap_or_default();
+                        return FilterDecision::internal_server_error(&body_str, self.version);
                     };
 
                     if let Some(session_id) = request.headers().get(MCP_SESSION_ID) {
@@ -708,7 +726,10 @@ impl McpGateway {
                 let Ok(accepted) =
                     self.build_mcp_http_response(StatusCode::ACCEPTED, Self::build_mcp_response_body(None), &headers)
                 else {
-                    return FilterDecision::internal_server_error("Failed to build response", self.version);
+                    let err =
+                        self.build_json_rpc_error(model::ErrorData::internal_error("Failed to build response", None));
+                    let body_str = serde_json::to_string(&err).unwrap_or_default();
+                    return FilterDecision::internal_server_error(&body_str, self.version);
                 };
                 FilterDecision::DirectResponse(Box::new(accepted))
             },
