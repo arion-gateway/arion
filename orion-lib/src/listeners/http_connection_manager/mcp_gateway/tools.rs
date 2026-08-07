@@ -402,7 +402,7 @@ impl ToolsRegistry {
     pub async fn build_list_tools(
         &self,
         req_ext: &http::Extensions,
-        session: Option<&Arc<Session>>,
+        session: &Arc<Session>,
     ) -> Result<ListToolsResult, CallToolError> {
         self.ensure_tools_current().await?;
 
@@ -426,7 +426,7 @@ impl ToolsRegistry {
         // - Direct call mode: always fill all tools (client calls semantic search tool directly)
         let should_fill_tools = self.semantic_search.as_ref().is_none_or(|ss| {
             if ss.enable_assisted_discovery {
-                session.as_ref().is_some_and(|s| s.prompt.lock().is_some())
+                session.prompt.lock().is_some()
             } else {
                 true
             }
@@ -439,17 +439,17 @@ impl ToolsRegistry {
         Ok(ListToolsResult { tools, next_cursor: None, meta: None })
     }
 
-    fn fill_list_tools(&self, req_ext: &http::Extensions, session: Option<&Arc<Session>>, tools: &mut Vec<Tool>) {
+    fn fill_list_tools(&self, req_ext: &http::Extensions, session: &Arc<Session>, tools: &mut Vec<Tool>) {
         let session = session.as_ref();
 
-        let restrict_to_active = self.semantic_search.is_some() && session.is_some_and(|s| !s.active_tools.is_empty());
+        let restrict_to_active = self.semantic_search.is_some() && !session.active_tools.is_empty();
 
         for entry in &self.tools {
             let entry = entry.value();
             if !entry.rbac.as_ref().is_none_or(|rbac| rbac.is_permitted(req_ext)) {
                 continue;
             }
-            if restrict_to_active && !session.is_some_and(|s| s.active_tools.contains(&entry.conf.name)) {
+            if restrict_to_active && !session.active_tools.contains(&entry.conf.name) {
                 continue;
             }
             tools.push(tool_from_entry(entry));
