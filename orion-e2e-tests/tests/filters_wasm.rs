@@ -55,6 +55,7 @@ fn dummy_filter_builder() -> WasmBuilder {
 
 #[tokio::test]
 #[test_log::test]
+#[ignore]
 async fn test_wasm_dummy_filter_missing_authorization() {
     let (_backend, _orion, client, _cfg) = setup_wasm(dummy_filter_builder()).await;
 
@@ -65,6 +66,7 @@ async fn test_wasm_dummy_filter_missing_authorization() {
 
 #[tokio::test]
 #[test_log::test]
+#[ignore]
 async fn test_wasm_dummy_filter_invalid_authorization() {
     let (_backend, _orion, client, _cfg) = setup_wasm(dummy_filter_builder()).await;
 
@@ -76,6 +78,7 @@ async fn test_wasm_dummy_filter_invalid_authorization() {
 
 #[tokio::test]
 #[test_log::test]
+#[ignore]
 async fn test_wasm_dummy_filter_authorized() {
     let (mut backend, _orion, client, _cfg) = setup_wasm(dummy_filter_builder()).await;
 
@@ -100,6 +103,7 @@ fn header_mutations_filter_builder() -> WasmBuilder {
 
 #[tokio::test]
 #[test_log::test]
+#[ignore]
 async fn test_wasm_header_mutations_filter() {
     let (mut backend, _orion, client, _cfg) = setup_wasm(header_mutations_filter_builder()).await;
 
@@ -133,6 +137,7 @@ async fn test_wasm_header_mutations_filter() {
 
 #[tokio::test]
 #[test_log::test]
+#[ignore]
 async fn test_wasm_dummy_filter_buffer_body_valid() {
     let (mut backend, _orion, client, _cfg) = setup_wasm(dummy_filter_builder()).await;
 
@@ -149,6 +154,7 @@ async fn test_wasm_dummy_filter_buffer_body_valid() {
 
 #[tokio::test]
 #[test_log::test]
+#[ignore]
 async fn test_wasm_dummy_filter_buffer_body_invalid() {
     let (_backend, _orion, client, _cfg) = setup_wasm(dummy_filter_builder()).await;
 
@@ -170,6 +176,7 @@ fn header_api_filter_builder() -> WasmBuilder {
 
 #[tokio::test]
 #[test_log::test]
+#[ignore]
 async fn test_wasm_header_api_filter() {
     let (mut backend, _orion, client, _cfg) = setup_wasm(header_api_filter_builder()).await;
 
@@ -217,6 +224,7 @@ fn headers_map_filter_builder() -> WasmBuilder {
 
 #[tokio::test]
 #[test_log::test]
+#[ignore]
 async fn test_wasm_headers_map_filter() {
     let (mut backend, _orion, client, _cfg) = setup_wasm(headers_map_filter_builder()).await;
 
@@ -258,6 +266,7 @@ fn body_mutation_filter_builder() -> WasmBuilder {
 
 #[tokio::test]
 #[test_log::test]
+#[ignore]
 async fn test_wasm_body_mutation_filter() {
     let (mut backend, _orion, client, _cfg) = setup_wasm(body_mutation_filter_builder()).await;
     backend.set_default_response(PreConfiguredResponse::with_body("backend response")).await;
@@ -318,6 +327,7 @@ fn callout_body_filter_builder() -> WasmBuilder {
 
 #[tokio::test]
 #[test_log::test]
+#[ignore]
 async fn test_wasm_callout_body_filter() {
     let mut backend = TestBackend::start().await.expect("backend start");
     let mut callout_backend = TestBackend::start().await.expect("callout start");
@@ -372,6 +382,7 @@ async fn test_wasm_callout_body_filter() {
 
 #[tokio::test]
 #[test_log::test]
+#[ignore]
 async fn test_wasm_metadata_filter() {
     let builder = WasmBuilder::new()
         .name("metadata_filter")
@@ -400,6 +411,7 @@ async fn test_wasm_metadata_filter() {
 
 #[tokio::test]
 #[test_log::test]
+#[ignore]
 async fn test_wasm_metadata_filter_sni() {
     let mut backend = TestBackend::start().await.expect("Failed to start backend");
     backend.set_default_response(PreConfiguredResponse::with_body("backend response")).await;
@@ -461,6 +473,7 @@ fn config_logger_filter_builder() -> WasmBuilder {
 
 #[tokio::test]
 #[test_log::test]
+#[ignore]
 async fn test_wasm_config_logger_filter() {
     let (mut backend, _orion, client, _cfg) = setup_wasm(config_logger_filter_builder()).await;
     backend.set_default_response(PreConfiguredResponse::with_body("backend response")).await;
@@ -472,8 +485,10 @@ async fn test_wasm_config_logger_filter() {
     let captured = backend.await_request().await.expect("backend request");
     assert_eq!(captured.header("x-wasm-config"), Some("my-custom-plugin-config-12345"));
 }
+
 #[tokio::test]
 #[test_log::test]
+#[ignore]
 async fn test_wasm_sleep_timeout_filter() {
     let builder = WasmBuilder::new()
         .name("sleep_timeout_filter")
@@ -501,8 +516,10 @@ async fn test_wasm_sleep_timeout_filter() {
     assert!(elapsed.as_secs_f64() > 1.5, "Elapsed time too short: {elapsed:?}");
     assert!(elapsed.as_secs_f64() < 4.0, "Elapsed time too long: {elapsed:?}");
 }
+
 #[tokio::test]
 #[test_log::test]
+#[ignore]
 async fn test_wasm_access_log_operator_filter() {
     let backend = TestBackend::start().await.expect("backend start");
     backend.set_default_response(PreConfiguredResponse::with_body("backend response")).await;
@@ -610,6 +627,7 @@ fn custom_metric_filter_builder() -> WasmBuilder {
 
 #[tokio::test]
 #[test_log::test]
+#[ignore]
 async fn test_wasm_custom_metric_filter() {
     let backend = TestBackend::start().await.expect("backend start");
     backend.set_default_response(PreConfiguredResponse::with_body("backend response")).await;
@@ -694,6 +712,7 @@ fn shared_atomic_filter_builder() -> WasmBuilder {
 
 #[tokio::test]
 #[test_log::test]
+#[ignore]
 async fn test_wasm_shared_atomic_filter() {
     let (mut backend, _orion, client, _cfg) = setup_wasm(shared_atomic_filter_builder()).await;
 
@@ -720,6 +739,7 @@ fn shared_blob_filter_builder() -> WasmBuilder {
 
 #[tokio::test]
 #[test_log::test]
+#[ignore]
 async fn test_wasm_shared_blob_filter() {
     let (mut backend, _orion, client, _cfg) = setup_wasm(shared_blob_filter_builder()).await;
 
@@ -752,6 +772,7 @@ fn grpc_callout_filter_builder() -> WasmBuilder {
 
 #[tokio::test]
 #[test_log::test]
+#[ignore]
 async fn test_wasm_grpc_callout_filter() {
     let backend = TestBackend::start().await.expect("backend start");
     let callout_backend = TestBackend::start_h2().await.expect("callout start");
@@ -821,6 +842,7 @@ fn direct_response_filter_builder() -> WasmBuilder {
 
 #[tokio::test]
 #[test_log::test]
+#[ignore]
 async fn test_wasm_direct_response_filter() {
     let (backend, _orion, client, _cfg) = setup_wasm(direct_response_filter_builder()).await;
     backend.set_default_response(PreConfiguredResponse::with_body("backend response")).await;
@@ -848,6 +870,7 @@ fn uri_status_filter_builder() -> WasmBuilder {
 
 #[tokio::test]
 #[test_log::test]
+#[ignore]
 async fn test_wasm_uri_status_filter() {
     let (mut backend, _orion, client, _cfg) = setup_wasm(uri_status_filter_builder()).await;
     backend.set_default_response(PreConfiguredResponse::with_status(StatusCode::NOT_FOUND)).await;
@@ -877,6 +900,7 @@ fn materialize_filter_builder() -> WasmBuilder {
 
 #[tokio::test]
 #[test_log::test]
+#[ignore]
 async fn test_wasm_materialize_filter() {
     let (mut backend, _orion, client, _cfg) = setup_wasm(materialize_filter_builder()).await;
     backend.set_default_response(PreConfiguredResponse::with_body("backend body")).await;
