@@ -17,8 +17,9 @@
 
 use super::upgrade_utils;
 use crate::{
-    event_error::EventFailure, extensions_context::MetadataContext,
-    listeners::synthetic_http_response::SyntheticHttpResponse, OrionResponseBody,
+    event_error::EventFailure,
+    listeners::{metadata::MetadataContext, synthetic_http_response::SyntheticHttpResponse},
+    OrionResponseBody,
 };
 use http::{header, HeaderMap, HeaderName, HeaderValue, Method, Request, Response};
 use orion_configuration::config::{

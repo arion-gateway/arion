@@ -36,7 +36,6 @@ use crate::{
         sink_body::{SinkBody, SinkSender},
         timeout_body::TimeoutBody,
     },
-    extensions_context::MetadataContext,
     listeners::{
         http_connection_manager::mcp_gateway::{
             embeddings,
@@ -46,6 +45,7 @@ use crate::{
         },
         http_filters::{FilterDecision, FilterFactory},
         listener::FilterListenerContext,
+        metadata::MetadataContext,
     },
     OrionRequestBody, OrionResponseBody, PolyBody,
 };

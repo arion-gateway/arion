@@ -28,8 +28,10 @@ use tower::Service;
 
 use crate::{
     body::{instrumented_body::InstrumentedBody, response_flags::BodyKind, timeout_body::TimeoutBody},
-    extensions_context::MetadataContext,
-    listeners::http_connection_manager::{RequestHandler, TransactionContext},
+    listeners::{
+        http_connection_manager::{RequestHandler, TransactionContext},
+        metadata::MetadataContext,
+    },
     transport::HttpChannel,
     RequestContext,
 };

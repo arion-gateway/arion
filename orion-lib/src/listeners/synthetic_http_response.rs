@@ -21,8 +21,7 @@ use http_body_util::Full;
 
 use crate::{
     body::{response_flags::ResponseFlags, timeout_body::TimeoutBody},
-    event_error::EventKind,
-    extensions_context::EventErrorContext,
+    event_error::{EventErrorContext, EventKind},
     OrionResponseBody,
 };
 

@@ -95,6 +95,9 @@ impl TlsBackendConfig {
     }
 
     fn build_server_config(&self) -> Result<rustls::ServerConfig> {
+        // When both ring and aws-lc-rs are enabled transitively, rustls cannot pick a default.
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
         let client_auth = match (&self.client_ca, self.require_client_cert) {
             (Some(ca_store), true) => {
                 let verifier = WebPkiClientVerifier::builder(Arc::new(ca_store.clone()))

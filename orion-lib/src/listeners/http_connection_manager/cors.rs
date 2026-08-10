@@ -435,7 +435,11 @@ mod tests {
         let decision = cors.apply_request(&mut req);
 
         if let FilterDecision::DirectResponse(resp) = decision {
-            assert_eq!(resp.headers().get(ACCESS_CONTROL_ALLOW_HEADERS).unwrap(), "X-Custom-Header, Content-Type");
+            // mcp-session-id is always appended so MCP Gateway clients can use it cross-origin.
+            assert_eq!(
+                resp.headers().get(ACCESS_CONTROL_ALLOW_HEADERS).unwrap(),
+                "X-Custom-Header, Content-Type, mcp-session-id"
+            );
         } else {
             panic!("Expected DirectResponse for valid preflight with headers");
         }
@@ -495,7 +499,11 @@ mod tests {
         let mut resp = Response::new(OrionResponseBody::default());
         cors.apply_response(&mut resp);
 
-        assert_eq!(resp.headers().get(ACCESS_CONTROL_EXPOSE_HEADERS).unwrap(), "X-Request-Id, X-Trace-Id");
+        // mcp-session-id is always appended so MCP Gateway clients can read it cross-origin.
+        assert_eq!(
+            resp.headers().get(ACCESS_CONTROL_EXPOSE_HEADERS).unwrap(),
+            "X-Request-Id, X-Trace-Id, mcp-session-id"
+        );
     }
 
     #[test]

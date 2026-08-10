@@ -9,7 +9,7 @@
 use std::sync::LazyLock;
 
 use crate::body::timeout_body::TimeoutBody;
-use crate::listeners::metadata::DownstreamMetadata;
+use crate::listeners::metadata::MetadataContext;
 use crate::OrionRequestBody;
 use crate::OrionResponseBody;
 use bytes::Bytes;
@@ -1558,8 +1558,8 @@ fn orion_get_downstream_metadata(
         };
         let request = unsafe { &*(req_ptr as *const Request<OrionRequestBody>) };
 
-        let host_meta = match request.extensions().get::<Box<DownstreamMetadata>>() {
-            Some(m) => m,
+        let host_meta = match request.extensions().get::<MetadataContext>() {
+            Some(m) => &m.downstream,
             None => return OrionWasmError::NotFound.into(),
         };
 

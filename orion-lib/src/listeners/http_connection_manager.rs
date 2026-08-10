@@ -42,7 +42,7 @@ use smallvec::SmallVec;
 use std::sync::atomic::AtomicUsize;
 
 #[cfg(feature = "access-log")]
-use crate::extensions_context::EventErrorContext;
+use crate::event_error::EventErrorContext;
 
 #[cfg(any(feature = "tracing", feature = "metrics"))]
 use opentelemetry::KeyValue;
@@ -108,12 +108,11 @@ use crate::{
         timeout_body::TimeoutBody,
     },
     event_error::{EventFailure, EventKind},
-    extensions_context::MetadataContext,
     get_shard_id,
     listeners::{
         http_connection_manager::http_modifiers::ModifiersExtractor,
         http_filters::{per_route_http_filters, FilterDecision, FilterFactory, HttpFilter, HttpFilterValue},
-        metadata::DownstreamMetadata,
+        metadata::{DownstreamMetadata, MetadataContext},
         synthetic_http_response::SyntheticHttpResponse,
     },
     with_client_span, with_metric, with_server_span, ConversionContext, OrionRequestBody, OrionResponseBody, PolyBody,
@@ -182,6 +181,9 @@ impl Write for LengthCounter {
 // | 2. TransactionLifecycleSvc                                                                  |
 // |   Input:  RequestMetadata<Request<Incoming>>                                                  |
 // |   Action: Applies Request ID policy, creates tracing span, initializes `TransactionContext`.  |
+// |           Inserts into request.extensions (once):                                             |
+// |             - Arc<TransactionContext>                                                         |
+// |             - MetadataContext { downstream, stream_metrics }                                  |
 // |           Calls inner. On return, traces the HTTP status code and handles 500 fallback.       |
 // |   Output: RequestTransactionContext<RequestMetadata<Request<Incoming>>>                       |
 // +-----------------------------------------------------------------------------------------------+
@@ -198,7 +200,7 @@ impl Write for LengthCounter {
 // +-----------------------------------------------------------------------------------------------+
 // | 4. HttpPipelineSvc (Terminal Service)                                                     |
 // |   Input:  PipelineRequest<Request<OrionRequestBody>>                                          |
-// |   Action: Executes the HTTP filter chain and routes to upstream via `RequestHandler` trait.   |
+// |   Action: Filter chain + routing via `RequestHandler`. Does not re-insert metadata extensions.|
 // |   Output: Response<OrionRequestBody> (bubbles back up the stack)                              |
 // +-----------------------------------------------------------------------------------------------+
 //
@@ -817,13 +819,7 @@ impl Service<PipelineRequest<Request<OrionRequestBody>>> for HttpPipelineSvc {
             let downstream_addr = downstream.connection.peer_address();
             let stream_metrics_clone = Arc::clone(&stream_metrics);
 
-            request.extensions_mut().insert(MetadataContext {
-                downstream: *downstream.clone(),
-                stream_metrics: Arc::clone(&stream_metrics),
-            });
-
-            // save downtream metadata as request extension...
-            request.extensions_mut().insert(downstream);
+            // MetadataContext is inserted once in TransactionLifecycleSvc (filters/WASM read it from extensions).
 
             // check if this is the first request on the stream, and if so, record it in the metrics.
             if stream_metrics.inc_requests() == 0 {
@@ -1620,6 +1616,10 @@ where
         }
 
         request.extensions_mut().insert(Arc::clone(&trans_ctx));
+        request.extensions_mut().insert(MetadataContext {
+            downstream: downstream.as_ref().clone(),
+            stream_metrics: Arc::clone(&stream_metrics),
+        });
 
         let new_req_meta = RequestMetadata { request, downstream, stream_metrics };
 

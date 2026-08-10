@@ -112,6 +112,9 @@ impl TlsClientConfig {
     }
 
     fn build_client_config(&self) -> Result<rustls::ClientConfig> {
+        // When both ring and aws-lc-rs are enabled transitively, rustls cannot pick a default.
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
         let builder = match (self.tls_min_version, self.tls_max_version) {
             (Some(min), Some(max)) if std::ptr::eq(min, max) => {
                 rustls::ClientConfig::builder_with_protocol_versions(&[min])

@@ -15,9 +15,12 @@
 //
 //
 
+use std::{collections::HashMap, net::SocketAddr, sync::Arc};
+
 use orion_configuration::config::common::TlvType;
 use smol_str::SmolStr;
-use std::{collections::HashMap, net::SocketAddr};
+
+use crate::utils::instrumented_stream::StreamMetrics;
 
 #[derive(Debug, Clone)]
 pub enum DownstreamConnectionMetadata {
@@ -65,4 +68,11 @@ impl DownstreamMetadata {
     {
         Self { connection, sni: sni.map(Into::into), listener_name }
     }
+}
+
+/// Per-request extension: connection identity + stream metrics.
+#[derive(Debug, Clone)]
+pub struct MetadataContext {
+    pub downstream: DownstreamMetadata,
+    pub stream_metrics: Arc<StreamMetrics>,
 }
