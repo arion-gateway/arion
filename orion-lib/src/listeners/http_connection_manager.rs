@@ -42,7 +42,7 @@ use smallvec::SmallVec;
 use std::sync::atomic::AtomicUsize;
 
 #[cfg(feature = "access-log")]
-use crate::extensions_context::EventContext;
+use crate::extensions_context::EventErrorContext;
 
 #[cfg(any(feature = "tracing", feature = "metrics"))]
 use opentelemetry::KeyValue;
@@ -867,7 +867,7 @@ impl Service<PipelineRequest<Request<OrionRequestBody>>> for HttpPipelineSvc {
 
                 #[cfg(feature = "access-log")]
                 let (initial_flags, initial_event) = {
-                    let ec = response.extensions().get::<EventContext>();
+                    let ec = response.extensions().get::<EventErrorContext>();
                     (ec.map(|ec| ec.response_flags).unwrap_or_default(), ec.and_then(|ec| ec.event_kind.clone()))
                 };
 
@@ -2101,7 +2101,7 @@ fn instrument_early_failure_response(
 
     #[cfg(feature = "access-log")]
     let (initial_flags, initial_event) = {
-        let ec = response.extensions().get::<EventContext>();
+        let ec = response.extensions().get::<EventErrorContext>();
         (ec.map(|ec| ec.response_flags).unwrap_or_default(), ec.and_then(|ec| ec.event_kind.clone()))
     };
 

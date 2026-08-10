@@ -12,7 +12,7 @@ pub struct MetadataContext {
 }
 
 #[derive(Debug, Clone)]
-pub struct EventContext {
+pub struct EventErrorContext {
     pub response_flags: ResponseFlags,
     pub event_kind: Option<EventKind>,
 }
