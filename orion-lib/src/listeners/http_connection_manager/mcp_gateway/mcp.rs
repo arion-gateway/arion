@@ -486,6 +486,7 @@ impl McpGateway {
 
         let builder = Response::builder()
             .header(http::header::CONNECTION, "keep-alive")
+            .header(MCP_SESSION_ID, session_id.as_str())
             .version(self.version)
             .status(StatusCode::ACCEPTED);
 
@@ -818,10 +819,12 @@ impl McpGateway {
             debug!(target: "mcp_gateway", "handle_rpc_json_request: 'initialize' method received");
             if session.is_some() {
                 info!(target: "mcp_gateway", "handle_rpc_json_request: session already initialized!");
-                return Ok(MessageResult::JsonRpcError(self.build_json_rpc_error(model::ErrorData::invalid_request(
+                let err = self.build_json_rpc_error(model::ErrorData::invalid_request(
                     "Initialize already called for this session",
                     None,
-                ))));
+                ));
+                let body = serde_json::to_string(&err).unwrap_or_default();
+                return Err(FilterDecision::bad_request(&body, req_version));
             };
 
             let Ok(init_params): Result<model::InitializeRequestParams, _> =
