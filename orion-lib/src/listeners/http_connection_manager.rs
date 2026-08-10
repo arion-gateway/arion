@@ -1632,8 +1632,8 @@ where
                 let response = SyntheticHttpResponse::internal_server_error(
                     EventKind::Upstream(err.into()),
                     ResponseFlags(orion_format::types::ResponseFlags::LOCAL_RESET),
-                    &msg,
                 )
+                .with_body(msg)
                 .into_response(incoming_version);
                 Ok(response.map(|body| InstrumentedBody::new(BodyKind::Response, body, None, |_, _, _, _| {})))
             } else {

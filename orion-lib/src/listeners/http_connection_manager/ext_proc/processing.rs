@@ -991,8 +991,8 @@ impl<M: kind::Mode + Default, Msg: kind::MessageKind + OverridableModeSelector> 
                 SyntheticHttpResponse::internal_server_error(
                     EventFailure::ExtProcError.into(),
                     ResponseFlags(FmtResponseFlags::NO_FILTER_CONFIG_FOUND),
-                    msg,
                 )
+                .with_body(msg.to_string())
                 .into_response(http_version),
             ))
         }
@@ -1005,8 +1005,8 @@ impl<M: kind::Mode + Default, Msg: kind::MessageKind + OverridableModeSelector> 
             SyntheticHttpResponse::internal_server_error(
                 EventFailure::ExtProcError.into(),
                 ResponseFlags(FmtResponseFlags::UNAUTHORIZED_EXTERNAL_SERVICE),
-                msg,
             )
+            .with_body(msg.to_string())
             .into_response(http_version),
         ))
     }

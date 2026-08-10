@@ -55,35 +55,35 @@ impl FilterDecision {
     }
 
     #[inline]
-    pub fn internal_server_error(msg: &str, ver: http::Version) -> FilterDecision {
+    pub fn internal_server_error(msg: &str, ver: http::Version) -> Self {
         FilterDecision::DirectResponse(Box::new(
-            SyntheticHttpResponse::internal_server_error(
-                EventFailure::DirectResponse.into(),
-                ResponseFlags::default(),
-                msg,
-            )
-            .into_response(ver),
-        ))
-    }
-
-    #[inline]
-    pub fn bad_request(ver: http::Version) -> FilterDecision {
-        FilterDecision::DirectResponse(Box::new(
-            SyntheticHttpResponse::bad_request(EventFailure::DirectResponse.into()).into_response(ver),
-        ))
-    }
-
-    #[inline]
-    #[allow(dead_code)]
-    pub fn not_found(ver: http::Version) -> FilterDecision {
-        FilterDecision::DirectResponse(Box::new(
-            SyntheticHttpResponse::not_found(EventFailure::DirectResponse.into(), ResponseFlags::default())
+            SyntheticHttpResponse::internal_server_error(EventFailure::DirectResponse.into(), ResponseFlags::default())
+                .with_body(msg.to_string())
                 .into_response(ver),
         ))
     }
 
     #[inline]
-    pub fn method_not_allowed(ver: http::Version) -> FilterDecision {
+    pub fn bad_request(msg: &str, ver: http::Version) -> Self {
+        FilterDecision::DirectResponse(Box::new(
+            SyntheticHttpResponse::bad_request(EventFailure::DirectResponse.into())
+                .with_body(msg.to_string())
+                .into_response(ver),
+        ))
+    }
+
+    #[inline]
+    #[allow(dead_code)]
+    pub fn not_found(msg: &str, ver: http::Version) -> Self {
+        FilterDecision::DirectResponse(Box::new(
+            SyntheticHttpResponse::not_found(EventFailure::DirectResponse.into(), ResponseFlags::default())
+                .with_body(msg.to_string())
+                .into_response(ver),
+        ))
+    }
+
+    #[inline]
+    pub fn method_not_allowed(msg: &str, ver: http::Version) -> Self {
         FilterDecision::DirectResponse(Box::new(
             SyntheticHttpResponse::custom_error(
                 StatusCode::METHOD_NOT_ALLOWED,
@@ -91,23 +91,25 @@ impl FilterDecision {
                 EventFailure::RouteNotFound.into(),
                 ResponseFlags(FmtResponseFlags::NO_ROUTE_FOUND),
             )
+            .with_body(msg.to_string())
             .into_response(ver),
         ))
     }
 
     #[inline]
-    pub fn no_route_found(ver: http::Version) -> FilterDecision {
+    pub fn no_route_found(msg: &str, ver: http::Version) -> Self {
         FilterDecision::DirectResponse(Box::new(
             SyntheticHttpResponse::not_found(
                 EventFailure::RouteNotFound.into(),
                 ResponseFlags(FmtResponseFlags::NO_ROUTE_FOUND),
             )
+            .with_body(msg.to_string())
             .into_response(ver),
         ))
     }
 
     #[inline]
-    pub fn rate_limited(status: Option<StatusCode>, ver: http::Version) -> FilterDecision {
+    pub fn rate_limited(msg: &str, status: Option<StatusCode>, ver: http::Version) -> Self {
         FilterDecision::DirectResponse(Box::new(
             SyntheticHttpResponse::custom_error(
                 status.unwrap_or(http::StatusCode::TOO_MANY_REQUESTS),
@@ -115,15 +117,18 @@ impl FilterDecision {
                 EventFailure::RateLimited.into(),
                 ResponseFlags(FmtResponseFlags::RATE_LIMITED),
             )
+            .with_body(msg.to_string())
             .into_response(ver),
         ))
     }
 
     #[inline]
     #[allow(dead_code)]
-    pub fn unauthorized(msg: &str, ver: http::Version) -> FilterDecision {
+    pub fn unauthorized(msg: &str, ver: http::Version) -> Self {
         FilterDecision::DirectResponse(Box::new(
-            SyntheticHttpResponse::unauthorized(EventFailure::ExtProcError.into(), msg).into_response(ver),
+            SyntheticHttpResponse::unauthorized(EventFailure::ExtProcError.into())
+                .with_body(msg.to_string())
+                .into_response(ver),
         ))
     }
 }
@@ -259,8 +264,8 @@ fn apply_authorization_rules<B>(rbac: &HttpRbac, req: &Request<B>) -> FilterDeci
         FilterDecision::DirectResponse(Box::new(
             SyntheticHttpResponse::forbidden(
                 EventFailure::RbacAccessDenied(enforced_policy.unwrap_or(SmolStr::new_static("unknown"))).into(),
-                "RBAC: access denied",
             )
+            .with_body("RBAC: access denied")
             .into_response(req.version()),
         ))
     }

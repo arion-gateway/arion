@@ -124,7 +124,7 @@ impl UserRateLimiter {
                 ]
             );
 
-            return FilterDecision::rate_limited(Some(self.inner.status), request.version());
+            return FilterDecision::rate_limited("Rate limited", Some(self.inner.status), request.version());
         }
 
         // If the entry for the user does not exist in the global map, let's try to insert a new one.
@@ -212,7 +212,7 @@ impl UserRateLimiter {
                             KeyValue::new("result", filters::EVENT_RATE_LIMITED)
                         ]
                     );
-                    FilterDecision::rate_limited(Some(self.inner.status), request.version())
+                    FilterDecision::rate_limited("Rate limited", Some(self.inner.status), request.version())
                 }
             },
         }

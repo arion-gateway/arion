@@ -97,8 +97,8 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
             return Ok(SyntheticHttpResponse::internal_server_error(
                 EventKind::Failure(EventFailure::ClusterNotFound),
                 ResponseFlags(FmtResponseFlags::NO_CLUSTER_FOUND),
-                "Failed to resolve cluster",
             )
+            .with_body("Failed to resolve cluster")
             .into_response(request.version()));
         };
 
@@ -234,11 +234,9 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
                             debug!("Failed to upgrade to websockets {upgrade_error}");
                             match upgrade_error {
                                 upgrade_utils::UpgradeError::UnsupportedProtocol(_) => {
-                                    return Ok(SyntheticHttpResponse::forbidden(
-                                        EventFailure::UpgradeFailed.into(),
-                                        "Unsupported upgrade protocol",
-                                    )
-                                    .into_response(ver));
+                                    return Ok(SyntheticHttpResponse::forbidden(EventFailure::UpgradeFailed.into())
+                                        .with_body("Unsupported upgrade protocol")
+                                        .into_response(ver));
                                 },
                                 _ => {
                                     return Ok(SyntheticHttpResponse::bad_request(EventFailure::UpgradeFailed.into())
@@ -313,12 +311,9 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
                     ResponseFlagsLong(&flags.0).to_smolstr(),
                     ResponseFlagsShort(&flags.0).to_smolstr()
                 );
-                Ok(SyntheticHttpResponse::internal_server_error(
-                    event_kind,
-                    flags,
-                    "Failed to connect to upstream cluster",
-                )
-                .into_response(request.version()))
+                Ok(SyntheticHttpResponse::internal_server_error(event_kind, flags)
+                    .with_body("Failed to connect to upstream cluster")
+                    .into_response(request.version()))
             },
         }
     }
