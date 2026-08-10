@@ -412,7 +412,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
 
         #[cfg(feature = "access-log")]
         trans_context.with_loggers(|loggers| {
-            if let Err(err) = crate::access_log::evaluate_access_log_hook(
+            if let Err(err) = crate::access_log::evaluate_base64_access_log_hook(
                 crate::access_log::AccessLogHook::UpstreamRequest,
                 request.headers(),
                 loggers,

@@ -106,7 +106,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
         {
             let mut state = trans_context.trans_state.lock();
             state.upstream_start_instant = Some(Instant::now());
-            state.upstream_cluster_name = Some(cluster_id);
+            state.upstream_cluster_name = Some(cluster_id)
         }
 
         let priority = self.priority;

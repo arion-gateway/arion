@@ -143,6 +143,8 @@ pub struct CustomMetrics {
     pub ext_proc_response: Vec<CustomMetric>,
     #[serde(default)]
     pub downstream_response: Vec<CustomMetric>,
+    #[serde(default)]
+    pub wasm: Vec<CustomMetric>,
 }
 
 #[derive(Clone, Debug, Deserialize, Default, Serialize, PartialEq, Eq)]

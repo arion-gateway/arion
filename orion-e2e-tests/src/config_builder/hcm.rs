@@ -261,6 +261,24 @@ impl HcmBuilder {
     }
 
     #[must_use]
+    pub fn wasm(
+        mut self,
+        wasm: impl Into<orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::wasm::v3::Wasm>,
+    ) -> Self {
+        let proto = wasm.into();
+        let any = Any {
+            type_url: "type.googleapis.com/envoy.extensions.filters.http.wasm.v3.Wasm".into(),
+            value: proto.encode_to_vec(),
+        };
+        self.proto.http_filters.push(HttpFilter {
+            name: "orion.filters.http.wasm".into(),
+            config_type: Some(HttpFilterConfigType::TypedConfig(any)),
+            ..Default::default()
+        });
+        self
+    }
+
+    #[must_use]
     pub fn upgrade_websocket(mut self) -> Self {
         use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::network::http_connection_manager::v3::http_connection_manager::UpgradeConfig;
         self.proto.upgrade_configs.push(UpgradeConfig { upgrade_type: "websocket".into(), ..Default::default() });

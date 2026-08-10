@@ -181,6 +181,12 @@ pub struct AccessLogConfig {
         with = "http_serde_ext::header_name::option"
     )]
     pub downstream_response_header: Option<HeaderName>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        default = "Default::default",
+        with = "http_serde_ext::header_name::option"
+    )]
+    pub wasm_header: Option<HeaderName>,
     #[serde(default = "Default::default", skip_serializing_if = "Vec::is_empty")]
     pub custom_operators: Vec<smol_str::SmolStr>,
 }
@@ -200,6 +206,7 @@ impl Default for AccessLogConfig {
             incoming_response_header: None,
             ext_proc_response_header: None,
             downstream_response_header: None,
+            wasm_header: None,
             custom_operators: Vec::new(),
         }
     }

@@ -44,7 +44,6 @@ chrono-tz.workspace = true
 cedar-policy.workspace = true
 orion-data-plane-api.workspace = true
 time.workspace = true
-
 arc-swap.workspace = true
 arrayvec.workspace = true
 async-stream.workspace = true
@@ -103,8 +102,13 @@ moka = { workspace = true, features = ["sync"] }
 rustls-platform-verifier = { workspace = true }
 contatori = { workspace = true, optional = true }
 pingora = { workspace = true, features = ["time"] }
-
-
+orion-wasm-types.workspace = true
+wasmtime.workspace = true
+bitflags.workspace = true
+crossbeam-queue = { workspace = true }
+http-serde-ext.workspace = true
+bincode-next = { version = "3.1.1", features = ["serde"] }
+itoa.workspace = true
 [dev-dependencies]
 orion-data-plane-api.workspace = true
 serde_yaml.workspace           = true

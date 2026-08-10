@@ -1,3 +1,4 @@
+use crate::listeners::http_connection_manager::wasm::WasmFilter;
 use std::{collections::HashMap, sync::Arc};
 
 use crate::{
@@ -143,6 +144,7 @@ pub struct HttpFilter {
 
 #[derive(Debug, Clone)]
 pub enum HttpFilterValue {
+    Wasm(WasmFilter),
     RateLimit(LocalRateLimit),
     Rbac(HttpRbac),
     ExternalProcessor(ExternalProcessor),
@@ -168,6 +170,7 @@ impl FilterFactory for HttpFilterValue {
             HttpFilterValue::Cors(conf) => HttpFilterValue::Cors(conf.clone()),
             HttpFilterValue::UserRateLimit(conf) => HttpFilterValue::UserRateLimit(conf.clone()),
             HttpFilterValue::CedarPolicy(conf) => HttpFilterValue::CedarPolicy(conf.clone()),
+            HttpFilterValue::Wasm(conf) => HttpFilterValue::Wasm(conf.new_from()),
         }
     }
 }
@@ -184,6 +187,7 @@ impl TryFrom<HttpFilterConfig> for HttpFilter {
         let HttpFilterConfig { name, disabled, filter } = value;
 
         let filter = match filter {
+            HttpFilterType::Wasm(conf) => HttpFilterValue::Wasm(WasmFilter::try_new(conf)?),
             HttpFilterType::RateLimit(conf) => HttpFilterValue::RateLimit(conf.into()),
             HttpFilterType::Rbac(conf) => HttpFilterValue::Rbac(HttpRbac::new(&conf)),
             HttpFilterType::ExternalProcessor(conf) => HttpFilterValue::ExternalProcessor(conf.into()),
@@ -213,6 +217,7 @@ impl HttpFilterValue {
             HttpFilterValue::McpGateway(mcp) => mcp.apply_request(request).await,
             HttpFilterValue::UserRateLimit(user_rate_limiter) => user_rate_limiter.apply_request(request),
             HttpFilterValue::CedarPolicy(cedar) => cedar.apply_request(request),
+            HttpFilterValue::Wasm(wasm) => wasm.apply_request(request).await,
         }
     }
     pub async fn apply_response(&mut self, response: &mut Response<OrionResponseBody>) -> FilterDecision {
@@ -221,6 +226,7 @@ impl HttpFilterValue {
             HttpFilterValue::ExternalProcessor(ext_proc) => ext_proc.apply_response(response).await,
             HttpFilterValue::McpGateway(mcp) => mcp.apply_response(response).await,
             HttpFilterValue::Cors(cors) => cors.apply_response(response),
+            HttpFilterValue::Wasm(wasm) => wasm.apply_response(response).await,
             HttpFilterValue::Rbac(_)
             | HttpFilterValue::RateLimit(_)
             | HttpFilterValue::UserRateLimit(_)

@@ -99,7 +99,11 @@ impl fmt::Display for TcpProxy {
 
 impl TcpProxy {
     #[allow(clippy::too_many_lines)]
-    pub async fn serve_connection(&self, stream: AsyncInstrumentedStream, metadata: DownstreamMetadata) -> Result<()> {
+    pub async fn serve_connection(
+        &self,
+        stream: AsyncInstrumentedStream,
+        metadata: Box<DownstreamMetadata>,
+    ) -> Result<()> {
         #[cfg(feature = "access-log")]
         let start_instant = Instant::now();
 
