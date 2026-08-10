@@ -24,6 +24,7 @@ pub mod custom;
 pub mod filters;
 pub mod http;
 pub mod listeners;
+pub mod mcp;
 pub mod server;
 pub mod tcp;
 pub mod tls;
@@ -82,6 +83,7 @@ pub fn init_global_metrics(_exporters_config: &[OtelExporterConfig], config: &Me
     filters::init_metrics(&config.rename);
     server::init_metrics(number_of_threads, &config.rename);
     user::init_metrics(&config.rename);
+    mcp::init_metrics();
     custom::init_metrics(&config.custom_metrics);
 }
 

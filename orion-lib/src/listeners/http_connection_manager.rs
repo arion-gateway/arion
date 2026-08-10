@@ -817,6 +817,11 @@ impl Service<PipelineRequest<Request<OrionRequestBody>>> for HttpPipelineSvc {
             let downstream_addr = downstream.connection.peer_address();
             let stream_metrics_clone = Arc::clone(&stream_metrics);
 
+            request.extensions_mut().insert(MetadataContext {
+                downstream: *downstream.clone(),
+                stream_metrics: Arc::clone(&stream_metrics),
+            });
+
             // save downtream metadata as request extension...
             request.extensions_mut().insert(downstream);
 
@@ -1631,8 +1636,8 @@ where
                 let response = SyntheticHttpResponse::internal_server_error(
                     EventKind::Upstream(err.into()),
                     ResponseFlags(orion_format::types::ResponseFlags::LOCAL_RESET),
-                    &msg,
                 )
+                .with_body(msg)
                 .into_response(incoming_version);
                 Ok(response.map(|body| InstrumentedBody::new(BodyKind::Response, body, None, |_, _, _, _| {})))
             } else {
@@ -2126,7 +2131,7 @@ fn instrument_early_failure_response(
                         let tx_duration = Instant::now().saturating_duration_since(first_byte_instant);
 
                         with_access_log!(&mut log_ctx.loggers, HttpResponseDurationContext { duration, tx_duration })
-                    }
+                    };
 
                     if trans_ctx.trans_phase.is_complete() {
                         let sm_arc = sm_for_cb2.clone().unwrap();

@@ -14,7 +14,24 @@ pub struct McpGateway {
     pub cluster_header: Option<ClusterHeader>,
     pub server_info: McpServerInfo,
     pub tools: Vec<McpTool>,
-    pub dynamic_tool_discovery: bool,
+    pub dynamic_mcp_servers: Vec<DynamicMcpServer>,
+    pub tds: Option<TdsSpecifier>,
+    pub semantic_search_tool: Option<McpSemanticSearch>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct DynamicMcpServer {
+    pub name: SmolStr,
+    pub description: String,
+    pub transport: McpBackendTransportUpstream,
+    pub url: String,
+    pub cache_duration: Option<Duration>,
+    pub rbac: Option<McpToolRbac>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct TdsSpecifier {
+    pub config_name: SmolStr,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
@@ -31,7 +48,44 @@ pub struct McpTool {
     pub output_schema: Map<String, Value>,
     pub backend: UpstreamBackend,
     pub rbac: Option<McpToolRbac>,
+    #[serde(default, skip_serializing_if = "EmbeddingVector::is_empty")]
+    pub embedding: EmbeddingVector,
 }
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(transparent)]
+pub struct EmbeddingVector(pub Vec<f32>);
+
+impl EmbeddingVector {
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    #[inline]
+    pub fn as_slice(&self) -> &[f32] {
+        &self.0
+    }
+}
+
+impl From<Vec<f32>> for EmbeddingVector {
+    fn from(v: Vec<f32>) -> Self {
+        Self(v)
+    }
+}
+
+impl PartialEq for EmbeddingVector {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.len() == other.0.len() && self.0.iter().zip(&other.0).all(|(a, b)| a.to_bits() == b.to_bits())
+    }
+}
+
+impl Eq for EmbeddingVector {}
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub enum UpstreamBackend {
@@ -47,7 +101,6 @@ pub enum UpstreamBackend {
     McpServer {
         transport: McpBackendTransportUpstream,
         url: String,
-        cache_duration: Option<Duration>,
     },
     FunctionGraph,
 }
@@ -77,6 +130,72 @@ pub enum McpRbacPermission {
     JwtClaim { field: SmolStr, value: SmolStr },
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct McpSemanticSearch {
+    pub enable_assisted_discovery: bool,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub embeddings: Option<RemoteEmbeddings>,
+    #[serde(default)]
+    pub similarity: SimilarityConfig,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct SimilarityConfig {
+    #[serde(default = "SimilarityConfig::default_top_k")]
+    pub top_k: usize,
+}
+
+impl SimilarityConfig {
+    const fn default_top_k() -> usize {
+        10
+    }
+}
+
+impl Default for SimilarityConfig {
+    fn default() -> Self {
+        Self { top_k: Self::default_top_k() }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RemoteEmbeddings {
+    pub cluster: SmolStr,
+    pub model_id: SmolStr,
+    #[serde(default = "RemoteEmbeddings::default_path", skip_serializing_if = "RemoteEmbeddings::is_default_path")]
+    pub path: String,
+    #[serde(with = "humantime_serde", skip_serializing_if = "Option::is_none", default)]
+    pub timeout: Option<Duration>,
+    pub dimensions: usize,
+}
+
+impl RemoteEmbeddings {
+    pub fn default_path() -> String {
+        "/v1/embeddings".to_owned()
+    }
+
+    fn is_default_path(path: &str) -> bool {
+        path == Self::default_path()
+    }
+
+    pub fn normalized(mut self) -> Result<Self, String> {
+        if self.cluster.is_empty() {
+            return Err("RemoteEmbeddings.cluster must not be empty".to_owned());
+        }
+        if self.model_id.is_empty() {
+            return Err("RemoteEmbeddings.model_id must not be empty".to_owned());
+        }
+        if self.dimensions == 0 {
+            return Err("RemoteEmbeddings.dimensions must be greater than zero".to_owned());
+        }
+        if self.path.is_empty() {
+            self.path = Self::default_path();
+        } else if !self.path.starts_with('/') {
+            self.path.insert(0, '/');
+        }
+        Ok(self)
+    }
+}
+
 #[cfg(feature = "envoy-conversions")]
 mod envoy_conversions {
     use std::str::FromStr;
@@ -88,9 +207,11 @@ mod envoy_conversions {
     use super::*;
     use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::mcp::mcp_gateway::v3::{
         mcp_server_backend::TransportUpstream as OrionTransportUpstream, permission,
-        tool::UpstreamBackend as OrionUpstreamBackend, tool_rbac::Action as OrionAction, JwtClaimMatcher,
-        JwtHeaderMatcher, McpGateway as OrionMcpGateway, Permission as OrionPermission,
-        QueryParam as OrionMcpQueryParams, ServerInfo as OrionMcpServerInfo, Tool as OrionTool,
+        tool::UpstreamBackend as OrionUpstreamBackend, tool_rbac::Action as OrionAction,
+        DynamicMcpServer as OrionDynamicMcpServer, JwtClaimMatcher, JwtHeaderMatcher, McpGateway as OrionMcpGateway,
+        Permission as OrionPermission, QueryParam as OrionMcpQueryParams, RemoteEmbeddings as OrionRemoteEmbeddings,
+        SemanticSearch as OrionSemanticSearch, ServerInfo as OrionMcpServerInfo,
+        SimilarityConfig as OrionSimilarityConfig, TdsSpecifier as OrionTdsSpecifier, Tool as OrionTool,
         ToolRbac as OrionToolRbac,
     };
     use tracing::warn;
@@ -107,13 +228,69 @@ mod envoy_conversions {
     impl TryFrom<OrionMcpGateway> for McpGateway {
         type Error = GenericError;
         fn try_from(orion: OrionMcpGateway) -> Result<Self, Self::Error> {
-            let OrionMcpGateway { cluster_header, server_info, tools, dynamic_tool_discovery } = orion;
+            let OrionMcpGateway { cluster_header, server_info, tools, semantic_search_tool, tds, dynamic_mcp_servers } =
+                orion;
             let server_info = required!(server_info)?;
             let cluster_header: Option<http::HeaderName> = cluster_header.map(TryInto::try_into).transpose()?;
             let cluster_header = cluster_header.map(ClusterHeader);
-
             let tools = tools.into_iter().map(TryInto::try_into).collect::<Result<Vec<_>, _>>()?;
-            Ok(McpGateway { cluster_header, server_info: server_info.into(), tools, dynamic_tool_discovery })
+            let dynamic_mcp_servers =
+                dynamic_mcp_servers.into_iter().map(TryInto::try_into).collect::<Result<Vec<_>, _>>()?;
+
+            Ok(McpGateway {
+                cluster_header,
+                server_info: server_info.try_into()?,
+                tools,
+                dynamic_mcp_servers,
+                tds: tds.map(TryInto::try_into).transpose()?,
+                semantic_search_tool: semantic_search_tool.map(TryInto::try_into).transpose()?,
+            })
+        }
+    }
+
+    impl TryFrom<OrionDynamicMcpServer> for DynamicMcpServer {
+        type Error = GenericError;
+        fn try_from(orion: OrionDynamicMcpServer) -> Result<Self, Self::Error> {
+            let transport = orion.transport().into();
+            let OrionDynamicMcpServer { name, description, url, cache_duration, rbac, .. } = orion;
+            if name.is_empty() {
+                return Err(GenericError::from_msg("DynamicMcpServer.name must not be empty"));
+            }
+            if url.is_empty() {
+                return Err(GenericError::from_msg("DynamicMcpServer.url must not be empty"));
+            }
+            let cache_duration = cache_duration
+                .map(|d| -> Result<Duration, GenericError> {
+                    let dur: RustType<Duration> = d.try_into()?;
+                    Ok(dur.into_inner())
+                })
+                .transpose()?;
+
+            Ok(DynamicMcpServer {
+                name: name.into(),
+                description,
+                transport,
+                url,
+                cache_duration,
+                rbac: rbac.map(TryInto::try_into).transpose()?,
+            })
+        }
+    }
+
+    impl TryFrom<OrionTdsSpecifier> for TdsSpecifier {
+        type Error = GenericError;
+        fn try_from(orion: OrionTdsSpecifier) -> Result<Self, Self::Error> {
+            if orion.config_name.is_empty() {
+                return Err(GenericError::from_msg(
+                    "TdsSpecifier.config_name specifying the resource name from the xDS Tools Discovery Service must not be empty",
+                ));
+            }
+            if orion.config_name.contains('/') {
+                return Err(GenericError::from_msg(
+                    "TdsSpecifier.config_name must not contain '/' (used as xDS resource-id separator)",
+                ));
+            }
+            Ok(TdsSpecifier { config_name: orion.config_name.into() })
         }
     }
 
@@ -121,7 +298,7 @@ mod envoy_conversions {
         type Error = GenericError;
 
         fn try_from(orion: OrionTool) -> Result<Self, Self::Error> {
-            let OrionTool { name, description, input_schema, output_schema, upstream_backend, rbac } = orion;
+            let OrionTool { name, description, input_schema, output_schema, upstream_backend, rbac, embedding } = orion;
             let backend = required!(upstream_backend)?.try_into()?;
 
             if let UpstreamBackend::FunctionGraph = backend {
@@ -172,7 +349,15 @@ mod envoy_conversions {
             };
 
             let rbac = rbac.map(TryInto::try_into).transpose()?;
-            Ok(McpTool { name: name.into(), description, input_schema, output_schema, backend, rbac })
+            Ok(McpTool {
+                name: name.into(),
+                description,
+                input_schema,
+                output_schema,
+                backend,
+                rbac,
+                embedding: EmbeddingVector(embedding),
+            })
         }
     }
 
@@ -196,17 +381,9 @@ mod envoy_conversions {
                         body_template,
                     })
                 },
-                OrionUpstreamBackend::McpServerBackend(trans) => Ok(UpstreamBackend::McpServer {
-                    transport: trans.transport().into(),
-                    url: trans.url,
-                    cache_duration: trans
-                        .cache_duration
-                        .map(|d| -> Result<Duration, GenericError> {
-                            let dur: RustType<Duration> = d.try_into()?;
-                            Ok(dur.into_inner())
-                        })
-                        .transpose()?,
-                }),
+                OrionUpstreamBackend::McpServerBackend(be) => {
+                    Ok(UpstreamBackend::McpServer { transport: be.transport().into(), url: be.url })
+                },
                 OrionUpstreamBackend::FunctionGraphBackend(_) => todo!(),
             }
         }
@@ -218,9 +395,18 @@ mod envoy_conversions {
         }
     }
 
-    impl From<OrionMcpServerInfo> for McpServerInfo {
-        fn from(orion: OrionMcpServerInfo) -> Self {
-            McpServerInfo { name: orion.name, version: orion.version }
+    impl TryFrom<OrionMcpServerInfo> for McpServerInfo {
+        type Error = GenericError;
+        fn try_from(orion: OrionMcpServerInfo) -> Result<Self, Self::Error> {
+            if orion.name.is_empty() {
+                return Err(GenericError::from_msg("McpServerInfo.name must not be empty"));
+            }
+            if orion.name.contains('/') {
+                return Err(GenericError::from_msg(
+                    "McpServerInfo.name must not contain '/' (used as xDS resource-id separator)",
+                ));
+            }
+            Ok(McpServerInfo { name: orion.name, version: orion.version })
         }
     }
 
@@ -271,8 +457,51 @@ mod envoy_conversions {
         }
     }
 
+    impl TryFrom<OrionSemanticSearch> for McpSemanticSearch {
+        type Error = GenericError;
+        fn try_from(orion: OrionSemanticSearch) -> Result<Self, Self::Error> {
+            let OrionSemanticSearch { enable_assisted_discovery, similarity, embeddings } = orion;
+
+            let similarity = similarity.map(TryInto::try_into).transpose()?.unwrap_or_default();
+            let embeddings = embeddings.map(TryInto::try_into).transpose()?;
+
+            Ok(McpSemanticSearch { enable_assisted_discovery, embeddings, similarity })
+        }
+    }
+
+    impl TryFrom<OrionRemoteEmbeddings> for RemoteEmbeddings {
+        type Error = GenericError;
+        fn try_from(orion: OrionRemoteEmbeddings) -> Result<Self, Self::Error> {
+            let OrionRemoteEmbeddings { cluster, model_id, path, timeout, dimensions } = orion;
+            let timeout = timeout
+                .map(|d| -> Result<Duration, GenericError> {
+                    let dur: RustType<Duration> = d.try_into()?;
+                    Ok(dur.into_inner())
+                })
+                .transpose()?;
+            RemoteEmbeddings {
+                cluster: cluster.into(),
+                model_id: model_id.into(),
+                path,
+                timeout,
+                dimensions: dimensions as usize,
+            }
+            .normalized()
+            .map_err(GenericError::from_msg)
+        }
+    }
+
+    impl TryFrom<OrionSimilarityConfig> for SimilarityConfig {
+        type Error = GenericError;
+        fn try_from(orion: OrionSimilarityConfig) -> Result<Self, Self::Error> {
+            let OrionSimilarityConfig { top_k } = orion;
+            Ok(SimilarityConfig { top_k: top_k as usize })
+        }
+    }
+
     #[cfg(test)]
     mod tests {
+        #![allow(clippy::assertions_on_result_states)]
         use super::*;
 
         #[test]
@@ -355,6 +584,76 @@ mod envoy_conversions {
             let result: Result<McpToolRbac, _> = orion_rbac.try_into();
             assert!(result.is_err());
             assert!(result.unwrap_err().to_string().contains("at least one permission"));
+        }
+
+        #[test]
+        fn test_semantic_search_round_trip() {
+            let orion = OrionSemanticSearch {
+                enable_assisted_discovery: true,
+                similarity: Some(OrionSimilarityConfig { top_k: 5 }),
+                embeddings: Some(OrionRemoteEmbeddings {
+                    cluster: "embeddings".to_owned(),
+                    model_id: "test-model".to_owned(),
+                    path: "/v1/embeddings".to_owned(),
+                    timeout: None,
+                    dimensions: 384,
+                }),
+            };
+            let parsed: McpSemanticSearch = orion.try_into().unwrap();
+            assert!(parsed.enable_assisted_discovery);
+            assert_eq!(parsed.similarity.top_k, 5);
+            let embeddings = parsed.embeddings.expect("remote embeddings config");
+            assert_eq!(embeddings.cluster.as_str(), "embeddings");
+            assert_eq!(embeddings.model_id.as_str(), "test-model");
+            assert_eq!(embeddings.path, "/v1/embeddings");
+            assert_eq!(embeddings.dimensions, 384);
+        }
+
+        #[test]
+        fn test_semantic_search_defaults_similarity() {
+            let orion = OrionSemanticSearch { enable_assisted_discovery: false, similarity: None, embeddings: None };
+            let parsed: McpSemanticSearch = orion.try_into().unwrap();
+            assert_eq!(parsed.similarity.top_k, 10);
+            assert!(parsed.embeddings.is_none());
+        }
+
+        #[test]
+        fn test_semantic_search_empty_remote_cluster_is_rejected() {
+            let result: Result<RemoteEmbeddings, _> = OrionRemoteEmbeddings {
+                cluster: String::new(),
+                model_id: "test-model".to_owned(),
+                path: String::new(),
+                timeout: None,
+                dimensions: 384,
+            }
+            .try_into();
+            assert!(result.is_err());
+            assert!(result.unwrap_err().to_string().contains("cluster"));
+        }
+
+        fn remote(cluster: &str, model_id: &str, path: &str, dimensions: usize) -> RemoteEmbeddings {
+            RemoteEmbeddings {
+                cluster: cluster.into(),
+                model_id: model_id.into(),
+                path: path.to_owned(),
+                timeout: None,
+                dimensions,
+            }
+        }
+
+        #[test]
+        fn normalized_prepends_leading_slash_and_defaults_empty_path() {
+            assert_eq!(remote("c", "m", "v1/embeddings", 384).normalized().unwrap().path, "/v1/embeddings");
+            assert_eq!(remote("c", "m", "", 384).normalized().unwrap().path, RemoteEmbeddings::default_path());
+            assert_eq!(remote("c", "m", "/custom", 384).normalized().unwrap().path, "/custom");
+        }
+
+        #[test]
+        fn normalized_rejects_empty_cluster_empty_model_and_zero_dimensions() {
+            assert!(remote("", "m", "/p", 384).normalized().is_err());
+            assert!(remote("c", "", "/p", 384).normalized().is_err());
+            assert!(remote("c", "m", "/p", 0).normalized().is_err());
+            assert!(remote("c", "m", "/p", 384).normalized().is_ok());
         }
     }
 }

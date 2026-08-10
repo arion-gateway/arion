@@ -64,6 +64,7 @@ pub enum XdsResourcePayload {
     Endpoints(ResourceId, ClusterLoadAssignment),
     RouteConfiguration(ResourceId, RouteConfiguration),
     Secret(ResourceId, Secret),
+    Extension(ResourceId, String, Vec<u8>),
 }
 
 impl TryFrom<(Resource, TypeUrl)> for XdsResourcePayload {
@@ -92,48 +93,45 @@ impl TryFrom<(Resource, TypeUrl)> for XdsResourcePayload {
                 let decoded = EnvoySecret::decode(res.value.as_slice())?.try_into()?;
                 Ok(XdsResourcePayload::Secret(resource_id, decoded))
             },
+            TypeUrl::Extension(url) => Ok(XdsResourcePayload::Extension(resource_id, url, res.value)),
         })
     }
 }
 
-#[derive(Eq, Hash, PartialEq, Debug, Copy, Clone, Deserialize)]
+#[derive(Eq, Hash, PartialEq, Debug, Clone, Deserialize)]
 pub enum TypeUrl {
     Listener,
     Cluster,
     RouteConfiguration,
     ClusterLoadAssignment,
     Secret,
+    Extension(String),
 }
 
 impl fmt::Display for TypeUrl {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                TypeUrl::Listener => "type.googleapis.com/envoy.config.listener.v3.Listener".to_owned(),
-                TypeUrl::Cluster => "type.googleapis.com/envoy.config.cluster.v3.Cluster".to_owned(),
-                TypeUrl::RouteConfiguration =>
-                    "type.googleapis.com/envoy.config.route.v3.RouteConfiguration".to_owned(),
-                TypeUrl::ClusterLoadAssignment =>
-                    "type.googleapis.com/envoy.config.endpoint.v3.ClusterLoadAssignment".to_owned(),
-                TypeUrl::Secret => "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.Secret".to_owned(),
-            }
-        )
+        match self {
+            TypeUrl::Listener => f.write_str("type.googleapis.com/envoy.config.listener.v3.Listener"),
+            TypeUrl::Cluster => f.write_str("type.googleapis.com/envoy.config.cluster.v3.Cluster"),
+            TypeUrl::RouteConfiguration => f.write_str("type.googleapis.com/envoy.config.route.v3.RouteConfiguration"),
+            TypeUrl::ClusterLoadAssignment => {
+                f.write_str("type.googleapis.com/envoy.config.endpoint.v3.ClusterLoadAssignment")
+            },
+            TypeUrl::Secret => f.write_str("type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.Secret"),
+            TypeUrl::Extension(url) => f.write_str(url),
+        }
     }
 }
 
-impl TryFrom<&str> for TypeUrl {
-    type Error = XdsError;
-
-    fn try_from(type_url_string: &str) -> Result<TypeUrl, XdsError> {
+impl From<&str> for TypeUrl {
+    fn from(type_url_string: &str) -> TypeUrl {
         match type_url_string {
-            "type.googleapis.com/envoy.config.listener.v3.Listener" => Ok(TypeUrl::Listener),
-            "type.googleapis.com/envoy.config.cluster.v3.Cluster" => Ok(TypeUrl::Cluster),
-            "type.googleapis.com/envoy.config.route.v3.RouteConfiguration" => Ok(TypeUrl::RouteConfiguration),
-            "type.googleapis.com/envoy.config.endpoint.v3.ClusterLoadAssignment" => Ok(TypeUrl::ClusterLoadAssignment),
-            "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.Secret" => Ok(TypeUrl::Secret),
-            value => Err(XdsError::UnknownResourceType(value.to_owned())),
+            "type.googleapis.com/envoy.config.listener.v3.Listener" => TypeUrl::Listener,
+            "type.googleapis.com/envoy.config.cluster.v3.Cluster" => TypeUrl::Cluster,
+            "type.googleapis.com/envoy.config.route.v3.RouteConfiguration" => TypeUrl::RouteConfiguration,
+            "type.googleapis.com/envoy.config.endpoint.v3.ClusterLoadAssignment" => TypeUrl::ClusterLoadAssignment,
+            "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.Secret" => TypeUrl::Secret,
+            other => TypeUrl::Extension(other.to_owned()),
         }
     }
 }

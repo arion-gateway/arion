@@ -311,12 +311,138 @@ impl HcmBuilder {
     }
 
     #[must_use]
+    pub fn with_http_filters(mut self, filters: Vec<HttpFilter>) -> Self {
+        // Insert filters before the router filter (which should be last)
+        let router_pos = self.proto.http_filters.iter().position(|f| f.name == "envoy.filters.http.router");
+
+        if let Some(pos) = router_pos {
+            for (i, filter) in filters.into_iter().enumerate() {
+                self.proto.http_filters.insert(pos + i, filter);
+            }
+        } else {
+            self.proto.http_filters.extend(filters);
+        }
+        self
+    }
+
+    #[must_use]
+    pub fn mcp_gateway(
+        self,
+        gateway: impl Into<
+            orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::mcp::mcp_gateway::v3::McpGateway,
+        >,
+    ) -> Self {
+        self.with_http_filters(vec![super::mcp_gateway::mcp_gateway_http_filter(gateway)])
+    }
+
+    #[must_use]
+    pub fn with_jwt_auth(self, jwks_inline: impl Into<String>, audiences: Vec<String>) -> Self {
+        use orion_data_plane_api::envoy_data_plane_api::envoy::config::route::v3::RouteMatch;
+        use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::jwt_authn::v3::{
+            jwt_provider, jwt_requirement, requirement_rule, JwtAuthentication, JwtHeader, JwtProvider, JwtRequirement,
+            RequirementRule,
+        };
+
+        let jwks_string = jwks_inline.into();
+
+        let provider = JwtProvider {
+            issuer: "https://auth.example.com".to_owned(),
+            audiences,
+            payload_in_metadata: "jwt_payload".to_owned(),
+            header_in_metadata: "jwt_header".to_owned(),
+            from_headers: vec![JwtHeader {
+                name: "Authorization".to_owned(),
+                value_prefix: "Bearer ".to_owned(),
+            }],
+            from_params: vec![],
+            from_cookies: vec![],
+            forward: false,
+            forward_payload_header: String::new(),
+            pad_forward_payload_header: false,
+            jwks_source_specifier: Some(jwt_provider::JwksSourceSpecifier::LocalJwks(
+                orion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::DataSource {
+                    specifier: Some(
+                        orion_data_plane_api::envoy_data_plane_api::envoy::config::core::v3::data_source::Specifier::InlineString(
+                            jwks_string,
+                        ),
+                    ),
+                    watched_directory: None,
+                },
+            )),
+            subjects: None,
+            require_expiration: false,
+            max_lifetime: None,
+            normalize_payload_in_metadata: None,
+            failed_status_in_metadata: String::new(),
+            clock_skew_seconds: 60,
+            claim_to_headers: vec![],
+            clear_route_cache: false,
+            jwt_cache_config: None,
+        };
+
+        let mut providers = std::collections::HashMap::new();
+        providers.insert("oauth_provider".to_owned(), provider);
+
+        let jwt_auth = JwtAuthentication {
+            providers,
+            rules: vec![RequirementRule {
+                r#match: Some(RouteMatch {
+                    path_specifier: Some(
+                        orion_data_plane_api::envoy_data_plane_api::envoy::config::route::v3::route_match::PathSpecifier::Prefix(
+                            "/".to_owned(),
+                        ),
+                    ),
+                    ..Default::default()
+                }),
+                requirement_type: Some(
+                    requirement_rule::RequirementType::Requires(
+                        JwtRequirement {
+                            requires_type: Some(
+                                jwt_requirement::RequiresType::ProviderName(
+                                    "oauth_provider".to_owned(),
+                                ),
+                            ),
+                        },
+                    ),
+                ),
+            }],
+            requirement_map: std::collections::HashMap::new(),
+            filter_state_rules: None,
+            bypass_cors_preflight: false,
+            strip_failure_response: false,
+            stat_prefix: String::new(),
+        };
+
+        let jwt_any = Any {
+            type_url: "type.googleapis.com/envoy.extensions.filters.http.jwt_authn.v3.JwtAuthentication".into(),
+            value: jwt_auth.encode_to_vec(),
+        };
+
+        let jwt_filter = HttpFilter {
+            name: "envoy.filters.http.jwt_authn".into(),
+            config_type: Some(
+                orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::network::http_connection_manager::v3::http_filter::ConfigType::TypedConfig(
+                    jwt_any,
+                ),
+            ),
+            ..Default::default()
+        };
+
+        self.with_http_filters(vec![jwt_filter])
+    }
+
+    #[must_use]
     pub fn build(mut self) -> EnvoyHcm {
         self.add_router_filter();
         self.proto
     }
 
     fn add_router_filter(&mut self) {
+        // Only add router if not already present
+        if self.proto.http_filters.iter().any(|f| f.name == "envoy.filters.http.router") {
+            return;
+        }
+
         let router = Router::default();
         let router_any = Any {
             type_url: "type.googleapis.com/envoy.extensions.filters.http.router.v3.Router".into(),

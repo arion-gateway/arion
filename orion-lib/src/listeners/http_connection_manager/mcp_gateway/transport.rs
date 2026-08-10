@@ -1,12 +1,6 @@
-use http::Method;
 use orion_http_header::MCP_SESSION_ID;
-use serde::Serialize;
 use smol_str::{SmolStr, ToSmolStr};
-use tracing::{debug, info};
-use url::form_urlencoded;
 
-pub const SESSION_ID_QUERY_KEY: &str = "sessionId";
-pub const SESSION_ID_QUERY_KEY_ALT: &str = "session_id";
 pub const MIME_TEXT_EVENT_STREAM: &str = "text/event-stream";
 pub const MIME_APPLICATION_JSON: &str = "application/json";
 
@@ -26,7 +20,6 @@ impl std::fmt::Display for SessionId {
 }
 
 pub trait RequestExt {
-    fn get_mcp_transport(&self) -> Option<Transport>;
     fn get_mcp_session_id(&self) -> Option<SessionId>;
     fn get_mcp_accepted_mime(&self) -> Option<AcceptedMime>;
 }
@@ -72,41 +65,8 @@ impl TryFrom<&str> for AcceptedMime {
 }
 
 impl<B> RequestExt for http::Request<B> {
-    fn get_mcp_transport(&self) -> Option<Transport> {
-        match *self.method() {
-            Method::POST => {
-                if let Some(query) = self.uri().query() {
-                    if query.contains(SESSION_ID_QUERY_KEY) || query.contains(SESSION_ID_QUERY_KEY_ALT) {
-                        return Some(Transport::Sse);
-                    }
-                }
-                Some(Transport::StreamableHttp)
-            },
-            Method::GET => {
-                if let Some(accept_value) = self.headers().get(http::header::ACCEPT) {
-                    if let Ok(s) = accept_value.to_str() {
-                        if s.contains(MIME_TEXT_EVENT_STREAM) {
-                            return Some(Transport::Sse);
-                        }
-                    }
-                }
-                None
-            },
-
-            _ => None,
-        }
-    }
-
     fn get_mcp_session_id(&self) -> Option<SessionId> {
-        if let Some(id) = self.headers().get(MCP_SESSION_ID) {
-            return id.to_str().ok().map(|s| SessionId(s.to_smolstr()));
-        }
-        self.uri().query().and_then(|query| {
-            debug!(target: "mcp_gateway", "get_mcp_session_id: query: {query}...");
-            form_urlencoded::parse(query.as_bytes())
-                .find(|(key, _)| key == SESSION_ID_QUERY_KEY || key == SESSION_ID_QUERY_KEY_ALT)
-                .map(|(_, value)| SessionId(value.to_smolstr()))
-        })
+        self.headers().get(MCP_SESSION_ID)?.to_str().ok().map(|s| SessionId(s.to_smolstr()))
     }
 
     fn get_mcp_accepted_mime(&self) -> Option<AcceptedMime> {
@@ -115,59 +75,6 @@ impl<B> RequestExt for http::Request<B> {
             return AcceptedMime::try_from(accept).ok();
         }
         None
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum Transport {
-    Sse,
-    #[default]
-    StreamableHttp,
-}
-
-impl std::fmt::Display for Transport {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Transport::Sse => write!(f, "SSE"),
-            Transport::StreamableHttp => write!(f, "StreamableHTTP"),
-        }
-    }
-}
-
-pub mod sse {
-    use bytes::{BufMut, BytesMut};
-
-    use super::{info, Serialize};
-
-    #[derive(Debug)]
-    pub enum Event<'a, T: Serialize = ()> {
-        Endpoint(&'a str),
-        Message(&'a T),
-    }
-
-    impl<T: Serialize> Event<'_, T> {
-        // Write directly to a pre-allocated BytesMut
-        pub fn write_to(&self, buf: &mut BytesMut) {
-            match self {
-                Event::Endpoint(endpoint) => {
-                    buf.extend_from_slice(b"event: endpoint\ndata: ");
-                    buf.extend_from_slice(endpoint.as_bytes());
-                    buf.extend_from_slice(b"\n\n");
-                },
-                Event::Message(value) => {
-                    // Write the SSE header
-                    buf.extend_from_slice(b"event: message\ndata: ");
-
-                    // Serialize directly into the IO writer adapter
-                    if let Err(err) = serde_json::to_writer(buf.writer(), value) {
-                        info!(target: "mcp_gateway", "SSE: failed to serialize message: {}!", err);
-                    }
-
-                    // Append closing newlines (acts as fallback if serialization fails)
-                    buf.extend_from_slice(b"\n\n");
-                },
-            }
-        }
     }
 }
 

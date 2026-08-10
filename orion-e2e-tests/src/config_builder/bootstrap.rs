@@ -191,12 +191,13 @@ impl BootstrapBuilder {
             return Err(Error::Config("At least one listener is required".into()));
         }
 
-        let bootstrap = self.build_bootstrap();
+        let bootstrap = self.build_bootstrap()?;
 
         serde_yaml::to_string(&bootstrap).map_err(Error::from)
     }
 
-    fn build_bootstrap(&self) -> OrionConfig {
+    #[allow(clippy::unnecessary_wraps)]
+    fn build_bootstrap(&self) -> Result<OrionConfig> {
         let listeners: Vec<Value> = self.listeners.iter().filter_map(|l| proto_to_yaml_value(l).ok()).collect();
         let clusters: Vec<Value> = self.clusters.iter().filter_map(|c| proto_to_yaml_value(c).ok()).collect();
 
@@ -217,7 +218,7 @@ impl BootstrapBuilder {
             all_clusters.push(xds_cluster);
         }
 
-        OrionConfig {
+        Ok(OrionConfig {
             runtime: RuntimeConfig { num_cpus: self.runtime_cpus, num_runtimes: self.runtime_count },
             logging: LoggingConfig {
                 log_level: self.log_level.clone(),
@@ -231,7 +232,7 @@ impl BootstrapBuilder {
                 static_resources: StaticResources { listeners, clusters: all_clusters, secrets: vec![] },
             },
             metrics: self.metrics.clone(),
-        }
+        })
     }
 }
 

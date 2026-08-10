@@ -49,7 +49,7 @@ use serde::Serialize;
 use tokio::sync::mpsc;
 
 use crate::body::{instrumented_body::InstrumentedBody, response_flags::BodyKind, timeout_body::TimeoutBody};
-pub use crate::configuration::get_listeners_and_clusters;
+pub use crate::configuration::{build_listener_factories, get_listeners_and_clusters, get_secrets_and_clusters};
 
 pub use clusters::{
     cluster::PartialClusterType,
@@ -57,6 +57,7 @@ pub use clusters::{
     load_assignment::PartialClusterLoadAssignment,
     ClusterLoadAssignmentBuilder,
 };
+pub use listeners::http_connection_manager::mcp_gateway::xds_handler as mcp_xds_handler;
 pub use listeners::listener::ListenerFactory;
 pub use listeners_manager::{ListenerConfigurationChange, ListenersManager, RouteConfigurationChange};
 pub use orion_configuration::config::network_filters::http_connection_manager::RouteConfiguration;

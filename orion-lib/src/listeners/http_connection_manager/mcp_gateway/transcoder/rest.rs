@@ -162,17 +162,23 @@ fn append_query_string(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rmcp::model::Extensions;
+    use rmcp::model::CallToolRequestParams;
     use serde_json::json;
     use upon::Engine;
 
     fn create_test_request(arguments: Option<serde_json::Map<String, Value>>) -> Request {
-        let mut params = serde_json::Map::new();
-        params.insert("name".to_owned(), json!("test_tool"));
-        if let Some(args) = arguments {
-            params.insert("arguments".to_owned(), Value::Object(args));
-        }
-        Request { method: "tools/call".into(), params, extensions: Extensions::default() }
+        let params = if let Some(args) = arguments {
+            CallToolRequestParams::new("test_tool").with_arguments(args)
+        } else {
+            CallToolRequestParams::new("test_tool")
+        };
+
+        let request_json = serde_json::json!({
+            "method": "tools/call",
+            "params": serde_json::to_value(&params).expect("Failed to serialize params")
+        });
+
+        serde_json::from_value(request_json).expect("Failed to create test request")
     }
 
     fn create_http_request() -> http::Request<OrionRequestBody> {

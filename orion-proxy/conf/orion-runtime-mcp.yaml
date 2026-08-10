@@ -144,12 +144,20 @@ envoy_bootstrap:
                               cluster: user_profile_api_cluster
                               method: DELETE
                               path: "/v1/admin/user"
+                        # Upstream MCP servers whose tools are discovered at
+                        # runtime. Each server materialises one registry entry
+                        # per tool it exposes, namespaced as `{name}__{tool}`.
+                        dynamic_mcp_servers:
                           - name: "everything"
                             description: "everything mcp server"
-                            mcp_server_backend:
-                              transport: StreamableHttp
-                              url: http://127.0.0.1:3001/mcp
-                              cache_duration: 10s
+                            transport: StreamableHttp
+                            url: http://127.0.0.1:3001/mcp
+                            cache_duration: 10s
+                        # Uncomment to bind this filter to an xDS Tool Discovery
+                        # Service stream. Tool and DynamicMcpServer resources
+                        # on that stream will augment the lists above.
+                        # tds:
+                        #   config_name: "my-mcp-config"
                     - name: envoy.filters.http.router
                       typedConfig:
                         "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router

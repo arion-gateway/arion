@@ -40,9 +40,9 @@ use orion_lib::access_log::{start_access_loggers, update_configuration, AccessLo
 
 use orion_error::Context;
 use orion_lib::{
-    clusters::cluster::ClusterType, get_listeners_and_clusters, new_configuration_channel, runtime_config,
-    ConfigurationReceivers, ConfigurationSenders, ListenerConfigurationChange, PartialClusterType, Result,
-    SecretManager,
+    build_listener_factories, clusters::cluster::ClusterType, get_secrets_and_clusters, new_configuration_channel,
+    runtime_config, ConfigurationReceivers, ConfigurationSenders, ListenerConfigurationChange, PartialClusterType,
+    Result, SecretManager,
 };
 #[cfg(feature = "metrics")]
 use orion_metrics::{metrics::init_global_metrics, wait_for_metrics_setup, OtelExporterConfig};
@@ -161,8 +161,10 @@ fn launch_runtimes(
     let ads_cluster_names: Vec<String> = bootstrap.get_ads_configs().iter().map(ToString::to_string).collect();
     let node = bootstrap.node.clone().unwrap_or_else(|| Node { id: "".into(), cluster_id: "".into() });
 
-    let (secret_manager, listener_factories, clusters) =
-        get_listeners_and_clusters(bootstrap.clone()).with_context_msg("Failed to get listeners and clusters")?;
+    let (secret_manager, clusters) =
+        get_secrets_and_clusters(&bootstrap).with_context_msg("Failed to get secrets and clusters")?;
+    let listener_factories = build_listener_factories(bootstrap.static_resources.listeners.clone(), &secret_manager)
+        .with_context_msg("failed to build listener factories")?;
     let secret_manager = Arc::new(RwLock::new(secret_manager));
 
     if listener_factories.is_empty() && ads_cluster_names.is_empty() {
@@ -357,16 +359,24 @@ async fn spawn_services(info: ServiceInfo) -> Result<()> {
     let bootstrap_clone = bootstrap.clone();
     let secret_manager_clone = Arc::clone(&secret_manager);
     set.spawn(async move {
-        let initial_clusters = configure_initial_resources(
-            bootstrap_clone,
-            listener_factories,
-            clusters,
-            configuration_senders_clone.clone(),
-        )
-        .await?;
-        if !ads_cluster_names.is_empty() {
+        // ADS cluster must be in the registry before connect() can resolve it.
+        // Static MCP TDS listeners may already have queued registrations; MCP
+        // xDS handler initialization drains those registrations when ADS exists.
+        let initial_clusters = register_initial_clusters(clusters)?;
+
+        let xds_connect = XdsConfigurationHandler::connect(&node, ads_cluster_names).await?;
+        let mcp_handler = xds_connect
+            .as_ref()
+            .map(|(_, sub_mgr, _)| orion_lib::mcp_xds_handler::init_mcp_xds_handler(Arc::clone(sub_mgr)));
+
+        push_initial_listeners(bootstrap_clone, listener_factories, configuration_senders_clone.clone()).await?;
+
+        if let Some((client, _sub_mgr, _worker_task)) = xds_connect {
             let mut xds_handler = XdsConfigurationHandler::new(secret_manager_clone, configuration_senders_clone);
-            _ = xds_handler.run_loop(node, initial_clusters, ads_cluster_names).await;
+            if let Some(mcp_handler) = mcp_handler {
+                xds_handler = xds_handler.with_extension_handlers(vec![mcp_handler]);
+            }
+            _ = xds_handler.run_loop(initial_clusters, client).await;
         }
         Ok(())
     });
@@ -443,15 +453,15 @@ async fn spawn_services(info: ServiceInfo) -> Result<()> {
     Ok(())
 }
 
-async fn configure_initial_resources(
+fn register_initial_clusters(clusters: Vec<PartialClusterType>) -> Result<Vec<ClusterType>> {
+    clusters.into_iter().map(orion_lib::clusters::add_cluster).collect::<Result<_>>()
+}
+
+async fn push_initial_listeners(
     bootstrap: Bootstrap,
     listeners: Vec<orion_lib::ListenerFactory>,
-    clusters: Vec<PartialClusterType>,
     configuration_senders: Vec<ConfigurationSenders>,
-) -> Result<Vec<ClusterType>> {
-    let initial_clusters: Vec<ClusterType> =
-        clusters.into_iter().map(orion_lib::clusters::add_cluster).collect::<Result<_>>()?;
-
+) -> Result<()> {
     let listeners_tx: Vec<_> = configuration_senders
         .into_iter()
         .map(|ConfigurationSenders { listener_configuration_sender, .. }| listener_configuration_sender)
@@ -467,7 +477,7 @@ async fn configure_initial_resources(
         .map_err(Into::<orion_error::Error>::into)?;
     }
 
-    Ok(initial_clusters)
+    Ok(())
 }
 
 async fn start_proxy(configuration_receivers: ConfigurationReceivers) -> Result<()> {

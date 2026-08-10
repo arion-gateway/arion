@@ -21,6 +21,7 @@ mod filter_chain;
 mod hcm;
 mod health_check;
 mod listener;
+pub mod mcp_gateway;
 mod network_global_rate_limit;
 pub mod presets;
 mod rate_limit;
@@ -46,6 +47,14 @@ pub use hcm::{CodecType, Hcm, HcmBuilder};
 pub use health_check::{GrpcHealthCheckBuilder, HealthCheckMethod, HttpHealthCheckBuilder, TcpHealthCheckBuilder};
 pub use listener::{
     Listener, ListenerBuilder, ProxyProtocolConfig, ProxyProtocolPassThroughTlvs, ProxyProtocolVersion,
+};
+pub use mcp_gateway::{
+    dynamic_mcp_server_xds_resource, inline_string_data_source, mcp_gateway_any, mcp_gateway_http_filter,
+    mcp_gateway_route_config, mcp_resource_id, mcp_tool_xds_resource, DynamicMcpServerBuilder, McpGatewayBuilder,
+    McpGatewayHttpConfigBuilder, McpRestBackendBuilder, McpSemanticSearchBuilder, McpServerBackendBuilder,
+    McpToolBuilder, McpToolRbacBuilder, McpTransport, DEFAULT_MCP_CLUSTER_HEADER, DEFAULT_MCP_FILTER_CHAIN_NAME,
+    DEFAULT_MCP_ROUTE_CONFIG_NAME, DEFAULT_MCP_VHOST_NAME, MCP_DYNAMIC_SERVER_TYPE_URL, MCP_GATEWAY_FILTER_NAME,
+    MCP_GATEWAY_TYPE_URL, MCP_TOOL_TYPE_URL,
 };
 pub use network_global_rate_limit::{NetworkGlobalRateLimit, NetworkGlobalRateLimitBuilder};
 pub use rate_limit::{

@@ -14,7 +14,6 @@
 
 #![allow(clippy::expect_used, reason = "test infrastructure — panicking on setup failure is intentional")]
 
-use ctor::ctor;
 use http::StatusCode;
 use orion_e2e_tests::config_builder::{
     presets, BootstrapBuilder, ClusterBuilder, DownstreamTlsBuilder, FilterChainBuilder, HcmBuilder, ListenerBuilder,
@@ -24,13 +23,6 @@ use orion_e2e_tests::{
     cleanup_config_file, OrionInstance, PreConfiguredResponse, SpawnOptions, TestBackend, TestCerts,
     TlsTestClientBuilder,
 };
-
-#[ctor]
-fn init() {
-    rustls::crypto::aws_lc_rs::default_provider()
-        .install_default()
-        .expect("Could not install crypto provider (aws-lc-rs)");
-}
 
 fn sni_filter_chain(
     name: &str,

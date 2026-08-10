@@ -37,6 +37,7 @@ pub use orion_xds::xds::server::ServerAction;
 pub enum ServerEvent {
     ClientConnected { remote_addr: SocketAddr, node_id: String },
     ClientDisconnected { remote_addr: SocketAddr },
+    Subscribed { type_url: String, resource_names: Vec<String> },
 }
 
 #[derive(Clone, Debug)]
@@ -236,6 +237,11 @@ impl AggregatedDiscoveryService for TrackedAggregateServer {
                     if ack_tracker_for_incoming.complete(&item.response_nonce, result) {
                         debug!("Completed ACK for nonce: {}", item.response_nonce);
                     }
+                } else if !item.resource_names_subscribe.is_empty() {
+                    _ = event_tx.send(ServerEvent::Subscribed {
+                        type_url: item.type_url.clone(),
+                        resource_names: item.resource_names_subscribe.clone(),
+                    });
                 }
             }
             if event_tx.send(ServerEvent::ClientDisconnected { remote_addr }).is_err() {

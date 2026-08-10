@@ -59,6 +59,11 @@ impl CapturedRequest {
     }
 
     #[must_use]
+    pub fn path_and_query(&self) -> &str {
+        self.uri.path_and_query().map_or(self.uri.path(), |pq| pq.as_str())
+    }
+
+    #[must_use]
     pub fn body_str(&self) -> Option<&str> {
         std::str::from_utf8(&self.body).ok()
     }

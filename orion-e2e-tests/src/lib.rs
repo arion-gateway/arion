@@ -15,10 +15,12 @@
 #![allow(clippy::expect_used, reason = "test infrastructure — panicking on setup failure is intentional")]
 
 pub mod config_builder;
+mod embeddings_service;
 mod error;
 pub mod ext_proc_test_server;
 mod grpc_test_backend;
 mod grpc_test_client;
+pub mod mcp_gateway;
 pub mod orion_instance;
 pub(crate) mod port_allocator;
 pub mod pp_test_client;
@@ -34,6 +36,7 @@ mod tls_test_client;
 mod xds_harness;
 pub mod xds_server;
 
+pub use embeddings_service::{CapturedEmbeddingsTestRequest, EmbeddingsTestService};
 pub use error::{Error, Result};
 pub use ext_proc_test_server::{
     ext_proc_responses, CapturedProcessingRequest, ExtProcTestServer, ExtProcTestServerBuilder,
@@ -41,6 +44,11 @@ pub use ext_proc_test_server::{
 pub use grpc_test_backend::test_proto::EchoResponse;
 pub use grpc_test_backend::{GrpcTestBackend, GrpcTestBackendBuilder};
 pub use grpc_test_client::GrpcTestClient;
+pub use mcp_gateway::{
+    generate_jwt_token, CallToolParams, CallToolResult, JwtKeyPair, ListToolsResult, McpJsonRpcError,
+    McpJsonRpcRequest, McpJsonRpcResponse, McpResultExt, McpTestClient, McpTool, MockMcpServer, TestJwtClaims,
+    ToolContent,
+};
 pub use orion_instance::{OrionInstance, SpawnOptions};
 pub use port_allocator::PortBlock;
 pub use pp_test_client::ProxyProtocolTcpClient;
@@ -54,6 +62,7 @@ pub use test_client::{RequestBuilder, TestClient, TestResponse};
 pub use tls_test_backend::{TlsBackendConfig, TlsTestBackend};
 pub use tls_test_client::{TlsClientConfig, TlsTestClient, TlsTestClientBuilder};
 pub use xds_harness::{HarnessError, HarnessTimeouts, XdsEnabledHarness, XdsHarnessOptions};
+pub use xds_server::ServerEvent;
 
 pub fn cleanup_config_file(path: &std::path::Path) {
     if let Err(e) = std::fs::remove_file(path) {

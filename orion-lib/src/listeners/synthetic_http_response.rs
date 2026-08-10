@@ -38,12 +38,12 @@ pub struct SyntheticHttpResponse {
 // === impl SyntheticHttpResponse ===
 
 impl SyntheticHttpResponse {
-    pub fn internal_server_error(event_kind: EventKind, response_flags: ResponseFlags, msg: &str) -> Self {
+    pub fn internal_server_error(event_kind: EventKind, response_flags: ResponseFlags) -> Self {
         Self {
             http_status: StatusCode::INTERNAL_SERVER_ERROR,
             event_kind,
             response_flags,
-            body: Bytes::copy_from_slice(msg.as_bytes()),
+            body: Bytes::default(),
             close_connection: true,
         }
     }
@@ -58,22 +58,22 @@ impl SyntheticHttpResponse {
         }
     }
 
-    pub fn unauthorized(event_kind: EventKind, msg: &str) -> Self {
+    pub fn unauthorized(event_kind: EventKind) -> Self {
         Self {
             http_status: StatusCode::UNAUTHORIZED,
             event_kind,
             response_flags: ResponseFlags::default(),
-            body: Bytes::copy_from_slice(msg.as_bytes()),
+            body: Bytes::default(),
             close_connection: true,
         }
     }
 
-    pub fn forbidden(event_kind: EventKind, msg: &str) -> Self {
+    pub fn forbidden(event_kind: EventKind) -> Self {
         Self {
             http_status: StatusCode::FORBIDDEN,
             event_kind,
             response_flags: ResponseFlags::default(),
-            body: Bytes::copy_from_slice(msg.as_bytes()),
+            body: Bytes::default(),
             //should this close actually? the connection seems to stay open since it's only triggered for a single http
             close_connection: true,
         }
@@ -156,6 +156,11 @@ impl SyntheticHttpResponse {
             body: Bytes::default(),
             close_connection: true,
         }
+    }
+
+    #[allow(dead_code)]
+    pub fn with_body<T: Into<Bytes>>(self, body: T) -> Self {
+        Self { body: body.into(), ..self }
     }
 
     #[allow(dead_code)]

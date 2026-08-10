@@ -15,11 +15,18 @@
 //
 //
 
-pub mod bindings;
-pub mod client;
-pub mod extension;
-pub mod model;
+use crate::{metrics::Metric, sharded::ShardedU64};
+use opentelemetry::global;
 
-mod request;
-pub mod resources;
-pub mod server;
+use std::{sync::OnceLock, thread::ThreadId};
+
+pub static EMBEDDING_FAILURES_TOTAL: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
+
+pub(crate) fn init_metrics() {
+    init_observable_counter!(
+        EMBEDDING_FAILURES_TOTAL,
+        "mcp",
+        "embedding_failures_total",
+        "Total number of MCP tool embedding generation failures"
+    );
+}

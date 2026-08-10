@@ -13,11 +13,20 @@ message McpGateway {
     optional string cluster_header = 1;
     ServerInfo server_info = 2 [(validate.rules).message = {required: true}];
     repeated Tool tools = 3;
-    bool dynamic_tool_discovery = 4;
+    SemanticSearch semantic_search_tool = 4;
+    // Optional xDS Tool Discovery Service. When set, Tool and DynamicMcpServer
+    // resources streamed on the associated config_name augment the statically
+    // configured tools/dynamic servers above.
+    TdsSpecifier tds = 5;
+    // Upstream MCP servers whose tools are discovered at runtime by calling
+    // tools/list on the upstream and materialised into this filter's registry.
+    repeated DynamicMcpServer dynamic_mcp_servers = 6;
 }
 
 // Server info
 message ServerInfo {
+    // identity for an MCP server (should be unique across all filter chains 
+    // in a single Orion instance)
     string name = 1 [(validate.rules).string = {min_bytes: 1}];
     string version = 2 [(validate.rules).string = {min_bytes: 1}];
 }
@@ -34,6 +43,7 @@ message Tool {
         McpServerBackend mcp_server_backend = 7;
     };
     optional ToolRbac rbac = 8;
+    repeated float embedding = 9 [packed = true];
 }
 
 message RestBackend {
@@ -61,7 +71,31 @@ message McpServerBackend {
   }
   TransportUpstream transport = 1;
   string url = 2 [(validate.rules).string = {min_bytes: 1}];
-  google.protobuf.Duration cache_duration = 3;
+  // Fields 3 (cache_duration) and 4 (dynamic_backend) were removed: dynamic
+  // tool discovery now lives on DynamicMcpServer.
+  reserved 3, 4;
+  reserved "cache_duration", "dynamic_backend";
+}
+
+// Source of dynamically discovered tools. The gateway calls tools/list on the
+// upstream at bootstrap (and again after cache_duration expires) and exposes
+// each returned tool as {name}__{upstream_tool_name} in the registry.
+message DynamicMcpServer {
+  string name = 1 [(validate.rules).string = {min_bytes: 1}];
+  string description = 2;
+  McpServerBackend.TransportUpstream transport = 3;
+  string url = 4 [(validate.rules).string = {min_bytes: 1}];
+  // If unset, the first fetch is cached indefinitely.
+  google.protobuf.Duration cache_duration = 5;
+  // Applied to every tool materialised from this server.
+  optional ToolRbac rbac = 6;
+}
+
+// Tool Discovery Service binding. config_name selects which TDS stream's
+// Tool / DynamicMcpServer resources this filter consumes (resource IDs are
+// of the form "{config_name}/{resource_name}").
+message TdsSpecifier {
+  string config_name = 1 [(validate.rules).string = {min_bytes: 1}];
 }
 
 // RBAC configuration for individual MCP tools
@@ -106,4 +140,32 @@ message JwtHeaderMatcher {
 message JwtClaimMatcher {
   string field = 1 [(validate.rules).string = {min_bytes: 1}];
   string value = 2 [(validate.rules).string = {min_bytes: 1}];
+}
+
+// Enables searching for relevant tools within an Orion hosted MCP gateway
+message SemanticSearch {
+    bool enable_assisted_discovery = 1;
+    // customize shape of results for relevant tools
+    SimilarityConfig similarity = 2;
+    // Optional OpenAI-compatible remote embeddings endpoint. When omitted,
+    // Orion ranks tools with the built-in BM25 scorer.
+    RemoteEmbeddings embeddings = 3;
+}
+
+message RemoteEmbeddings {
+    // Orion cluster used to reach the embeddings endpoint.
+    string cluster = 1 [(validate.rules).string = {min_bytes: 1}];
+    // Model id sent in the OpenAI-compatible embeddings request body.
+    string model_id = 2 [(validate.rules).string = {min_bytes: 1}];
+    // Request path on the remote endpoint. Empty means /v1/embeddings.
+    string path = 3;
+    google.protobuf.Duration timeout = 4;
+    // Vector dimension produced by the model. Must be greater than zero.
+    uint32 dimensions = 5 [(validate.rules).uint32 = {gt: 0}];
+    reserved 6;
+}
+
+message SimilarityConfig {
+    // Maximum number of results to return. 0 means unlimited.
+    uint32 top_k = 1;
 }

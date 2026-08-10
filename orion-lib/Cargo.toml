@@ -10,17 +10,13 @@ dashmap.workspace = true
 abort-on-drop.workspace = true
 bytes.workspace = true
 smol_str.workspace = true
-chrono-tz.workspace = true
 exponential-backoff.workspace = true
 futures.workspace = true
 http.workspace = true
 http-body.workspace = true
 http-body-util.workspace = true
 hyper-util.workspace = true
-cedar-policy.workspace = true
 orion-configuration.workspace = true
-orion-wasm-types.workspace = true
-orion-data-plane-api.workspace = true
 orion-error.workspace = true
 orion-format.workspace = true
 orion-http-header.workspace = true
@@ -28,6 +24,7 @@ orion-interner.workspace = true
 orion-tracing.workspace = true
 orion-auth.workspace = true
 orion-xds.workspace = true
+prost.workspace = true
 bounded-integer.workspace = true
 ppp.workspace = true
 regex.workspace = true
@@ -41,9 +38,12 @@ url.workspace = true
 atomic_enum.workspace = true
 serde_json.workspace = true
 tracing-rolling-file.workspace = true
-time.workspace = true
 ahash.workspace = true
-
+tonic.workspace = true
+chrono-tz.workspace = true
+cedar-policy.workspace = true
+orion-data-plane-api.workspace = true
+time.workspace = true
 arc-swap.workspace = true
 arrayvec.workspace = true
 async-stream.workspace = true
@@ -51,47 +51,32 @@ atomic-time.workspace = true
 enum_dispatch.workspace = true
 futures-util.workspace = true
 h2.workspace = true
-hickory-resolver = { workspace = true, features = ["system-config"] }
-hyper = { workspace = true, features = ["full"] }
 hyper-rustls.workspace = true
 ipnet.workspace = true
 lru_time_cache.workspace = true
 opentelemetry.workspace = true
-orion-metrics = { workspace = true, optional = true }
 parking_lot.workspace = true
 pin-project.workspace = true
 pingora-timeout.workspace = true
 pretty-duration.workspace = true
-rand = { workspace = true, features = ["small_rng"] }
 rustc-hash.workspace = true
-rustls = { workspace = true, features = ["aws-lc-rs"] }
 rustls-pemfile.workspace = true
-rustls-platform-verifier = { workspace = true }
 rustls-webpki.workspace = true
 scopeguard.workspace = true
 thread-id.workspace = true
+thread_local.workspace = true
 tokio-rustls.workspace = true
 tower-service.workspace = true
 traceparent.workspace = true
 tracing-appender.workspace = true
 twox-hash.workspace = true
 typed-builder.workspace = true
-uuid = { workspace = true, features = ["v4"] }
-x509-parser = { workspace = true, features = ["default"] }
 ref-cast.workspace = true
 smallvec.workspace = true
 assert_matches.workspace = true
-tokio-util = { workspace = true, features = ["rt"] }
-tonic.workspace = true
-jsonwebtoken = { workspace = true, features = ["rust_crypto"] }
-chrono = { workspace = true, features = ["serde"] }
 base64.workspace = true
-schemars = { workspace = true, features = ["std", "derive", "chrono04"] }
 pastey.workspace = true
 owning_ref.workspace = true
-rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }
-moka = { workspace = true, features = ["sync"] }
-contatori = { workspace = true, optional = true }
 quanta.workspace = true
 hyperlocal.workspace = true
 jsonschema.workspace = true
@@ -101,13 +86,27 @@ percent-encoding.workspace = true
 atomicoption.workspace = true
 papaya.workspace = true
 const-str.workspace = true
+hickory-resolver = { workspace = true, features = ["system-config"] }
+hyper = { workspace = true, features = ["full"] }
+orion-metrics = { workspace = true, optional = true }
+rand = { workspace = true, features = ["small_rng"] }
+rustls = { workspace = true, features = ["aws-lc-rs"] }
+uuid = { workspace = true, features = ["v4"] }
+x509-parser = { workspace = true, features = ["default"] }
+tokio-util = { workspace = true, features = ["rt"] }
+jsonwebtoken = { workspace = true, features = ["aws_lc_rs"] }
+chrono = { workspace = true, features = ["serde"] }
+schemars = { workspace = true, features = ["std", "derive", "chrono04"] }
+rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }
+moka = { workspace = true, features = ["sync"] }
+rustls-platform-verifier = { workspace = true }
+contatori = { workspace = true, optional = true }
 pingora = { workspace = true, features = ["time"] }
+orion-wasm-types.workspace = true
 wasmtime.workspace = true
 bitflags.workspace = true
-thread_local.workspace = true
 crossbeam-queue = { workspace = true }
 http-serde-ext.workspace = true
-
 bincode-next = { version = "3.1.1", features = ["serde"] }
 itoa.workspace = true
 [dev-dependencies]

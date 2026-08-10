@@ -9,9 +9,13 @@ End-to-end testing utilities for Orion Proxy.
 cargo build --all-features -p orion-proxy
 
 # Run e2e tests (ignored by default)
-# We reccomend using a single thread for e2e tests to avoid race conditions
+# We recommend using a single thread for e2e tests to avoid race conditions
 cargo test -p orion-e2e-tests -- --ignored --test-threads=1
 ```
+
+## Runnable Examples
+
+- [MCP Gateway local semantic search demo](examples/README.md)
 
 ## Architecture
 
@@ -548,3 +552,97 @@ XdsEnabledHarness
 4. Always call `shutdown()` on OrionInstance or XdsEnabledHarness
 5. Verify both the response and what the backend received
 6. Build the proxy binary first: `cargo build -p orion-proxy`
+
+## MCP Gateway Tests
+
+The MCP (Model Context Protocol) gateway tests are located in `tests/mcp_gateway_tests.rs` and provide comprehensive coverage of the MCP gateway functionality.
+
+### Running MCP Tests
+
+```bash
+# Build Orion first
+cargo build -p orion-proxy
+
+# Run all MCP gateway tests
+cargo test --test mcp_gateway_tests -- --ignored
+
+# Run a specific test
+cargo test --test mcp_gateway_tests test_mcp_gateway_rest_path_templating -- --ignored
+```
+
+### Test Categories
+
+| Category | Description |
+|----------|-------------|
+| **Basic Protocol** | MCP handshake, ping, tools/list |
+| **REST Transcoding** | Path templating, query params, body templating |
+| **MCP Backend** | Proxying to upstream MCP servers |
+| **RBAC** | JWT claim/header-based access control |
+| **Discovery** | Dynamic tool discovery API |
+
+### Key Test Utilities
+
+- `McpTestClient` - HTTP client for MCP protocol requests
+- `MockMcpServer` - Simulated MCP backend server
+- `JwtKeyPair` - RSA key generation for JWT testing
+- `mcp_gateway_config()` - Builder for MCP gateway configuration
+- `rest_tool_config()` - Create REST backend tool definitions
+- `mcp_server_tool_config()` - Create MCP backend tool definitions
+- `rbac_config()` - Create RBAC permission configurations
+
+### Example MCP Test
+
+```rust
+#[tokio::test]
+#[ignore]
+async fn test_mcp_gateway_tools_list() {
+    // Start mock backend
+    let mut backend = TestBackend::start().await.unwrap();
+    backend.set_default_response(
+        PreConfiguredResponse::with_body(r#"{"result": "ok"}"#)
+    ).await;
+
+    // Create tool configuration
+    let tool = rest_tool_config(
+        "get_weather",
+        "Get weather forecast",
+        "weather_cluster",
+        "GET",
+        "/weather",
+        json!({"type": "object", "properties": {}}),
+        vec![],
+        None,
+        None,
+    );
+
+    // Build configuration
+    let bootstrap = mcp_gateway_config(
+        "test-gateway",
+        "1.0.0",
+        vec![tool],
+        vec![ClusterBuilder::new("weather_cluster")
+            .endpoint(EndpointBuilder::from_socket_addr(backend.addr()))],
+    );
+
+    let config_path = bootstrap.build_to_temp().unwrap();
+
+    // Spawn Orion
+    let orion = OrionInstance::spawn_auto_port(
+        &config_path,
+        "http",
+        SpawnOptions::default()
+    ).await.unwrap();
+
+    // Create MCP client and test
+    let mut client = McpTestClient::new(
+        format!("http://{}", orion.listener_addr().unwrap())
+    );
+    client.initialize().await.unwrap();
+    
+    let tools = client.list_tools().await.unwrap();
+    assert_eq!(tools.tools.len(), 1);
+    assert_eq!(tools.tools[0].name, "get_weather");
+
+    orion.shutdown();
+}
+```

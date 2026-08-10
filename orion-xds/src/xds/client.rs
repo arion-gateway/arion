@@ -121,6 +121,10 @@ impl DeltaDiscoveryClient {
 }
 
 impl DeltaDiscoverySubscriptionManager {
+    pub fn from_sender(subscriptions_tx: mpsc::Sender<SubscriptionEvent>) -> Self {
+        Self { subscriptions_tx }
+    }
+
     pub async fn subscribe(&self, resource_id: ResourceId, type_url: TypeUrl) -> Result<(), XdsError> {
         Ok(self.subscriptions_tx.send(SubscriptionEvent::Subscribe(type_url, resource_id)).await?)
     }
@@ -266,7 +270,7 @@ impl<C: bindings::TypedXdsBinding> DeltaClientBackgroundWorker<C> {
         match event {
             SubscriptionEvent::Subscribe(type_url, resource_id) => {
                 debug!(type_url = type_url.to_string(), resource_id, "processing new subscription");
-                let is_new = state.subscriptions.entry(type_url).or_default().insert(resource_id.clone());
+                let is_new = state.subscriptions.entry(type_url.clone()).or_default().insert(resource_id.clone());
                 if is_new {
                     if let Err(err) = discovery_requests_tx
                         .send(
@@ -283,7 +287,8 @@ impl<C: bindings::TypedXdsBinding> DeltaClientBackgroundWorker<C> {
             },
             SubscriptionEvent::Unsubscribe(type_url, resource_id) => {
                 debug!(type_url = type_url.to_string(), resource_id, "processing unsubscribe");
-                let was_subscribed = state.subscriptions.entry(type_url).or_default().remove(resource_id.as_str());
+                let was_subscribed =
+                    state.subscriptions.entry(type_url.clone()).or_default().remove(resource_id.as_str());
                 if was_subscribed {
                     if let Err(err) = discovery_requests_tx
                         .send(
@@ -307,19 +312,19 @@ impl<C: bindings::TypedXdsBinding> DeltaClientBackgroundWorker<C> {
         acknowledgments_tx: &mpsc::Sender<DeltaDiscoveryRequest>,
         state: &mut DiscoveryClientState,
     ) -> Result<(), XdsError> {
-        let type_url = TypeUrl::try_from(response.type_url.as_str())?;
+        let type_url = TypeUrl::from(response.type_url.as_str());
         let nonce = response.nonce.clone();
         info!(type_url = type_url.to_string(), size = response.resources.len(), "received config resources from xDS");
-        let for_removal = Self::process_resource_ids_for_removal(state, &response, type_url);
+        let for_removal = Self::process_resource_ids_for_removal(state, &response, &type_url);
 
-        match Self::decode_pending_updates(&response, type_url) {
+        match Self::decode_pending_updates(&response, &type_url) {
             Ok(mut decoded_updates) => {
                 let (internal_ack_tx, internal_ack_rx) = oneshot::channel::<Vec<RejectedConfig>>();
 
                 let mut pending_update_versions = Self::extract_update_versions(&decoded_updates);
                 let mut removal_notifications = for_removal
                     .iter()
-                    .map(|resource_id| XdsResourceUpdate::Remove(resource_id.clone(), type_url))
+                    .map(|resource_id| XdsResourceUpdate::Remove(resource_id.clone(), type_url.clone()))
                     .collect::<Vec<XdsResourceUpdate>>();
 
                 let mut batched_updates = Vec::<XdsResourceUpdate>::new();
@@ -336,7 +341,7 @@ impl<C: bindings::TypedXdsBinding> DeltaClientBackgroundWorker<C> {
                             Ok(rejected_configs) => {
                                 let maybe_error = if rejected_configs.is_empty() {
                                     debug!(type_url = type_url.to_string(), nonce, "sending ack response after processing");
-                                    let tracked_resources = state.tracked.entry(type_url).or_default();
+                                    let tracked_resources = state.tracked.entry(type_url.clone()).or_default();
                                     for (resource_id, resource_version) in pending_update_versions.drain() {
                                         tracked_resources.insert(resource_id, resource_version);
                                     }
@@ -349,7 +354,7 @@ impl<C: bindings::TypedXdsBinding> DeltaClientBackgroundWorker<C> {
                                     warn!(type_url = type_url.to_string(), error_msg, nonce, "rejecting configs with nack response");
                                     Some(StatusBuilder::invalid_argument().with_message(error_msg).build())
                                 };
-                                let upstream_response = DeltaDiscoveryRequestBuilder::for_resource(type_url)
+                                let upstream_response = DeltaDiscoveryRequestBuilder::for_resource(type_url.clone())
                                     .with_node_id(self.node.clone())
                                     .with_nounce(nonce.clone())
                                     .with_error_detail(maybe_error)
@@ -369,7 +374,7 @@ impl<C: bindings::TypedXdsBinding> DeltaClientBackgroundWorker<C> {
                                 .collect::<Vec<String>>()
                                 .join("; ");
                         let error_msg = format!("timed out trying to apply resource updates for [{version_info}]");
-                        let upstream_response = DeltaDiscoveryRequestBuilder::for_resource(type_url)
+                        let upstream_response = DeltaDiscoveryRequestBuilder::for_resource(type_url.clone())
                             .with_node_id(self.node.clone())
                             .with_nounce(nonce.clone())
                             .with_error_detail(Some(StatusBuilder::unspecified_error().with_message(error_msg).build()))
@@ -386,7 +391,7 @@ impl<C: bindings::TypedXdsBinding> DeltaClientBackgroundWorker<C> {
                     type_url = type_url.to_string(),
                     error_msg, nonce, "decoding error, rejecting configs with nack response"
                 );
-                let upstream_nack_response = DeltaDiscoveryRequestBuilder::for_resource(type_url)
+                let upstream_nack_response = DeltaDiscoveryRequestBuilder::for_resource(type_url.clone())
                     .with_node_id(self.node.clone())
                     .with_nounce(nonce)
                     .with_error_detail(Some(StatusBuilder::invalid_argument().with_message(error_msg).build()))
@@ -416,7 +421,7 @@ impl<C: bindings::TypedXdsBinding> DeltaClientBackgroundWorker<C> {
                 let subscriptions = tracking_state.subscriptions.get(resource_type).cloned().unwrap_or_default();
                 let already_tracked: HashMap<ResourceId, ResourceVersion> =
                     tracking_state.tracked.get(resource_type).cloned().unwrap_or_default();
-                DeltaDiscoveryRequestBuilder::for_resource(resource_type.to_owned())
+                DeltaDiscoveryRequestBuilder::for_resource(resource_type.clone())
                     .with_node_id(self.node.clone())
                     .with_initial_resource_versions(already_tracked)
                     .with_resource_names_subscribe(subscriptions.into_iter().collect())
@@ -428,14 +433,14 @@ impl<C: bindings::TypedXdsBinding> DeltaClientBackgroundWorker<C> {
     fn process_resource_ids_for_removal(
         state: &mut DiscoveryClientState,
         response: &DeltaDiscoveryResponse,
-        type_url: TypeUrl,
+        type_url: &TypeUrl,
     ) -> Vec<String> {
         response
             .removed_resources
             .iter()
             .map(|resource_id| {
                 debug!("received delete for config resource {}", resource_id);
-                if let Some(resources) = state.tracked.get_mut(&type_url) {
+                if let Some(resources) = state.tracked.get_mut(type_url) {
                     resources.remove(resource_id);
                 }
                 resource_id.clone()
@@ -445,7 +450,7 @@ impl<C: bindings::TypedXdsBinding> DeltaClientBackgroundWorker<C> {
 
     fn decode_pending_updates(
         response: &DeltaDiscoveryResponse,
-        type_url: TypeUrl,
+        type_url: &TypeUrl,
     ) -> Result<Vec<XdsResourceUpdate>, Vec<RejectedConfig>> {
         let mut decoding_errors = Vec::<RejectedConfig>::new();
         let decoded_updates = response
@@ -455,7 +460,7 @@ impl<C: bindings::TypedXdsBinding> DeltaClientBackgroundWorker<C> {
             .filter_map(|resource| {
                 let resource_id = resource.name.clone();
                 let resource_version = resource.version.clone();
-                let decoded = XdsResourcePayload::try_from((resource, type_url));
+                let decoded = XdsResourcePayload::try_from((resource, type_url.clone()));
                 if decoded.is_err() {
                     let error_msg = format!(
                         "problem decoding config update for {} : error {:?}",

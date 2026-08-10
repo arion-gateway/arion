@@ -41,12 +41,28 @@ ppp = { workspace = true }
 rustls = { workspace = true, features = ["aws_lc_rs"] }
 rustls-pemfile.workspace = true
 ctor.workspace = true
+clap.workspace = true
 test-log = { workspace = true, features = ["trace"] }
 futures-util.workspace = true
 pingora = { workspace = true, features = ["time"] }
+fastembed = { version = "4", optional = true, default-features = false, features = ["hf-hub-rustls-tls", "ort-download-binaries"] }
 
 [dev-dependencies]
 tracing-test.workspace = true
+
+[features]
+default = []
+fastembed-service = ["dep:fastembed"]
+mcp-tests = []
+
+[[example]]
+name = "fastembed_embedding_service"
+path = "examples/fastembed_embedding_service.rs"
+required-features = ["fastembed-service"]
+
+[[test]]
+name = "mcp_gateway_semantic_search"
+path = "tests/mcp_gateway_semantic_search.rs"
 
 [build-dependencies]
 tonic-prost-build.workspace = true
