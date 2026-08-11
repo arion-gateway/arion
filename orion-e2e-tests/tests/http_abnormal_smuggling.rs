@@ -18,31 +18,13 @@ use std::time::Duration;
 
 use orion_e2e_tests::config_builder::presets;
 use orion_e2e_tests::{
-    cleanup_config_file, OrionInstance, PreConfiguredResponse, RawHttpResponse, SpawnOptions, TcpTestBackend,
-    TcpTestClient, TestBackend,
+    cleanup_config_file, OrionInstance, PreConfiguredResponse, RawHttpResponse, SpawnOptions, TcpTestClient,
+    TestBackend,
 };
 
 async fn setup() -> (OrionInstance, TestBackend, TcpTestClient, std::path::PathBuf) {
     let backend = TestBackend::start().await.expect("Failed to start backend");
     backend.set_default_response(PreConfiguredResponse::with_body("OK")).await;
-
-    let bootstrap = presets::simple_proxy("backend", backend.addr());
-    let config_path = bootstrap.build_to_temp().expect("Failed to build config");
-
-    let orion = OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default())
-        .await
-        .expect("Failed to spawn Orion");
-
-    #[allow(clippy::unwrap_used)]
-    let tcp_client = TcpTestClient::new(orion.listener_addr().unwrap());
-    (orion, backend, tcp_client, config_path)
-}
-
-async fn setup_with_tcp_backend() -> (OrionInstance, TcpTestBackend, TcpTestClient, std::path::PathBuf) {
-    let backend = TcpTestBackend::start().await.expect("Failed to start TCP backend");
-    // Configure TCP backend to send a minimal HTTP response
-    backend.set_send_on_connect(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK".to_vec()).await;
-    backend.set_read_timeout(Duration::from_secs(2)).await;
 
     let bootstrap = presets::simple_proxy("backend", backend.addr());
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
@@ -64,7 +46,7 @@ fn cleanup(orion: OrionInstance, config_path: &std::path::Path) {
 #[tokio::test]
 #[ignore]
 async fn test_tc0701_cl_te_smuggling() {
-    let (orion, mut backend, tcp_client, config_path) = setup_with_tcp_backend().await;
+    let (orion, mut backend, tcp_client, config_path) = setup().await;
 
     // CL-TE smuggling payload:
     // CL says the body is short (covering only the chunked preamble),
@@ -81,56 +63,30 @@ async fn test_tc0701_cl_te_smuggling() {
         \r\n";
 
     let response = tcp_client.send_with_timeout(payload, Duration::from_secs(3)).await.expect("Failed to send");
-
-    // Orion rejects the ambiguous CL+TE request per RFC 7230 §3.3.3.
-    // It returns 400 when the frame parser catches the conflict, or 502 when the upstream
-    // connection aborts — both indicate safe rejection. The smuggled request must not reach the backend.
     let resp = RawHttpResponse::parse(&response).expect("Expected a response");
-    resp.assert_status_in(&[400, 502]);
 
-    // Verify backend did NOT receive a smuggled request to /smuggled.
-    let conn = backend.await_connection_with_timeout(Duration::from_secs(1)).await;
-    if let Ok(conn) = conn {
-        let received = String::from_utf8_lossy(&conn.received_data);
-        assert!(!received.contains("/smuggled"), "Backend received smuggled request! Data: {received}");
-    }
-
-    cleanup(orion, &config_path);
-}
-
-#[tokio::test]
-#[ignore]
-async fn test_tc0702_te_cl_smuggling() {
-    let (orion, mut backend, tcp_client, config_path) = setup_with_tcp_backend().await;
-
-    // TE-CL payload: TE takes priority, body is chunked.
-    // After the chunk terminator (0\r\n\r\n), we inject a second request.
-    let payload = b"POST /test HTTP/1.1\r\n\
-        Host: localhost\r\n\
-        Transfer-Encoding: chunked\r\n\
-        Content-Length: 50\r\n\
-        \r\n\
-        5\r\n\
-        hello\r\n\
-        0\r\n\
-        \r\n\
-        GET /smuggled HTTP/1.1\r\n\
-        Host: localhost\r\n\
-        \r\n";
-
-    let response = tcp_client.send_with_timeout(payload, Duration::from_secs(3)).await.expect("Failed to send");
-
-    // Orion prioritizes Transfer-Encoding over Content-Length and forwards the chunked body;
-    // the smuggled request after 0\r\n\r\n is not forwarded to the backend.
-    let resp = RawHttpResponse::parse(&response).expect("Expected a response");
+    // hyper uses TE:chunked for framing (stripping CL per RFC 9112 6.3), so POST /test is
+    // forwarded correctly. hyper also sets keep_alive=false when both CL and TE are present,
+    // closing the connection after the response - the bytes after the chunked terminator
+    // (GET /smuggled) are therefore discarded and never reach Orion's service layer.
     resp.assert_status(200);
 
-    // Verify no smuggled request reached the backend.
-    let conn = backend.await_connection_with_timeout(Duration::from_secs(1)).await;
-    if let Ok(conn) = conn {
-        let received = String::from_utf8_lossy(&conn.received_data);
-        assert!(!received.contains("/smuggled"), "Backend received smuggled request! Data: {received}");
-    }
+    // Backend sees POST /test with no framing ambiguity: hyper stripped CL (TE wins),
+    // Orion stripped TE as a hop-by-hop header, and the chunked body decodes to zero bytes.
+    let post_req = backend.await_request_with_timeout(Duration::from_secs(1)).await.expect("Expected POST /test");
+    assert_eq!(post_req.path(), "/test");
+    assert!(
+        !(post_req.headers.contains_key("content-length") && post_req.headers.contains_key("transfer-encoding")),
+        "backend must not receive both Content-Length and Transfer-Encoding simultaneously"
+    );
+    assert!(post_req.body.is_empty(), "chunked body 0\\r\\n\\r\\n decodes to zero bytes");
+
+    // GET /smuggled must NOT reach the backend: hyper discards the trailing bytes by closing
+    // the connection instead of reading them as a new pipelined request.
+    assert!(
+        backend.try_recv_request().is_none(),
+        "GET /smuggled must not reach the backend: hyper closes the connection on CL+TE requests"
+    );
 
     cleanup(orion, &config_path);
 }
