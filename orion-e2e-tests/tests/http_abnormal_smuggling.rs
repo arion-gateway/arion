@@ -29,9 +29,10 @@ async fn setup() -> (OrionInstance, TestBackend, TcpTestClient, std::path::PathB
     let bootstrap = presets::simple_proxy("backend", backend.addr());
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
 
-    let orion = OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default())
+    let orion = OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default().with_test_admin())
         .await
         .expect("Failed to spawn Orion");
+    orion.wait_for_upstream_ready(Duration::from_secs(5)).await.expect("upstream not ready");
 
     #[allow(clippy::unwrap_used)]
     let tcp_client = TcpTestClient::new(orion.listener_addr().unwrap());
@@ -47,14 +48,15 @@ fn cleanup(orion: OrionInstance, config_path: &std::path::Path) {
 #[ignore]
 async fn test_tc0701_cl_te_smuggling() {
     let mut backend = TcpTestBackend::start().await.expect("Failed to start TCP backend");
-    backend.set_send_on_connect(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK".to_vec()).await;
+    backend.set_send_after_read(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK".to_vec()).await;
     backend.set_read_timeout(Duration::from_secs(2)).await;
 
     let bootstrap = presets::simple_proxy("backend", backend.addr());
     let config_path = bootstrap.build_to_temp().expect("Failed to build config");
-    let orion = OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default())
+    let orion = OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default().with_test_admin())
         .await
         .expect("Failed to spawn Orion");
+    orion.wait_for_upstream_ready(Duration::from_secs(5)).await.expect("upstream not ready");
 
     #[allow(clippy::unwrap_used)]
     let tcp_client = TcpTestClient::new(orion.listener_addr().unwrap());

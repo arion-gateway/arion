@@ -134,7 +134,7 @@ pub fn simple_proxy(cluster_name: impl Into<String>, backend: SocketAddr) -> Boo
         ),
     );
 
-    BootstrapBuilder::new().listener(listener).cluster(cluster)
+    BootstrapBuilder::new().listener(listener).cluster(cluster).admin("127.0.0.1", crate::TEST_ADMIN_PORT)
 }
 
 #[must_use]

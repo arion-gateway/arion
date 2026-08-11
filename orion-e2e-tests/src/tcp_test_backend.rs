@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use tokio::sync::{mpsc, Mutex, Notify};
+use tokio::sync::{Mutex, Notify, mpsc};
 use tracing::{debug, error, info, warn};
 
 use crate::{Error, Result};
@@ -36,13 +36,19 @@ pub struct CapturedTcpConnection {
 #[derive(Debug, Clone)]
 struct TcpBehavior {
     send_on_connect: Option<Vec<u8>>,
+    send_after_read: Option<Vec<u8>>,
     close_after_send: bool,
     read_timeout: Duration,
 }
 
 impl Default for TcpBehavior {
     fn default() -> Self {
-        Self { send_on_connect: None, close_after_send: false, read_timeout: Duration::from_millis(100) }
+        Self {
+            send_on_connect: None,
+            send_after_read: None,
+            close_after_send: false,
+            read_timeout: Duration::from_millis(100),
+        }
     }
 }
 
@@ -140,6 +146,13 @@ impl TcpTestBackend {
                                             debug!(?peer_addr, "Read timeout, no data received");
                                         }
                                     }
+
+                                    if let Some(ref data) = current_behavior.send_after_read {
+                                        if let Err(e) = stream.write_all(data).await {
+                                            warn!(?e, "Failed to send after-read response");
+                                        }
+                                        debug!(?peer_addr, bytes = data.len(), "Sent after-read response");
+                                    }
                                 }
 
                                 let captured = CapturedTcpConnection { peer_addr, received_data };
@@ -177,6 +190,10 @@ impl TcpTestBackend {
 
     pub async fn clear_send_on_connect(&self) {
         self.behavior.lock().await.send_on_connect = None;
+    }
+
+    pub async fn set_send_after_read(&self, data: impl Into<Vec<u8>>) {
+        self.behavior.lock().await.send_after_read = Some(data.into());
     }
 
     pub async fn set_close_after_send(&self, close: bool) {

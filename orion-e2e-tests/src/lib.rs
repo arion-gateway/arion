@@ -39,21 +39,21 @@ pub mod xds_server;
 pub use embeddings_service::{CapturedEmbeddingsTestRequest, EmbeddingsTestService};
 pub use error::{Error, Result};
 pub use ext_proc_test_server::{
-    ext_proc_responses, CapturedProcessingRequest, ExtProcTestServer, ExtProcTestServerBuilder,
+    CapturedProcessingRequest, ExtProcTestServer, ExtProcTestServerBuilder, ext_proc_responses,
 };
 pub use grpc_test_backend::test_proto::EchoResponse;
 pub use grpc_test_backend::{GrpcTestBackend, GrpcTestBackendBuilder};
 pub use grpc_test_client::GrpcTestClient;
 pub use mcp_gateway::{
-    generate_jwt_token, CallToolParams, CallToolResult, JwtKeyPair, ListToolsResult, McpJsonRpcError,
-    McpJsonRpcRequest, McpJsonRpcResponse, McpResultExt, McpTestClient, McpTool, MockMcpServer, TestJwtClaims,
-    ToolContent,
+    CallToolParams, CallToolResult, JwtKeyPair, ListToolsResult, McpJsonRpcError, McpJsonRpcRequest,
+    McpJsonRpcResponse, McpResultExt, McpTestClient, McpTool, MockMcpServer, TestJwtClaims, ToolContent,
+    generate_jwt_token,
 };
 pub use orion_instance::{OrionInstance, SpawnOptions};
 pub use port_allocator::PortBlock;
 pub use pp_test_client::ProxyProtocolTcpClient;
-pub use raw_http::{assert_rejected, PartialSendClient, RawHttpRequestBuilder, RawHttpResponse};
-pub use rls_test_server::{rls_responses, RlsTestServer, RlsTestServerBuilder};
+pub use raw_http::{PartialSendClient, RawHttpRequestBuilder, RawHttpResponse, assert_rejected};
+pub use rls_test_server::{RlsTestServer, RlsTestServerBuilder, rls_responses};
 pub use tcp_test_backend::{CapturedTcpConnection, TcpTestBackend};
 pub use tcp_test_client::TcpTestClient;
 pub use test_backend::{CapturedRequest, PreConfiguredResponse, TestBackend};
@@ -63,6 +63,11 @@ pub use tls_test_backend::{TlsBackendConfig, TlsTestBackend};
 pub use tls_test_client::{TlsClientConfig, TlsTestClient, TlsTestClientBuilder};
 pub use xds_harness::{HarnessError, HarnessTimeouts, XdsEnabledHarness, XdsHarnessOptions};
 pub use xds_server::ServerEvent;
+
+/// Fixed admin port used by test Orion instances. Hardcoded so that tests do not need
+/// dynamic port allocation for the admin interface. E2e tests must run single-threaded
+/// (--test-threads=1) to avoid port conflicts across concurrent test binaries.
+pub const TEST_ADMIN_PORT: u16 = 9901;
 
 pub fn cleanup_config_file(path: &std::path::Path) {
     if let Err(e) = std::fs::remove_file(path) {

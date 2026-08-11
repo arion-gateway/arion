@@ -34,6 +34,7 @@ pub struct OrionInstance {
     config_path: PathBuf,
     cleanup_config: bool,
     listener_addr: Option<SocketAddr>,
+    admin_addr: Option<SocketAddr>,
     shutdown_requested: Arc<AtomicBool>,
     _output_reader: Option<std::thread::JoinHandle<()>>,
 }
@@ -206,6 +207,7 @@ impl OrionInstance {
             config_path,
             cleanup_config: options.cleanup_config,
             listener_addr: Some(listener_addr),
+            admin_addr: options.admin_addr,
             shutdown_requested,
             _output_reader: output_reader,
         })
@@ -363,6 +365,7 @@ impl OrionInstance {
             config_path,
             cleanup_config: options.cleanup_config,
             listener_addr: Some(listener_addr),
+            admin_addr: options.admin_addr,
             shutdown_requested,
             _output_reader: output_reader,
         })
@@ -430,9 +433,62 @@ impl OrionInstance {
             config_path,
             cleanup_config: options.cleanup_config,
             listener_addr,
+            admin_addr: options.admin_addr,
             shutdown_requested,
             _output_reader: output_reader,
         })
+    }
+
+    /// Polls Orion's admin /ready endpoint until it returns 200 (ProxyState::Live is set).
+    ///
+    /// spawn_auto_port returns as soon as the downstream listener port is bound, but
+    /// ProxyState::Live is set slightly later once all proxy runtimes are fully started.
+    /// Calling this after spawn_auto_port closes that gap. Backends are always started
+    /// before Orion in tests, so by the time this returns, the upstream is also ready.
+    ///
+    /// Requires the bootstrap config to include an admin section and SpawnOptions to be
+    /// built with with_test_admin(). Returns immediately if no admin_addr is configured.
+    pub async fn wait_for_upstream_ready(&self, timeout: Duration) -> Result<()> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let Some(admin_addr) = self.admin_addr else {
+            return Ok(());
+        };
+
+        const READY_REQ: &[u8] = b"GET /ready HTTP/1.0\r\nHost: localhost\r\n\r\n";
+        const RETRY_INTERVAL: Duration = Duration::from_millis(50);
+
+        let deadline = Instant::now() + timeout;
+
+        loop {
+            let outcome = async {
+                let mut stream = tokio::net::TcpStream::connect(admin_addr).await?;
+                stream.write_all(READY_REQ).await?;
+                let mut buf = [0u8; 64];
+                let n = stream.read(&mut buf).await?;
+                Ok::<Vec<u8>, std::io::Error>(buf.get(..n).unwrap_or_default().to_vec())
+            }
+            .await;
+
+            match outcome {
+                Ok(bytes) => {
+                    let status = std::str::from_utf8(&bytes)
+                        .ok()
+                        .and_then(|s| s.split_whitespace().nth(1))
+                        .and_then(|s| s.parse::<u16>().ok());
+                    if status == Some(200) {
+                        return Ok(());
+                    }
+                    debug!(?status, "admin /ready not yet 200, retrying");
+                },
+                Err(e) => debug!(?e, "admin probe failed, retrying"),
+            }
+
+            if Instant::now() >= deadline {
+                return Err(Error::ReadyTimeout(timeout));
+            }
+            tokio::time::sleep(RETRY_INTERVAL).await;
+        }
     }
 
     pub async fn wait_for_listener(&mut self, timeout: Duration) -> Result<()> {
@@ -487,11 +543,7 @@ impl OrionInstance {
 
     #[must_use]
     pub fn is_running(&mut self) -> bool {
-        if let Some(ref mut process) = self.process {
-            matches!(process.try_wait(), Ok(None))
-        } else {
-            false
-        }
+        if let Some(ref mut process) = self.process { matches!(process.try_wait(), Ok(None)) } else { false }
     }
 
     pub fn shutdown(mut self) {
@@ -562,6 +614,7 @@ pub struct SpawnOptions {
     pub num_runtimes: Option<usize>,
     pub log_level: Option<String>,
     pub verbose_output: bool,
+    pub admin_addr: Option<SocketAddr>,
 }
 
 impl Default for SpawnOptions {
@@ -573,6 +626,7 @@ impl Default for SpawnOptions {
             num_runtimes: None,
             log_level: None,
             verbose_output: false,
+            admin_addr: None,
         }
     }
 }
@@ -611,6 +665,14 @@ impl SpawnOptions {
     #[must_use]
     pub fn with_log_level(mut self, level: impl Into<String>) -> Self {
         self.log_level = Some(level.into());
+        self
+    }
+
+    /// Configures the admin address to TEST_ADMIN_PORT on localhost. The bootstrap config
+    /// must include a matching `.admin("127.0.0.1", TEST_ADMIN_PORT)` call.
+    #[must_use]
+    pub fn with_test_admin(mut self) -> Self {
+        self.admin_addr = Some(SocketAddr::from(([127, 0, 0, 1], crate::TEST_ADMIN_PORT)));
         self
     }
 }
