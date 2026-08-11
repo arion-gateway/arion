@@ -18,12 +18,11 @@
 #[cfg(feature = "access-log")]
 use crate::with_access_log;
 
-use super::{RequestHandler, TransactionContext};
+use super::{RequestCtx, RequestHandler};
 use crate::{body::timeout_body::TimeoutBody, OrionRequestBody, OrionResponseBody, Result};
 use http_body_util::Full;
 use hyper::{Request, Response};
 use orion_configuration::config::network_filters::http_connection_manager::route::DirectResponseAction;
-use std::sync::Arc;
 
 #[cfg(feature = "access-log")]
 use orion_format::context::UpstreamContext;
@@ -31,7 +30,7 @@ use orion_format::context::UpstreamContext;
 impl<'a> RequestHandler<Request<OrionRequestBody>, &'a str> for &DirectResponseAction {
     async fn to_response(
         self,
-        #[allow(unused_variables)] trans_context: &Arc<TransactionContext>,
+        #[allow(unused_variables)] ctx: &RequestCtx,
         request: Request<OrionRequestBody>,
         #[allow(unused_variables)] arg: &'a str,
     ) -> Result<Response<OrionResponseBody>> {
@@ -39,7 +38,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, &'a str> for &DirectResponseA
         let route_name = arg;
         #[cfg(feature = "access-log")]
         with_access_log!(
-            &mut trans_context.trans_state.lock().loggers,
+            &mut ctx.tx.trans_state.lock().loggers,
             UpstreamContext { authority: None, cluster_name: None, route_name }
         );
 

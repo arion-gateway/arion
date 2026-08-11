@@ -15,17 +15,15 @@
 //
 //
 
-use std::sync::Arc;
-
 #[cfg(feature = "metrics")]
 use crate::metrics;
 
-use super::{RequestHandler, TransactionContext};
+use super::{RequestCtx, RequestHandler};
 use crate::{
     body::response_flags::ResponseFlags, event_error::EventFailure,
     listeners::synthetic_http_response::SyntheticHttpResponse, transport::HttpChannels,
-    utils::instrumented_stream::InstrumentedStream, with_metric, OrionRequestBody, OrionResponseBody, RequestContext,
-    Result,
+    utils::instrumented_stream::InstrumentedStream, with_metric, OrionRequestBody, OrionResponseBody, Result,
+    UpstreamCallOpts,
 };
 use orion_format::types::ResponseFlags as FmtResponseFlags;
 
@@ -97,7 +95,7 @@ pub fn is_websocket_enabled_by_hcm(hcm_enabled_upgrades: &[UpgradeType]) -> bool
 
 #[allow(clippy::too_many_lines)]
 pub async fn handle_websocket_upgrade(
-    trans_ctx: &Arc<TransactionContext>,
+    req_ctx: &RequestCtx,
     mut request: Request<OrionRequestBody>,
     svc_channel: &HttpChannels,
     #[cfg(feature = "metrics")] listener_name: &'static str,
@@ -106,10 +104,10 @@ pub async fn handle_websocket_upgrade(
     match version {
         Version::HTTP_11 => {
             #[cfg(feature = "metrics")]
-            let user_partition_key = trans_ctx.user_partition_key;
+            let user_partition_key = req_ctx.tx.user_partition_key;
 
             let request_upgrade = hyper::upgrade::on(&mut request);
-            match svc_channel.to_response(trans_ctx, request, RequestContext::default()).await {
+            match svc_channel.to_response(req_ctx, request, UpstreamCallOpts::default()).await {
                 Ok(mut upstream_response) if upstream_response.status() == StatusCode::SWITCHING_PROTOCOLS => {
                     let response_upgrade = hyper::upgrade::on(&mut upstream_response);
                     #[cfg(feature = "metrics")]

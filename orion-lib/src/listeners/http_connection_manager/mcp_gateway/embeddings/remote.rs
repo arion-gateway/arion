@@ -24,14 +24,14 @@ use orion_interner::StringInterner;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
-use crate::body::instrumented_body::InstrumentedBody;
 use crate::body::poly_body::PolyBody;
 use crate::body::response_flags::BodyKind;
 use crate::body::timeout_body::TimeoutBody;
 use crate::clusters::clusters_manager;
 use crate::clusters::clusters_manager::RoutingContext;
-use crate::listeners::http_connection_manager::{RequestHandler, TransactionContext};
-use crate::{OrionRequestBody, RequestContext};
+use crate::listeners::http_connection_manager::RequestHandler;
+use crate::{body::instrumented_body::InstrumentedBody, listeners::http_connection_manager::RequestCtx};
+use crate::{OrionRequestBody, UpstreamCallOpts};
 
 use super::{normalise_in_place, Embedding, EmbeddingError};
 
@@ -103,10 +103,10 @@ impl EmbeddingsClient {
             .body(body)
             .map_err(|e| EmbeddingError::Service(format!("request: {e}")))?;
 
-        let request_context =
-            RequestContext { route_timeout: Some(self.timeout), retry_policy: None, ..Default::default() };
+        let upstream_call_opts =
+            UpstreamCallOpts { route_timeout: Some(self.timeout), retry_policy: None, ..Default::default() };
         let response = (&channels)
-            .to_response(&Arc::new(TransactionContext::default()), request, request_context)
+            .to_response(&RequestCtx::default(), request, upstream_call_opts)
             .await
             .map_err(|e| EmbeddingError::Service(format!("upstream call failed: {e}")))?;
 

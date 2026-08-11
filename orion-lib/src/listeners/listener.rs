@@ -751,7 +751,7 @@ impl Listener {
                 return filterchain
                     .start_filterchain(
                         stream,
-                        Box::new(DownstreamMetadata::new(connection_metadata, sni, listener_name)),
+                        Arc::new(DownstreamMetadata::new(connection_metadata, sni, listener_name)),
                         start_instant,
                     )
                     .await;

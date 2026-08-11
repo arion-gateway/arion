@@ -25,13 +25,13 @@ use crate::{
     event_error::{EventKind, TryInferFrom, UpstreamError},
     instrument_block, instrument_function,
     listeners::{
-        http_connection_manager::{http_modifiers::strip_trailers_headers, RequestHandler, TransactionContext},
+        http_connection_manager::{http_modifiers::strip_trailers_headers, RequestCtx, RequestHandler},
         synthetic_http_response::SyntheticHttpResponse,
     },
     secrets::{TlsConfigurator, WantsToBuildClient},
     thread_local::{LocalBuilder, ThreadLocalObject},
     transport::timer::PingoraTimer,
-    Error, OrionRequestBody, OrionResponseBody, RequestContext, Result,
+    Error, OrionRequestBody, OrionResponseBody, Result, UpstreamCallOpts,
 };
 use http::{
     uri::{Authority, Parts},
@@ -294,18 +294,17 @@ impl HttpChannelBuilder {
     }
 }
 
-impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &HttpChannels {
+impl<'a> RequestHandler<Request<OrionRequestBody>, UpstreamCallOpts<'a>> for &HttpChannels {
     async fn to_response(
         self,
-        trans_context: &Arc<TransactionContext>,
+        req_ctx: &RequestCtx,
         request: Request<OrionRequestBody>,
-        arg: RequestContext<'a>,
+        arg: UpstreamCallOpts<'a>,
     ) -> Result<Response<OrionResponseBody>> {
-        let ctx = arg;
         match self {
-            HttpChannels::Single(channel) => channel.to_response(trans_context, request, ctx).await,
+            HttpChannels::Single(channel) => channel.to_response(req_ctx, request, arg).await,
             HttpChannels::MultiWithFailover { channel, failover_channels } => {
-                let RequestContext { route_timeout, priority, .. } = ctx;
+                let UpstreamCallOpts { route_timeout, priority, .. } = arg;
                 let (parts, body) = request.into_parts();
                 let body_kind = body.body_kind;
                 let stream_metrics = Clone::clone(&body.stream_metrics);
@@ -327,9 +326,9 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
                         on_complete: Clone::clone(&on_complete),
                     };
                     let rebuilt_req = Request::from_parts(parts.clone(), cloned_body);
-                    let attempt_ctx = RequestContext { route_timeout, retry_policy: None, priority };
+                    let attempt_ctx = UpstreamCallOpts { route_timeout, retry_policy: None, priority };
 
-                    match channel.to_response(trans_context, rebuilt_req, attempt_ctx).await {
+                    match channel.to_response(req_ctx, rebuilt_req, attempt_ctx).await {
                         Ok(response) => {
                             if response.status().is_server_error() && (attempt + 1) < total_attempts {
                                 debug!(
@@ -368,15 +367,14 @@ pub struct Retries {
     pub timeouts: u32,
 }
 
-impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &HttpChannel {
+impl<'a> RequestHandler<Request<OrionRequestBody>, UpstreamCallOpts<'a>> for &HttpChannel {
     async fn to_response(
         self,
-        #[allow(unused_variables)] trans_context: &Arc<TransactionContext>,
+        req_ctx: &RequestCtx,
         request: Request<OrionRequestBody>,
-        arg: RequestContext<'a>,
+        arg: UpstreamCallOpts<'a>,
     ) -> Result<Response<OrionResponseBody>> {
-        let ctx = arg;
-        instrument_function!(trans_context.clock, |nanos| {
+        instrument_function!(req_ctx.tx.clock, |nanos| {
             #[allow(clippy::cast_possible_truncation)]
             crate::instrumentation::metrics::REQUEST_TO_RESPONSE_TIME.observe(nanos as usize)
         });
@@ -411,7 +409,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
         }
 
         #[cfg(feature = "access-log")]
-        trans_context.with_loggers(|loggers| {
+        req_ctx.tx.with_loggers(|loggers| {
             if let Err(err) = crate::access_log::evaluate_base64_access_log_hook(
                 crate::access_log::AccessLogHook::UpstreamRequest,
                 request.headers(),
@@ -421,12 +419,12 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
             }
         });
 
-        let RequestContext { route_timeout, retry_policy, priority } = ctx;
+        let UpstreamCallOpts { route_timeout, retry_policy, priority } = arg;
 
         let mut retries = Retries::default();
         let start_time = std::time::Instant::now();
         let result = instrument_block!(
-            trans_context.clock,
+            req_ctx.tx.clock,
             |nanos| {
                 #[allow(clippy::cast_possible_truncation)]
                 crate::instrumentation::metrics::SEND_REQUEST_WAIT_RESPONSE.observe(nanos as usize);
@@ -439,7 +437,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &Http
                     priority,
                     Some(&mut retries),
                     #[cfg(feature = "instrumentation")]
-                    &trans_context.clock,
+                    &req_ctx.tx.clock,
                 )
                 .await
             }

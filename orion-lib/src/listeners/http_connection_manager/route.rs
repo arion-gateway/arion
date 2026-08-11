@@ -1,4 +1,3 @@
-use std::sync::Arc;
 // Copyright 2025 The kmesh Authors
 //
 //
@@ -15,7 +14,7 @@ use std::sync::Arc;
 // limitations under the License.
 //
 //
-use super::{http_modifiers, upgrades as upgrade_utils, RequestHandler, TransactionContext};
+use super::{http_modifiers, upgrades as upgrade_utils, RequestCtx, RequestHandler};
 use crate::event_error::{EventFailure, EventKind, TryInferFrom, UpstreamError};
 use crate::{
     body::response_flags::ResponseFlags,
@@ -33,7 +32,7 @@ use crate::with_access_log;
 
 #[cfg(feature = "metrics")]
 use crate::{clusters::CircuitBreakerDenial, get_shard_id, with_metric};
-use crate::{instrument_block, instrument_function, OrionRequestBody, OrionResponseBody, RequestContext};
+use crate::{instrument_block, instrument_function, OrionRequestBody, OrionResponseBody, UpstreamCallOpts};
 use http::{uri::Parts as UriParts, Uri};
 use hyper::{Request, Response};
 #[cfg(any(feature = "metrics", feature = "tracing"))]
@@ -78,11 +77,11 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
     #[allow(unused_variables)]
     async fn to_response(
         self,
-        trans_context: &Arc<TransactionContext>,
+        ctx: &RequestCtx,
         request: Request<OrionRequestBody>,
         (route_context, connection_manager): (RouteContext<'a>, &HttpConnectionManager),
     ) -> Result<Response<OrionResponseBody>> {
-        instrument_function!(trans_context.clock, |nanos| {
+        instrument_function!(ctx.tx.clock, |nanos| {
             #[allow(clippy::cast_possible_truncation)]
             crate::instrumentation::metrics::TOTAL_ROUTE_ACTION.observe(nanos as usize)
         });
@@ -104,7 +103,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
 
         #[cfg(feature = "metrics")]
         {
-            let mut state = trans_context.trans_state.lock();
+            let mut state = ctx.tx.trans_state.lock();
             state.upstream_start_instant = Some(Instant::now());
             state.upstream_cluster_name = Some(cluster_id)
         }
@@ -143,7 +142,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
         let routing_context = RoutingContext::try_from((&routing_requirement, &request, hash_state))?;
 
         let maybe_channel = instrument_block!(
-            trans_context.clock,
+            ctx.tx.clock,
             |nanos| {
                 #[allow(clippy::cast_possible_truncation)]
                 crate::instrumentation::metrics::LOAD_BALANCING_SRV.observe(nanos as usize);
@@ -155,7 +154,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
             Ok(svc_channel) => {
                 #[cfg(feature = "access-log")]
                 with_access_log!(
-                    &mut trans_context.trans_state.lock().loggers,
+                    &mut ctx.tx.trans_state.lock().loggers,
                     UpstreamContext {
                         authority: Some(svc_channel.upstream_authority()),
                         cluster_name: Some(svc_channel.cluster_name()),
@@ -190,7 +189,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
 
                 #[cfg(feature = "tracing")]
                 let mut client_span = connection_manager.http_tracer.try_create_span(
-                    trans_context.trace_ctx.as_ref(),
+                    ctx.tx.trace_ctx.as_ref(),
                     &connection_manager.get_tracing_key(),
                     SpanKind::Client,
                     SpanName::Str::<()>(svc_channel.upstream_authority().as_str()),
@@ -210,15 +209,12 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
 
                 // ... store the span in the span_state
                 #[cfg(feature = "tracing")]
-                if let Some(ref span_state) = trans_context.span_state {
+                if let Some(ref span_state) = ctx.tx.span_state {
                     *span_state.client_span.lock() = client_span;
                 }
 
                 #[cfg(feature = "access-log")]
-                with_access_log!(
-                    &mut trans_context.trans_state.lock().loggers,
-                    UpstreamRequestContext(&upstream_request)
-                );
+                with_access_log!(&mut ctx.tx.trans_state.lock().loggers, UpstreamRequestContext(&upstream_request));
 
                 let websocket_enabled = if let Some(upgrade_config) = self.upgrade_config {
                     upgrade_config.is_websocket_enabled(websocket_enabled_by_default)
@@ -249,7 +245,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
                 if is_ws_upgrade_request {
                     if websocket_enabled {
                         return upgrade_utils::handle_websocket_upgrade(
-                            trans_context,
+                            ctx,
                             upstream_request,
                             &svc_channel,
                             #[cfg(feature = "metrics")]
@@ -262,7 +258,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
                         http_metrics::DOWNSTREAM_RQ_WS_ON_NON_WS_ROUTE,
                         add,
                         1,
-                        trans_context.shard_id(),
+                        ctx.tx.shard_id(),
                         &[KeyValue::new("listener", connection_manager.listener_name)]
                     );
                     return Ok(
@@ -277,9 +273,9 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
                 // send the request to the upstream service channel and wait for the response...
                 let resp = svc_channel
                     .to_response(
-                        trans_context,
+                        ctx,
                         upstream_request,
-                        RequestContext { route_timeout: self.timeout, retry_policy, priority },
+                        UpstreamCallOpts { route_timeout: self.timeout, retry_policy, priority },
                     )
                     .await;
                 match resp {

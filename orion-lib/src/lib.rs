@@ -120,7 +120,7 @@ macro_rules! unwrap_or_run {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct RequestContext<'a> {
+pub struct UpstreamCallOpts<'a> {
     pub route_timeout: Option<Duration>,
     pub retry_policy: Option<&'a RetryPolicy>,
     pub priority: clusters::RoutingPriority,

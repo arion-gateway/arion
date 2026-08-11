@@ -28,12 +28,9 @@ use tower::Service;
 
 use crate::{
     body::{instrumented_body::InstrumentedBody, response_flags::BodyKind, timeout_body::TimeoutBody},
-    listeners::{
-        http_connection_manager::{RequestHandler, TransactionContext},
-        metadata::MetadataContext,
-    },
+    listeners::http_connection_manager::{RequestCtx, RequestHandler},
     transport::HttpChannel,
-    RequestContext,
+    UpstreamCallOpts,
 };
 
 /// Adapts a [`HttpChannel`] to a [`Service`] that can be used as a channel for gRPC.
@@ -54,12 +51,21 @@ impl GrpcService {
 
         Ok(GrpcService { inner, scheme, authority })
     }
-}
 
-impl GrpcService {
-    async fn do_call(self, grpc_req: Request<GrpcBody>) -> std::result::Result<http::Response<GrpcBody>, crate::Error> {
-        let stream_metrics = grpc_req.extensions().get::<MetadataContext>().map(|md| Arc::clone(&md.stream_metrics));
+    /// Outbound gRPC call on behalf of a downstream request.
+    pub fn call_with_ctx(
+        &self,
+        grpc_req: Request<GrpcBody>,
+        req_ctx: RequestCtx,
+    ) -> BoxFuture<'static, std::result::Result<http::Response<GrpcBody>, crate::Error>> {
+        self.clone().do_call(grpc_req, req_ctx).boxed()
+    }
 
+    async fn do_call(
+        self,
+        grpc_req: Request<GrpcBody>,
+        req_ctx: RequestCtx,
+    ) -> std::result::Result<http::Response<GrpcBody>, crate::Error> {
         let (mut parts, grpc_body) = grpc_req.into_parts();
 
         // Add scheme and authority to gRPC URLs to make them valid HTTP
@@ -73,17 +79,14 @@ impl GrpcService {
             InstrumentedBody::new(
                 BodyKind::Request,
                 TimeoutBody::new(None, grpc_body.into()),
-                stream_metrics,
+                Some(Arc::clone(&req_ctx.conn.stream_metrics)),
                 |_body_bytes, _stream_metrics, _event_error, _flags| {
                     debug!("gRPC request body finalized");
                 },
             ),
         );
 
-        let svc_resp = self
-            .inner
-            .to_response(&Arc::new(TransactionContext::default()), http_req, RequestContext::default())
-            .await?;
+        let svc_resp = self.inner.to_response(&req_ctx, http_req, UpstreamCallOpts::default()).await?;
         let (header, body) = svc_resp.into_parts();
         let body = GrpcBody::new(body);
         let svc_resp = http::Response::from_parts(header, body);
@@ -105,9 +108,9 @@ impl Service<Request<GrpcBody>> for GrpcService {
     }
 
     fn call(&mut self, req: Request<GrpcBody>) -> Self::Future {
-        let grpc_req = req;
+        // Tower/tonic entrypoint (xDS, health, etc.): no live downstream request.
         self.clone()
-            .do_call(grpc_req)
+            .do_call(req, RequestCtx::default())
             .map_err(|e| Box::new(crate::Error::into_inner(e)) as orion_xds::grpc_deps::Error)
             .boxed()
     }
