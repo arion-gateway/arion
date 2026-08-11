@@ -35,11 +35,11 @@ use crate::{
     utils::instrumented_stream::InstrumentedStream,
     with_metric, AsyncInstrumentedStream, Result,
 };
-use std::sync::Arc;
 use orion_configuration::config::{
     access_log::AccessLog, cluster::ClusterSpecifier as ClusterSpecifierConfig,
     network_filters::tcp_proxy::TcpProxy as TcpProxyConfig,
 };
+use std::sync::Arc;
 
 #[cfg(feature = "metrics")]
 use {

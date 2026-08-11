@@ -1,5 +1,10 @@
 use crate::{
-    OrionRequestBody, OrionResponseBody, body::poly_body::PolyBody, listeners::{http_connection_manager::RequestCtx, http_filters::{FilterDecision, FilterFactory}},
+    body::poly_body::PolyBody,
+    listeners::{
+        http_connection_manager::RequestCtx,
+        http_filters::{FilterDecision, FilterFactory},
+    },
+    OrionRequestBody, OrionResponseBody,
 };
 use bitflags::bitflags;
 use bytes::Bytes;
@@ -341,11 +346,7 @@ impl WasmFilter {
     }
 
     #[allow(clippy::too_many_lines)]
-    pub async fn apply_request(
-        &mut self,
-        req: &mut Request<OrionRequestBody>,
-        req_ctx: &RequestCtx,
-    ) -> FilterDecision {
+    pub async fn apply_request(&mut self, req: &mut Request<OrionRequestBody>, req_ctx: &RequestCtx) -> FilterDecision {
         debug!("WasFilter::apply_request: {:?}", self.inner.config);
 
         if self.inner.hooks.contains(HookFlags::ON_TRANSACTION_START) {
@@ -529,10 +530,7 @@ impl WasmFilter {
     }
 
     #[allow(unused_variables)]
-    fn extract_and_apply_access_log_operators(
-        &mut self,
-        req_ctx: &RequestCtx,
-    ) {
+    fn extract_and_apply_access_log_operators(&mut self, req_ctx: &RequestCtx) {
         if let Some(state) = self.state.get_mut() {
             let ops = std::mem::take(&mut state.store.data_mut().access_log_operators);
             if !ops.is_empty() {
