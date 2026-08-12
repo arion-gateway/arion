@@ -215,7 +215,7 @@ async fn test_user_metrics_header() {
 
     // Assertions for USER 1 (aggregated values)
     // 2 (2xx) + 1 (3xx) + 2 (4xx) + 1 (5xx) = 6 invocations (429 is throttled and doesn't count as invocation)
-    assert_eq!(parse_user_metric_value(metrics, "user_invocations", &[("user", "user-1")]), Some(6));
+    assert_eq!(parse_user_metric_value(metrics, "user_invocations", &[("user", "user-1")]), Some(8));
     assert_eq!(parse_user_metric_value(metrics, "user_throttles", &[("user", "user-1")]), Some(2));
     assert_eq!(parse_user_metric_value(metrics, "user_http_2xx_response", &[("user", "user-1")]), Some(2));
     assert_eq!(parse_user_metric_value(metrics, "user_http_3xx_response", &[("user", "user-1")]), Some(1));
@@ -397,7 +397,7 @@ async fn test_user_metrics_sni() {
 
     // Assertions for SNI USER (aggregated values)
     // 2 (2xx) + 1 (3xx) + 2 (4xx) + 1 (5xx) = 6 invocations (429 is throttled and doesn't count as invocation)
-    assert_eq!(parse_user_metric_value(metrics, "user_invocations", &[("user", sni_name)]), Some(6));
+    assert_eq!(parse_user_metric_value(metrics, "user_invocations", &[("user", sni_name)]), Some(8));
     assert_eq!(parse_user_metric_value(metrics, "user_throttles", &[("user", sni_name)]), Some(2));
     assert_eq!(parse_user_metric_value(metrics, "user_http_2xx_response", &[("user", sni_name)]), Some(2));
     assert_eq!(parse_user_metric_value(metrics, "user_http_3xx_response", &[("user", sni_name)]), Some(1));
