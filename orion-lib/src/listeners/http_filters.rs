@@ -12,6 +12,7 @@ use crate::{
             jwt_authn::{JwtAuthentication, JwtAuthenticationBuilder},
             mcp_gateway::mcp::McpGateway,
             user_rate_limiter::UserRateLimiter,
+            RequestCtx,
         },
         rate_limiter::local_rate_limiter::LocalRateLimit,
         rbac::HttpRbac,
@@ -207,26 +208,30 @@ impl TryFrom<HttpFilterConfig> for HttpFilter {
 }
 
 impl HttpFilterValue {
-    pub async fn apply_request(&mut self, request: &mut Request<OrionRequestBody>) -> FilterDecision {
+    pub async fn apply_request(&mut self, request: &mut Request<OrionRequestBody>, ctx: &RequestCtx) -> FilterDecision {
         match self {
             HttpFilterValue::Rbac(rbac) => apply_authorization_rules(rbac, request),
             HttpFilterValue::RateLimit(rl) => rl.run(request),
-            HttpFilterValue::ExternalProcessor(ext_proc) => ext_proc.apply_request(request).await,
+            HttpFilterValue::ExternalProcessor(ext_proc) => ext_proc.apply_request(request, ctx).await,
             HttpFilterValue::JwtAuthentication(jwt) => jwt.apply_request(request).await,
             HttpFilterValue::Cors(cors) => cors.apply_request(request),
-            HttpFilterValue::McpGateway(mcp) => mcp.apply_request(request).await,
+            HttpFilterValue::McpGateway(mcp) => mcp.apply_request(request, ctx).await,
             HttpFilterValue::UserRateLimit(user_rate_limiter) => user_rate_limiter.apply_request(request),
             HttpFilterValue::CedarPolicy(cedar) => cedar.apply_request(request),
-            HttpFilterValue::Wasm(wasm) => wasm.apply_request(request).await,
+            HttpFilterValue::Wasm(wasm) => wasm.apply_request(request, ctx).await,
         }
     }
-    pub async fn apply_response(&mut self, response: &mut Response<OrionResponseBody>) -> FilterDecision {
+    pub async fn apply_response(
+        &mut self,
+        response: &mut Response<OrionResponseBody>,
+        ctx: &RequestCtx,
+    ) -> FilterDecision {
         match self {
             // RBAC and RateLimit do not apply on the response path
-            HttpFilterValue::ExternalProcessor(ext_proc) => ext_proc.apply_response(response).await,
+            HttpFilterValue::ExternalProcessor(ext_proc) => ext_proc.apply_response(response, ctx).await,
             HttpFilterValue::McpGateway(mcp) => mcp.apply_response(response).await,
             HttpFilterValue::Cors(cors) => cors.apply_response(response),
-            HttpFilterValue::Wasm(wasm) => wasm.apply_response(response).await,
+            HttpFilterValue::Wasm(wasm) => wasm.apply_response(response, ctx).await,
             HttpFilterValue::Rbac(_)
             | HttpFilterValue::RateLimit(_)
             | HttpFilterValue::UserRateLimit(_)

@@ -17,8 +17,9 @@
 
 use super::upgrade_utils;
 use crate::{
-    event_error::EventFailure, extensions_context::MetadataContext,
-    listeners::synthetic_http_response::SyntheticHttpResponse, OrionResponseBody,
+    event_error::EventFailure,
+    listeners::{metadata::ConnMeta, synthetic_http_response::SyntheticHttpResponse},
+    OrionResponseBody,
 };
 use http::{header, HeaderMap, HeaderName, HeaderValue, Method, Request, Response};
 use orion_configuration::config::{
@@ -28,7 +29,7 @@ use orion_configuration::config::{
         HeaderModifiersAdd, HeaderModifiersRemove, Route, RouteConfiguration, VirtualHost, XffSettings,
     },
 };
-use orion_format::context::{DownstreamContext, DownstreamResponseContext, SocketAddrContext};
+use orion_format::context::{DownstreamContext, DownstreamResponseContext};
 use orion_http_header::{X_ENVOY_EXTERNAL_ADDRESS, X_ENVOY_INTERNAL, X_FORWARDED_FOR};
 use std::net::{IpAddr, SocketAddr};
 use tracing::warn;
@@ -233,18 +234,18 @@ impl<B> HeaderMapModifier<&HeaderModifiersRemove> for Response<B> {
     }
 }
 
-impl<B> HeaderMapModifier<&HeaderModifiersAdd> for Request<B> {
-    fn apply_mutation(&mut self, modifier: &HeaderModifiersAdd) {
+impl<B> HeaderMapModifier<(&HeaderModifiersAdd, &ConnMeta)> for Request<B> {
+    fn apply_mutation(&mut self, (modifier, conn): (&HeaderModifiersAdd, &ConnMeta)) {
         for modifier in &modifier.0 {
-            modifier.apply_to_request(self);
+            modifier.apply_to_request(self, conn);
         }
     }
 }
 
-impl<B> HeaderMapModifier<&HeaderModifiersAdd> for Response<B> {
-    fn apply_mutation(&mut self, modifier: &HeaderModifiersAdd) {
+impl<B> HeaderMapModifier<(&HeaderModifiersAdd, &ConnMeta)> for Response<B> {
+    fn apply_mutation(&mut self, (modifier, conn): (&HeaderModifiersAdd, &ConnMeta)) {
         for modifier in &modifier.0 {
-            modifier.apply_to_response(self);
+            modifier.apply_to_response(self, conn);
         }
     }
 }
@@ -322,8 +323,8 @@ pub enum HeaderAction {
 }
 
 pub trait HeaderValueModifier {
-    fn apply_to_request<B>(&self, request: &mut Request<B>) -> bool;
-    fn apply_to_response<B>(&self, response: &mut Response<B>) -> bool;
+    fn apply_to_request<B>(&self, request: &mut Request<B>, conn: &ConnMeta) -> bool;
+    fn apply_to_response<B>(&self, response: &mut Response<B>, conn: &ConnMeta) -> bool;
     fn run_action(
         &self,
         action: HeaderAction,
@@ -354,18 +355,8 @@ pub trait HeaderValueModifier {
 }
 
 impl HeaderValueModifier for HeaderValueOption {
-    fn apply_to_request<B>(&self, request: &mut Request<B>) -> bool {
+    fn apply_to_request<B>(&self, request: &mut Request<B>, conn: &ConnMeta) -> bool {
         let has_key_already = request.headers_mut().get(&self.header.key).is_some();
-
-        let socket_address = || match request.extensions().get::<MetadataContext>() {
-            Some(meta) => SocketAddrContext {
-                downstream_local_addr: Some(meta.downstream.connection.local_address()),
-                downstream_peer_addr: Some(meta.downstream.connection.peer_address()),
-                upstream_local_addr: None,
-                upstream_peer_addr: None,
-            },
-            None => SocketAddrContext::default(),
-        };
 
         let get_header_value = |req: &Request<B>| -> HeaderValue {
             let mut formatter = self.header.value.clone();
@@ -376,7 +367,7 @@ impl HeaderValueModifier for HeaderValueOption {
                 request_head_size: 0,
                 trace_id: None,
                 server_name: None,
-                socket_address: socket_address(),
+                socket_address: conn.downstream_socket_addr_context(),
             });
             formatter
                 .into_header_value()
@@ -408,11 +399,12 @@ impl HeaderValueModifier for HeaderValueOption {
         self.run_action(action, request.headers_mut(), self.keep_empty_value, &self.header.key)
     }
 
-    fn apply_to_response<B>(&self, response: &mut Response<B>) -> bool {
+    fn apply_to_response<B>(&self, response: &mut Response<B>, _conn: &ConnMeta) -> bool {
         let has_key_already = response.headers_mut().get(&self.header.key).is_some();
 
         let get_header_value = |res: &Response<B>| -> HeaderValue {
             let mut formatter = self.header.value.clone();
+            // Response formatters currently don't use connection addresses; `conn` keeps the API symmetric.
             formatter.with_context(&DownstreamResponseContext { response: res, response_head_size: 0 });
             formatter
                 .into_header_value()
@@ -565,7 +557,7 @@ mod tests {
             append_action: HeaderAppendAction::AppendIfExistsOrAdd,
             keep_empty_value: false,
         }
-        .apply_to_request(&mut request);
+        .apply_to_request(&mut request, &ConnMeta::default());
 
         assert_eq!(request.headers().get(LOCATION), Some(&hello.clone().into_header_value().unwrap()));
         assert_eq!(request.headers().len(), 1);
@@ -575,7 +567,7 @@ mod tests {
             append_action: HeaderAppendAction::AppendIfExistsOrAdd,
             keep_empty_value: false,
         }
-        .apply_to_request(&mut request);
+        .apply_to_request(&mut request, &ConnMeta::default());
 
         assert_eq!(request.headers().len(), 2);
 
@@ -597,7 +589,7 @@ mod tests {
             append_action: HeaderAppendAction::AppendIfExistsOrAdd,
             keep_empty_value: false,
         }
-        .apply_to_request(&mut request);
+        .apply_to_request(&mut request, &ConnMeta::default());
 
         assert_eq!(request.headers().get(USER_AGENT), Some(&hello.into_header_value().unwrap()));
         assert_eq!(request.headers().len(), 1);
@@ -607,7 +599,7 @@ mod tests {
             append_action: HeaderAppendAction::AppendIfExistsOrAdd,
             keep_empty_value: false,
         }
-        .apply_to_request(&mut request);
+        .apply_to_request(&mut request, &ConnMeta::default());
 
         assert_eq!(request.headers().len(), 2);
     }
@@ -624,7 +616,7 @@ mod tests {
             append_action: HeaderAppendAction::AppendIfExistsOrAdd,
             keep_empty_value: false,
         }
-        .apply_to_request(&mut request);
+        .apply_to_request(&mut request, &ConnMeta::default());
 
         assert_eq!(request.headers().get(COOKIE), Some(&hello.into_header_value().unwrap()));
         assert_eq!(request.headers().len(), 1);
@@ -634,7 +626,7 @@ mod tests {
             append_action: HeaderAppendAction::AppendIfExistsOrAdd,
             keep_empty_value: false,
         }
-        .apply_to_request(&mut request);
+        .apply_to_request(&mut request, &ConnMeta::default());
 
         assert_eq!(request.headers().len(), 2);
     }
@@ -650,7 +642,7 @@ mod tests {
             append_action: HeaderAppendAction::AppendIfAbsent,
             keep_empty_value: false,
         }
-        .apply_to_request(&mut request);
+        .apply_to_request(&mut request, &ConnMeta::default());
 
         assert_eq!(request.headers().get(USER_AGENT), Some(&hello.clone().into_header_value().unwrap()));
         assert_eq!(request.headers().len(), 1);
@@ -660,7 +652,7 @@ mod tests {
             append_action: HeaderAppendAction::AppendIfAbsent,
             keep_empty_value: false,
         }
-        .apply_to_request(&mut request);
+        .apply_to_request(&mut request, &ConnMeta::default());
 
         assert_eq!(request.headers().get(USER_AGENT), Some(&hello.into_header_value().unwrap()));
         assert_eq!(request.headers().len(), 1);
@@ -678,7 +670,7 @@ mod tests {
             append_action: HeaderAppendAction::OverwriteIfExistsOrAdd,
             keep_empty_value: false,
         }
-        .apply_to_request(&mut request);
+        .apply_to_request(&mut request, &ConnMeta::default());
 
         assert_eq!(request.headers().get(USER_AGENT), Some(&hello.into_header_value().unwrap()));
         assert_eq!(request.headers().len(), 1);
@@ -688,7 +680,7 @@ mod tests {
             append_action: HeaderAppendAction::OverwriteIfExistsOrAdd,
             keep_empty_value: false,
         }
-        .apply_to_request(&mut request);
+        .apply_to_request(&mut request, &ConnMeta::default());
 
         assert_eq!(request.headers().get(USER_AGENT), Some(&world.into_header_value().unwrap()));
         assert_eq!(request.headers().len(), 1);
@@ -706,7 +698,7 @@ mod tests {
             append_action: HeaderAppendAction::OverwriteIfExists,
             keep_empty_value: false,
         }
-        .apply_to_request(&mut request);
+        .apply_to_request(&mut request, &ConnMeta::default());
 
         assert_eq!(request.headers().get(USER_AGENT), None);
         assert!(request.headers().is_empty());
@@ -715,7 +707,7 @@ mod tests {
             append_action: HeaderAppendAction::AppendIfAbsent,
             keep_empty_value: false,
         }
-        .apply_to_request(&mut request);
+        .apply_to_request(&mut request, &ConnMeta::default());
 
         assert_eq!(request.headers().get(USER_AGENT), Some(&hello.into_header_value().unwrap()));
         assert_eq!(request.headers().len(), 1);
@@ -725,7 +717,7 @@ mod tests {
             append_action: HeaderAppendAction::OverwriteIfExists,
             keep_empty_value: false,
         }
-        .apply_to_request(&mut request);
+        .apply_to_request(&mut request, &ConnMeta::default());
 
         assert_eq!(request.headers().get(USER_AGENT), Some(&world.into_header_value().unwrap()));
         assert_eq!(request.headers().len(), 1);
@@ -743,7 +735,7 @@ mod tests {
             append_action: HeaderAppendAction::AppendIfExistsOrAdd,
             keep_empty_value: true,
         }
-        .apply_to_request(&mut request);
+        .apply_to_request(&mut request, &ConnMeta::default());
 
         assert_eq!(request.headers().get(USER_AGENT), Some(&test.clone().into_header_value().unwrap()));
         assert_eq!(request.headers().len(), 1);
@@ -753,7 +745,7 @@ mod tests {
             append_action: HeaderAppendAction::AppendIfExistsOrAdd,
             keep_empty_value: true,
         }
-        .apply_to_request(&mut request);
+        .apply_to_request(&mut request, &ConnMeta::default());
 
         assert_eq!(request.headers().get(USER_AGENT), Some(&test.into_header_value().unwrap()));
         assert_eq!(request.headers().len(), 2);

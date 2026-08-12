@@ -15,9 +15,12 @@
 //
 //
 
+use std::{collections::HashMap, net::SocketAddr, sync::Arc};
+
 use orion_configuration::config::common::TlvType;
 use smol_str::SmolStr;
-use std::{collections::HashMap, net::SocketAddr};
+
+use crate::utils::instrumented_stream::StreamMetrics;
 
 #[derive(Debug, Clone)]
 pub enum DownstreamConnectionMetadata {
@@ -64,5 +67,57 @@ impl DownstreamMetadata {
         S: Into<SmolStr>,
     {
         Self { connection, sni: sni.map(Into::into), listener_name }
+    }
+}
+
+/// Connection/stream-scoped metadata shared for the lifetime of a downstream stream.
+#[derive(Debug, Clone)]
+pub struct ConnMeta {
+    pub downstream: Arc<DownstreamMetadata>,
+    pub stream_metrics: Arc<StreamMetrics>,
+}
+
+impl ConnMeta {
+    #[inline]
+    pub fn new(downstream: Arc<DownstreamMetadata>, stream_metrics: Arc<StreamMetrics>) -> Self {
+        Self { downstream, stream_metrics }
+    }
+
+    #[inline]
+    pub fn downstream_peer_address(&self) -> SocketAddr {
+        self.downstream.connection.peer_address()
+    }
+
+    #[inline]
+    pub fn downstream_local_address(&self) -> SocketAddr {
+        self.downstream.connection.local_address()
+    }
+
+    #[inline]
+    pub fn listener_name(&self) -> &'static str {
+        self.downstream.listener_name
+    }
+
+    /// Socket addresses for access-log / header formatters.
+    #[inline]
+    pub fn downstream_socket_addr_context(&self) -> orion_format::context::SocketAddrContext {
+        orion_format::context::SocketAddrContext {
+            downstream_local_addr: Some(self.downstream_local_address()),
+            downstream_peer_addr: Some(self.downstream_peer_address()),
+            upstream_local_addr: None,
+            upstream_peer_addr: None,
+        }
+    }
+}
+
+impl Default for ConnMeta {
+    fn default() -> Self {
+        let unspecified = SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), 0);
+        let downstream = Arc::new(DownstreamMetadata::new(
+            DownstreamConnectionMetadata::FromSocket { peer_address: unspecified, local_address: unspecified },
+            None::<&str>,
+            "synthetic",
+        ));
+        Self::new(downstream, Arc::new(StreamMetrics::default()))
     }
 }

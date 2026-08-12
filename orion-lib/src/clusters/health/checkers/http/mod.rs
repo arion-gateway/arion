@@ -35,7 +35,8 @@ use tokio::{
 use super::checker::{IntervalWaiter, ProtocolChecker, WaitInterval};
 use crate::{
     body::{instrumented_body::InstrumentedBody, response_flags::BodyKind, timeout_body::TimeoutBody},
-    OrionRequestBody, OrionResponseBody, RequestContext,
+    listeners::http_connection_manager::RequestCtx,
+    OrionRequestBody, OrionResponseBody, UpstreamCallOpts,
 };
 // use crate::clusters::cluster::HyperService;
 use crate::{
@@ -43,7 +44,7 @@ use crate::{
         checkers::checker::HealthCheckerLoop, counter::HealthStatusCounter, EndpointHealthUpdate, EndpointId,
         HealthStatus,
     },
-    listeners::http_connection_manager::{RequestHandler, TransactionContext},
+    listeners::http_connection_manager::RequestHandler,
     transport::HttpChannel,
     Error,
 };
@@ -86,7 +87,7 @@ fn try_spawn_http_health_checker_impl<H, W>(
 where
     W: WaitInterval + Send + 'static,
     H: Send + 'static,
-    for<'a> &'a H: RequestHandler<Request<OrionRequestBody>, RequestContext<'a>>,
+    for<'a> &'a H: RequestHandler<Request<OrionRequestBody>, UpstreamCallOpts<'a>>,
 {
     tracing::debug!(
         "Starting HTTP health checks of endpoint {:?} in cluster {:?}",
@@ -131,13 +132,13 @@ struct HttpChecker<H = HttpChannel> {
 impl<H> ProtocolChecker for HttpChecker<H>
 where
     H: Send,
-    for<'a> &'a H: RequestHandler<Request<OrionRequestBody>, RequestContext<'a>>,
+    for<'a> &'a H: RequestHandler<Request<OrionRequestBody>, UpstreamCallOpts<'a>>,
 {
     type Response = Response<OrionResponseBody>;
 
     async fn check(&mut self) -> Result<Self::Response, Error> {
         let request = create_request(self.http_version, &self.method, &self.host, &self.uri)?;
-        self.client.to_response(&Arc::new(TransactionContext::default()), request, RequestContext::default()).await
+        self.client.to_response(&RequestCtx::default(), request, UpstreamCallOpts::default()).await
     }
 
     fn process_response(
@@ -154,8 +155,8 @@ where
             tracing::debug!("Response for cluster {:?}: success {}", endpoint.endpoint, status_code);
             counter.add_success()
         } else if status_in_ranges(&self.retriable_statuses, status_code) {
-            // Retriable statuses count as a failure, but don't change the status immediately
-            tracing::debug!("Response for cluster {:?}: retriable failure {}", endpoint.endpoint, status_code);
+            // Retryable statuses count as a failure, but don't change the status immediately
+            tracing::debug!("Response for cluster {:?}: retryable failure {}", endpoint.endpoint, status_code);
             counter.add_failure()
         } else {
             // Unexpected statuses immediately cause the endpoint to be unhealthy

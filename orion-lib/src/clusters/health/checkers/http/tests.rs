@@ -51,12 +51,12 @@ impl MockHttpStack {
     }
 }
 
-impl<'a> RequestHandler<Request<OrionRequestBody>, RequestContext<'a>> for &MockHttpStack {
+impl<'a> RequestHandler<Request<OrionRequestBody>, UpstreamCallOpts<'a>> for &MockHttpStack {
     async fn to_response(
         self,
-        _trans_context: &Arc<TransactionContext>,
+        _req_ctx: &RequestCtx,
         request: Request<OrionRequestBody>,
-        _ctx: RequestContext<'a>,
+        _ctx: UpstreamCallOpts<'a>,
     ) -> Result<Response<OrionResponseBody>> {
         let state = &mut self.0.lock();
         // Log this request

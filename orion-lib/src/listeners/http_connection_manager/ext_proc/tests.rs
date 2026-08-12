@@ -990,7 +990,9 @@ async fn test_request_combinatorial_processing() {
                 config.failure_mode_allow = false;
                 let mut ext_proc = ExternalProcessor::from(config);
                 let mut request = build_request_from_mock(mock_request).await;
-                let result = fast_timeout(Duration::from_secs(2), ext_proc.apply_request(&mut request)).await;
+                let result =
+                    fast_timeout(Duration::from_secs(2), ext_proc.apply_request(&mut request, &RequestCtx::default()))
+                        .await;
                 let Ok(result) = result else {
                     warn!(target: "ext_proc_tests", "test_request_combinatorial_modes_continue: ############ test {test_case_num} HANGS ############");
                     timed_out_tests.push(test_case_num);
@@ -1054,7 +1056,11 @@ async fn test_response_combinatorial_processing() {
                 config.failure_mode_allow = false;
                 let mut ext_proc = ExternalProcessor::from(config);
                 let mut response = build_response_from_mock(mock_response).await;
-                let result = fast_timeout(Duration::from_secs(2), ext_proc.apply_response(&mut response)).await;
+                let result = fast_timeout(
+                    Duration::from_secs(2),
+                    ext_proc.apply_response(&mut response, &RequestCtx::default()),
+                )
+                .await;
                 let Ok(result) = result else {
                     warn!(target: "ext_proc_tests", "test_response_combinatorial_modes_continue: ############ test {test_case_num} HANGS ############");
                     timed_out_tests.push(test_case_num);
@@ -1118,7 +1124,9 @@ async fn test_request_combinatorial_observability() {
                 config.failure_mode_allow = false;
                 let mut ext_proc = ExternalProcessor::from(config);
                 let mut request = build_request_from_mock(mock_request).await;
-                let result = fast_timeout(Duration::from_secs(2), ext_proc.apply_request(&mut request)).await;
+                let result =
+                    fast_timeout(Duration::from_secs(2), ext_proc.apply_request(&mut request, &RequestCtx::default()))
+                        .await;
                 let Ok(result) = result else {
                     warn!(target: "ext_proc_tests", "test_request_combinatorial_modes_observability: ############ test {test_case_num} HANGS ############");
                     timed_out_tests.push(test_case_num);
@@ -1182,7 +1190,11 @@ async fn test_response_combinatorial_observability() {
                 config.failure_mode_allow = false;
                 let mut ext_proc = ExternalProcessor::from(config);
                 let mut response = build_response_from_mock(mock_response).await;
-                let result = fast_timeout(Duration::from_secs(2), ext_proc.apply_response(&mut response)).await;
+                let result = fast_timeout(
+                    Duration::from_secs(2),
+                    ext_proc.apply_response(&mut response, &RequestCtx::default()),
+                )
+                .await;
                 let Ok(result) = result else {
                     warn!(target: "ext_proc_tests", "test_response_combinatorial_observability: ############ test {test_case_num} HANGS ############");
                     timed_out_tests.push(test_case_num);
@@ -1249,7 +1261,7 @@ async fn test_request_header_skip_body_buffered_empty() {
     })
     .await;
 
-    let result = ext_proc.apply_request(&mut request).await;
+    let result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
     assert_matches!(result, FilterDecision::Continue);
 }
 
@@ -1295,7 +1307,7 @@ async fn test_request_header_mutation_in_buffered_body_response_with_trailers() 
     })
     .await;
 
-    let result = ext_proc.apply_request(&mut request).await;
+    let result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
 
     let body = std::mem::take(&mut request.body_mut().inner.inner).collect().await.unwrap();
     let trailers = body.trailers().cloned();
@@ -1341,7 +1353,7 @@ async fn test_request_header_mutation() {
     })
     .await;
 
-    let result = ext_proc.apply_request(&mut request).await;
+    let result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
 
     assert_matches!(result, FilterDecision::Continue);
     assert_eq!(request.headers().get("x-processed").unwrap(), "true");
@@ -1387,7 +1399,7 @@ async fn test_request_header_mutation_pseudo_headers() {
     })
     .await;
 
-    let result = ext_proc.apply_request(&mut request).await;
+    let result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
     let (parts, _) = request.into_parts();
 
     assert_matches!(result, FilterDecision::Continue);
@@ -1436,7 +1448,7 @@ async fn test_request_trailer_mutation() {
     })
     .await;
 
-    let result = ext_proc.apply_request(&mut request).await;
+    let result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
     let body = std::mem::take(&mut request.body_mut().inner.inner).collect().await.unwrap();
     let trailers = body.trailers().cloned();
 
@@ -1483,7 +1495,7 @@ async fn test_request_body_buffered_continue_and_replace_on_headers_response() {
     })
     .await;
 
-    let result = ext_proc.apply_request(&mut request).await;
+    let result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
 
     assert_matches!(result, FilterDecision::Continue);
     assert_eq!(request.method(), Method::GET);
@@ -1536,7 +1548,7 @@ async fn test_request_body_buffered_continue_and_replace_on_body_response() {
     })
     .await;
 
-    let result = ext_proc.apply_request(&mut request).await;
+    let result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
 
     assert_matches!(result, FilterDecision::Continue);
     assert_eq!(request.method(), Method::GET);
@@ -1585,7 +1597,7 @@ async fn test_request_body_buffered_mode() {
     })
     .await;
 
-    let result = ext_proc.apply_request(&mut request).await;
+    let result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
 
     assert_matches!(result, FilterDecision::Continue);
     assert_eq!(request.headers().get("x-stream-processed").unwrap(), "true");
@@ -1634,7 +1646,7 @@ async fn test_request_body_buffered_mode_header_mutations_on_body() {
     })
     .await;
 
-    let result = ext_proc.apply_request(&mut request).await;
+    let result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
 
     assert_matches!(result, FilterDecision::Continue);
     assert_eq!(request.headers().get("mutation-in-header-response").unwrap(), "true");
@@ -1676,7 +1688,7 @@ async fn test_request_body_buffered_mode_header_mutations_on_body_no_header_resp
     })
     .await;
 
-    let result = ext_proc.apply_request(&mut request).await;
+    let result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
 
     assert_matches!(result, FilterDecision::Continue);
     assert_eq!(request.headers().get("mutation-in-body-response").unwrap(), "true");
@@ -1726,7 +1738,7 @@ async fn test_request_body_buffered_mode_send_body_without_waiting_for_header_re
     })
     .await;
 
-    let result = ext_proc.apply_request(&mut request).await;
+    let result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
 
     assert_matches!(result, FilterDecision::Continue);
     assert_eq!(request.headers().get("x-stream-processed").unwrap(), "true");
@@ -1778,7 +1790,7 @@ async fn test_request_body_streaming_mode() {
         _marker: std::marker::PhantomData,
     })
     .await;
-    let result = ext_proc.apply_request(&mut request).await;
+    let result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
 
     assert_matches!(result, FilterDecision::Continue);
     assert_eq!(request.headers().get("x-stream-processed").unwrap(), "true");
@@ -1826,7 +1838,7 @@ async fn test_request_full_duplex_streaming_mode_header_only() {
     })
     .await;
 
-    let result = ext_proc.apply_request(&mut request).await;
+    let result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
 
     assert_matches!(result, FilterDecision::Continue);
     assert_eq!(request.headers().get("x-stream-processed").unwrap(), "true");
@@ -1887,7 +1899,7 @@ async fn test_request_full_duplex_streaming_mode_with_body() {
     })
     .await;
 
-    let result = ext_proc.apply_request(&mut request).await;
+    let result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
 
     assert_matches!(result, FilterDecision::Continue);
     assert_eq!(request.headers().get("x-stream-processed").unwrap(), "true");
@@ -1952,7 +1964,7 @@ async fn test_request_full_duplex_streaming_mode_with_body_and_trailers() {
     })
     .await;
 
-    let result = ext_proc.apply_request(&mut request).await;
+    let result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
 
     assert_matches!(result, FilterDecision::Continue);
     assert_eq!(request.headers().get("x-stream-processed").unwrap(), "true");
@@ -2007,7 +2019,7 @@ async fn test_request_buffered_mode_header_only() {
     })
     .await;
 
-    let result = ext_proc.apply_request(&mut request).await;
+    let result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
 
     assert_matches!(result, FilterDecision::Continue);
     assert_eq!(request.headers().get("x-stream-processed").unwrap(), "true");
@@ -2068,7 +2080,7 @@ async fn test_request_buffered_mode_with_body() {
     })
     .await;
 
-    let result = ext_proc.apply_request(&mut request).await;
+    let result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
 
     assert_matches!(result, FilterDecision::Continue);
     assert_eq!(request.headers().get("x-stream-processed").unwrap(), "true");
@@ -2133,7 +2145,7 @@ async fn test_request_buffered_mode_with_body_and_trailers() {
     })
     .await;
 
-    let result = ext_proc.apply_request(&mut request).await;
+    let result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
 
     assert_matches!(result, FilterDecision::Continue);
     assert_eq!(request.headers().get("x-stream-processed").unwrap(), "true");
@@ -2180,7 +2192,7 @@ async fn test_response_header_mutation_pseudo_headers() {
         _marker: std::marker::PhantomData,
     })
     .await;
-    let result = ext_proc.apply_response(&mut response).await;
+    let result = ext_proc.apply_response(&mut response, &RequestCtx::default()).await;
     let (parts, _) = response.into_parts();
 
     assert_matches!(result, FilterDecision::Continue);
@@ -2226,7 +2238,7 @@ async fn test_response_body_streaming_mode() {
 
     let mut response =
         build_response_from_mock(&MockMessage::<ResponseMsg>::new(vec![], vec!["streaming body data"], vec![])).await;
-    let result = ext_proc.apply_response(&mut response).await;
+    let result = ext_proc.apply_response(&mut response, &RequestCtx::default()).await;
 
     assert_matches!(result, FilterDecision::Continue);
     assert_eq!(response.headers().get("x-stream-processed").unwrap(), "true");
@@ -2262,7 +2274,7 @@ async fn test_response_body_streaming_mode_observability() {
 
     let mut response =
         build_response_from_mock(&MockMessage::<ResponseMsg>::new(vec![], vec!["streaming body data"], vec![])).await;
-    let result = ext_proc.apply_response(&mut response).await;
+    let result = ext_proc.apply_response(&mut response, &RequestCtx::default()).await;
 
     assert_matches!(result, FilterDecision::Continue);
     let body_bytes = &mut response.body_mut().collect().await.unwrap().to_bytes();
@@ -2305,7 +2317,7 @@ async fn test_request_header_timeout() {
     ))
     .await;
 
-    let result = ext_proc.apply_request(&mut request).await;
+    let result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
     assert_matches!(result, FilterDecision::DirectResponse(dr) => {
         assert_eq!(dr.status(), http::StatusCode::GATEWAY_TIMEOUT);
     });
@@ -2342,7 +2354,7 @@ async fn test_request_header_timeout_failure_mode_allow_true() {
 
     let mut request =
         build_request_from_mock(&MockMessage::<RequestMsg>::new(vec![], vec!["streaming body data"], vec![])).await;
-    let result = ext_proc.apply_request(&mut request).await;
+    let result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
     assert_matches!(result, FilterDecision::Continue);
 
     let (_, body) = request.into_parts();
@@ -2384,7 +2396,7 @@ async fn test_request_body_timeout_failure_mode_allow_false() {
 
     let mut request =
         build_request_from_mock(&MockMessage::<RequestMsg>::new(vec![], vec!["streaming body data"], vec![])).await;
-    let result = ext_proc.apply_request(&mut request).await;
+    let result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
     assert_matches!(result, FilterDecision::Continue);
 
     let body_bytes = &mut request.body_mut().collect().await;
@@ -2422,7 +2434,7 @@ async fn test_request_body_timeout_failure_mode_allow_true() {
 
     let mut request =
         build_request_from_mock(&MockMessage::<RequestMsg>::new(vec![], vec!["streaming body data"], vec![])).await;
-    let result = ext_proc.apply_request(&mut request).await;
+    let result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
     assert_matches!(result, FilterDecision::Continue);
 
     let (_, body) = request.into_parts();
@@ -2480,7 +2492,7 @@ async fn test_request_multichunk_body_with_mutation() {
     let mut request =
         build_request_from_mock(&MockMessage::<RequestMsg>::new(vec![], vec!["chunk1", "chunk2", "chunk3"], vec![]))
             .await;
-    let result = ext_proc.apply_request(&mut request).await;
+    let result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
     assert_matches!(result, FilterDecision::Continue);
 
     let body_chunks =
@@ -2525,7 +2537,7 @@ async fn test_request_multichunk_body_timeout_failure_mode_allow_true() {
     let mut request =
         build_request_from_mock(&MockMessage::<RequestMsg>::new(vec![], vec!["chunk1", "chunk2", "chunk3"], vec![]))
             .await;
-    let result = ext_proc.apply_request(&mut request).await;
+    let result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
     assert_matches!(result, FilterDecision::Continue);
 
     let body_chunks =
@@ -2566,7 +2578,7 @@ async fn test_response_header_timeout() {
 
     let mut response =
         build_response_from_mock(&MockMessage::<ResponseMsg>::new(vec![], vec!["streaming body data"], vec![])).await;
-    let result = ext_proc.apply_response(&mut response).await;
+    let result = ext_proc.apply_response(&mut response, &RequestCtx::default()).await;
     assert_matches!(result, FilterDecision::DirectResponse(dr) => {
         assert_eq!(dr.status(), http::StatusCode::GATEWAY_TIMEOUT);
     });
@@ -2602,7 +2614,7 @@ async fn test_response_header_timeout_failure_mode_allow_true() {
 
     let mut response =
         build_response_from_mock(&MockMessage::<ResponseMsg>::new(vec![], vec!["streaming body data"], vec![])).await;
-    let result = ext_proc.apply_response(&mut response).await;
+    let result = ext_proc.apply_response(&mut response, &RequestCtx::default()).await;
     assert_matches!(result, FilterDecision::Continue);
 
     let (_, body) = response.into_parts();
@@ -2645,7 +2657,7 @@ async fn test_response_body_timeout_failure_mode_allow_false() {
 
     let mut response =
         build_response_from_mock(&MockMessage::<ResponseMsg>::new(vec![], vec!["streaming body data"], vec![])).await;
-    let result = ext_proc.apply_response(&mut response).await;
+    let result = ext_proc.apply_response(&mut response, &RequestCtx::default()).await;
     assert_matches!(result, FilterDecision::Continue);
 
     let body_bytes = &mut response.body_mut().collect().await;
@@ -2683,7 +2695,7 @@ async fn test_response_body_timeout_failure_mode_allow_true() {
 
     let mut response =
         build_response_from_mock(&MockMessage::<ResponseMsg>::new(vec![], vec!["streaming body data"], vec![])).await;
-    let result = ext_proc.apply_response(&mut response).await;
+    let result = ext_proc.apply_response(&mut response, &RequestCtx::default()).await;
     assert_matches!(result, FilterDecision::Continue);
 
     let (_, body) = response.into_parts();
@@ -2719,7 +2731,7 @@ async fn test_immediate_response_request_header() {
 
     let mut request =
         build_request_from_mock(&MockMessage::<RequestMsg>::new(vec![], vec!["streaming body data"], vec![])).await;
-    let result = ext_proc.apply_request(&mut request).await;
+    let result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
     assert_matches!(result, FilterDecision::DirectResponse(dr) => {
         assert_eq!(dr.status(), StatusCode::from_u16(302).unwrap());
         assert_eq!(dr.headers().get("x-immediate-header").unwrap(), "immediate value");
@@ -2758,7 +2770,7 @@ async fn test_immediate_response_request_header_disable_immediate_response() {
         vec![],
     ))
     .await;
-    let result = ext_proc.apply_request(&mut request).await;
+    let result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
 
     assert_matches!(result, FilterDecision::DirectResponse(dr) => {
         assert_eq!(dr.status(), StatusCode::from_u16(500).unwrap());
@@ -2794,7 +2806,7 @@ async fn test_immediate_response_request_header_disable_immediate_response_failu
         vec![],
     ))
     .await;
-    let result = ext_proc.apply_request(&mut request).await;
+    let result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
 
     assert_matches!(result, FilterDecision::Continue);
     let (parts, body) = request.into_parts();
@@ -2853,7 +2865,7 @@ async fn test_request_header_override_request_body() {
     })
     .await;
 
-    let result = ext_proc.apply_request(&mut request).await;
+    let result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
     assert_matches!(result, FilterDecision::Continue);
 
     assert_eq!(request.headers().get("content-type").unwrap(), "application/json");
@@ -2912,7 +2924,7 @@ async fn test_request_header_override_request_trailers() {
     })
     .await;
 
-    let result = ext_proc.apply_request(&mut request).await;
+    let result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
     assert_matches!(result, FilterDecision::Continue);
     assert_eq!(request.headers().get("content-type").unwrap(), "application/json");
 
@@ -2974,7 +2986,7 @@ async fn test_response_header_override_response_body() {
     })
     .await;
 
-    let result = ext_proc.apply_response(&mut response).await;
+    let result = ext_proc.apply_response(&mut response, &RequestCtx::default()).await;
     assert_matches!(result, FilterDecision::Continue);
 
     assert_eq!(response.headers().get("content-type").unwrap(), "application/json");
@@ -3031,7 +3043,7 @@ async fn test_response_header_override_response_trailers() {
     })
     .await;
 
-    let result = ext_proc.apply_response(&mut response).await;
+    let result = ext_proc.apply_response(&mut response, &RequestCtx::default()).await;
     assert_matches!(result, FilterDecision::Continue);
     assert_eq!(response.headers().get("content-type").unwrap(), "application/json");
 
@@ -3102,7 +3114,7 @@ async fn test_request_header_override_response_header() {
     })
     .await;
 
-    let request_result = ext_proc.apply_request(&mut request).await;
+    let request_result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
     assert_matches!(request_result, FilterDecision::Continue);
     assert_eq!(request.headers().get("content-type").unwrap(), "application/json");
 
@@ -3114,7 +3126,7 @@ async fn test_request_header_override_response_header() {
     })
     .await;
 
-    let result = ext_proc.apply_response(&mut response).await;
+    let result = ext_proc.apply_response(&mut response, &RequestCtx::default()).await;
     assert_matches!(result, FilterDecision::Continue);
     assert_eq!(response.headers().get("content-type").unwrap(), "application/json");
     assert_eq!(response.headers().get("x-custom-header").unwrap(), "ext-proc header value");
@@ -3167,7 +3179,7 @@ async fn test_request_body_buffered_too_large() {
         _marker: std::marker::PhantomData,
     })
     .await;
-    let result = ext_proc.apply_request(&mut request).await;
+    let result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
 
     assert_matches!(result, FilterDecision::DirectResponse(_));
     match result {
@@ -3222,7 +3234,7 @@ async fn test_request_multichunk_merged_body_streaming_mode() {
         _marker: std::marker::PhantomData,
     })
     .await;
-    let result = ext_proc.apply_request(&mut request).await;
+    let result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
 
     assert_matches!(result, FilterDecision::Continue);
     assert_eq!(request.headers().get("x-stream-processed").unwrap(), "true");
@@ -3274,7 +3286,7 @@ async fn test_request_multichunk_merged_body_buffered_mode() {
         _marker: std::marker::PhantomData,
     })
     .await;
-    let result = ext_proc.apply_request(&mut request).await;
+    let result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
 
     assert_matches!(result, FilterDecision::Continue);
     assert_eq!(request.headers().get("x-stream-processed").unwrap(), "true");
@@ -3341,7 +3353,7 @@ async fn test_request_multichunk_not_merged_body_streaming_mode() {
         _marker: std::marker::PhantomData,
     })
     .await;
-    let result = ext_proc.apply_request(&mut request).await;
+    let result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
 
     assert_matches!(result, FilterDecision::Continue);
     assert_eq!(request.headers().get("x-stream-processed").unwrap(), "true");
@@ -3495,7 +3507,7 @@ async fn test_request_body_and_trailer_processing_out_of_order() {
     })
     .await;
 
-    let result = ext_proc.apply_request(&mut request).await;
+    let result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
     assert_matches!(result, FilterDecision::Continue);
 
     let body = std::mem::take(&mut request.body_mut().inner.inner);
@@ -3555,7 +3567,7 @@ async fn test_request_multichunk_body_no_truncate_body() {
     let mut request =
         build_request_from_mock(&MockMessage::<RequestMsg>::new(vec![], vec!["chunk1", "chunk2", "chunk3"], vec![]))
             .await;
-    let result = ext_proc.apply_request(&mut request).await;
+    let result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
     assert_matches!(result, FilterDecision::Continue);
 
     let body_chunks =
@@ -3600,7 +3612,7 @@ async fn test_response_header_mutation() {
     })
     .await;
 
-    let result = ext_proc.apply_response(&mut response).await;
+    let result = ext_proc.apply_response(&mut response, &RequestCtx::default()).await;
 
     assert_matches!(result, FilterDecision::Continue);
     assert_eq!(response.headers().get("x-processed").unwrap(), "true");
@@ -3647,7 +3659,7 @@ async fn test_response_trailer_mutation() {
     })
     .await;
 
-    let result = ext_proc.apply_response(&mut response).await;
+    let result = ext_proc.apply_response(&mut response, &RequestCtx::default()).await;
     let (parts, body) = response.into_parts();
     let collected = body.collect().await.unwrap();
     let trailers = collected.trailers().cloned();
@@ -3695,7 +3707,7 @@ async fn test_response_body_buffered_continue_and_replace_on_headers_response() 
     })
     .await;
 
-    let result = ext_proc.apply_response(&mut response).await;
+    let result = ext_proc.apply_response(&mut response, &RequestCtx::default()).await;
 
     assert_matches!(result, FilterDecision::Continue);
     assert_eq!(response.headers().get("y-custom-header").unwrap(), "true");
@@ -3745,7 +3757,7 @@ async fn test_response_body_buffered_continue_and_replace_on_body_response() {
     })
     .await;
 
-    let result = ext_proc.apply_response(&mut response).await;
+    let result = ext_proc.apply_response(&mut response, &RequestCtx::default()).await;
 
     assert_matches!(result, FilterDecision::Continue);
     let body_bytes = response.body_mut().collect().await.unwrap().to_bytes();
@@ -3794,7 +3806,7 @@ async fn test_response_body_buffered_mode() {
     })
     .await;
 
-    let result = ext_proc.apply_response(&mut response).await;
+    let result = ext_proc.apply_response(&mut response, &RequestCtx::default()).await;
 
     assert_matches!(result, FilterDecision::Continue);
     assert_eq!(response.headers().get("x-stream-processed").unwrap(), "true");
@@ -3844,7 +3856,7 @@ async fn test_response_body_buffered_mode_header_mutations_on_body() {
     })
     .await;
 
-    let result = ext_proc.apply_response(&mut response).await;
+    let result = ext_proc.apply_response(&mut response, &RequestCtx::default()).await;
 
     assert_matches!(result, FilterDecision::Continue);
     assert_eq!(response.headers().get("mutation-in-header-response").unwrap(), "true");
@@ -3887,7 +3899,7 @@ async fn test_response_body_buffered_mode_header_mutations_on_body_no_header_res
     })
     .await;
 
-    let result = ext_proc.apply_response(&mut response).await;
+    let result = ext_proc.apply_response(&mut response, &RequestCtx::default()).await;
 
     assert_matches!(result, FilterDecision::Continue);
     assert_eq!(response.headers().get("mutation-in-body-response").unwrap(), "true");
@@ -3937,7 +3949,7 @@ async fn test_response_body_buffered_mode_send_body_without_waiting_for_header_r
     })
     .await;
 
-    let result = ext_proc.apply_response(&mut response).await;
+    let result = ext_proc.apply_response(&mut response, &RequestCtx::default()).await;
 
     assert_matches!(result, FilterDecision::Continue);
     assert_eq!(response.headers().get("x-stream-processed").unwrap(), "true");
@@ -3975,7 +3987,7 @@ async fn test_request_body_streaming_mode_observability() {
     let mut request =
         build_request_from_mock(&MockMessage::<RequestMsg>::new(vec![], vec!["streaming body data"], vec![])).await;
 
-    let result = ext_proc.apply_request(&mut request).await;
+    let result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
 
     assert_matches!(result, FilterDecision::Continue);
     let body_bytes = std::mem::take(&mut request.body_mut().inner.inner).collect().await.unwrap().to_bytes();
@@ -4006,7 +4018,7 @@ async fn test_immediate_response_response_header() {
 
     let mut response =
         build_response_from_mock(&MockMessage::<ResponseMsg>::new(vec![], vec!["streaming body data"], vec![])).await;
-    let result = ext_proc.apply_response(&mut response).await;
+    let result = ext_proc.apply_response(&mut response, &RequestCtx::default()).await;
     assert_matches!(result, FilterDecision::DirectResponse(dr) => {
         assert_eq!(dr.status(), StatusCode::from_u16(302).unwrap());
         assert_eq!(dr.headers().get("x-immediate-header").unwrap(), "immediate value");
@@ -4045,7 +4057,7 @@ async fn test_immediate_response_response_header_disable_immediate_response() {
         vec![],
     ))
     .await;
-    let result = ext_proc.apply_response(&mut response).await;
+    let result = ext_proc.apply_response(&mut response, &RequestCtx::default()).await;
 
     assert_matches!(result, FilterDecision::DirectResponse(dr) => {
         assert_eq!(dr.status(), StatusCode::from_u16(500).unwrap());
@@ -4081,7 +4093,7 @@ async fn test_immediate_response_response_header_disable_immediate_response_fail
         vec![],
     ))
     .await;
-    let result = ext_proc.apply_response(&mut response).await;
+    let result = ext_proc.apply_response(&mut response, &RequestCtx::default()).await;
 
     assert_matches!(result, FilterDecision::Continue);
     let (parts, body) = response.into_parts();
@@ -4131,7 +4143,7 @@ async fn test_response_body_buffered_too_large() {
         _marker: std::marker::PhantomData,
     })
     .await;
-    let result = ext_proc.apply_response(&mut response).await;
+    let result = ext_proc.apply_response(&mut response, &RequestCtx::default()).await;
 
     assert_matches!(result, FilterDecision::DirectResponse(_));
     match result {
@@ -4182,7 +4194,7 @@ async fn test_response_multichunk_merged_body_streaming_mode() {
         _marker: std::marker::PhantomData,
     })
     .await;
-    let result = ext_proc.apply_response(&mut response).await;
+    let result = ext_proc.apply_response(&mut response, &RequestCtx::default()).await;
 
     assert_matches!(result, FilterDecision::Continue);
     assert_eq!(response.headers().get("x-stream-processed").unwrap(), "true");
@@ -4230,7 +4242,7 @@ async fn test_response_multichunk_merged_body_buffered_mode() {
         _marker: std::marker::PhantomData,
     })
     .await;
-    let result = ext_proc.apply_response(&mut response).await;
+    let result = ext_proc.apply_response(&mut response, &RequestCtx::default()).await;
 
     assert_matches!(result, FilterDecision::Continue);
     assert_eq!(response.headers().get("x-stream-processed").unwrap(), "true");
@@ -4288,7 +4300,7 @@ async fn test_response_multichunk_not_merged_body_streaming_mode() {
         _marker: std::marker::PhantomData,
     })
     .await;
-    let result = ext_proc.apply_response(&mut response).await;
+    let result = ext_proc.apply_response(&mut response, &RequestCtx::default()).await;
 
     assert_matches!(result, FilterDecision::Continue);
     assert_eq!(response.headers().get("x-stream-processed").unwrap(), "true");
@@ -4346,7 +4358,7 @@ async fn test_response_multichunk_body_with_mutation() {
     let mut response =
         build_response_from_mock(&MockMessage::<ResponseMsg>::new(vec![], vec!["chunk1", "chunk2", "chunk3"], vec![]))
             .await;
-    let result = ext_proc.apply_response(&mut response).await;
+    let result = ext_proc.apply_response(&mut response, &RequestCtx::default()).await;
     assert_matches!(result, FilterDecision::Continue);
 
     let body_chunks = to_body_data_chunks(response.body_mut().collect().await.unwrap()).await;
@@ -4390,7 +4402,7 @@ async fn test_response_multichunk_body_timeout_failure_mode_allow_true() {
     let mut response =
         build_response_from_mock(&MockMessage::<ResponseMsg>::new(vec![], vec!["chunk1", "chunk2", "chunk3"], vec![]))
             .await;
-    let result = ext_proc.apply_response(&mut response).await;
+    let result = ext_proc.apply_response(&mut response, &RequestCtx::default()).await;
     assert_matches!(result, FilterDecision::Continue);
 
     let body_chunks = to_body_data_chunks(response.body_mut().collect().await.unwrap()).await;
@@ -4438,7 +4450,7 @@ async fn test_response_body_and_trailer_out_of_order() {
     })
     .await;
 
-    let result = ext_proc.apply_response(&mut response).await;
+    let result = ext_proc.apply_response(&mut response, &RequestCtx::default()).await;
     assert_matches!(result, FilterDecision::Continue);
 
     let (_, body) = response.into_parts();
@@ -4498,7 +4510,7 @@ async fn test_response_multichunk_body_no_truncate_body() {
     let mut response =
         build_response_from_mock(&MockMessage::<ResponseMsg>::new(vec![], vec!["chunk1", "chunk2", "chunk3"], vec![]))
             .await;
-    let result = ext_proc.apply_response(&mut response).await;
+    let result = ext_proc.apply_response(&mut response, &RequestCtx::default()).await;
     assert_matches!(result, FilterDecision::Continue);
 
     let body_chunks = to_body_data_chunks(response.body_mut().collect().await.unwrap()).await;
@@ -4546,7 +4558,7 @@ async fn test_request_trailer_timeout() {
     })
     .await;
 
-    let result = ext_proc.apply_request(&mut request).await;
+    let result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
     // Trailer processing happens in the body stream, so the initial result is Continue
     // but the body collection will fail due to the trailer timeout
     assert_matches!(result, FilterDecision::Continue);
@@ -4592,7 +4604,7 @@ async fn test_request_trailer_timeout_failure_mode_allow_true() {
     })
     .await;
 
-    let result = ext_proc.apply_request(&mut request).await;
+    let result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
     assert_matches!(result, FilterDecision::Continue);
 
     let body = std::mem::take(&mut request.body_mut().inner.inner).collect().await.unwrap();
@@ -4639,7 +4651,7 @@ async fn test_response_trailer_timeout() {
     })
     .await;
 
-    let result = ext_proc.apply_response(&mut response).await;
+    let result = ext_proc.apply_response(&mut response, &RequestCtx::default()).await;
     // Trailer processing happens in the body stream, so the initial result is Continue
     // but the body collection will fail due to the trailer timeout
     assert_matches!(result, FilterDecision::Continue);
@@ -4686,7 +4698,7 @@ async fn test_response_trailer_timeout_failure_mode_allow_true() {
     })
     .await;
 
-    let result = ext_proc.apply_response(&mut response).await;
+    let result = ext_proc.apply_response(&mut response, &RequestCtx::default()).await;
     assert_matches!(result, FilterDecision::Continue);
 
     let (_, body) = response.into_parts();
@@ -4735,7 +4747,7 @@ async fn test_immediate_response_request_body() {
         _marker: std::marker::PhantomData,
     })
     .await;
-    let result = ext_proc.apply_request(&mut request).await;
+    let result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
     assert_matches!(result, FilterDecision::DirectResponse(dr) => {
         assert_eq!(dr.status(), StatusCode::from_u16(403).unwrap());
         assert_eq!(dr.headers().get("x-immediate-header").unwrap(), "immediate value");
@@ -4782,7 +4794,7 @@ async fn test_immediate_response_response_body() {
         _marker: std::marker::PhantomData,
     })
     .await;
-    let result = ext_proc.apply_response(&mut response).await;
+    let result = ext_proc.apply_response(&mut response, &RequestCtx::default()).await;
     assert_matches!(result, FilterDecision::DirectResponse(dr) => {
         assert_eq!(dr.status(), StatusCode::from_u16(403).unwrap());
         assert_eq!(dr.headers().get("x-immediate-header").unwrap(), "immediate value");
@@ -4863,7 +4875,7 @@ async fn test_request_body_clear_body_mutation() {
     })
     .await;
 
-    let result = ext_proc.apply_request(&mut request).await;
+    let result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
 
     assert_matches!(result, FilterDecision::Continue);
     let body_bytes = std::mem::take(&mut request.body_mut().inner.inner).collect().await.unwrap().to_bytes();
@@ -4905,7 +4917,7 @@ async fn test_response_body_clear_body_mutation() {
     })
     .await;
 
-    let result = ext_proc.apply_response(&mut response).await;
+    let result = ext_proc.apply_response(&mut response, &RequestCtx::default()).await;
 
     assert_matches!(result, FilterDecision::Continue);
     let body_bytes = response.body_mut().collect().await.unwrap().to_bytes();
@@ -4975,7 +4987,7 @@ async fn test_request_header_clear_body_mutation_continue_and_replace() {
     })
     .await;
 
-    let result = ext_proc.apply_request(&mut request).await;
+    let result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
 
     assert_matches!(result, FilterDecision::Continue);
     assert_eq!(request.headers().get("x-body-cleared").unwrap(), "true");
@@ -5014,7 +5026,7 @@ async fn test_response_header_clear_body_mutation_continue_and_replace() {
     })
     .await;
 
-    let result = ext_proc.apply_response(&mut response).await;
+    let result = ext_proc.apply_response(&mut response, &RequestCtx::default()).await;
 
     assert_matches!(result, FilterDecision::Continue);
     assert_eq!(response.headers().get("x-body-cleared").unwrap(), "true");
@@ -5062,7 +5074,7 @@ async fn test_response_full_duplex_streaming_mode_header_only() {
     })
     .await;
 
-    let result = ext_proc.apply_response(&mut response).await;
+    let result = ext_proc.apply_response(&mut response, &RequestCtx::default()).await;
 
     assert_matches!(result, FilterDecision::Continue);
     assert_eq!(response.headers().get("x-stream-processed").unwrap(), "true");
@@ -5123,7 +5135,7 @@ async fn test_response_full_duplex_streaming_mode_with_body() {
     })
     .await;
 
-    let result = ext_proc.apply_response(&mut response).await;
+    let result = ext_proc.apply_response(&mut response, &RequestCtx::default()).await;
 
     assert_matches!(result, FilterDecision::Continue);
     assert_eq!(response.headers().get("x-stream-processed").unwrap(), "true");
@@ -5188,7 +5200,7 @@ async fn test_response_full_duplex_streaming_mode_with_body_and_trailers() {
     })
     .await;
 
-    let result = ext_proc.apply_response(&mut response).await;
+    let result = ext_proc.apply_response(&mut response, &RequestCtx::default()).await;
 
     assert_matches!(result, FilterDecision::Continue);
     assert_eq!(response.headers().get("x-stream-processed").unwrap(), "true");
@@ -5243,7 +5255,7 @@ async fn test_response_buffered_mode_header_only() {
     })
     .await;
 
-    let result = ext_proc.apply_response(&mut response).await;
+    let result = ext_proc.apply_response(&mut response, &RequestCtx::default()).await;
 
     assert_matches!(result, FilterDecision::Continue);
     assert_eq!(response.headers().get("x-stream-processed").unwrap(), "true");
@@ -5304,7 +5316,7 @@ async fn test_response_buffered_mode_with_body() {
     })
     .await;
 
-    let result = ext_proc.apply_response(&mut response).await;
+    let result = ext_proc.apply_response(&mut response, &RequestCtx::default()).await;
 
     assert_matches!(result, FilterDecision::Continue);
     assert_eq!(response.headers().get("x-stream-processed").unwrap(), "true");
@@ -5369,7 +5381,7 @@ async fn test_response_buffered_mode_with_body_and_trailers() {
     })
     .await;
 
-    let result = ext_proc.apply_response(&mut response).await;
+    let result = ext_proc.apply_response(&mut response, &RequestCtx::default()).await;
 
     assert_matches!(result, FilterDecision::Continue);
     assert_eq!(response.headers().get("x-stream-processed").unwrap(), "true");
@@ -5439,7 +5451,7 @@ async fn test_request_body_timeout_scenarios() {
         ))
         .await;
 
-        let result = ext_proc.apply_request(&mut request).await;
+        let result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
 
         if body_mode == BodyProcessingMode::Buffered {
             assert_matches!(result, FilterDecision::DirectResponse(dr) => {
@@ -5516,7 +5528,7 @@ async fn test_request_trailer_timeout_scenarios() {
         })
         .await;
 
-        let result = ext_proc.apply_request(&mut request).await;
+        let result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
 
         assert_matches!(result, FilterDecision::Continue);
         let body_result = std::mem::take(&mut request.body_mut().inner.inner).collect().await;
@@ -5579,7 +5591,7 @@ async fn test_response_body_timeout_scenarios() {
         ))
         .await;
 
-        let result = ext_proc.apply_response(&mut response).await;
+        let result = ext_proc.apply_response(&mut response, &RequestCtx::default()).await;
 
         if body_mode == BodyProcessingMode::Buffered {
             assert_matches!(result, FilterDecision::DirectResponse(dr) => {
@@ -5656,7 +5668,7 @@ async fn test_response_trailer_timeout_scenarios() {
         })
         .await;
 
-        let result = ext_proc.apply_response(&mut response).await;
+        let result = ext_proc.apply_response(&mut response, &RequestCtx::default()).await;
 
         assert_matches!(result, FilterDecision::Continue);
         let body_result = response.body_mut().collect().await;
@@ -5710,7 +5722,7 @@ async fn test_request_response_headers_processing_mode() {
     ))
     .await;
 
-    let req_result = ext_proc.apply_request(&mut request).await;
+    let req_result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
     assert_matches!(req_result, FilterDecision::Continue);
     assert_eq!(request.headers().get("x-req-mutated").unwrap(), "true");
 
@@ -5721,7 +5733,7 @@ async fn test_request_response_headers_processing_mode() {
     ))
     .await;
 
-    let res_result = ext_proc.apply_response(&mut response).await;
+    let res_result = ext_proc.apply_response(&mut response, &RequestCtx::default()).await;
     assert_matches!(res_result, FilterDecision::Continue);
     assert_eq!(response.headers().get("x-res-mutated").unwrap(), "true");
 }
@@ -5762,7 +5774,7 @@ async fn test_request_response_headers_observability_mode() {
     ))
     .await;
 
-    let req_result = ext_proc.apply_request(&mut request).await;
+    let req_result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
     assert_matches!(req_result, FilterDecision::Continue);
     assert!(request.headers().get("x-req-mutated").is_none());
 
@@ -5773,7 +5785,7 @@ async fn test_request_response_headers_observability_mode() {
     ))
     .await;
 
-    let res_result = ext_proc.apply_response(&mut response).await;
+    let res_result = ext_proc.apply_response(&mut response, &RequestCtx::default()).await;
     assert_matches!(res_result, FilterDecision::Continue);
     assert!(response.headers().get("x-res-mutated").is_none());
 }
@@ -5818,7 +5830,7 @@ async fn test_request_response_body_buffered_processing_mode() {
     ))
     .await;
 
-    let req_result = ext_proc.apply_request(&mut request).await;
+    let req_result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
     assert_matches!(req_result, FilterDecision::Continue);
     let body_bytes = std::mem::take(&mut request.body_mut().inner.inner).collect().await.unwrap().to_bytes();
     assert_eq!(body_bytes, "req-mutated-body".as_bytes());
@@ -5830,7 +5842,7 @@ async fn test_request_response_body_buffered_processing_mode() {
     ))
     .await;
 
-    let res_result = ext_proc.apply_response(&mut response).await;
+    let res_result = ext_proc.apply_response(&mut response, &RequestCtx::default()).await;
     assert_matches!(res_result, FilterDecision::Continue);
     let body_bytes = response.body_mut().collect().await.unwrap().to_bytes();
     assert_eq!(body_bytes, "res-mutated-body".as_bytes());
@@ -5866,7 +5878,7 @@ async fn test_request_response_body_buffered_observability_mode() {
     ))
     .await;
 
-    let req_result = ext_proc.apply_request(&mut request).await;
+    let req_result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
     assert_matches!(req_result, FilterDecision::Continue);
     let body_bytes = std::mem::take(&mut request.body_mut().inner.inner).collect().await.unwrap().to_bytes();
     assert_eq!(body_bytes, "req-body".as_bytes());
@@ -5878,7 +5890,7 @@ async fn test_request_response_body_buffered_observability_mode() {
     ))
     .await;
 
-    let res_result = ext_proc.apply_response(&mut response).await;
+    let res_result = ext_proc.apply_response(&mut response, &RequestCtx::default()).await;
     assert_matches!(res_result, FilterDecision::Continue);
     let body_bytes = response.body_mut().collect().await.unwrap().to_bytes();
     assert_eq!(body_bytes, "res-body".as_bytes());
@@ -5924,7 +5936,7 @@ async fn test_request_response_body_streamed_processing_mode() {
     ))
     .await;
 
-    let req_result = ext_proc.apply_request(&mut request).await;
+    let req_result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
     assert_matches!(req_result, FilterDecision::Continue);
     let body_bytes = std::mem::take(&mut request.body_mut().inner.inner).collect().await.unwrap().to_bytes();
     assert_eq!(body_bytes, "req-mutated-chunk".as_bytes());
@@ -5936,7 +5948,7 @@ async fn test_request_response_body_streamed_processing_mode() {
     ))
     .await;
 
-    let res_result = ext_proc.apply_response(&mut response).await;
+    let res_result = ext_proc.apply_response(&mut response, &RequestCtx::default()).await;
     assert_matches!(res_result, FilterDecision::Continue);
     let body_bytes = response.body_mut().collect().await.unwrap().to_bytes();
     assert_eq!(body_bytes, "res-mutated-chunk".as_bytes());
@@ -5972,7 +5984,7 @@ async fn test_request_response_body_streamed_observability_mode() {
     ))
     .await;
 
-    let req_result = ext_proc.apply_request(&mut request).await;
+    let req_result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
     assert_matches!(req_result, FilterDecision::Continue);
     let body_bytes = std::mem::take(&mut request.body_mut().inner.inner).collect().await.unwrap().to_bytes();
     assert_eq!(body_bytes, "req-chunk".as_bytes());
@@ -5984,7 +5996,7 @@ async fn test_request_response_body_streamed_observability_mode() {
     ))
     .await;
 
-    let res_result = ext_proc.apply_response(&mut response).await;
+    let res_result = ext_proc.apply_response(&mut response, &RequestCtx::default()).await;
     assert_matches!(res_result, FilterDecision::Continue);
     let body_bytes = response.body_mut().collect().await.unwrap().to_bytes();
     assert_eq!(body_bytes, "res-chunk".as_bytes());
@@ -6018,7 +6030,7 @@ async fn test_request_response_trailers_processing_mode() {
     ))
     .await;
 
-    let req_result = ext_proc.apply_request(&mut request).await;
+    let req_result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
     assert_matches!(req_result, FilterDecision::Continue);
     let req_body = std::mem::take(&mut request.body_mut().inner.inner).collect().await.unwrap();
     let req_trailers = req_body.trailers().unwrap();
@@ -6031,7 +6043,7 @@ async fn test_request_response_trailers_processing_mode() {
     ))
     .await;
 
-    let res_result = ext_proc.apply_response(&mut response).await;
+    let res_result = ext_proc.apply_response(&mut response, &RequestCtx::default()).await;
     assert_matches!(res_result, FilterDecision::Continue);
     let res_body = response.body_mut().collect().await.unwrap();
     let res_trailers = res_body.trailers().unwrap();
@@ -6068,7 +6080,7 @@ async fn test_request_response_trailers_observability_mode() {
     ))
     .await;
 
-    let req_result = ext_proc.apply_request(&mut request).await;
+    let req_result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
     assert_matches!(req_result, FilterDecision::Continue);
     let req_body = std::mem::take(&mut request.body_mut().inner.inner).collect().await.unwrap();
     let req_trailers = req_body.trailers().unwrap();
@@ -6082,7 +6094,7 @@ async fn test_request_response_trailers_observability_mode() {
     ))
     .await;
 
-    let res_result = ext_proc.apply_response(&mut response).await;
+    let res_result = ext_proc.apply_response(&mut response, &RequestCtx::default()).await;
     assert_matches!(res_result, FilterDecision::Continue);
     let res_body = response.body_mut().collect().await.unwrap();
     let res_trailers = res_body.trailers().unwrap();
@@ -6126,7 +6138,7 @@ async fn test_request_header_mutation_with_large_body() {
     })
     .await;
 
-    let result = ext_proc.apply_request(&mut request).await;
+    let result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
 
     assert_matches!(result, FilterDecision::Continue);
     assert_eq!(request.headers().get("x-processed").unwrap(), "true");
@@ -6180,7 +6192,7 @@ async fn test_request_header_mutation_with_multichunk_large_body() {
     })
     .await;
 
-    let result = ext_proc.apply_request(&mut request).await;
+    let result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
 
     assert_matches!(result, FilterDecision::Continue);
     assert_eq!(request.headers().get("x-processed").unwrap(), "true");
@@ -6261,7 +6273,7 @@ async fn test_request_mutation_with_streamed_10m_body_4k_chunks() {
     .await;
 
     // Process Request
-    let req_result = ext_proc.apply_request(&mut request).await;
+    let req_result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
     assert_matches!(req_result, FilterDecision::Continue);
 
     // Consume and verify the mutated request body
@@ -6336,7 +6348,7 @@ async fn test_response_mutation_with_streamed_10m_body_4k_chunks() {
     })
     .await;
 
-    let res_result = ext_proc.apply_response(&mut response).await;
+    let res_result = ext_proc.apply_response(&mut response, &RequestCtx::default()).await;
     assert_matches!(res_result, FilterDecision::Continue);
 
     let res_inner = std::mem::take(&mut response.body_mut().inner);
@@ -6448,7 +6460,7 @@ async fn test_request_and_response_mutation_with_streamed_10m_body_4k_chunks() {
     .await;
 
     // Process Request
-    let req_result = ext_proc.apply_request(&mut request).await;
+    let req_result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
     assert_matches!(req_result, FilterDecision::Continue);
 
     // Consume and verify the mutated request body
@@ -6464,7 +6476,7 @@ async fn test_request_and_response_mutation_with_streamed_10m_body_4k_chunks() {
     assert_eq!(actual_req_body_len, BODY_SIZE);
 
     // Process Response
-    let res_result = ext_proc.apply_response(&mut response).await;
+    let res_result = ext_proc.apply_response(&mut response, &RequestCtx::default()).await;
     assert_matches!(res_result, FilterDecision::Continue);
 
     // Consume and verify the mutated response body
@@ -6524,7 +6536,7 @@ async fn test_forward_rules_allowed_headers() {
     })
     .await;
 
-    let result = ext_proc.apply_request(&mut request).await;
+    let result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
     assert_matches!(result, FilterDecision::Continue);
 
     // Assert the original headers are preserved in the proxy's request
@@ -6591,7 +6603,7 @@ async fn test_header_append_action_append_if_exists_or_add() {
     })
     .await;
 
-    let result = ext_proc.apply_request(&mut request).await;
+    let result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
     assert_matches!(result, FilterDecision::Continue);
 
     // AppendIfExistsOrAdd: since "x-appended-header" exists ("original-value"),
@@ -6642,7 +6654,7 @@ async fn test_clear_route_cache() {
     })
     .await;
 
-    let result = ext_proc.apply_request(&mut request).await;
+    let result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
 
     // When clear_route_cache is true, the filter should return FilterDecision::Reroute
     assert_matches!(result, FilterDecision::Reroute);
@@ -6688,7 +6700,7 @@ async fn test_immediate_response_with_grpc_status() {
     })
     .await;
 
-    let result = ext_proc.apply_request(&mut request).await;
+    let result = ext_proc.apply_request(&mut request, &RequestCtx::default()).await;
 
     // An ImmediateResponse triggers a DirectResponse
     assert_matches!(result, FilterDecision::DirectResponse(response) => {

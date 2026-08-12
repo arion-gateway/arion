@@ -36,13 +36,15 @@ use crate::{
         sink_body::{SinkBody, SinkSender},
         timeout_body::TimeoutBody,
     },
-    extensions_context::MetadataContext,
     listeners::{
-        http_connection_manager::mcp_gateway::{
-            embeddings,
-            tools::{CallToolError, ToolBuilderError, ToolEntry, ToolsRegistry},
-            transcoder::{Transcoder, TranscoderType},
-            transport::{self, AcceptedMime, RequestExt, SessionId, MIME_APPLICATION_JSON, MIME_TEXT_EVENT_STREAM},
+        http_connection_manager::{
+            mcp_gateway::{
+                embeddings,
+                tools::{CallToolError, ToolBuilderError, ToolEntry, ToolsRegistry},
+                transcoder::{Transcoder, TranscoderType},
+                transport::{self, AcceptedMime, RequestExt, SessionId, MIME_APPLICATION_JSON, MIME_TEXT_EVENT_STREAM},
+            },
+            RequestCtx,
         },
         http_filters::{FilterDecision, FilterFactory},
         listener::FilterListenerContext,
@@ -297,18 +299,19 @@ impl FilterFactory for McpGateway {
 }
 
 impl McpGateway {
-    pub async fn apply_request(&mut self, request: &mut http::Request<OrionRequestBody>) -> FilterDecision {
+    pub async fn apply_request(
+        &mut self,
+        request: &mut http::Request<OrionRequestBody>,
+        req_ctx: &RequestCtx,
+    ) -> FilterDecision {
         //debug!(target: "mcp_gateway", "apply_request: {:?}", request);
 
         self.version = request.version();
 
-        let Some(metadata) = request.extensions().get::<MetadataContext>() else {
-            debug!(target: "mcp_gateway", "apply_request: failed to retrieve metadata");
-            return FilterDecision::internal_server_error("Failed to retrieve metadata", self.version);
-        };
+        let listener_name = req_ctx.conn.listener_name();
 
         // get global context for this listener
-        let ctx = McpGatewayListenerContext::get_filter_context(metadata.downstream.listener_name);
+        let ctx = McpGatewayListenerContext::get_filter_context(listener_name);
 
         // ensure cleanup task is running
         ctx.start_cleanup_task();
@@ -320,9 +323,7 @@ impl McpGateway {
             // (&Method::OPTIONS, SSE_MESSAGE_ENDPOINT) | (&Method::OPTIONS, MCP_MESSAGE_ENDPOINT) => {
             //     self.handle_cors_options(request).await
             // },
-            (&Method::POST, MCP_MESSAGE_ENDPOINT) => {
-                self.handle_mcp_post_endpoint(&ctx, request, metadata.downstream.listener_name).await
-            },
+            (&Method::POST, MCP_MESSAGE_ENDPOINT) => self.handle_mcp_post_endpoint(&ctx, request, listener_name).await,
             (&Method::DELETE, MCP_MESSAGE_ENDPOINT) => self.handle_mcp_delete_endpoint(&ctx, request),
             _ => {
                 debug!(target: "mcp_gateway", "apply_request: no route found");

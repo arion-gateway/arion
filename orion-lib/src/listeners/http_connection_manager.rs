@@ -42,7 +42,7 @@ use smallvec::SmallVec;
 use std::sync::atomic::AtomicUsize;
 
 #[cfg(feature = "access-log")]
-use crate::extensions_context::EventContext;
+use crate::event_error::EventErrorContext;
 
 #[cfg(any(feature = "tracing", feature = "metrics"))]
 use opentelemetry::KeyValue;
@@ -108,12 +108,11 @@ use crate::{
         timeout_body::TimeoutBody,
     },
     event_error::{EventFailure, EventKind},
-    extensions_context::MetadataContext,
     get_shard_id,
     listeners::{
         http_connection_manager::http_modifiers::ModifiersExtractor,
         http_filters::{per_route_http_filters, FilterDecision, FilterFactory, HttpFilter, HttpFilterValue},
-        metadata::DownstreamMetadata,
+        metadata::{ConnMeta, DownstreamMetadata},
         synthetic_http_response::SyntheticHttpResponse,
     },
     with_client_span, with_metric, with_server_span, ConversionContext, OrionRequestBody, OrionResponseBody, PolyBody,
@@ -129,10 +128,7 @@ use orion_configuration::config::network_filters::{
 use orion_format::types::ResponseFlags as FmtResponseFlags;
 use route::RouteContext;
 use smol_str::SmolStr;
-use std::{
-    collections::HashMap,
-    net::{IpAddr, Ipv4Addr, SocketAddr},
-};
+use std::collections::HashMap;
 use std::{fmt, future::Future, result::Result as StdResult, sync::Arc};
 use tokio::sync::watch;
 use tracing::{debug, error};
@@ -171,35 +167,35 @@ impl Write for LengthCounter {
 //                                |
 //                                v
 // +-----------------------------------------------------------------------------------------------+
-// | 1. MetadataSvc (in filterchain.rs)                                                        |
+// | 1. MetadataSvc                                                                                |
 // |   Input:  Request<Incoming>                                                                   |
-// |   Action: Injects `DownstreamMetadata` and `StreamMetrics`.                                   |
-// |   Output: RequestMetadata<Request<Incoming>>                                                  |
+// |   Action: Attaches connection-scoped ConnMeta (Arc downstream + stream metrics).              |
+// |   Output: IncomingHttpRequest<Incoming>                                                       |
 // +-----------------------------------------------------------------------------------------------+
 //                                |
 //                                v
 // +-----------------------------------------------------------------------------------------------+
 // | 2. TransactionLifecycleSvc                                                                  |
-// |   Input:  RequestMetadata<Request<Incoming>>                                                  |
-// |   Action: Applies Request ID policy, creates tracing span, initializes `TransactionContext`.  |
-// |           Calls inner. On return, traces the HTTP status code and handles 500 fallback.       |
-// |   Output: RequestTransactionContext<RequestMetadata<Request<Incoming>>>                       |
+// |   Input:  IncomingHttpRequest<Incoming>                                                       |
+// |   Action: Request ID, span, TransactionContext → RequestCtx.                                  |
+// |           Bridge (temporary): also inserts ctx into request.extensions for filters/WASM.      |
+// |   Output: HttpRequest<Incoming>                                                               |
 // +-----------------------------------------------------------------------------------------------+
 //                                |
 //                                v
 // +-----------------------------------------------------------------------------------------------+
 // | 3. TransactionSvc                                                                         |
-// |   Input:  RequestTransactionContext<RequestMetadata<Request<Incoming>>>                       |
-// |   Action: Records active metrics, validates request, wraps body in `InstrumentedBody`.        |
-// |   Output: PipelineRequest<Request<OrionRequestBody>>                                          |
+// |   Input:  HttpRequest<Incoming>                                                               |
+// |   Action: Metrics, validation, instrumented body, resolve route_conf.                         |
+// |   Output: RoutedHttpRequest<OrionRequestBody>                                                 |
 // +-----------------------------------------------------------------------------------------------+
 //                                |
 //                                v
 // +-----------------------------------------------------------------------------------------------+
 // | 4. HttpPipelineSvc (Terminal Service)                                                     |
-// |   Input:  PipelineRequest<Request<OrionRequestBody>>                                          |
-// |   Action: Executes the HTTP filter chain and routes to upstream via `RequestHandler` trait.   |
-// |   Output: Response<OrionRequestBody> (bubbles back up the stack)                              |
+// |   Input:  RoutedHttpRequest<OrionRequestBody>                                                 |
+// |   Action: Filter chain + routing via RequestHandler (ctx passed explicitly).                  |
+// |   Output: Response<OrionRequestBody>                                                          |
 // +-----------------------------------------------------------------------------------------------+
 //
 // =================================================================================================
@@ -799,31 +795,25 @@ impl HttpPipelineSvc {
     }
 }
 
-impl Service<PipelineRequest<Request<OrionRequestBody>>> for HttpPipelineSvc {
+impl Service<RoutedHttpRequest<OrionRequestBody>> for HttpPipelineSvc {
     type Response = Response<OrionRequestBody>;
     type Error = crate::Error;
     type Future = BoxFuture<'static, StdResult<Self::Response, Self::Error>>;
 
     #[allow(clippy::too_many_lines)]
-    fn call(&self, req: PipelineRequest<Request<OrionRequestBody>>) -> Self::Future {
+    fn call(&self, req: RoutedHttpRequest<OrionRequestBody>) -> Self::Future {
         let manager = Arc::clone(&self.manager);
         Box::pin(async move {
-            let PipelineRequest { mut request, trans_ctx, route_conf, downstream, stream_metrics } = req;
+            let RoutedHttpRequest { http: HttpRequest { mut request, ctx }, route_conf } = req;
+            let trans_ctx = Arc::clone(&ctx.tx);
+            let stream_metrics = Arc::clone(&ctx.conn.stream_metrics);
 
             #[allow(unused_variables)]
             let listener_name = manager.listener_name;
             #[allow(unused_variables)]
             let filterchain_id = manager.filterchain_id;
-            let downstream_addr = downstream.connection.peer_address();
+            let downstream_addr = ctx.conn.downstream_peer_address();
             let stream_metrics_clone = Arc::clone(&stream_metrics);
-
-            request.extensions_mut().insert(MetadataContext {
-                downstream: *downstream.clone(),
-                stream_metrics: Arc::clone(&stream_metrics),
-            });
-
-            // save downtream metadata as request extension...
-            request.extensions_mut().insert(downstream);
 
             // check if this is the first request on the stream, and if so, record it in the metrics.
             if stream_metrics.inc_requests() == 0 {
@@ -853,7 +843,7 @@ impl Service<PipelineRequest<Request<OrionRequestBody>>> for HttpPipelineSvc {
             http_modifiers::apply_prerouting_functions(&mut request, downstream_addr, manager.xff_settings);
 
             // process request, get the response..
-            let result = route_conf.to_response(&trans_ctx, request, Arc::clone(&manager)).await;
+            let result = route_conf.to_response(&ctx, request, Arc::clone(&manager)).await;
 
             // calculate the time to first byte..
             #[cfg(any(feature = "access-log", feature = "metrics"))]
@@ -867,7 +857,7 @@ impl Service<PipelineRequest<Request<OrionRequestBody>>> for HttpPipelineSvc {
 
                 #[cfg(feature = "access-log")]
                 let (initial_flags, initial_event) = {
-                    let ec = response.extensions().get::<EventContext>();
+                    let ec = response.extensions().get::<EventErrorContext>();
                     (ec.map(|ec| ec.response_flags).unwrap_or_default(), ec.and_then(|ec| ec.event_kind.clone()))
                 };
 
@@ -1015,7 +1005,7 @@ fn select_virtual_host<'a, T>(request: &Request<T>, virtual_hosts: &'a [VirtualH
 pub trait RequestHandler<R, A>: Sized {
     fn to_response(
         self,
-        trans_context: &Arc<TransactionContext>,
+        ctx: &RequestCtx,
         request: R,
         arg: A,
     ) -> impl Future<Output = Result<Response<OrionResponseBody>>> + Send;
@@ -1032,22 +1022,59 @@ fn match_request_route<'a, B>(request: &Request<B>, route_config: &'a RouteConfi
     Some(CachedRoute { route: chosen_route, route_match: route_match_result, vh: chosen_vh })
 }
 
-struct AsyncExecution(Arc<RouteConfiguration>);
+/// How far into the per-route filter chain this pipeline invocation should start.
+struct PipelineStart {
+    filter_idx: usize,
+    initial_filter: Option<HttpFilterValue>,
+}
 
-impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usize, HttpFilterValue)>
-    for AsyncExecution
-{
-    #[allow(clippy::too_many_lines)]
+/// Policy for nested `FilterDecision::AsyncRequest` while walking filters.
+enum AsyncRequestPolicy {
+    /// Main path: spawn a resume task for the remaining filters.
+    SpawnResume,
+    /// Resume path: a second async hand-off is not supported.
+    Unsupported,
+}
+
+impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for Arc<RouteConfiguration> {
     async fn to_response(
         self,
-        trans_context: &Arc<TransactionContext>,
-        mut request: Request<OrionRequestBody>,
-        (connection_manager, mut filter_idx, http_filter): (Arc<HttpConnectionManager>, usize, HttpFilterValue),
+        ctx: &RequestCtx,
+        request: Request<OrionRequestBody>,
+        connection_manager: Arc<HttpConnectionManager>,
     ) -> Result<Response<OrionResponseBody>> {
-        let mut cached_route = match_request_route(&request, &self.0);
-        let mut active_filters: SmallVec<[HttpFilterValue; 4]> = SmallVec::new();
+        run_route_pipeline(
+            self,
+            ctx,
+            request,
+            connection_manager,
+            PipelineStart { filter_idx: 0, initial_filter: None },
+            AsyncRequestPolicy::SpawnResume,
+            true,
+        )
+        .await
+    }
+}
 
-        active_filters.push(http_filter);
+#[allow(clippy::too_many_lines)]
+fn run_route_pipeline<'a>(
+    route_conf: Arc<RouteConfiguration>,
+    ctx: &'a RequestCtx,
+    mut request: Request<OrionRequestBody>,
+    connection_manager: Arc<HttpConnectionManager>,
+    start: PipelineStart,
+    async_policy: AsyncRequestPolicy,
+    with_response_hooks: bool,
+) -> BoxFuture<'a, Result<Response<OrionResponseBody>>> {
+    // Boxed to break recursive `Send` inference when the main path spawns a resume task.
+    Box::pin(async move {
+        let mut cached_route = match_request_route(&request, &route_conf);
+        let mut active_filters: SmallVec<[HttpFilterValue; 4]> = SmallVec::new();
+        let mut filter_idx = start.filter_idx;
+
+        if let Some(initial_filter) = start.initial_filter {
+            active_filters.push(initial_filter);
+        }
 
         let filter_response = 'filter_loop: loop {
             let Some(ref chosen_route) = cached_route else {
@@ -1069,234 +1096,71 @@ impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usiz
 
             let mut reroute = false;
 
-            // Semantic Match: We keep the exact same while logic
             while filter_idx < route_filters.len() {
-                // Safe Access: Replaces route_filters[filter_idx] without changing logic flow
                 let Some(filter) = route_filters.get(filter_idx) else {
                     break;
                 };
 
+                let current_idx = filter_idx;
                 filter_idx += 1;
 
                 if filter.disabled {
                     continue;
                 }
 
-                if let Some(filter_config) = &filter.filter {
-                    let mut filter_value = filter_config.new_from();
-                    let filter_res = filter_value.apply_request(&mut request).await;
-
-                    match filter_res {
-                        FilterDecision::Continue => {
-                            active_filters.push(filter_value);
-                        },
-                        FilterDecision::DirectResponse(_) => {
-                            break 'filter_loop filter_res;
-                        },
-                        FilterDecision::AsyncRequest(_, _) => {
-                            unimplemented!()
-                        },
-                        FilterDecision::Reroute => {
-                            active_filters.push(filter_value);
-                            reroute = true;
-                            break;
-                        },
-                    }
-                }
-            }
-
-            if reroute {
-                debug!("rerouting request...");
-                cached_route = match_request_route(&request, &self.0);
-                // filter_idx remains incremented as in your original code
-            } else {
-                break 'filter_loop FilterDecision::Continue;
-            }
-        };
-
-        // Rest of the function remains identical to your provided source
-        let mut response = match cached_route {
-            None => SyntheticHttpResponse::not_found(
-                EventFailure::RouteNotFound.into(),
-                ResponseFlags(FmtResponseFlags::NO_ROUTE_FOUND),
-            )
-            .into_response(request.version()),
-            Some(cached_route) => match filter_response {
-                FilterDecision::DirectResponse(response) | FilterDecision::AsyncRequest(response, _) => {
-                    let mut response = *response;
-                    apply_mutations_on_response(
-                        &mut response,
-                        &self.0,
-                        &cached_route,
-                        self.0.most_specific_header_mutations_wins,
-                    );
-                    response
-                },
-                _ => {
-                    let websocket_enabled_by_default =
-                        upgrade_utils::is_websocket_enabled_by_hcm(&connection_manager.enabled_upgrades);
-
-                    let mut response = match &cached_route.route.action {
-                        Action::DirectResponse(dr) => {
-                            dr.to_response(trans_context, request, &cached_route.route.name).await
-                        },
-                        Action::Redirect(rd) => {
-                            rd.to_response(
-                                trans_context,
-                                request,
-                                (&cached_route.route_match, &cached_route.route.name),
-                            )
-                            .await
-                        },
-                        Action::Route(route) => {
-                            apply_mutations_on_request(
-                                &mut request,
-                                &self.0,
-                                &cached_route,
-                                self.0.most_specific_header_mutations_wins,
-                            );
-
-                            let remote_address = request
-                                .extensions()
-                                .get::<MetadataContext>()
-                                .map(|md| md.downstream.connection.peer_address())
-                                .unwrap_or_else(|| SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0));
-
-                            route
-                                .to_response(
-                                    trans_context,
-                                    request,
-                                    (
-                                        RouteContext {
-                                            route_name: &cached_route.route.name,
-                                            retry_policy: cached_route.vh.retry_policy.as_ref(),
-                                            route_match: &cached_route.route_match,
-                                            remote_address,
-                                            websocket_enabled_by_default,
-                                        },
-                                        &connection_manager,
-                                    ),
-                                )
-                                .await
-                        },
-                    }?;
-
-                    apply_mutations_on_response(
-                        &mut response,
-                        &self.0,
-                        &cached_route,
-                        self.0.most_specific_header_mutations_wins,
-                    );
-                    response
-                },
-            },
-        };
-
-        response.extensions_mut().insert(Arc::clone(trans_context));
-
-        for filter in active_filters.iter_mut().rev() {
-            let filter_res = filter.apply_response(&mut response).await;
-            if let FilterDecision::DirectResponse(direct_response) = filter_res {
-                response = *direct_response;
-                response.extensions_mut().insert(Arc::clone(trans_context));
-            }
-        }
-
-        Ok(response)
-    }
-}
-
-impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for Arc<RouteConfiguration> {
-    #[allow(clippy::too_many_lines)]
-    async fn to_response(
-        self,
-        trans_context: &Arc<TransactionContext>,
-        mut request: Request<OrionRequestBody>,
-        arg: Arc<HttpConnectionManager>,
-    ) -> Result<Response<OrionResponseBody>> {
-        let connection_manager = arg;
-        let mut cached_route = match_request_route(&request, &self);
-        // let mut request: Request<HttpBody> = request.map(|body| body.map_inner(TimeoutBody::map_into));
-        let mut active_filters: SmallVec<[HttpFilterValue; 4]> = SmallVec::new();
-
-        let mut filter_idx = 0;
-
-        let filter_response = 'filter_loop: loop {
-            let Some(ref chosen_route) = cached_route else {
-                // No route found - return 404 immediately
-                break 'filter_loop FilterDecision::DirectResponse(Box::new(
-                    SyntheticHttpResponse::not_found(
-                        EventFailure::RouteNotFound.into(),
-                        ResponseFlags(FmtResponseFlags::NO_ROUTE_FOUND),
-                    )
-                    .into_response(request.version()),
-                ));
-            };
-
-            let guard = connection_manager.http_filters_per_route.load();
-            let route_filters = guard.get(&chosen_route.route.route_match);
-
-            let Some(route_filters) = route_filters else {
-                // No filters to process
-                break 'filter_loop FilterDecision::Continue;
-            };
-
-            let mut reroute = false;
-
-            for (current_idx, filter) in route_filters.iter().enumerate().skip(filter_idx) {
-                if filter.disabled {
-                    filter_idx += 1;
+                let Some(filter_config) = &filter.filter else {
                     continue;
-                }
+                };
 
-                if let Some(filter_config) = &filter.filter {
-                    let mut filter_value = filter_config.new_from();
-                    let filter_res = filter_value.apply_request(&mut request).await;
+                let mut filter_value = filter_config.new_from();
+                let filter_res = filter_value.apply_request(&mut request, ctx).await;
 
-                    match filter_res {
-                        FilterDecision::Continue => {
-                            active_filters.push(filter_value);
-                            filter_idx += 1;
-                        },
-                        FilterDecision::DirectResponse(_) => {
-                            break 'filter_loop filter_res;
-                        },
-                        FilterDecision::AsyncRequest(resp, Some(req)) => {
-                            let async_exec = AsyncExecution(Arc::clone(&self));
-                            let conn_manager = Arc::clone(&connection_manager);
-
-                            // Use current_idx + 1 to ensure the next task starts from the correct filter
-                            let next_idx = current_idx + 1;
-
-                            tokio::spawn(async move {
-                                let trans_ctx = Arc::new(TransactionContext::default());
-                                _ = async_exec
-                                    .to_response(&trans_ctx, *req, (conn_manager, next_idx, filter_value))
+                match filter_res {
+                    FilterDecision::Continue => {
+                        active_filters.push(filter_value);
+                    },
+                    FilterDecision::DirectResponse(_) => {
+                        break 'filter_loop filter_res;
+                    },
+                    FilterDecision::AsyncRequest(resp, maybe_req) => match async_policy {
+                        AsyncRequestPolicy::SpawnResume => {
+                            if let Some(req) = maybe_req {
+                                let resume_route_conf = Arc::clone(&route_conf);
+                                let conn_manager = Arc::clone(&connection_manager);
+                                // Resume after the filter that handed off asynchronously.
+                                let next_idx = current_idx + 1;
+                                let spawn_ctx = ctx.clone();
+                                tokio::spawn(async move {
+                                    _ = run_route_pipeline(
+                                        resume_route_conf,
+                                        &spawn_ctx,
+                                        *req,
+                                        conn_manager,
+                                        PipelineStart { filter_idx: next_idx, initial_filter: Some(filter_value) },
+                                        AsyncRequestPolicy::Unsupported,
+                                        false,
+                                    )
                                     .await;
-                            });
-
+                                });
+                            }
                             break 'filter_loop FilterDecision::AsyncRequest(resp, None);
                         },
-                        FilterDecision::AsyncRequest(resp, None) => {
-                            break 'filter_loop FilterDecision::AsyncRequest(resp, None);
+                        AsyncRequestPolicy::Unsupported => {
+                            unimplemented!("nested AsyncRequest is not supported on the resume path")
                         },
-                        FilterDecision::Reroute => {
-                            active_filters.push(filter_value);
-                            filter_idx += 1;
-                            reroute = true;
-                            break;
-                        },
-                    }
-                } else {
-                    filter_idx += 1;
+                    },
+                    FilterDecision::Reroute => {
+                        active_filters.push(filter_value);
+                        reroute = true;
+                        break;
+                    },
                 }
             }
 
             if reroute {
                 debug!("rerouting request...");
-                cached_route = match_request_route(&request, &self);
+                cached_route = match_request_route(&request, &route_conf);
             } else {
-                // All filters processed successfully
                 break 'filter_loop FilterDecision::Continue;
             }
         };
@@ -1312,9 +1176,10 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
                     let mut response = *response;
                     apply_mutations_on_response(
                         &mut response,
-                        &self,
+                        &route_conf,
                         &cached_route,
-                        self.most_specific_header_mutations_wins,
+                        route_conf.most_specific_header_mutations_wins,
+                        &ctx.conn,
                     );
                     response
                 },
@@ -1323,33 +1188,23 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
                         upgrade_utils::is_websocket_enabled_by_hcm(&connection_manager.enabled_upgrades);
 
                     let mut response = match &cached_route.route.action {
-                        Action::DirectResponse(dr) => {
-                            dr.to_response(trans_context, request, &cached_route.route.name).await
-                        },
+                        Action::DirectResponse(dr) => dr.to_response(ctx, request, &cached_route.route.name).await,
                         Action::Redirect(rd) => {
-                            rd.to_response(
-                                trans_context,
-                                request,
-                                (&cached_route.route_match, &cached_route.route.name),
-                            )
-                            .await
+                            rd.to_response(ctx, request, (&cached_route.route_match, &cached_route.route.name)).await
                         },
                         Action::Route(route) => {
                             apply_mutations_on_request(
                                 &mut request,
-                                &self,
+                                &route_conf,
                                 &cached_route,
-                                self.most_specific_header_mutations_wins,
+                                route_conf.most_specific_header_mutations_wins,
+                                &ctx.conn,
                             );
 
-                            let remote_address = request
-                                .extensions()
-                                .get::<MetadataContext>()
-                                .map(|md| md.downstream.connection.peer_address())
-                                .unwrap_or_else(|| SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0));
+                            let remote_address = ctx.conn.downstream_peer_address();
                             route
                                 .to_response(
-                                    trans_context,
+                                    ctx,
                                     request,
                                     (
                                         RouteContext {
@@ -1366,61 +1221,59 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
                         },
                     }?;
 
-                    #[cfg(feature = "metrics")]
-                    if let Some(custom_metrics) = CUSTOM_METRICS.get() {
-                        let mut attrs = SmallVec::<[KeyValue; 2]>::new();
-                        if let Some(custom_keys) = metrics::CUSTOM_KEYS.get() {
-                            for key in custom_keys {
-                                if let Some(source) = key.source() {
-                                    if let Some(id) =
-                                        metrics::extract_custom_partition_key(response.headers(), Some(source))
-                                    {
-                                        attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
+                    if with_response_hooks {
+                        #[cfg(feature = "metrics")]
+                        if let Some(custom_metrics) = CUSTOM_METRICS.get() {
+                            let mut attrs = SmallVec::<[KeyValue; 2]>::new();
+                            if let Some(custom_keys) = metrics::CUSTOM_KEYS.get() {
+                                for key in custom_keys {
+                                    if let Some(source) = key.source() {
+                                        if let Some(id) =
+                                            metrics::extract_custom_partition_key(response.headers(), Some(source))
+                                        {
+                                            attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
+                                        }
                                     }
                                 }
                             }
+                            custom_metrics.with_headers(
+                                MetricsHook::IncomingResponse,
+                                response.headers(),
+                                attrs.as_slice(),
+                            );
                         }
-                        custom_metrics.with_headers(
-                            MetricsHook::IncomingResponse,
-                            response.headers(),
-                            attrs.as_slice(),
-                        );
-                    }
 
-                    #[cfg(feature = "access-log")]
-                    if let Err(err) = crate::access_log::evaluate_base64_access_log_hook(
-                        crate::access_log::AccessLogHook::IncomingResponse,
-                        response.headers(),
-                        &mut trans_context.trans_state.lock().loggers,
-                    ) {
-                        tracing::warn!("Failed to process access log header for IncomingResponse: {err}");
+                        #[cfg(feature = "access-log")]
+                        if let Err(err) = crate::access_log::evaluate_base64_access_log_hook(
+                            crate::access_log::AccessLogHook::IncomingResponse,
+                            response.headers(),
+                            &mut ctx.tx.trans_state.lock().loggers,
+                        ) {
+                            tracing::warn!("Failed to process access log header for IncomingResponse: {err}");
+                        }
                     }
 
                     apply_mutations_on_response(
                         &mut response,
-                        &self,
+                        &route_conf,
                         &cached_route,
-                        self.most_specific_header_mutations_wins,
+                        route_conf.most_specific_header_mutations_wins,
+                        &ctx.conn,
                     );
                     response
                 },
             },
         };
 
-        response.extensions_mut().insert(Arc::clone(trans_context));
-
-        // let's process the active filters on response in the reverse order...
-        //
-        for filter in &mut active_filters.iter_mut().rev() {
-            let filter_res = filter.apply_response(&mut response).await;
+        for filter in active_filters.iter_mut().rev() {
+            let filter_res = filter.apply_response(&mut response, ctx).await;
             if let FilterDecision::DirectResponse(direct_response) = filter_res {
                 response = *direct_response;
-                response.extensions_mut().insert(Arc::clone(trans_context));
             }
         }
 
         Ok(response)
-    }
+    })
 }
 
 fn apply_mutations_on_request<B>(
@@ -1428,19 +1281,25 @@ fn apply_mutations_on_request<B>(
     route_config: &RouteConfiguration,
     cached_route: &CachedRoute<'_>,
     most_specific_header_mutations_wins: bool,
+    conn: &ConnMeta,
 ) where
     Route: ModifiersExtractor<Request<B>>,
     VirtualHost: ModifiersExtractor<Request<B>>,
     RouteConfiguration: ModifiersExtractor<Request<B>>,
 {
+    let apply_pair = |target: &mut Request<B>, (remove, add)| {
+        target.apply_mutation(remove);
+        target.apply_mutation((add, conn));
+    };
+
     if most_specific_header_mutations_wins {
-        target.apply_mutation(ModifiersExtractor::<Request<B>>::extract(route_config));
-        target.apply_mutation(ModifiersExtractor::<Request<B>>::extract(cached_route.vh));
-        target.apply_mutation(ModifiersExtractor::<Request<B>>::extract(cached_route.route));
+        apply_pair(target, ModifiersExtractor::<Request<B>>::extract(route_config));
+        apply_pair(target, ModifiersExtractor::<Request<B>>::extract(cached_route.vh));
+        apply_pair(target, ModifiersExtractor::<Request<B>>::extract(cached_route.route));
     } else {
-        target.apply_mutation(ModifiersExtractor::<Request<B>>::extract(cached_route.route));
-        target.apply_mutation(ModifiersExtractor::<Request<B>>::extract(cached_route.vh));
-        target.apply_mutation(ModifiersExtractor::<Request<B>>::extract(route_config));
+        apply_pair(target, ModifiersExtractor::<Request<B>>::extract(cached_route.route));
+        apply_pair(target, ModifiersExtractor::<Request<B>>::extract(cached_route.vh));
+        apply_pair(target, ModifiersExtractor::<Request<B>>::extract(route_config));
     }
 }
 
@@ -1449,58 +1308,90 @@ fn apply_mutations_on_response<B>(
     route_config: &RouteConfiguration,
     cached_route: &CachedRoute<'_>,
     most_specific_header_mutations_wins: bool,
+    conn: &ConnMeta,
 ) where
     Route: ModifiersExtractor<Response<B>>,
     VirtualHost: ModifiersExtractor<Response<B>>,
     RouteConfiguration: ModifiersExtractor<Response<B>>,
 {
+    let apply_pair = |target: &mut Response<B>, (remove, add)| {
+        target.apply_mutation(remove);
+        target.apply_mutation((add, conn));
+    };
+
     if most_specific_header_mutations_wins {
-        target.apply_mutation(ModifiersExtractor::<Response<B>>::extract(route_config));
-        target.apply_mutation(ModifiersExtractor::<Response<B>>::extract(cached_route.vh));
-        target.apply_mutation(ModifiersExtractor::<Response<B>>::extract(cached_route.route));
+        apply_pair(target, ModifiersExtractor::<Response<B>>::extract(route_config));
+        apply_pair(target, ModifiersExtractor::<Response<B>>::extract(cached_route.vh));
+        apply_pair(target, ModifiersExtractor::<Response<B>>::extract(cached_route.route));
     } else {
-        target.apply_mutation(ModifiersExtractor::<Response<B>>::extract(cached_route.route));
-        target.apply_mutation(ModifiersExtractor::<Response<B>>::extract(cached_route.vh));
-        target.apply_mutation(ModifiersExtractor::<Response<B>>::extract(route_config));
+        apply_pair(target, ModifiersExtractor::<Response<B>>::extract(cached_route.route));
+        apply_pair(target, ModifiersExtractor::<Response<B>>::extract(cached_route.vh));
+        apply_pair(target, ModifiersExtractor::<Response<B>>::extract(route_config));
     }
 }
 
-// --- NEW SERVICES ---
-pub struct RequestMetadata<R> {
-    pub request: R,
-    pub downstream: Box<DownstreamMetadata>,
-    pub stream_metrics: Arc<StreamMetrics>,
+// --- Typed request envelope (Service stack) ---
+
+/// Per-request context always present after TransactionLifecycleSvc.
+#[derive(Clone, Debug)]
+pub struct RequestCtx {
+    pub conn: ConnMeta,
+    pub tx: Arc<TransactionContext>,
 }
 
-pub struct RequestTransactionContext<R> {
-    pub request: R,
-    pub trans_ctx: Arc<TransactionContext>,
+impl RequestCtx {
+    #[inline]
+    pub fn new(conn: ConnMeta, tx: Arc<TransactionContext>) -> Self {
+        Self { conn, tx }
+    }
 }
 
-pub struct PipelineRequest<R> {
-    pub request: R,
-    pub trans_ctx: Arc<TransactionContext>,
+impl Default for RequestCtx {
+    fn default() -> Self {
+        Self { conn: ConnMeta::default(), tx: Arc::new(TransactionContext::default()) }
+    }
+}
+
+/// HTTP request + connection meta (before transaction is created).
+pub struct IncomingHttpRequest<B> {
+    pub request: Request<B>,
+    pub conn: ConnMeta,
+}
+
+/// HTTP request + full request context (conn + transaction).
+pub struct HttpRequest<B> {
+    pub request: Request<B>,
+    pub ctx: RequestCtx,
+}
+
+impl<B> HttpRequest<B> {
+    #[inline]
+    pub fn map_body<B2>(self, f: impl FnOnce(B) -> B2) -> HttpRequest<B2> {
+        HttpRequest { request: self.request.map(f), ctx: self.ctx }
+    }
+}
+
+/// HttpRequest after route configuration has been resolved.
+pub struct RoutedHttpRequest<B> {
+    pub http: HttpRequest<B>,
     pub route_conf: Arc<RouteConfiguration>,
-    pub downstream: Box<DownstreamMetadata>,
-    pub stream_metrics: Arc<StreamMetrics>,
 }
 
 #[derive(Clone)]
 pub struct MetadataSvc<S> {
-    downstream: Box<DownstreamMetadata>,
-    stream_metrics: Arc<StreamMetrics>,
+    conn: ConnMeta,
     inner: S,
 }
 
 impl<S> MetadataSvc<S> {
-    pub fn new(downstream: Box<DownstreamMetadata>, stream_metrics: Arc<StreamMetrics>, inner: S) -> Self {
-        Self { downstream, stream_metrics, inner }
+    pub fn new(downstream: Arc<DownstreamMetadata>, stream_metrics: Arc<StreamMetrics>, inner: S) -> Self {
+        Self { conn: ConnMeta::new(downstream, stream_metrics), inner }
     }
 }
 
 impl<S, ReqBody> Service<Request<ReqBody>> for MetadataSvc<S>
 where
-    S: Service<RequestMetadata<Request<ReqBody>>, Error = crate::Error> + Clone,
+    S: Service<IncomingHttpRequest<ReqBody>, Error = crate::Error> + Clone,
     S::Future: Send + 'static,
 {
     type Response = S::Response;
@@ -1508,11 +1399,7 @@ where
     type Future = futures::future::BoxFuture<'static, std::result::Result<Self::Response, Self::Error>>;
 
     fn call(&self, req: Request<ReqBody>) -> Self::Future {
-        let fut = self.inner.call(RequestMetadata {
-            request: req,
-            downstream: self.downstream.clone(),
-            stream_metrics: Arc::clone(&self.stream_metrics),
-        });
+        let fut = self.inner.call(IncomingHttpRequest { request: req, conn: self.conn.clone() });
         Box::pin(
             async move { fut.await.map_err(|e| Box::new(e.into_inner()) as Box<dyn std::error::Error + Send + Sync>) },
         )
@@ -1531,13 +1418,10 @@ impl<S> TransactionLifecycleSvc<S> {
     }
 }
 
-impl<S> Service<RequestMetadata<Request<Incoming>>> for TransactionLifecycleSvc<S>
+impl<S> Service<IncomingHttpRequest<Incoming>> for TransactionLifecycleSvc<S>
 where
-    S: Service<
-            RequestTransactionContext<RequestMetadata<Request<Incoming>>>,
-            Response = Response<OrionRequestBody>,
-            Error = crate::Error,
-        > + Clone
+    S: Service<HttpRequest<Incoming>, Response = Response<OrionRequestBody>, Error = crate::Error>
+        + Clone
         + Send
         + Sync
         + 'static,
@@ -1547,8 +1431,8 @@ where
     type Error = S::Error;
     type Future = BoxFuture<'static, StdResult<Self::Response, Self::Error>>;
 
-    fn call(&self, req: RequestMetadata<Request<Incoming>>) -> Self::Future {
-        let RequestMetadata { request: incoming_request, downstream, stream_metrics } = req;
+    fn call(&self, req: IncomingHttpRequest<Incoming>) -> Self::Future {
+        let IncomingHttpRequest { request: incoming_request, conn } = req;
         let incoming_request_id = RequestId::from_request(&incoming_request);
         let incoming_version = incoming_request.version();
         let listener_name = self.manager.listener_name;
@@ -1562,7 +1446,7 @@ where
             false
         };
 
-        let is_internal = http_modifiers::is_internal_ip(downstream.connection.peer_address().ip());
+        let is_internal = http_modifiers::is_internal_ip(conn.downstream_peer_address().ip());
 
         #[allow(unused_mut)]
         let (mut request, request_id) = self.manager.request_id_handler.apply_policy(
@@ -1590,7 +1474,7 @@ where
         }
 
         #[cfg(feature = "metrics")]
-        let sni = downstream.sni.clone();
+        let sni = conn.downstream.sni.clone();
 
         #[cfg(feature = "metrics")]
         let user_partition_key =
@@ -1619,15 +1503,12 @@ where
             self.manager.http_tracer.update_tracing_headers(trace_ctx, &mut request);
         }
 
-        request.extensions_mut().insert(Arc::clone(&trans_ctx));
-
-        let new_req_meta = RequestMetadata { request, downstream, stream_metrics };
+        let ctx = RequestCtx::new(conn, Arc::clone(&trans_ctx));
+        let http_req = HttpRequest { request, ctx };
 
         let inner = self.inner.clone();
         Box::pin(async move {
-            let response = inner
-                .call(RequestTransactionContext { request: new_req_meta, trans_ctx: Arc::clone(&trans_ctx) })
-                .await;
+            let response = inner.call(http_req).await;
 
             trans_ctx.trace_status_code(&response, listener_name);
             if let Err(err) = response {
@@ -1664,9 +1545,9 @@ impl<S> TransactionSvc<S> {
     }
 }
 
-impl<S> Service<RequestTransactionContext<RequestMetadata<Request<Incoming>>>> for TransactionSvc<S>
+impl<S> Service<HttpRequest<Incoming>> for TransactionSvc<S>
 where
-    S: Service<PipelineRequest<Request<OrionRequestBody>>, Response = Response<OrionRequestBody>, Error = crate::Error>
+    S: Service<RoutedHttpRequest<OrionRequestBody>, Response = Response<OrionRequestBody>, Error = crate::Error>
         + Clone
         + Send
         + Sync
@@ -1678,9 +1559,10 @@ where
     type Future = BoxFuture<'static, StdResult<Self::Response, Self::Error>>;
 
     #[allow(clippy::too_many_lines)]
-    fn call(&self, req: RequestTransactionContext<RequestMetadata<Request<Incoming>>>) -> Self::Future {
-        let RequestTransactionContext { trans_ctx, request: RequestMetadata { request, downstream, stream_metrics } } =
-            req;
+    fn call(&self, req: HttpRequest<Incoming>) -> Self::Future {
+        let HttpRequest { request, ctx } = req;
+        let trans_ctx = Arc::clone(&ctx.tx);
+        let stream_metrics = Arc::clone(&ctx.conn.stream_metrics);
 
         let manager = Arc::clone(&self.manager);
         let listener_name = manager.listener_name;
@@ -1737,7 +1619,7 @@ where
             let req_timeout = manager.request_timeout;
             let filterchain_id = manager.filterchain_id;
 
-            eval_http_init_context(&request, &trans_ctx, Some(&downstream));
+            eval_http_init_context(&request, &trans_ctx, Some(ctx.conn.downstream.as_ref()));
 
             let Some(route_conf) = route_conf else {
                 return Ok(handle_route_conf_not_found(
@@ -1762,7 +1644,7 @@ where
             }
 
             let sm_for_cb = Arc::clone(&stream_metrics);
-            let request = request.map(|body| {
+            let http = HttpRequest { request, ctx }.map_body(|body| {
                 #[cfg(any(feature = "access-log", feature = "tracing", feature = "metrics"))]
                 let trans_ctx = Arc::clone(&trans_ctx);
                 let body = TimeoutBody::new(req_timeout, PolyBody::from(body));
@@ -1844,9 +1726,8 @@ where
             });
 
             #[cfg(feature = "access-log")]
-            let trans_ctx_clone = Arc::clone(&trans_ctx);
-            let response =
-                inner.call(PipelineRequest { request, trans_ctx, route_conf, downstream, stream_metrics }).await;
+            let trans_ctx_clone = Arc::clone(&http.ctx.tx);
+            let response = inner.call(RoutedHttpRequest { http, route_conf }).await;
 
             #[cfg(feature = "metrics")]
             if let Ok(response) = &response {
@@ -2101,7 +1982,7 @@ fn instrument_early_failure_response(
 
     #[cfg(feature = "access-log")]
     let (initial_flags, initial_event) = {
-        let ec = response.extensions().get::<EventContext>();
+        let ec = response.extensions().get::<EventErrorContext>();
         (ec.map(|ec| ec.response_flags).unwrap_or_default(), ec.and_then(|ec| ec.event_kind.clone()))
     };
 

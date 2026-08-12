@@ -1,6 +1,9 @@
 use crate::{
     body::poly_body::PolyBody,
-    listeners::http_filters::{FilterDecision, FilterFactory},
+    listeners::{
+        http_connection_manager::RequestCtx,
+        http_filters::{FilterDecision, FilterFactory},
+    },
     OrionRequestBody, OrionResponseBody,
 };
 use bitflags::bitflags;
@@ -304,6 +307,7 @@ impl WasmFilter {
                         shared_memory: Arc::clone(&self.inner.shared_memory),
                         active_request_handle: None,
                         active_response_handle: None,
+                        active_request_ctx: None,
                         memory: None,
                         orion_malloc: None,
                     },
@@ -335,11 +339,14 @@ impl WasmFilter {
     /// Borrow the already-initialized request-local state without re-entering the async pool/instantiate path.
     #[inline]
     fn require_state(&mut self) -> Result<&mut WasmFilterState, WasmError> {
-        self.state.get_mut().as_deref_mut().ok_or_else(|| WasmError::InitError("Wasm state is uninitialized".to_owned()))
+        self.state
+            .get_mut()
+            .as_deref_mut()
+            .ok_or_else(|| WasmError::InitError("Wasm state is uninitialized".to_owned()))
     }
 
     #[allow(clippy::too_many_lines)]
-    pub async fn apply_request(&mut self, req: &mut Request<OrionRequestBody>) -> FilterDecision {
+    pub async fn apply_request(&mut self, req: &mut Request<OrionRequestBody>, req_ctx: &RequestCtx) -> FilterDecision {
         debug!("WasFilter::apply_request: {:?}", self.inner.config);
 
         if self.inner.hooks.contains(HookFlags::ON_TRANSACTION_START) {
@@ -364,10 +371,12 @@ impl WasmFilter {
         }
 
         let req_handle = std::ptr::from_mut::<Request<OrionRequestBody>>(req) as u64;
+        let ctx_handle = std::ptr::from_ref(req_ctx) as u64;
         match self.require_state() {
             Ok(state) => {
                 state.store.data_mut().active_response_handle = None;
                 state.store.data_mut().active_request_handle = Some(req_handle);
+                state.store.data_mut().active_request_ctx = Some(ctx_handle);
             },
             Err(e) => return FilterDecision::internal_server_error(&e.to_string(), req.version()),
         }
@@ -515,19 +524,17 @@ impl WasmFilter {
             Err(e) => FilterDecision::internal_server_error(&e.to_string(), req.version()),
         };
 
-        self.extract_and_apply_access_log_operators(req.extensions());
+        self.extract_and_apply_access_log_operators(req_ctx);
 
         decision
     }
 
     #[allow(unused_variables)]
-    fn extract_and_apply_access_log_operators(&mut self, extensions: &http::Extensions) {
+    fn extract_and_apply_access_log_operators(&mut self, req_ctx: &RequestCtx) {
         if let Some(state) = self.state.get_mut() {
             let ops = std::mem::take(&mut state.store.data_mut().access_log_operators);
             if !ops.is_empty() {
                 #[cfg(all(feature = "access-log", feature = "metrics"))]
-                if let Some(ctx) =
-                    extensions.get::<std::sync::Arc<crate::listeners::http_connection_manager::TransactionContext>>()
                 {
                     let mut kv = orion_metrics::key_value::KeyValueMap::default();
                     for (k, v) in &ops {
@@ -536,7 +543,7 @@ impl WasmFilter {
                     _ = crate::access_log::evaluate_plain_access_log_hook(
                         crate::access_log::AccessLogHook::Wasm,
                         &kv,
-                        &mut ctx.trans_state.lock().loggers,
+                        &mut req_ctx.tx.trans_state.lock().loggers,
                     );
                 }
             }
@@ -544,7 +551,11 @@ impl WasmFilter {
     }
 
     #[allow(clippy::too_many_lines)]
-    pub async fn apply_response(&mut self, response: &mut Response<OrionResponseBody>) -> FilterDecision {
+    pub async fn apply_response(
+        &mut self,
+        response: &mut Response<OrionResponseBody>,
+        req_ctx: &RequestCtx,
+    ) -> FilterDecision {
         debug!("WasFilter::apply_response: {:?}", self.inner.config);
         if !self.inner.hooks.intersects(HookFlags::ON_RESPONSE_HEADERS | HookFlags::ON_RESPONSE_BODY) {
             return FilterDecision::Continue;
@@ -558,10 +569,12 @@ impl WasmFilter {
         }
 
         let resp_handle = std::ptr::from_mut::<Response<OrionResponseBody>>(response) as u64;
+        let ctx_handle = std::ptr::from_ref(req_ctx) as u64;
         match self.require_state() {
             Ok(s) => {
                 s.store.data_mut().active_request_handle = None;
                 s.store.data_mut().active_response_handle = Some(resp_handle);
+                s.store.data_mut().active_request_ctx = Some(ctx_handle);
             },
             Err(e) => return FilterDecision::internal_server_error(&e.to_string(), response.version()),
         }
@@ -712,7 +725,7 @@ impl WasmFilter {
             Err(e) => FilterDecision::internal_server_error(&e.to_string(), response.version()),
         };
 
-        self.extract_and_apply_access_log_operators(response.extensions());
+        self.extract_and_apply_access_log_operators(req_ctx);
 
         decision
     }

@@ -12,8 +12,7 @@ use crate::body::channel_body::{BodyType, ChannelBody, FrameBridge};
 use crate::body::timeout_body::TimeoutBody;
 use crate::event_error::EventFailure;
 use crate::listeners::http_connection_manager::ext_proc::kind::{MessageType, RequestMsg, ResponseMsg};
-#[cfg(feature = "access-log")]
-use crate::listeners::http_connection_manager::TransactionContext;
+use crate::listeners::http_connection_manager::RequestCtx;
 use crate::{OrionRequestBody, OrionResponseBody};
 use http_body_util::{BodyExt, Collected, LengthLimitError, Limited};
 #[cfg(feature = "metrics")]
@@ -456,7 +455,11 @@ impl ExternalProcessor {
         }
     }
 
-    pub async fn apply_request(&mut self, request: &mut Request<OrionRequestBody>) -> FilterDecision {
+    pub async fn apply_request(
+        &mut self,
+        request: &mut Request<OrionRequestBody>,
+        req_ctx: &RequestCtx,
+    ) -> FilterDecision {
         let processing_data = match self.apply_request_prepare_processing_data(request).await {
             Ok(data) => data,
             Err(decision) => return decision,
@@ -509,9 +512,9 @@ impl ExternalProcessor {
         }
 
         #[cfg(feature = "access-log")]
-        if let Some(trans_ctx) = request.extensions().get::<Arc<TransactionContext>>() {
+        {
             use crate::access_log;
-            trans_ctx.with_loggers(|loggers| {
+            req_ctx.tx.with_loggers(|loggers| {
                 if let Err(err) = access_log::evaluate_base64_access_log_hook(
                     access_log::AccessLogHook::ExtProcRequest,
                     headers,
@@ -693,7 +696,11 @@ impl ExternalProcessor {
         }
     }
 
-    pub async fn apply_response(&mut self, response: &mut Response<OrionResponseBody>) -> FilterDecision {
+    pub async fn apply_response(
+        &mut self,
+        response: &mut Response<OrionResponseBody>,
+        req_ctx: &RequestCtx,
+    ) -> FilterDecision {
         let processing_data = match self.apply_response_prepare_processing_data(response).await {
             Ok(data) => data,
             Err(decision) => return decision,
@@ -746,9 +753,9 @@ impl ExternalProcessor {
         }
 
         #[cfg(feature = "access-log")]
-        if let Some(trans_ctx) = response.extensions().get::<Arc<TransactionContext>>() {
+        {
             use crate::access_log;
-            trans_ctx.with_loggers(|loggers| {
+            req_ctx.tx.with_loggers(|loggers| {
                 if let Err(err) = access_log::evaluate_base64_access_log_hook(
                     access_log::AccessLogHook::ExtProcResponse,
                     headers,

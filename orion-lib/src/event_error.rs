@@ -72,6 +72,13 @@ pub enum EventKind {
     Failure(EventFailure),
 }
 
+/// Per-response extension carrying access-log / metrics event info.
+#[derive(Debug, Clone)]
+pub struct EventErrorContext {
+    pub response_flags: ResponseFlags,
+    pub event_kind: Option<EventKind>,
+}
+
 // Implement From<EventError> for EventKind
 impl From<UpstreamError> for EventKind {
     fn from(error: UpstreamError) -> Self {

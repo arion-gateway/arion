@@ -6,10 +6,11 @@
 #![allow(clippy::manual_let_else)]
 #![allow(clippy::too_many_lines)]
 
+use std::sync::Arc;
 use std::sync::LazyLock;
 
 use crate::body::timeout_body::TimeoutBody;
-use crate::listeners::metadata::DownstreamMetadata;
+use crate::listeners::http_connection_manager::RequestCtx;
 use crate::OrionRequestBody;
 use crate::OrionResponseBody;
 use bytes::Bytes;
@@ -33,9 +34,11 @@ pub struct WasmState {
     pub response_trailers: Option<http::HeaderMap>,
     pub access_log_operators: Vec<(SmolStr, SmolStr)>,
     pub io_deadline: Option<std::time::Instant>,
-    pub shared_memory: std::sync::Arc<super::shared::SharedMemory>,
+    pub shared_memory: Arc<super::shared::SharedMemory>,
     pub active_request_handle: Option<u64>,
     pub active_response_handle: Option<u64>,
+    /// Pointer to `RequestCtx` for the active request (valid while the filter runs).
+    pub active_request_ctx: Option<u64>,
     /// Guest linear memory, resolved once at instantiate time.
     pub memory: Option<Memory>,
     /// Guest allocator export, resolved once at instantiate time.
@@ -57,6 +60,7 @@ impl WasmState {
         self.io_deadline = None;
         self.active_request_handle = None;
         self.active_response_handle = None;
+        self.active_request_ctx = None;
     }
 }
 
@@ -227,12 +231,7 @@ fn orion_get_plugin_config(
     0
 }
 
-fn orion_get_body(
-    mut caller: Caller<'_, WasmState>,
-    body_ptr: u32,
-    max_len: u32,
-    written_len_ptr: u32,
-) -> i32 {
+fn orion_get_body(mut caller: Caller<'_, WasmState>, body_ptr: u32, max_len: u32, written_len_ptr: u32) -> i32 {
     let Some(memory) = guest_memory(&mut caller) else {
         return OrionWasmError::InvalidMemoryAccess.into();
     };
@@ -1552,14 +1551,11 @@ fn orion_get_downstream_metadata(
     (out_ptr_ptr, out_len_ptr): (u32, u32),
 ) -> Box<dyn std::future::Future<Output = i32> + Send + '_> {
     Box::new(async move {
-        let req_ptr = match caller.data().active_request_handle {
-            Some(p) => p,
-            None => return OrionWasmError::InternalError.into(),
-        };
-        let request = unsafe { &*(req_ptr as *const Request<OrionRequestBody>) };
-
-        let host_meta = match request.extensions().get::<Box<DownstreamMetadata>>() {
-            Some(m) => m,
+        let host_meta = match caller.data().active_request_ctx {
+            Some(ctx_ptr) => {
+                let req_ctx = unsafe { &*(ctx_ptr as *const RequestCtx) };
+                req_ctx.conn.downstream.as_ref()
+            },
             None => return OrionWasmError::NotFound.into(),
         };
 
@@ -1681,7 +1677,7 @@ fn orion_shared_resolve(mut caller: Caller<'_, WasmState>, name_ptr: u32, name_l
         None => return u32::MAX,
     };
 
-    let shared = std::sync::Arc::clone(&caller.data().shared_memory);
+    let shared = Arc::clone(&caller.data().shared_memory);
     let map = &shared.name_to_id;
     let pin = map.pin();
 
@@ -1867,7 +1863,7 @@ fn ext_shared_blob_read(
     buf_len: u32,
     out_version_ptr: u32,
 ) -> u32 {
-    let shared = std::sync::Arc::clone(&caller.data().shared_memory);
+    let shared = Arc::clone(&caller.data().shared_memory);
     let Some(blob_lock) = get_shared_blob!(shared, id) else {
         return u32::MAX;
     };
@@ -1904,7 +1900,7 @@ fn ext_shared_blob_read(
 }
 
 fn ext_shared_blob_write(mut caller: Caller<'_, WasmState>, id: u32, buf_ptr: u32, buf_len: u32) -> u64 {
-    let shared = std::sync::Arc::clone(&caller.data().shared_memory);
+    let shared = Arc::clone(&caller.data().shared_memory);
     let Some(blob_lock) = get_shared_blob!(shared, id) else {
         return 0;
     };
@@ -1934,7 +1930,7 @@ fn ext_shared_blob_cas(
     expected_version: u64,
     out_success_ptr: u32,
 ) -> u64 {
-    let shared = std::sync::Arc::clone(&caller.data().shared_memory);
+    let shared = Arc::clone(&caller.data().shared_memory);
     let Some(blob_lock) = get_shared_blob!(shared, id) else {
         return 0;
     };
