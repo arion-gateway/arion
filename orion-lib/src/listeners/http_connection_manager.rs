@@ -1022,22 +1022,59 @@ fn match_request_route<'a, B>(request: &Request<B>, route_config: &'a RouteConfi
     Some(CachedRoute { route: chosen_route, route_match: route_match_result, vh: chosen_vh })
 }
 
-struct AsyncExecution(Arc<RouteConfiguration>);
+/// How far into the per-route filter chain this pipeline invocation should start.
+struct PipelineStart {
+    filter_idx: usize,
+    initial_filter: Option<HttpFilterValue>,
+}
 
-impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usize, HttpFilterValue)>
-    for AsyncExecution
-{
-    #[allow(clippy::too_many_lines)]
+/// Policy for nested `FilterDecision::AsyncRequest` while walking filters.
+enum AsyncRequestPolicy {
+    /// Main path: spawn a resume task for the remaining filters.
+    SpawnResume,
+    /// Resume path: a second async hand-off is not supported.
+    Unsupported,
+}
+
+impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for Arc<RouteConfiguration> {
     async fn to_response(
         self,
         ctx: &RequestCtx,
-        mut request: Request<OrionRequestBody>,
-        (connection_manager, mut filter_idx, http_filter): (Arc<HttpConnectionManager>, usize, HttpFilterValue),
+        request: Request<OrionRequestBody>,
+        connection_manager: Arc<HttpConnectionManager>,
     ) -> Result<Response<OrionResponseBody>> {
-        let mut cached_route = match_request_route(&request, &self.0);
-        let mut active_filters: SmallVec<[HttpFilterValue; 4]> = SmallVec::new();
+        run_route_pipeline(
+            self,
+            ctx,
+            request,
+            connection_manager,
+            PipelineStart { filter_idx: 0, initial_filter: None },
+            AsyncRequestPolicy::SpawnResume,
+            true,
+        )
+        .await
+    }
+}
 
-        active_filters.push(http_filter);
+#[allow(clippy::too_many_lines)]
+fn run_route_pipeline<'a>(
+    route_conf: Arc<RouteConfiguration>,
+    ctx: &'a RequestCtx,
+    mut request: Request<OrionRequestBody>,
+    connection_manager: Arc<HttpConnectionManager>,
+    start: PipelineStart,
+    async_policy: AsyncRequestPolicy,
+    with_response_hooks: bool,
+) -> BoxFuture<'a, Result<Response<OrionResponseBody>>> {
+    // Boxed to break recursive `Send` inference when the main path spawns a resume task.
+    Box::pin(async move {
+        let mut cached_route = match_request_route(&request, &route_conf);
+        let mut active_filters: SmallVec<[HttpFilterValue; 4]> = SmallVec::new();
+        let mut filter_idx = start.filter_idx;
+
+        if let Some(initial_filter) = start.initial_filter {
+            active_filters.push(initial_filter);
+        }
 
         let filter_response = 'filter_loop: loop {
             let Some(ref chosen_route) = cached_route else {
@@ -1059,52 +1096,75 @@ impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usiz
 
             let mut reroute = false;
 
-            // Semantic Match: We keep the exact same while logic
             while filter_idx < route_filters.len() {
-                // Safe Access: Replaces route_filters[filter_idx] without changing logic flow
                 let Some(filter) = route_filters.get(filter_idx) else {
                     break;
                 };
 
+                let current_idx = filter_idx;
                 filter_idx += 1;
 
                 if filter.disabled {
                     continue;
                 }
 
-                if let Some(filter_config) = &filter.filter {
-                    let mut filter_value = filter_config.new_from();
-                    let filter_res = filter_value.apply_request(&mut request, ctx).await;
+                let Some(filter_config) = &filter.filter else {
+                    continue;
+                };
 
-                    match filter_res {
-                        FilterDecision::Continue => {
-                            active_filters.push(filter_value);
+                let mut filter_value = filter_config.new_from();
+                let filter_res = filter_value.apply_request(&mut request, ctx).await;
+
+                match filter_res {
+                    FilterDecision::Continue => {
+                        active_filters.push(filter_value);
+                    },
+                    FilterDecision::DirectResponse(_) => {
+                        break 'filter_loop filter_res;
+                    },
+                    FilterDecision::AsyncRequest(resp, maybe_req) => match async_policy {
+                        AsyncRequestPolicy::SpawnResume => {
+                            if let Some(req) = maybe_req {
+                                let resume_route_conf = Arc::clone(&route_conf);
+                                let conn_manager = Arc::clone(&connection_manager);
+                                // Resume after the filter that handed off asynchronously.
+                                let next_idx = current_idx + 1;
+                                let spawn_ctx = ctx.clone();
+                                tokio::spawn(async move {
+                                    _ = run_route_pipeline(
+                                        resume_route_conf,
+                                        &spawn_ctx,
+                                        *req,
+                                        conn_manager,
+                                        PipelineStart { filter_idx: next_idx, initial_filter: Some(filter_value) },
+                                        AsyncRequestPolicy::Unsupported,
+                                        false,
+                                    )
+                                    .await;
+                                });
+                            }
+                            break 'filter_loop FilterDecision::AsyncRequest(resp, None);
                         },
-                        FilterDecision::DirectResponse(_) => {
-                            break 'filter_loop filter_res;
+                        AsyncRequestPolicy::Unsupported => {
+                            unimplemented!("nested AsyncRequest is not supported on the resume path")
                         },
-                        FilterDecision::AsyncRequest(_, _) => {
-                            unimplemented!()
-                        },
-                        FilterDecision::Reroute => {
-                            active_filters.push(filter_value);
-                            reroute = true;
-                            break;
-                        },
-                    }
+                    },
+                    FilterDecision::Reroute => {
+                        active_filters.push(filter_value);
+                        reroute = true;
+                        break;
+                    },
                 }
             }
 
             if reroute {
                 debug!("rerouting request...");
-                cached_route = match_request_route(&request, &self.0);
-                // filter_idx remains incremented as in your original code
+                cached_route = match_request_route(&request, &route_conf);
             } else {
                 break 'filter_loop FilterDecision::Continue;
             }
         };
 
-        // Rest of the function remains identical to your provided source
         let mut response = match cached_route {
             None => SyntheticHttpResponse::not_found(
                 EventFailure::RouteNotFound.into(),
@@ -1116,9 +1176,9 @@ impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usiz
                     let mut response = *response;
                     apply_mutations_on_response(
                         &mut response,
-                        &self.0,
+                        &route_conf,
                         &cached_route,
-                        self.0.most_specific_header_mutations_wins,
+                        route_conf.most_specific_header_mutations_wins,
                         &ctx.conn,
                     );
                     response
@@ -1135,14 +1195,13 @@ impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usiz
                         Action::Route(route) => {
                             apply_mutations_on_request(
                                 &mut request,
-                                &self.0,
+                                &route_conf,
                                 &cached_route,
-                                self.0.most_specific_header_mutations_wins,
+                                route_conf.most_specific_header_mutations_wins,
                                 &ctx.conn,
                             );
 
                             let remote_address = ctx.conn.downstream_peer_address();
-
                             route
                                 .to_response(
                                     ctx,
@@ -1162,11 +1221,43 @@ impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usiz
                         },
                     }?;
 
+                    if with_response_hooks {
+                        #[cfg(feature = "metrics")]
+                        if let Some(custom_metrics) = CUSTOM_METRICS.get() {
+                            let mut attrs = SmallVec::<[KeyValue; 2]>::new();
+                            if let Some(custom_keys) = metrics::CUSTOM_KEYS.get() {
+                                for key in custom_keys {
+                                    if let Some(source) = key.source() {
+                                        if let Some(id) =
+                                            metrics::extract_custom_partition_key(response.headers(), Some(source))
+                                        {
+                                            attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
+                                        }
+                                    }
+                                }
+                            }
+                            custom_metrics.with_headers(
+                                MetricsHook::IncomingResponse,
+                                response.headers(),
+                                attrs.as_slice(),
+                            );
+                        }
+
+                        #[cfg(feature = "access-log")]
+                        if let Err(err) = crate::access_log::evaluate_base64_access_log_hook(
+                            crate::access_log::AccessLogHook::IncomingResponse,
+                            response.headers(),
+                            &mut ctx.tx.trans_state.lock().loggers,
+                        ) {
+                            tracing::warn!("Failed to process access log header for IncomingResponse: {err}");
+                        }
+                    }
+
                     apply_mutations_on_response(
                         &mut response,
-                        &self.0,
+                        &route_conf,
                         &cached_route,
-                        self.0.most_specific_header_mutations_wins,
+                        route_conf.most_specific_header_mutations_wins,
                         &ctx.conn,
                     );
                     response
@@ -1182,213 +1273,7 @@ impl RequestHandler<Request<OrionRequestBody>, (Arc<HttpConnectionManager>, usiz
         }
 
         Ok(response)
-    }
-}
-
-impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for Arc<RouteConfiguration> {
-    #[allow(clippy::too_many_lines)]
-    async fn to_response(
-        self,
-        ctx: &RequestCtx,
-        mut request: Request<OrionRequestBody>,
-        arg: Arc<HttpConnectionManager>,
-    ) -> Result<Response<OrionResponseBody>> {
-        let connection_manager = arg;
-        let mut cached_route = match_request_route(&request, &self);
-        // let mut request: Request<HttpBody> = request.map(|body| body.map_inner(TimeoutBody::map_into));
-        let mut active_filters: SmallVec<[HttpFilterValue; 4]> = SmallVec::new();
-
-        let mut filter_idx = 0;
-
-        let filter_response = 'filter_loop: loop {
-            let Some(ref chosen_route) = cached_route else {
-                // No route found - return 404 immediately
-                break 'filter_loop FilterDecision::DirectResponse(Box::new(
-                    SyntheticHttpResponse::not_found(
-                        EventFailure::RouteNotFound.into(),
-                        ResponseFlags(FmtResponseFlags::NO_ROUTE_FOUND),
-                    )
-                    .into_response(request.version()),
-                ));
-            };
-
-            let guard = connection_manager.http_filters_per_route.load();
-            let route_filters = guard.get(&chosen_route.route.route_match);
-
-            let Some(route_filters) = route_filters else {
-                // No filters to process
-                break 'filter_loop FilterDecision::Continue;
-            };
-
-            let mut reroute = false;
-
-            for (current_idx, filter) in route_filters.iter().enumerate().skip(filter_idx) {
-                if filter.disabled {
-                    filter_idx += 1;
-                    continue;
-                }
-
-                if let Some(filter_config) = &filter.filter {
-                    let mut filter_value = filter_config.new_from();
-                    let filter_res = filter_value.apply_request(&mut request, ctx).await;
-
-                    match filter_res {
-                        FilterDecision::Continue => {
-                            active_filters.push(filter_value);
-                            filter_idx += 1;
-                        },
-                        FilterDecision::DirectResponse(_) => {
-                            break 'filter_loop filter_res;
-                        },
-                        FilterDecision::AsyncRequest(resp, Some(req)) => {
-                            let async_exec = AsyncExecution(Arc::clone(&self));
-                            let conn_manager = Arc::clone(&connection_manager);
-
-                            // Use current_idx + 1 to ensure the next task starts from the correct filter
-                            let next_idx = current_idx + 1;
-
-                            let spawn_ctx = ctx.clone();
-                            tokio::spawn(async move {
-                                _ = async_exec
-                                    .to_response(&spawn_ctx, *req, (conn_manager, next_idx, filter_value))
-                                    .await;
-                            });
-
-                            break 'filter_loop FilterDecision::AsyncRequest(resp, None);
-                        },
-                        FilterDecision::AsyncRequest(resp, None) => {
-                            break 'filter_loop FilterDecision::AsyncRequest(resp, None);
-                        },
-                        FilterDecision::Reroute => {
-                            active_filters.push(filter_value);
-                            filter_idx += 1;
-                            reroute = true;
-                            break;
-                        },
-                    }
-                } else {
-                    filter_idx += 1;
-                }
-            }
-
-            if reroute {
-                debug!("rerouting request...");
-                cached_route = match_request_route(&request, &self);
-            } else {
-                // All filters processed successfully
-                break 'filter_loop FilterDecision::Continue;
-            }
-        };
-
-        let mut response = match cached_route {
-            None => SyntheticHttpResponse::not_found(
-                EventFailure::RouteNotFound.into(),
-                ResponseFlags(FmtResponseFlags::NO_ROUTE_FOUND),
-            )
-            .into_response(request.version()),
-            Some(cached_route) => match filter_response {
-                FilterDecision::DirectResponse(response) | FilterDecision::AsyncRequest(response, _) => {
-                    let mut response = *response;
-                    apply_mutations_on_response(
-                        &mut response,
-                        &self,
-                        &cached_route,
-                        self.most_specific_header_mutations_wins,
-                        &ctx.conn,
-                    );
-                    response
-                },
-                _ => {
-                    let websocket_enabled_by_default =
-                        upgrade_utils::is_websocket_enabled_by_hcm(&connection_manager.enabled_upgrades);
-
-                    let mut response = match &cached_route.route.action {
-                        Action::DirectResponse(dr) => dr.to_response(ctx, request, &cached_route.route.name).await,
-                        Action::Redirect(rd) => {
-                            rd.to_response(ctx, request, (&cached_route.route_match, &cached_route.route.name)).await
-                        },
-                        Action::Route(route) => {
-                            apply_mutations_on_request(
-                                &mut request,
-                                &self,
-                                &cached_route,
-                                self.most_specific_header_mutations_wins,
-                                &ctx.conn,
-                            );
-
-                            let remote_address = ctx.conn.downstream_peer_address();
-                            route
-                                .to_response(
-                                    ctx,
-                                    request,
-                                    (
-                                        RouteContext {
-                                            route_name: &cached_route.route.name,
-                                            retry_policy: cached_route.vh.retry_policy.as_ref(),
-                                            route_match: &cached_route.route_match,
-                                            remote_address,
-                                            websocket_enabled_by_default,
-                                        },
-                                        &connection_manager,
-                                    ),
-                                )
-                                .await
-                        },
-                    }?;
-
-                    #[cfg(feature = "metrics")]
-                    if let Some(custom_metrics) = CUSTOM_METRICS.get() {
-                        let mut attrs = SmallVec::<[KeyValue; 2]>::new();
-                        if let Some(custom_keys) = metrics::CUSTOM_KEYS.get() {
-                            for key in custom_keys {
-                                if let Some(source) = key.source() {
-                                    if let Some(id) =
-                                        metrics::extract_custom_partition_key(response.headers(), Some(source))
-                                    {
-                                        attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
-                                    }
-                                }
-                            }
-                        }
-                        custom_metrics.with_headers(
-                            MetricsHook::IncomingResponse,
-                            response.headers(),
-                            attrs.as_slice(),
-                        );
-                    }
-
-                    #[cfg(feature = "access-log")]
-                    if let Err(err) = crate::access_log::evaluate_base64_access_log_hook(
-                        crate::access_log::AccessLogHook::IncomingResponse,
-                        response.headers(),
-                        &mut ctx.tx.trans_state.lock().loggers,
-                    ) {
-                        tracing::warn!("Failed to process access log header for IncomingResponse: {err}");
-                    }
-
-                    apply_mutations_on_response(
-                        &mut response,
-                        &self,
-                        &cached_route,
-                        self.most_specific_header_mutations_wins,
-                        &ctx.conn,
-                    );
-                    response
-                },
-            },
-        };
-
-        // let's process the active filters on response in the reverse order...
-        //
-        for filter in &mut active_filters.iter_mut().rev() {
-            let filter_res = filter.apply_response(&mut response, ctx).await;
-            if let FilterDecision::DirectResponse(direct_response) = filter_res {
-                response = *direct_response;
-            }
-        }
-
-        Ok(response)
-    }
+    })
 }
 
 fn apply_mutations_on_request<B>(
