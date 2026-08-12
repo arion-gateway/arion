@@ -102,12 +102,12 @@ moka = { workspace = true, features = ["sync"] }
 rustls-platform-verifier = { workspace = true }
 contatori = { workspace = true, optional = true }
 pingora = { workspace = true, features = ["time"] }
-orion-wasm-types.workspace = true
-wasmtime.workspace = true
-bitflags.workspace = true
-crossbeam-queue = { workspace = true }
-http-serde-ext.workspace = true
-bincode-next = { version = "3.1.1", features = ["serde"] }
+orion-wasm-types = { workspace = true, optional = true }
+wasmtime = { workspace = true, optional = true }
+bitflags = { workspace = true, optional = true }
+crossbeam-queue = { workspace = true, optional = true }
+http-serde-ext = { workspace = true, optional = true }
+bincode-next = { version = "3.1.1", features = ["serde"], optional = true }
 itoa.workspace = true
 [dev-dependencies]
 orion-data-plane-api.workspace = true
@@ -120,6 +120,15 @@ default   = ["server", "macros", "elicitation", "base64", "schemars"]
 metrics   = ["dep:orion-metrics"]
 tracing   = []
 access-log = []
+# HTTP Wasm filter host (wasmtime + orion-wasm-types)
+wasm = [
+  "dep:orion-wasm-types",
+  "dep:wasmtime",
+  "dep:bitflags",
+  "dep:crossbeam-queue",
+  "dep:http-serde-ext",
+  "dep:bincode-next",
+]
 
 # performance instrumentation
 instrumentation = ["dep:contatori"]

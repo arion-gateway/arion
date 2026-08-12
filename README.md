@@ -68,6 +68,20 @@ git submodule update --force
 cargo build
 ```
 
+Optional Cargo features (enable with `--features <name>` on `orion-proxy`):
+
+| Feature | Description |
+|---------|-------------|
+| `wasm` | HTTP Wasm filter host (Wasmtime). Required to load Wasm HTTP filters at runtime. |
+| `metrics` / `prometheus` | Metrics export |
+| `access-log` | Access logging |
+| `tracing` | Distributed tracing |
+
+Example with Wasm support:
+```console
+cargo build -p orion-proxy --features wasm
+```
+
 ### Running
 ```console
 cargo run --bin orion -- --config orion/conf/orion-runtime.yaml

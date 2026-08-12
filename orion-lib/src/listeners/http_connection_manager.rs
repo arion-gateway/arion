@@ -27,6 +27,7 @@ pub(crate) mod cedar_policy;
 pub mod cors;
 mod direct_response;
 pub mod ext_proc;
+#[cfg(feature = "wasm")]
 pub mod wasm;
 //pub mod global_rate_limit;
 pub mod http_modifiers;

@@ -1,3 +1,4 @@
+#[cfg(feature = "wasm")]
 use crate::listeners::http_connection_manager::wasm::WasmFilter;
 use std::{collections::HashMap, sync::Arc};
 
@@ -145,6 +146,7 @@ pub struct HttpFilter {
 
 #[derive(Debug, Clone)]
 pub enum HttpFilterValue {
+    #[cfg(feature = "wasm")]
     Wasm(WasmFilter),
     RateLimit(LocalRateLimit),
     Rbac(HttpRbac),
@@ -171,6 +173,7 @@ impl FilterFactory for HttpFilterValue {
             HttpFilterValue::Cors(conf) => HttpFilterValue::Cors(conf.clone()),
             HttpFilterValue::UserRateLimit(conf) => HttpFilterValue::UserRateLimit(conf.clone()),
             HttpFilterValue::CedarPolicy(conf) => HttpFilterValue::CedarPolicy(conf.clone()),
+            #[cfg(feature = "wasm")]
             HttpFilterValue::Wasm(conf) => HttpFilterValue::Wasm(conf.new_from()),
         }
     }
@@ -188,7 +191,14 @@ impl TryFrom<HttpFilterConfig> for HttpFilter {
         let HttpFilterConfig { name, disabled, filter } = value;
 
         let filter = match filter {
+            #[cfg(feature = "wasm")]
             HttpFilterType::Wasm(conf) => HttpFilterValue::Wasm(WasmFilter::try_new(conf)?),
+            #[cfg(not(feature = "wasm"))]
+            HttpFilterType::Wasm(_) => {
+                return Err("HTTP Wasm filter requires building Orion with the `wasm` Cargo feature \
+(e.g. `cargo build -p orion-proxy --features wasm`)"
+                    .into());
+            },
             HttpFilterType::RateLimit(conf) => HttpFilterValue::RateLimit(conf.into()),
             HttpFilterType::Rbac(conf) => HttpFilterValue::Rbac(HttpRbac::new(&conf)),
             HttpFilterType::ExternalProcessor(conf) => HttpFilterValue::ExternalProcessor(conf.into()),
@@ -218,6 +228,7 @@ impl HttpFilterValue {
             HttpFilterValue::McpGateway(mcp) => mcp.apply_request(request, ctx).await,
             HttpFilterValue::UserRateLimit(user_rate_limiter) => user_rate_limiter.apply_request(request),
             HttpFilterValue::CedarPolicy(cedar) => cedar.apply_request(request),
+            #[cfg(feature = "wasm")]
             HttpFilterValue::Wasm(wasm) => wasm.apply_request(request, ctx).await,
         }
     }
@@ -231,6 +242,7 @@ impl HttpFilterValue {
             HttpFilterValue::ExternalProcessor(ext_proc) => ext_proc.apply_response(response, ctx).await,
             HttpFilterValue::McpGateway(mcp) => mcp.apply_response(response).await,
             HttpFilterValue::Cors(cors) => cors.apply_response(response),
+            #[cfg(feature = "wasm")]
             HttpFilterValue::Wasm(wasm) => wasm.apply_response(response, ctx).await,
             HttpFilterValue::Rbac(_)
             | HttpFilterValue::RateLimit(_)
