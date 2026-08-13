@@ -453,6 +453,11 @@ impl TlsConfigurator<(), ()> {
 }
 
 impl TlsConfigurator<ServerConfig, WantsToBuildServer> {
+    #[inline]
+    pub fn server_config(&self) -> Arc<ServerConfig> {
+        Arc::clone(&self.config)
+    }
+
     pub fn into_inner(self) -> ServerConfig {
         (*self.config).clone()
     }

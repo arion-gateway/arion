@@ -266,14 +266,11 @@ impl FilterchainType {
                 let trans_svc = http_connection_manager.transaction_context_svc();
                 // codec type as given in the listener, not alpn
                 let codec_type = http_connection_manager.codec_type;
-                let tls_configurator = config
-                    .tls_configurator
-                    .clone()
-                    .map(TlsConfigurator::<ServerConfig, WantsToBuildServer>::into_inner);
+                let tls_config = config.tls_configurator.as_ref().map(TlsConfigurator::server_config);
 
-                let (stream, selected_codec) = if let Some(tls_configurator) = tls_configurator {
+                let (stream, selected_codec) = if let Some(tls_config) = tls_config {
                     let (stream, negotiated) =
-                        start_tls(http_connection_manager.listener_name, stream, tls_configurator, Some(codec_type))
+                        start_tls(http_connection_manager.listener_name, stream, tls_config, Some(codec_type))
                             .await?;
                     with_metric!(tls::HANDSHAKES, add, 1, shard_id, &[KeyValue::new("listener", listener_name)]);
 
@@ -343,14 +340,11 @@ impl FilterchainType {
                 }
 
                 let listener_name = tcp_proxy.listener_name;
-                let server_config = config
-                    .tls_configurator
-                    .clone()
-                    .map(TlsConfigurator::<ServerConfig, WantsToBuildServer>::into_inner);
+                let tls_config = config.tls_configurator.as_ref().map(TlsConfigurator::server_config);
 
                 let (stream, _alpns): (Box<dyn AsyncReadWriteInstrumented>, Option<AlpnCodecs>) =
-                    if let Some(server_config) = server_config {
-                        start_tls(listener_name, stream, server_config, None).await?
+                    if let Some(tls_config) = tls_config {
+                        start_tls(listener_name, stream, tls_config, None).await?
                     } else {
                         (stream, None)
                     };
@@ -375,7 +369,7 @@ fn negotiate_codec_type<'a>(codec_type: CodecType, client_alpns: impl Iterator<I
 async fn start_tls(
     listener_name: &'static str,
     stream: AsyncInstrumentedStream,
-    mut config: ServerConfig,
+    config: Arc<ServerConfig>,
     codec_type: Option<CodecType>,
 ) -> Result<(AsyncInstrumentedStream, Option<AlpnCodecs>)> {
     let acceptor = tokio_rustls::LazyConfigAcceptor::new(Acceptor::default(), stream);
@@ -394,15 +388,16 @@ async fn start_tls(
             //note(hayley): here we use the CodecType (Http1, H2, Auto) to determine what alpn
             // we should offer. however, envoy also has a field commonTlsContext:  alpn_protocols: [h2,http/1.1]
             // in the TLS config. That one should probably take precedence.
-            let negotiated_codec_type = match (codec_type, client_hello.alpn()) {
+            let (config, negotiated_codec_type) = match (codec_type, client_hello.alpn()) {
                 (Some(desired), Some(offered)) => {
+                    let mut config = ServerConfig::clone(&config);
                     if let Some(negotiated_codec_type) = negotiate_codec_type(desired, offered) {
                         debug!("{listener_name} Negotiated codec type {negotiated_codec_type:?}");
                         // note(hayley): do we need to dynamically set this? inspecting the offer vs. desired is useful to log and configure the hyper server
                         //  but maybe we should set this at the listener level and let rustls handle it the handshake.
                         //  since the spec says that rustls has to send a specific error if the client offers only unsupported alpn
                         config.alpn_protocols = vec![negotiated_codec_type.as_ref().to_owned()];
-                        Some(negotiated_codec_type)
+                        (Arc::new(config), Some(negotiated_codec_type))
                     } else {
                         // this error message could be better but is a bit of a refactor to get the names
                         warn!("Couldn't agree on a common codec");
@@ -411,7 +406,7 @@ async fn start_tls(
                             .iter()
                             .map(|alpn| alpn.as_ref().to_owned())
                             .collect::<Vec<_>>();
-                        None
+                        (Arc::new(config), None)
                     }
                 },
                 (Some(desired), None) => {
@@ -420,13 +415,13 @@ async fn start_tls(
                     //  the envoy docs state that ALPN is preferred when it is available, but if it is not
                     // protocol inference is used if the codec is set to auto
                     // since we pass in the Codec from the listener here, not the alpn config, we should accept this.
-                    None
+                    (config, None)
                 },
                 //nothing requested (i.e. tcp proxy), nothing offered
                 //nothing requested, client offered alpn.
-                (None, None | Some(_)) => None,
+                (None, None | Some(_)) => (config, None),
             };
-            let stream = accepted.into_stream(Arc::new(config)).await.map_err(|e| format!("Can't accept {e:?}"))?;
+            let stream = accepted.into_stream(config).await.map_err(|e| format!("Can't accept {e:?}"))?;
             Ok((Box::new(stream), negotiated_codec_type))
         },
         Err(err) => Err(format!("{listener_name} Can't start tls {err:?}").into()),
