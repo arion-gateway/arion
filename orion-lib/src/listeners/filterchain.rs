@@ -52,6 +52,7 @@ use crate::{with_histogram, with_metric};
 
 use rustls::{server::Acceptor, ServerConfig};
 use scopeguard::defer;
+use smallvec::SmallVec;
 use smol_str::SmolStr;
 use std::sync::Arc;
 use tracing::{debug, warn};
@@ -362,11 +363,11 @@ impl FilterchainType {
 }
 
 fn negotiate_codec_type<'a>(codec_type: CodecType, client_alpns: impl Iterator<Item = &'a [u8]>) -> Option<AlpnCodecs> {
-    let client_alpns = client_alpns.collect::<Vec<_>>();
+    let client_alpns: SmallVec<[&[u8]; 4]> = client_alpns.collect();
     AlpnCodecs::from_codec(codec_type)
         .iter()
-        .find(|&&desired_proto| client_alpns.contains(&desired_proto.as_ref()))
         .copied()
+        .find(|desired_proto| client_alpns.contains(&desired_proto.as_ref()))
 }
 
 async fn start_tls(
