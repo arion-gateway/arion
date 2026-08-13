@@ -41,7 +41,6 @@ pub enum FilterDecision {
     Continue,
     Reroute,
     DirectResponse(Box<Response<OrionResponseBody>>),
-    AsyncRequest(Box<Response<OrionResponseBody>>, Option<Box<Request<OrionRequestBody>>>),
 }
 
 impl FilterDecision {
@@ -53,7 +52,6 @@ impl FilterDecision {
         match self {
             FilterDecision::Continue | FilterDecision::Reroute => None,
             FilterDecision::DirectResponse(response) => Some(response.headers()),
-            FilterDecision::AsyncRequest(_, request) => request.as_ref().map(|r| r.headers()),
         }
     }
 

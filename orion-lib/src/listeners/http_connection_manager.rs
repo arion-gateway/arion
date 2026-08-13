@@ -1023,59 +1023,16 @@ fn match_request_route<'a, B>(request: &Request<B>, route_config: &'a RouteConfi
     Some(CachedRoute { route: chosen_route, route_match: route_match_result, vh: chosen_vh })
 }
 
-/// How far into the per-route filter chain this pipeline invocation should start.
-struct PipelineStart {
-    filter_idx: usize,
-    initial_filter: Option<HttpFilterValue>,
-}
-
-/// Policy for nested `FilterDecision::AsyncRequest` while walking filters.
-enum AsyncRequestPolicy {
-    /// Main path: spawn a resume task for the remaining filters.
-    SpawnResume,
-    /// Resume path: a second async hand-off is not supported.
-    Unsupported,
-}
-
 impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for Arc<RouteConfiguration> {
     async fn to_response(
         self,
         ctx: &RequestCtx,
-        request: Request<OrionRequestBody>,
+        mut request: Request<OrionRequestBody>,
         connection_manager: Arc<HttpConnectionManager>,
     ) -> Result<Response<OrionResponseBody>> {
-        run_route_pipeline(
-            self,
-            ctx,
-            request,
-            connection_manager,
-            PipelineStart { filter_idx: 0, initial_filter: None },
-            AsyncRequestPolicy::SpawnResume,
-            true,
-        )
-        .await
-    }
-}
-
-#[allow(clippy::too_many_lines)]
-fn run_route_pipeline<'a>(
-    route_conf: Arc<RouteConfiguration>,
-    ctx: &'a RequestCtx,
-    mut request: Request<OrionRequestBody>,
-    connection_manager: Arc<HttpConnectionManager>,
-    start: PipelineStart,
-    async_policy: AsyncRequestPolicy,
-    with_response_hooks: bool,
-) -> BoxFuture<'a, Result<Response<OrionResponseBody>>> {
-    // Boxed to break recursive `Send` inference when the main path spawns a resume task.
-    Box::pin(async move {
+        let route_conf = &self;
         let mut cached_route = match_request_route(&request, &route_conf);
         let mut active_filters: SmallVec<[HttpFilterValue; 4]> = SmallVec::new();
-        let mut filter_idx = start.filter_idx;
-
-        if let Some(initial_filter) = start.initial_filter {
-            active_filters.push(initial_filter);
-        }
 
         let filter_response = 'filter_loop: loop {
             let Some(ref chosen_route) = cached_route else {
@@ -1097,14 +1054,7 @@ fn run_route_pipeline<'a>(
 
             let mut reroute = false;
 
-            while filter_idx < route_filters.len() {
-                let Some(filter) = route_filters.get(filter_idx) else {
-                    break;
-                };
-
-                let current_idx = filter_idx;
-                filter_idx += 1;
-
+            for filter in route_filters {
                 if filter.disabled {
                     continue;
                 }
@@ -1122,33 +1072,6 @@ fn run_route_pipeline<'a>(
                     },
                     FilterDecision::DirectResponse(_) => {
                         break 'filter_loop filter_res;
-                    },
-                    FilterDecision::AsyncRequest(resp, maybe_req) => match async_policy {
-                        AsyncRequestPolicy::SpawnResume => {
-                            if let Some(req) = maybe_req {
-                                let resume_route_conf = Arc::clone(&route_conf);
-                                let conn_manager = Arc::clone(&connection_manager);
-                                // Resume after the filter that handed off asynchronously.
-                                let next_idx = current_idx + 1;
-                                let spawn_ctx = ctx.clone();
-                                tokio::spawn(async move {
-                                    _ = run_route_pipeline(
-                                        resume_route_conf,
-                                        &spawn_ctx,
-                                        *req,
-                                        conn_manager,
-                                        PipelineStart { filter_idx: next_idx, initial_filter: Some(filter_value) },
-                                        AsyncRequestPolicy::Unsupported,
-                                        false,
-                                    )
-                                    .await;
-                                });
-                            }
-                            break 'filter_loop FilterDecision::AsyncRequest(resp, None);
-                        },
-                        AsyncRequestPolicy::Unsupported => {
-                            unimplemented!("nested AsyncRequest is not supported on the resume path")
-                        },
                     },
                     FilterDecision::Reroute => {
                         active_filters.push(filter_value);
@@ -1173,7 +1096,7 @@ fn run_route_pipeline<'a>(
             )
             .into_response(request.version()),
             Some(cached_route) => match filter_response {
-                FilterDecision::DirectResponse(response) | FilterDecision::AsyncRequest(response, _) => {
+                FilterDecision::DirectResponse(response) => {
                     let mut response = *response;
                     apply_mutations_on_response(
                         &mut response,
@@ -1222,36 +1145,34 @@ fn run_route_pipeline<'a>(
                         },
                     }?;
 
-                    if with_response_hooks {
-                        #[cfg(feature = "metrics")]
-                        if let Some(custom_metrics) = CUSTOM_METRICS.get() {
-                            let mut attrs = SmallVec::<[KeyValue; 2]>::new();
-                            if let Some(custom_keys) = metrics::CUSTOM_KEYS.get() {
-                                for key in custom_keys {
-                                    if let Some(source) = key.source() {
-                                        if let Some(id) =
-                                            metrics::extract_custom_partition_key(response.headers(), Some(source))
-                                        {
-                                            attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
-                                        }
+                    #[cfg(feature = "metrics")]
+                    if let Some(custom_metrics) = CUSTOM_METRICS.get() {
+                        let mut attrs = SmallVec::<[KeyValue; 2]>::new();
+                        if let Some(custom_keys) = metrics::CUSTOM_KEYS.get() {
+                            for key in custom_keys {
+                                if let Some(source) = key.source() {
+                                    if let Some(id) =
+                                        metrics::extract_custom_partition_key(response.headers(), Some(source))
+                                    {
+                                        attrs.push(KeyValue::new(key.attribute_name().unwrap_or("custom"), id));
                                     }
                                 }
                             }
-                            custom_metrics.with_headers(
-                                MetricsHook::IncomingResponse,
-                                response.headers(),
-                                attrs.as_slice(),
-                            );
                         }
-
-                        #[cfg(feature = "access-log")]
-                        if let Err(err) = crate::access_log::evaluate_base64_access_log_hook(
-                            crate::access_log::AccessLogHook::IncomingResponse,
+                        custom_metrics.with_headers(
+                            MetricsHook::IncomingResponse,
                             response.headers(),
-                            &mut ctx.tx.trans_state.lock().loggers,
-                        ) {
-                            tracing::warn!("Failed to process access log header for IncomingResponse: {err}");
-                        }
+                            attrs.as_slice(),
+                        );
+                    }
+
+                    #[cfg(feature = "access-log")]
+                    if let Err(err) = crate::access_log::evaluate_base64_access_log_hook(
+                        crate::access_log::AccessLogHook::IncomingResponse,
+                        response.headers(),
+                        &mut ctx.tx.trans_state.lock().loggers,
+                    ) {
+                        tracing::warn!("Failed to process access log header for IncomingResponse: {err}");
                     }
 
                     apply_mutations_on_response(
@@ -1274,7 +1195,7 @@ fn run_route_pipeline<'a>(
         }
 
         Ok(response)
-    })
+    }
 }
 
 fn apply_mutations_on_request<B>(

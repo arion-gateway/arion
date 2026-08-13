@@ -543,7 +543,11 @@ impl OrionInstance {
 
     #[must_use]
     pub fn is_running(&mut self) -> bool {
-        if let Some(ref mut process) = self.process { matches!(process.try_wait(), Ok(None)) } else { false }
+        if let Some(ref mut process) = self.process {
+            matches!(process.try_wait(), Ok(None))
+        } else {
+            false
+        }
     }
 
     pub fn shutdown(mut self) {

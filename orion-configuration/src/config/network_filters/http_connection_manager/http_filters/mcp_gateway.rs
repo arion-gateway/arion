@@ -95,7 +95,6 @@ pub enum UpstreamBackend {
         path: String,
         query_params: Vec<McpRestQueryParams>,
         cluster: String,
-        r#async: bool,
         body_template: Option<String>,
     },
     McpServer {
@@ -377,7 +376,6 @@ mod envoy_conversions {
                         path: be.path,
                         query_params: be.query_params.into_iter().map(Into::into).collect(),
                         cluster,
-                        r#async: be.r#async,
                         body_template,
                     })
                 },

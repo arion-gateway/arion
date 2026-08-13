@@ -778,7 +778,7 @@ impl ToolsRegistry {
         }
 
         match (&entry.conf.backend, &entry.transcoder) {
-            (UpstreamBackend::Rest { cluster, r#async, .. }, TranscoderType::Rest(transcoder)) => {
+            (UpstreamBackend::Rest { cluster, .. }, TranscoderType::Rest(transcoder)) => {
                 let mut upstream_request = transcoder
                     .encode(req_headers, &rpc.request)
                     .map_err(|e| CallToolError::TranscoderError { tool: name.to_owned(), reason: e.to_string() })?;
@@ -786,7 +786,7 @@ impl ToolsRegistry {
                     let headers = upstream_request.headers_mut();
                     headers.append(cluster_header.0.clone(), HeaderValue::from_str(cluster)?);
                 }
-                Ok(MessageResult::UpstreamRequest((upstream_request, *r#async, Arc::clone(&entry))))
+                Ok(MessageResult::UpstreamRequest(upstream_request, Arc::clone(&entry)))
             },
             (UpstreamBackend::McpServer { url, .. }, TranscoderType::NoTranscoder) => {
                 // For dynamic tools the upstream expects the original tool
@@ -993,7 +993,6 @@ mod tests {
                 path: "/test".into(),
                 query_params: vec![],
                 cluster: "test_cluster".into(),
-                r#async: false,
                 body_template: None,
             },
             rbac: None,

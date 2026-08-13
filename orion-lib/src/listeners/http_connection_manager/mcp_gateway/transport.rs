@@ -102,6 +102,7 @@ pub mod streamable_http {
     #[derive(Debug)]
     pub enum Event<'a, T: Serialize = ()> {
         Message(&'a T),
+        #[allow(unused)]
         Priming,
     }
 

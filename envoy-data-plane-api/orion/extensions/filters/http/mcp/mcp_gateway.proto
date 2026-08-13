@@ -25,7 +25,7 @@ message McpGateway {
 
 // Server info
 message ServerInfo {
-    // identity for an MCP server (should be unique across all filter chains 
+    // identity for an MCP server (should be unique across all filter chains
     // in a single Orion instance)
     string name = 1 [(validate.rules).string = {min_bytes: 1}];
     string version = 2 [(validate.rules).string = {min_bytes: 1}];
@@ -51,8 +51,7 @@ message RestBackend {
   string path = 2 [(validate.rules).string = {min_bytes: 1}];
   repeated QueryParam query_params = 3;
   string cluster = 4 [(validate.rules).string = {min_bytes: 1}];
-  bool async = 5;
-  envoy.config.core.v3.DataSource body_template = 6;
+  envoy.config.core.v3.DataSource body_template = 5;
 }
 
 message QueryParam {

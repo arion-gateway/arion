@@ -334,7 +334,6 @@ mod tests {
                 path: "/test".into(),
                 query_params: Vec::new(),
                 cluster: "test_cluster".into(),
-                r#async: false,
                 body_template: None,
             })),
             rbac: None,

@@ -276,12 +276,6 @@ impl McpRestBackendBuilder {
     }
 
     #[must_use]
-    pub fn async_call(mut self, value: bool) -> Self {
-        self.proto.r#async = value;
-        self
-    }
-
-    #[must_use]
     pub fn with_proto<F: FnOnce(&mut RestBackend)>(mut self, f: F) -> Self {
         f(&mut self.proto);
         self

@@ -18,8 +18,8 @@ use std::time::Duration;
 
 use orion_e2e_tests::config_builder::presets;
 use orion_e2e_tests::{
-    OrionInstance, PreConfiguredResponse, RawHttpResponse, SpawnOptions, TcpTestBackend, TcpTestClient, TestBackend,
-    cleanup_config_file,
+    cleanup_config_file, OrionInstance, PreConfiguredResponse, RawHttpResponse, SpawnOptions, TcpTestBackend,
+    TcpTestClient, TestBackend,
 };
 
 async fn setup() -> (OrionInstance, TestBackend, TcpTestClient, std::path::PathBuf) {

@@ -1,22 +1,19 @@
 use atomic_time::AtomicInstant;
 use bytes::{Bytes, BytesMut};
 use dashmap::{DashMap, DashSet};
-use futures::SinkExt;
 use http::{HeaderName, Method, Response, StatusCode};
 use http_body_util::{BodyExt, Empty, Full};
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::McpGateway as McpGatewayConfig;
 use orion_http_header::MCP_SESSION_ID;
 use parking_lot::Mutex;
-use scopeguard::defer;
 use serde::Serialize;
 use serde_json::{json, Value};
 use smallvec::{smallvec, SmallVec};
 use smol_str::{SmolStr, ToSmolStr};
 use std::sync::{
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+    atomic::{AtomicBool, Ordering},
     Arc,
 };
-use tokio::sync::Mutex as TokioMutex;
 use tracing::{debug, error, info};
 use uuid::Uuid;
 
@@ -32,10 +29,7 @@ use rmcp::{
 };
 
 use crate::{
-    body::{
-        sink_body::{SinkBody, SinkSender},
-        timeout_body::TimeoutBody,
-    },
+    body::timeout_body::TimeoutBody,
     listeners::{
         http_connection_manager::{
             mcp_gateway::{
@@ -94,7 +88,6 @@ impl Default for Session {
 #[derive(Debug)]
 pub struct McpGatewayListenerContext {
     session_map: Arc<DashMap<SessionId, Arc<Session>, ahash::RandomState>>,
-    active_async_requests: AtomicUsize,
     cleanup_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
     cleanup_task_started: AtomicBool,
 }
@@ -135,7 +128,6 @@ impl Default for McpGatewayListenerContext {
     fn default() -> Self {
         Self {
             session_map: Arc::new(DashMap::default()),
-            active_async_requests: AtomicUsize::default(),
             cleanup_task: Mutex::new(None),
             cleanup_task_started: AtomicBool::new(false),
         }
@@ -151,23 +143,7 @@ pub enum SessionError {
 }
 
 impl McpGatewayListenerContext {
-    const MAX_CONCURRENT_ASYNC_REQUESTS: usize = 4096;
     const MAX_SESSIONS_LIMIT: usize = 65536;
-
-    #[inline]
-    pub fn try_start_async_request(&self) -> bool {
-        if self.active_async_requests.load(std::sync::atomic::Ordering::Relaxed) >= Self::MAX_CONCURRENT_ASYNC_REQUESTS
-        {
-            return false;
-        }
-        self.active_async_requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        true
-    }
-
-    #[inline]
-    pub fn end_async_request(&self) {
-        self.active_async_requests.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-    }
 
     pub fn create_session(&self, listener_name: &'static str) -> Result<Arc<Session>, SessionError> {
         if self.session_map.len() >= Self::MAX_SESSIONS_LIMIT {
@@ -227,7 +203,7 @@ pub enum MessageResult {
     JsonRpcResponse(model::JsonRpcResponse<Value>),
     JsonRpcResponseNewSession(model::JsonRpcResponse<Value>, Arc<Session>),
     JsonRpcNotificationResponse(model::JsonRpcNotification<ServerNotification>, model::JsonRpcResponse<Value>),
-    UpstreamRequest((http::Request<OrionRequestBody>, bool, Arc<ToolEntry>)),
+    UpstreamRequest(http::Request<OrionRequestBody>, Arc<ToolEntry>),
 }
 
 /// `McpGateway` filter
@@ -238,7 +214,6 @@ pub struct McpGateway {
     request_id: model::RequestId,
     version: http::Version,
     initialize_request_params: Option<model::InitializeRequestParams>,
-    streamable_async_sender: Option<Arc<TokioMutex<SinkSender>>>,
     current_tool: Option<Arc<ToolEntry>>,
 }
 
@@ -278,7 +253,6 @@ impl TryFrom<McpGatewayConfig> for McpGateway {
             request_id: model::RequestId::Number(0),
             initialize_request_params: None,
             version: http::Version::default(),
-            streamable_async_sender: None,
             current_tool: None,
         })
     }
@@ -292,7 +266,6 @@ impl FilterFactory for McpGateway {
             request_id: model::RequestId::Number(0),
             initialize_request_params: None,
             version: http::Version::default(),
-            streamable_async_sender: None,
             current_tool: None,
         }
     }
@@ -337,40 +310,14 @@ impl McpGateway {
         // debug!(target: "mcp_gateway", "apply_response: {response:?}");
 
         // get global context for this listener
-        let Some(session) = self.current_session.as_deref() else {
+        let Some(_session) = self.current_session.as_deref() else {
             debug!(target: "mcp_gateway", "apply_response: no session found!");
             return FilterDecision::Continue;
-        };
-
-        let ctx = McpGatewayListenerContext::get_filter_context(session.listener_name);
-        let is_async = self.streamable_async_sender.as_ref().is_some();
-
-        defer! {
-            if is_async {
-                ctx.end_async_request();
-            }
         };
 
         // collect the body...
         let Ok(body) = response.body_mut().collect().await else {
             debug!(target: "mcp_gateway", "apply_response: failed to collect response body");
-            let error =
-                self.build_json_rpc_error(model::ErrorData::internal_error("failed to collect response body", None));
-            let event = transport::streamable_http::Event::Message(&error);
-            if let Some(sender) = &mut self.streamable_async_sender {
-                let mut sender_guard = sender.lock().await;
-                let sender = &mut *sender_guard;
-                let mut buf = BytesMut::with_capacity(1024);
-                if let Err(e) = event.write_to(&mut buf) {
-                    debug!(target: "mcp_gateway", "apply_response: failed to serialize SSE event: {e}");
-                    return FilterDecision::internal_server_error("Failed to serialize SSE event", self.version);
-                }
-                if let Err(e) = Self::send_sse_message(sender, buf.freeze(), self.version).await {
-                    return e;
-                }
-                sender.close();
-            }
-
             return FilterDecision::Continue;
         };
 
@@ -441,32 +388,17 @@ impl McpGateway {
 
         let json_rpc_response = self.to_json_rpc_response(server_result);
 
-        if let Some(sender) = self.streamable_async_sender.as_mut() {
-            debug!(target: "mcp_gateway", "apply_response: streamable HTTP (async)...");
-            let mut sender_guard = sender.lock().await;
-            let sender = &mut *sender_guard;
-            let event = transport::streamable_http::Event::Message(&json_rpc_response);
-            let mut buf = BytesMut::with_capacity(1024);
-            if let Err(e) = event.write_to(&mut buf) {
-                debug!(target: "mcp_gateway", "apply_response: failed to serialize SSE event: {e}");
-                return FilterDecision::internal_server_error("Failed to serialize SSE event", self.version);
-            }
-            if let Err(e) = sender.send(buf.freeze()).await {
-                debug!(target: "mcp_gateway", "apply_response: failed to send message for session {}, error {e}", session.session_id);
-            }
-            sender.close();
+        debug!(target: "mcp_gateway", "apply_response: streamable HTTP...");
+        let body = serde_json::to_vec(&json_rpc_response).unwrap_or_default();
+        let headers = self.build_http_headers_with_content_type(Some(MIME_APPLICATION_JSON));
+        if let Ok(resp) =
+            self.build_mcp_http_response(StatusCode::OK, Self::build_mcp_response_body(Some(body.into())), &headers)
+        {
+            *response = resp;
         } else {
-            debug!(target: "mcp_gateway", "apply_response: streamable HTTP (sync)...");
-            let body = serde_json::to_vec(&json_rpc_response).unwrap_or_default();
-            let headers = self.build_http_headers_with_content_type(Some(MIME_APPLICATION_JSON));
-            if let Ok(resp) =
-                self.build_mcp_http_response(StatusCode::OK, Self::build_mcp_response_body(Some(body.into())), &headers)
-            {
-                *response = resp;
-            } else {
-                debug!(target: "mcp_gateway", "apply_response: Failed to build MCP response");
-            }
+            debug!(target: "mcp_gateway", "apply_response: Failed to build MCP response");
         }
+
         FilterDecision::Continue
     }
 
@@ -658,69 +590,10 @@ impl McpGateway {
                     Err(e) => e,
                 }
             },
-            MessageResult::UpstreamRequest((upstream_request, async_call, _)) => {
+            MessageResult::UpstreamRequest(upstream_request, _) => {
                 debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: send upstream ({upstream_request:?}");
-                if async_call {
-                    debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: streamable http...");
-                    if !ctx.try_start_async_request() {
-                        debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: rate limited!");
-                        let err = self.build_json_rpc_error(model::ErrorData::internal_error("Rate limited", None));
-                        let body_str = serde_json::to_string(&err).unwrap_or_default();
-                        return FilterDecision::rate_limited(&body_str, None, request.version());
-                    }
-
-                    let (body, mut sender) = SinkBody::new();
-
-                    // priming event...
-                    let event: transport::streamable_http::Event = transport::streamable_http::Event::Priming;
-                    let mut buf = BytesMut::with_capacity(1024);
-                    if let Err(e) = event.write_to(&mut buf) {
-                        debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: failed to serialize priming event: {e}");
-                        let err = self.build_json_rpc_error(model::ErrorData::internal_error(
-                            "Failed to serialize priming event",
-                            None,
-                        ));
-                        let body_str = serde_json::to_string(&err).unwrap_or_default();
-                        return FilterDecision::internal_server_error(&body_str, self.version);
-                    }
-                    if let Err(e) = sender.send(buf.freeze()).await {
-                        debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: failed to send priming event: {e}");
-                        let err = self.build_json_rpc_error(model::ErrorData::internal_error(
-                            "Failed to send priming event",
-                            None,
-                        ));
-                        let body_str = serde_json::to_string(&err).unwrap_or_default();
-                        return FilterDecision::internal_server_error(&body_str, self.version);
-                    }
-
-                    // save the sender for use on response
-                    self.streamable_async_sender = Some(Arc::new(TokioMutex::new(sender)));
-
-                    let body = TimeoutBody::new(None, PolyBody::from(body));
-                    let Ok(mut okay) = self.build_mcp_http_response(
-                        StatusCode::OK,
-                        body,
-                        &[
-                            (http::header::CONTENT_TYPE, MIME_TEXT_EVENT_STREAM),
-                            (http::header::CACHE_CONTROL, "no-cache"),
-                        ],
-                    ) else {
-                        let err = self
-                            .build_json_rpc_error(model::ErrorData::internal_error("Failed to build response", None));
-                        let body_str = serde_json::to_string(&err).unwrap_or_default();
-                        return FilterDecision::internal_server_error(&body_str, self.version);
-                    };
-
-                    if let Some(session_id) = request.headers().get(MCP_SESSION_ID) {
-                        okay.headers_mut().insert(MCP_SESSION_ID, session_id.clone());
-                    }
-
-                    debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: returning async request...");
-                    FilterDecision::AsyncRequest(Box::new(okay), Some(Box::new(upstream_request)))
-                } else {
-                    *request = upstream_request;
-                    FilterDecision::Continue
-                }
+                *request = upstream_request;
+                FilterDecision::Continue
             },
             MessageResult::Nothing => {
                 debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: return Nothing response.");
@@ -1002,7 +875,7 @@ impl McpGateway {
                     },
                 };
 
-                if let MessageResult::UpstreamRequest((_, _, tool)) = &msg_result {
+                if let MessageResult::UpstreamRequest(_, tool) = &msg_result {
                     self.current_tool = Some(Arc::clone(tool));
                 }
 
@@ -1032,18 +905,6 @@ impl McpGateway {
         let session: Arc<Session> = Arc::clone(&session);
         debug!(target: "mcp_gateway", "get_valid_session: {session_id} -> {session:?}");
         Ok(session)
-    }
-
-    async fn send_sse_message(
-        sender: &mut SinkSender,
-        message: Bytes,
-        version: http::Version,
-    ) -> Result<(), FilterDecision> {
-        if let Err(e) = sender.send(message).await {
-            debug!(target: "mcp_gateway", "send_sse_message: failed to send message: {e}");
-            return Err(FilterDecision::internal_server_error("Failed to send SSE message", version));
-        }
-        Ok(())
     }
 
     /// Extract body string from response bytes, with fallback messages based on status.

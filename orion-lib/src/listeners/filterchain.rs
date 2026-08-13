@@ -274,8 +274,7 @@ impl FilterchainType {
 
                 let (stream, selected_codec) = if let Some(tls_config) = tls_config {
                     let (stream, negotiated) =
-                        start_tls(http_connection_manager.listener_name, stream, tls_config, Some(codec_type))
-                            .await?;
+                        start_tls(http_connection_manager.listener_name, stream, tls_config, Some(codec_type)).await?;
                     with_metric!(tls::HANDSHAKES, add, 1, shard_id, &[KeyValue::new("listener", listener_name)]);
 
                     // if we negotiated a protocol over ALPN, use that instead of the configured CodecType.
