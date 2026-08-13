@@ -43,7 +43,7 @@ use orion_configuration::config::{
 };
 
 #[cfg(feature = "metrics")]
-use {crate::get_shard_id, opentelemetry::KeyValue};
+use {crate::get_shard_id, opentelemetry::KeyValue, orion_interner::StringInterner};
 
 #[cfg(feature = "metrics")]
 use orion_metrics::metrics::{filters, http, tcp, tls};
@@ -218,7 +218,7 @@ impl FilterchainType {
                     get_shard_id!(),
                     &[
                         KeyValue::new("listener", listener_name),
-                        KeyValue::new("filter", rate_limit.stat_prefix.to_string()),
+                        KeyValue::new("filter", rate_limit.stat_prefix.to_static_str()),
                         KeyValue::new("result", filters::EVENT_OK)
                     ]
                 );
@@ -233,7 +233,7 @@ impl FilterchainType {
                     get_shard_id!(),
                     &[
                         KeyValue::new("listener", listener_name),
-                        KeyValue::new("filter", rate_limit.stat_prefix.to_string()),
+                        KeyValue::new("filter", rate_limit.stat_prefix.to_static_str()),
                         KeyValue::new("result", filters::EVENT_RATE_LIMITED)
                     ]
                 );
