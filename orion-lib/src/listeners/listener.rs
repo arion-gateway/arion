@@ -445,14 +445,14 @@ impl Listener {
                                         with_metric!(listeners::DOWNSTREAM_CX_TOTAL, add, 1, shard_id,&[KeyValue::new("listener", listener_name)]);
                                         with_metric!(listeners::DOWNSTREAM_CX_ACTIVE, add, 1, shard_id,&[KeyValue::new("listener", listener_name)]);
 
-                                        _ = tokio::spawn(Self::process_connection(
+                                        _ = Self::process_connection(
                                             name,
                                             filter_chains,
                                             with_tls_inspector,
                                             ConnectionSource::Socket { local_address: local_address.unwrap_or(address), peer_addr, proxy_protocol_config },
                                             Box::new(stream),
                                             start,
-                                        )).await;
+                                        ).await;
                                     });
 
                                     #[cfg(feature = "instrumentation")]
