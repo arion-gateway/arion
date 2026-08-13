@@ -179,6 +179,9 @@ impl FilterchainType {
         server_name: Option<&str>,
     ) -> Option<AsyncInstrumentedStream> {
         let rbac_filters = &self.filter_chain().rbac_filters;
+        if rbac_filters.is_empty() {
+            return Some(stream);
+        }
         let network_context =
             NetworkContext::new(connection_metadata.local_address(), connection_metadata.peer_address(), server_name);
         for rbac in rbac_filters {
