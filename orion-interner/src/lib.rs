@@ -25,8 +25,9 @@ use smol_str::SmolStr;
 // static GLOBAL_INTERNER: OnceLock<ThreadedRodeo> = OnceLock::new();
 
 thread_local! {
-    /// Thread-local interner for storing static strings.
-    static THREAD_LOCAL_INTERNER: RefCell<Rodeo> = RefCell::new(Rodeo::new());
+    /// Thread-local interner. The `Rodeo` is leaked so interned strings remain
+    /// valid after this thread exits (the TLS slot itself is still dropped).
+    static THREAD_LOCAL_INTERNER: RefCell<&'static mut Rodeo> = RefCell::new(Box::leak(Box::new(Rodeo::new())));
 }
 
 pub trait StringInterner {
@@ -37,10 +38,11 @@ pub trait StringInterner {
 fn intern_str(s: &str) -> &'static str {
     THREAD_LOCAL_INTERNER.with_borrow_mut(|interner| {
         let key = &mut interner.get_or_intern(s);
-        // SAFETY: The `THREAD_LOCAL_INTERNER` is a `static` per-thraad variable, meaning it has a `'static`
-        // lifetime and is never dropped. Therefore, the string slices stored within it
-        // are also valid for the `'static` lifetime. This transmute is safe because
-        // we are extending a lifetime that is already effectively `'static`.
+        // SAFETY: `resolve` ties the `&str` to the temporary `RefMut` of the TLS slot.
+        // The `Rodeo` is heap-allocated and leaked (`Box::leak`), so it is never dropped
+        // when this thread exits — only the `RefCell` (a pointer) is. Interned slices
+        // therefore remain valid for the rest of the process, which is the `'static`
+        // lifetime we extend to here.
         unsafe { std::mem::transmute::<&str, &'static str>(interner.resolve(key)) }
     })
 }
