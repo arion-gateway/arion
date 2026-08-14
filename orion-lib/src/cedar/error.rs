@@ -13,9 +13,9 @@ pub enum Error {
     #[error("policy validation failed:\n{0}")]
     Validation(ValidationError),
     #[error("failed to build Cedar context: {0}")]
-    Context(SmolStr),
+    Context(String),
     #[error("failed to build Cedar entity: {0}")]
-    Entity(SmolStr),
+    Entity(String),
 }
 
 #[derive(Debug)]

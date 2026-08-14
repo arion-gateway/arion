@@ -2,7 +2,6 @@ use http::Request;
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::cedar_policy::{
     CedarPolicy as CedarPolicyConfig, EnforcementMode, FailureMode,
 };
-use serde_json::Value;
 use smol_str::SmolStr;
 use std::sync::Arc;
 use tracing::debug;
@@ -43,21 +42,16 @@ impl CedarHttpFilter {
     }
 
     fn evaluate_policy<B>(&self, req: &Request<B>) -> Result<AuthzResponse, CedarError> {
-        let claims_value: Option<Value> =
-            req.extensions().get::<JwtClaims>().and_then(|c| serde_json::to_value(c).ok());
+        let claims = req.extensions().get::<JwtClaims>();
 
-        let principal = claims_value
-            .as_ref()
-            .map(|v| principal_from_jwt(v, &self.principal_entity_type))
-            .unwrap_or_else(|| entity_uid(&self.principal_entity_type, "anonymous"))?;
+        let principal = match claims {
+            Some(claims) => principal_from_jwt(claims, &self.principal_entity_type),
+            None => entity_uid(&self.principal_entity_type, "anonymous"),
+        }?;
         let action = entity_uid("Action", req.method().as_str())?;
         let resource = entity_uid(&self.resource_entity_type, req.uri().path())?;
-        let context = build_authz_context(
-            claims_value.as_ref(),
-            Some(req.method().as_str()),
-            Some(req.uri().path()),
-            req.uri().query(),
-        )?;
+        let context =
+            build_authz_context(claims, Some(req.method().as_str()), Some(req.uri().path()), req.uri().query())?;
         self.store.is_authorized(AuthzRequest { principal, action, resource, context })
     }
 

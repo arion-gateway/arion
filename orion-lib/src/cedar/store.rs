@@ -62,7 +62,7 @@ impl PolicyStore {
         let AuthzRequest { principal, action, resource, context } = authz_req;
 
         let request = Request::new(principal, action, resource, context, Some(&self.schema))
-            .map_err(|e| Error::Context(SmolStr::from(e.to_string())))?;
+            .map_err(|e| Error::Context(e.to_string()))?;
 
         let response = self.authorizer.is_authorized(&request, &self.policy_set, &self.entities);
         let decision = response.decision();
