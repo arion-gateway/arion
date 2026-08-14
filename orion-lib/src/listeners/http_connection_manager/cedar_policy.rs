@@ -6,9 +6,11 @@ use smol_str::SmolStr;
 use std::sync::Arc;
 use tracing::debug;
 
+use cedar_policy::{EntityTypeName, EntityUid};
+
 use crate::cedar::{
     error::Error as CedarError,
-    request::{build_authz_context, entity_uid, principal_from_jwt},
+    request::{build_authz_context, entity_uid_from_type, parse_entity_type, principal_from_jwt},
     store::{AuthzRequest, AuthzResponse, SharedPolicyStore},
 };
 
@@ -25,19 +27,27 @@ pub(crate) struct CedarHttpFilter {
     store: SharedPolicyStore,
     enforcement_mode: EnforcementMode,
     failure_mode: FailureMode,
-    principal_entity_type: SmolStr,
-    resource_entity_type: SmolStr,
+    principal_type: EntityTypeName,
+    resource_type: EntityTypeName,
+    action_type: EntityTypeName,
+    anonymous_principal: EntityUid,
 }
 
 impl CedarHttpFilter {
     pub(crate) fn try_from_config(conf: CedarPolicyConfig) -> crate::Result<Self> {
         let store = crate::cedar::store::PolicyStore::new(&conf.policies, &conf.schema, &conf.entities)?;
+        let principal_type = parse_entity_type(&conf.principal_entity_type)?;
+        let resource_type = parse_entity_type(&conf.resource_entity_type)?;
+        let action_type = parse_entity_type("Action")?;
+        let anonymous_principal = entity_uid_from_type(&principal_type, "anonymous");
         Ok(Self {
             store: Arc::new(store),
             enforcement_mode: conf.enforcement_mode,
             failure_mode: conf.failure_mode,
-            principal_entity_type: conf.principal_entity_type,
-            resource_entity_type: conf.resource_entity_type,
+            principal_type,
+            resource_type,
+            action_type,
+            anonymous_principal,
         })
     }
 
@@ -45,11 +55,11 @@ impl CedarHttpFilter {
         let claims = req.extensions().get::<JwtClaims>();
 
         let principal = match claims {
-            Some(claims) => principal_from_jwt(claims, &self.principal_entity_type),
-            None => entity_uid(&self.principal_entity_type, "anonymous"),
-        }?;
-        let action = entity_uid("Action", req.method().as_str())?;
-        let resource = entity_uid(&self.resource_entity_type, req.uri().path())?;
+            Some(claims) => principal_from_jwt(claims, &self.principal_type)?,
+            None => self.anonymous_principal.clone(),
+        };
+        let action = entity_uid_from_type(&self.action_type, req.method().as_str());
+        let resource = entity_uid_from_type(&self.resource_type, req.uri().path());
         let context =
             build_authz_context(claims, Some(req.method().as_str()), Some(req.uri().path()), req.uri().query())?;
         self.store.is_authorized(AuthzRequest { principal, action, resource, context })

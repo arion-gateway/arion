@@ -1,34 +1,29 @@
 use cedar_policy::{Context, EntityId, EntityTypeName, EntityUid, RestrictedExpression};
 use serde_json::Value;
-use smol_str::SmolStr;
-use std::{cell::RefCell, collections::HashMap, str::FromStr};
+use std::str::FromStr;
 
 use super::error::Error;
 use crate::listeners::http_connection_manager::jwt_authn::claims::JwtClaims;
 
-thread_local! {
-    static ENTITY_TYPE_CACHE: RefCell<HashMap<SmolStr, EntityTypeName>> = RefCell::default();
+#[inline]
+pub(crate) fn parse_entity_type(type_name: &str) -> Result<EntityTypeName, Error> {
+    EntityTypeName::from_str(type_name)
+        .map_err(|e| Error::Entity(format!("invalid entity type '{type_name}': {e}")))
 }
 
+pub(crate) fn entity_uid_from_type(entity_type: &EntityTypeName, id: &str) -> EntityUid {
+    EntityUid::from_type_name_and_id(entity_type.clone(), EntityId::new(id))
+}
+
+#[cfg(test)]
 pub(crate) fn entity_uid(type_name: &str, id: &str) -> Result<EntityUid, Error> {
-    let et = ENTITY_TYPE_CACHE.with(|cache| -> Result<EntityTypeName, Error> {
-        let mut cache = cache.borrow_mut();
-        if let Some(et) = cache.get(type_name) {
-            Ok(et.clone())
-        } else {
-            let et = EntityTypeName::from_str(type_name)
-                .map_err(|e| Error::Entity(format!("invalid entity type '{type_name}': {e}")))?;
-            cache.insert(SmolStr::from(type_name), et.clone());
-            Ok(et)
-        }
-    })?;
-    let id = EntityId::from_str(id).map_err(|e| Error::Entity(format!("invalid entity id '{id}': {e}")))?;
-    Ok(EntityUid::from_type_name_and_id(et, id))
+    Ok(entity_uid_from_type(&parse_entity_type(type_name)?, id))
 }
 
-pub fn principal_from_jwt(claims: &JwtClaims, entity_type: &str) -> Result<EntityUid, Error> {
+#[inline]
+pub fn principal_from_jwt(claims: &JwtClaims, entity_type: &EntityTypeName) -> Result<EntityUid, Error> {
     let sub = claims.sub.as_deref().ok_or_else(|| Error::Entity("JWT claims missing string 'sub' field".to_owned()))?;
-    entity_uid(entity_type, sub)
+    Ok(entity_uid_from_type(entity_type, sub))
 }
 
 fn json_value_to_restricted_expr(value: &Value) -> Result<RestrictedExpression, Error> {
@@ -152,6 +147,8 @@ pub fn build_authz_context(
 mod tests {
     use super::*;
     use crate::cedar::store::{AuthzRequest, PolicyStore};
+    use ahash::HashMap;
+    use smol_str::SmolStr;
 
     fn jwt_claims(sub: Option<&str>) -> JwtClaims {
         JwtClaims {
@@ -180,19 +177,23 @@ mod tests {
 
     #[test]
     fn principal_from_jwt_extracts_sub() {
-        let uid = principal_from_jwt(&jwt_claims(Some("svc-alice")), "User").unwrap();
+        let uid = principal_from_jwt(&jwt_claims(Some("svc-alice")), &parse_entity_type("User").unwrap()).unwrap();
         assert_eq!(uid.to_string(), r#"User::"svc-alice""#);
     }
 
     #[test]
     fn principal_from_jwt_with_namespace() {
-        let uid = principal_from_jwt(&jwt_claims(Some("urn:example:svc-alice")), "AgentIdentity::IamEntity").unwrap();
+        let uid = principal_from_jwt(
+            &jwt_claims(Some("urn:example:svc-alice")),
+            &parse_entity_type("AgentIdentity::IamEntity").unwrap(),
+        )
+        .unwrap();
         assert_eq!(uid.to_string(), r#"AgentIdentity::IamEntity::"urn:example:svc-alice""#);
     }
 
     #[test]
     fn principal_from_jwt_missing_sub_errors() {
-        principal_from_jwt(&jwt_claims(None), "User").unwrap_err();
+        principal_from_jwt(&jwt_claims(None), &parse_entity_type("User").unwrap()).unwrap_err();
     }
 
     #[test]
@@ -289,7 +290,7 @@ mod tests {
         let claims = jwt_claims(Some("svc-alice"));
         let response = store
             .is_authorized(AuthzRequest {
-                principal: principal_from_jwt(&claims, "User").unwrap(),
+                principal: principal_from_jwt(&claims, &parse_entity_type("User").unwrap()).unwrap(),
                 action: entity_uid("Action", "read").unwrap(),
                 resource: entity_uid("Document", "doc-1").unwrap(),
                 context: build_authz_context(Some(&claims), None, None, None).unwrap(),
@@ -304,7 +305,7 @@ mod tests {
         let claims = jwt_claims(Some("svc-bob"));
         let response = store
             .is_authorized(AuthzRequest {
-                principal: principal_from_jwt(&claims, "User").unwrap(),
+                principal: principal_from_jwt(&claims, &parse_entity_type("User").unwrap()).unwrap(),
                 action: entity_uid("Action", "read").unwrap(),
                 resource: entity_uid("Document", "doc-1").unwrap(),
                 context: build_authz_context(Some(&claims), None, None, None).unwrap(),

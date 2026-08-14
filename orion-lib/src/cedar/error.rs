@@ -1,6 +1,5 @@
 use cedar_policy::entities_errors::EntitiesError;
 use cedar_policy::{CedarSchemaError, ParseErrors, ValidationResult};
-use smol_str::SmolStr;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -20,8 +19,8 @@ pub enum Error {
 
 #[derive(Debug)]
 pub struct ValidationError {
-    pub errors: Vec<SmolStr>,
-    pub warnings: Vec<SmolStr>,
+    pub errors: Vec<String>,
+    pub warnings: Vec<String>,
 }
 
 impl std::fmt::Display for ValidationError {
@@ -56,8 +55,8 @@ impl From<EntitiesError> for Error {
 
 impl ValidationError {
     pub(crate) fn from_result(result: &ValidationResult) -> Option<Self> {
-        let errors: Vec<SmolStr> = result.validation_errors().map(|e| SmolStr::from(e.to_string())).collect();
-        let warnings: Vec<SmolStr> = result.validation_warnings().map(|w| SmolStr::from(w.to_string())).collect();
+        let errors: Vec<String> = result.validation_errors().map(|e| e.to_string()).collect();
+        let warnings: Vec<String> = result.validation_warnings().map(|w| w.to_string()).collect();
 
         if errors.is_empty() {
             None
