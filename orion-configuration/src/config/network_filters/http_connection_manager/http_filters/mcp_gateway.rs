@@ -1,22 +1,50 @@
 use std::time::Duration;
 
 use crate::config::core::DataSource;
+use crate::config::network_filters::http_connection_manager::RetryPolicy;
 use crate::config::network_filters::network_rbac::Action;
+use http::uri::Authority;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use smol_str::SmolStr;
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
-pub struct ClusterHeader(#[serde(with = "http_serde_ext::header_name")] pub http::HeaderName);
-
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct McpGateway {
-    pub cluster_header: Option<ClusterHeader>,
     pub server_info: McpServerInfo,
     pub tools: Vec<McpTool>,
     pub dynamic_mcp_servers: Vec<DynamicMcpServer>,
     pub tds: Option<TdsSpecifier>,
     pub semantic_search_tool: Option<McpSemanticSearch>,
+    #[serde(default)]
+    pub upstream_limits: UpstreamLimits,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct UpstreamLimits {
+    #[serde(with = "humantime_serde")]
+    pub timeout: Duration,
+    pub max_response_bytes: usize,
+}
+
+impl UpstreamLimits {
+    pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(15);
+    pub const DEFAULT_MAX_RESPONSE_BYTES: usize = 1024 * 1024;
+}
+
+impl Default for UpstreamLimits {
+    fn default() -> Self {
+        Self { timeout: Self::DEFAULT_TIMEOUT, max_response_bytes: Self::DEFAULT_MAX_RESPONSE_BYTES }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Default)]
+pub struct HttpUpstreamPolicy {
+    #[serde(with = "http_serde_ext::authority::option", skip_serializing_if = "Option::is_none", default)]
+    pub authority: Option<Authority>,
+    #[serde(with = "humantime_serde", skip_serializing_if = "Option::is_none", default)]
+    pub timeout: Option<Duration>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub retry_policy: Option<RetryPolicy>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
@@ -95,6 +123,8 @@ pub enum UpstreamBackend {
         path: String,
         query_params: Vec<McpRestQueryParams>,
         cluster: String,
+        #[serde(default)]
+        upstream_policy: HttpUpstreamPolicy,
         body_template: Option<String>,
     },
     McpServer {
@@ -197,18 +227,19 @@ impl RemoteEmbeddings {
 
 #[cfg(feature = "envoy-conversions")]
 mod envoy_conversions {
-    use std::str::FromStr;
+    use std::{num::NonZeroUsize, str::FromStr};
 
     use crate::config::common::envoy_conversions::IsUsed;
     use crate::config::core::RustType;
-    use crate::config::{required, GenericError};
+    use crate::config::{required, GenericError, WithNodeOnResult};
 
     use super::*;
     use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::mcp::mcp_gateway::v3::{
         mcp_server_backend::TransportUpstream as OrionTransportUpstream, permission,
         tool::UpstreamBackend as OrionUpstreamBackend, tool_rbac::Action as OrionAction,
-        DynamicMcpServer as OrionDynamicMcpServer, JwtClaimMatcher, JwtHeaderMatcher, McpGateway as OrionMcpGateway,
-        Permission as OrionPermission, QueryParam as OrionMcpQueryParams, RemoteEmbeddings as OrionRemoteEmbeddings,
+        DynamicMcpServer as OrionDynamicMcpServer, HttpUpstreamPolicy as OrionHttpUpstreamPolicy, JwtClaimMatcher,
+        JwtHeaderMatcher, McpGateway as OrionMcpGateway, Permission as OrionPermission,
+        QueryParam as OrionMcpQueryParams, RemoteEmbeddings as OrionRemoteEmbeddings,
         SemanticSearch as OrionSemanticSearch, ServerInfo as OrionMcpServerInfo,
         SimilarityConfig as OrionSimilarityConfig, TdsSpecifier as OrionTdsSpecifier, Tool as OrionTool,
         ToolRbac as OrionToolRbac,
@@ -227,23 +258,75 @@ mod envoy_conversions {
     impl TryFrom<OrionMcpGateway> for McpGateway {
         type Error = GenericError;
         fn try_from(orion: OrionMcpGateway) -> Result<Self, Self::Error> {
-            let OrionMcpGateway { cluster_header, server_info, tools, semantic_search_tool, tds, dynamic_mcp_servers } =
-                orion;
+            let OrionMcpGateway {
+                server_info,
+                tools,
+                semantic_search_tool,
+                tds,
+                dynamic_mcp_servers,
+                upstream_timeout,
+                max_upstream_response_bytes,
+            } = orion;
             let server_info = required!(server_info)?;
-            let cluster_header: Option<http::HeaderName> = cluster_header.map(TryInto::try_into).transpose()?;
-            let cluster_header = cluster_header.map(ClusterHeader);
             let tools = tools.into_iter().map(TryInto::try_into).collect::<Result<Vec<_>, _>>()?;
             let dynamic_mcp_servers =
                 dynamic_mcp_servers.into_iter().map(TryInto::try_into).collect::<Result<Vec<_>, _>>()?;
 
             Ok(McpGateway {
-                cluster_header,
                 server_info: server_info.try_into()?,
                 tools,
                 dynamic_mcp_servers,
                 tds: tds.map(TryInto::try_into).transpose()?,
                 semantic_search_tool: semantic_search_tool.map(TryInto::try_into).transpose()?,
+                upstream_limits: parse_upstream_limits(upstream_timeout, max_upstream_response_bytes)?,
             })
+        }
+    }
+
+    fn parse_upstream_limits(
+        upstream_timeout: Option<orion_data_plane_api::envoy_data_plane_api::google::protobuf::Duration>,
+        max_upstream_response_bytes: Option<u64>,
+    ) -> Result<UpstreamLimits, GenericError> {
+        let timeout = upstream_timeout
+            .map(parse_positive_duration)
+            .transpose()
+            .with_node("upstream_timeout")?
+            .unwrap_or(UpstreamLimits::DEFAULT_TIMEOUT);
+        let max_response_bytes = max_upstream_response_bytes
+            .map(|value| -> Result<usize, GenericError> {
+                NonZeroUsize::try_from(usize::try_from(value)?)
+                    .map(NonZeroUsize::get)
+                    .map_err(|_| GenericError::from_msg("must be greater than zero"))
+            })
+            .transpose()
+            .with_node("max_upstream_response_bytes")?
+            .unwrap_or(UpstreamLimits::DEFAULT_MAX_RESPONSE_BYTES);
+
+        Ok(UpstreamLimits { timeout, max_response_bytes })
+    }
+
+    fn parse_positive_duration(
+        duration: orion_data_plane_api::envoy_data_plane_api::google::protobuf::Duration,
+    ) -> Result<Duration, GenericError> {
+        let duration = RustType::<Duration>::try_from(duration)?.into_inner();
+        (!duration.is_zero()).then_some(duration).ok_or_else(|| GenericError::from_msg("must be greater than zero"))
+    }
+
+    impl TryFrom<OrionHttpUpstreamPolicy> for HttpUpstreamPolicy {
+        type Error = GenericError;
+
+        fn try_from(orion: OrionHttpUpstreamPolicy) -> Result<Self, Self::Error> {
+            let authority = orion
+                .authority
+                .map(|authority| {
+                    Authority::from_str(&authority)
+                        .map_err(|e| GenericError::from_msg_with_cause("Invalid HttpUpstreamPolicy.authority", e))
+                })
+                .transpose()?;
+            let timeout = orion.timeout.map(parse_positive_duration).transpose().with_node("timeout")?;
+            let retry_policy = orion.retry_policy.map(TryInto::try_into).transpose().with_node("retry_policy")?;
+
+            Ok(Self { authority, timeout, retry_policy })
         }
     }
 
@@ -376,6 +459,7 @@ mod envoy_conversions {
                         path: be.path,
                         query_params: be.query_params.into_iter().map(Into::into).collect(),
                         cluster,
+                        upstream_policy: be.upstream_policy.map(TryInto::try_into).transpose()?.unwrap_or_default(),
                         body_template,
                     })
                 },

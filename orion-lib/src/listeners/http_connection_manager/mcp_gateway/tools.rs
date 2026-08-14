@@ -1,24 +1,31 @@
-use crate::listeners::http_connection_manager::mcp_gateway::{
-    embeddings::{self, Bm25Document},
-    mcp::{MessageResult, Session},
-    rbac::{
-        Action as RbacAction, JwtClaimField, JwtHeaderField, JwtHeaderMatcher, JwtPayloadMatcher,
-        Permission as RbacPermission, ToolRbac,
+#[cfg(feature = "metrics")]
+use crate::get_shard_id;
+use crate::listeners::http_connection_manager::{
+    mcp_gateway::{
+        embeddings::{self, Bm25Document},
+        mcp::{MessageResult, Session},
+        rbac::{
+            Action as RbacAction, JwtClaimField, JwtHeaderField, JwtHeaderMatcher, JwtPayloadMatcher,
+            Permission as RbacPermission, ToolRbac,
+        },
+        transcoder::{
+            rest::{BODY_TEMPLATE_NAME, DEFAULT_USER_AGENT, PATH_TEMPLATE_NAME},
+            FunctionGraphTranscoder, RestTranscoder, Transcoder, TranscoderType,
+        },
+        upstream::{self, ToolInvocationFailure, ToolInvocationOutcome},
     },
-    transcoder::{
-        rest::{BODY_TEMPLATE_NAME, DEFAULT_USER_AGENT, PATH_TEMPLATE_NAME},
-        FunctionGraphTranscoder, RestTranscoder, Transcoder, TranscoderType,
-    },
+    RequestCtx,
 };
 use crate::with_metric;
 use atomic_time::AtomicInstant;
 use dashmap::DashMap;
-use http::{header::InvalidHeaderValue, HeaderValue};
 use jsonschema::Validator;
+use opentelemetry::KeyValue;
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::{
-    ClusterHeader, DynamicMcpServer, EmbeddingVector, McpBackendTransportUpstream, McpSemanticSearch, McpTool,
-    UpstreamBackend,
+    DynamicMcpServer, EmbeddingVector, McpBackendTransportUpstream, McpSemanticSearch, McpTool, UpstreamBackend,
+    UpstreamLimits,
 };
+use pingora_timeout::fast_timeout::fast_timeout;
 use rmcp::{
     model::{
         CallToolRequestParams, CallToolResult, ClientCapabilities, ClientInfo, Content, Implementation,
@@ -29,8 +36,6 @@ use rmcp::{
     transport::StreamableHttpClientTransport,
     ServiceError, ServiceExt,
 };
-#[cfg(feature = "metrics")]
-use {crate::get_shard_id, opentelemetry::KeyValue};
 
 use rmcp::model;
 use rmcp::model::{ListToolsResult, Tool};
@@ -133,8 +138,6 @@ pub enum CallToolError {
     RbacDenied(String),
     #[error("FunctionGraph transcoding is not yet implemented")]
     FunctionGraphNotImplemented,
-    #[error("HeaderValue: {0}")]
-    InvalidHeaderValue(#[from] InvalidHeaderValue),
     #[error("Transcoder: tool: {tool} reason: {reason}")]
     TranscoderError { tool: String, reason: String },
     #[error("Client initialization error: {0}")]
@@ -272,7 +275,7 @@ impl ToolsRegistry {
         self.semantic_search.as_ref().map(|s| s.similarity.top_k).unwrap_or(10)
     }
 
-    pub async fn bootstrap(&self) -> Result<(), CallToolError> {
+    pub async fn bootstrap(&self, req_ctx: &RequestCtx) -> Result<(), CallToolError> {
         self.bootstrapped
             .get_or_init(|| async {
                 for server in &self.dynamic_mcp_servers {
@@ -280,18 +283,18 @@ impl ToolsRegistry {
                 }
             })
             .await;
-        self.embed_unembedded_tools(None).await;
+        self.embed_unembedded_tools(None, req_ctx).await;
         Ok(())
     }
 
-    async fn ensure_tools_current(&self) -> Result<(), CallToolError> {
-        self.bootstrap().await?;
+    async fn ensure_tools_current(&self, req_ctx: &RequestCtx) -> Result<(), CallToolError> {
+        self.bootstrap(req_ctx).await?;
         self.refresh_expired_dynamic_servers().await;
-        self.embed_unembedded_tools(None).await;
+        self.embed_unembedded_tools(None, req_ctx).await;
         Ok(())
     }
 
-    async fn embed_unembedded_tools(&self, restrict_to: Option<&[SmolStr]>) {
+    async fn embed_unembedded_tools(&self, restrict_to: Option<&[SmolStr]>, req_ctx: &RequestCtx) {
         let Some(client) = self.embeddings_client.as_ref() else {
             return;
         };
@@ -320,7 +323,7 @@ impl ToolsRegistry {
             return;
         }
 
-        match client.embed_batch(&texts).await {
+        match client.embed_batch(&texts, req_ctx).await {
             Ok(vectors) => {
                 for (name, vec) in names.iter().zip(vectors) {
                     if let Some(shard) = self.tools.get(name) {
@@ -348,9 +351,9 @@ impl ToolsRegistry {
         }
     }
 
-    pub async fn embed_tool_if_unembedded(&self, name: &SmolStr) {
+    pub async fn embed_tool_if_unembedded(&self, name: &SmolStr, req_ctx: &RequestCtx) {
         let names = [name.clone()];
-        self.embed_unembedded_tools(Some(&names)).await;
+        self.embed_unembedded_tools(Some(&names), req_ctx).await;
     }
 
     #[allow(clippy::unused_async)]
@@ -402,9 +405,10 @@ impl ToolsRegistry {
     pub async fn build_list_tools(
         &self,
         req_ext: &http::Extensions,
+        req_ctx: &RequestCtx,
         session: &Arc<Session>,
     ) -> Result<ListToolsResult, CallToolError> {
-        self.ensure_tools_current().await?;
+        self.ensure_tools_current(req_ctx).await?;
 
         let mut tools = Vec::with_capacity(self.tools.len() + 1);
 
@@ -580,6 +584,7 @@ impl ToolsRegistry {
     pub async fn call_semantic_search_tool(
         &self,
         req_ext: &http::Extensions,
+        req_ctx: &RequestCtx,
         rpc: &model::JsonRpcRequest,
         session: &Arc<Session>,
     ) -> Result<MessageResult, CallToolError> {
@@ -600,9 +605,9 @@ impl ToolsRegistry {
             return Err(CallToolError::ValidationError("Semantic search not configured".into()));
         };
 
-        self.ensure_tools_current().await?;
+        self.ensure_tools_current(req_ctx).await?;
 
-        let ranked = self.rank_tools_for_query(req_ext, prompt).await?;
+        let ranked = self.rank_tools_for_query(req_ext, req_ctx, prompt).await?;
         session.active_tools.clear();
         for entry in &ranked {
             session.active_tools.insert(entry.conf.name.clone());
@@ -660,6 +665,7 @@ impl ToolsRegistry {
     async fn rank_tools_for_query(
         &self,
         req_ext: &http::Extensions,
+        req_ctx: &RequestCtx,
         user_query: &str,
     ) -> Result<Vec<Arc<ToolEntry>>, CallToolError> {
         let mut candidates: Vec<Arc<ToolEntry>> = Vec::with_capacity(self.tools.len());
@@ -671,7 +677,7 @@ impl ToolsRegistry {
             candidates.push(entry);
         }
 
-        let mut scored = match self.vector_scores(user_query, &candidates).await {
+        let mut scored = match self.vector_scores(user_query, req_ctx, &candidates).await {
             Some(scored) => scored,
             None => Self::bm25_scores(user_query, &candidates),
         };
@@ -688,10 +694,11 @@ impl ToolsRegistry {
     async fn vector_scores(
         &self,
         user_query: &str,
+        req_ctx: &RequestCtx,
         candidates: &[Arc<ToolEntry>],
     ) -> Option<Vec<(f32, Arc<ToolEntry>)>> {
         let client = self.embeddings_client.as_ref()?;
-        let query_embedding = match client.embed_query(user_query).await {
+        let query_embedding = match client.embed_query(user_query, req_ctx).await {
             Ok(v) => v,
             Err(err) => {
                 warn!(target: "mcp_gateway", "embed_query failed: {err}; cosine ranking unavailable");
@@ -748,15 +755,16 @@ impl ToolsRegistry {
         &self,
         req_ext: &http::Extensions,
         req_headers: &http::HeaderMap,
+        req_ctx: &RequestCtx,
         rpc: &model::JsonRpcRequest,
-        cluster_header: Option<&ClusterHeader>,
+        upstream_limits: &UpstreamLimits,
         session: &Arc<Session>,
     ) -> Result<MessageResult, CallToolError> {
         let name = rpc.request.params.get("name").and_then(Value::as_str).ok_or(CallToolError::NameNotString)?;
         debug!(target: "mcp_gateway", "call: method:{} tool '{name}'", rpc.request.method);
 
         if name == SEMANTIC_SEARCH_TOOL_NAME && self.semantic_search.is_some() {
-            return self.call_semantic_search_tool(req_ext, rpc, session).await;
+            return self.call_semantic_search_tool(req_ext, req_ctx, rpc, session).await;
             // todo(francesco) we should send back an error if agent is invoking semantic_search tool and none is configured
         }
 
@@ -778,15 +786,18 @@ impl ToolsRegistry {
         }
 
         match (&entry.conf.backend, &entry.transcoder) {
-            (UpstreamBackend::Rest { cluster, .. }, TranscoderType::Rest(transcoder)) => {
-                let mut upstream_request = transcoder
+            (UpstreamBackend::Rest { .. }, TranscoderType::Rest(transcoder)) => {
+                let upstream_request = transcoder
                     .encode(req_headers, &rpc.request)
                     .map_err(|e| CallToolError::TranscoderError { tool: name.to_owned(), reason: e.to_string() })?;
-                if let Some(cluster_header) = cluster_header {
-                    let headers = upstream_request.headers_mut();
-                    headers.append(cluster_header.0.clone(), HeaderValue::from_str(cluster)?);
-                }
-                Ok(MessageResult::UpstreamRequest(upstream_request, Arc::clone(&entry)))
+                let tool_result = upstream::invoke_rest_tool(&entry, upstream_request, upstream_limits, req_ctx)
+                    .await
+                    .into_call_tool_result();
+                Ok(MessageResult::JsonRpcResponse(model::JsonRpcResponse {
+                    jsonrpc: model::JsonRpcVersion2_0,
+                    id: rpc.id.clone(),
+                    result: serde_json::to_value(tool_result)?,
+                }))
             },
             (UpstreamBackend::McpServer { url, .. }, TranscoderType::NoTranscoder) => {
                 // For dynamic tools the upstream expects the original tool
@@ -797,37 +808,80 @@ impl ToolsRegistry {
                     ToolSource::Provided => entry.conf.name.clone(),
                 };
 
-                let client = match session.mcp_upstreams.entry(url.to_owned()) {
-                    dashmap::Entry::Occupied(entry) => entry.into_ref(),
-                    dashmap::Entry::Vacant(vacant_entry) => {
-                        let new_client = Self::get_mcp_client(url).await?;
-                        vacant_entry.insert(new_client)
-                    },
-                };
-
-                let call_params = match &rpc.request.params.get("arguments") {
-                    Some(serde_json::Value::Object(args)) => {
-                        CallToolRequestParams::new(upstream_tool_name.to_string()).with_arguments(args.clone())
-                    },
-                    _ => CallToolRequestParams::new(upstream_tool_name.to_string()),
-                };
-
-                let tool_result = match client.call_tool(call_params).await {
-                    Ok(res) => res,
-                    Err(err) => {
-                        if matches!(&err, ServiceError::TransportSend(_) | ServiceError::TransportClosed) {
-                            // drop reference before removing the map entry to avoid deadlock
-                            info!(target: "mcp_gateway", "removing MCP client for URL {url} due to transport error!");
-                            drop(client);
-                            session.mcp_upstreams.remove(url);
+                let invocation = async {
+                    let cached = session.mcp_upstreams.get(url).map(|client| Arc::clone(&client));
+                    let client = if let Some(client) = cached {
+                        client
+                    } else {
+                        let new_client = Arc::new(Self::get_mcp_client(url).await?);
+                        match session.mcp_upstreams.entry(url.to_owned()) {
+                            dashmap::Entry::Occupied(occupied) => Arc::clone(occupied.get()),
+                            dashmap::Entry::Vacant(vacant) => Arc::clone(vacant.insert(new_client).value()),
                         }
-                        return Err(err.into());
+                    };
+
+                    let call_params = match &rpc.request.params.get("arguments") {
+                        Some(serde_json::Value::Object(args)) => {
+                            CallToolRequestParams::new(upstream_tool_name.to_string()).with_arguments(args.clone())
+                        },
+                        _ => CallToolRequestParams::new(upstream_tool_name.to_string()),
+                    };
+
+                    match client.call_tool(call_params).await {
+                        Ok(result) => Ok::<_, CallToolError>(result),
+                        Err(err) => {
+                            if matches!(&err, ServiceError::TransportSend(_) | ServiceError::TransportClosed) {
+                                info!(target: "mcp_gateway", "removing MCP client for URL {url} due to transport error!");
+                                session.mcp_upstreams.remove(url);
+                            }
+                            Err(CallToolError::ServiceError(err))
+                        },
+                    }
+                };
+
+                let started = Instant::now();
+                let mut span = req_ctx.begin_upstream_span(url);
+                span.set_attributes([
+                    KeyValue::new("mcp.tool.name", name.to_owned()),
+                    KeyValue::new("mcp.backend", "mcp_server"),
+                    KeyValue::new("mcp.upstream", url.to_owned()),
+                ]);
+                let mut outcome = match fast_timeout(upstream_limits.timeout, invocation).await {
+                    Err(_) => ToolInvocationOutcome::failure(ToolInvocationFailure::upstream_timeout()),
+                    Ok(Ok(result)) => ToolInvocationOutcome::Success(result),
+                    Ok(Err(err)) => {
+                        debug!(target: "mcp_gateway", "upstream MCP tool call failed: {err}");
+                        ToolInvocationOutcome::failure(ToolInvocationFailure::upstream_error())
                     },
                 };
 
-                debug!(target: "mcp_gateway", "Received result from tool {name}@{upstream_tool_name}: {:?}", tool_result);
+                let successful_value = if let ToolInvocationOutcome::Success(result) = &outcome {
+                    let value = serde_json::to_value(result)?;
+                    let result_bytes = upstream::serialized_json_size(&value)?;
+                    upstream::record_tool_response_bytes(&entry.conf.name, result_bytes);
+                    if result_bytes > upstream_limits.max_response_bytes {
+                        outcome = ToolInvocationOutcome::failure(ToolInvocationFailure::response_too_large(
+                            upstream_limits.max_response_bytes,
+                        ));
+                        None
+                    } else {
+                        Some(value)
+                    }
+                } else {
+                    None
+                };
 
-                let json_result = serde_json::to_value(tool_result)?;
+                upstream::record_tool_invocation(&entry.conf.name, started, &outcome);
+                if let Some(code) = upstream::outcome_failure_code(&outcome) {
+                    span.set_attribute(KeyValue::new("mcp.error.code", code));
+                    span.set_error(code);
+                }
+                span.complete();
+
+                let json_result = match successful_value {
+                    Some(value) => value,
+                    None => serde_json::to_value(outcome.into_call_tool_result())?,
+                };
 
                 let json_rcp_response = model::JsonRpcResponse {
                     jsonrpc: model::JsonRpcVersion2_0,
@@ -993,6 +1047,7 @@ mod tests {
                 path: "/test".into(),
                 query_params: vec![],
                 cluster: "test_cluster".into(),
+                upstream_policy: Default::default(),
                 body_template: None,
             },
             rbac: None,
@@ -1137,6 +1192,31 @@ mod tests {
 
         let result = tool_entry.validate_against_output_schema(&response);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn invalid_upstream_output_is_a_structured_tool_error() {
+        let output_schema = serde_json::from_value(json!({
+            "type": "object",
+            "properties": { "temperature": { "type": "number" } },
+            "required": ["temperature"]
+        }))
+        .unwrap();
+        let registry = registry_with_tool(create_test_tool_with_schemas(serde_json::Map::new(), output_schema));
+        let tool = registry.get_tool_by_name("test_tool").unwrap();
+
+        let result = upstream::call_tool_outcome_from_upstream(
+            &tool,
+            http::StatusCode::OK,
+            bytes::Bytes::from_static(br#"{"temperature":"hot"}"#),
+        )
+        .into_call_tool_result();
+
+        assert_eq!(result.is_error, Some(true));
+        assert_eq!(
+            result.structured_content.as_ref().and_then(|value| value.pointer("/error/code")).and_then(Value::as_str),
+            Some("invalid_output")
+        );
     }
 
     #[test]
@@ -1358,7 +1438,8 @@ mod tests {
         )
         .unwrap();
 
-        registry.bootstrap().await.unwrap();
+        let req_ctx = RequestCtx::default();
+        registry.bootstrap(&req_ctx).await.unwrap();
 
         for name in ["weather_get_forecast", "user_profile_get", "admin_delete"] {
             let entry = registry.get_tool_by_name(name).unwrap();
@@ -1367,7 +1448,7 @@ mod tests {
 
         let req_ext = http::Extensions::new();
         let ranked = registry
-            .rank_tools_for_query(&req_ext, "what is the weather today")
+            .rank_tools_for_query(&req_ext, &req_ctx, "what is the weather today")
             .await
             .expect("semantic search ranking should succeed");
         assert_eq!(ranked.len(), 2, "top_k=2 should return exactly 2 tools");
@@ -1396,8 +1477,11 @@ mod tests {
         let registry = ToolsRegistry::with_config(vec![tool_a, tool_b], Vec::new(), semantic_search, None).unwrap();
 
         let req_ext = http::Extensions::new();
-        let ranked =
-            registry.rank_tools_for_query(&req_ext, "weather forecast").await.expect("BM25 ranking should succeed");
+        let req_ctx = RequestCtx::default();
+        let ranked = registry
+            .rank_tools_for_query(&req_ext, &req_ctx, "weather forecast")
+            .await
+            .expect("BM25 ranking should succeed");
         assert_eq!(ranked.len(), 1, "top_k=1 should return exactly 1 tool");
         assert_eq!(ranked[0].conf.name.as_str(), "weather_get_forecast", "BM25 should rank weather first");
     }
@@ -1425,8 +1509,11 @@ mod tests {
         registry.add_tool(tool_b).await.unwrap();
 
         let req_ext = http::Extensions::new();
-        let ranked =
-            registry.rank_tools_for_query(&req_ext, "billing invoices").await.expect("BM25 ranking should succeed");
+        let req_ctx = RequestCtx::default();
+        let ranked = registry
+            .rank_tools_for_query(&req_ext, &req_ctx, "billing invoices")
+            .await
+            .expect("BM25 ranking should succeed");
         assert_eq!(ranked[0].conf.name.as_str(), "beta");
 
         let mut replacement = create_test_tool_with_schemas(serde_json::Map::new(), serde_json::Map::new());
@@ -1435,7 +1522,7 @@ mod tests {
         registry.add_tool(replacement).await.unwrap();
 
         let ranked = registry
-            .rank_tools_for_query(&req_ext, "billing invoices")
+            .rank_tools_for_query(&req_ext, &req_ctx, "billing invoices")
             .await
             .expect("BM25 ranking should succeed after replacement");
         assert_eq!(ranked[0].conf.name.as_str(), "alpha");
@@ -1471,8 +1558,9 @@ mod tests {
             ToolsRegistry::with_config(vec![tool_a, tool_b], Vec::new(), semantic_search, Some(client)).unwrap();
 
         let req_ext = http::Extensions::new();
+        let req_ctx = RequestCtx::default();
         let ranked = registry
-            .rank_tools_for_query(&req_ext, "billing invoices")
+            .rank_tools_for_query(&req_ext, &req_ctx, "billing invoices")
             .await
             .expect("BM25 fallback should rank candidates when embeddings fail");
         assert_eq!(ranked[0].conf.name.as_str(), "billing_lookup");
@@ -1518,7 +1606,7 @@ mod tests {
         let registry =
             ToolsRegistry::with_config(vec![tool], Vec::new(), semantic_search, Some(Arc::clone(&client))).unwrap();
 
-        registry.embed_tool_if_unembedded(&"needs_embedding".into()).await;
+        registry.embed_tool_if_unembedded(&"needs_embedding".into(), &RequestCtx::default()).await;
         assert!(
             registry.get_tool_by_name("needs_embedding").unwrap().embedding.load_full().is_none(),
             "embeddings failure should leave the tool unembedded"
@@ -1560,7 +1648,7 @@ mod tests {
         assert!(registry.get_tool_by_name("billing_lookup").unwrap().embedding.load_full().is_none());
 
         let req_ext = http::Extensions::new();
-        let result = registry.rank_tools_for_query(&req_ext, "weather forecast").await;
+        let result = registry.rank_tools_for_query(&req_ext, &RequestCtx::default(), "weather forecast").await;
 
         let ranked = result.expect("unembedded tool must not abort cosine ranking");
         assert_eq!(ranked.len(), 1);
@@ -1587,14 +1675,15 @@ mod tests {
 
         // First call: embeddings fail, bootstrap still succeeds because BM25 can
         // serve as the fallback ranking path.
-        registry.bootstrap().await.expect("embeddings failure should not fail bootstrap");
+        let req_ctx = RequestCtx::default();
+        registry.bootstrap(&req_ctx).await.expect("embeddings failure should not fail bootstrap");
         assert!(
             registry.get_tool_by_name("flaky_tool").unwrap().embedding.load_full().is_none(),
             "tool must remain unembedded after a failed bootstrap"
         );
 
         // Second call: remote embeddings recover, bootstrap succeeds and stores the embedding.
-        registry.bootstrap().await.expect("retry must succeed once embeddings recover");
+        registry.bootstrap(&req_ctx).await.expect("retry must succeed once embeddings recover");
         assert!(
             registry.get_tool_by_name("flaky_tool").unwrap().embedding.load_full().is_some(),
             "embedding should be stored after a successful retry"

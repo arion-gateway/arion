@@ -25,8 +25,8 @@ use orion_data_plane_api::envoy_data_plane_api::{
     google::protobuf::{Any, Duration as ProstDuration},
     orion::extensions::filters::http::mcp::mcp_gateway::v3::{
         mcp_server_backend, permission::PermissionType, tool, tool_rbac, DynamicMcpServer, FunctionGraphBackend,
-        JwtClaimMatcher, JwtHeaderMatcher, McpGateway, McpServerBackend, Permission, QueryParam, RemoteEmbeddings,
-        RestBackend, SemanticSearch, ServerInfo, SimilarityConfig, TdsSpecifier, Tool, ToolRbac,
+        HttpUpstreamPolicy, JwtClaimMatcher, JwtHeaderMatcher, McpGateway, McpServerBackend, Permission, QueryParam,
+        RemoteEmbeddings, RestBackend, SemanticSearch, ServerInfo, SimilarityConfig, TdsSpecifier, Tool, ToolRbac,
     },
     prost::Message,
 };
@@ -37,7 +37,6 @@ use super::{
     route_config::RouteConfigBuilder, virtual_host::VirtualHostBuilder,
 };
 
-pub const DEFAULT_MCP_CLUSTER_HEADER: &str = "x-mcp-target-cluster";
 pub const DEFAULT_MCP_ROUTE_CONFIG_NAME: &str = "mcp_routes";
 pub const DEFAULT_MCP_VHOST_NAME: &str = "mcp";
 pub const DEFAULT_MCP_FILTER_CHAIN_NAME: &str = "main";
@@ -77,7 +76,6 @@ impl McpGatewayBuilder {
     pub fn new(server_name: impl Into<String>, server_version: impl Into<String>) -> Self {
         Self {
             proto: McpGateway {
-                cluster_header: Some(DEFAULT_MCP_CLUSTER_HEADER.to_owned()),
                 server_info: Some(ServerInfo { name: server_name.into(), version: server_version.into() }),
                 ..Default::default()
             },
@@ -85,14 +83,14 @@ impl McpGatewayBuilder {
     }
 
     #[must_use]
-    pub fn cluster_header(mut self, header: impl Into<String>) -> Self {
-        self.proto.cluster_header = Some(header.into());
+    pub fn upstream_timeout(mut self, timeout: ProstDuration) -> Self {
+        self.proto.upstream_timeout = Some(timeout);
         self
     }
 
     #[must_use]
-    pub fn without_cluster_header(mut self) -> Self {
-        self.proto.cluster_header = None;
+    pub fn max_upstream_response_bytes(mut self, max_upstream_response_bytes: u64) -> Self {
+        self.proto.max_upstream_response_bytes = Some(max_upstream_response_bytes);
         self
     }
 
@@ -272,6 +270,18 @@ impl McpRestBackendBuilder {
     #[must_use]
     pub fn body_template(mut self, template: impl Into<DataSource>) -> Self {
         self.proto.body_template = Some(template.into());
+        self
+    }
+
+    #[must_use]
+    pub fn authority(mut self, authority: impl Into<String>) -> Self {
+        self.proto.upstream_policy.get_or_insert_default().authority = Some(authority.into());
+        self
+    }
+
+    #[must_use]
+    pub fn upstream_policy(mut self, policy: HttpUpstreamPolicy) -> Self {
+        self.proto.upstream_policy = Some(policy);
         self
     }
 
@@ -614,9 +624,7 @@ impl McpGatewayHttpConfigBuilder {
 
     #[must_use]
     pub fn build_listener(self) -> ListenerBuilder {
-        let route_cluster_header =
-            self.gateway.cluster_header.clone().unwrap_or_else(|| DEFAULT_MCP_CLUSTER_HEADER.to_owned());
-        let route_config = mcp_gateway_route_config(self.route_config_name, route_cluster_header);
+        let route_config = mcp_gateway_route_config(self.route_config_name);
         let mut hcm = HcmBuilder::new().route_config(route_config);
 
         if let Some(jwt_auth) = self.jwt_auth {
@@ -637,6 +645,7 @@ impl McpGatewayHttpConfigBuilder {
             .listener(self.build_listener())
             .cluster(ClusterBuilder::new("dummy").endpoint(EndpointBuilder::new("127.0.0.1", 1)))
             .clusters(clusters)
+            .admin("127.0.0.1", crate::TEST_ADMIN_PORT)
     }
 }
 
@@ -661,13 +670,9 @@ pub fn mcp_gateway_http_filter(config: impl Into<McpGateway>) -> HttpFilter {
 }
 
 #[must_use]
-pub fn mcp_gateway_route_config(
-    route_config_name: impl Into<String>,
-    cluster_header: impl Into<String>,
-) -> RouteConfigBuilder {
+pub fn mcp_gateway_route_config(route_config_name: impl Into<String>) -> RouteConfigBuilder {
     RouteConfigBuilder::new(route_config_name).virtual_host(
-        VirtualHostBuilder::new(DEFAULT_MCP_VHOST_NAME)
-            .route(RouteBuilder::new().match_prefix("/").cluster_header(cluster_header)),
+        VirtualHostBuilder::new(DEFAULT_MCP_VHOST_NAME).route(RouteBuilder::new().match_prefix("/").cluster("dummy")),
     )
 }
 

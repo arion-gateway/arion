@@ -46,7 +46,8 @@ envoy_bootstrap:
                         server_info:
                           name: "orion-mcp-gateway"
                           version: "0.0.1"
-                        cluster_header: "x-mcp-target-cluster"
+                        upstream_timeout: 15s
+                        max_upstream_response_bytes: 1048576
                         tools:
                           - name: "weather_get_forecast"
                             description: "Get weather forecast for a location"
@@ -171,7 +172,9 @@ envoy_bootstrap:
                           - match:
                               prefix: "/"
                             route:
-                              cluster_header: "x-mcp-target-cluster"
+                              # MCP tool calls dispatch directly to their configured clusters.
+                              # This route is only a fallback for requests not handled by the filter.
+                              cluster: weather_api_cluster
 
     clusters:
       - name: weather_api_cluster

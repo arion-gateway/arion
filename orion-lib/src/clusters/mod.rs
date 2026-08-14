@@ -21,6 +21,7 @@ pub mod circuit_breaker;
 pub mod cluster;
 pub mod clusters_manager;
 pub(crate) mod health;
+pub mod http_upstream;
 pub(crate) mod load_assignment;
 pub(crate) mod retry_policy;
 pub use crate::transport::{GrpcService, SimpleRoundRobinGrpcServiceLB};

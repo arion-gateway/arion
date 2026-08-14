@@ -168,7 +168,7 @@ impl TraceInfo {
     pub fn into_child(self) -> Self {
         // Generate a new span ID for the child span
         let mut rng = rand::rng();
-        let new_span_id = rng.random::<u64>();
+        let new_span_id = rng.random_range(1..=u64::MAX);
         let prev_span_id = self.span_id;
         TraceInfo { span_id: Some(new_span_id), parent_id: prev_span_id, ..self }
     }
@@ -312,12 +312,23 @@ impl TraceInfo {
     }
 
     pub fn update_headers(&self, headers: &mut HeaderMap) -> Result<(), TraceError> {
+        self.update_headers_with_tracestate(headers, None)
+    }
+
+    pub fn update_headers_with_tracestate(
+        &self,
+        headers: &mut HeaderMap,
+        tracestate: Option<&HeaderValue>,
+    ) -> Result<(), TraceError> {
         match self.provider {
             TraceProvider::Uber => {
                 insert_header!(headers, UBER_TRACE_ID, 80, "{}", self);
             },
             TraceProvider::W3CTraceContext => {
                 insert_header!(headers, TRACEPARENT, 80, "{}", self);
+                if let Some(tracestate) = tracestate {
+                    headers.insert(TRACESTATE, tracestate.clone());
+                }
             },
             TraceProvider::B3 => {
                 insert_header!(headers, B3, 80, "{}", self);
@@ -741,5 +752,16 @@ mod tests {
         let result = TraceInfo::extract_from(req.headers());
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), TraceError::InvalidFormat));
+    }
+
+    #[test]
+    fn injecting_w3c_context_retains_tracestate() {
+        let mut headers = HeaderMap::new();
+        let trace = TraceInfo::new(true, TraceProvider::W3CTraceContext, Some(0x123)).into_child();
+        let tracestate = HeaderValue::from_static("vendor=value");
+        trace.update_headers_with_tracestate(&mut headers, Some(&tracestate)).unwrap();
+
+        assert!(headers.contains_key(TRACEPARENT));
+        assert_eq!(headers.get(TRACESTATE), Some(&tracestate));
     }
 }

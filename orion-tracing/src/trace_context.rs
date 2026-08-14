@@ -33,6 +33,7 @@ pub struct TraceContext {
     child: Mutex<Option<TraceInfo>>,
     request_id: Option<RequestId>,
     client_trace_id: Option<HeaderValue>,
+    tracestate: Option<HeaderValue>,
     should_sample: bool,
 }
 
@@ -44,6 +45,7 @@ impl TraceContext {
             child: Mutex::new(None),
             request_id: None,
             client_trace_id: None,
+            tracestate: None,
             should_sample: false,
         }
     }
@@ -64,6 +66,10 @@ impl TraceContext {
 
     pub fn with_client_trace_id(self, client_trace_id: Option<HeaderValue>) -> Self {
         Self { client_trace_id, ..self }
+    }
+
+    pub fn with_tracestate(self, tracestate: Option<HeaderValue>) -> Self {
+        Self { tracestate, ..self }
     }
 
     pub fn with_should_sample(self, should_sample: bool) -> Self {
@@ -105,6 +111,11 @@ impl TraceContext {
     #[inline]
     pub fn client_trace_id(&self) -> Option<&HeaderValue> {
         self.client_trace_id.as_ref()
+    }
+
+    #[inline]
+    pub fn tracestate(&self) -> Option<&HeaderValue> {
+        self.tracestate.as_ref()
     }
 
     #[inline]
@@ -369,5 +380,20 @@ mod tests {
 
         // Children should be different (different span IDs)
         assert_ne!(first_child, second_child);
+    }
+
+    #[test]
+    fn multiple_upstream_children_share_the_server_context() {
+        let context = TraceContext::new(None).with_parent(create_sample_trace_info());
+        context.spawn_child();
+        let server = context.map_child(Clone::clone).unwrap();
+
+        let first = server.clone().into_child();
+        let second = server.clone().into_child();
+
+        assert_eq!(first.trace_id(), server.trace_id());
+        assert_eq!(second.trace_id(), server.trace_id());
+        assert_ne!(first.span_id(), second.span_id());
+        assert_eq!(context.map_child(Clone::clone), Some(server));
     }
 }

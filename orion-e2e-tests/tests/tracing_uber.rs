@@ -78,6 +78,7 @@ async fn test_uber_basic() {
 // ─── Not sampled (sampled=0) ───
 #[tokio::test]
 #[ignore]
+#[allow(clippy::indexing_slicing)]
 async fn test_uber_not_sampled() {
     let (orion, client, mut backend, config_path) = setup().await;
 
@@ -86,8 +87,13 @@ async fn test_uber_not_sampled() {
     resp.assert_status(StatusCode::OK);
 
     let cap = backend.await_request().await.unwrap();
-    // uber-trace-id should still be propagated (with its identifiers)
-    assert_eq!(cap.header("uber-trace-id"), Some(uber_in.as_str()));
+    let uber_out = cap.header("uber-trace-id").expect("uber-trace-id should be propagated even when not sampled");
+    let parts: Vec<&str> = uber_out.split(':').collect();
+    assert_eq!(parts.len(), 4);
+    assert_eq!(parts[0], TRACE_ID, "trace_id should be preserved");
+    assert_ne!(parts[1], SPAN_ID, "span_id should be a new child");
+    assert_eq!(parts[2], SPAN_ID, "parent span_id should be the incoming span_id");
+    assert_eq!(parts[3], "0", "sampled flag should remain 0");
 
     orion.shutdown();
     cleanup_config_file(&config_path);

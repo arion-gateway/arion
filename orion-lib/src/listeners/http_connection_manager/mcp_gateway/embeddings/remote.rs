@@ -78,7 +78,11 @@ impl EmbeddingsClient {
         }
     }
 
-    async fn post_for_embeddings(&self, inputs: Vec<String>) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+    async fn post_for_embeddings(
+        &self,
+        inputs: Vec<String>,
+        req_ctx: &RequestCtx,
+    ) -> Result<Vec<Vec<f32>>, EmbeddingError> {
         let payload = EmbeddingsRequest { model: &self.model_id, input: &inputs };
         let body_bytes = serde_json::to_vec(&payload).map_err(|e| EmbeddingError::Service(format!("encode: {e}")))?;
 
@@ -106,7 +110,7 @@ impl EmbeddingsClient {
         let upstream_call_opts =
             UpstreamCallOpts { route_timeout: Some(self.timeout), retry_policy: None, ..Default::default() };
         let response = (&channels)
-            .to_response(&RequestCtx::default(), request, upstream_call_opts)
+            .to_response(req_ctx, request, upstream_call_opts)
             .await
             .map_err(|e| EmbeddingError::Service(format!("upstream call failed: {e}")))?;
 
@@ -163,18 +167,18 @@ impl EmbeddingsClient {
         &self.description
     }
 
-    pub async fn embed_query(&self, text: &str) -> Result<Embedding, EmbeddingError> {
+    pub async fn embed_query(&self, text: &str, req_ctx: &RequestCtx) -> Result<Embedding, EmbeddingError> {
         #[cfg(test)]
         if let Some(mode) = &self.test_mode {
             return Self::test_embed_query(mode, text);
         }
 
-        let mut vectors = self.post_for_embeddings(vec![text.to_owned()]).await?;
+        let mut vectors = self.post_for_embeddings(vec![text.to_owned()], req_ctx).await?;
         let v = vectors.pop().ok_or_else(|| EmbeddingError::Service("empty result".into()))?;
         self.finalize(v)
     }
 
-    pub async fn embed_batch(&self, texts: &[String]) -> Result<Vec<Embedding>, EmbeddingError> {
+    pub async fn embed_batch(&self, texts: &[String], req_ctx: &RequestCtx) -> Result<Vec<Embedding>, EmbeddingError> {
         #[cfg(test)]
         if let Some(mode) = &self.test_mode {
             return Self::test_embed_batch(mode, texts);
@@ -183,7 +187,7 @@ impl EmbeddingsClient {
         if texts.is_empty() {
             return Ok(Vec::new());
         }
-        let vectors = self.post_for_embeddings(texts.to_vec()).await?;
+        let vectors = self.post_for_embeddings(texts.to_vec(), req_ctx).await?;
         let mut out = Vec::with_capacity(vectors.len());
         for v in vectors {
             out.push(self.finalize(v)?);

@@ -21,7 +21,9 @@ use crate::{
         instrumented_body::InstrumentedBody, poly_body::PolyBody, response_flags::ResponseFlags,
         timeout_body::TimeoutBody,
     },
-    clusters::{decrement_retries, retry_policy::RetryCondition, try_increment_retries, RoutingPriority},
+    clusters::{
+        decrement_retries, retry_policy::RetryCondition, try_increment_retries, CircuitBreakerDenial, RoutingPriority,
+    },
     event_error::{EventKind, TryInferFrom, UpstreamError},
     instrument_block, instrument_function,
     listeners::{
@@ -71,6 +73,28 @@ use webpki::types::ServerName;
 #[cfg(feature = "metrics")]
 use scopeguard::defer;
 pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[must_use = "dropping the permit releases the retry circuit-breaker slot"]
+struct RetryCircuitBreakerPermit {
+    cluster_name: &'static str,
+    priority: RoutingPriority,
+}
+
+impl RetryCircuitBreakerPermit {
+    fn try_acquire(
+        cluster_name: &'static str,
+        priority: RoutingPriority,
+    ) -> std::result::Result<Self, CircuitBreakerDenial> {
+        try_increment_retries(cluster_name, priority)?;
+        Ok(Self { cluster_name, priority })
+    }
+}
+
+impl Drop for RetryCircuitBreakerPermit {
+    fn drop(&mut self) {
+        decrement_retries(self.cluster_name, self.priority);
+    }
+}
 
 type HttpClient = Client<UnifiedConnector, OrionRequestBody>;
 type HttpsClient = Client<HttpsConnector<UnifiedConnector>, OrionRequestBody>;
@@ -632,7 +656,7 @@ impl HttpChannel {
 
         let max_retries = retry_policy.num_retries() as usize;
         let mut parts_opt = Some(parts);
-        let mut retry_acquired = false;
+        let mut retry_permit = None;
         let mut last_result: Option<Result<Response<Incoming>>> = None;
 
         for (index, back_off) in retry_policy.exponential_back_off().iter().enumerate() {
@@ -686,27 +710,29 @@ impl HttpChannel {
 
             // take an exponential back off break and retry...
             if index < retry_policy.num_retries() as usize {
-                if !retry_acquired && try_increment_retries(self.cluster_name, priority).is_err() {
-                    debug!(
-                        "retry_policy: circuit breaker denied retry #{}/{} for cluster {}",
-                        index + 1,
-                        retry_policy.num_retries(),
-                        self.cluster_name
-                    );
-                    #[cfg(feature = "metrics")]
-                    {
-                        let shard_id = get_shard_id!();
-                        with_metric!(
-                            clusters::UPSTREAM_RQ_RETRY_OVERFLOW,
-                            add,
-                            1,
-                            shard_id,
-                            &[KeyValue::new("cluster", self.cluster_name)]
+                if retry_permit.is_none() {
+                    let Ok(permit) = RetryCircuitBreakerPermit::try_acquire(self.cluster_name, priority) else {
+                        debug!(
+                            "retry_policy: circuit breaker denied retry #{}/{} for cluster {}",
+                            index + 1,
+                            retry_policy.num_retries(),
+                            self.cluster_name
                         );
+                        #[cfg(feature = "metrics")]
+                        {
+                            let shard_id = get_shard_id!();
+                            with_metric!(
+                                clusters::UPSTREAM_RQ_RETRY_OVERFLOW,
+                                add,
+                                1,
+                                shard_id,
+                                &[KeyValue::new("cluster", self.cluster_name)]
+                            );
+                        };
+                        return result;
                     };
-                    return result;
+                    retry_permit = Some(permit);
                 }
-                retry_acquired = true;
 
                 debug!(
                     "retry_policy: retrying request #{}/{} in {}...",
@@ -719,10 +745,6 @@ impl HttpChannel {
             }
 
             last_result = Some(result);
-        }
-
-        if retry_acquired {
-            decrement_retries(self.cluster_name, priority);
         }
 
         match last_result {

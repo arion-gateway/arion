@@ -78,6 +78,7 @@ async fn test_traceparent_basic() {
 // ─── Not-sampled traceparent (flags=00) ───
 #[tokio::test]
 #[ignore]
+#[allow(clippy::indexing_slicing)]
 async fn test_traceparent_not_sampled() {
     let (orion, client, mut backend, config_path) = setup().await;
 
@@ -86,8 +87,13 @@ async fn test_traceparent_not_sampled() {
     resp.assert_status(StatusCode::OK);
 
     let cap = backend.await_request().await.unwrap();
-    // Even if not sampled, the traceparent should still be propagated
-    assert_eq!(cap.header("traceparent"), Some(tp_in.as_str()));
+    let tp_out = cap.header("traceparent").expect("traceparent should be propagated even when not sampled");
+    let parts: Vec<&str> = tp_out.split('-').collect();
+    assert_eq!(parts.len(), 4);
+    assert_eq!(parts[0], "00");
+    assert_eq!(parts[1], TRACE_ID, "trace_id should be preserved");
+    assert_ne!(parts[2], SPAN_ID, "span_id should be a new child");
+    assert_eq!(parts[3], "00", "sampled flag should remain 00");
 
     orion.shutdown();
     cleanup_config_file(&config_path);

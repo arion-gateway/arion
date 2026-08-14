@@ -36,5 +36,4 @@ pub mod context_body;
 pub mod instrumented_body;
 pub mod poly_body;
 pub(crate) mod response_flags;
-pub mod sink_body;
 pub mod timeout_body;

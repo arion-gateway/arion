@@ -208,7 +208,7 @@ impl ClusterOps for OriginalDstCluster {
     fn get_http_connection(&mut self, context: RoutingContext) -> Result<HttpChannels> {
         match context {
             RoutingContext::Authority(authority) => {
-                self.get_http_connection_by_authority(authority).map(HttpChannels::Single)
+                self.get_http_connection_by_authority(authority.as_ref()).map(HttpChannels::Single)
             },
             RoutingContext::Header(header_value) => {
                 debug!("get HTTP connection by header {header_value:?}...");
@@ -225,14 +225,14 @@ impl ClusterOps for OriginalDstCluster {
 
     fn get_tcp_connection(&mut self, context: RoutingContext) -> Result<TcpChannelConnector> {
         match context {
-            RoutingContext::Authority(authority) => self.get_tcp_connection_by_authority(authority),
+            RoutingContext::Authority(authority) => self.get_tcp_connection_by_authority(authority.as_ref()),
             _ => Err(format!("ORIGINAL_DST cluster {} requires authority routing context", self.global.name).into()),
         }
     }
 
     fn get_grpc_connection(&mut self, context: RoutingContext) -> Result<GrpcService> {
         match context {
-            RoutingContext::Authority(authority) => self.get_grpc_connection_by_authority(authority),
+            RoutingContext::Authority(authority) => self.get_grpc_connection_by_authority(authority.as_ref()),
             _ => Err(format!("ORIGINAL_DST cluster {} requires authority routing context", self.global.name).into()),
         }
     }
@@ -603,7 +603,7 @@ mod tests {
         let mut cluster = build_original_dst_cluster(config);
 
         let authority = Authority::from_str("localhost:52000").unwrap();
-        let _tcp_future = cluster.get_tcp_connection(RoutingContext::Authority(&authority)).unwrap();
+        let _tcp_future = cluster.get_tcp_connection(RoutingContext::from(&authority)).unwrap();
 
         let endpoints = cluster.all_tcp_channels();
         assert_eq!(endpoints.len(), 1);
@@ -620,9 +620,9 @@ mod tests {
         let mut cluster = build_original_dst_cluster(config);
 
         let auth1 = Authority::from_str("localhost:5100").unwrap();
-        let auth1_context = RoutingContext::Authority(&auth1);
+        let auth1_context = RoutingContext::from(&auth1);
         let auth2 = Authority::from_str("localhost:5101").unwrap();
-        let auth2_context = RoutingContext::Authority(&auth2);
+        let auth2_context = RoutingContext::from(&auth2);
 
         let _grpc1 = cluster.get_grpc_connection(auth1_context).unwrap();
         let _grpc2 = cluster.get_grpc_connection(auth2_context).unwrap();

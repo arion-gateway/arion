@@ -87,6 +87,7 @@ use {
 #[cfg(any(feature = "access-log", feature = "metrics"))]
 use {parking_lot::Mutex, std::time::Instant};
 
+use ::http::HeaderValue;
 use arc_swap::ArcSwap;
 use core::time::Duration;
 use futures::future::BoxFuture;
@@ -135,7 +136,7 @@ use tokio::sync::watch;
 use tracing::{debug, error};
 use upgrades as upgrade_utils;
 
-use orion_tracing::http_tracer::HttpTracer;
+use orion_tracing::http_tracer::{HttpTracer, ScopedClientSpan};
 use orion_tracing::request_id::{RequestId, RequestIdManager};
 
 use crate::listeners::http_connection_manager::http_modifiers::HeaderMapModifier;
@@ -457,6 +458,8 @@ pub struct TransactionContext {
     #[cfg(feature = "tracing")]
     trace_ctx: Option<TraceContext>,
     #[cfg(feature = "tracing")]
+    upstream_tracing_key: Option<TracingKey>,
+    #[cfg(feature = "tracing")]
     span_state: Option<Arc<SpanState>>,
     #[cfg(any(feature = "access-log", feature = "metrics"))]
     trans_state: Mutex<TransactionState>,
@@ -493,6 +496,8 @@ impl Default for TransactionContext {
             #[cfg(feature = "tracing")]
             trace_ctx: None,
             #[cfg(feature = "tracing")]
+            upstream_tracing_key: None,
+            #[cfg(feature = "tracing")]
             span_state: None,
             #[cfg(any(feature = "access-log", feature = "metrics", feature = "tracing"))]
             trans_phase: TransactionPhase::new(),
@@ -518,6 +523,7 @@ impl TransactionContext {
         thread_id: ShardId,
         #[cfg(feature = "access-log")] access_log: &[AccessLog],
         #[cfg(feature = "tracing")] trace_ctx: Option<TraceContext>,
+        #[cfg(feature = "tracing")] upstream_tracing_key: Option<TracingKey>,
         #[cfg(feature = "tracing")] server_span: Option<BoxedSpan>,
     ) -> Self {
         TransactionContext {
@@ -532,6 +538,8 @@ impl TransactionContext {
             #[cfg(feature = "tracing")]
             trace_ctx,
             #[cfg(feature = "tracing")]
+            upstream_tracing_key,
+            #[cfg(feature = "tracing")]
             span_state: server_span.map(|span| Arc::new(SpanState::new(Some(span)))),
             shard_id: thread_id,
             #[cfg(any(feature = "access-log", feature = "metrics", feature = "tracing"))]
@@ -545,6 +553,28 @@ impl TransactionContext {
     #[allow(dead_code)]
     pub fn shard_id(&self) -> ShardId {
         self.shard_id
+    }
+
+    #[inline]
+    pub(crate) fn propagated_request_id(&self) -> Option<&HeaderValue> {
+        self.request_id.as_ref().and_then(RequestId::propagate_ref)
+    }
+
+    pub(crate) fn begin_upstream_span(&self, span_name: &str) -> ScopedClientSpan {
+        #[cfg(feature = "tracing")]
+        {
+            return HttpTracer::begin_scoped_client_span(
+                self.trace_ctx.as_ref(),
+                self.upstream_tracing_key.as_ref(),
+                span_name,
+            );
+        }
+
+        #[cfg(not(feature = "tracing"))]
+        {
+            let _ = span_name;
+            ScopedClientSpan::disabled()
+        }
     }
 
     #[cfg(feature = "access-log")]
@@ -1271,6 +1301,16 @@ impl RequestCtx {
     pub fn new(conn: ConnMeta, tx: Arc<TransactionContext>) -> Self {
         Self { conn, tx }
     }
+
+    #[inline]
+    pub(crate) fn propagated_request_id(&self) -> Option<&HeaderValue> {
+        self.tx.propagated_request_id()
+    }
+
+    #[inline]
+    pub(crate) fn begin_upstream_span(&self, span_name: &str) -> ScopedClientSpan {
+        self.tx.begin_upstream_span(span_name)
+    }
 }
 
 impl Default for RequestCtx {
@@ -1388,12 +1428,20 @@ where
             self.manager.http_tracer.try_build_trace_context(&request, incoming_request_id.or(request_id.clone()));
 
         #[cfg(feature = "tracing")]
+        let tracing_key = self.manager.get_tracing_key();
+
+        #[cfg(feature = "tracing")]
         let mut server_span = self.manager.http_tracer.try_create_span(
             trace_context.as_ref(),
-            &self.manager.get_tracing_key(),
+            &tracing_key,
             SpanKind::Server,
             SpanName::Host(&request),
         );
+
+        #[cfg(feature = "tracing")]
+        let upstream_tracing_key = (trace_context.as_ref().is_some_and(TraceContext::should_sample)
+            && self.manager.http_tracer.upstream_spans_enabled())
+        .then_some(tracing_key);
 
         #[cfg(feature = "tracing")]
         if let Some(span) = server_span.as_mut() {
@@ -1421,6 +1469,8 @@ where
             &self.manager.access_log,
             #[cfg(feature = "tracing")]
             trace_context,
+            #[cfg(feature = "tracing")]
+            upstream_tracing_key,
             #[cfg(feature = "tracing")]
             server_span,
         ));
@@ -2143,5 +2193,21 @@ mod tests {
         let vh2 = VirtualHost { domains: domains2, ..Default::default() };
         let request = Request::builder().header("host", "domain2.com").body(()).unwrap();
         assert_eq!(select_virtual_host(&request, &[vh1.clone(), vh2.clone(), vh3.clone()]), None);
+    }
+
+    #[test]
+    fn propagated_request_id_exposes_only_authoritative_propagating_ids() {
+        let propagated = HeaderValue::from_static("propagated-id");
+        let ctx = TransactionContext {
+            request_id: Some(RequestId::Propagate(propagated.clone())),
+            ..TransactionContext::default()
+        };
+        assert_eq!(ctx.propagated_request_id(), Some(&propagated));
+
+        let ctx = TransactionContext {
+            request_id: Some(RequestId::Internal(HeaderValue::from_static("internal-id"))),
+            ..TransactionContext::default()
+        };
+        assert!(ctx.propagated_request_id().is_none());
     }
 }

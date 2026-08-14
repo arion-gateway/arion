@@ -70,10 +70,6 @@ impl Transcoder for RestTranscoder {
         let mut builder =
             http::Request::builder().method(&self.method).uri(uri).header(http::header::USER_AGENT, user_agent);
 
-        if let Some(host) = http_headers.get(http::header::HOST).and_then(|h| h.to_str().ok()) {
-            builder = builder.header(http::header::HOST, host);
-        }
-
         // Build the body based on body template or empty body
         let body = if self.has_body_template {
             let rendered = self.render_template(BODY_TEMPLATE_NAME, arguments)?;

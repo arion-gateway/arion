@@ -3,6 +3,7 @@ syntax = "proto3";
 package orion.extensions.filters.http.mcp.mcp_gateway.v3;
 
 import "envoy/config/core/v3/base.proto";
+import "envoy/config/route/v3/route_components.proto";
 import "google/protobuf/duration.proto";
 import "validate/validate.proto";
 
@@ -10,17 +11,19 @@ import "validate/validate.proto";
 // Configuraton for McpGateway
 // [#extension: envoy.filters.network.mcp_gateway]
 message McpGateway {
-    optional string cluster_header = 1;
-    ServerInfo server_info = 2 [(validate.rules).message = {required: true}];
-    repeated Tool tools = 3;
-    SemanticSearch semantic_search_tool = 4;
+    ServerInfo server_info = 1 [(validate.rules).message = {required: true}];
+    repeated Tool tools = 2;
+    SemanticSearch semantic_search_tool = 3;
     // Optional xDS Tool Discovery Service. When set, Tool and DynamicMcpServer
-    // resources streamed on the associated config_name augment the statically
-    // configured tools/dynamic servers above.
-    TdsSpecifier tds = 5;
+    // resource updates matching this configuration will be subscribed/consumed over xDS.
+    TdsSpecifier tds = 4;
     // Upstream MCP servers whose tools are discovered at runtime by calling
     // tools/list on the upstream and materialised into this filter's registry.
-    repeated DynamicMcpServer dynamic_mcp_servers = 6;
+    repeated DynamicMcpServer dynamic_mcp_servers = 5;
+    // Request timeout applied for upstream requests (when not set explicitly). Defaults to 15s.
+    google.protobuf.Duration upstream_timeout = 6 [(validate.rules).duration = {gt {}}];
+    // Maximum REST response body or serialized MCP tool result. Defaults to 1 MiB.
+    optional uint64 max_upstream_response_bytes = 7 [(validate.rules).uint64 = {gt: 0}];
 }
 
 // Server info
@@ -52,6 +55,15 @@ message RestBackend {
   repeated QueryParam query_params = 3;
   string cluster = 4 [(validate.rules).string = {min_bytes: 1}];
   envoy.config.core.v3.DataSource body_template = 5;
+  HttpUpstreamPolicy upstream_policy = 6;
+}
+
+message HttpUpstreamPolicy {
+  // Sets the HTTP Host/:authority when routing upstream (required for ORIGINAL_DST clusters).
+  optional string authority = 1 [(validate.rules).string = {min_bytes: 1}];
+  // Overrides the gateway-wide timeout when making upstream request.
+  google.protobuf.Duration timeout = 2 [(validate.rules).duration = {gt {}}];
+  envoy.config.route.v3.RetryPolicy retry_policy = 3;
 }
 
 message QueryParam {
@@ -70,10 +82,6 @@ message McpServerBackend {
   }
   TransportUpstream transport = 1;
   string url = 2 [(validate.rules).string = {min_bytes: 1}];
-  // Fields 3 (cache_duration) and 4 (dynamic_backend) were removed: dynamic
-  // tool discovery now lives on DynamicMcpServer.
-  reserved 3, 4;
-  reserved "cache_duration", "dynamic_backend";
 }
 
 // Source of dynamically discovered tools. The gateway calls tools/list on the
@@ -161,7 +169,6 @@ message RemoteEmbeddings {
     google.protobuf.Duration timeout = 4;
     // Vector dimension produced by the model. Must be greater than zero.
     uint32 dimensions = 5 [(validate.rules).uint32 = {gt: 0}];
-    reserved 6;
 }
 
 message SimilarityConfig {

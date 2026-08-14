@@ -102,8 +102,6 @@ pub mod streamable_http {
     #[derive(Debug)]
     pub enum Event<'a, T: Serialize = ()> {
         Message(&'a T),
-        #[allow(unused)]
-        Priming,
     }
 
     impl<T: Serialize> Event<'_, T> {
@@ -119,23 +117,41 @@ pub mod streamable_http {
             // Create an adapter that implements std::io::Write
             let mut writer = buf.writer();
 
-            match self {
-                Event::Message(value) => {
-                    // 1. Write the SSE header using the io::Write trait
-                    write!(writer, "event: message\nid: {prefix:x}_{count}\ndata: ")?;
+            let Event::Message(value) = self;
 
-                    // 2. Serialize JSON directly into the writer
-                    serde_json::to_writer(&mut writer, value).map_err(std::io::Error::other)?;
+            // 1. Write the SSE header using the io::Write trait
+            write!(writer, "event: message\nid: {prefix:x}_{count}\ndata: ")?;
 
-                    // 3. Append the closing newlines
-                    writer.write_all(b"\n\n")?;
-                },
-                Event::Priming => {
-                    write!(writer, "event: message\nid: {prefix:x}_{count}\ndata:\n\n")?;
-                },
-            }
+            // 2. Serialize JSON directly into the writer
+            serde_json::to_writer(&mut writer, value).map_err(std::io::Error::other)?;
+
+            // 3. Append the closing newlines
+            writer.write_all(b"\n\n")?;
 
             Ok(())
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use serde::Serialize;
+
+        #[derive(Serialize)]
+        struct TestMessage<'a> {
+            value: &'a str,
+        }
+
+        #[test]
+        fn message_event_writes_an_sse_frame() {
+            let message = TestMessage { value: "hello" };
+            let mut buf = BytesMut::new();
+
+            Event::Message(&message).write_to(&mut buf).unwrap();
+
+            let encoded = std::str::from_utf8(&buf).unwrap();
+            assert!(encoded.starts_with("event: message\nid: "));
+            assert!(encoded.ends_with("\ndata: {\"value\":\"hello\"}\n\n"));
         }
     }
 }
