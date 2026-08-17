@@ -59,7 +59,7 @@ fn optional_long(key: &'static str, value: Option<u64>) -> Result<Option<(String
 }
 
 fn jwt_claims_to_restricted_expr(claims: &JwtClaims) -> Result<RestrictedExpression, Error> {
-    let mut fields = Vec::with_capacity(7 + claims.extra.len());
+    let mut fields : SmallVec<[_;16]> = SmallVec::with_capacity(7 + claims.extra.len());
 
     if let Some(sub) = &claims.sub {
         fields.push(("sub".to_owned(), RestrictedExpression::new_string(sub.to_string())));
