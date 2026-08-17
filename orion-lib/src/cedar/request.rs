@@ -232,7 +232,7 @@ mod tests {
             permit(principal == User::"svc-frontend", action == Action::"GET", resource);
             permit(principal == User::"svc-admin",    action,                  resource);
         "#;
-        let store = PolicyStore::new(POLICY, SCHEMA, "").unwrap();
+        let store = PolicyStore::new(POLICY, SCHEMA, "", false).unwrap();
         let claims = JwtClaims {
             sub: Some(SmolStr::from("svc-frontend")),
             iss: Some(SmolStr::from("test-issuer")),
@@ -273,7 +273,7 @@ mod tests {
 
     #[test]
     fn jwt_context_permits_matching_sub() {
-        let store = PolicyStore::new(JWT_POLICY, JWT_SCHEMA, "").unwrap();
+        let store = PolicyStore::new(JWT_POLICY, JWT_SCHEMA, "", false).unwrap();
         let claims = jwt_claims(Some("svc-alice"));
         let response = store
             .authorize(AuthzRequest {
@@ -288,7 +288,7 @@ mod tests {
 
     #[test]
     fn jwt_context_denies_wrong_sub() {
-        let store = PolicyStore::new(JWT_POLICY, JWT_SCHEMA, "").unwrap();
+        let store = PolicyStore::new(JWT_POLICY, JWT_SCHEMA, "", false).unwrap();
         let claims = jwt_claims(Some("svc-bob"));
         let response = store
             .authorize(AuthzRequest {
@@ -321,7 +321,7 @@ mod tests {
 
     #[test]
     fn http_context_permits_matching_route() {
-        let store = PolicyStore::new(HTTP_POLICY, HTTP_SCHEMA, "").unwrap();
+        let store = PolicyStore::new(HTTP_POLICY, HTTP_SCHEMA, "", false).unwrap();
         let response = store
             .authorize(AuthzRequest {
                 principal: entity_uid("User", "alice").unwrap(),
@@ -335,7 +335,7 @@ mod tests {
 
     #[test]
     fn http_context_denies_wrong_method() {
-        let store = PolicyStore::new(HTTP_POLICY, HTTP_SCHEMA, "").unwrap();
+        let store = PolicyStore::new(HTTP_POLICY, HTTP_SCHEMA, "", false).unwrap();
         let response = store
             .authorize(AuthzRequest {
                 principal: entity_uid("User", "alice").unwrap(),

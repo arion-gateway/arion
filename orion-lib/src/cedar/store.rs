@@ -13,6 +13,7 @@ pub struct PolicyStore {
     schema: Schema,
     entities: Entities,
     authorizer: Authorizer,
+    validate_schema_per_request: bool,
 }
 
 pub struct AuthzResponse {
@@ -28,7 +29,12 @@ pub struct AuthzRequest {
 }
 
 impl PolicyStore {
-    pub fn new(policy_src: &str, schema_src: &str, entities_json: &str) -> Result<Self, Error> {
+    pub fn new(
+        policy_src: &str,
+        schema_src: &str,
+        entities_json: &str,
+        validate_schema_per_request: bool,
+    ) -> Result<Self, Error> {
         let schema: Schema = schema_src.parse()?;
         let policy_set: PolicySet = policy_src.parse()?;
 
@@ -55,14 +61,15 @@ impl PolicyStore {
             "Cedar policy store initialized"
         );
 
-        Ok(Self { policy_set, schema, entities, authorizer: Authorizer::new() })
+        Ok(Self { policy_set, schema, entities, authorizer: Authorizer::new(), validate_schema_per_request })
     }
 
     pub fn authorize(&self, authz_req: AuthzRequest) -> Result<AuthzResponse, Error> {
         let AuthzRequest { principal, action, resource, context } = authz_req;
 
-        let request = Request::new(principal, action, resource, context, Some(&self.schema))
-            .map_err(|e| Error::Context(e.to_string()))?;
+        let request =
+            Request::new(principal, action, resource, context, self.validate_schema_per_request.then(|| &self.schema))
+                .map_err(|e| Error::Context(e.to_string()))?;
 
         let response = self.authorizer.is_authorized(&request, &self.policy_set, &self.entities);
         let decision = response.decision();
@@ -125,13 +132,13 @@ mod tests {
 
     #[test]
     fn store_loads_valid_policy() {
-        let store = PolicyStore::new(TEST_POLICY, TEST_SCHEMA, "");
+        let store = PolicyStore::new(TEST_POLICY, TEST_SCHEMA, "", false);
         store.unwrap();
     }
 
     #[test]
     fn store_rejects_invalid_policy_syntax() {
-        let result = PolicyStore::new("not a policy", TEST_SCHEMA, "");
+        let result = PolicyStore::new("not a policy", TEST_SCHEMA, "", false);
         result.unwrap_err();
     }
 
@@ -144,7 +151,7 @@ mod tests {
                 resource == Document::"doc-1"
             ) when { principal.nonexistent_attr == "x" };
         "#;
-        let result = PolicyStore::new(bad_policy, TEST_SCHEMA, "");
+        let result = PolicyStore::new(bad_policy, TEST_SCHEMA, "", false);
         result.unwrap_err();
     }
 
@@ -159,21 +166,21 @@ mod tests {
 
     #[test]
     fn authorize_permits_matching_request() {
-        let store = PolicyStore::new(TEST_POLICY, TEST_SCHEMA, "").unwrap();
+        let store = PolicyStore::new(TEST_POLICY, TEST_SCHEMA, "", false).unwrap();
         let response = store.authorize(make_request("alice", "read", "doc-1")).unwrap();
         assert!(response.is_allowed());
     }
 
     #[test]
     fn authorize_denies_wrong_principal() {
-        let store = PolicyStore::new(TEST_POLICY, TEST_SCHEMA, "").unwrap();
+        let store = PolicyStore::new(TEST_POLICY, TEST_SCHEMA, "", false).unwrap();
         let response = store.authorize(make_request("bob", "read", "doc-1")).unwrap();
         assert!(!response.is_allowed());
     }
 
     #[test]
     fn authorize_denies_wrong_action() {
-        let store = PolicyStore::new(TEST_POLICY, TEST_SCHEMA, "").unwrap();
+        let store = PolicyStore::new(TEST_POLICY, TEST_SCHEMA, "", false).unwrap();
         let response = store.authorize(make_request("alice", "write", "doc-1")).unwrap();
         assert!(!response.is_allowed());
     }
@@ -187,20 +194,20 @@ mod tests {
                 "parents": []
             }
         ]"#;
-        let store = PolicyStore::new(TEST_POLICY, TEST_SCHEMA, entities_json).unwrap();
+        let store = PolicyStore::new(TEST_POLICY, TEST_SCHEMA, entities_json, false).unwrap();
         let user_uid = entity_uid("User", "alice").unwrap();
         assert!(store.entities().get(&user_uid).is_some());
     }
 
     #[test]
     fn store_loads_empty_entities() {
-        let store = PolicyStore::new(TEST_POLICY, TEST_SCHEMA, "").unwrap();
+        let store = PolicyStore::new(TEST_POLICY, TEST_SCHEMA, "", false).unwrap();
         assert!(store.entities().iter().next().is_none());
     }
 
     #[test]
     fn store_rejects_invalid_entities_json() {
-        let result = PolicyStore::new(TEST_POLICY, TEST_SCHEMA, "not valid json");
+        let result = PolicyStore::new(TEST_POLICY, TEST_SCHEMA, "not valid json", false);
         result.unwrap_err();
     }
 }

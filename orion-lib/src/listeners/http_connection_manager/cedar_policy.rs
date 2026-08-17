@@ -40,7 +40,12 @@ pub(crate) struct CedarHttpFilter {
 
 impl CedarHttpFilterInner {
     pub(crate) fn try_from_config(conf: CedarPolicyConfig) -> crate::Result<Self> {
-        let store = crate::cedar::store::PolicyStore::new(&conf.policies, &conf.schema, &conf.entities)?;
+        let store = crate::cedar::store::PolicyStore::new(
+            &conf.policies,
+            &conf.schema,
+            &conf.entities,
+            conf.validate_schema_per_request,
+        )?;
         let principal_type = parse_entity_type(&conf.principal_entity_type)?;
         let resource_type = parse_entity_type(&conf.resource_entity_type)?;
         let action_type = parse_entity_type("Action")?;
@@ -163,6 +168,7 @@ mod tests {
             failure_mode: FailureMode::FailOpen,
             principal_entity_type: "User".into(),
             resource_entity_type: "HttpPath".into(),
+            validate_schema_per_request: false,
         })
         .unwrap()
     }
