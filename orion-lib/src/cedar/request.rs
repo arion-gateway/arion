@@ -1,5 +1,6 @@
 use cedar_policy::{Context, EntityId, EntityTypeName, EntityUid, RestrictedExpression};
 use serde_json::Value;
+use smallvec::SmallVec;
 use std::str::FromStr;
 
 use super::error::Error;
@@ -99,35 +100,22 @@ pub fn build_authz_context(
 ) -> Result<Context, Error> {
     let expr_err = |e: &dyn std::fmt::Display| Error::Context(e.to_string());
 
-    let http = if http_method.is_some() || http_path.is_some() || http_query.is_some() {
-        let record = match (http_method, http_path, http_query) {
-            (Some(m), Some(p), Some(q)) => RestrictedExpression::new_record([
-                ("method".to_owned(), RestrictedExpression::new_string(m.to_owned())),
-                ("path".to_owned(), RestrictedExpression::new_string(p.to_owned())),
-                ("query".to_owned(), RestrictedExpression::new_string(q.to_owned())),
-            ]),
-            (Some(m), Some(p), None) => RestrictedExpression::new_record([
-                ("method".to_owned(), RestrictedExpression::new_string(m.to_owned())),
-                ("path".to_owned(), RestrictedExpression::new_string(p.to_owned())),
-            ]),
-            _ => {
-                let mut fields = Vec::with_capacity(3);
-                if let Some(m) = http_method {
-                    fields.push(("method".to_owned(), RestrictedExpression::new_string(m.to_owned())));
-                }
-                if let Some(p) = http_path {
-                    fields.push(("path".to_owned(), RestrictedExpression::new_string(p.to_owned())));
-                }
-                if let Some(q) = http_query {
-                    fields.push(("query".to_owned(), RestrictedExpression::new_string(q.to_owned())));
-                }
-                RestrictedExpression::new_record(fields)
-            },
+    let http = {
+        let mut fields: SmallVec<[(String, RestrictedExpression); 3]> = smallvec::smallvec![];
+        if let Some(m) = http_method {
+            fields.push(("method".to_owned(), RestrictedExpression::new_string(m.to_owned())));
         }
-        .map_err(|e| expr_err(&e))?;
-        Some(record)
-    } else {
-        None
+        if let Some(p) = http_path {
+            fields.push(("path".to_owned(), RestrictedExpression::new_string(p.to_owned())));
+        }
+        if let Some(q) = http_query {
+            fields.push(("query".to_owned(), RestrictedExpression::new_string(q.to_owned())));
+        }
+        if fields.is_empty() {
+            None
+        } else {
+            Some(RestrictedExpression::new_record(fields).map_err(|e| expr_err(&e))?)
+        }
     };
 
     match (jwt_claims, http) {
