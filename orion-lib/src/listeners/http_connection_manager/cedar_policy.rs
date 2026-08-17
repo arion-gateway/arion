@@ -23,7 +23,7 @@ use crate::{
 };
 
 #[derive(Debug, Clone)]
-pub(crate) struct CedarHttpFilter {
+pub(crate) struct CedarHttpFilterInner {
     store: SharedPolicyStore,
     enforcement_mode: EnforcementMode,
     failure_mode: FailureMode,
@@ -33,7 +33,12 @@ pub(crate) struct CedarHttpFilter {
     anonymous_principal: EntityUid,
 }
 
-impl CedarHttpFilter {
+#[derive(Debug, Clone)]
+pub(crate) struct CedarHttpFilter {
+    inner: Arc<CedarHttpFilterInner>,
+}
+
+impl CedarHttpFilterInner {
     pub(crate) fn try_from_config(conf: CedarPolicyConfig) -> crate::Result<Self> {
         let store = crate::cedar::store::PolicyStore::new(&conf.policies, &conf.schema, &conf.entities)?;
         let principal_type = parse_entity_type(&conf.principal_entity_type)?;
@@ -64,19 +69,26 @@ impl CedarHttpFilter {
             build_authz_context(claims, Some(req.method().as_str()), Some(req.uri().path()), req.uri().query())?;
         self.store.authorize(AuthzRequest { principal, action, resource, context })
     }
+}
+
+impl CedarHttpFilter {
+    pub(crate) fn try_from_config(conf: CedarPolicyConfig) -> crate::Result<Self> {
+        let inner = Arc::new(CedarHttpFilterInner::try_from_config(conf)?);
+        Ok(Self { inner })
+    }
 
     pub(crate) fn apply_request<B>(&self, req: &Request<B>) -> FilterDecision {
-        match self.evaluate_policy(req) {
+        match self.inner.evaluate_policy(req) {
             Ok(response) => {
                 debug!(
                     target: "cedar_policy",
                     decision = ?response.decision,
                     policy_id = ?response.reason.as_ref().and_then(|r| r.first()),
-                    enforcement = ?self.enforcement_mode,
+                    enforcement = ?self.inner.enforcement_mode,
                     "Cedar authorization decision"
                 );
 
-                match self.enforcement_mode {
+                match self.inner.enforcement_mode {
                     EnforcementMode::Enforce => {
                         if response.is_allowed() {
                             FilterDecision::Continue
@@ -102,7 +114,7 @@ impl CedarHttpFilter {
             Err(err) => {
                 debug!(target: "cedar_policy", %err, "Cedar policy evaluation error");
 
-                match self.failure_mode {
+                match self.inner.failure_mode {
                     FailureMode::FailClosed => FilterDecision::DirectResponse(Box::new(
                         SyntheticHttpResponse::forbidden(EventKind::Failure(EventFailure::CedarAccessDenied(
                             SmolStr::new_static("error"),

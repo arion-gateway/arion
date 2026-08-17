@@ -650,8 +650,12 @@ async fn test_cedar_anon_deny_concurrent_single_shot_connections() {
 
     let results: Vec<_> = join_all(handles).await.into_iter().map(|r| r.unwrap().unwrap()).collect();
 
-    let wrongly_allowed: Vec<_> =
-        results.iter().enumerate().filter(|(_, r)| r.status != StatusCode::FORBIDDEN).map(|(i, r)| (i, r.status)).collect();
+    let wrongly_allowed: Vec<_> = results
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.status != StatusCode::FORBIDDEN)
+        .map(|(i, r)| (i, r.status))
+        .collect();
 
     assert!(
         wrongly_allowed.is_empty(),
@@ -727,7 +731,8 @@ async fn test_cedar_anon_deny_true_http_pipelining() {
     println!("{:?}", String::from_utf8_lossy(&response));
 
     assert_eq!(
-        total_status_lines, REQUESTS,
+        total_status_lines,
+        REQUESTS,
         "expected {REQUESTS} pipelined responses, got {total_status_lines}. Raw response:\n{}",
         String::from_utf8_lossy(&response)
     );
