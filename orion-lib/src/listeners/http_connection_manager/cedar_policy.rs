@@ -62,7 +62,7 @@ impl CedarHttpFilter {
         let resource = entity_uid_from_type(&self.resource_type, req.uri().path());
         let context =
             build_authz_context(claims, Some(req.method().as_str()), Some(req.uri().path()), req.uri().query())?;
-        self.store.is_authorized(AuthzRequest { principal, action, resource, context })
+        self.store.authorize(AuthzRequest { principal, action, resource, context })
     }
 
     pub(crate) fn apply_request<B>(&self, req: &Request<B>) -> FilterDecision {

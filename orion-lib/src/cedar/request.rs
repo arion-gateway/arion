@@ -7,8 +7,7 @@ use crate::listeners::http_connection_manager::jwt_authn::claims::JwtClaims;
 
 #[inline]
 pub(crate) fn parse_entity_type(type_name: &str) -> Result<EntityTypeName, Error> {
-    EntityTypeName::from_str(type_name)
-        .map_err(|e| Error::Entity(format!("invalid entity type '{type_name}': {e}")))
+    EntityTypeName::from_str(type_name).map_err(|e| Error::Entity(format!("invalid entity type '{type_name}': {e}")))
 }
 
 pub(crate) fn entity_uid_from_type(entity_type: &EntityTypeName, id: &str) -> EntityUid {
@@ -256,7 +255,7 @@ mod tests {
             jti: None,
             extra: HashMap::default(),
         };
-        let result = store.is_authorized(AuthzRequest {
+        let result = store.authorize(AuthzRequest {
             principal: entity_uid("User", "svc-frontend").unwrap(),
             action: entity_uid("Action", "POST").unwrap(),
             resource: entity_uid("HttpPath", "/api").unwrap(),
@@ -289,7 +288,7 @@ mod tests {
         let store = PolicyStore::new(JWT_POLICY, JWT_SCHEMA, "").unwrap();
         let claims = jwt_claims(Some("svc-alice"));
         let response = store
-            .is_authorized(AuthzRequest {
+            .authorize(AuthzRequest {
                 principal: principal_from_jwt(&claims, &parse_entity_type("User").unwrap()).unwrap(),
                 action: entity_uid("Action", "read").unwrap(),
                 resource: entity_uid("Document", "doc-1").unwrap(),
@@ -304,7 +303,7 @@ mod tests {
         let store = PolicyStore::new(JWT_POLICY, JWT_SCHEMA, "").unwrap();
         let claims = jwt_claims(Some("svc-bob"));
         let response = store
-            .is_authorized(AuthzRequest {
+            .authorize(AuthzRequest {
                 principal: principal_from_jwt(&claims, &parse_entity_type("User").unwrap()).unwrap(),
                 action: entity_uid("Action", "read").unwrap(),
                 resource: entity_uid("Document", "doc-1").unwrap(),
@@ -336,7 +335,7 @@ mod tests {
     fn http_context_permits_matching_route() {
         let store = PolicyStore::new(HTTP_POLICY, HTTP_SCHEMA, "").unwrap();
         let response = store
-            .is_authorized(AuthzRequest {
+            .authorize(AuthzRequest {
                 principal: entity_uid("User", "alice").unwrap(),
                 action: entity_uid("Action", "call").unwrap(),
                 resource: entity_uid("Api", "gateway").unwrap(),
@@ -350,7 +349,7 @@ mod tests {
     fn http_context_denies_wrong_method() {
         let store = PolicyStore::new(HTTP_POLICY, HTTP_SCHEMA, "").unwrap();
         let response = store
-            .is_authorized(AuthzRequest {
+            .authorize(AuthzRequest {
                 principal: entity_uid("User", "alice").unwrap(),
                 action: entity_uid("Action", "call").unwrap(),
                 resource: entity_uid("Api", "gateway").unwrap(),

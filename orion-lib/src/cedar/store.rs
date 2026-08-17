@@ -58,7 +58,7 @@ impl PolicyStore {
         Ok(Self { policy_set, schema, entities, authorizer: Authorizer::new() })
     }
 
-    pub fn is_authorized(&self, authz_req: AuthzRequest) -> Result<AuthzResponse, Error> {
+    pub fn authorize(&self, authz_req: AuthzRequest) -> Result<AuthzResponse, Error> {
         let AuthzRequest { principal, action, resource, context } = authz_req;
 
         let request = Request::new(principal, action, resource, context, Some(&self.schema))
@@ -160,21 +160,21 @@ mod tests {
     #[test]
     fn authorize_permits_matching_request() {
         let store = PolicyStore::new(TEST_POLICY, TEST_SCHEMA, "").unwrap();
-        let response = store.is_authorized(make_request("alice", "read", "doc-1")).unwrap();
+        let response = store.authorize(make_request("alice", "read", "doc-1")).unwrap();
         assert!(response.is_allowed());
     }
 
     #[test]
     fn authorize_denies_wrong_principal() {
         let store = PolicyStore::new(TEST_POLICY, TEST_SCHEMA, "").unwrap();
-        let response = store.is_authorized(make_request("bob", "read", "doc-1")).unwrap();
+        let response = store.authorize(make_request("bob", "read", "doc-1")).unwrap();
         assert!(!response.is_allowed());
     }
 
     #[test]
     fn authorize_denies_wrong_action() {
         let store = PolicyStore::new(TEST_POLICY, TEST_SCHEMA, "").unwrap();
-        let response = store.is_authorized(make_request("alice", "write", "doc-1")).unwrap();
+        let response = store.authorize(make_request("alice", "write", "doc-1")).unwrap();
         assert!(!response.is_allowed());
     }
 
