@@ -4,7 +4,7 @@ use orion_configuration::config::network_filters::http_connection_manager::http_
 };
 use smol_str::SmolStr;
 use std::sync::Arc;
-use tracing::debug;
+use tracing::{debug, info};
 
 use cedar_policy::{EntityTypeName, EntityUid};
 
@@ -92,7 +92,11 @@ impl CedarHttpFilter {
                             ))
                         }
                     },
-                    EnforcementMode::LogOnly => FilterDecision::Continue,
+                    EnforcementMode::LogOnly => {
+                        info!(target: "cedar_policy", "Request is denied by Cedar policy");
+                        debug!(target: "cedar_policy", "Denied request: {:?}", req.uri());
+                        FilterDecision::Continue
+                    },
                 }
             },
             Err(err) => {
