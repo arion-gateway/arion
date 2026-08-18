@@ -102,6 +102,7 @@ bitflags! {
 }
 
 /// Per-instance resolved callback handles. Looked up once at instantiate time.
+#[allow(clippy::struct_field_names)]
 struct InstanceHooks {
     on_plugin_start: Option<TypedFunc<(), ()>>,
     on_plugin_destroy: Option<TypedFunc<(), ()>>,

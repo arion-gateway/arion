@@ -39,7 +39,7 @@ pub(crate) struct CedarHttpFilter {
 }
 
 impl CedarHttpFilterInner {
-    pub(crate) fn try_from_config(conf: CedarPolicyConfig) -> crate::Result<Self> {
+    pub(crate) fn try_from_config(conf: &CedarPolicyConfig) -> crate::Result<Self> {
         let store = crate::cedar::store::PolicyStore::new(
             &conf.policies,
             &conf.schema,
@@ -77,7 +77,7 @@ impl CedarHttpFilterInner {
 }
 
 impl CedarHttpFilter {
-    pub(crate) fn try_from_config(conf: CedarPolicyConfig) -> crate::Result<Self> {
+    pub(crate) fn try_from_config(conf: &CedarPolicyConfig) -> crate::Result<Self> {
         let inner = Arc::new(CedarHttpFilterInner::try_from_config(conf)?);
         Ok(Self { inner })
     }
@@ -160,7 +160,7 @@ mod tests {
     "#;
 
     fn make_cedar_filter() -> CedarHttpFilter {
-        CedarHttpFilter::try_from_config(CedarPolicyConfig {
+        CedarHttpFilter::try_from_config(&CedarPolicyConfig {
             schema: JWT_SCHEMA.into(),
             policies: JWT_POLICIES.into(),
             entities: SmolStr::default(),

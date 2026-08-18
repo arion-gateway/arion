@@ -481,6 +481,8 @@ async fn test_cedar_fail_closed_on_bad_schema() {
 #[tokio::test]
 #[ignore]
 async fn test_cedar_anon_deny_repeated_requests_same_connection() {
+    const REQUESTS: usize = 10000;
+
     let backend = TestBackend::start().await.unwrap();
     backend.set_default_response(PreConfiguredResponse::with_body("OK")).await;
 
@@ -507,7 +509,6 @@ async fn test_cedar_anon_deny_repeated_requests_same_connection() {
 
     let client = TestClient::new(orion.listener_addr().unwrap());
 
-    const REQUESTS: usize = 10000;
     let mut wrongly_allowed = Vec::new();
     for i in 0..REQUESTS {
         let response = client.get("/other").await.unwrap();
@@ -535,6 +536,8 @@ async fn test_cedar_anon_deny_repeated_requests_same_connection() {
 #[ignore]
 async fn test_cedar_anon_deny_sustained_load_many_persistent_connections() {
     use std::time::{Duration, Instant};
+    const CONNECTIONS: usize = 128;
+    const TEST_DURATION: Duration = Duration::from_secs(2);
 
     let backend = TestBackend::start().await.unwrap();
     backend.set_default_response(PreConfiguredResponse::with_body("OK")).await;
@@ -561,9 +564,6 @@ async fn test_cedar_anon_deny_sustained_load_many_persistent_connections() {
     let orion =
         OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default().with_num_cpus(8)).await.unwrap();
     let addr = orion.listener_addr().unwrap();
-
-    const CONNECTIONS: usize = 128;
-    const TEST_DURATION: Duration = Duration::from_secs(2);
 
     let handles: Vec<_> = (0..CONNECTIONS)
         .map(|conn_idx| {
@@ -610,6 +610,8 @@ async fn test_cedar_anon_deny_sustained_load_many_persistent_connections() {
 #[tokio::test]
 #[ignore]
 async fn test_cedar_anon_deny_concurrent_single_shot_connections() {
+    const REQUESTS: usize = 256;
+
     let backend = TestBackend::start().await.unwrap();
     backend.set_default_response(PreConfiguredResponse::with_body("OK")).await;
 
@@ -636,7 +638,6 @@ async fn test_cedar_anon_deny_concurrent_single_shot_connections() {
         OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default().with_num_cpus(8)).await.unwrap();
     let addr = orion.listener_addr().unwrap();
 
-    const REQUESTS: usize = 256;
     let handles: Vec<_> = (0..REQUESTS)
         .map(|_| {
             tokio::spawn(async move {

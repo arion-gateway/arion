@@ -297,12 +297,12 @@ impl HttpChannelBuilder {
 impl<'a> RequestHandler<Request<OrionRequestBody>, UpstreamCallOpts<'a>> for &HttpChannels {
     async fn to_response(
         self,
-        req_ctx: &RequestCtx,
+        ctx: &RequestCtx,
         request: Request<OrionRequestBody>,
         arg: UpstreamCallOpts<'a>,
     ) -> Result<Response<OrionResponseBody>> {
         match self {
-            HttpChannels::Single(channel) => channel.to_response(req_ctx, request, arg).await,
+            HttpChannels::Single(channel) => channel.to_response(ctx, request, arg).await,
             HttpChannels::MultiWithFailover { channel, failover_channels } => {
                 let UpstreamCallOpts { route_timeout, priority, .. } = arg;
                 let (parts, body) = request.into_parts();
@@ -328,7 +328,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, UpstreamCallOpts<'a>> for &Ht
                     let rebuilt_req = Request::from_parts(parts.clone(), cloned_body);
                     let attempt_ctx = UpstreamCallOpts { route_timeout, retry_policy: None, priority };
 
-                    match channel.to_response(req_ctx, rebuilt_req, attempt_ctx).await {
+                    match channel.to_response(ctx, rebuilt_req, attempt_ctx).await {
                         Ok(response) => {
                             if response.status().is_server_error() && (attempt + 1) < total_attempts {
                                 debug!(
@@ -370,11 +370,11 @@ pub struct Retries {
 impl<'a> RequestHandler<Request<OrionRequestBody>, UpstreamCallOpts<'a>> for &HttpChannel {
     async fn to_response(
         self,
-        req_ctx: &RequestCtx,
+        #[allow(unused_variables)] ctx: &RequestCtx,
         request: Request<OrionRequestBody>,
         arg: UpstreamCallOpts<'a>,
     ) -> Result<Response<OrionResponseBody>> {
-        instrument_function!(req_ctx.tx.clock, |nanos| {
+        instrument_function!(ctx.tx.clock, |nanos| {
             #[allow(clippy::cast_possible_truncation)]
             crate::instrumentation::metrics::REQUEST_TO_RESPONSE_TIME.observe(nanos as usize)
         });
@@ -409,7 +409,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, UpstreamCallOpts<'a>> for &Ht
         }
 
         #[cfg(feature = "access-log")]
-        req_ctx.tx.with_loggers(|loggers| {
+        ctx.tx.with_loggers(|loggers| {
             if let Err(err) = crate::access_log::evaluate_base64_access_log_hook(
                 crate::access_log::AccessLogHook::UpstreamRequest,
                 request.headers(),
@@ -424,7 +424,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, UpstreamCallOpts<'a>> for &Ht
         let mut retries = Retries::default();
         let start_time = std::time::Instant::now();
         let result = instrument_block!(
-            req_ctx.tx.clock,
+            ctx.tx.clock,
             |nanos| {
                 #[allow(clippy::cast_possible_truncation)]
                 crate::instrumentation::metrics::SEND_REQUEST_WAIT_RESPONSE.observe(nanos as usize);
@@ -437,7 +437,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, UpstreamCallOpts<'a>> for &Ht
                     priority,
                     Some(&mut retries),
                     #[cfg(feature = "instrumentation")]
-                    &req_ctx.tx.clock,
+                    &ctx.tx.clock,
                 )
                 .await
             }

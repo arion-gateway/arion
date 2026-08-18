@@ -439,24 +439,23 @@ impl OrionInstance {
         })
     }
 
-    /// Polls Orion's admin /ready endpoint until it returns 200 (ProxyState::Live is set).
+    /// Polls Orion's admin /ready endpoint until it returns 200 (`ProxyState::Live` is set).
     ///
-    /// spawn_auto_port returns as soon as the downstream listener port is bound, but
-    /// ProxyState::Live is set slightly later once all proxy runtimes are fully started.
-    /// Calling this after spawn_auto_port closes that gap. Backends are always started
+    /// `spawn_auto_port` returns as soon as the downstream listener port is bound, but
+    /// `ProxyState::Live` is set slightly later once all proxy runtimes are fully started.
+    /// Calling this after `spawn_auto_port` closes that gap. Backends are always started
     /// before Orion in tests, so by the time this returns, the upstream is also ready.
     ///
-    /// Requires the bootstrap config to include an admin section and SpawnOptions to be
-    /// built with with_test_admin(). Returns immediately if no admin_addr is configured.
+    /// Requires the bootstrap config to include an admin section and `SpawnOptions` to be
+    /// built with `with_test_admin()`. Returns immediately if no `admin_addr` is configured.
     pub async fn wait_for_upstream_ready(&self, timeout: Duration) -> Result<()> {
+        const READY_REQ: &[u8] = b"GET /ready HTTP/1.0\r\nHost: localhost\r\n\r\n";
+        const RETRY_INTERVAL: Duration = Duration::from_millis(50);
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         let Some(admin_addr) = self.admin_addr else {
             return Ok(());
         };
-
-        const READY_REQ: &[u8] = b"GET /ready HTTP/1.0\r\nHost: localhost\r\n\r\n";
-        const RETRY_INTERVAL: Duration = Duration::from_millis(50);
 
         let deadline = Instant::now() + timeout;
 
@@ -672,7 +671,7 @@ impl SpawnOptions {
         self
     }
 
-    /// Configures the admin address to TEST_ADMIN_PORT on localhost. The bootstrap config
+    /// Configures the admin address to `TEST_ADMIN_PORT` on localhost. The bootstrap config
     /// must include a matching `.admin("127.0.0.1", TEST_ADMIN_PORT)` call.
     #[must_use]
     pub fn with_test_admin(mut self) -> Self {

@@ -524,7 +524,7 @@ impl McpGateway {
             debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: new session created");
             session_id = Some(new_session.session_id.clone());
             debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: current session: {session_id:?} -> {:?}", new_session);
-            self.current_session = Some(Arc::clone(&new_session));
+            self.current_session = Some(Arc::clone(new_session));
         } else if let Some(session) = session {
             session_id = Some(session.session_id.clone());
             debug!(target: "mcp_gateway", "handle_mcp_post_endpoint: current session: {session_id:?} -> {:?}", session);
@@ -699,7 +699,7 @@ impl McpGateway {
                 ));
                 let body = serde_json::to_string(&err).unwrap_or_default();
                 return Err(FilterDecision::bad_request(&body, req_version));
-            };
+            }
 
             let Ok(init_params): Result<model::InitializeRequestParams, _> =
                 serde_json::from_value(serde_json::Value::Object(rpc.request.params))
@@ -765,7 +765,7 @@ impl McpGateway {
             },
             ListToolsRequestMethod::VALUE => {
                 debug!(target: "mcp_gateway", "handle_rpc_json_request: 'tools/list'");
-                let tools = match self.inner.tools.build_list_tools(req_ext, &session).await {
+                let tools = match self.inner.tools.build_list_tools(req_ext, session).await {
                     Ok(tools) => tools,
                     Err(err) => {
                         debug!(target: "mcp_gateway", "handle_rpc_json_request: 'tools/list' failed: {err:#}");
@@ -788,7 +788,7 @@ impl McpGateway {
                 let msg_result = match self
                     .inner
                     .tools
-                    .call(req_ext, req_headers, &rpc, self.inner.config.cluster_header.as_ref(), &session)
+                    .call(req_ext, req_headers, &rpc, self.inner.config.cluster_header.as_ref(), session)
                     .await
                 {
                     Ok(result) => result,

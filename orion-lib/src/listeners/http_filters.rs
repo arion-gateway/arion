@@ -59,7 +59,7 @@ impl FilterDecision {
     pub fn internal_server_error(msg: &str, ver: http::Version) -> Self {
         FilterDecision::DirectResponse(Box::new(
             SyntheticHttpResponse::internal_server_error(EventFailure::DirectResponse.into(), ResponseFlags::default())
-                .with_body(msg.to_string())
+                .with_body(msg.to_owned())
                 .into_response(ver),
         ))
     }
@@ -68,7 +68,7 @@ impl FilterDecision {
     pub fn bad_request(msg: &str, ver: http::Version) -> Self {
         FilterDecision::DirectResponse(Box::new(
             SyntheticHttpResponse::bad_request(EventFailure::DirectResponse.into())
-                .with_body(msg.to_string())
+                .with_body(msg.to_owned())
                 .into_response(ver),
         ))
     }
@@ -78,7 +78,7 @@ impl FilterDecision {
     pub fn not_found(msg: &str, ver: http::Version) -> Self {
         FilterDecision::DirectResponse(Box::new(
             SyntheticHttpResponse::not_found(EventFailure::DirectResponse.into(), ResponseFlags::default())
-                .with_body(msg.to_string())
+                .with_body(msg.to_owned())
                 .into_response(ver),
         ))
     }
@@ -92,7 +92,7 @@ impl FilterDecision {
                 EventFailure::RouteNotFound.into(),
                 ResponseFlags(FmtResponseFlags::NO_ROUTE_FOUND),
             )
-            .with_body(msg.to_string())
+            .with_body(msg.to_owned())
             .into_response(ver),
         ))
     }
@@ -104,7 +104,7 @@ impl FilterDecision {
                 EventFailure::RouteNotFound.into(),
                 ResponseFlags(FmtResponseFlags::NO_ROUTE_FOUND),
             )
-            .with_body(msg.to_string())
+            .with_body(msg.to_owned())
             .into_response(ver),
         ))
     }
@@ -118,7 +118,7 @@ impl FilterDecision {
                 EventFailure::RateLimited.into(),
                 ResponseFlags(FmtResponseFlags::RATE_LIMITED),
             )
-            .with_body(msg.to_string())
+            .with_body(msg.to_owned())
             .into_response(ver),
         ))
     }
@@ -128,7 +128,7 @@ impl FilterDecision {
     pub fn unauthorized(msg: &str, ver: http::Version) -> Self {
         FilterDecision::DirectResponse(Box::new(
             SyntheticHttpResponse::unauthorized(EventFailure::ExtProcError.into())
-                .with_body(msg.to_string())
+                .with_body(msg.to_owned())
                 .into_response(ver),
         ))
     }
@@ -209,7 +209,7 @@ impl TryFrom<HttpFilterConfig> for HttpFilter {
             HttpFilterType::UserRateLimit(user_rate_limit) => {
                 HttpFilterValue::UserRateLimit(user_rate_limit.try_into()?)
             },
-            HttpFilterType::CedarPolicy(conf) => HttpFilterValue::CedarPolicy(CedarHttpFilter::try_from_config(conf)?),
+            HttpFilterType::CedarPolicy(conf) => HttpFilterValue::CedarPolicy(CedarHttpFilter::try_from_config(&conf)?),
         };
         Ok(Self { name, disabled, filter: Some(filter), filter_config: hcm_config.map(Box::new) })
     }

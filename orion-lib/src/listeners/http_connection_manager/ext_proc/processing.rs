@@ -992,7 +992,7 @@ impl<M: kind::Mode + Default, Msg: kind::MessageKind + OverridableModeSelector> 
                     EventFailure::ExtProcError.into(),
                     ResponseFlags(FmtResponseFlags::NO_FILTER_CONFIG_FOUND),
                 )
-                .with_body(msg.to_string())
+                .with_body(msg.to_owned())
                 .into_response(http_version),
             ))
         }
@@ -1006,7 +1006,7 @@ impl<M: kind::Mode + Default, Msg: kind::MessageKind + OverridableModeSelector> 
                 EventFailure::ExtProcError.into(),
                 ResponseFlags(FmtResponseFlags::UNAUTHORIZED_EXTERNAL_SERVICE),
             )
-            .with_body(msg.to_string())
+            .with_body(msg.to_owned())
             .into_response(http_version),
         ))
     }

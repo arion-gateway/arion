@@ -67,9 +67,14 @@ impl PolicyStore {
     pub fn authorize(&self, authz_req: AuthzRequest) -> Result<AuthzResponse, Error> {
         let AuthzRequest { principal, action, resource, context } = authz_req;
 
-        let request =
-            Request::new(principal, action, resource, context, self.validate_schema_per_request.then(|| &self.schema))
-                .map_err(|e| Error::Context(e.to_string()))?;
+        let request = Request::new(
+            principal,
+            action,
+            resource,
+            context,
+            self.validate_schema_per_request.then_some(&self.schema),
+        )
+        .map_err(|e| Error::Context(e.to_string()))?;
 
         let response = self.authorizer.is_authorized(&request, &self.policy_set, &self.entities);
         let decision = response.decision();

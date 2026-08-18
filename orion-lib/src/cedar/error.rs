@@ -55,8 +55,8 @@ impl From<EntitiesError> for Error {
 
 impl ValidationError {
     pub(crate) fn from_result(result: &ValidationResult) -> Option<Self> {
-        let errors: Vec<String> = result.validation_errors().map(|e| e.to_string()).collect();
-        let warnings: Vec<String> = result.validation_warnings().map(|w| w.to_string()).collect();
+        let errors: Vec<String> = result.validation_errors().map(ToString::to_string).collect();
+        let warnings: Vec<String> = result.validation_warnings().map(ToString::to_string).collect();
 
         if errors.is_empty() {
             None

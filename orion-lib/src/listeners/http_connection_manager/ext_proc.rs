@@ -458,7 +458,7 @@ impl ExternalProcessor {
     pub async fn apply_request(
         &mut self,
         request: &mut Request<OrionRequestBody>,
-        req_ctx: &RequestCtx,
+        #[allow(unused_variables)] req_ctx: &RequestCtx,
     ) -> FilterDecision {
         let processing_data = match self.apply_request_prepare_processing_data(request).await {
             Ok(data) => data,
@@ -522,8 +522,8 @@ impl ExternalProcessor {
                 ) {
                     warn!("Failed to process access log header for ExtProcRequest: {err}");
                 }
-            });
-        }
+            })
+        };
 
         debug!(target: "ext_proc", "apply_request completed: {filter_decision:?}!");
         request.body_mut().inner.inner.prefetch_frames().await;
@@ -699,7 +699,7 @@ impl ExternalProcessor {
     pub async fn apply_response(
         &mut self,
         response: &mut Response<OrionResponseBody>,
-        req_ctx: &RequestCtx,
+        #[allow(unused_variables)] req_ctx: &RequestCtx,
     ) -> FilterDecision {
         let processing_data = match self.apply_response_prepare_processing_data(response).await {
             Ok(data) => data,
@@ -763,8 +763,8 @@ impl ExternalProcessor {
                 ) {
                     warn!("Failed to process access log header for ExtProcResponse: {err}");
                 }
-            });
-        }
+            })
+        };
 
         debug!(target: "ext_proc", "apply_response completed: {filter_decision:?}!");
 

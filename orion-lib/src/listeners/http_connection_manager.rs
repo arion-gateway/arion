@@ -1024,14 +1024,16 @@ fn match_request_route<'a, B>(request: &Request<B>, route_config: &'a RouteConfi
 }
 
 impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for Arc<RouteConfiguration> {
+    #[allow(clippy::too_many_lines)]
     async fn to_response(
         self,
         ctx: &RequestCtx,
         mut request: Request<OrionRequestBody>,
-        connection_manager: Arc<HttpConnectionManager>,
+        arg: Arc<HttpConnectionManager>,
     ) -> Result<Response<OrionResponseBody>> {
         let route_conf = &self;
-        let mut cached_route = match_request_route(&request, &route_conf);
+        let connection_manager = &arg;
+        let mut cached_route = match_request_route(&request, route_conf);
         let mut active_filters: SmallVec<[HttpFilterValue; 4]> = SmallVec::new();
 
         let mut filter_start_idx = 0;
@@ -1085,12 +1087,13 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
 
             if reroute {
                 debug!("rerouting request...");
-                cached_route = match_request_route(&request, &route_conf);
+                cached_route = match_request_route(&request, route_conf);
             } else {
                 break 'filter_loop FilterDecision::Continue;
             }
         };
 
+        #[allow(clippy::single_match_else)]
         let mut response = match cached_route {
             None => SyntheticHttpResponse::not_found(
                 EventFailure::RouteNotFound.into(),
@@ -1102,7 +1105,7 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
                     let mut response = *response;
                     apply_mutations_on_response(
                         &mut response,
-                        &route_conf,
+                        route_conf,
                         &cached_route,
                         route_conf.most_specific_header_mutations_wins,
                         &ctx.conn,
@@ -1121,7 +1124,7 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
                         Action::Route(route) => {
                             apply_mutations_on_request(
                                 &mut request,
-                                &route_conf,
+                                route_conf,
                                 &cached_route,
                                 route_conf.most_specific_header_mutations_wins,
                                 &ctx.conn,
@@ -1140,7 +1143,7 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
                                             remote_address,
                                             websocket_enabled_by_default,
                                         },
-                                        &connection_manager,
+                                        connection_manager,
                                     ),
                                 )
                                 .await
@@ -1179,7 +1182,7 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
 
                     apply_mutations_on_response(
                         &mut response,
-                        &route_conf,
+                        route_conf,
                         &cached_route,
                         route_conf.most_specific_header_mutations_wins,
                         &ctx.conn,
@@ -1256,7 +1259,7 @@ fn apply_mutations_on_response<B>(
 
 // --- Typed request envelope (Service stack) ---
 
-/// Per-request context always present after TransactionLifecycleSvc.
+/// Per-request context always present after `TransactionLifecycleSvc`.
 #[derive(Clone, Debug)]
 pub struct RequestCtx {
     pub conn: ConnMeta,
@@ -1295,7 +1298,7 @@ impl<B> HttpRequest<B> {
     }
 }
 
-/// HttpRequest after route configuration has been resolved.
+/// `HttpRequest` after route configuration has been resolved.
 pub struct RoutedHttpRequest<B> {
     pub http: HttpRequest<B>,
     pub route_conf: Arc<RouteConfiguration>,
