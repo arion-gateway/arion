@@ -2,14 +2,15 @@ use http::Request;
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::cedar_policy::{
     CedarPolicy as CedarPolicyConfig, EnforcementMode, FailureMode,
 };
-use serde_json::Value;
 use smol_str::SmolStr;
 use std::sync::Arc;
-use tracing::debug;
+use tracing::{debug, info};
+
+use cedar_policy::{EntityTypeName, EntityUid};
 
 use crate::cedar::{
     error::Error as CedarError,
-    request::{build_authz_context, entity_uid, principal_from_jwt},
+    request::{build_authz_context, entity_uid_from_type, parse_entity_type, principal_from_jwt},
     store::{AuthzRequest, AuthzResponse, SharedPolicyStore},
 };
 
@@ -22,57 +23,77 @@ use crate::{
 };
 
 #[derive(Debug, Clone)]
-pub(crate) struct CedarHttpFilter {
+pub(crate) struct CedarHttpFilterInner {
     store: SharedPolicyStore,
     enforcement_mode: EnforcementMode,
     failure_mode: FailureMode,
-    principal_entity_type: SmolStr,
-    resource_entity_type: SmolStr,
+    principal_type: EntityTypeName,
+    resource_type: EntityTypeName,
+    action_type: EntityTypeName,
+    anonymous_principal: EntityUid,
 }
 
-impl CedarHttpFilter {
+#[derive(Debug, Clone)]
+pub(crate) struct CedarHttpFilter {
+    inner: Arc<CedarHttpFilterInner>,
+}
+
+impl CedarHttpFilterInner {
     pub(crate) fn try_from_config(conf: CedarPolicyConfig) -> crate::Result<Self> {
-        let store = crate::cedar::store::PolicyStore::new(&conf.policies, &conf.schema, &conf.entities)?;
+        let store = crate::cedar::store::PolicyStore::new(
+            &conf.policies,
+            &conf.schema,
+            &conf.entities,
+            conf.validate_schema_per_request,
+        )?;
+        let principal_type = parse_entity_type(&conf.principal_entity_type)?;
+        let resource_type = parse_entity_type(&conf.resource_entity_type)?;
+        let action_type = parse_entity_type("Action")?;
+        let anonymous_principal = entity_uid_from_type(&principal_type, "anonymous");
         Ok(Self {
             store: Arc::new(store),
             enforcement_mode: conf.enforcement_mode,
             failure_mode: conf.failure_mode,
-            principal_entity_type: conf.principal_entity_type,
-            resource_entity_type: conf.resource_entity_type,
+            principal_type,
+            resource_type,
+            action_type,
+            anonymous_principal,
         })
     }
 
     fn evaluate_policy<B>(&self, req: &Request<B>) -> Result<AuthzResponse, CedarError> {
-        let claims_value: Option<Value> =
-            req.extensions().get::<JwtClaims>().and_then(|c| serde_json::to_value(c).ok());
+        let claims = req.extensions().get::<JwtClaims>();
 
-        let principal = claims_value
-            .as_ref()
-            .map(|v| principal_from_jwt(v, &self.principal_entity_type))
-            .unwrap_or_else(|| entity_uid(&self.principal_entity_type, "anonymous"))?;
-        let action = entity_uid("Action", req.method().as_str())?;
-        let resource = entity_uid(&self.resource_entity_type, req.uri().path())?;
-        let context = build_authz_context(
-            claims_value.as_ref(),
-            Some(req.method().as_str()),
-            Some(req.uri().path()),
-            req.uri().query(),
-        )?;
-        self.store.is_authorized(AuthzRequest { principal, action, resource, context })
+        let principal = match claims {
+            Some(claims) => principal_from_jwt(claims, &self.principal_type)?,
+            None => self.anonymous_principal.clone(),
+        };
+        let action = entity_uid_from_type(&self.action_type, req.method().as_str());
+        let resource = entity_uid_from_type(&self.resource_type, req.uri().path());
+        let context =
+            build_authz_context(claims, Some(req.method().as_str()), Some(req.uri().path()), req.uri().query())?;
+        self.store.authorize(AuthzRequest { principal, action, resource, context })
+    }
+}
+
+impl CedarHttpFilter {
+    pub(crate) fn try_from_config(conf: CedarPolicyConfig) -> crate::Result<Self> {
+        let inner = Arc::new(CedarHttpFilterInner::try_from_config(conf)?);
+        Ok(Self { inner })
     }
 
     pub(crate) fn apply_request<B>(&self, req: &Request<B>) -> FilterDecision {
-        match self.evaluate_policy(req) {
+        match self.inner.evaluate_policy(req) {
             Ok(response) => {
                 debug!(
                     target: "cedar_policy",
                     decision = ?response.decision,
                     policy_id = ?response.reason.as_ref().and_then(|r| r.first()),
-                    enforcement = ?self.enforcement_mode,
+                    enforcement = ?self.inner.enforcement_mode,
                     "Cedar authorization decision"
                 );
 
-                match self.enforcement_mode {
+                match self.inner.enforcement_mode {
                     EnforcementMode::Enforce => {
                         if response.is_allowed() {
                             FilterDecision::Continue
@@ -88,13 +109,17 @@ impl CedarHttpFilter {
                             ))
                         }
                     },
-                    EnforcementMode::LogOnly => FilterDecision::Continue,
+                    EnforcementMode::LogOnly => {
+                        info!(target: "cedar_policy", "Request is denied by Cedar policy");
+                        debug!(target: "cedar_policy", "Denied request: {:?}", req.uri());
+                        FilterDecision::Continue
+                    },
                 }
             },
             Err(err) => {
                 debug!(target: "cedar_policy", %err, "Cedar policy evaluation error");
 
-                match self.failure_mode {
+                match self.inner.failure_mode {
                     FailureMode::FailClosed => FilterDecision::DirectResponse(Box::new(
                         SyntheticHttpResponse::forbidden(EventKind::Failure(EventFailure::CedarAccessDenied(
                             SmolStr::new_static("error"),
@@ -143,6 +168,7 @@ mod tests {
             failure_mode: FailureMode::FailOpen,
             principal_entity_type: "User".into(),
             resource_entity_type: "HttpPath".into(),
+            validate_schema_per_request: false,
         })
         .unwrap()
     }

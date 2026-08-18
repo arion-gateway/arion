@@ -1,60 +1,154 @@
-use cedar_policy::{Context, EntityId, EntityTypeName, EntityUid};
-use serde_json::{Map, Value};
-use smol_str::SmolStr;
+use cedar_policy::{Context, EntityId, EntityTypeName, EntityUid, RestrictedExpression};
+use serde_json::Value;
+use smallvec::SmallVec;
 use std::str::FromStr;
 
 use super::error::Error;
+use crate::listeners::http_connection_manager::jwt_authn::claims::JwtClaims;
 
-pub(crate) fn entity_uid(type_name: &str, id: &str) -> Result<EntityUid, Error> {
-    let type_name = EntityTypeName::from_str(type_name)
-        .map_err(|e| Error::Entity(SmolStr::from(format!("invalid entity type '{type_name}': {e}"))))?;
-    let id =
-        EntityId::from_str(id).map_err(|e| Error::Entity(SmolStr::from(format!("invalid entity id '{id}': {e}"))))?;
-    Ok(EntityUid::from_type_name_and_id(type_name, id))
+#[inline]
+pub(crate) fn parse_entity_type(type_name: &str) -> Result<EntityTypeName, Error> {
+    EntityTypeName::from_str(type_name).map_err(|e| Error::Entity(format!("invalid entity type '{type_name}': {e}")))
 }
 
-pub fn principal_from_jwt(claims: &Value, entity_type: &str) -> Result<EntityUid, Error> {
-    let sub = claims
-        .get("sub")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| Error::Entity(SmolStr::from("JWT claims missing string 'sub' field")))?;
-    entity_uid(entity_type, sub)
+pub(crate) fn entity_uid_from_type(entity_type: &EntityTypeName, id: &str) -> EntityUid {
+    EntityUid::from_type_name_and_id(entity_type.clone(), EntityId::new(id))
+}
+
+#[cfg(test)]
+pub(crate) fn entity_uid(type_name: &str, id: &str) -> Result<EntityUid, Error> {
+    Ok(entity_uid_from_type(&parse_entity_type(type_name)?, id))
+}
+
+#[inline]
+pub fn principal_from_jwt(claims: &JwtClaims, entity_type: &EntityTypeName) -> Result<EntityUid, Error> {
+    let sub = claims.sub.as_deref().ok_or_else(|| Error::Entity("JWT claims missing string 'sub' field".to_owned()))?;
+    Ok(entity_uid_from_type(entity_type, sub))
+}
+
+fn json_value_to_restricted_expr(value: &Value) -> Result<RestrictedExpression, Error> {
+    match value {
+        Value::String(s) => Ok(RestrictedExpression::new_string(s.clone())),
+        Value::Number(n) => n
+            .as_i64()
+            .map(RestrictedExpression::new_long)
+            .ok_or_else(|| Error::Context(format!("unsupported number in Cedar context: {n}"))),
+        Value::Bool(b) => Ok(RestrictedExpression::new_bool(*b)),
+        Value::Array(arr) => {
+            let items: Result<Vec<_>, _> = arr.iter().map(json_value_to_restricted_expr).collect();
+            Ok(RestrictedExpression::new_set(items?))
+        },
+        Value::Object(map) => {
+            let fields: Result<Vec<(String, RestrictedExpression)>, _> =
+                map.iter().map(|(k, v)| json_value_to_restricted_expr(v).map(|e| (k.clone(), e))).collect();
+            RestrictedExpression::new_record(fields?).map_err(|e| Error::Context(e.to_string()))
+        },
+        Value::Null => Err(Error::Context("null values are not supported in Cedar context".to_owned())),
+    }
+}
+
+#[inline]
+fn optional_long(key: &'static str, value: Option<u64>) -> Result<Option<(String, RestrictedExpression)>, Error> {
+    value
+        .map(|n| {
+            i64::try_from(n)
+                .map(|n| (key.to_owned(), RestrictedExpression::new_long(n)))
+                .map_err(|_err| Error::Context(format!("unsupported number in Cedar context: {n}")))
+        })
+        .transpose()
+}
+
+fn jwt_claims_to_restricted_expr(claims: &JwtClaims) -> Result<RestrictedExpression, Error> {
+    let mut fields: SmallVec<[_; 16]> = SmallVec::with_capacity(7 + claims.extra.len());
+
+    if let Some(sub) = &claims.sub {
+        fields.push(("sub".to_owned(), RestrictedExpression::new_string(sub.to_string())));
+    }
+    if let Some(iss) = &claims.iss {
+        fields.push(("iss".to_owned(), RestrictedExpression::new_string(iss.to_string())));
+    }
+    if let Some(aud) = &claims.aud {
+        fields.push((
+            "aud".to_owned(),
+            RestrictedExpression::new_set(aud.iter().map(|a| RestrictedExpression::new_string(a.to_string()))),
+        ));
+    }
+    if let Some(field) = optional_long("exp", claims.exp)? {
+        fields.push(field);
+    }
+    if let Some(field) = optional_long("iat", claims.iat)? {
+        fields.push(field);
+    }
+    if let Some(field) = optional_long("nbf", claims.nbf)? {
+        fields.push(field);
+    }
+    if let Some(jti) = &claims.jti {
+        fields.push(("jti".to_owned(), RestrictedExpression::new_string(jti.to_string())));
+    }
+    for (k, v) in &claims.extra {
+        fields.push((k.clone(), json_value_to_restricted_expr(v)?));
+    }
+
+    RestrictedExpression::new_record(fields).map_err(|e| Error::Context(e.to_string()))
 }
 
 pub fn build_authz_context(
-    jwt_claims: Option<&Value>,
+    jwt_claims: Option<&JwtClaims>,
     http_method: Option<&str>,
     http_path: Option<&str>,
     http_query: Option<&str>,
 ) -> Result<Context, Error> {
-    let mut ctx = Map::new();
+    let expr_err = |e: &dyn std::fmt::Display| Error::Context(e.to_string());
 
-    if let Some(claims) = jwt_claims {
-        ctx.insert("jwt".to_owned(), claims.clone());
-    }
-
-    if http_method.is_some() || http_path.is_some() || http_query.is_some() {
-        let mut http = Map::new();
+    let http = {
+        let mut fields: SmallVec<[(String, RestrictedExpression); 3]> = smallvec::smallvec![];
         if let Some(m) = http_method {
-            http.insert("method".to_owned(), Value::String(m.to_owned()));
+            fields.push(("method".to_owned(), RestrictedExpression::new_string(m.to_owned())));
         }
         if let Some(p) = http_path {
-            http.insert("path".to_owned(), Value::String(p.to_owned()));
+            fields.push(("path".to_owned(), RestrictedExpression::new_string(p.to_owned())));
         }
         if let Some(q) = http_query {
-            http.insert("query".to_owned(), Value::String(q.to_owned()));
+            fields.push(("query".to_owned(), RestrictedExpression::new_string(q.to_owned())));
         }
-        ctx.insert("http".to_owned(), Value::Object(http));
-    }
+        if fields.is_empty() {
+            None
+        } else {
+            Some(RestrictedExpression::new_record(fields).map_err(|e| expr_err(&e))?)
+        }
+    };
 
-    Context::from_json_value(Value::Object(ctx), None).map_err(|e| Error::Context(SmolStr::from(e.to_string())))
+    match (jwt_claims, http) {
+        (Some(claims), Some(http_rec)) => Context::from_pairs([
+            ("jwt".to_owned(), jwt_claims_to_restricted_expr(claims)?),
+            ("http".to_owned(), http_rec),
+        ]),
+        (Some(claims), None) => Context::from_pairs([("jwt".to_owned(), jwt_claims_to_restricted_expr(claims)?)]),
+        (None, Some(http_rec)) => Context::from_pairs([("http".to_owned(), http_rec)]),
+        (None, None) => return Ok(Context::empty()),
+    }
+    .map_err(|e| expr_err(&e))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::cedar::store::{AuthzRequest, PolicyStore};
-    use serde_json::json;
+    use ahash::HashMap;
+    use smol_str::SmolStr;
+
+    fn jwt_claims(sub: Option<&str>) -> JwtClaims {
+        JwtClaims {
+            sub: sub.map(SmolStr::from),
+            iss: None,
+            aud: None,
+            exp: None,
+            iat: None,
+            nbf: None,
+            jti: None,
+            extra: HashMap::default(),
+        }
+    }
 
     #[test]
     fn entity_uid_valid() {
@@ -70,28 +164,23 @@ mod tests {
 
     #[test]
     fn principal_from_jwt_extracts_sub() {
-        let claims = json!({ "sub": "svc-alice", "iss": "https://auth.example.com" });
-        let uid = principal_from_jwt(&claims, "User").unwrap();
+        let uid = principal_from_jwt(&jwt_claims(Some("svc-alice")), &parse_entity_type("User").unwrap()).unwrap();
         assert_eq!(uid.to_string(), r#"User::"svc-alice""#);
     }
 
     #[test]
     fn principal_from_jwt_with_namespace() {
-        let claims = json!({ "sub": "urn:example:svc-alice" });
-        let uid = principal_from_jwt(&claims, "AgentIdentity::IamEntity").unwrap();
+        let uid = principal_from_jwt(
+            &jwt_claims(Some("urn:example:svc-alice")),
+            &parse_entity_type("AgentIdentity::IamEntity").unwrap(),
+        )
+        .unwrap();
         assert_eq!(uid.to_string(), r#"AgentIdentity::IamEntity::"urn:example:svc-alice""#);
     }
 
     #[test]
     fn principal_from_jwt_missing_sub_errors() {
-        let claims = json!({ "iss": "https://auth.example.com" });
-        principal_from_jwt(&claims, "User").unwrap_err();
-    }
-
-    #[test]
-    fn principal_from_jwt_non_string_sub_errors() {
-        let claims = json!({ "sub": 42 });
-        principal_from_jwt(&claims, "User").unwrap_err();
+        principal_from_jwt(&jwt_claims(None), &parse_entity_type("User").unwrap()).unwrap_err();
     }
 
     #[test]
@@ -101,7 +190,8 @@ mod tests {
 
     #[test]
     fn context_jwt_only() {
-        let claims = json!({ "sub": "svc-alice", "iss": "https://auth.example.com" });
+        let mut claims = jwt_claims(Some("svc-alice"));
+        claims.iss = Some(SmolStr::from("https://auth.example.com"));
         build_authz_context(Some(&claims), None, None, None).unwrap();
     }
 
@@ -112,7 +202,7 @@ mod tests {
 
     #[test]
     fn context_jwt_and_http() {
-        let claims = json!({ "sub": "svc-alice" });
+        let claims = jwt_claims(Some("svc-alice"));
         build_authz_context(Some(&claims), Some("POST"), Some("/mcp"), None).unwrap();
     }
 
@@ -142,15 +232,18 @@ mod tests {
             permit(principal == User::"svc-frontend", action == Action::"GET", resource);
             permit(principal == User::"svc-admin",    action,                  resource);
         "#;
-        let store = PolicyStore::new(POLICY, SCHEMA, "").unwrap();
-        let claims = json!({
-            "sub": "svc-frontend",
-            "iss": "test-issuer",
-            "aud": ["mcp-gateway"],
-            "exp": 9_999_999_999u64,
-            "iat": 0u64
-        });
-        let result = store.is_authorized(AuthzRequest {
+        let store = PolicyStore::new(POLICY, SCHEMA, "", false).unwrap();
+        let claims = JwtClaims {
+            sub: Some(SmolStr::from("svc-frontend")),
+            iss: Some(SmolStr::from("test-issuer")),
+            aud: Some(vec![SmolStr::from("mcp-gateway")]),
+            exp: Some(9_999_999_999),
+            iat: Some(0),
+            nbf: None,
+            jti: None,
+            extra: HashMap::default(),
+        };
+        let result = store.authorize(AuthzRequest {
             principal: entity_uid("User", "svc-frontend").unwrap(),
             action: entity_uid("Action", "POST").unwrap(),
             resource: entity_uid("HttpPath", "/api").unwrap(),
@@ -180,11 +273,11 @@ mod tests {
 
     #[test]
     fn jwt_context_permits_matching_sub() {
-        let store = PolicyStore::new(JWT_POLICY, JWT_SCHEMA, "").unwrap();
-        let claims = json!({ "sub": "svc-alice" });
+        let store = PolicyStore::new(JWT_POLICY, JWT_SCHEMA, "", false).unwrap();
+        let claims = jwt_claims(Some("svc-alice"));
         let response = store
-            .is_authorized(AuthzRequest {
-                principal: principal_from_jwt(&claims, "User").unwrap(),
+            .authorize(AuthzRequest {
+                principal: principal_from_jwt(&claims, &parse_entity_type("User").unwrap()).unwrap(),
                 action: entity_uid("Action", "read").unwrap(),
                 resource: entity_uid("Document", "doc-1").unwrap(),
                 context: build_authz_context(Some(&claims), None, None, None).unwrap(),
@@ -195,11 +288,11 @@ mod tests {
 
     #[test]
     fn jwt_context_denies_wrong_sub() {
-        let store = PolicyStore::new(JWT_POLICY, JWT_SCHEMA, "").unwrap();
-        let claims = json!({ "sub": "svc-bob" });
+        let store = PolicyStore::new(JWT_POLICY, JWT_SCHEMA, "", false).unwrap();
+        let claims = jwt_claims(Some("svc-bob"));
         let response = store
-            .is_authorized(AuthzRequest {
-                principal: principal_from_jwt(&claims, "User").unwrap(),
+            .authorize(AuthzRequest {
+                principal: principal_from_jwt(&claims, &parse_entity_type("User").unwrap()).unwrap(),
                 action: entity_uid("Action", "read").unwrap(),
                 resource: entity_uid("Document", "doc-1").unwrap(),
                 context: build_authz_context(Some(&claims), None, None, None).unwrap(),
@@ -228,9 +321,9 @@ mod tests {
 
     #[test]
     fn http_context_permits_matching_route() {
-        let store = PolicyStore::new(HTTP_POLICY, HTTP_SCHEMA, "").unwrap();
+        let store = PolicyStore::new(HTTP_POLICY, HTTP_SCHEMA, "", false).unwrap();
         let response = store
-            .is_authorized(AuthzRequest {
+            .authorize(AuthzRequest {
                 principal: entity_uid("User", "alice").unwrap(),
                 action: entity_uid("Action", "call").unwrap(),
                 resource: entity_uid("Api", "gateway").unwrap(),
@@ -242,9 +335,9 @@ mod tests {
 
     #[test]
     fn http_context_denies_wrong_method() {
-        let store = PolicyStore::new(HTTP_POLICY, HTTP_SCHEMA, "").unwrap();
+        let store = PolicyStore::new(HTTP_POLICY, HTTP_SCHEMA, "", false).unwrap();
         let response = store
-            .is_authorized(AuthzRequest {
+            .authorize(AuthzRequest {
                 principal: entity_uid("User", "alice").unwrap(),
                 action: entity_uid("Action", "call").unwrap(),
                 resource: entity_uid("Api", "gateway").unwrap(),

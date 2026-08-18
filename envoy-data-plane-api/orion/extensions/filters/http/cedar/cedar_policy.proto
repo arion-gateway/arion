@@ -32,6 +32,11 @@ message CedarPolicy {
   // The URI path is used as the entity ID.
   // Defaults to "HttpPath" when empty.
   string resource_entity_type = 7;
+
+  // Schema is used to validate not only the policies at configuration time
+  // but also to validate the AuthorizationRequest generated from the HTTP
+  // request that is being evaluated.
+  optional bool validate_schema_per_request = 8;
 }
 
 // Enforcement mode for Cedar policy evaluation.

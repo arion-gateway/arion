@@ -1,3 +1,4 @@
+use futures::future::join_all;
 use http::StatusCode;
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use orion_data_plane_api::envoy_data_plane_api::envoy::{
@@ -461,6 +462,205 @@ async fn test_cedar_fail_closed_on_bad_schema() {
 
     let client = TestClient::new(orion.listener_addr().unwrap());
     client.get("/anything").await.unwrap().assert_status(StatusCode::FORBIDDEN);
+
+    orion.shutdown();
+}
+
+// ---------------------------------------------------------------------------
+// Group 4 — reproduce the load-test regression: Cedar decisions flip once
+// requests are pipelined over persistent/keep-alive connections, or once many
+// connections are opened concurrently across worker threads.
+
+/// Same deny-wrong-resource policy as `test_cedar_anon_deny_wrong_resource`,
+/// but issues many sequential requests over the *same* `TestClient`, whose
+/// underlying hyper client keeps the connection alive and reuses it — mirroring
+/// a load test with persistent/keep-alive connections. Every single request
+/// must be denied; if any request after the first one comes back 200, the
+/// Cedar filter is not being re-evaluated (or is caching a decision) on
+/// subsequent requests of a reused connection.
+#[tokio::test]
+#[ignore]
+async fn test_cedar_anon_deny_repeated_requests_same_connection() {
+    let backend = TestBackend::start().await.unwrap();
+    backend.set_default_response(PreConfiguredResponse::with_body("OK")).await;
+
+    let cedar = CedarPolicyBuilder::new(
+        ANON_SCHEMA,
+        r#"permit(
+        principal == User::"anonymous",
+        action    == Action::"GET",
+        resource  == HttpPath::"/health"
+    );"#,
+    );
+
+    let bootstrap = BootstrapBuilder::new()
+        .listener(
+            ListenerBuilder::new("http").port(0).filter_chain(
+                FilterChainBuilder::new("main")
+                    .hcm(HcmBuilder::new().http1().cedar_policy(cedar).route_config(simple_route_config())),
+            ),
+        )
+        .cluster(ClusterBuilder::new("backend").endpoint(EndpointBuilder::from_socket_addr(backend.addr())));
+
+    let config_path = bootstrap.build_to_temp().unwrap();
+    let orion = OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default()).await.unwrap();
+
+    let client = TestClient::new(orion.listener_addr().unwrap());
+
+    const REQUESTS: usize = 10000;
+    let mut wrongly_allowed = Vec::new();
+    for i in 0..REQUESTS {
+        let response = client.get("/other").await.unwrap();
+        if response.status != StatusCode::FORBIDDEN {
+            wrongly_allowed.push((i, response.status));
+        }
+    }
+
+    assert!(
+        wrongly_allowed.is_empty(),
+        "expected every request on the reused connection to be denied, but {}/{REQUESTS} were not: {wrongly_allowed:?}",
+        wrongly_allowed.len()
+    );
+
+    orion.shutdown();
+}
+
+/// Heavier variant closer to the reported load-test shape: many *concurrent*
+/// persistent connections (one `TestClient`/hyper connection per task, spread
+/// across many Orion worker threads), each hammering the same denied path for
+/// a couple of seconds. Every response, from the first to the last, must be
+/// FORBIDDEN. Failures are reported with the index within their connection so
+/// a "correct for the first few requests, then flips" pattern is visible.
+#[tokio::test]
+#[ignore]
+async fn test_cedar_anon_deny_sustained_load_many_persistent_connections() {
+    use std::time::{Duration, Instant};
+
+    let backend = TestBackend::start().await.unwrap();
+    backend.set_default_response(PreConfiguredResponse::with_body("OK")).await;
+
+    let cedar = CedarPolicyBuilder::new(
+        ANON_SCHEMA,
+        r#"permit(
+        principal == User::"anonymous",
+        action    == Action::"GET",
+        resource  == HttpPath::"/health"
+    );"#,
+    );
+
+    let bootstrap = BootstrapBuilder::new()
+        .listener(
+            ListenerBuilder::new("http").port(0).filter_chain(
+                FilterChainBuilder::new("main")
+                    .hcm(HcmBuilder::new().http1().cedar_policy(cedar).route_config(simple_route_config())),
+            ),
+        )
+        .cluster(ClusterBuilder::new("backend").endpoint(EndpointBuilder::from_socket_addr(backend.addr())));
+
+    let config_path = bootstrap.build_to_temp().unwrap();
+    let orion =
+        OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default().with_num_cpus(8)).await.unwrap();
+    let addr = orion.listener_addr().unwrap();
+
+    const CONNECTIONS: usize = 128;
+    const TEST_DURATION: Duration = Duration::from_secs(2);
+
+    let handles: Vec<_> = (0..CONNECTIONS)
+        .map(|conn_idx| {
+            tokio::spawn(async move {
+                let client = TestClient::new(addr);
+                let start = Instant::now();
+                let mut request_idx = 0usize;
+                let mut first_wrong: Option<(usize, StatusCode, std::time::Duration)> = None;
+                let mut wrong_count = 0usize;
+                while start.elapsed() < TEST_DURATION {
+                    let response = client.get("/other").await.unwrap();
+                    if response.status != StatusCode::FORBIDDEN {
+                        wrong_count += 1;
+                        if first_wrong.is_none() {
+                            first_wrong = Some((request_idx, response.status, start.elapsed()));
+                        }
+                    }
+                    request_idx += 1;
+                }
+                (conn_idx, request_idx, wrong_count, first_wrong)
+            })
+        })
+        .collect();
+
+    let results: Vec<_> = join_all(handles).await.into_iter().map(|r| r.unwrap()).collect();
+
+    let total_requests: usize = results.iter().map(|(_, n, _, _)| n).sum();
+    let total_wrong: usize = results.iter().map(|(_, _, w, _)| w).sum();
+    let offenders: Vec<_> = results.iter().filter(|(_, _, w, _)| *w > 0).collect();
+
+    assert!(
+        total_wrong == 0,
+        "expected every request across {CONNECTIONS} persistent connections to be denied, but {total_wrong}/{total_requests} were not.\n\
+         First few offending connections (conn_idx, requests_sent, wrong_count, first_wrong(request_idx, status, elapsed)): {:?}",
+        offenders.iter().take(10).collect::<Vec<_>>()
+    );
+
+    orion.shutdown();
+}
+
+/// Same policy, but each request opens a brand-new connection (no keep-alive
+/// reuse) and many of these are fired concurrently across multiple Orion
+/// worker threads — mirroring a load test with one request per connection.
+#[tokio::test]
+#[ignore]
+async fn test_cedar_anon_deny_concurrent_single_shot_connections() {
+    let backend = TestBackend::start().await.unwrap();
+    backend.set_default_response(PreConfiguredResponse::with_body("OK")).await;
+
+    let cedar = CedarPolicyBuilder::new(
+        ANON_SCHEMA,
+        r#"permit(
+        principal == User::"anonymous",
+        action    == Action::"GET",
+        resource  == HttpPath::"/health"
+    );"#,
+    );
+
+    let bootstrap = BootstrapBuilder::new()
+        .listener(
+            ListenerBuilder::new("http").port(0).filter_chain(
+                FilterChainBuilder::new("main")
+                    .hcm(HcmBuilder::new().http1().cedar_policy(cedar).route_config(simple_route_config())),
+            ),
+        )
+        .cluster(ClusterBuilder::new("backend").endpoint(EndpointBuilder::from_socket_addr(backend.addr())));
+
+    let config_path = bootstrap.build_to_temp().unwrap();
+    let orion =
+        OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default().with_num_cpus(8)).await.unwrap();
+    let addr = orion.listener_addr().unwrap();
+
+    const REQUESTS: usize = 256;
+    let handles: Vec<_> = (0..REQUESTS)
+        .map(|_| {
+            tokio::spawn(async move {
+                // A fresh TestClient per task => a fresh connection per request, no pooling reuse.
+                let client = TestClient::new(addr);
+                client.get("/other").await
+            })
+        })
+        .collect();
+
+    let results: Vec<_> = join_all(handles).await.into_iter().map(|r| r.unwrap().unwrap()).collect();
+
+    let wrongly_allowed: Vec<_> = results
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.status != StatusCode::FORBIDDEN)
+        .map(|(i, r)| (i, r.status))
+        .collect();
+
+    assert!(
+        wrongly_allowed.is_empty(),
+        "expected every single-shot-connection request to be denied, but {}/{REQUESTS} were not: {wrongly_allowed:?}",
+        wrongly_allowed.len()
+    );
 
     orion.shutdown();
 }

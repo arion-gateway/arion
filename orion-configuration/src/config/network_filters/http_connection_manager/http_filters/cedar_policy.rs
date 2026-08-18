@@ -15,6 +15,8 @@ pub struct CedarPolicy {
     pub principal_entity_type: SmolStr,
     #[serde(default = "default_resource_entity_type")]
     pub resource_entity_type: SmolStr,
+    #[serde(default)]
+    pub validate_schema_per_request: bool,
 }
 
 fn default_principal_entity_type() -> SmolStr {
@@ -63,6 +65,7 @@ mod envoy_conversions {
                 failure_mode,
                 principal_entity_type,
                 resource_entity_type,
+                validate_schema_per_request,
             } = proto;
 
             let policies = required!(policies)?;
@@ -101,6 +104,7 @@ mod envoy_conversions {
                 failure_mode,
                 principal_entity_type,
                 resource_entity_type,
+                validate_schema_per_request: validate_schema_per_request == Some(true),
             })
         }
     }

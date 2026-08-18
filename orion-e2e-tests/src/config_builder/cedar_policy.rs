@@ -11,6 +11,7 @@ pub struct CedarPolicyBuilder {
     failure_mode: i32,
     principal_entity_type: String,
     resource_entity_type: String,
+    validate_schema_per_request: Option<bool>,
 }
 
 impl CedarPolicyBuilder {
@@ -24,6 +25,7 @@ impl CedarPolicyBuilder {
             failure_mode: 0,     // FAIL_CLOSED
             principal_entity_type: String::new(),
             resource_entity_type: String::new(),
+            validate_schema_per_request: Some(false),
         }
     }
 
@@ -68,6 +70,7 @@ impl From<CedarPolicyBuilder> for Any {
             failure_mode: b.failure_mode,
             principal_entity_type: b.principal_entity_type,
             resource_entity_type: b.resource_entity_type,
+            validate_schema_per_request: b.validate_schema_per_request,
         };
         Any {
             type_url: "type.googleapis.com/orion.extensions.filters.http.cedar.cedar_policy.v3.CedarPolicy".to_owned(),
