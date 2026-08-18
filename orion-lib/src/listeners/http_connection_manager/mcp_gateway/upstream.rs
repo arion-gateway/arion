@@ -179,7 +179,7 @@ async fn dispatch_rest_tool(
         RoutingPriority::Default,
     ) {
         Ok(acquired) => acquired,
-        Err(error) => return ToolInvocationOutcome::Failure(acquire_failure(error)),
+        Err(error) => return ToolInvocationOutcome::Failure(acquire_failure(&error)),
     };
 
     if upstream_policy.authority.is_none() {
@@ -236,7 +236,7 @@ async fn dispatch_rest_tool(
     }
 }
 
-fn acquire_failure(error: AcquireHttpUpstreamError) -> ToolInvocationFailure {
+fn acquire_failure(error: &AcquireHttpUpstreamError) -> ToolInvocationFailure {
     match error.kind() {
         AcquireHttpUpstreamErrorKind::CircuitBreakerOverflow => ToolInvocationFailure {
             code: ToolInvocationErrorCode::Overflow,
@@ -386,9 +386,9 @@ pub(crate) fn record_tool_response_bytes(_tool_name: &str, _bytes: usize) {}
 struct CountingWriter(usize);
 
 impl io::Write for CountingWriter {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.0 = self.0.checked_add(bytes.len()).ok_or_else(|| io::Error::other("serialized size overflow"))?;
-        Ok(bytes.len())
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0 = self.0.checked_add(buf.len()).ok_or_else(|| io::Error::other("serialized size overflow"))?;
+        Ok(buf.len())
     }
 
     fn flush(&mut self) -> io::Result<()> {

@@ -124,7 +124,7 @@ pub enum UpstreamBackend {
         query_params: Vec<McpRestQueryParams>,
         cluster: String,
         #[serde(default)]
-        upstream_policy: HttpUpstreamPolicy,
+        upstream_policy: Box<HttpUpstreamPolicy>,
         body_template: Option<String>,
     },
     McpServer {
@@ -296,7 +296,7 @@ mod envoy_conversions {
             .map(|value| -> Result<usize, GenericError> {
                 NonZeroUsize::try_from(usize::try_from(value)?)
                     .map(NonZeroUsize::get)
-                    .map_err(|_| GenericError::from_msg("must be greater than zero"))
+                    .map_err(|_err| GenericError::from_msg("must be greater than zero"))
             })
             .transpose()
             .with_node("max_upstream_response_bytes")?
@@ -459,7 +459,9 @@ mod envoy_conversions {
                         path: be.path,
                         query_params: be.query_params.into_iter().map(Into::into).collect(),
                         cluster,
-                        upstream_policy: be.upstream_policy.map(TryInto::try_into).transpose()?.unwrap_or_default(),
+                        upstream_policy: Box::new(
+                            be.upstream_policy.map(TryInto::try_into).transpose()?.unwrap_or_default(),
+                        ),
                         body_template,
                     })
                 },

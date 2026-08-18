@@ -416,6 +416,7 @@ async fn test_mcp_gateway_rest_authority_override() {
 }
 
 #[tokio::test]
+#[allow(clippy::cast_possible_truncation)]
 #[ignore]
 async fn test_mcp_gateway_tool_response_limit() {
     const LIMIT: u64 = 16;

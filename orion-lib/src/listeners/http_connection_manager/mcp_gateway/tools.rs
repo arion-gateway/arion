@@ -751,6 +751,7 @@ impl ToolsRegistry {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_lines)]
     pub async fn call(
         &self,
         req_ext: &http::Extensions,
@@ -1047,7 +1048,7 @@ mod tests {
                 path: "/test".into(),
                 query_params: vec![],
                 cluster: "test_cluster".into(),
-                upstream_policy: Default::default(),
+                upstream_policy: Box::default(),
                 body_template: None,
             },
             rbac: None,

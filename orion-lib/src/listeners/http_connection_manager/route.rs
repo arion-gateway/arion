@@ -88,8 +88,8 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
         #[cfg(feature = "metrics")]
         {
             let mut state = ctx.tx.trans_state.lock();
-            state.upstream_start_instant = Some(Instant::now());
-        }
+            state.upstream_start_instant = Some(Instant::now())
+        };
 
         let acquire_result = instrument_block!(
             ctx.tx.clock,

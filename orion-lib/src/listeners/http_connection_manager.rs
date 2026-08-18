@@ -563,11 +563,7 @@ impl TransactionContext {
     pub(crate) fn begin_upstream_span(&self, span_name: &str) -> ScopedClientSpan {
         #[cfg(feature = "tracing")]
         {
-            return HttpTracer::begin_scoped_client_span(
-                self.trace_ctx.as_ref(),
-                self.upstream_tracing_key.as_ref(),
-                span_name,
-            );
+            HttpTracer::begin_scoped_client_span(self.trace_ctx.as_ref(), self.upstream_tracing_key.as_ref(), span_name)
         }
 
         #[cfg(not(feature = "tracing"))]
