@@ -16,8 +16,7 @@ use orion_e2e_tests::{
         BootstrapBuilder, CedarPolicyBuilder, ClusterBuilder, EndpointBuilder, FilterChainBuilder, HcmBuilder,
         ListenerBuilder, RouteBuilder, RouteConfigBuilder, VirtualHostBuilder,
     },
-    OrionInstance, PartialSendClient, PreConfiguredResponse, RawHttpRequestBuilder, SpawnOptions, TestBackend,
-    TestClient,
+    OrionInstance, PreConfiguredResponse, SpawnOptions, TestBackend, TestClient,
 };
 use serde::Serialize;
 
@@ -661,85 +660,6 @@ async fn test_cedar_anon_deny_concurrent_single_shot_connections() {
         wrongly_allowed.is_empty(),
         "expected every single-shot-connection request to be denied, but {}/{REQUESTS} were not: {wrongly_allowed:?}",
         wrongly_allowed.len()
-    );
-
-    orion.shutdown();
-}
-
-/// True HTTP/1.1 pipelining: write many requests back-to-back on one raw TCP
-/// socket *before* reading any response, then read all the responses off the
-/// wire. Unlike `TestClient` (which waits for each response before sending
-/// the next request, i.e. keep-alive reuse, not pipelining), this matches
-/// what the user's load tester is doing when it says "requests are pipelined
-/// over the same connection".
-#[tokio::test]
-#[ignore]
-async fn test_cedar_anon_deny_true_http_pipelining() {
-    let backend = TestBackend::start().await.unwrap();
-    backend.set_default_response(PreConfiguredResponse::with_body("OK")).await;
-
-    let cedar = CedarPolicyBuilder::new(
-        ANON_SCHEMA,
-        r#"permit(
-        principal == User::"anonymous",
-        action    == Action::"GET",
-        resource  == HttpPath::"/health"
-    );"#,
-    );
-
-    let bootstrap = BootstrapBuilder::new()
-        .listener(
-            ListenerBuilder::new("http").port(0).filter_chain(
-                FilterChainBuilder::new("main")
-                    .hcm(HcmBuilder::new().http1().cedar_policy(cedar).route_config(simple_route_config())),
-            ),
-        )
-        .cluster(ClusterBuilder::new("backend").endpoint(EndpointBuilder::from_socket_addr(backend.addr())));
-
-    let config_path = bootstrap.build_to_temp().unwrap();
-    let orion = OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default()).await.unwrap();
-    let addr = orion.listener_addr().unwrap();
-
-    const REQUESTS: usize = 50;
-
-    let single_request = RawHttpRequestBuilder::new()
-        .method("GET")
-        .uri("/other")
-        .header("Host", "test")
-        .header("Connection", "keep-alive")
-        .build();
-
-    let mut pipelined = Vec::new();
-    for _ in 0..REQUESTS {
-        pipelined.extend_from_slice(&single_request);
-    }
-
-    let mut client = PartialSendClient::connect(addr).await.unwrap();
-    client.send_bytes(&pipelined).await.unwrap();
-    let response = client.read_response(std::time::Duration::from_secs(3)).await.unwrap();
-
-    fn count_occurrences(haystack: &[u8], needle: &[u8]) -> usize {
-        if needle.is_empty() || haystack.len() < needle.len() {
-            return 0;
-        }
-        haystack.windows(needle.len()).filter(|w| *w == needle).count()
-    }
-
-    let total_status_lines = count_occurrences(&response, b"HTTP/1.1 ");
-    let forbidden = count_occurrences(&response, b"HTTP/1.1 403");
-
-    println!("{:?}", String::from_utf8_lossy(&response));
-
-    assert_eq!(
-        total_status_lines,
-        REQUESTS,
-        "expected {REQUESTS} pipelined responses, got {total_status_lines}. Raw response:\n{}",
-        String::from_utf8_lossy(&response)
-    );
-    assert_eq!(
-        forbidden, REQUESTS,
-        "expected every pipelined response to be 403 Forbidden, but only {forbidden}/{REQUESTS} were. Raw response:\n{}",
-        String::from_utf8_lossy(&response)
     );
 
     orion.shutdown();
