@@ -1034,6 +1034,7 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
         let mut cached_route = match_request_route(&request, &route_conf);
         let mut active_filters: SmallVec<[HttpFilterValue; 4]> = SmallVec::new();
 
+        let mut filter_start_idx = 0;
         let filter_response = 'filter_loop: loop {
             let Some(ref chosen_route) = cached_route else {
                 break 'filter_loop FilterDecision::DirectResponse(Box::new(
@@ -1054,7 +1055,8 @@ impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for A
 
             let mut reroute = false;
 
-            for filter in route_filters {
+            for filter in route_filters.iter().skip(filter_start_idx) {
+                filter_start_idx += 1;
                 if filter.disabled {
                     continue;
                 }
