@@ -813,6 +813,7 @@ impl ExternalProcessor {
                     EventFailure::ExtProcError.into(),
                     ResponseFlags(FmtResponseFlags::UPSTREAM_CONNECTION_FAILURE),
                 )
+                .with_close_connection(true)
                 .into_response(http_version),
             ))
         }

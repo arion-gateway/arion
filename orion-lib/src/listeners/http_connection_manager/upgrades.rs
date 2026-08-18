@@ -264,7 +264,9 @@ pub async fn handle_websocket_upgrade(
                 },
             }
         },
-        _ => Ok(SyntheticHttpResponse::bad_request(EventFailure::UpgradeFailed.into()).into_response(version)),
+        _ => Ok(SyntheticHttpResponse::bad_request(EventFailure::UpgradeFailed.into())
+            .with_close_connection(true)
+            .into_response(version)),
     }
 }
 

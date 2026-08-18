@@ -236,6 +236,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
                                 },
                                 _ => {
                                     return Ok(SyntheticHttpResponse::bad_request(EventFailure::UpgradeFailed.into())
+                                        .with_close_connection(true)
                                         .into_response(ver));
                                 },
                             }
@@ -261,9 +262,9 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
                         ctx.tx.shard_id(),
                         &[KeyValue::new("listener", connection_manager.listener_name)]
                     );
-                    return Ok(
-                        SyntheticHttpResponse::bad_request(EventFailure::UpgradeFailed.into()).into_response(ver)
-                    );
+                    return Ok(SyntheticHttpResponse::bad_request(EventFailure::UpgradeFailed.into())
+                        .with_close_connection(true)
+                        .into_response(ver));
                 }
 
                 if let Some(direct_response) = http_modifiers::apply_preflight_functions(&mut upstream_request) {

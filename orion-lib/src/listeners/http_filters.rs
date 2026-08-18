@@ -69,6 +69,7 @@ impl FilterDecision {
         FilterDecision::DirectResponse(Box::new(
             SyntheticHttpResponse::bad_request(EventFailure::DirectResponse.into())
                 .with_body(msg.to_owned())
+                .with_close_connection(true)
                 .into_response(ver),
         ))
     }

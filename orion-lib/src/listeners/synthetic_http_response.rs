@@ -43,7 +43,7 @@ impl SyntheticHttpResponse {
             event_kind,
             response_flags,
             body: Bytes::default(),
-            close_connection: true,
+            close_connection: false,
         }
     }
 
@@ -53,7 +53,7 @@ impl SyntheticHttpResponse {
             event_kind,
             response_flags,
             body: Bytes::default(),
-            close_connection: true,
+            close_connection: false,
         }
     }
 
@@ -63,7 +63,7 @@ impl SyntheticHttpResponse {
             event_kind,
             response_flags: ResponseFlags::default(),
             body: Bytes::default(),
-            close_connection: true,
+            close_connection: false,
         }
     }
 
@@ -73,8 +73,7 @@ impl SyntheticHttpResponse {
             event_kind,
             response_flags: ResponseFlags::default(),
             body: Bytes::default(),
-            //should this close actually? the connection seems to stay open since it's only triggered for a single http
-            close_connection: true,
+            close_connection: false,
         }
     }
 
@@ -85,7 +84,7 @@ impl SyntheticHttpResponse {
             event_kind,
             response_flags,
             body: Bytes::default(),
-            close_connection: true,
+            close_connection: false,
         }
     }
 
@@ -99,19 +98,13 @@ impl SyntheticHttpResponse {
         }
     }
 
-    pub fn into_circuit_breaker_response(self, version: http::Version) -> Response<OrionResponseBody> {
-        let mut rsp = self.into_response(version);
-        rsp.headers_mut().insert("x-envoy-overloaded", HeaderValue::from_static("true"));
-        rsp
-    }
-
     pub fn gateway_timeout(event_kind: EventKind, response_flags: ResponseFlags) -> Self {
         Self {
             http_status: StatusCode::GATEWAY_TIMEOUT,
             event_kind,
             response_flags,
             body: Bytes::default(),
-            close_connection: true,
+            close_connection: false,
         }
     }
 
@@ -132,7 +125,7 @@ impl SyntheticHttpResponse {
             event_kind,
             response_flags: ResponseFlags::default(),
             body: Bytes::default(),
-            close_connection: true,
+            close_connection: false,
         }
     }
 
@@ -142,7 +135,7 @@ impl SyntheticHttpResponse {
             event_kind,
             response_flags: ResponseFlags::default(),
             body: Bytes::default(),
-            close_connection: true,
+            close_connection: false,
         }
     }
 
@@ -153,13 +146,18 @@ impl SyntheticHttpResponse {
             event_kind,
             response_flags,
             body: Bytes::default(),
-            close_connection: true,
+            close_connection: false,
         }
     }
 
     #[allow(dead_code)]
     pub fn with_body<T: Into<Bytes>>(self, body: T) -> Self {
         Self { body: body.into(), ..self }
+    }
+
+    #[allow(dead_code)]
+    pub fn with_close_connection(self, close_connection: bool) -> Self {
+        Self { close_connection, ..self }
     }
 
     #[allow(dead_code)]
@@ -183,6 +181,13 @@ impl SyntheticHttpResponse {
             // Notify the (proxy or non-proxy) client that the connection will be closed.
             rsp.headers_mut().insert(http::header::CONNECTION, HeaderValue::from_static("close"));
         }
+        rsp
+    }
+
+    #[inline]
+    pub fn into_circuit_breaker_response(self, version: http::Version) -> Response<OrionResponseBody> {
+        let mut rsp = self.into_response(version);
+        rsp.headers_mut().insert("x-envoy-overloaded", HeaderValue::from_static("true"));
         rsp
     }
 }

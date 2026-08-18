@@ -2024,6 +2024,7 @@ fn reject_request_if_invalid(
                 debug!("Invalid number of host headers: {}", n);
                 Some(
                     SyntheticHttpResponse::bad_request(EventFailure::DirectResponse.into())
+                        .with_close_connection(true)
                         .into_response(request.version()),
                 )
             },
