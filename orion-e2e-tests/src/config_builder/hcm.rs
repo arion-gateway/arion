@@ -337,10 +337,25 @@ impl HcmBuilder {
 
     #[must_use]
     pub fn with_jwt_auth(self, jwks_inline: impl Into<String>, audiences: Vec<String>) -> Self {
+        self.with_jwt_auth_config(jwks_inline, audiences, &[], false)
+    }
+
+    /// JWT auth with optional `claim_to_headers` and `clear_route_cache`.
+    ///
+    /// When `clear_route_cache` is true, a successful authentication rematches the
+    /// request so later routes can select on headers copied from JWT claims.
+    #[must_use]
+    pub fn with_jwt_auth_config(
+        self,
+        jwks_inline: impl Into<String>,
+        audiences: Vec<String>,
+        claim_to_headers: &[(&str, &str)],
+        clear_route_cache: bool,
+    ) -> Self {
         use orion_data_plane_api::envoy_data_plane_api::envoy::config::route::v3::RouteMatch;
         use orion_data_plane_api::envoy_data_plane_api::envoy::extensions::filters::http::jwt_authn::v3::{
-            jwt_provider, jwt_requirement, requirement_rule, JwtAuthentication, JwtHeader, JwtProvider, JwtRequirement,
-            RequirementRule,
+            jwt_provider, jwt_requirement, requirement_rule, JwtAuthentication, JwtClaimToHeader, JwtHeader,
+            JwtProvider, JwtRequirement, RequirementRule,
         };
 
         let jwks_string = jwks_inline.into();
@@ -375,8 +390,14 @@ impl HcmBuilder {
             normalize_payload_in_metadata: None,
             failed_status_in_metadata: String::new(),
             clock_skew_seconds: 60,
-            claim_to_headers: vec![],
-            clear_route_cache: false,
+            claim_to_headers: claim_to_headers
+                .iter()
+                .map(|(header_name, claim_name)| JwtClaimToHeader {
+                    header_name: (*header_name).to_owned(),
+                    claim_name: (*claim_name).to_owned(),
+                })
+                .collect(),
+            clear_route_cache,
             jwt_cache_config: None,
         };
 
