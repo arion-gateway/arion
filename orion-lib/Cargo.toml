@@ -85,6 +85,7 @@ upon.workspace = true
 percent-encoding.workspace = true
 atomicoption.workspace = true
 papaya.workspace = true
+str-utils.workspace = true
 const-str.workspace = true
 hickory-resolver = { workspace = true, features = ["system-config"] }
 hyper = { workspace = true, features = ["full"] }

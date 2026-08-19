@@ -22,6 +22,7 @@ use orion_data_plane_api::envoy_data_plane_api::{
 };
 use serde::{Deserialize, Deserializer, Serialize};
 use smallvec::SmallVec;
+use smol_str::SmolStr;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum StatsSink {
@@ -126,7 +127,7 @@ impl PartitionKeySource for SourceHeaderNameOrSni {}
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct PartitionKey<P: PartitionKeySource> {
     pub source: P,
-    pub attribute_name: Option<String>,
+    pub attribute_name: Option<SmolStr>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -161,13 +162,15 @@ pub struct MetricsConfig {
 
 #[cfg(test)]
 mod tests {
+    use smol_str::ToSmolStr;
+
     use super::*;
 
     #[test]
     fn test_partition_key_header_name_deserialization() {
         let yaml = "source: !HeaderName x-user-id\nattribute_name: user\n";
         let key: PartitionKey<SourceHeaderName> = serde_yaml::from_str(yaml).expect("failed to parse HeaderName");
-        assert_eq!(key.attribute_name, Some("user".to_owned()));
+        assert_eq!(key.attribute_name, Some("user".to_smolstr()));
         assert!(matches!(key.source, SourceHeaderName::HeaderName(_)));
         println!("HeaderName YAML roundtrip:\n{}", serde_yaml::to_string(&key).unwrap());
     }
@@ -176,7 +179,7 @@ mod tests {
     fn test_partition_key_sni_deserialization() {
         let yaml = "source: Sni\nattribute_name: user\n";
         let key: PartitionKey<SourceHeaderNameOrSni> = serde_yaml::from_str(yaml).expect("failed to parse Sni");
-        assert_eq!(key.attribute_name, Some("user".to_owned()));
+        assert_eq!(key.attribute_name, Some("user".to_smolstr()));
         assert!(matches!(key.source, SourceHeaderNameOrSni::Sni));
         println!("Sni YAML roundtrip:\n{}", serde_yaml::to_string(&key).unwrap());
     }

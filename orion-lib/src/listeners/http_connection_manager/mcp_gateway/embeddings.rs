@@ -11,12 +11,14 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 
 use std::{
+    borrow::Cow,
     collections::{HashMap, HashSet},
     sync::Arc,
 };
 
 use ahash::RandomState;
 use smol_str::SmolStr;
+use str_utils::ToLowercase;
 
 mod remote;
 
@@ -89,7 +91,7 @@ impl Bm25Document {
     fn add_text(&mut self, text: &str, weight: u32) {
         for term in tokenize(text) {
             self.token_count += weight;
-            *self.term_frequencies.entry(SmolStr::new(&term)).or_default() += weight;
+            *self.term_frequencies.entry(SmolStr::new(term.as_ref())).or_default() += weight;
         }
     }
 
@@ -131,7 +133,7 @@ pub fn bm25_scores(query: &str, documents: &[&Bm25Document]) -> Vec<f32> {
     let idfs: Vec<f32> = query_terms
         .iter()
         .map(|term| {
-            let df = documents.iter().filter(|doc| doc.term_frequencies.contains_key(term.as_str())).count() as f32;
+            let df = documents.iter().filter(|doc| doc.term_frequencies.contains_key(term.as_ref())).count() as f32;
             (1.0 + (document_count - df + 0.5) / (df + 0.5)).ln()
         })
         .collect();
@@ -148,7 +150,7 @@ pub fn bm25_scores(query: &str, documents: &[&Bm25Document]) -> Vec<f32> {
                 .iter()
                 .zip(&idfs)
                 .map(|(term, idf)| {
-                    let Some(tf) = doc.term_frequencies.get(term.as_str()).copied() else {
+                    let Some(tf) = doc.term_frequencies.get(term.as_ref()).copied() else {
                         return 0.0;
                     };
                     let tf = tf as f32;
@@ -160,13 +162,15 @@ pub fn bm25_scores(query: &str, documents: &[&Bm25Document]) -> Vec<f32> {
         .collect()
 }
 
-fn unique_tokens(text: &str) -> Vec<String> {
+#[inline]
+fn unique_tokens(text: &str) -> Vec<Cow<'_, str>> {
     let mut seen = HashSet::new();
-    tokenize(text).into_iter().filter(|term| seen.insert(term.clone())).collect()
+    tokenize(text).filter(|term| seen.insert(term.clone())).collect()
 }
 
-fn tokenize(text: &str) -> Vec<String> {
-    text.split(|c: char| !c.is_alphanumeric()).filter(|term| !term.is_empty()).map(str::to_lowercase).collect()
+#[inline]
+fn tokenize(text: &str) -> impl Iterator<Item = Cow<'_, str>> {
+    text.split(|c: char| !c.is_alphanumeric()).filter(|term| !term.is_empty()).map(ToLowercase::to_lowercase_cow)
 }
 
 #[cfg(test)]
@@ -198,7 +202,7 @@ mod tests {
             return vec![0.0; documents.len()];
         }
 
-        let tokenized_documents: Vec<Vec<String>> = documents.iter().map(|doc| tokenize(doc)).collect();
+        let tokenized_documents: Vec<_> = documents.iter().map(|doc| tokenize(doc).collect()).collect();
         let avg_doc_len =
             tokenized_documents.iter().map(Vec::len).sum::<usize>() as f32 / tokenized_documents.len() as f32;
         if avg_doc_len == 0.0 {
@@ -207,7 +211,7 @@ mod tests {
 
         let mut document_frequencies: HashMap<&str, usize> = HashMap::new();
         for terms in &tokenized_documents {
-            let unique_doc_terms: HashSet<&str> = terms.iter().map(String::as_str).collect();
+            let unique_doc_terms: HashSet<&str> = terms.iter().map(AsRef::as_ref).collect();
             for term in unique_doc_terms {
                 *document_frequencies.entry(term).or_default() += 1;
             }
@@ -225,17 +229,17 @@ mod tests {
                 }
                 let mut term_frequencies: HashMap<&str, usize> = HashMap::new();
                 for term in terms {
-                    *term_frequencies.entry(term.as_str()).or_default() += 1;
+                    *term_frequencies.entry(term.as_ref()).or_default() += 1;
                 }
 
                 let doc_len = terms.len() as f32;
                 query_terms
                     .iter()
                     .map(|term| {
-                        let Some(tf) = term_frequencies.get(term.as_str()).copied() else {
+                        let Some(tf) = term_frequencies.get(term.as_ref()).copied() else {
                             return 0.0;
                         };
-                        let df = document_frequencies.get(term.as_str()).copied().unwrap_or(0) as f32;
+                        let df = document_frequencies.get(term.as_ref()).copied().unwrap_or(0) as f32;
                         let idf = (1.0 + (document_count - df + 0.5) / (df + 0.5)).ln();
                         let tf = tf as f32;
                         let denominator = tf + K1 * (1.0 - B + B * (doc_len / avg_doc_len));

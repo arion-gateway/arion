@@ -25,6 +25,7 @@ use orion_configuration::config::network_filters::http_connection_manager::http_
     DynamicMcpServer, EmbeddingVector, McpBackendTransportUpstream, McpSemanticSearch, McpTool, UpstreamBackend,
     UpstreamLimits,
 };
+use orion_interner::StringInterner;
 use pingora_timeout::fast_timeout::fast_timeout;
 use rmcp::{
     model::{
@@ -42,7 +43,8 @@ use rmcp::model::{ListToolsResult, Tool};
 use rmcp::service::{RoleClient, RunningService};
 use scopeguard::defer;
 use serde_json::{json, Value};
-use smol_str::SmolStr;
+use smol_str::{format_smolstr, SmolStr};
+use std::borrow::Cow;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
@@ -133,13 +135,13 @@ pub enum CallToolError {
     #[error("'name' parameter is missing or not a string")]
     NameNotString,
     #[error("tool '{0}' not found in registry")]
-    ToolNotFound(String),
+    ToolNotFound(SmolStr),
     #[error("access to tool '{0}' denied by RBAC policy")]
-    RbacDenied(String),
+    RbacDenied(SmolStr),
     #[error("FunctionGraph transcoding is not yet implemented")]
     FunctionGraphNotImplemented,
     #[error("Transcoder: tool: {tool} reason: {reason}")]
-    TranscoderError { tool: String, reason: String },
+    TranscoderError { tool: SmolStr, reason: String },
     #[error("Client initialization error: {0}")]
     ClientInitializeError(#[from] ClientInitializeError),
     #[error("ServiceError: {0}")]
@@ -147,7 +149,7 @@ pub enum CallToolError {
     #[error("SerdeError: {0}")]
     SerdeError(#[from] serde_json::Error),
     #[error("Validation error: {0}")]
-    ValidationError(String),
+    ValidationError(Cow<'static, str>),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -193,7 +195,7 @@ impl ToolEntry {
     ) -> Result<(), CallToolError> {
         if let Some(validator) = validator {
             if let Some(err) = validator.iter_errors(arguments).next() {
-                return Err(CallToolError::ValidationError(err.to_string()));
+                return Err(CallToolError::ValidationError(err.to_string().into()));
             }
         }
         Ok(())
@@ -522,7 +524,7 @@ impl ToolsRegistry {
             .into_iter()
             .map(|tool| {
                 let upstream_tool_name: SmolStr = tool.name.as_ref().into();
-                let exposed_name: SmolStr = format!("{server_name}{DYNAMIC_TOOL_SEPARATOR}{upstream_tool_name}").into();
+                let exposed_name = format_smolstr!("{server_name}{DYNAMIC_TOOL_SEPARATOR}{upstream_tool_name}");
                 let description = tool.description.as_deref().map(str::to_owned).unwrap_or_default();
                 let input_schema = tool.input_schema.as_ref().clone();
                 let conf = McpTool {
@@ -773,11 +775,11 @@ impl ToolsRegistry {
         let entry = self
             .get_tool_by_name(name)
             .filter(|_| !filter_by_active || session.active_tools.contains(name))
-            .ok_or_else(|| CallToolError::ToolNotFound(name.to_owned()))?;
+            .ok_or_else(|| CallToolError::ToolNotFound(name.into()))?;
 
         if let Some(rbac) = &entry.rbac {
             if !rbac.is_permitted(req_ext) {
-                return Err(CallToolError::RbacDenied(name.to_owned()));
+                return Err(CallToolError::RbacDenied(name.into()));
             }
         }
 
@@ -790,7 +792,7 @@ impl ToolsRegistry {
             (UpstreamBackend::Rest { .. }, TranscoderType::Rest(transcoder)) => {
                 let upstream_request = transcoder
                     .encode(req_headers, &rpc.request)
-                    .map_err(|e| CallToolError::TranscoderError { tool: name.to_owned(), reason: e.to_string() })?;
+                    .map_err(|e| CallToolError::TranscoderError { tool: name.into(), reason: e.to_string() })?;
                 let tool_result = upstream::invoke_rest_tool(&entry, upstream_request, upstream_limits, req_ctx)
                     .await
                     .into_call_tool_result();
@@ -843,9 +845,9 @@ impl ToolsRegistry {
                 let started = Instant::now();
                 let mut span = req_ctx.begin_upstream_span(url);
                 span.set_attributes([
-                    KeyValue::new("mcp.tool.name", name.to_owned()),
+                    KeyValue::new("mcp.tool.name", name.to_static_str()),
                     KeyValue::new("mcp.backend", "mcp_server"),
-                    KeyValue::new("mcp.upstream", url.to_owned()),
+                    KeyValue::new("mcp.upstream", url.to_static_str()),
                 ]);
                 let mut outcome = match fast_timeout(upstream_limits.timeout, invocation).await {
                     Err(_) => ToolInvocationOutcome::failure(ToolInvocationFailure::upstream_timeout()),
@@ -1379,7 +1381,7 @@ mod tests {
 
         for upstream in ["alpha", "beta"] {
             let conf = McpTool {
-                name: format!("srv__{upstream}").into(),
+                name: format_smolstr!("srv__{upstream}"),
                 description: String::new(),
                 input_schema: serde_json::Map::new(),
                 output_schema: serde_json::Map::new(),

@@ -16,6 +16,7 @@
 //
 
 use crate::Result;
+use ahash::HashSet;
 use chrono::{DateTime, Utc};
 use orion_configuration::{
     config::{
@@ -31,8 +32,8 @@ use rustls::{
 };
 use rustls_pemfile::{certs, pkcs8_private_keys};
 use serde::Serialize;
-use smol_str::{SmolStr, ToSmolStr};
-use std::{fmt::Write, sync::Arc};
+use smol_str::{format_smolstr, SmolStr, ToSmolStr};
+use std::sync::Arc;
 use tracing::{debug, warn};
 use webpki::types::ServerName;
 use x509_parser::extensions::GeneralName;
@@ -75,8 +76,8 @@ impl TryFrom<&ValidationContext> for CertStore {
 
 #[derive(Debug, Clone, Default)]
 pub struct SecretManager {
-    certificate_secrets: HashMap<String, Arc<CertificateSecret>>,
-    validation_contexts: HashMap<String, Arc<CertStore>>,
+    certificate_secrets: HashMap<SmolStr, Arc<CertificateSecret>>,
+    validation_contexts: HashMap<SmolStr, Arc<CertStore>>,
 }
 
 #[derive(Debug, Clone)]
@@ -139,21 +140,21 @@ impl TryFrom<&TlsCertificate> for CertificateSecret {
 #[derive(Debug, Clone, Serialize)]
 pub struct SubjectAltName {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub dns: Option<String>,
+    pub dns: Option<SmolStr>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub ip_address: Option<String>,
+    pub ip_address: Option<SmolStr>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub uri: Option<String>,
+    pub uri: Option<SmolStr>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CertDetails {
     pub path: String,
-    pub serial_number: String,
+    pub serial_number: SmolStr,
     pub subject_alt_names: Vec<SubjectAltName>,
-    pub days_until_expiration: String,
-    pub valid_from: String,
-    pub expiration_time: String,
+    pub days_until_expiration: SmolStr,
+    pub valid_from: SmolStr,
+    pub expiration_time: SmolStr,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -171,16 +172,28 @@ fn data_source_path(ds: &DataSource) -> &str {
 
 fn parse_cert_details(der: &[u8], path: &str) -> Option<CertDetails> {
     let (_, x509) = x509_parser::parse_x509_certificate(der).ok()?;
-    let serial_number = x509.raw_serial().iter().fold(String::new(), |mut serial, b| {
-        _ = write!(serial, "{b:02x}");
-        serial
-    });
+    let serial_number = {
+        use std::io::Write;
+        let mut builder = smol_str::SmolStrBuilder::new();
+        for b in x509.raw_serial() {
+            let mut buf = [0u8; 4];
+            // Create a mutable reference to the slice
+            let mut slice = &mut buf[..];
+            _ = write!(slice, "{b:02x}");
+            // Extract exactly the 2 written bytes from the original buffer
+            // and convert them to a string slice
+            let hex_str = unsafe { std::str::from_utf8_unchecked(&buf[..2]) };
+            builder.push_str(hex_str);
+        }
+
+        builder.finish()
+    };
     let validity = x509.validity();
     let valid_from =
-        DateTime::<Utc>::from_timestamp(validity.not_before.timestamp(), 0)?.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        DateTime::<Utc>::from_timestamp(validity.not_before.timestamp(), 0)?.format("%Y-%m-%dT%H:%M:%SZ").to_smolstr();
     let expiration_time =
-        DateTime::<Utc>::from_timestamp(validity.not_after.timestamp(), 0)?.format("%Y-%m-%dT%H:%M:%SZ").to_string();
-    let days_until_expiration = ((validity.not_after.timestamp() - Utc::now().timestamp()) / 86400).max(0).to_string();
+        DateTime::<Utc>::from_timestamp(validity.not_after.timestamp(), 0)?.format("%Y-%m-%dT%H:%M:%SZ").to_smolstr();
+    let days_until_expiration = ((validity.not_after.timestamp() - Utc::now().timestamp()) / 86400).max(0).to_smolstr();
     let subject_alt_names = x509
         .subject_alternative_name()
         .ok()
@@ -191,19 +204,19 @@ fn parse_cert_details(der: &[u8], path: &str) -> Option<CertDetails> {
                 .iter()
                 .filter_map(|name| match name {
                     GeneralName::DNSName(dns) => {
-                        Some(SubjectAltName { dns: Some((*dns).to_owned()), ip_address: None, uri: None })
+                        Some(SubjectAltName { dns: Some((*dns).to_smolstr()), ip_address: None, uri: None })
                     },
                     GeneralName::IPAddress(bytes) => {
                         let ip_str = if let [a, b, c, d] = bytes {
-                            format!("{a}.{b}.{c}.{d}")
+                            format_smolstr!("{a}.{b}.{c}.{d}")
                         } else {
                             let addr: [u8; 16] = (*bytes).try_into().ok()?;
-                            std::net::Ipv6Addr::from(addr).to_string()
+                            std::net::Ipv6Addr::from(addr).to_smolstr()
                         };
                         Some(SubjectAltName { dns: None, ip_address: Some(ip_str), uri: None })
                     },
                     GeneralName::URI(uri) => {
-                        Some(SubjectAltName { dns: None, ip_address: None, uri: Some((*uri).to_owned()) })
+                        Some(SubjectAltName { dns: None, ip_address: None, uri: Some((*uri).to_smolstr()) })
                     },
                     _ => None,
                 })
@@ -230,12 +243,12 @@ impl SecretManager {
         let secret = match secret.kind() {
             Type::TlsCertificate(certificate) => {
                 let secret = Arc::new(CertificateSecret::try_from(certificate)?);
-                let _ = self.certificate_secrets.insert(secret_id.to_owned(), Arc::clone(&secret));
+                let _ = self.certificate_secrets.insert(secret_id.to_smolstr(), Arc::clone(&secret));
                 TransportSecret::Certificate(secret)
             },
             Type::ValidationContext(validation_context) => {
                 let store = Arc::new(CertStore::try_from(validation_context)?);
-                let _ = self.validation_contexts.insert(secret_id.to_owned(), Arc::clone(&store));
+                let _ = self.validation_contexts.insert(secret_id.to_smolstr(), Arc::clone(&store));
                 TransportSecret::ValidationContext(store)
             },
         };
@@ -268,24 +281,19 @@ impl SecretManager {
     pub fn get_all_secrets(&self) -> Vec<Secret> {
         let mut secrets = Vec::new();
         secrets.extend(
-            self.certificate_secrets
-                .iter()
-                .map(|(name, secret)| Secret { name: name.into(), kind: Type::TlsCertificate(secret.config.clone()) }),
-        );
-        secrets.extend(
-            self.validation_contexts.iter().map(|(name, secret)| Secret {
-                name: name.into(),
-                kind: Type::ValidationContext(secret.config.clone()),
+            self.certificate_secrets.iter().map(|(name, secret)| Secret {
+                name: name.to_owned(),
+                kind: Type::TlsCertificate(secret.config.clone()),
             }),
         );
+        secrets.extend(self.validation_contexts.iter().map(|(name, secret)| Secret {
+            name: name.to_owned(),
+            kind: Type::ValidationContext(secret.config.clone()),
+        }));
         secrets
     }
 
-    pub fn get_certs_info(
-        &self,
-        cert_names: &std::collections::HashSet<String>,
-        ca_names: &std::collections::HashSet<String>,
-    ) -> Vec<CertInfo> {
+    pub fn get_certs_info(&self, cert_names: &HashSet<SmolStr>, ca_names: &HashSet<SmolStr>) -> Vec<CertInfo> {
         let mut result = Vec::new();
         for name in cert_names {
             let Some(cert_secret) = self.certificate_secrets.get(name.as_str()) else { continue };

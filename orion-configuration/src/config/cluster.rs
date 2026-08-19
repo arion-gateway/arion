@@ -216,7 +216,7 @@ pub struct TlsConfig {
     //  We could technically fall back to using the endpoint address/name for the sni
     // where no sni is configured here but that would require a major refactor.
     // previous behaviour was to set sni to the empty string if missing.
-    pub sni: SmolStr,
+    pub sni: String,
     #[serde(skip_serializing_if = "is_default", default)]
     pub parameters: TlsParameters,
     #[serde(skip_serializing_if = "Option::is_none", default = "Default::default", flatten)]

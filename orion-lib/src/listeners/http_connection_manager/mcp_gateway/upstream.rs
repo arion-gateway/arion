@@ -8,10 +8,10 @@ use orion_configuration::config::{
     network_filters::http_connection_manager::http_filters::mcp_gateway::{UpstreamBackend, UpstreamLimits},
 };
 use orion_http_header::X_REQUEST_ID;
+use orion_interner::StringInterner;
 use rmcp::model::{Annotated, CallToolResult, RawContent, RawTextContent};
 use serde::Serialize;
 use serde_json::{json, Value};
-use smol_str::SmolStr;
 
 #[cfg(feature = "metrics")]
 use {
@@ -126,9 +126,9 @@ pub async fn invoke_rest_tool(
     };
     let mut span = req_ctx.begin_upstream_span(cluster);
     span.set_attributes([
-        KeyValue::new("mcp.tool.name", tool.conf.name.to_string()),
+        KeyValue::new("mcp.tool.name", tool.conf.name.to_static_str()),
         KeyValue::new("mcp.backend", "rest"),
-        KeyValue::new("mcp.upstream", cluster.to_owned()),
+        KeyValue::new("mcp.upstream", cluster.to_static_str()),
     ]);
     let outcome = dispatch_rest_tool(tool, request, upstream_limits, req_ctx, &mut span).await;
     if let Some(code) = outcome_failure_code(&outcome) {
@@ -170,7 +170,7 @@ async fn dispatch_rest_tool(
     } else {
         request.headers_mut().remove(X_REQUEST_ID);
     }
-    let cluster_specifier = ClusterSpecifier::Cluster(SmolStr::from(cluster.as_str()));
+    let cluster_specifier = ClusterSpecifier::Cluster(cluster.clone());
     let acquired = match acquire_http_upstream(
         &cluster_specifier,
         &request,
@@ -350,7 +350,8 @@ pub(crate) fn outcome_failure_code(outcome: &ToolInvocationOutcome) -> Option<&'
 pub(crate) fn record_tool_invocation(tool_name: &str, started: Instant, outcome: &ToolInvocationOutcome) {
     let shard_id = get_shard_id!();
     let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-    let tool_attrs = &[KeyValue::new("tool", tool_name.to_owned())];
+    let tool_name = tool_name.to_static_str();
+    let tool_attrs = &[KeyValue::new("tool", tool_name)];
     with_metric!(mcp_metrics::TOOL_RQ_TOTAL, add, 1, shard_id, tool_attrs);
     with_histogram!(mcp_metrics::TOOL_RQ_TIME, record, elapsed_ms, shard_id, tool_attrs);
     if let Some(error_code) = outcome_failure_code(outcome) {
@@ -359,7 +360,7 @@ pub(crate) fn record_tool_invocation(tool_name: &str, started: Instant, outcome:
             add,
             1,
             shard_id,
-            &[KeyValue::new("tool", tool_name.to_owned()), KeyValue::new("error", error_code)]
+            &[KeyValue::new("tool", tool_name), KeyValue::new("error", error_code)]
         );
     }
 }
@@ -375,7 +376,7 @@ pub(crate) fn record_tool_response_bytes(tool_name: &str, bytes: usize) {
         record,
         bytes,
         get_shard_id!(),
-        &[KeyValue::new("tool", tool_name.to_owned())]
+        &[KeyValue::new("tool", tool_name.to_static_str())]
     );
 }
 

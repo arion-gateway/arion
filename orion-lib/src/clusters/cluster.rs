@@ -66,7 +66,7 @@ impl TryFrom<(Box<ClusterConfig>, &SecretManager)> for PartialClusterType {
             ClusterDiscoveryType::Static(cla) => {
                 let server_name = transport_socket
                     .tls_configurator()
-                    .map(|tls_configurator| ServerName::try_from(tls_configurator.sni()))
+                    .map(|tls_configurator| ServerName::try_from(tls_configurator.sni().to_owned()))
                     .transpose()?;
 
                 let cluster_name = cla.cluster_name.clone();
@@ -99,7 +99,7 @@ impl TryFrom<(Box<ClusterConfig>, &SecretManager)> for PartialClusterType {
             ClusterDiscoveryType::StrictDns(cla) => {
                 let server_name = transport_socket
                     .tls_configurator()
-                    .map(|tls_configurator| ServerName::try_from(tls_configurator.sni()))
+                    .map(|tls_configurator| ServerName::try_from(tls_configurator.sni().to_owned()))
                     .transpose()?;
 
                 let cla = ClusterLoadAssignmentBuilder::builder()
@@ -140,7 +140,7 @@ impl TryFrom<(Box<ClusterConfig>, &SecretManager)> for PartialClusterType {
                 let server_name = transport_socket
                     .tls_configurator()
                     .as_ref()
-                    .map(|tls_configurator| ServerName::try_from(tls_configurator.sni()))
+                    .map(|tls_configurator| ServerName::try_from(tls_configurator.sni().to_owned()))
                     .transpose()?;
 
                 Ok(PartialClusterType::OnDemand(Box::new(OriginalDstClusterBuilder {

@@ -91,15 +91,16 @@ impl JwtPayloadMatcher {
                     claims.aud.as_ref().is_some_and(|aud| aud.iter().any(|a| a.as_str() == self.value.as_str()))
                 },
                 JwtClaimField::JwtID => claims.jti.as_ref().is_some_and(|jti| jti.as_str() == self.value.as_str()),
-                JwtClaimField::Expiration => claims.exp.is_some_and(|exp| exp.to_string() == self.value.as_str()),
-                JwtClaimField::IssuedAt => claims.iat.is_some_and(|iat| iat.to_string() == self.value.as_str()),
-                JwtClaimField::NotBefore => claims.nbf.is_some_and(|nbf| nbf.to_string() == self.value.as_str()),
+                JwtClaimField::Expiration => claims.exp.is_some_and(|exp| u64_eq_str(exp, self.value.as_str())),
+                JwtClaimField::IssuedAt => claims.iat.is_some_and(|iat| u64_eq_str(iat, self.value.as_str())),
+                JwtClaimField::NotBefore => claims.nbf.is_some_and(|nbf| u64_eq_str(nbf, self.value.as_str())),
                 JwtClaimField::Extra(claim_name) => {
                     // Check custom claims
                     claims.extra.get(claim_name.as_str()).is_some_and(|v| match v {
                         Value::String(s) => s.as_str() == self.value.as_str(),
-                        Value::Number(n) => n.to_string() == self.value.as_str(),
-                        Value::Bool(b) => b.to_string() == self.value.as_str(),
+                        Value::Number(n) => json_number_eq_str(n, self.value.as_str()),
+                        Value::Bool(true) => self.value.as_str() == "true",
+                        Value::Bool(false) => self.value.as_str() == "false",
                         _ => false,
                     })
                 },
@@ -153,6 +154,29 @@ impl ToolRbac {
         );
 
         permitted
+    }
+}
+
+#[inline]
+fn i64_eq_str(n: i64, expected: &str) -> bool {
+    let mut buf = itoa::Buffer::new();
+    buf.format(n) == expected
+}
+
+#[inline]
+fn u64_eq_str(n: u64, expected: &str) -> bool {
+    let mut buf = itoa::Buffer::new();
+    buf.format(n) == expected
+}
+
+#[inline]
+fn json_number_eq_str(n: &serde_json::Number, expected: &str) -> bool {
+    if let Some(i) = n.as_i64() {
+        i64_eq_str(i, expected)
+    } else if let Some(u) = n.as_u64() {
+        u64_eq_str(u, expected)
+    } else {
+        n.to_string() == expected
     }
 }
 

@@ -17,6 +17,7 @@
 
 use std::{collections::BTreeMap, sync::Arc};
 
+use smol_str::SmolStr;
 use tokio::sync::{broadcast, mpsc, Notify};
 use tracing::{info, warn};
 
@@ -29,15 +30,15 @@ use crate::{secrets::TransportSecret, ConfigDump, Result};
 #[derive(Debug, Clone)]
 pub enum ListenerConfigurationChange {
     Added(Box<(ListenerFactory, ListenerConfig)>),
-    Removed(String),
-    TlsContextChanged((String, TransportSecret)),
+    Removed(SmolStr),
+    TlsContextChanged((SmolStr, TransportSecret)),
     GetConfiguration(mpsc::Sender<ConfigDump>),
 }
 
 #[derive(Clone)]
 pub enum RouteConfigurationChange {
-    Added((String, RouteConfiguration), Option<Arc<Notify>>),
-    Removed(String, Option<Arc<Notify>>),
+    Added((SmolStr, RouteConfiguration), Option<Arc<Notify>>),
+    Removed(SmolStr, Option<Arc<Notify>>),
 }
 
 impl std::fmt::Debug for RouteConfigurationChange {
@@ -50,7 +51,7 @@ impl std::fmt::Debug for RouteConfigurationChange {
 }
 #[derive(Debug, Clone)]
 pub enum TlsContextChange {
-    Updated((String, TransportSecret)),
+    Updated((SmolStr, TransportSecret)),
 }
 
 struct ListenerInfo {

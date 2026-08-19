@@ -42,7 +42,7 @@ pub struct EmbeddingsClient {
     cluster_id: &'static str,
     cluster_label: SmolStr,
     model_id: SmolStr,
-    path: String,
+    path: SmolStr,
     timeout: Duration,
     description: String,
     dimensions: AtomicUsize,
@@ -58,7 +58,7 @@ impl EmbeddingsClient {
     pub fn new(
         cluster: SmolStr,
         model_id: SmolStr,
-        path: String,
+        path: SmolStr,
         timeout: Option<Duration>,
         dimensions: usize,
     ) -> Self {
@@ -80,10 +80,10 @@ impl EmbeddingsClient {
 
     async fn post_for_embeddings(
         &self,
-        inputs: Vec<String>,
+        inputs: &[&str],
         req_ctx: &RequestCtx,
     ) -> Result<Vec<Vec<f32>>, EmbeddingError> {
-        let payload = EmbeddingsRequest { model: &self.model_id, input: &inputs };
+        let payload = EmbeddingsRequest { model: self.model_id.as_str(), input: inputs };
         let body_bytes = serde_json::to_vec(&payload).map_err(|e| EmbeddingError::Service(format!("encode: {e}")))?;
 
         let channels = clusters_manager::get_http_connection(self.cluster_id, RoutingContext::None)
@@ -173,7 +173,7 @@ impl EmbeddingsClient {
             return Self::test_embed_query(mode, text);
         }
 
-        let mut vectors = self.post_for_embeddings(vec![text.to_owned()], req_ctx).await?;
+        let mut vectors = self.post_for_embeddings(&[text], req_ctx).await?;
         let v = vectors.pop().ok_or_else(|| EmbeddingError::Service("empty result".into()))?;
         self.finalize(v)
     }
@@ -187,7 +187,8 @@ impl EmbeddingsClient {
         if texts.is_empty() {
             return Ok(Vec::new());
         }
-        let vectors = self.post_for_embeddings(texts.to_vec(), req_ctx).await?;
+        let inputs: Vec<&str> = texts.iter().map(String::as_str).collect();
+        let vectors = self.post_for_embeddings(&inputs, req_ctx).await?;
         let mut out = Vec::with_capacity(vectors.len());
         for v in vectors {
             out.push(self.finalize(v)?);
@@ -212,11 +213,13 @@ impl EmbeddingsClient {
 
     #[cfg(test)]
     fn new_test(description: &str, test_mode: TestMode) -> Self {
+        use orion_configuration::config::network_filters::http_connection_manager::http_filters::mcp_gateway::REMOTE_EMBEDDINGS_PATH;
+
         Self {
             cluster_id: "",
             cluster_label: "test".into(),
             model_id: "test-model".into(),
-            path: "/v1/embeddings".to_owned(),
+            path: SmolStr::new_inline(REMOTE_EMBEDDINGS_PATH),
             timeout: DEFAULT_EMBEDDINGS_TIMEOUT,
             description: description.to_owned(),
             dimensions: AtomicUsize::new(3),
@@ -251,7 +254,7 @@ impl EmbeddingsClient {
 #[derive(Serialize)]
 struct EmbeddingsRequest<'a> {
     model: &'a str,
-    input: &'a [String],
+    input: &'a [&'a str],
 }
 
 #[derive(Deserialize)]

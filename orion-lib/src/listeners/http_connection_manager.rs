@@ -283,7 +283,7 @@ impl TryFrom<ConversionContext<'_, HttpConnectionManagerConfig>> for PartialHttp
         let ConversionContext { envoy_object: configuration, .. } = ctx;
         let codec_type = configuration.codec_type;
         let enabled_upgrades = configuration.enabled_upgrades;
-        let http_filters_hcm = configuration
+        let http_filters_hcm: Vec<_> = configuration
             .http_filters
             .into_iter()
             .map(|f| -> Result<Arc<HttpFilter>> { Ok(Arc::new(HttpFilter::try_from(f)?)) })

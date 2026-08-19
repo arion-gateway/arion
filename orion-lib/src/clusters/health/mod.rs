@@ -23,6 +23,7 @@ use http::uri::Authority;
 
 pub use manager::HealthCheckManager;
 pub use orion_configuration::config::cluster::HealthStatus;
+use smol_str::SmolStr;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum ValueUpdated {
@@ -55,7 +56,7 @@ impl EndpointHealth for HealthStatus {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct EndpointId {
-    pub cluster: String,
+    pub cluster: SmolStr,
     pub endpoint: Authority,
 }
 

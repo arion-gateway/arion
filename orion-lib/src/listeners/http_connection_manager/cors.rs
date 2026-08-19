@@ -10,6 +10,7 @@ use http::{
 };
 use http_body_util::Empty;
 use orion_configuration::config::network_filters::http_connection_manager::http_filters::cors::CorsConfig;
+use str_utils::ToLowercase;
 use tracing::debug;
 
 use crate::{
@@ -83,14 +84,18 @@ impl Cors {
                 if let Some(req_headers_hdr) = req.headers().get(ACCESS_CONTROL_REQUEST_HEADERS) {
                     if let Ok(req_headers_str) = req_headers_hdr.to_str() {
                         // Parse comma-separated header names and validate each
-                        for requested_header in req_headers_str.split(',').map(|s| s.trim().to_ascii_lowercase()) {
+                        for requested_header in req_headers_str.split(',').map(|s| s.trim().to_ascii_lowercase_cow()) {
                             if requested_header.is_empty() {
                                 continue;
                             }
                             // Check if the requested header is in allowed headers (case-insensitive)
                             // We implicitly allow mcp-session-id to support the MCP Gateway
                             let is_allowed = requested_header == "mcp-session-id"
-                                || self.inner.allow_headers.iter().any(|h| h.to_ascii_lowercase() == requested_header);
+                                || self
+                                    .inner
+                                    .allow_headers
+                                    .iter()
+                                    .any(|h| h.to_ascii_lowercase_cow() == requested_header);
                             if !is_allowed {
                                 debug!(target: "cors", "Preflight failed: Header '{}' not allowed", requested_header);
                                 return FilterDecision::Continue;

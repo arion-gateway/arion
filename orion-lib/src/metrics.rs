@@ -49,7 +49,7 @@ macro_rules! get_shard_id {
 #[derive(Default)]
 pub struct PartitionKey<P: PartitionKeySource> {
     source: AtomicOption<P>,
-    attribute_name: AtomicOption<String>,
+    attribute_name: AtomicOption<SmolStr>,
 }
 
 impl<P> PartitionKey<P>
@@ -73,11 +73,11 @@ where
 
     #[inline]
     pub fn attribute_name(&self) -> Option<&str> {
-        self.attribute_name.as_ref(Ordering::Acquire).map(String::as_str)
+        self.attribute_name.as_ref(Ordering::Acquire).map(SmolStr::as_str)
     }
 
     #[inline]
-    pub fn set_attribute_name(&self, value: String) {
+    pub fn set_attribute_name(&self, value: SmolStr) {
         self.attribute_name.store(Ordering::Release, value);
     }
 }

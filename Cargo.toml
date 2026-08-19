@@ -151,6 +151,7 @@ serde_regex              = "1.1.0"
 serde_yaml               = "0.9.34"
 smallvec                 = { version = "1", features = ["union"] }
 smol_str                 = { version = "0.3.5", features = ["serde"] }
+str-utils 		         = "0.3.7"
 tempfile                 = "3.23"
 test-log                 = { version = "0.2.19", features = ["trace"] }
 thiserror                = "2.0.17"

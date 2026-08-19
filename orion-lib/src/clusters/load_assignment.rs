@@ -436,7 +436,7 @@ impl ClusterLoadAssignment {
     }
 
     pub fn rebuild(self) -> Result<Self> {
-        let endpoints = self
+        let endpoints: Vec<_> = self
             .endpoints
             .into_iter()
             .map(|mut e| {

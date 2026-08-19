@@ -8,7 +8,7 @@ use orion_http_header::MCP_SESSION_ID;
 use parking_lot::Mutex;
 use serde_json::{json, Value};
 use smallvec::{smallvec, SmallVec};
-use smol_str::{SmolStr, ToSmolStr};
+use smol_str::{format_smolstr, SmolStr, ToSmolStr};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -233,9 +233,9 @@ impl TryFrom<McpGatewayConfig> for McpGateway {
 
         let tds_registration = if let Some(tds) = &config.tds {
             let runtime_id = crate::runtime_context::get_runtime_id();
-            let server_name: SmolStr = config.server_info.name.as_str().into();
+            let server_name = config.server_info.name.clone();
             super::uniqueness::claim(runtime_id, server_name.clone()).map_err(ToolBuilderError::DuplicateServerName)?;
-            let scope: SmolStr = format!("{server_name}/{config_name}", config_name = tds.config_name).into();
+            let scope = format_smolstr!("{server_name}/{config_name}", config_name = tds.config_name);
             super::xds_handler::subscribe_for_updates(scope.clone(), &tools);
             Some(TdsRegistration { runtime_id, server_name, scope })
         } else {
@@ -619,7 +619,7 @@ impl McpGateway {
 
             let server_info = {
                 let info = &self.inner.config.server_info;
-                Implementation::new(info.name.clone(), info.version.clone())
+                Implementation::new(info.name.to_string(), info.version.to_string())
             };
 
             let result = InitializeResult::new(capabilities).with_server_info(server_info);

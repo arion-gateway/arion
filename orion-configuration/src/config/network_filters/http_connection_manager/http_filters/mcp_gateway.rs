@@ -6,7 +6,7 @@ use crate::config::network_filters::network_rbac::Action;
 use http::uri::Authority;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use smol_str::SmolStr;
+use smol_str::{format_smolstr, SmolStr};
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct McpGateway {
@@ -64,8 +64,8 @@ pub struct TdsSpecifier {
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct McpServerInfo {
-    pub name: String,
-    pub version: String,
+    pub name: SmolStr,
+    pub version: SmolStr,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
@@ -122,7 +122,7 @@ pub enum UpstreamBackend {
         method: http::Method,
         path: String,
         query_params: Vec<McpRestQueryParams>,
-        cluster: String,
+        cluster: SmolStr,
         #[serde(default)]
         upstream_policy: Box<HttpUpstreamPolicy>,
         body_template: Option<String>,
@@ -191,19 +191,21 @@ pub struct RemoteEmbeddings {
     pub cluster: SmolStr,
     pub model_id: SmolStr,
     #[serde(default = "RemoteEmbeddings::default_path", skip_serializing_if = "RemoteEmbeddings::is_default_path")]
-    pub path: String,
+    pub path: SmolStr,
     #[serde(with = "humantime_serde", skip_serializing_if = "Option::is_none", default)]
     pub timeout: Option<Duration>,
     pub dimensions: usize,
 }
 
+pub const REMOTE_EMBEDDINGS_PATH: &str = "/v1/embeddings";
+
 impl RemoteEmbeddings {
-    pub fn default_path() -> String {
-        "/v1/embeddings".to_owned()
+    pub fn default_path() -> SmolStr {
+        SmolStr::new_inline(REMOTE_EMBEDDINGS_PATH)
     }
 
     fn is_default_path(path: &str) -> bool {
-        path == Self::default_path()
+        path == REMOTE_EMBEDDINGS_PATH
     }
 
     pub fn normalized(mut self) -> Result<Self, String> {
@@ -219,7 +221,7 @@ impl RemoteEmbeddings {
         if self.path.is_empty() {
             self.path = Self::default_path();
         } else if !self.path.starts_with('/') {
-            self.path.insert(0, '/');
+            self.path = format_smolstr!("/{}", self.path);
         }
         Ok(self)
     }
@@ -458,7 +460,7 @@ mod envoy_conversions {
                         method: http::Method::from_str(&be.method)?,
                         path: be.path,
                         query_params: be.query_params.into_iter().map(Into::into).collect(),
-                        cluster,
+                        cluster: cluster.into(),
                         upstream_policy: Box::new(
                             be.upstream_policy.map(TryInto::try_into).transpose()?.unwrap_or_default(),
                         ),
@@ -490,7 +492,7 @@ mod envoy_conversions {
                     "McpServerInfo.name must not contain '/' (used as xDS resource-id separator)",
                 ));
             }
-            Ok(McpServerInfo { name: orion.name, version: orion.version })
+            Ok(McpServerInfo { name: orion.name.into(), version: orion.version.into() })
         }
     }
 
@@ -566,7 +568,7 @@ mod envoy_conversions {
             RemoteEmbeddings {
                 cluster: cluster.into(),
                 model_id: model_id.into(),
-                path,
+                path: path.into(),
                 timeout,
                 dimensions: dimensions as usize,
             }
@@ -678,7 +680,7 @@ mod envoy_conversions {
                 embeddings: Some(OrionRemoteEmbeddings {
                     cluster: "embeddings".to_owned(),
                     model_id: "test-model".to_owned(),
-                    path: "/v1/embeddings".to_owned(),
+                    path: REMOTE_EMBEDDINGS_PATH.to_owned(),
                     timeout: None,
                     dimensions: 384,
                 }),
@@ -689,7 +691,7 @@ mod envoy_conversions {
             let embeddings = parsed.embeddings.expect("remote embeddings config");
             assert_eq!(embeddings.cluster.as_str(), "embeddings");
             assert_eq!(embeddings.model_id.as_str(), "test-model");
-            assert_eq!(embeddings.path, "/v1/embeddings");
+            assert_eq!(embeddings.path, REMOTE_EMBEDDINGS_PATH);
             assert_eq!(embeddings.dimensions, 384);
         }
 
@@ -719,7 +721,7 @@ mod envoy_conversions {
             RemoteEmbeddings {
                 cluster: cluster.into(),
                 model_id: model_id.into(),
-                path: path.to_owned(),
+                path: path.into(),
                 timeout: None,
                 dimensions,
             }
@@ -727,7 +729,7 @@ mod envoy_conversions {
 
         #[test]
         fn normalized_prepends_leading_slash_and_defaults_empty_path() {
-            assert_eq!(remote("c", "m", "v1/embeddings", 384).normalized().unwrap().path, "/v1/embeddings");
+            assert_eq!(remote("c", "m", "v1/embeddings", 384).normalized().unwrap().path, REMOTE_EMBEDDINGS_PATH);
             assert_eq!(remote("c", "m", "", 384).normalized().unwrap().path, RemoteEmbeddings::default_path());
             assert_eq!(remote("c", "m", "/custom", 384).normalized().unwrap().path, "/custom");
         }

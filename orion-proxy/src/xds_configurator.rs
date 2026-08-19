@@ -37,6 +37,7 @@ use orion_xds::{
 };
 use parking_lot::RwLock;
 use pingora_timeout::fast_timeout::fast_timeout;
+use smol_str::SmolStr;
 #[cfg(feature = "tracing")]
 use smol_str::ToSmolStr;
 use std::{sync::Arc, time::Duration};
@@ -213,7 +214,7 @@ impl XdsConfigurationHandler {
                 Ok(())
             },
             orion_xds::xds::model::TypeUrl::Listener => {
-                let change = ListenerConfigurationChange::Removed(id.to_owned());
+                let change = ListenerConfigurationChange::Removed(id.into());
                 let _ = send_change_to_runtimes(&self.listeners_senders, change).await.ok();
                 // remove access logs configuration...
                 self.access_log_listener_remove(id).await;
@@ -229,7 +230,7 @@ impl XdsConfigurationHandler {
             },
             orion_xds::xds::model::TypeUrl::RouteConfiguration => {
                 let notify = Arc::new(Notify::new());
-                let change = RouteConfigurationChange::Removed(id.to_owned(), Some(Arc::clone(&notify)));
+                let change = RouteConfigurationChange::Removed(id.into(), Some(Arc::clone(&notify)));
                 let _ = send_change_to_runtimes(&self.route_senders, change).await.ok();
                 match fast_timeout(ROUTE_UPDATE_TIMEOUT, notify.notified()).await {
                     Ok(()) => Ok(()),
@@ -291,7 +292,7 @@ impl XdsConfigurationHandler {
             XdsResourcePayload::RouteConfiguration(id, route) => {
                 debug!("Got update for route configuration {id}: {:#?}", route);
                 let notify = Arc::new(Notify::new());
-                let change = RouteConfigurationChange::Added((id.clone(), route), Some(Arc::clone(&notify)));
+                let change = RouteConfigurationChange::Added((SmolStr::new(&id), route), Some(Arc::clone(&notify)));
                 let _ = send_change_to_runtimes(&self.route_senders, change).await.ok();
                 match fast_timeout(ROUTE_UPDATE_TIMEOUT, notify.notified()).await {
                     Ok(()) => Ok(()),
@@ -328,7 +329,7 @@ impl XdsConfigurationHandler {
                         for cluster_config in cluster_configs {
                             self.health_manager.restart_cluster(cluster_config).await;
                         }
-                        let change = ListenerConfigurationChange::TlsContextChanged((id.clone(), secret));
+                        let change = ListenerConfigurationChange::TlsContextChanged((SmolStr::new(&id), secret));
                         let _ = send_change_to_runtimes(&self.listeners_senders, change).await.ok();
                         Ok(())
                     },
