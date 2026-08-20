@@ -45,10 +45,13 @@ const HOP_BY_HOP_HEADERS: &[HeaderName] = &[
     header::TRANSFER_ENCODING,
     header::UPGRADE,
 ];
-pub fn apply_prerouting_functions<T>(request: &mut Request<T>, downstream_addr: SocketAddr, xff_settings: XffSettings) {
-    process_xff_headers(request, downstream_addr, xff_settings);
+
+#[inline]
+pub fn apply_prerouting_functions<T>(request: &mut Request<T>, downstream_addr: SocketAddr, xff_settings: &XffSettings) {
+    apply_xff_headers(request, downstream_addr, xff_settings);
 }
 
+#[inline]
 pub fn apply_preflight_functions<T>(request: &mut Request<T>) -> Option<Response<OrionResponseBody>> {
     if let Some(direct_response) = filter_disallowed_requests(request) {
         return Some(direct_response);
@@ -102,7 +105,7 @@ pub fn strip_trailers_headers(http_version: Codec, headers: &mut HeaderMap) {
     }
 }
 
-fn process_xff_headers<T>(request: &mut Request<T>, downstream_addr: SocketAddr, xff_settings: XffSettings) {
+fn apply_xff_headers<T>(request: &mut Request<T>, downstream_addr: SocketAddr, xff_settings: &XffSettings) {
     let headers = request.headers_mut();
     let downstream_is_internal = is_internal_ip(downstream_addr.ip());
     let downstream_is_external = !downstream_is_internal;
@@ -120,14 +123,17 @@ fn process_xff_headers<T>(request: &mut Request<T>, downstream_addr: SocketAddr,
     let existing_xff = headers.get(X_FORWARDED_FOR).and_then(|value| value.to_str().ok());
     let (trusted_client_address, xff_contains_single_ip) =
         determine_trusted_client_address(existing_xff, downstream_addr, xff_settings);
-    let xff_contains_single_internal_ip = xff_contains_single_ip && is_internal_ip(trusted_client_address);
-    let xff_contains_single_external_ip = xff_contains_single_ip && !is_internal_ip(trusted_client_address);
+
+    let is_internal_trusted_client = is_internal_ip(trusted_client_address);
+    let xff_contains_single_internal_ip = xff_contains_single_ip && is_internal_trusted_client;
+    let xff_contains_single_external_ip = xff_contains_single_ip && !is_internal_trusted_client;
+
     let has_incoming_xff = existing_xff.is_some();
 
     let should_update_xff = xff_settings.use_remote_address && !xff_settings.skip_xff_append;
     let should_set_envoy_external = xff_settings.use_remote_address
         && !headers.contains_key(X_ENVOY_EXTERNAL_ADDRESS)
-        && !is_internal_ip(trusted_client_address);
+        && !is_internal_trusted_client;
     let should_set_envoy_internal = (xff_settings.use_remote_address && downstream_is_internal && !has_incoming_xff)
         || xff_contains_single_internal_ip;
     let should_mark_envoy_internal_false =
@@ -181,7 +187,7 @@ fn append_hop_to_xff(existing_xff: Option<&str>, downstream_ip: IpAddr) -> Strin
 fn determine_trusted_client_address(
     existing_xff: Option<&str>,
     downstream_addr: SocketAddr,
-    xff_settings: XffSettings,
+    xff_settings: &XffSettings,
 ) -> (IpAddr, bool) {
     let mut trusted_client_address = downstream_addr.ip();
     let mut xff_contains_single_ip = false;
@@ -219,6 +225,7 @@ pub trait HeaderMapModifier<M> {
 }
 
 impl<B> HeaderMapModifier<&HeaderModifiersRemove> for Request<B> {
+    #[inline]
     fn apply_mutation(&mut self, modifier: &HeaderModifiersRemove) {
         for name in &modifier.0 {
             self.headers_mut().remove(name);
@@ -227,6 +234,7 @@ impl<B> HeaderMapModifier<&HeaderModifiersRemove> for Request<B> {
 }
 
 impl<B> HeaderMapModifier<&HeaderModifiersRemove> for Response<B> {
+    #[inline]
     fn apply_mutation(&mut self, modifier: &HeaderModifiersRemove) {
         for name in &modifier.0 {
             self.headers_mut().remove(name);
@@ -235,6 +243,7 @@ impl<B> HeaderMapModifier<&HeaderModifiersRemove> for Response<B> {
 }
 
 impl<B> HeaderMapModifier<(&HeaderModifiersAdd, &ConnMeta)> for Request<B> {
+    #[inline]
     fn apply_mutation(&mut self, (modifier, conn): (&HeaderModifiersAdd, &ConnMeta)) {
         for modifier in &modifier.0 {
             modifier.apply_to_request(self, conn);
@@ -243,6 +252,7 @@ impl<B> HeaderMapModifier<(&HeaderModifiersAdd, &ConnMeta)> for Request<B> {
 }
 
 impl<B> HeaderMapModifier<(&HeaderModifiersAdd, &ConnMeta)> for Response<B> {
+    #[inline]
     fn apply_mutation(&mut self, (modifier, conn): (&HeaderModifiersAdd, &ConnMeta)) {
         for modifier in &modifier.0 {
             modifier.apply_to_response(self, conn);
@@ -255,6 +265,7 @@ where
     Request<B>: HeaderMapModifier<&'m1 M1>,
     Request<B>: HeaderMapModifier<&'m2 M2>,
 {
+    #[inline]
     fn apply_mutation(&mut self, (m1, m2): (&'m1 M1, &'m2 M2)) {
         self.apply_mutation(m1);
         self.apply_mutation(m2);
@@ -266,6 +277,7 @@ where
     Response<B>: HeaderMapModifier<&'m1 M1>,
     Response<B>: HeaderMapModifier<&'m2 M2>,
 {
+    #[inline]
     fn apply_mutation(&mut self, (m1, m2): (&'m1 M1, &'m2 M2)) {
         self.apply_mutation(m1);
         self.apply_mutation(m2);
@@ -281,36 +293,42 @@ pub trait ModifiersExtractor<T: ModifierType> {
 }
 
 impl<B> ModifiersExtractor<Request<B>> for Route {
+    #[inline]
     fn extract(&self) -> (&HeaderModifiersRemove, &HeaderModifiersAdd) {
         (&self.request_headers_to_remove, &self.request_headers_to_add)
     }
 }
 
 impl<B> ModifiersExtractor<Response<B>> for Route {
+    #[inline]
     fn extract(&self) -> (&HeaderModifiersRemove, &HeaderModifiersAdd) {
         (&self.response_headers_to_remove, &self.response_headers_to_add)
     }
 }
 
 impl<B> ModifiersExtractor<Request<B>> for VirtualHost {
+    #[inline]
     fn extract(&self) -> (&HeaderModifiersRemove, &HeaderModifiersAdd) {
         (&self.request_headers_to_remove, &self.request_headers_to_add)
     }
 }
 
 impl<B> ModifiersExtractor<Response<B>> for VirtualHost {
+    #[inline]
     fn extract(&self) -> (&HeaderModifiersRemove, &HeaderModifiersAdd) {
         (&self.response_headers_to_remove, &self.response_headers_to_add)
     }
 }
 
 impl<B> ModifiersExtractor<Request<B>> for RouteConfiguration {
+    #[inline]
     fn extract(&self) -> (&HeaderModifiersRemove, &HeaderModifiersAdd) {
         (&self.request_headers_to_remove, &self.request_headers_to_add)
     }
 }
 
 impl<B> ModifiersExtractor<Response<B>> for RouteConfiguration {
+    #[inline]
     fn extract(&self) -> (&HeaderModifiersRemove, &HeaderModifiersAdd) {
         (&self.response_headers_to_remove, &self.response_headers_to_add)
     }
@@ -453,7 +471,7 @@ mod tests {
         let downstream_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 5)), 80);
         let xff_settings = XffSettings { use_remote_address: true, skip_xff_append: false, xff_num_trusted_hops: 0 };
 
-        process_xff_headers(&mut request, downstream_addr, xff_settings);
+        apply_xff_headers(&mut request, downstream_addr, &xff_settings);
 
         assert_eq!(request.headers().get("x-envoy-external-address").unwrap(), "192.0.2.5");
         assert_eq!(
@@ -472,7 +490,7 @@ mod tests {
         let downstream_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 11, 12, 13)), 80);
         let xff_settings = XffSettings { use_remote_address: false, skip_xff_append: false, xff_num_trusted_hops: 0 };
 
-        process_xff_headers(&mut request, downstream_addr, xff_settings);
+        apply_xff_headers(&mut request, downstream_addr, &xff_settings);
 
         assert!(request.headers().get("x-envoy-external-address").is_none());
         assert_eq!(
@@ -489,7 +507,7 @@ mod tests {
         let downstream_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 5)), 80);
         let xff_settings = XffSettings { use_remote_address: true, skip_xff_append: false, xff_num_trusted_hops: 2 };
 
-        process_xff_headers(&mut request, downstream_addr, xff_settings);
+        apply_xff_headers(&mut request, downstream_addr, &xff_settings);
 
         assert_eq!(request.headers().get("x-envoy-external-address").unwrap(), "203.0.113.10");
         assert_eq!(
@@ -508,7 +526,7 @@ mod tests {
         let downstream_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 11, 12, 13)), 80);
         let xff_settings = XffSettings { use_remote_address: false, skip_xff_append: false, xff_num_trusted_hops: 0 };
 
-        process_xff_headers(&mut request, downstream_addr, xff_settings);
+        apply_xff_headers(&mut request, downstream_addr, &xff_settings);
 
         assert!(request.headers().get("x-envoy-external-address").is_none());
         assert_eq!(
@@ -524,7 +542,7 @@ mod tests {
         let downstream_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 20, 30, 40)), 80);
         let xff_settings = XffSettings { use_remote_address: false, skip_xff_append: false, xff_num_trusted_hops: 0 };
 
-        process_xff_headers(&mut request, downstream_addr, xff_settings);
+        apply_xff_headers(&mut request, downstream_addr, &xff_settings);
 
         assert!(request.headers().get("x-envoy-external-address").is_none());
         assert!(request.headers().get("x-forwarded-for").is_none());
@@ -538,7 +556,7 @@ mod tests {
         let downstream_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 20, 30, 50)), 80);
         let xff_settings = XffSettings { use_remote_address: false, skip_xff_append: false, xff_num_trusted_hops: 0 };
 
-        process_xff_headers(&mut request, downstream_addr, xff_settings);
+        apply_xff_headers(&mut request, downstream_addr, &xff_settings);
 
         assert!(request.headers().get("x-envoy-external-address").is_none());
         assert_eq!(request.headers().get("x-forwarded-for").unwrap(), "10.20.30.40");

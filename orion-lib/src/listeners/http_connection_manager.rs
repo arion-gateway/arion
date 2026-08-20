@@ -856,7 +856,7 @@ impl HttpPipelineSvc {
             }
 
             // apply the request header modifiers
-            http_modifiers::apply_prerouting_functions(&mut request, downstream_addr, manager.xff_settings);
+            http_modifiers::apply_prerouting_functions(&mut request, downstream_addr, &manager.xff_settings);
 
             // process request, get the response..
             let result = route_conf.to_response(&ctx, request, Arc::clone(&manager)).await;
