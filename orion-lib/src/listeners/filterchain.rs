@@ -267,7 +267,6 @@ impl FilterchainType {
                         shard_id, &[KeyValue::new("listener", listener_name)]);
                 }
 
-                let trans_svc = http_connection_manager.transaction_context_svc();
                 // codec type as given in the listener, not alpn
                 let codec_type = http_connection_manager.codec_type;
                 let tls_config = config.tls_configurator.as_ref().map(TlsConfigurator::server_config);
@@ -306,13 +305,10 @@ impl FilterchainType {
                     CodecType::Http2 => hyper_server.http2_only(),
                     CodecType::Auto => hyper_server,
                 };
-                let metadata_svc = crate::listeners::http_connection_manager::MetadataSvc::new(
-                    metadata,
-                    Arc::clone(&stream_metrics),
-                    trans_svc,
-                );
+                let trans_svc = http_connection_manager
+                    .transaction_context_svc(metadata, Arc::clone(&stream_metrics));
                 hyper_server
-                    .serve_connection_with_upgrades(stream, metadata_svc)
+                    .serve_connection_with_upgrades(stream, trans_svc)
                     .await
                     .inspect_err(|err| debug!("{listener_name} : HTTP connection error: {err}"))
                     .map_err(Error::from)

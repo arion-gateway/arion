@@ -155,12 +155,11 @@ impl Write for LengthCounter {
 
 #[derive(Debug, Clone)]
 // =================================================================================================
-// HTTP Connection Manager - Service Stack Architecture
+// HTTP Connection Manager - Request Pipeline Architecture
 // =================================================================================================
 //
-// The HTTP request processing is structured as a stack of strongly-typed `hyper::Service` layers.
-// Each layer wraps the request in a specific type, adding context as it moves down the stack,
-// and performs pre-processing (before calling the inner service) and post-processing (after).
+// Hyper requires a single `Service<Request<Incoming>>` with a `'static` future. Only that boundary
+// is boxed. Inner stages are plain async methods on typed envelopes (no extra `BoxFuture`).
 //
 // +-----------------------------------------------------------------------------------------------+
 // | Hyper Server (hyper::server::conn::http1 / http2)                                             |
@@ -169,24 +168,16 @@ impl Write for LengthCounter {
 //                                |
 //                                v
 // +-----------------------------------------------------------------------------------------------+
-// | 1. MetadataSvc                                                                                |
+// | 1. TransactionLifecycleSvc  (hyper::Service, sole BoxFuture)                                  |
 // |   Input:  Request<Incoming>                                                                   |
-// |   Action: Attaches connection-scoped ConnMeta (Arc downstream + stream metrics).              |
-// |   Output: IncomingHttpRequest<Incoming>                                                       |
-// +-----------------------------------------------------------------------------------------------+
-//                                |
-//                                v
-// +-----------------------------------------------------------------------------------------------+
-// | 2. TransactionLifecycleSvc                                                                  |
-// |   Input:  IncomingHttpRequest<Incoming>                                                       |
-// |   Action: Request ID, span, TransactionContext → RequestCtx.                                  |
-// |           Bridge (temporary): also inserts ctx into request.extensions for filters/WASM.      |
+// |   Action: Attach ConnMeta, request ID, span, TransactionContext → RequestCtx.                 |
+// |           Map crate::Error → Box<dyn Error> for Hyper.                                        |
 // |   Output: HttpRequest<Incoming>                                                               |
 // +-----------------------------------------------------------------------------------------------+
 //                                |
 //                                v
 // +-----------------------------------------------------------------------------------------------+
-// | 3. TransactionSvc                                                                         |
+// | 2. TransactionSvc  (async fn, unboxed)                                                        |
 // |   Input:  HttpRequest<Incoming>                                                               |
 // |   Action: Metrics, validation, instrumented body, resolve route_conf.                         |
 // |   Output: RoutedHttpRequest<OrionRequestBody>                                                 |
@@ -194,7 +185,7 @@ impl Write for LengthCounter {
 //                                |
 //                                v
 // +-----------------------------------------------------------------------------------------------+
-// | 4. HttpPipelineSvc (Terminal Service)                                                     |
+// | 3. HttpPipelineSvc  (async fn, unboxed)                                                       |
 // |   Input:  RoutedHttpRequest<OrionRequestBody>                                                 |
 // |   Action: Filter chain + routing via RequestHandler (ctx passed explicitly).                  |
 // |   Output: Response<OrionRequestBody>                                                          |
@@ -399,11 +390,13 @@ impl HttpConnectionManager {
     #[allow(clippy::type_complexity)]
     pub(crate) fn transaction_context_svc(
         self: &Arc<Self>,
+        downstream: Arc<DownstreamMetadata>,
+        stream_metrics: Arc<StreamMetrics>,
     ) -> TransactionLifecycleSvc<TransactionSvc<HttpPipelineSvc>> {
         let pipeline_service = HttpPipelineSvc::new(Arc::clone(self));
         let transaction_service =
             TransactionSvc::new(Arc::clone(self), self.router_sender.subscribe(), pipeline_service);
-        TransactionLifecycleSvc::new(Arc::clone(self), transaction_service)
+        TransactionLifecycleSvc::new(Arc::clone(self), downstream, stream_metrics, transaction_service)
     }
 }
 
@@ -820,17 +813,13 @@ impl HttpPipelineSvc {
     pub fn new(manager: Arc<HttpConnectionManager>) -> Self {
         Self { manager }
     }
-}
-
-impl Service<RoutedHttpRequest<OrionRequestBody>> for HttpPipelineSvc {
-    type Response = Response<OrionRequestBody>;
-    type Error = crate::Error;
-    type Future = BoxFuture<'static, StdResult<Self::Response, Self::Error>>;
 
     #[allow(clippy::too_many_lines)]
-    fn call(&self, req: RoutedHttpRequest<OrionRequestBody>) -> Self::Future {
+    async fn call(
+        &self,
+        req: RoutedHttpRequest<OrionRequestBody>,
+    ) -> StdResult<Response<OrionRequestBody>, crate::Error> {
         let manager = Arc::clone(&self.manager);
-        Box::pin(async move {
             let RoutedHttpRequest { http: HttpRequest { mut request, ctx }, route_conf } = req;
             let trans_ctx = Arc::clone(&ctx.tx);
             let stream_metrics = Arc::clone(&ctx.conn.stream_metrics);
@@ -1014,7 +1003,6 @@ impl Service<RoutedHttpRequest<OrionRequestBody>> for HttpPipelineSvc {
                     )
                 })
             })
-        })
     }
 }
 
@@ -1315,12 +1303,6 @@ impl Default for RequestCtx {
     }
 }
 
-/// HTTP request + connection meta (before transaction is created).
-pub struct IncomingHttpRequest<B> {
-    pub request: Request<B>,
-    pub conn: ConnMeta,
-}
-
 /// HTTP request + full request context (conn + transaction).
 pub struct HttpRequest<B> {
     pub request: Request<B>,
@@ -1341,61 +1323,30 @@ pub struct RoutedHttpRequest<B> {
 }
 
 #[derive(Clone)]
-pub struct MetadataSvc<S> {
-    conn: ConnMeta,
-    inner: S,
-}
-
-impl<S> MetadataSvc<S> {
-    pub fn new(downstream: Arc<DownstreamMetadata>, stream_metrics: Arc<StreamMetrics>, inner: S) -> Self {
-        Self { conn: ConnMeta::new(downstream, stream_metrics), inner }
-    }
-}
-
-impl<S, ReqBody> Service<Request<ReqBody>> for MetadataSvc<S>
-where
-    S: Service<IncomingHttpRequest<ReqBody>, Error = crate::Error> + Clone,
-    S::Future: Send + 'static,
-{
-    type Response = S::Response;
-    type Error = Box<dyn std::error::Error + Send + Sync>;
-    type Future = futures::future::BoxFuture<'static, std::result::Result<Self::Response, Self::Error>>;
-
-    fn call(&self, req: Request<ReqBody>) -> Self::Future {
-        let fut = self.inner.call(IncomingHttpRequest { request: req, conn: self.conn.clone() });
-        Box::pin(
-            async move { fut.await.map_err(|e| Box::new(e.into_inner()) as Box<dyn std::error::Error + Send + Sync>) },
-        )
-    }
-}
-
-#[derive(Clone)]
 pub struct TransactionLifecycleSvc<S> {
+    conn: ConnMeta,
     manager: Arc<HttpConnectionManager>,
     inner: S,
 }
 
 impl<S> TransactionLifecycleSvc<S> {
-    pub fn new(manager: Arc<HttpConnectionManager>, inner: S) -> Self {
-        Self { manager, inner }
+    pub fn new(
+        manager: Arc<HttpConnectionManager>,
+        downstream: Arc<DownstreamMetadata>,
+        stream_metrics: Arc<StreamMetrics>,
+        inner: S,
+    ) -> Self {
+        Self { conn: ConnMeta::new(downstream, stream_metrics), manager, inner }
     }
 }
 
-impl<S> Service<IncomingHttpRequest<Incoming>> for TransactionLifecycleSvc<S>
-where
-    S: Service<HttpRequest<Incoming>, Response = Response<OrionRequestBody>, Error = crate::Error>
-        + Clone
-        + Send
-        + Sync
-        + 'static,
-    S::Future: Send + 'static,
-{
-    type Response = S::Response;
-    type Error = S::Error;
+impl Service<Request<Incoming>> for TransactionLifecycleSvc<TransactionSvc<HttpPipelineSvc>> {
+    type Response = Response<OrionRequestBody>;
+    type Error = Box<dyn std::error::Error + Send + Sync>;
     type Future = BoxFuture<'static, StdResult<Self::Response, Self::Error>>;
 
-    fn call(&self, req: IncomingHttpRequest<Incoming>) -> Self::Future {
-        let IncomingHttpRequest { request: incoming_request, conn } = req;
+    fn call(&self, incoming_request: Request<Incoming>) -> Self::Future {
+        let conn = self.conn.clone();
         let incoming_request_id = RequestId::from_request(&incoming_request);
         let incoming_version = incoming_request.version();
         let listener_name = self.manager.listener_name;
@@ -1484,7 +1435,7 @@ where
             let response = inner.call(http_req).await;
 
             trans_ctx.trace_status_code(&response, listener_name);
-            if let Err(err) = response {
+            let response = if let Err(err) = response {
                 error!("Error during handling HTTP transaction: {}", err);
                 let msg = err.to_string();
                 let response = SyntheticHttpResponse::internal_server_error(
@@ -1496,7 +1447,8 @@ where
                 Ok(response.map(|body| InstrumentedBody::new(BodyKind::Response, body, None, |_, _, _, _| {})))
             } else {
                 response
-            }
+            };
+            response.map_err(|e| Box::new(e.into_inner()) as Box<dyn std::error::Error + Send + Sync>)
         })
     }
 }
@@ -1518,21 +1470,9 @@ impl<S> TransactionSvc<S> {
     }
 }
 
-impl<S> Service<HttpRequest<Incoming>> for TransactionSvc<S>
-where
-    S: Service<RoutedHttpRequest<OrionRequestBody>, Response = Response<OrionRequestBody>, Error = crate::Error>
-        + Clone
-        + Send
-        + Sync
-        + 'static,
-    S::Future: Send + 'static,
-{
-    type Response = S::Response;
-    type Error = S::Error;
-    type Future = BoxFuture<'static, StdResult<Self::Response, Self::Error>>;
-
+impl TransactionSvc<HttpPipelineSvc> {
     #[allow(clippy::too_many_lines)]
-    fn call(&self, req: HttpRequest<Incoming>) -> Self::Future {
+    async fn call(&self, req: HttpRequest<Incoming>) -> StdResult<Response<OrionRequestBody>, crate::Error> {
         let HttpRequest { request, ctx } = req;
         let trans_ctx = Arc::clone(&ctx.tx);
         let stream_metrics = Arc::clone(&ctx.conn.stream_metrics);
@@ -1580,11 +1520,8 @@ where
             tracing::warn!("Failed to process access log header for IncomingRequest: {err}");
         }
 
-        let inner = self.inner.clone();
-
-        Box::pin(async move {
-            #[allow(unused_variables)]
-            let trans_ctx_for_defer = Arc::clone(&trans_ctx);
+        #[allow(unused_variables)]
+        let trans_ctx_for_defer = Arc::clone(&trans_ctx);
             scopeguard::defer! {
                 with_metric!(http::DOWNSTREAM_RQ_ACTIVE, sub, 1, trans_ctx_for_defer.shard_id(), &[KeyValue::new("listener", listener_name)]);
             }
@@ -1700,7 +1637,7 @@ where
 
             #[cfg(feature = "access-log")]
             let trans_ctx_clone = Arc::clone(&http.ctx.tx);
-            let response = inner.call(RoutedHttpRequest { http, route_conf }).await;
+            let response = self.inner.call(RoutedHttpRequest { http, route_conf }).await;
 
             #[cfg(feature = "metrics")]
             if let Ok(response) = &response {
@@ -1732,7 +1669,6 @@ where
                 }
             }
             response
-        })
     }
 }
 
