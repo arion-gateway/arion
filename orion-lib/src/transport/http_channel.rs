@@ -517,9 +517,9 @@ impl HttpChannel {
         match &self.channel_client {
             HttpChannelClient::Plain(sender) => {
                 let client = sender.get_local();
-                let req = maybe_normalize_uri(request, false)?;
+                maybe_normalize_uri(&mut request, false)?;
                 self.send_with_policy(
-                    req,
+                    request,
                     timeout,
                     retry_policy,
                     priority,
@@ -534,12 +534,12 @@ impl HttpChannel {
                 let HttpsClientExt { configured_upstream_http_version, client: sender } = context;
                 let configured_version = *configured_upstream_http_version;
                 let client = sender.get_local();
-                let req = maybe_normalize_uri(request, true)?;
+                maybe_normalize_uri(&mut request, true)?;
                 //FIXME(hayley): apply http protocol translation for plaintext too
-                let req = maybe_change_http_protocol_version(req, configured_version)?;
+                maybe_change_http_protocol_version(&mut request, configured_version)?;
 
                 self.send_with_policy(
-                    req,
+                    request,
                     timeout,
                     retry_policy,
                     priority,
@@ -589,37 +589,45 @@ impl HttpChannel {
             strip_trailers_headers(self.http_version, req.headers_mut());
         }
 
-        let fut = async {
-            match retry_policy {
-                Some(policy) if policy.is_retriable(&req) => {
-                    self.send_with_retry(
-                        req,
-                        policy,
-                        priority,
-                        sender,
-                        output,
-                        #[cfg(feature = "instrumentation")]
-                        clock,
-                    )
-                    .await
-                },
-                _ => {
-                    instrument_block!(
-                        clock,
-                        |nanos| {
-                            #[allow(clippy::cast_possible_truncation)]
-                            crate::instrumentation::metrics::SEND_REQUEST.observe(nanos as usize);
-                        },
-                        { sender.request(req).await.map_err(Error::from) }
-                    )
-                },
+        if let Some(policy) = retry_policy.filter(|policy| policy.is_retriable(&req)) {
+            let fut = self.send_with_retry(
+                req,
+                policy,
+                priority,
+                sender,
+                output,
+                #[cfg(feature = "instrumentation")]
+                clock,
+            );
+            if let Some(t) = timeout {
+                fast_timeout(t, fut).await.map_err(|_e| Error::from(UpstreamError::RouteTimeout))?
+            } else {
+                fut.await
             }
-        };
-
-        if let Some(t) = timeout {
-            fast_timeout(t, fut).await.map_err(|_e| Error::from(UpstreamError::RouteTimeout))?
+        } else if let Some(t) = timeout {
+            // Keep instrumentation inside the timed future so a route timeout
+            // cancels `sender.request` without recording SEND_REQUEST.
+            fast_timeout(t, async {
+                instrument_block!(
+                    clock,
+                    |nanos| {
+                        #[allow(clippy::cast_possible_truncation)]
+                        crate::instrumentation::metrics::SEND_REQUEST.observe(nanos as usize);
+                    },
+                    { sender.request(req).await.map_err(Error::from) }
+                )
+            })
+            .await
+            .map_err(|_e| Error::from(UpstreamError::RouteTimeout))?
         } else {
-            fut.await
+            instrument_block!(
+                clock,
+                |nanos| {
+                    #[allow(clippy::cast_possible_truncation)]
+                    crate::instrumentation::metrics::SEND_REQUEST.observe(nanos as usize);
+                },
+                { sender.request(req).await.map_err(Error::from) }
+            )
         }
     }
 
@@ -842,20 +850,19 @@ fn is_absolute(uri: &Uri) -> bool {
     uri.authority().is_some() && uri.scheme().is_some()
 }
 
-fn maybe_change_http_protocol_version(
-    request: Request<OrionRequestBody>,
-    version: Codec,
-) -> Result<Request<OrionRequestBody>> {
-    let request = maybe_update_host(request, version)?;
-    Ok(maybe_rewrite_version(request, version))
+#[inline]
+fn maybe_change_http_protocol_version(request: &mut Request<OrionRequestBody>, version: Codec) -> Result<()> {
+    maybe_update_host(request, version)?;
+    maybe_rewrite_version(request, version);
+    Ok(())
 }
 
-fn maybe_rewrite_version(mut request: Request<OrionRequestBody>, version: Codec) -> Request<OrionRequestBody> {
+#[inline]
+fn maybe_rewrite_version(request: &mut Request<OrionRequestBody>, version: Codec) {
     *request.version_mut() = version.into();
-    request
 }
 
-fn maybe_update_host(mut request: Request<OrionRequestBody>, version: Codec) -> Result<Request<OrionRequestBody>> {
+fn maybe_update_host(request: &mut Request<OrionRequestBody>, version: Codec) -> Result<()> {
     let request_version = request.version();
     match (request_version, version) {
         (Version::HTTP_11, Codec::Http2) => {
@@ -874,13 +881,10 @@ fn maybe_update_host(mut request: Request<OrionRequestBody>, version: Codec) -> 
             return Err(format!("Unsupported http version {v:?}").into());
         },
     }
-    Ok(request)
+    Ok(())
 }
 
-fn maybe_normalize_uri(
-    mut request: Request<OrionRequestBody>,
-    is_tls: bool,
-) -> crate::Result<Request<OrionRequestBody>> {
+fn maybe_normalize_uri(request: &mut Request<OrionRequestBody>, is_tls: bool) -> Result<()> {
     let uri = request.uri();
     if !is_absolute(uri) {
         if let Some(host_header) = request.headers().get("host") {
@@ -897,5 +901,5 @@ fn maybe_normalize_uri(
             *uri = new;
         }
     }
-    Ok(request)
+    Ok(())
 }

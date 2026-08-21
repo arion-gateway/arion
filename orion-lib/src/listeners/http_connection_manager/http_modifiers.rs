@@ -47,7 +47,11 @@ const HOP_BY_HOP_HEADERS: &[HeaderName] = &[
 ];
 
 #[inline]
-pub fn apply_prerouting_functions<T>(request: &mut Request<T>, downstream_addr: SocketAddr, xff_settings: &XffSettings) {
+pub fn apply_prerouting_functions<T>(
+    request: &mut Request<T>,
+    downstream_addr: SocketAddr,
+    xff_settings: &XffSettings,
+) {
     apply_xff_headers(request, downstream_addr, xff_settings);
 }
 
