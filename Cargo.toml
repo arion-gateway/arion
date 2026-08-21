@@ -198,10 +198,13 @@ rpath            = false
 strip            = "debuginfo"
 
 [profile.release-debuginfo]
-debug           = "full"
 inherits        = "release"
-split-debuginfo = "packed"
+debug           = "full"
+codegen-units   = 16
+opt-level       = 2
+lto             = false
 strip           = false
+#split-debuginfo = "packed"
 
 [profile.release-dhat]
 debug    = 1
