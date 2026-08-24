@@ -135,7 +135,7 @@ impl ListenersManager {
     pub fn start_listener(&mut self, listener: Listener, listener_conf: ListenerConfig) -> Result<()> {
         let listener_name = listener.get_name();
         if let Some((addr, dev)) = listener.get_socket() {
-            info!("Starting Listener {} at {addr} (device bind:{})", listener_name, dev.is_some());
+            info!("Starting Listener {} at {addr} (bind device:{})", listener_name, dev.is_some());
         } else {
             info!("Starting Internal listener {}", listener_name);
         }
