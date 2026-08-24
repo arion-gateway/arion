@@ -224,9 +224,8 @@ impl HttpChannelBuilder {
             .pool_max_idle_per_host(usize::MAX)
             .set_host(false);
 
-        let configured_upstream_http_version = self.http_protocol_options.codec;
-
-        self.configure_http2_if_needed(&mut client_builder, configured_upstream_http_version);
+        client_builder.http1_writev(false);
+        self.configure_http2_if_needed(&mut client_builder, self.http_protocol_options.codec);
 
         client_builder
     }
@@ -244,8 +243,15 @@ impl HttpChannelBuilder {
                 client_builder.http2_keep_alive_while_idle(true);
             }
 
-            client_builder.http2_initial_connection_window_size(http2_options.initial_connection_window_size());
-            client_builder.http2_initial_stream_window_size(http2_options.initial_stream_window_size());
+            let stream_window = http2_options.initial_stream_window_size();
+            let conn_window = http2_options.initial_connection_window_size();
+            if stream_window.is_none() && conn_window.is_none() {
+                // Hyper defaults to 64KiB; adaptive windowing avoids stalling large bodies.
+                client_builder.http2_adaptive_window(true);
+            } else {
+                client_builder.http2_initial_stream_window_size(stream_window);
+                client_builder.http2_initial_connection_window_size(conn_window);
+            }
 
             if let Some(max) = http2_options.max_concurrent_streams() {
                 client_builder.http2_initial_max_send_streams(max);

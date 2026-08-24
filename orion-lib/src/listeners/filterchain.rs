@@ -297,9 +297,13 @@ impl FilterchainType {
 
                 debug!("{listener_name} tried to negotiate {codec_type:?}, got {selected_codec:?}");
                 let mut hyper_server = HyperServerBuilder::new(TokioExecutor::new());
+                {
+                    let mut http1 = hyper_server.http1();
+                    http1.writev(false);
+                }
+                hyper_server.http2().adaptive_window(true);
                 let stream_metrics = stream.shared_metrics();
                 let stream = TokioIo::new(stream);
-                //todo(hayley): we should be applying listener http settings here
                 hyper_server = match selected_codec {
                     CodecType::Http1 => hyper_server.http1_only(),
                     CodecType::Http2 => hyper_server.http2_only(),
