@@ -819,39 +819,36 @@ impl HttpPipelineSvc {
         &self,
         req: RoutedHttpRequest<OrionRequestBody>,
     ) -> StdResult<Response<OrionRequestBody>, crate::Error> {
-        let manager = Arc::clone(&self.manager);
         let RoutedHttpRequest { http: HttpRequest { mut request, ctx }, route_conf } = req;
-        let trans_ctx = Arc::clone(&ctx.tx);
-        let stream_metrics = Arc::clone(&ctx.conn.stream_metrics);
+        let manager = self.manager.as_ref();
 
         #[allow(unused_variables)]
         let listener_name = manager.listener_name;
         #[allow(unused_variables)]
         let filterchain_id = manager.filterchain_id;
         let downstream_addr = ctx.conn.downstream_peer_address();
-        let stream_metrics_clone = Arc::clone(&stream_metrics);
 
         // check if this is the first request on the stream, and if so, record it in the metrics.
-        if stream_metrics.inc_requests() == 0 {
+        if ctx.conn.stream_metrics.inc_requests() == 0 {
             #[cfg(feature = "metrics")]
-            if let Some(user_partition_key) = trans_ctx.user_partition_key {
+            if let Some(user_partition_key) = ctx.tx.user_partition_key {
                 with_metric!(
                     user::CONNECTIONS,
                     add,
                     1,
-                    trans_ctx.shard_id,
+                    ctx.tx.shard_id,
                     &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
                 );
                 with_metric!(
                     user::CONNECTIONS_ACTIVE,
                     add,
                     1,
-                    trans_ctx.shard_id,
+                    ctx.tx.shard_id,
                     &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
                 );
 
                 // store the user_partition_key to decrement CONNECTIONS_ACTIVE later, when the stream is closed.
-                stream_metrics.set_user_partition_key(user_partition_key);
+                ctx.conn.stream_metrics.set_user_partition_key(user_partition_key);
             }
         }
 
@@ -859,7 +856,7 @@ impl HttpPipelineSvc {
         http_modifiers::apply_prerouting_functions(&mut request, downstream_addr, &manager.xff_settings);
 
         // process request, get the response..
-        let result = route_conf.to_response(&ctx, request, Arc::clone(&manager)).await;
+        let result = route_conf.to_response(&ctx, request, manager).await;
 
         // calculate the time to first byte..
         #[cfg(any(feature = "access-log", feature = "metrics"))]
@@ -869,7 +866,7 @@ impl HttpPipelineSvc {
             // set the request id on the response...
             manager
                 .request_id_handler
-                .apply_to(&mut response, trans_ctx.request_id.as_ref().and_then(|x| x.propagate_ref()));
+                .apply_to(&mut response, ctx.tx.request_id.as_ref().and_then(|x| x.propagate_ref()));
 
             #[cfg(feature = "access-log")]
             let (initial_flags, initial_event) = {
@@ -882,7 +879,7 @@ impl HttpPipelineSvc {
                 use crate::with_access_log;
 
                 with_access_log!(
-                    &mut trans_ctx.trans_state.lock().loggers,
+                    &mut ctx.tx.trans_state.lock().loggers,
                     DownstreamResponseContext {
                         response: &response,
                         response_head_size: response_head_size(&response)
@@ -890,17 +887,17 @@ impl HttpPipelineSvc {
                 )
             }
 
+            #[cfg(any(feature = "access-log", feature = "tracing", feature = "metrics"))]
+            let trans_ctx = ctx.tx;
+            let stream_metrics = ctx.conn.stream_metrics;
+            #[cfg(any(feature = "access-log", feature = "metrics"))]
+            let stream_metrics_for_flush = Arc::clone(&stream_metrics);
+
             response.map(move |body| {
-                #[allow(unused_variables)]
-                let stream_metrics_clone = stream_metrics_clone;
-
-                #[allow(unused_variables)]
-                let sm_for_cb2 = Arc::clone(&stream_metrics_clone);
-
                 InstrumentedBody::new(
                     BodyKind::Response,
                     body,
-                    Some(stream_metrics_clone),
+                    Some(stream_metrics),
                     #[allow(unused_variables)]
                     move |body_bytes, stream_metrics, body_error, body_flags| {
                         #[cfg(any(feature = "access-log", feature = "metrics"))]
@@ -947,23 +944,23 @@ impl HttpPipelineSvc {
                             );
 
                             if trans_ctx.trans_phase.is_complete() {
-                                let sm_arc = Arc::clone(&sm_for_cb2);
                                 let trans_ctx_cb = Arc::clone(&trans_ctx);
                                 #[cfg(feature = "access-log")]
                                 let initial_event_cb = initial_event.clone();
                                 let body_error_cb = body_error.clone();
+                                drop(trans_state);
 
                                 stream_metrics.add_flush_callback(Box::new(move || {
                                     #[allow(unused_mut)]
-                                    let mut trans_ctx = trans_ctx_cb.trans_state.lock();
+                                    let mut trans_state = trans_ctx_cb.trans_state.lock();
                                     #[allow(unused_variables)]
-                                    let ctx_bytes = trans_ctx.bytes;
+                                    let ctx_bytes = trans_state.bytes;
                                     #[allow(unused_variables)]
-                                    let ctx_flags = trans_ctx.flags;
+                                    let ctx_flags = trans_state.flags;
                                     #[allow(unused_variables)]
-                                    let ctx_event = trans_ctx.event.clone();
+                                    let ctx_event = trans_state.event.clone();
                                     eval_http_finish_context(FinishContextParams {
-                                        stream_metrics: &sm_arc,
+                                        stream_metrics: &stream_metrics_for_flush,
                                         listener_name,
                                         user_partition_key: trans_ctx_cb.user_partition_key,
                                         filterchain_id,
@@ -979,7 +976,7 @@ impl HttpPipelineSvc {
                                                 event_kind: ctx_event.or(initial_event_cb).or(body_error_cb),
                                                 response_flags: ctx_flags | initial_flags | body_flags,
                                             },
-                                            access_loggers: trans_ctx.loggers.as_mut(),
+                                            access_loggers: trans_state.loggers.as_mut(),
                                         },
                                     });
                                 }));
@@ -1037,16 +1034,15 @@ fn match_request_route<'a, B>(request: &Request<B>, route_config: &'a RouteConfi
     Some(CachedRoute { route: chosen_route, route_match: route_match_result, vh: chosen_vh })
 }
 
-impl RequestHandler<Request<OrionRequestBody>, Arc<HttpConnectionManager>> for Arc<RouteConfiguration> {
+impl RequestHandler<Request<OrionRequestBody>, &HttpConnectionManager> for Arc<RouteConfiguration> {
     #[allow(clippy::too_many_lines)]
     async fn to_response(
         self,
         ctx: &RequestCtx,
         mut request: Request<OrionRequestBody>,
-        arg: Arc<HttpConnectionManager>,
+        connection_manager: &HttpConnectionManager,
     ) -> Result<Response<OrionResponseBody>> {
         let route_conf = &self;
-        let connection_manager = &arg;
         let mut cached_route = match_request_route(&request, route_conf);
         let mut active_filters: SmallVec<[HttpFilterValue; 4]> = SmallVec::new();
 
@@ -1474,25 +1470,21 @@ impl TransactionSvc<HttpPipelineSvc> {
     #[allow(clippy::too_many_lines)]
     async fn call(&self, req: HttpRequest<Incoming>) -> StdResult<Response<OrionRequestBody>, crate::Error> {
         let HttpRequest { request, ctx } = req;
-        let trans_ctx = Arc::clone(&ctx.tx);
-        let stream_metrics = Arc::clone(&ctx.conn.stream_metrics);
-
-        let manager = Arc::clone(&self.manager);
-        let listener_name = manager.listener_name;
+        let listener_name = self.manager.listener_name;
         let route_conf = self.router.borrow().clone();
 
         with_metric!(
             http::DOWNSTREAM_RQ_TOTAL,
             add,
             1,
-            trans_ctx.shard_id(),
+            ctx.tx.shard_id(),
             &[KeyValue::new("listener", listener_name)]
         );
         with_metric!(
             http::DOWNSTREAM_RQ_ACTIVE,
             add,
             1,
-            trans_ctx.shard_id(),
+            ctx.tx.shard_id(),
             &[KeyValue::new("listener", listener_name)]
         );
 
@@ -1515,58 +1507,57 @@ impl TransactionSvc<HttpPipelineSvc> {
         if let Err(err) = crate::access_log::evaluate_base64_access_log_hook(
             crate::access_log::AccessLogHook::IncomingRequest,
             request.headers(),
-            &mut trans_ctx.trans_state.lock().loggers,
+            &mut ctx.tx.trans_state.lock().loggers,
         ) {
             tracing::warn!("Failed to process access log header for IncomingRequest: {err}");
         }
 
         #[allow(unused_variables)]
-        let trans_ctx_for_defer = Arc::clone(&trans_ctx);
+        let shard_id = ctx.tx.shard_id();
         scopeguard::defer! {
-            with_metric!(http::DOWNSTREAM_RQ_ACTIVE, sub, 1, trans_ctx_for_defer.shard_id(), &[KeyValue::new("listener", listener_name)]);
+            with_metric!(http::DOWNSTREAM_RQ_ACTIVE, sub, 1, shard_id, &[KeyValue::new("listener", listener_name)]);
         }
 
-        let req_timeout = manager.request_timeout;
-        let filterchain_id = manager.filterchain_id;
+        let req_timeout = self.manager.request_timeout;
+        let filterchain_id = self.manager.filterchain_id;
 
-        eval_http_init_context(&request, &trans_ctx, Some(ctx.conn.downstream.as_ref()));
+        eval_http_init_context(&request, &ctx.tx, Some(ctx.conn.downstream.as_ref()));
 
         let Some(route_conf) = route_conf else {
             return Ok(handle_route_conf_not_found(
                 request.version(),
-                &trans_ctx,
-                Some(&stream_metrics),
+                &ctx.tx,
+                Some(&ctx.conn.stream_metrics),
                 listener_name,
-                trans_ctx.user_partition_key,
+                ctx.tx.user_partition_key,
                 filterchain_id,
             ));
         };
 
         if let Some(response_error) = reject_request_if_invalid(
             &request,
-            &trans_ctx,
-            Some(&stream_metrics),
+            &ctx.tx,
+            Some(&ctx.conn.stream_metrics),
             listener_name,
-            trans_ctx.user_partition_key,
+            ctx.tx.user_partition_key,
             filterchain_id,
         ) {
             return Ok(response_error);
         }
 
-        let sm_for_cb = Arc::clone(&stream_metrics);
+        let stream_metrics = Arc::clone(&ctx.conn.stream_metrics);
+        #[cfg(any(feature = "access-log", feature = "metrics"))]
+        let stream_metrics_for_flush = Arc::clone(&stream_metrics);
+        #[cfg(any(feature = "access-log", feature = "tracing", feature = "metrics"))]
+        let trans_ctx = Arc::clone(&ctx.tx);
         let http = HttpRequest { request, ctx }.map_body(|body| {
-            #[cfg(any(feature = "access-log", feature = "tracing", feature = "metrics"))]
-            let trans_ctx = Arc::clone(&trans_ctx);
             let body = TimeoutBody::new(req_timeout, PolyBody::from(body));
-
-            #[allow(unused_variables)]
-            let stream_metrics_clone = Arc::clone(&stream_metrics);
             InstrumentedBody::new(
                 BodyKind::Request,
                 body,
-                Some(sm_for_cb),
+                Some(stream_metrics),
                 #[allow(unused_variables)]
-                move |body_bytes, _stream_metrics, body_error, body_flags| {
+                move |body_bytes, stream_metrics, body_error, body_flags| {
                     #[cfg(any(feature = "access-log", feature = "metrics"))]
                     {
                         let mut trans_state = trans_ctx.trans_state.lock();
@@ -1582,9 +1573,9 @@ impl TransactionSvc<HttpPipelineSvc> {
                         if trans_ctx.trans_phase.is_complete() {
                             let trans_ctx_cb = Arc::clone(&trans_ctx);
                             let body_error_cb = body_error.clone();
+                            drop(trans_state);
 
-                            let stream_metrics_cb = Arc::clone(&stream_metrics_clone);
-                            stream_metrics_clone.add_flush_callback(Box::new(move || {
+                            stream_metrics.add_flush_callback(Box::new(move || {
                                 #[allow(unused_mut)]
                                 let mut trans_state = trans_ctx_cb.trans_state.lock();
                                 #[allow(unused_variables)]
@@ -1595,7 +1586,7 @@ impl TransactionSvc<HttpPipelineSvc> {
                                 let ctx_event = trans_state.event.clone();
 
                                 eval_http_finish_context(FinishContextParams {
-                                    stream_metrics: &stream_metrics_cb,
+                                    stream_metrics: &stream_metrics_for_flush,
                                     listener_name,
                                     user_partition_key: trans_ctx_cb.user_partition_key,
                                     filterchain_id,
@@ -1896,18 +1887,19 @@ fn instrument_early_failure_response(
     #[cfg(any(feature = "access-log", feature = "tracing", feature = "metrics"))]
     let trans_ctx = Arc::clone(trans_ctx);
 
-    let sm_for_cb = stream_metrics.cloned();
+    let stream_metrics = stream_metrics.cloned();
+    #[cfg(any(feature = "access-log", feature = "metrics"))]
+    let stream_metrics_for_flush = stream_metrics.clone();
     response.map(|body| {
-        let sm_for_cb2 = sm_for_cb.clone();
         InstrumentedBody::new(
             BodyKind::Response,
             body,
-            sm_for_cb,
+            stream_metrics,
             #[allow(unused_variables)]
             move |body_bytes, stream_metrics, body_error, body_flags| {
                 #[cfg(any(feature = "access-log", feature = "metrics"))]
                 {
-                    let mut log_ctx = trans_ctx.trans_state.lock();
+                    let mut trans_state = trans_ctx.trans_state.lock();
 
                     #[cfg(feature = "access-log")]
                     {
@@ -1918,28 +1910,28 @@ fn instrument_early_failure_response(
                         #[allow(unused_variables)]
                         let tx_duration = Instant::now().saturating_duration_since(first_byte_instant);
 
-                        with_access_log!(&mut log_ctx.loggers, HttpResponseDurationContext { duration, tx_duration })
+                        with_access_log!(&mut trans_state.loggers, HttpResponseDurationContext { duration, tx_duration })
                     };
 
                     if trans_ctx.trans_phase.is_complete() {
-                        let sm_arc = sm_for_cb2.clone().unwrap();
                         let trans_ctx_cb = Arc::clone(&trans_ctx);
                         #[cfg(feature = "access-log")]
                         let initial_event_cb = initial_event.clone();
                         let body_error_cb = body_error.clone();
+                        drop(trans_state);
 
                         stream_metrics.add_flush_callback(Box::new(move || {
                             #[allow(unused_mut)]
-                            let mut log_ctx = trans_ctx_cb.trans_state.lock();
+                            let mut trans_state = trans_ctx_cb.trans_state.lock();
                             #[allow(unused_variables)]
-                            let ctx_bytes = log_ctx.bytes;
+                            let ctx_bytes = trans_state.bytes;
                             #[allow(unused_variables)]
-                            let ctx_flags = log_ctx.flags;
+                            let ctx_flags = trans_state.flags;
                             #[allow(unused_variables)]
-                            let ctx_event = log_ctx.event.clone();
+                            let ctx_event = trans_state.event.clone();
 
                             eval_http_finish_context(FinishContextParams {
-                                stream_metrics: &sm_arc,
+                                stream_metrics: stream_metrics_for_flush.as_ref().unwrap(),
                                 listener_name,
                                 user_partition_key: trans_ctx_cb.user_partition_key,
                                 filterchain_id,
@@ -1955,16 +1947,16 @@ fn instrument_early_failure_response(
                                         event_kind: ctx_event.or(initial_event_cb).or(body_error_cb),
                                         response_flags: ctx_flags | initial_flags | body_flags,
                                     },
-                                    access_loggers: log_ctx.loggers.as_mut(),
+                                    access_loggers: trans_state.loggers.as_mut(),
                                 },
                             });
                         }));
                     } else {
-                        log_ctx.bytes = body_bytes;
+                        trans_state.bytes = body_bytes;
                         #[cfg(feature = "access-log")]
                         {
-                            log_ctx.flags = initial_flags | body_flags;
-                            log_ctx.event = initial_event.or(body_error);
+                            trans_state.flags = initial_flags | body_flags;
+                            trans_state.event = initial_event.or(body_error);
                         }
                     }
                 }
