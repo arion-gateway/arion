@@ -341,9 +341,9 @@ impl TcpProxy {
 
         #[cfg(feature = "access-log")]
         {
-            use crate::access_log::log_access_blocking;
+            use crate::access_log::log_access;
             let messages = access_loggers.into_iter().map(LogFormatter::into_message).collect::<Vec<_>>();
-            log_access_blocking(Target::ListenerFilterChain(self.listener_name.into(), self.filterchain_id), messages)
+            log_access(Target::ListenerFilterChain(self.listener_name.into(), self.filterchain_id), messages).await
         }
         res
     }
