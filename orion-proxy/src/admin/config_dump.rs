@@ -56,7 +56,9 @@ pub async fn config_dump_handler(State(admin_state): State<AdminState>) -> Json<
 
     // Create config_dump channels to send to components so they can send back their config
     let (config_dump_sender, mut config_dump_receiver) = mpsc::channel::<ConfigDump>(100);
-    let mut config = ConfigDump { bootstrap: Some(admin_state.bootstrap.clone()), ..Default::default() };
+    let mut bootstrap = admin_state.bootstrap.clone();
+    bootstrap.static_resources.secrets = redact_secrets(bootstrap.static_resources.secrets);
+    let mut config = ConfigDump { bootstrap: Some(bootstrap), ..Default::default() };
 
     // Retrieve active listers configuration
     let change = ListenerConfigurationChange::GetConfiguration(config_dump_sender.clone());
@@ -139,10 +141,12 @@ mod config_dump_tests {
         (ConfigurationSenders { listener_configuration_sender: list_tx, route_configuration_sender: route_tx }, handle)
     }
 
-    #[test]
+    #[tokio::test]
     #[allow(clippy::indexing_slicing)]
-    fn test_redact_secrets_tls_certificate() {
-        let secret = Secret {
+    async fn config_dump_bootstrap_secrets_redacted() {
+        use orion_configuration::config::bootstrap::StaticResources;
+
+        let tls_secret = Secret {
             name: SmolStr::new_static("test_tls"),
             kind: Type::TlsCertificate(
                 TlsCertificate::try_from(EnvoyTlsCertificate {
@@ -159,20 +163,7 @@ mod config_dump_tests {
                 .unwrap(),
             ),
         };
-        let redacted = redact_secrets(vec![secret.clone()]);
-        match &redacted[0].kind {
-            Type::TlsCertificate(tls) => {
-                assert_eq!(tls.private_key(), &DataSource::InlineString("[redacted]".into()));
-                assert_eq!(tls.certificate_chain(), &DataSource::InlineString("cert_data".into()));
-            },
-            Type::ValidationContext(_) => unreachable!(),
-        }
-    }
-
-    #[test]
-    #[allow(clippy::indexing_slicing)]
-    fn test_redact_secrets_validation_context() {
-        let secret = Secret {
+        let validation_secret = Secret {
             name: SmolStr::new_static("test_validation"),
             kind: Type::ValidationContext(
                 ValidationContext::try_from(EnvoyCertificateValidationContext {
@@ -185,13 +176,27 @@ mod config_dump_tests {
                 .unwrap(),
             ),
         };
-        let redacted = redact_secrets(vec![secret.clone()]);
-        match &redacted[0].kind {
-            Type::ValidationContext(vc) => {
-                assert_eq!(vc.trusted_ca(), &DataSource::InlineString("ca_data".into()));
-            },
-            Type::TlsCertificate(_) => unreachable!(),
-        }
+        let bootstrap = Bootstrap {
+            static_resources: StaticResources { secrets: vec![tls_secret, validation_secret], ..Default::default() },
+            ..Default::default()
+        };
+        let (configuration_senders, handle) = spawn_mock_listener_manager(None);
+        let admin_state = AdminState {
+            bootstrap,
+            configuration_senders: vec![configuration_senders],
+            secret_manager: Arc::new(RwLock::new(orion_lib::SecretManager::default())),
+            server_startup: Instant::now(),
+        };
+        let app = build_admin_router(admin_state);
+        let server = TestServer::new(app).unwrap();
+        let response = server.get("/config_dump").await;
+        response.assert_status_ok();
+        let value: serde_json::Value = response.json();
+        let secrets = &value["bootstrap"]["static_resources"]["secrets"];
+        assert_eq!(secrets[0]["tls_certificate"]["private_key"]["inline_string"], "[redacted]");
+        assert_eq!(secrets[0]["tls_certificate"]["certificate_chain"]["inline_string"], "cert_data");
+        assert_eq!(secrets[1]["validation_context"]["trusted_ca"]["inline_string"], "ca_data");
+        handle.abort();
     }
 
     #[tokio::test]
