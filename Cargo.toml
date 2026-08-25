@@ -3,7 +3,6 @@ members = [
   "envoy-data-plane-api",
   "orion-configuration",
   "orion-data-plane-api",
-  "orion-auth",
   "orion-error",
   "orion-http-header",
   "orion-e2e-tests",
@@ -36,7 +35,6 @@ version      = "0.1.0"
 [workspace.dependencies]
 # --- Orion Internal Crates ---
 envoy-data-plane-api     = { path = "envoy-data-plane-api" }
-orion-auth               = { path = "orion-auth" }
 orion-configuration      = { path = "orion-configuration" }
 orion-data-plane-api     = { path = "orion-data-plane-api" }
 orion-error              = { path = "orion-error" }

@@ -22,7 +22,6 @@ orion-format.workspace = true
 orion-http-header.workspace = true
 orion-interner.workspace = true
 orion-tracing.workspace = true
-orion-auth.workspace = true
 orion-xds.workspace = true
 prost.workspace = true
 bounded-integer.workspace = true
