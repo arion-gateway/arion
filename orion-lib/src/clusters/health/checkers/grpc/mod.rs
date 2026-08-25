@@ -124,7 +124,7 @@ where
 
     fn check(&mut self) -> impl Future<Output = Result<Self::Response, Error>> + Send {
         async move {
-            let request = HealthCheckRequest { service: self.config.service_name.clone().into() };
+            let request = HealthCheckRequest { service: String::from(self.config.service_name.as_str()) };
             Ok(self.channel.check(request).await.map(TonicResponse::into_inner)?)
         }
         .boxed()

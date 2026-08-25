@@ -27,6 +27,7 @@ use http::{
 };
 use http_body_util::Empty;
 use orion_configuration::config::cluster::health_check::{ClusterHealthCheck, HttpHealthCheck};
+use smol_str::SmolStr;
 use tokio::{
     sync::{mpsc, Notify},
     task::JoinHandle,
@@ -101,7 +102,7 @@ where
     let scheme = if is_https { Scheme::HTTPS } else { Scheme::HTTP };
 
     let host = protocol_config.host(&endpoint.cluster)?;
-    let host_name = host.to_string();
+    let host_name = SmolStr::from(host.as_str());
     let uri = build_uri(scheme, host, protocol_config.path.unwrap_or(PathAndQuery::from_static("/")))?;
 
     let checker = HttpChecker {
@@ -124,7 +125,7 @@ struct HttpChecker<H = HttpChannel> {
     retriable_statuses: Vec<Range<u16>>,
     http_version: http::Version,
     method: http::Method,
-    host: String,
+    host: SmolStr,
     uri: http::Uri,
     client: H,
 }

@@ -23,6 +23,7 @@ use orion_lib::runtime_context::set_runtime_id;
 #[cfg(feature = "metrics")]
 use orion_metrics::{metrics::init_per_thread_metrics, OtelExporterConfig};
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{fmt::Display, ops::Deref};
 use tokio::runtime::{Builder, Runtime};
 use tracing::{info, warn};
@@ -49,33 +50,43 @@ impl Deref for RuntimeId {
 pub fn build_tokio_runtime(
     thread_name: &str,
     num_threads: usize,
-    affinity_info: Option<(RuntimeId, Affinity)>,
+    runtime_id: Option<RuntimeId>,
+    affinity_info: Option<Affinity>,
     #[cfg(feature = "metrics")] otel_exporters: Vec<OtelExporterConfig>,
 ) -> Runtime {
     let config = runtime_config();
 
-    let runtime_id = affinity_info.as_ref().map_or(0, |(id, _)| id.0);
-    let thread_name: String = match &affinity_info {
-        Some((runtime_id, _)) => format!("{thread_name}_{runtime_id}"),
-        None => thread_name.to_owned(),
-    };
+    match runtime_id {
+        Some(runtime_id) => info!("{thread_name}: building runtime[{runtime_id}]..."),
+        None => info!("{thread_name}: building runtime..."),
+    }
 
-    if let Some((runtime_id, affinity)) = affinity_info {
-        match affinity.run_strategy(runtime_id, num_threads) {
-            Ok(aff) => {
-                if let Err(err) = core_affinity::set_cores_for_current(&aff) {
-                    warn!("{thread_name}: Couldn't pin thread to core {aff:?}: {err}");
-                } else {
-                    info!("{thread_name}: ST-runtime[{runtime_id}] pinned to core {aff:?}");
-                }
-            },
-            Err(e) => {
-                warn!("{thread_name}: Strategy: {e}");
-            },
+    // Incoming name is already `proxy_RTn` / `services`. Only append a suffix
+    // when this runtime has multiple Tokio workers, and then it is the worker id.
+    let thread_name = thread_name.to_owned();
+
+    if let Some(affinity) = affinity_info {
+        if let Some(runtime_id) = runtime_id {
+            match affinity.run_strategy(runtime_id, num_threads) {
+                Ok(aff) => {
+                    if let Err(err) = core_affinity::set_cores_for_current(&aff) {
+                        warn!("{thread_name}: Couldn't pin thread to core {aff:?}: {err}");
+                    } else {
+                        info!("{thread_name}: runtime[{runtime_id}] pinned to core {aff:?}");
+                    }
+                },
+                Err(e) => {
+                    warn!("{thread_name}: Strategy: {e}");
+                },
+            }
         }
     }
 
     let num_threads = num_threads.max(1);
+
+    // Important note: although using `current_thread` when `num_threads == 1` may seem attractive,
+    // it isn't possible because we currently use `block_in_place`, which isn't available in single-threaded runtimes (Nicola)
+
     let mut builder = Builder::new_multi_thread();
     builder.worker_threads(num_threads).max_blocking_threads(num_threads).enable_all();
 
@@ -86,14 +97,28 @@ pub fn build_tokio_runtime(
     // initialize per-thread state: runtime ID and metrics
     #[cfg(feature = "metrics")]
     builder.on_thread_start(move || {
-        set_runtime_id(runtime_id);
+        if let Some(runtime_id) = runtime_id {
+            set_runtime_id(runtime_id.0);
+        }
         init_per_thread_metrics(&otel_exporters);
     });
     #[cfg(not(feature = "metrics"))]
     builder.on_thread_start(move || {
-        set_runtime_id(runtime_id);
+        if let Some(runtime_id) = runtime_id {
+            set_runtime_id(runtime_id.0);
+        }
     });
 
+    if num_threads == 1 {
+        builder.thread_name(thread_name);
+    } else {
+        let worker_id = AtomicUsize::new(0);
+        builder.thread_name_fn(move || {
+            let id = worker_id.fetch_add(1, Ordering::Relaxed);
+            format!("{thread_name}_{id}")
+        });
+    }
+
     #[allow(clippy::expect_used)]
-    builder.thread_name(thread_name).build().expect("failed to build basic runtime")
+    builder.build().expect("failed to build basic runtime")
 }

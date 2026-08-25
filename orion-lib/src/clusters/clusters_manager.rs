@@ -28,15 +28,16 @@ use crate::{
     transport::{GrpcService, HttpChannel, HttpChannels, TcpChannelConnector},
     OrionRequestBody, Result,
 };
-use http::{uri::Authority, HeaderMap, HeaderName, HeaderValue, Request};
+use http::{header::HOST, uri::Authority, HeaderMap, HeaderName, HeaderValue, Request};
 use orion_configuration::config::cluster::{Cluster as ClusterConfig, ClusterSpecifier};
 use orion_interner::StringInterner;
 use rand::{prelude::SliceRandom, thread_rng};
 use smol_str::SmolStr;
-use std::sync::Arc;
 use std::{
+    borrow::Cow,
     cell::RefCell,
     collections::{btree_map::Entry as BTreeEntry, BTreeMap},
+    sync::Arc,
 };
 use tracing::{debug, warn};
 
@@ -60,9 +61,43 @@ pub enum RoutingContext<'a> {
     None,
     Header(&'a HeaderValue),
     DynamicDest(&'a DynamicDest),
-    Authority(&'a Authority),
+    Authority(Cow<'a, Authority>),
     Hash(HashState<'a>),
     OverrideHost { header: &'a HeaderValue, fallback_hash: Option<HashState<'a>> },
+}
+
+impl<'a> From<&'a Authority> for RoutingContext<'a> {
+    fn from(authority: &'a Authority) -> Self {
+        Self::Authority(Cow::Borrowed(authority))
+    }
+}
+
+struct RoutingAuthority<'a>(Cow<'a, Authority>);
+
+impl<'a> From<&'a Authority> for RoutingAuthority<'a> {
+    fn from(authority: &'a Authority) -> Self {
+        Self(Cow::Borrowed(authority))
+    }
+}
+
+impl<'a, B> TryFrom<&'a Request<B>> for RoutingAuthority<'a> {
+    type Error = RoutingContextError;
+
+    fn try_from(request: &'a Request<B>) -> std::result::Result<Self, Self::Error> {
+        if let Some(authority) = request.uri().authority() {
+            return Ok(authority.into());
+        }
+
+        let host = request.headers().get(HOST).ok_or(RoutingContextError::MissingAuthority)?;
+        let authority = Authority::try_from(host.as_bytes()).map_err(RoutingContextError::InvalidAuthority)?;
+        Ok(Self(Cow::Owned(authority)))
+    }
+}
+
+impl<'a> From<RoutingAuthority<'a>> for RoutingContext<'a> {
+    fn from(authority: RoutingAuthority<'a>) -> Self {
+        Self::Authority(authority.0)
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -71,8 +106,10 @@ pub enum RoutingContextError {
     MissingMetadataKey,
     #[error("Missing required header '{0}' for ORIGINAL_DST cluster")]
     MissingHeader(HeaderName),
-    #[error("Routing by Authority is not currently supported")]
-    UnsupportedAuthority,
+    #[error("Missing required request authority for ORIGINAL_DST cluster")]
+    MissingAuthority,
+    #[error("Invalid request authority: {0}")]
+    InvalidAuthority(#[source] http::uri::InvalidUri),
 }
 
 impl<'a> TryFrom<(&'a RoutingRequirement, &'a Request<OrionRequestBody>, HashState<'a>)> for RoutingContext<'a> {
@@ -110,8 +147,8 @@ impl<'a> TryFrom<(&'a RoutingRequirement, &'a Request<OrionRequestBody>, HashSta
                 Ok(RoutingContext::Header(header_value))
             },
             RoutingRequirement::Authority => {
-                debug!("RoutingContext via authority is not supported");
-                Err(RoutingContextError::UnsupportedAuthority)
+                debug!("RoutingContext via request authority");
+                RoutingAuthority::try_from(request).map(Into::into)
             },
             RoutingRequirement::Hash => {
                 debug!("RoutingContext via hash: {:?}", hash_state);

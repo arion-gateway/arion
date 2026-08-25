@@ -46,12 +46,12 @@ const WEBSOCKET: &str = "websocket";
 
 #[inline]
 pub fn is_upgrade_connection(header_value: &str) -> bool {
-    header_value.to_lowercase() == UPGRADE
+    header_value.eq_ignore_ascii_case(UPGRADE)
 }
 
 #[inline]
 pub fn is_websocket_upgrade(header_value: &str) -> bool {
-    header_value.to_lowercase() == WEBSOCKET
+    header_value.eq_ignore_ascii_case(WEBSOCKET)
 }
 
 #[inline]

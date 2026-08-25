@@ -267,7 +267,6 @@ impl FilterchainType {
                         shard_id, &[KeyValue::new("listener", listener_name)]);
                 }
 
-                let trans_svc = http_connection_manager.transaction_context_svc();
                 // codec type as given in the listener, not alpn
                 let codec_type = http_connection_manager.codec_type;
                 let tls_config = config.tls_configurator.as_ref().map(TlsConfigurator::server_config);
@@ -298,21 +297,21 @@ impl FilterchainType {
 
                 debug!("{listener_name} tried to negotiate {codec_type:?}, got {selected_codec:?}");
                 let mut hyper_server = HyperServerBuilder::new(TokioExecutor::new());
+                {
+                    let mut http1 = hyper_server.http1();
+                    http1.writev(false);
+                }
+                hyper_server.http2().adaptive_window(true);
                 let stream_metrics = stream.shared_metrics();
                 let stream = TokioIo::new(stream);
-                //todo(hayley): we should be applying listener http settings here
                 hyper_server = match selected_codec {
                     CodecType::Http1 => hyper_server.http1_only(),
                     CodecType::Http2 => hyper_server.http2_only(),
                     CodecType::Auto => hyper_server,
                 };
-                let metadata_svc = crate::listeners::http_connection_manager::MetadataSvc::new(
-                    metadata,
-                    Arc::clone(&stream_metrics),
-                    trans_svc,
-                );
+                let trans_svc = http_connection_manager.transaction_context_svc(metadata, Arc::clone(&stream_metrics));
                 hyper_server
-                    .serve_connection_with_upgrades(stream, metadata_svc)
+                    .serve_connection_with_upgrades(stream, trans_svc)
                     .await
                     .inspect_err(|err| debug!("{listener_name} : HTTP connection error: {err}"))
                     .map_err(Error::from)

@@ -118,6 +118,7 @@ where
 
 /// Get a sorting key for [Authority] that implements [Ord]. In case you wonder,
 /// this implementation is how [Authority] implements [`PartialOrd`].
+#[inline]
 fn authority_sorting_key(authority: &Authority) -> impl Iterator<Item = u8> + '_ {
     authority.as_str().as_bytes().iter().map(u8::to_ascii_lowercase)
 }

@@ -73,6 +73,10 @@ custom_header!(
     TRACEPARENT, "traceparent");
 
 custom_header!(
+    /// The `tracestate` header carries vendor-specific W3C Trace Context state
+    TRACESTATE, "tracestate");
+
+custom_header!(
     /// The `X-Envoy-RateLimited` header is used to indicate rate limiting by Envoy
     X_ENVOY_RATELIMITED, "x-envoy-ratelimited");
 

@@ -154,7 +154,7 @@ async fn configure_tls(
     stream: AsyncInstrumentedStream,
 ) -> crate::Result<AsyncInstrumentedStream> {
     let client_config = tls_config.clone().into_inner();
-    let server_name = ServerName::try_from(tls_config.sni())
+    let server_name = ServerName::try_from(tls_config.sni().to_owned())
         .map_err(|e| -> crate::Error { format!("Invalid server name: {e}").into() })?;
     let tls_connector = TlsConnector::from(Arc::new(client_config));
     let tls_stream = tls_connector

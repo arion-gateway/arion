@@ -208,8 +208,11 @@ pub struct CallToolParams {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CallToolResult {
     pub content: Vec<ToolContent>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub structured_content: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub is_error: Option<bool>,
 }
@@ -568,6 +571,7 @@ async fn handle_mcp_request(
                             content_type: "text".to_owned(),
                             text: format!("Echo: {message}"),
                         }],
+                        structured_content: None,
                         is_error: Some(false),
                     }
                 },
@@ -579,6 +583,7 @@ async fn handle_mcp_request(
                             content_type: "text".to_owned(),
                             text: format!("Result: {}", a + b),
                         }],
+                        structured_content: None,
                         is_error: Some(false),
                     }
                 },
@@ -587,6 +592,7 @@ async fn handle_mcp_request(
                         content_type: "text".to_owned(),
                         text: format!("Unknown tool: {}", params.name),
                     }],
+                    structured_content: None,
                     is_error: Some(true),
                 },
             };

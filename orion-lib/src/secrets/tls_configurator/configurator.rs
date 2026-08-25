@@ -39,7 +39,8 @@ use rustls::{
 };
 use rustls_platform_verifier::Verifier;
 use smol_str::SmolStr;
-use std::{collections::HashMap, result::Result as StdResult, sync::Arc};
+use std::{borrow::Cow, collections::HashMap, result::Result as StdResult, sync::Arc};
+use str_utils::ToLowercase;
 use tracing::{debug, info, warn};
 
 pub fn get_crypto_key_provider() -> Result<&'static dyn KeyProvider> {
@@ -415,7 +416,7 @@ impl TryFrom<(TlsClientConfig, &SecretManager)> for TlsConfigurator<ClientConfig
         } else {
             ctx_builder.with_no_client_auth()
         }
-        .with_sni(sni.into())
+        .with_sni(sni)
         .with_trust_chain_verification(trust_chain_verification);
 
         let config = ctx_builder.build()?;
@@ -467,8 +468,8 @@ impl TlsConfigurator<ClientConfig, WantsToBuildClient> {
     pub fn into_inner(self) -> ClientConfig {
         (*self.config).clone()
     }
-    pub fn sni(&self) -> String {
-        self.context_builder.state.sni.clone()
+    pub fn sni(&self) -> &str {
+        self.context_builder.state.sni.as_str()
     }
 }
 
@@ -492,16 +493,16 @@ impl RelaxedResolvesServerCertUsingSni {
     }
 
     pub fn add(&mut self, name: &str, ck: Arc<rustls::sign::CertifiedKey>) -> StdResult<(), rustls::Error> {
-        let name = name.to_ascii_lowercase();
+        let name = name.to_ascii_lowercase_cow();
         // 1. Check if it's a wildcard early on
         let is_wildcard = name.starts_with("*.");
         let base_domain = name.strip_prefix("*.").unwrap_or(&name);
 
         // 2. Create a valid DNS name for rustls validation.
         // If it's a wildcard like "*.example.com", we test if the cert covers "dummy.example.com"
-        let test_name_str = if is_wildcard { format!("dummy.{base_domain}") } else { name.clone() };
+        let test_name_str = if is_wildcard { Cow::Owned(format!("dummy.{base_domain}")) } else { name.clone() };
 
-        let server_name = rustls::pki_types::ServerName::try_from(test_name_str)
+        let server_name = rustls::pki_types::ServerName::try_from(test_name_str.as_ref())
             .map_err(|_e| rustls::Error::General("Bad Server/DNS name".into()))?;
 
         // 3. Sanity check: verify the certificate actually covers the domain/wildcard
@@ -529,7 +530,7 @@ impl RelaxedResolvesServerCertUsingSni {
         if is_wildcard {
             self.by_wildcard.insert(base_domain.to_owned(), ck);
         } else {
-            self.by_name.insert(name.clone(), ck);
+            self.by_name.insert(name.into(), ck);
         }
 
         Ok(())

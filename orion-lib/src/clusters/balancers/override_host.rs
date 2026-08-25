@@ -2,6 +2,7 @@ use std::{str::FromStr, sync::Arc};
 
 use http::{uri::Authority, HeaderName, HeaderValue};
 use rustc_hash::FxHashMap as HashMap;
+use smol_str::{SmolStr, ToSmolStr};
 use tracing::debug;
 
 use super::{Balancer, EndpointWithAuthority};
@@ -22,7 +23,7 @@ struct OverrideEndpoint {
 pub struct OverrideHostLoadBalancer {
     header: HeaderName,
     fallback: Box<BalancerType>,
-    endpoints: HashMap<String, OverrideEndpoint>,
+    endpoints: HashMap<SmolStr, OverrideEndpoint>,
 }
 
 impl OverrideHostLoadBalancer {
@@ -94,13 +95,13 @@ impl OverrideHostLoadBalancer {
         header: HeaderName,
         fallback: BalancerType,
         endpoints: &[LocalityLbEndpoints],
-        previous: Option<&HashMap<String, OverrideEndpoint>>,
+        previous: Option<&HashMap<SmolStr, OverrideEndpoint>>,
     ) -> Self {
         let fallback = Box::new(fallback);
         let mut override_map = HashMap::default();
         for locality in endpoints {
             for endpoint in &locality.endpoints {
-                let key = endpoint.authority().as_str().to_owned();
+                let key = endpoint.authority().as_str().to_smolstr();
                 let healthy = previous
                     .and_then(|prev| prev.get(&key).map(|entry| entry.healthy))
                     .unwrap_or_else(|| endpoint.health_status.is_healthy());

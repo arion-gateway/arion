@@ -18,11 +18,7 @@ use super::{http_modifiers, upgrades as upgrade_utils, RequestCtx, RequestHandle
 use crate::event_error::{EventFailure, EventKind, TryInferFrom, UpstreamError};
 use crate::{
     body::response_flags::ResponseFlags,
-    clusters::{
-        balancers::hash_policy::HashState,
-        clusters_manager::{self, RoutingContext},
-        decrement_requests, try_increment_requests,
-    },
+    clusters::http_upstream::{acquire_http_upstream, AcquireHttpUpstreamError},
     listeners::{http_connection_manager::HttpConnectionManager, synthetic_http_response::SyntheticHttpResponse},
     Result,
 };
@@ -31,7 +27,7 @@ use crate::{
 use crate::with_access_log;
 
 #[cfg(feature = "metrics")]
-use crate::{clusters::CircuitBreakerDenial, get_shard_id, with_metric};
+use crate::with_metric;
 use crate::{instrument_block, instrument_function, OrionRequestBody, OrionResponseBody, UpstreamCallOpts};
 use http::{uri::Parts as UriParts, Uri};
 use hyper::{Request, Response};
@@ -43,8 +39,7 @@ use orion_configuration::config::network_filters::http_connection_manager::{
 };
 use orion_error::Context;
 #[cfg(feature = "metrics")]
-use orion_metrics::metrics::{clusters, http as http_metrics};
-use scopeguard::defer;
+use orion_metrics::metrics::http as http_metrics;
 
 #[cfg(feature = "access-log")]
 use orion_format::context::{UpstreamContext, UpstreamRequestContext};
@@ -90,68 +85,40 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
         let RouteContext { route_name, retry_policy, remote_address, route_match, websocket_enabled_by_default } =
             route_context;
 
-        let Some(cluster_id) = clusters_manager::resolve_cluster(&self.cluster_specifier, Some(request.headers()))
-        else {
-            debug!("Failed to resolve cluster from specifier {:?}", self.cluster_specifier);
-            return Ok(SyntheticHttpResponse::internal_server_error(
-                EventKind::Failure(EventFailure::ClusterNotFound),
-                ResponseFlags(FmtResponseFlags::NO_CLUSTER_FOUND),
-            )
-            .with_body("Failed to resolve cluster")
-            .into_response(request.version()));
-        };
-
         #[cfg(feature = "metrics")]
         {
             let mut state = ctx.tx.trans_state.lock();
-            state.upstream_start_instant = Some(Instant::now());
-            state.upstream_cluster_name = Some(cluster_id)
-        }
+            state.upstream_start_instant = Some(Instant::now())
+        };
 
-        let priority = self.priority;
-        #[allow(unused_variables)]
-        if let Err(denial) = try_increment_requests(cluster_id, priority) {
-            debug!("Circuit breaker overflow for cluster {}", cluster_id);
-            #[cfg(feature = "metrics")]
-            {
-                let shard_id = get_shard_id!();
-                let attrs = &[KeyValue::new("cluster", cluster_id.to_owned())];
-                match denial {
-                    CircuitBreakerDenial::MaxConnections => {
-                        with_metric!(clusters::UPSTREAM_CX_OVERFLOW, add, 1, shard_id, attrs);
-                    },
-                    CircuitBreakerDenial::MaxRequests => {
-                        with_metric!(clusters::UPSTREAM_RQ_OVERFLOW, add, 1, shard_id, attrs);
-                    },
-                    CircuitBreakerDenial::MaxRetries => {},
-                }
-            }
-            return Ok(SyntheticHttpResponse::circuit_breaker_overflow(
-                EventKind::Failure(EventFailure::UpstreamOverflow),
-                ResponseFlags(FmtResponseFlags::UPSTREAM_OVERFLOW),
-            )
-            .into_circuit_breaker_response(request.version()));
-        }
-
-        defer! {
-            decrement_requests(cluster_id, priority);
-        }
-
-        let routing_requirement = clusters_manager::get_cluster_routing_requirements(cluster_id);
-        let hash_state = HashState::new(self.hash_policy.as_slice(), &request, remote_address);
-        let routing_context = RoutingContext::try_from((&routing_requirement, &request, hash_state))?;
-
-        let maybe_channel = instrument_block!(
+        let acquire_result = instrument_block!(
             ctx.tx.clock,
             |nanos| {
                 #[allow(clippy::cast_possible_truncation)]
                 crate::instrumentation::metrics::LOAD_BALANCING_SRV.observe(nanos as usize);
             },
-            { clusters_manager::get_http_connection(cluster_id, routing_context) }
+            {
+                acquire_http_upstream(
+                    &self.cluster_specifier,
+                    &request,
+                    self.hash_policy.as_slice(),
+                    remote_address,
+                    self.priority,
+                )
+            }
         );
 
-        match maybe_channel {
-            Ok(svc_channel) => {
+        #[cfg(feature = "metrics")]
+        if let Some(cluster_id) = match &acquire_result {
+            Ok(upstream) => Some(upstream.cluster_id()),
+            Err(error) => error.cluster_id(),
+        } {
+            ctx.tx.trans_state.lock().upstream_cluster_name = Some(cluster_id);
+        }
+
+        match acquire_result {
+            Ok(acquired) => {
+                let svc_channel = acquired.channels();
                 #[cfg(feature = "access-log")]
                 with_access_log!(
                     &mut ctx.tx.trans_state.lock().loggers,
@@ -248,7 +215,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
                         return upgrade_utils::handle_websocket_upgrade(
                             ctx,
                             upstream_request,
-                            &svc_channel,
+                            svc_channel,
                             #[cfg(feature = "metrics")]
                             connection_manager.listener_name,
                         )
@@ -276,9 +243,12 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
                     .to_response(
                         ctx,
                         upstream_request,
-                        UpstreamCallOpts { route_timeout: self.timeout, retry_policy, priority },
+                        UpstreamCallOpts { route_timeout: self.timeout, retry_policy, priority: self.priority },
                     )
                     .await;
+                // Match the existing route accounting lifetime: release the
+                // request permit once response headers (or an error) arrive.
+                drop(acquired);
                 match resp {
                     Err(err) => {
                         let err = err.into_inner();
@@ -296,15 +266,32 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
                     resp => resp,
                 }
             },
+            Err(AcquireHttpUpstreamError::ClusterNotFound) => {
+                debug!("Failed to resolve cluster from specifier {:?}", self.cluster_specifier);
+                Ok(SyntheticHttpResponse::internal_server_error(
+                    EventKind::Failure(EventFailure::ClusterNotFound),
+                    ResponseFlags(FmtResponseFlags::NO_CLUSTER_FOUND),
+                )
+                .with_body("Failed to resolve cluster")
+                .into_response(request.version()))
+            },
+            Err(AcquireHttpUpstreamError::CircuitBreakerOverflow { cluster_id, .. }) => {
+                debug!("Circuit breaker overflow for cluster {}", cluster_id);
+                Ok(SyntheticHttpResponse::circuit_breaker_overflow(
+                    EventKind::Failure(EventFailure::UpstreamOverflow),
+                    ResponseFlags(FmtResponseFlags::UPSTREAM_OVERFLOW),
+                )
+                .into_circuit_breaker_response(request.version()))
+            },
+            Err(AcquireHttpUpstreamError::RoutingContext { source, .. }) => Err(source.into()),
             // http connection not available from cluster...
-            Err(err) => {
-                let err = err.into_inner();
-                let event_error = UpstreamError::try_infer_from(&err);
+            Err(AcquireHttpUpstreamError::Connection { source, .. }) => {
+                let event_error = UpstreamError::try_infer_from(source.as_ref());
                 let flags = event_error.clone().map(ResponseFlags::from).unwrap_or_default();
                 let event_kind = event_error.map_or(EventFailure::ViaUpstream.into(), EventKind::Upstream);
                 debug!(
                     "Failed to get an HTTP connection: {:?}: {}({})",
-                    err,
+                    source,
                     ResponseFlagsLong(&flags.0).to_smolstr(),
                     ResponseFlagsShort(&flags.0).to_smolstr()
                 );

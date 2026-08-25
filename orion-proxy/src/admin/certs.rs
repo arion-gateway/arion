@@ -1,5 +1,4 @@
-use std::collections::HashSet;
-
+use ahash::HashSet;
 use axum::{extract::State, Json};
 use orion_configuration::config::{
     cluster::TlsSecret,
@@ -10,14 +9,15 @@ use orion_lib::{
     clusters::clusters_manager::get_all_clusters, ConfigDump, ConfigurationSenders, ListenerConfigurationChange,
 };
 use serde_json::{json, Value};
+use smol_str::SmolStr;
 use tokio::sync::mpsc;
 
 use crate::admin::AdminState;
 use crate::xds_configurator::send_change_to_runtimes;
 
 pub async fn certs_handler(State(admin_state): State<AdminState>) -> Json<Value> {
-    let mut cert_names: HashSet<String> = HashSet::new();
-    let mut ca_names: HashSet<String> = HashSet::new();
+    let mut cert_names: HashSet<SmolStr> = HashSet::default();
+    let mut ca_names: HashSet<SmolStr> = HashSet::default();
 
     collect_listener_sds_names(&admin_state.configuration_senders, &mut cert_names, &mut ca_names).await;
 
@@ -31,8 +31,8 @@ pub async fn certs_handler(State(admin_state): State<AdminState>) -> Json<Value>
 
 async fn collect_listener_sds_names(
     configuration_senders: &[ConfigurationSenders],
-    cert_names: &mut HashSet<String>,
-    ca_names: &mut HashSet<String>,
+    cert_names: &mut HashSet<SmolStr>,
+    ca_names: &mut HashSet<SmolStr>,
 ) {
     let listeners_senders: Vec<_> = configuration_senders
         .iter()
@@ -52,22 +52,22 @@ async fn collect_listener_sds_names(
 
 fn collect_filter_chain_tls_sds_names(
     tls_config: Option<&ListenerTlsConfig>,
-    cert_names: &mut HashSet<String>,
-    ca_names: &mut HashSet<String>,
+    cert_names: &mut HashSet<SmolStr>,
+    ca_names: &mut HashSet<SmolStr>,
 ) {
     let Some(tls) = tls_config else { return };
     if let Secrets::SdsConfig(names) = &tls.common_tls_context.secrets {
-        cert_names.extend(names.iter().map(ToString::to_string));
+        cert_names.extend(names.iter().map(SmolStr::to_owned));
     }
     if let Some(CommonTlsValidationContext::SdsConfig(name)) = &tls.common_tls_context.validation_context {
-        ca_names.insert(name.to_string());
+        ca_names.insert(name.to_owned());
     }
 }
 
 fn collect_cluster_sds_names(
     transport_socket: Option<&UpstreamTransportSocketConfig>,
-    cert_names: &mut HashSet<String>,
-    ca_names: &mut HashSet<String>,
+    cert_names: &mut HashSet<SmolStr>,
+    ca_names: &mut HashSet<SmolStr>,
 ) {
     let tls = match transport_socket {
         Some(UpstreamTransportSocketConfig::Tls(tls)) => Some(tls),
@@ -76,9 +76,9 @@ fn collect_cluster_sds_names(
     };
     let Some(tls) = tls else { return };
     if let Some(TlsSecret::SdsConfig(name)) = &tls.secret {
-        cert_names.insert(name.to_string());
+        cert_names.insert(name.to_owned());
     }
     if let Some(CommonTlsValidationContext::SdsConfig(name)) = &tls.validation_context {
-        ca_names.insert(name.to_string());
+        ca_names.insert(name.to_owned());
     }
 }

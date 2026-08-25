@@ -1,16 +1,50 @@
+use std::fmt::{self, Write};
+
 #[derive(Clone, Copy)]
 pub struct TruncatedDebug<'a, T, const N: usize>(pub &'a T);
 
-impl<T: std::fmt::Debug, const N: usize> std::fmt::Debug for TruncatedDebug<'_, T, N> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let data_string = format!("{:?}", self.0);
-        let max_len = N;
+// A zero-allocation writer adapter that counts characters and truncates the output.
+struct TruncatingWriter<'a, 'b> {
+    inner: &'a mut fmt::Formatter<'b>,
+    chars_remaining: usize,
+    truncated: bool,
+}
 
-        if data_string.chars().count() > max_len {
-            let truncated: String = data_string.chars().take(max_len).collect();
-            f.write_fmt(format_args!("{truncated}… "))
-        } else {
-            f.write_str(&data_string)
+impl<'a, 'b> Write for TruncatingWriter<'a, 'b> {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        if self.chars_remaining == 0 {
+            self.truncated = true;
+            return Ok(());
         }
+
+        let mut char_count = 0;
+        for (byte_idx, _) in s.char_indices() {
+            if char_count == self.chars_remaining {
+                // Character limit reached within this chunk.
+                self.truncated = true;
+                self.chars_remaining = 0;
+                return self.inner.write_str(&s[..byte_idx]);
+            }
+            char_count += 1;
+        }
+
+        // The entire chunk fits. Update remaining count and write.
+        self.chars_remaining -= char_count;
+        self.inner.write_str(s)
+    }
+}
+
+impl<T: fmt::Debug, const N: usize> fmt::Debug for TruncatedDebug<'_, T, N> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut writer = TruncatingWriter { inner: f, chars_remaining: N, truncated: false };
+
+        // Format the inner type directly into the adapter. No String is allocated.
+        write!(&mut writer, "{:?}", self.0)?;
+
+        if writer.truncated {
+            f.write_str("… ")?;
+        }
+
+        Ok(())
     }
 }

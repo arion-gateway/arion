@@ -22,7 +22,7 @@ use rustls::{
     client::WebPkiServerVerifier, server::WebPkiClientVerifier, sign::CertifiedKey, ClientConfig, RootCertStore,
     ServerConfig, SupportedProtocolVersion,
 };
-use smol_str::SmolStr;
+use smol_str::{SmolStr, ToSmolStr};
 use tracing::{debug, warn};
 use x509_parser::prelude::{FromDer, GeneralName, X509Certificate};
 
@@ -294,7 +294,7 @@ impl TlsContextBuilder<WantsToBuildServer> {
             .filter_map(Result::ok)
             .map(|(secret_name, config_name, ck, first_cert_der)| {
                 // Start with the name provided in the configuration
-                let mut names_to_register = vec![config_name.to_string()];
+                let mut names_to_register = vec![config_name.to_owned()];
 
                 // Extract and append all SANs from the actual certificate, extend the config name and remove
                 // possible duplicates...
@@ -332,7 +332,7 @@ impl TlsContextBuilder<WantsToBuildServer> {
     }
 
     // Extracts DNS names from the Subject Alternative Name extension
-    fn extract_dns_sans(der: &[u8]) -> Vec<String> {
+    fn extract_dns_sans(der: &[u8]) -> Vec<SmolStr> {
         let mut sans = Vec::new();
 
         // Parse the DER encoded certificate
@@ -342,7 +342,7 @@ impl TlsContextBuilder<WantsToBuildServer> {
                 for name in &san_ext.value.general_names {
                     // We only care about DNS names for SNI matching
                     if let GeneralName::DNSName(dns) = name {
-                        sans.push(dns.to_string());
+                        sans.push(dns.to_smolstr());
                     }
                 }
             }

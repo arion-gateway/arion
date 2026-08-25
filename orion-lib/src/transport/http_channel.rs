@@ -21,7 +21,9 @@ use crate::{
         instrumented_body::InstrumentedBody, poly_body::PolyBody, response_flags::ResponseFlags,
         timeout_body::TimeoutBody,
     },
-    clusters::{decrement_retries, retry_policy::RetryCondition, try_increment_retries, RoutingPriority},
+    clusters::{
+        decrement_retries, retry_policy::RetryCondition, try_increment_retries, CircuitBreakerDenial, RoutingPriority,
+    },
     event_error::{EventKind, TryInferFrom, UpstreamError},
     instrument_block, instrument_function,
     listeners::{
@@ -71,6 +73,28 @@ use webpki::types::ServerName;
 #[cfg(feature = "metrics")]
 use scopeguard::defer;
 pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[must_use = "dropping the permit releases the retry circuit-breaker slot"]
+struct RetryCircuitBreakerPermit {
+    cluster_name: &'static str,
+    priority: RoutingPriority,
+}
+
+impl RetryCircuitBreakerPermit {
+    fn try_acquire(
+        cluster_name: &'static str,
+        priority: RoutingPriority,
+    ) -> std::result::Result<Self, CircuitBreakerDenial> {
+        try_increment_retries(cluster_name, priority)?;
+        Ok(Self { cluster_name, priority })
+    }
+}
+
+impl Drop for RetryCircuitBreakerPermit {
+    fn drop(&mut self) {
+        decrement_retries(self.cluster_name, self.priority);
+    }
+}
 
 type HttpClient = Client<UnifiedConnector, OrionRequestBody>;
 type HttpsClient = Client<HttpsConnector<UnifiedConnector>, OrionRequestBody>;
@@ -200,9 +224,8 @@ impl HttpChannelBuilder {
             .pool_max_idle_per_host(usize::MAX)
             .set_host(false);
 
-        let configured_upstream_http_version = self.http_protocol_options.codec;
-
-        self.configure_http2_if_needed(&mut client_builder, configured_upstream_http_version);
+        client_builder.http1_writev(false);
+        self.configure_http2_if_needed(&mut client_builder, self.http_protocol_options.codec);
 
         client_builder
     }
@@ -220,8 +243,15 @@ impl HttpChannelBuilder {
                 client_builder.http2_keep_alive_while_idle(true);
             }
 
-            client_builder.http2_initial_connection_window_size(http2_options.initial_connection_window_size());
-            client_builder.http2_initial_stream_window_size(http2_options.initial_stream_window_size());
+            let stream_window = http2_options.initial_stream_window_size();
+            let conn_window = http2_options.initial_connection_window_size();
+            if stream_window.is_none() && conn_window.is_none() {
+                // Hyper defaults to 64KiB; adaptive windowing avoids stalling large bodies.
+                client_builder.http2_adaptive_window(true);
+            } else {
+                client_builder.http2_initial_stream_window_size(stream_window);
+                client_builder.http2_initial_connection_window_size(conn_window);
+            }
 
             if let Some(max) = http2_options.max_concurrent_streams() {
                 client_builder.http2_initial_max_send_streams(max);
@@ -493,9 +523,9 @@ impl HttpChannel {
         match &self.channel_client {
             HttpChannelClient::Plain(sender) => {
                 let client = sender.get_local();
-                let req = maybe_normalize_uri(request, false)?;
+                maybe_normalize_uri(&mut request, false)?;
                 self.send_with_policy(
-                    req,
+                    request,
                     timeout,
                     retry_policy,
                     priority,
@@ -510,12 +540,12 @@ impl HttpChannel {
                 let HttpsClientExt { configured_upstream_http_version, client: sender } = context;
                 let configured_version = *configured_upstream_http_version;
                 let client = sender.get_local();
-                let req = maybe_normalize_uri(request, true)?;
+                maybe_normalize_uri(&mut request, true)?;
                 //FIXME(hayley): apply http protocol translation for plaintext too
-                let req = maybe_change_http_protocol_version(req, configured_version)?;
+                maybe_change_http_protocol_version(&mut request, configured_version)?;
 
                 self.send_with_policy(
-                    req,
+                    request,
                     timeout,
                     retry_policy,
                     priority,
@@ -565,37 +595,45 @@ impl HttpChannel {
             strip_trailers_headers(self.http_version, req.headers_mut());
         }
 
-        let fut = async {
-            match retry_policy {
-                Some(policy) if policy.is_retriable(&req) => {
-                    self.send_with_retry(
-                        req,
-                        policy,
-                        priority,
-                        sender,
-                        output,
-                        #[cfg(feature = "instrumentation")]
-                        clock,
-                    )
-                    .await
-                },
-                _ => {
-                    instrument_block!(
-                        clock,
-                        |nanos| {
-                            #[allow(clippy::cast_possible_truncation)]
-                            crate::instrumentation::metrics::SEND_REQUEST.observe(nanos as usize);
-                        },
-                        { sender.request(req).await.map_err(Error::from) }
-                    )
-                },
+        if let Some(policy) = retry_policy.filter(|policy| policy.is_retriable(&req)) {
+            let fut = self.send_with_retry(
+                req,
+                policy,
+                priority,
+                sender,
+                output,
+                #[cfg(feature = "instrumentation")]
+                clock,
+            );
+            if let Some(t) = timeout {
+                fast_timeout(t, fut).await.map_err(|_e| Error::from(UpstreamError::RouteTimeout))?
+            } else {
+                fut.await
             }
-        };
-
-        if let Some(t) = timeout {
-            fast_timeout(t, fut).await.map_err(|_e| Error::from(UpstreamError::RouteTimeout))?
+        } else if let Some(t) = timeout {
+            // Keep instrumentation inside the timed future so a route timeout
+            // cancels `sender.request` without recording SEND_REQUEST.
+            fast_timeout(t, async {
+                instrument_block!(
+                    clock,
+                    |nanos| {
+                        #[allow(clippy::cast_possible_truncation)]
+                        crate::instrumentation::metrics::SEND_REQUEST.observe(nanos as usize);
+                    },
+                    { sender.request(req).await.map_err(Error::from) }
+                )
+            })
+            .await
+            .map_err(|_e| Error::from(UpstreamError::RouteTimeout))?
         } else {
-            fut.await
+            instrument_block!(
+                clock,
+                |nanos| {
+                    #[allow(clippy::cast_possible_truncation)]
+                    crate::instrumentation::metrics::SEND_REQUEST.observe(nanos as usize);
+                },
+                { sender.request(req).await.map_err(Error::from) }
+            )
         }
     }
 
@@ -632,7 +670,7 @@ impl HttpChannel {
 
         let max_retries = retry_policy.num_retries() as usize;
         let mut parts_opt = Some(parts);
-        let mut retry_acquired = false;
+        let mut retry_permit = None;
         let mut last_result: Option<Result<Response<Incoming>>> = None;
 
         for (index, back_off) in retry_policy.exponential_back_off().iter().enumerate() {
@@ -686,27 +724,29 @@ impl HttpChannel {
 
             // take an exponential back off break and retry...
             if index < retry_policy.num_retries() as usize {
-                if !retry_acquired && try_increment_retries(self.cluster_name, priority).is_err() {
-                    debug!(
-                        "retry_policy: circuit breaker denied retry #{}/{} for cluster {}",
-                        index + 1,
-                        retry_policy.num_retries(),
-                        self.cluster_name
-                    );
-                    #[cfg(feature = "metrics")]
-                    {
-                        let shard_id = get_shard_id!();
-                        with_metric!(
-                            clusters::UPSTREAM_RQ_RETRY_OVERFLOW,
-                            add,
-                            1,
-                            shard_id,
-                            &[KeyValue::new("cluster", self.cluster_name)]
+                if retry_permit.is_none() {
+                    let Ok(permit) = RetryCircuitBreakerPermit::try_acquire(self.cluster_name, priority) else {
+                        debug!(
+                            "retry_policy: circuit breaker denied retry #{}/{} for cluster {}",
+                            index + 1,
+                            retry_policy.num_retries(),
+                            self.cluster_name
                         );
+                        #[cfg(feature = "metrics")]
+                        {
+                            let shard_id = get_shard_id!();
+                            with_metric!(
+                                clusters::UPSTREAM_RQ_RETRY_OVERFLOW,
+                                add,
+                                1,
+                                shard_id,
+                                &[KeyValue::new("cluster", self.cluster_name)]
+                            );
+                        };
+                        return result;
                     };
-                    return result;
+                    retry_permit = Some(permit);
                 }
-                retry_acquired = true;
 
                 debug!(
                     "retry_policy: retrying request #{}/{} in {}...",
@@ -719,10 +759,6 @@ impl HttpChannel {
             }
 
             last_result = Some(result);
-        }
-
-        if retry_acquired {
-            decrement_retries(self.cluster_name, priority);
         }
 
         match last_result {
@@ -820,20 +856,19 @@ fn is_absolute(uri: &Uri) -> bool {
     uri.authority().is_some() && uri.scheme().is_some()
 }
 
-fn maybe_change_http_protocol_version(
-    request: Request<OrionRequestBody>,
-    version: Codec,
-) -> Result<Request<OrionRequestBody>> {
-    let request = maybe_update_host(request, version)?;
-    Ok(maybe_rewrite_version(request, version))
+#[inline]
+fn maybe_change_http_protocol_version(request: &mut Request<OrionRequestBody>, version: Codec) -> Result<()> {
+    maybe_update_host(request, version)?;
+    maybe_rewrite_version(request, version);
+    Ok(())
 }
 
-fn maybe_rewrite_version(mut request: Request<OrionRequestBody>, version: Codec) -> Request<OrionRequestBody> {
+#[inline]
+fn maybe_rewrite_version(request: &mut Request<OrionRequestBody>, version: Codec) {
     *request.version_mut() = version.into();
-    request
 }
 
-fn maybe_update_host(mut request: Request<OrionRequestBody>, version: Codec) -> Result<Request<OrionRequestBody>> {
+fn maybe_update_host(request: &mut Request<OrionRequestBody>, version: Codec) -> Result<()> {
     let request_version = request.version();
     match (request_version, version) {
         (Version::HTTP_11, Codec::Http2) => {
@@ -852,13 +887,10 @@ fn maybe_update_host(mut request: Request<OrionRequestBody>, version: Codec) -> 
             return Err(format!("Unsupported http version {v:?}").into());
         },
     }
-    Ok(request)
+    Ok(())
 }
 
-fn maybe_normalize_uri(
-    mut request: Request<OrionRequestBody>,
-    is_tls: bool,
-) -> crate::Result<Request<OrionRequestBody>> {
+fn maybe_normalize_uri(request: &mut Request<OrionRequestBody>, is_tls: bool) -> Result<()> {
     let uri = request.uri();
     if !is_absolute(uri) {
         if let Some(host_header) = request.headers().get("host") {
@@ -875,5 +907,5 @@ fn maybe_normalize_uri(
             *uri = new;
         }
     }
-    Ok(request)
+    Ok(())
 }

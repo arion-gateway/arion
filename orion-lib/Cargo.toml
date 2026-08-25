@@ -22,7 +22,6 @@ orion-format.workspace = true
 orion-http-header.workspace = true
 orion-interner.workspace = true
 orion-tracing.workspace = true
-orion-auth.workspace = true
 orion-xds.workspace = true
 prost.workspace = true
 bounded-integer.workspace = true
@@ -85,6 +84,7 @@ upon.workspace = true
 percent-encoding.workspace = true
 atomicoption.workspace = true
 papaya.workspace = true
+str-utils.workspace = true
 const-str.workspace = true
 hickory-resolver = { workspace = true, features = ["system-config"] }
 hyper = { workspace = true, features = ["full"] }

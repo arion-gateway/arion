@@ -105,9 +105,7 @@ mod test {
 
     fn build_request<'a>(uri: &str, headers: impl IntoIterator<Item = (&'a str, &'a str)>) -> Request<()> {
         let mut builder = Builder::new().uri(uri);
-
         builder = headers.into_iter().fold(builder, |builder, (key, value)| builder.header(key, value));
-
         builder.body(()).unwrap()
     }
 

@@ -28,7 +28,14 @@
     clippy::expect_used
 )]
 
-use orion_data_plane_api::envoy_data_plane_api::orion::extensions::filters::http::mcp::mcp_gateway::v3::Tool as OrionMcpTool;
+use std::time::Duration;
+
+use http::StatusCode;
+use orion_data_plane_api::envoy_data_plane_api::{
+    envoy::config::route::v3::RetryPolicy as EnvoyRetryPolicy,
+    google::protobuf::{Duration as ProstDuration, UInt32Value},
+    orion::extensions::filters::http::mcp::mcp_gateway::v3::{HttpUpstreamPolicy, Tool as OrionMcpTool},
+};
 use orion_e2e_tests::config_builder::{
     inline_string_data_source, ClusterBuilder, EndpointBuilder, McpGatewayBuilder, McpGatewayHttpConfigBuilder,
     McpRestBackendBuilder, McpServerBackendBuilder, McpToolBuilder, McpToolRbacBuilder,
@@ -356,6 +363,218 @@ async fn test_mcp_gateway_rest_full_transcoding() {
     let body_json: serde_json::Value = serde_json::from_str(body).expect("Invalid JSON body");
     assert_eq!(body_json["data"], "new data", "Body should contain templated content");
     assert_eq!(body_json["metadata"]["version"], 2, "Body should contain nested templated version");
+
+    orion.shutdown();
+    let _ = std::fs::remove_file(&config_path);
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_mcp_gateway_rest_authority_override() {
+    let mut backend = TestBackend::start().await.expect("Failed to start test backend");
+    backend.set_default_response(PreConfiguredResponse::with_body(r#"{"status":"ok"}"#)).await;
+
+    let override_tool = McpToolBuilder::new("authority_test", "Verify the configured upstream authority")
+        .input_schema(empty_schema())
+        .rest_backend(
+            McpRestBackendBuilder::new("backend_cluster", "GET", "/authority").authority("tools.internal.example:8443"),
+        )
+        .build();
+    let default_tool =
+        rest_tool("authority_default", "Use the endpoint authority", "backend_cluster", "GET", "/authority");
+
+    let bootstrap =
+        mcp_gateway_test_config(vec![override_tool, default_tool])
+            .build_bootstrap(vec![
+                ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr()))
+            ]);
+    let config_path = bootstrap.build_to_temp().expect("Failed to build config");
+    let orion = OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default())
+        .await
+        .expect("Failed to spawn Orion");
+    let mut client = McpTestClient::new(orion.listener_addr().unwrap());
+    client.initialize().await.expect("Failed to initialize");
+
+    let result = client.call_tool("authority_test", json!({})).await.expect("Failed to call tool");
+    assert_eq!(result.is_error, Some(false));
+    assert_eq!(result.structured_content, None);
+    assert_eq!(result.content.len(), 1);
+    assert_eq!(result.content[0].text, r#"{"status":"ok"}"#);
+
+    let result = client.call_tool("authority_default", json!({})).await.expect("Failed to call tool");
+    assert_eq!(result.is_error, Some(false));
+
+    // The configured authority wins; without one the endpoint address is used.
+    let overridden = backend.await_request().await.expect("No request received");
+    assert_eq!(overridden.header("host"), Some("tools.internal.example:8443"));
+    let defaulted = backend.await_request().await.expect("No request received");
+    let endpoint_authority = backend.addr().to_string();
+    assert_eq!(defaulted.header("host"), Some(endpoint_authority.as_str()));
+
+    orion.shutdown();
+    let _ = std::fs::remove_file(&config_path);
+}
+
+#[tokio::test]
+#[allow(clippy::cast_possible_truncation)]
+#[ignore]
+async fn test_mcp_gateway_tool_response_limit() {
+    const LIMIT: u64 = 16;
+    const AT_LIMIT: &str = "1234567890abcdef";
+    const OVER_LIMIT: &str = "1234567890abcdefg";
+
+    let at_limit_backend = TestBackend::start().await.expect("Failed to start at-limit backend");
+    at_limit_backend.set_default_response(PreConfiguredResponse::with_body(AT_LIMIT)).await;
+    let over_limit_backend = TestBackend::start().await.expect("Failed to start over-limit backend");
+    over_limit_backend.set_default_response(PreConfiguredResponse::with_body(OVER_LIMIT)).await;
+
+    assert_eq!(AT_LIMIT.len(), LIMIT as usize);
+    assert_eq!(OVER_LIMIT.len(), LIMIT as usize + 1);
+
+    let at_limit_tool = rest_tool("at_limit", "Return exactly the response limit", "at_limit", "GET", "/exact");
+    let over_limit_tool = rest_tool("over_limit", "Exceed the response limit", "over_limit", "GET", "/large");
+    let gateway = McpGatewayBuilder::new(SERVER_NAME, SERVER_VERSION)
+        .max_upstream_response_bytes(LIMIT)
+        .tools([at_limit_tool, over_limit_tool]);
+    let bootstrap = McpGatewayHttpConfigBuilder::new(gateway).build_bootstrap(vec![
+        ClusterBuilder::new("at_limit").endpoint(EndpointBuilder::from_socket_addr(at_limit_backend.addr())),
+        ClusterBuilder::new("over_limit").endpoint(EndpointBuilder::from_socket_addr(over_limit_backend.addr())),
+    ]);
+    let config_path = bootstrap.build_to_temp().expect("Failed to build config");
+    let orion = OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default())
+        .await
+        .expect("Failed to spawn Orion");
+    let mut client = McpTestClient::new(orion.listener_addr().unwrap());
+    client.initialize().await.expect("Failed to initialize");
+
+    let at_limit = client.call_tool("at_limit", json!({})).await.expect("Failed to call at-limit tool");
+    assert_eq!(at_limit.is_error, Some(false));
+    assert_eq!(at_limit.content.len(), 1);
+    assert_eq!(at_limit.content[0].text, AT_LIMIT);
+
+    let result = client.call_tool("over_limit", json!({})).await.expect("Failed to call over-limit tool");
+    assert_eq!(result.is_error, Some(true));
+    let error = result.structured_content.as_ref().and_then(|value| value.get("error")).expect("missing error");
+    assert_eq!(error.get("code"), Some(&json!("response_too_large")));
+    assert_eq!(error.get("status"), Some(&json!(413)));
+    assert_eq!(error.get("retryable"), Some(&json!(false)));
+
+    orion.shutdown();
+    let _ = std::fs::remove_file(&config_path);
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_mcp_gateway_rest_retry_503_then_200() {
+    let mut backend = TestBackend::start().await.expect("Failed to start test backend");
+    backend
+        .enqueue_response(PreConfiguredResponse::with_status(StatusCode::SERVICE_UNAVAILABLE).body("retry me"))
+        .await;
+    backend.enqueue_response(PreConfiguredResponse::with_body("recovered").header("connection", "close")).await;
+
+    let retry_policy = EnvoyRetryPolicy {
+        retry_on: "5xx".to_owned(),
+        num_retries: Some(UInt32Value { value: 2 }),
+        ..Default::default()
+    };
+    let tool =
+        McpToolBuilder::new("retry", "Retry one transient upstream failure")
+            .input_schema(empty_schema())
+            .rest_backend(McpRestBackendBuilder::new("backend_cluster", "GET", "/retry").upstream_policy(
+                HttpUpstreamPolicy { authority: None, timeout: None, retry_policy: Some(retry_policy) },
+            ))
+            .build();
+    let bootstrap = mcp_gateway_test_config(vec![tool]).build_bootstrap(vec![ClusterBuilder::new("backend_cluster")
+        .endpoint(EndpointBuilder::from_socket_addr(backend.addr()))
+        .circuit_breaker_max_retries(2)]);
+    let config_path = bootstrap.build_to_temp().expect("Failed to build config");
+    let orion = OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default())
+        .await
+        .expect("Failed to spawn Orion");
+    let mut client = McpTestClient::new(orion.listener_addr().unwrap());
+    client.initialize().await.expect("Failed to initialize");
+
+    let result = client.call_tool("retry", json!({})).await.expect("Failed to call retry tool");
+    let first = backend.await_request().await.expect("Missing initial request");
+    let retry = backend.await_request().await.expect("Missing retry request");
+    assert_eq!(first.path(), "/retry");
+    assert_eq!(retry.path(), "/retry");
+    assert_eq!(result.is_error, Some(false), "unexpected tool result: {result:?}");
+    assert_eq!(result.content.len(), 1);
+    assert_eq!(result.content[0].text, "recovered");
+
+    orion.shutdown();
+    let _ = std::fs::remove_file(&config_path);
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_mcp_gateway_tool_timeout() {
+    let backend = TestBackend::start().await.expect("Failed to start test backend");
+    backend.set_default_response(PreConfiguredResponse::with_body("late").delay(Duration::from_millis(200))).await;
+
+    let tool = rest_tool("slow", "Return after the tool deadline", "backend_cluster", "GET", "/slow");
+    let gateway = McpGatewayBuilder::new(SERVER_NAME, SERVER_VERSION)
+        .upstream_timeout(ProstDuration { seconds: 0, nanos: 50_000_000 })
+        .tool(tool);
+    let bootstrap = McpGatewayHttpConfigBuilder::new(gateway)
+        .build_bootstrap(vec![
+            ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr()))
+        ]);
+    let config_path = bootstrap.build_to_temp().expect("Failed to build config");
+    let orion = OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default())
+        .await
+        .expect("Failed to spawn Orion");
+    let mut client = McpTestClient::new(orion.listener_addr().unwrap());
+    client.initialize().await.expect("Failed to initialize");
+
+    let result = client.call_tool("slow", json!({})).await.expect("Failed to call tool");
+    assert_eq!(result.is_error, Some(true));
+    let error = result.structured_content.as_ref().and_then(|value| value.get("error")).expect("missing error");
+    assert_eq!(error.get("code"), Some(&json!("upstream_timeout")));
+    assert_eq!(error.get("status"), Some(&json!(504)));
+    assert_eq!(error.get("retryable"), Some(&json!(true)));
+
+    orion.shutdown();
+    let _ = std::fs::remove_file(&config_path);
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_mcp_gateway_rest_policy_timeout_overrides_global_timeout() {
+    let backend = TestBackend::start().await.expect("Failed to start test backend");
+    backend
+        .set_default_response(PreConfiguredResponse::with_body("within tool timeout").delay(Duration::from_millis(100)))
+        .await;
+
+    let tool = McpToolBuilder::new("policy_timeout", "Use the per-tool timeout")
+        .input_schema(empty_schema())
+        .rest_backend(McpRestBackendBuilder::new("backend_cluster", "GET", "/policy-timeout").upstream_policy(
+            HttpUpstreamPolicy {
+                authority: None,
+                timeout: Some(ProstDuration { seconds: 0, nanos: 500_000_000 }),
+                retry_policy: None,
+            },
+        ))
+        .build();
+    let gateway = McpGatewayBuilder::new(SERVER_NAME, SERVER_VERSION)
+        .upstream_timeout(ProstDuration { seconds: 0, nanos: 50_000_000 })
+        .tool(tool);
+    let bootstrap = McpGatewayHttpConfigBuilder::new(gateway)
+        .build_bootstrap(vec![
+            ClusterBuilder::new("backend_cluster").endpoint(EndpointBuilder::from_socket_addr(backend.addr()))
+        ]);
+    let config_path = bootstrap.build_to_temp().expect("Failed to build config");
+    let orion = OrionInstance::spawn_auto_port(&config_path, "http", SpawnOptions::default())
+        .await
+        .expect("Failed to spawn Orion");
+    let mut client = McpTestClient::new(orion.listener_addr().unwrap());
+    client.initialize().await.expect("Failed to initialize");
+
+    let result = client.call_tool("policy_timeout", json!({})).await.expect("Failed to call tool");
+    assert_eq!(result.is_error, Some(false));
+    assert_eq!(result.content.len(), 1);
+    assert_eq!(result.content[0].text, "within tool timeout");
 
     orion.shutdown();
     let _ = std::fs::remove_file(&config_path);

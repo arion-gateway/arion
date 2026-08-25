@@ -218,7 +218,7 @@ fn launch_runtimes(
         num_threads_per_runtime * num_runtimes,
     );
 
-    info!("Launching {num_runtimes} worker runtime(s) with {num_threads_per_runtime} thread(s) each");
+    info!("Launching {num_runtimes} Proxy runtime(s) with {num_threads_per_runtime} thread(s) each");
 
     let proxy_handles = {
         (0..num_runtimes)
@@ -227,7 +227,8 @@ fn launch_runtimes(
                 spawn_proxy_runtime_from_thread(
                     "proxy",
                     num_threads_per_runtime,
-                    rt_config.affinity_strategy.clone().map(|affinity| (RuntimeId(id), affinity)),
+                    RuntimeId(id),
+                    rt_config.affinity_strategy.clone(),
                     config_receivers,
                     #[cfg(feature = "metrics")]
                     otel_exporters.clone(),
@@ -258,17 +259,19 @@ type RuntimeHandle = JoinHandle<Result<()>>;
 fn spawn_proxy_runtime_from_thread(
     thread_name: &'static str,
     num_threads: usize,
-    affinity_info: Option<(RuntimeId, Affinity)>,
+    runtime_id: RuntimeId,
+    affinity_info: Option<Affinity>,
     configuration_receivers: ConfigurationReceivers,
     #[cfg(feature = "metrics")] otel_exporters: Vec<OtelExporterConfig>,
 ) -> Result<RuntimeHandle> {
-    let thread_name = build_thread_name(thread_name, affinity_info.as_ref());
+    let thread_name = build_thread_name(thread_name, Some(runtime_id));
 
     let handle: JoinHandle<Result<()>> = thread::Builder::new().name(thread_name.clone()).spawn(move || {
         #[cfg(feature = "metrics")]
-        let rt = runtime::build_tokio_runtime(&thread_name, num_threads, affinity_info, otel_exporters);
+        let rt =
+            runtime::build_tokio_runtime(&thread_name, num_threads, Some(runtime_id), affinity_info, otel_exporters);
         #[cfg(not(feature = "metrics"))]
-        let rt = runtime::build_tokio_runtime(&thread_name, num_threads, affinity_info);
+        let rt = runtime::build_tokio_runtime(&thread_name, num_threads, Some(runtime_id), affinity_info);
 
         rt.block_on(async {
             tokio::select! {
@@ -294,16 +297,16 @@ fn spawn_proxy_runtime_from_thread(
 fn spawn_services_runtime_from_thread(
     thread_name: &'static str,
     num_threads: usize,
-    affinity_info: Option<(RuntimeId, Affinity)>,
+    affinity_info: Option<Affinity>,
     service_info: ServiceInfo,
 ) -> Result<RuntimeHandle> {
-    let thread_name = build_thread_name(thread_name, affinity_info.as_ref());
+    let thread_name = build_thread_name(thread_name, None);
 
     let rt_handle = thread::Builder::new().name(thread_name.clone()).spawn(move || {
         #[cfg(feature = "metrics")]
-        let rt = runtime::build_tokio_runtime(&thread_name, num_threads, affinity_info, vec![]);
+        let rt = runtime::build_tokio_runtime(&thread_name, num_threads, None, affinity_info, vec![]);
         #[cfg(not(feature = "metrics"))]
-        let rt = runtime::build_tokio_runtime(&thread_name, num_threads, affinity_info);
+        let rt = runtime::build_tokio_runtime(&thread_name, num_threads, None, affinity_info);
 
         rt.block_on(async {
             tokio::select! {
@@ -328,10 +331,10 @@ fn spawn_services_runtime_from_thread(
 }
 
 #[inline]
-fn build_thread_name(thread_name: &'static str, affinity_info: Option<&(RuntimeId, Affinity)>) -> String {
-    match affinity_info {
-        Some((runtime_id, _)) => format!("{thread_name}_RT{runtime_id}"),
-        None => format!("{thread_name}_RT"),
+fn build_thread_name(thread_name: &'static str, runtime_id: Option<RuntimeId>) -> String {
+    match runtime_id {
+        Some(id) => format!("{thread_name}_RT{id}"),
+        None => thread_name.to_string(),
     }
 }
 

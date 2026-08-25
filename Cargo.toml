@@ -3,7 +3,6 @@ members = [
   "envoy-data-plane-api",
   "orion-configuration",
   "orion-data-plane-api",
-  "orion-auth",
   "orion-error",
   "orion-http-header",
   "orion-e2e-tests",
@@ -36,7 +35,6 @@ version      = "0.1.0"
 [workspace.dependencies]
 # --- Orion Internal Crates ---
 envoy-data-plane-api     = { path = "envoy-data-plane-api" }
-orion-auth               = { path = "orion-auth" }
 orion-configuration      = { path = "orion-configuration" }
 orion-data-plane-api     = { path = "orion-data-plane-api" }
 orion-error              = { path = "orion-error" }
@@ -98,7 +96,7 @@ http-body                = "1.0"
 http-body-util           = "0.1.3"
 http-serde-ext           = "1.0.2"
 humantime-serde          = "1.1.1"
-hyper                    = { version = "1", features = ["full"] }
+hyper                    = { version = "1.11.0", features = ["full"] }
 hyper-util               = { version = "0.1.20", features = ["full"] }
 hyper-rustls             = { version = "0.27.7", features = ["default", "http2"] }
 hyperlocal               = "0.9.1"
@@ -151,6 +149,7 @@ serde_regex              = "1.1.0"
 serde_yaml               = "0.9.34"
 smallvec                 = { version = "1", features = ["union"] }
 smol_str                 = { version = "0.3.5", features = ["serde"] }
+str-utils 		         = "0.3.7"
 tempfile                 = "3.23"
 test-log                 = { version = "0.2.19", features = ["trace"] }
 thiserror                = "2.0.17"
@@ -197,10 +196,13 @@ rpath            = false
 strip            = "debuginfo"
 
 [profile.release-debuginfo]
-debug           = "full"
 inherits        = "release"
-split-debuginfo = "packed"
+debug           = "full"
+codegen-units   = 16
+opt-level       = 2
+lto             = false
 strip           = false
+#split-debuginfo = "packed"
 
 [profile.release-dhat]
 debug    = 1

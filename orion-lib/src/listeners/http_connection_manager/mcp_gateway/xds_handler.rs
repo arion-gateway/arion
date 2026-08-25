@@ -335,6 +335,7 @@ mod tests {
                 query_params: Vec::new(),
                 cluster: "test_cluster".into(),
                 body_template: None,
+                upstream_policy: None,
             })),
             rbac: None,
             embedding: Vec::new(),

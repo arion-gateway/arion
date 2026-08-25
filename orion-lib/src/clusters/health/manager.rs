@@ -18,6 +18,7 @@
 use std::collections::HashMap;
 
 use orion_configuration::config::cluster::{health_check::HealthCheckProtocol, HealthCheck};
+use smol_str::{SmolStr, ToSmolStr};
 use tokio::sync::mpsc;
 
 use crate::clusters::{
@@ -31,7 +32,7 @@ use super::EndpointId;
 pub struct HealthCheckManager {
     /// This sender is kept here to clone it every time a new health checker is spawned.
     updates_from_checkers_sender: mpsc::Sender<EndpointHealthUpdate>,
-    checkers: HashMap<String, Vec<EndpointHealthChecker>>,
+    checkers: HashMap<SmolStr, Vec<EndpointHealthChecker>>,
 }
 
 impl HealthCheckManager {
@@ -51,7 +52,7 @@ impl HealthCheckManager {
         if let Some(health_check_config) = cluster_config.into_health_check() {
             let HealthCheck { cluster: cluster_config, protocol } = health_check_config;
 
-            let checkers = self.checkers.entry(cluster_name.to_owned()).or_default();
+            let checkers = self.checkers.entry(cluster_name.to_smolstr()).or_default();
 
             match protocol {
                 HealthCheckProtocol::Http(http_config) => {
@@ -60,7 +61,7 @@ impl HealthCheckManager {
                     };
 
                     for (authority, channel) in endpoints {
-                        let endpoint_id = EndpointId { cluster: cluster_name.to_owned(), endpoint: authority };
+                        let endpoint_id = EndpointId { cluster: cluster_name.to_smolstr(), endpoint: authority };
 
                         let new_checker = EndpointHealthChecker::try_new_http(
                             endpoint_id.clone(),
@@ -89,7 +90,7 @@ impl HealthCheckManager {
                     };
 
                     for (authority, channel) in endpoints {
-                        let endpoint_id = EndpointId { cluster: cluster_name.to_owned(), endpoint: authority };
+                        let endpoint_id = EndpointId { cluster: cluster_name.to_smolstr(), endpoint: authority };
 
                         checkers.push(EndpointHealthChecker::new_tcp(
                             endpoint_id.clone(),
@@ -114,7 +115,7 @@ impl HealthCheckManager {
                             },
                         };
 
-                        let endpoint_id = EndpointId { cluster: cluster_name.to_owned(), endpoint };
+                        let endpoint_id = EndpointId { cluster: cluster_name.to_smolstr(), endpoint };
 
                         checkers.push(EndpointHealthChecker::new_grpc(
                             endpoint_id.clone(),
