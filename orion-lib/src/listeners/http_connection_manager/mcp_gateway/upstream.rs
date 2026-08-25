@@ -12,6 +12,7 @@ use orion_interner::StringInterner;
 use rmcp::model::{Annotated, CallToolResult, RawContent, RawTextContent};
 use serde::Serialize;
 use serde_json::{json, Value};
+use tracing::warn;
 
 #[cfg(feature = "metrics")]
 use {
@@ -26,6 +27,7 @@ use super::{
 use crate::{
     body::{poly_body::PolyBodyError, timeout_body::TimeoutBodyError},
     clusters::{
+        clusters_manager::RoutingContextError,
         http_upstream::{acquire_http_upstream, AcquireHttpUpstreamError, AcquireHttpUpstreamErrorKind},
         RoutingPriority,
     },
@@ -179,7 +181,7 @@ async fn dispatch_rest_tool(
         RoutingPriority::Default,
     ) {
         Ok(acquired) => acquired,
-        Err(error) => return ToolInvocationOutcome::Failure(acquire_failure(&error)),
+        Err(error) => return ToolInvocationOutcome::Failure(acquire_failure(&tool.conf.name, &error)),
     };
 
     if upstream_policy.authority.is_none() {
@@ -236,7 +238,7 @@ async fn dispatch_rest_tool(
     }
 }
 
-fn acquire_failure(error: &AcquireHttpUpstreamError) -> ToolInvocationFailure {
+fn acquire_failure(tool_name: &str, error: &AcquireHttpUpstreamError) -> ToolInvocationFailure {
     match error.kind() {
         AcquireHttpUpstreamErrorKind::CircuitBreakerOverflow => ToolInvocationFailure {
             code: ToolInvocationErrorCode::Overflow,
@@ -244,9 +246,23 @@ fn acquire_failure(error: &AcquireHttpUpstreamError) -> ToolInvocationFailure {
             status: Some(StatusCode::SERVICE_UNAVAILABLE),
             retryable: true,
         },
-        AcquireHttpUpstreamErrorKind::ClusterNotFound
-        | AcquireHttpUpstreamErrorKind::RoutingContext
-        | AcquireHttpUpstreamErrorKind::Connection => ToolInvocationFailure::upstream_error(),
+        AcquireHttpUpstreamErrorKind::RoutingContext => {
+            if let AcquireHttpUpstreamError::RoutingContext {
+                cluster_id,
+                source: RoutingContextError::MissingAuthority,
+            } = error
+            {
+                warn!(
+                    target: "mcp_gateway",
+                    "tool '{tool_name}' call failed: cluster '{cluster_id}' requires a request authority \
+                     (ORIGINAL_DST routing) but none was set; configure `upstream_policy.authority` for this tool"
+                );
+            }
+            ToolInvocationFailure::upstream_error()
+        },
+        AcquireHttpUpstreamErrorKind::ClusterNotFound | AcquireHttpUpstreamErrorKind::Connection => {
+            ToolInvocationFailure::upstream_error()
+        },
     }
 }
 
