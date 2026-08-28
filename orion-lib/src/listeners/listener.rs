@@ -450,7 +450,7 @@ impl Listener {
                                             filter_chains,
                                             with_tls_inspector,
                                             ConnectionSource::Socket { local_address: local_address.unwrap_or(address), peer_addr, proxy_protocol_config },
-                                            Box::new(stream),
+                                            stream.into(),
                                             start,
                                         ).await;
                                     });

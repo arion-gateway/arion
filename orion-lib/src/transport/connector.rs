@@ -318,7 +318,7 @@ impl InternalConnector {
             })
         });
         let internal_conn = InternalConnection {
-            stream: Box::new(InstrumentedStream::new(server_stream)) as AsyncInstrumentedStream,
+            stream: InstrumentedStream::new(server_stream).into(),
             downstream_metadata,
             start_instant: Instant::now(),
         };
@@ -331,7 +331,7 @@ impl InternalConnector {
         }
         debug!("Successfully connected to internal listener '{}'", self.listener_name);
 
-        Ok((Box::new(InstrumentedStream::new(client_stream)) as AsyncInstrumentedStream, self.cluster_name))
+        Ok((InstrumentedStream::new(client_stream).into(), self.cluster_name))
     }
 }
 
@@ -515,7 +515,7 @@ impl Service<Uri> for UnifiedConnector {
                         }))
                     }
 
-                    Ok(HttpConnection::new(TokioIo::new(Box::new(instrumented) as AsyncInstrumentedStream)))
+                    Ok(HttpConnection::new(TokioIo::new(instrumented.into())))
                 })
             },
             UnifiedConnector::Internal(c) => {

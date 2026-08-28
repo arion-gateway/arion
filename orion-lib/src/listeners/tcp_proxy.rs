@@ -29,10 +29,11 @@ use {
     std::time::Instant,
 };
 
+#[cfg(feature = "metrics")]
+use crate::utils::instrumented_stream::HasMetrics;
 use crate::{
     clusters::clusters_manager::{self, RoutingContext},
     listeners::metadata::DownstreamMetadata,
-    utils::instrumented_stream::InstrumentedStream,
     with_metric, AsyncInstrumentedStream, Result,
 };
 use orion_configuration::config::{
@@ -158,8 +159,8 @@ impl TcpProxy {
                             maybe_upstream_peer_addr = channel.upstream_peer_addr
                         }
 
-                        let mut downstream = InstrumentedStream::new(stream);
-                        let mut upstream = InstrumentedStream::new(channel.stream);
+                        let mut downstream = stream;
+                        let mut upstream = channel.stream;
 
                         #[allow(unused_variables)]
                         let res = tokio::io::copy_bidirectional(&mut downstream, &mut upstream).await;

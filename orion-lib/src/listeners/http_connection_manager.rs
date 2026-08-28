@@ -1473,13 +1473,7 @@ impl TransactionSvc<HttpPipelineSvc> {
         let listener_name = self.manager.listener_name;
         let route_conf = self.router.borrow().clone();
 
-        with_metric!(
-            http::DOWNSTREAM_RQ_TOTAL,
-            add,
-            1,
-            ctx.tx.shard_id(),
-            &[KeyValue::new("listener", listener_name)]
-        );
+        with_metric!(http::DOWNSTREAM_RQ_TOTAL, add, 1, ctx.tx.shard_id(), &[KeyValue::new("listener", listener_name)]);
         with_metric!(
             http::DOWNSTREAM_RQ_ACTIVE,
             add,
@@ -1910,7 +1904,10 @@ fn instrument_early_failure_response(
                         #[allow(unused_variables)]
                         let tx_duration = Instant::now().saturating_duration_since(first_byte_instant);
 
-                        with_access_log!(&mut trans_state.loggers, HttpResponseDurationContext { duration, tx_duration })
+                        with_access_log!(
+                            &mut trans_state.loggers,
+                            HttpResponseDurationContext { duration, tx_duration }
+                        )
                     };
 
                     if trans_ctx.trans_phase.is_complete() {

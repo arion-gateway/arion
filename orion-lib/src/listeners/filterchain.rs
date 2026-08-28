@@ -28,7 +28,7 @@ use crate::{
         },
     },
     secrets::{TlsConfigurator, WantsToBuildServer},
-    transport::AsyncReadWriteInstrumented,
+    utils::instrumented_stream::HasMetrics,
     AsyncInstrumentedStream, ConversionContext, Error, Result,
 };
 use hyper_util::rt::{TokioExecutor, TokioIo};
@@ -344,12 +344,11 @@ impl FilterchainType {
                 let listener_name = tcp_proxy.listener_name;
                 let tls_config = config.tls_configurator.as_ref().map(TlsConfigurator::server_config);
 
-                let (stream, _alpns): (Box<dyn AsyncReadWriteInstrumented>, Option<AlpnCodecs>) =
-                    if let Some(tls_config) = tls_config {
-                        start_tls(listener_name, stream, tls_config, None).await?
-                    } else {
-                        (stream, None)
-                    };
+                let (stream, _alpns) = if let Some(tls_config) = tls_config {
+                    start_tls(listener_name, stream, tls_config, None).await?
+                } else {
+                    (stream, None)
+                };
 
                 debug!("Starting tcp proxy");
                 let res = tcp_proxy.serve_connection(stream, metadata).await;
@@ -374,7 +373,7 @@ async fn start_tls(
     config: Arc<ServerConfig>,
     codec_type: Option<CodecType>,
 ) -> Result<(AsyncInstrumentedStream, Option<AlpnCodecs>)> {
-    let acceptor = tokio_rustls::LazyConfigAcceptor::new(Acceptor::default(), stream);
+    let acceptor = tokio_rustls::LazyConfigAcceptor::new(Acceptor::default(), Box::new(stream));
     tokio::pin!(acceptor);
     match acceptor.as_mut().await {
         Ok(accepted) => {
@@ -424,7 +423,7 @@ async fn start_tls(
                 (None, None | Some(_)) => (config, None),
             };
             let stream = accepted.into_stream(config).await.map_err(|e| format!("Can't accept {e:?}"))?;
-            Ok((Box::new(stream), negotiated_codec_type))
+            Ok((AsyncInstrumentedStream::server_tls(stream), negotiated_codec_type))
         },
         Err(err) => Err(format!("{listener_name} Can't start tls {err:?}").into()),
     }

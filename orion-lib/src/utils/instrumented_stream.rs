@@ -24,7 +24,7 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 #[cfg(feature = "metrics")]
 use crate::{get_shard_id, metrics, with_metric};
 
-use crate::{transport::AsyncReadWriteInstrumented, utils::rewindable_stream::RewindableHeadAsyncStream};
+use crate::utils::rewindable_stream::RewindableHeadAsyncStream;
 
 // Tracks the exact operation that caused the error
 #[derive(Debug)]
@@ -401,19 +401,9 @@ impl<S> HasMetrics for InstrumentedStream<S> {
     }
 }
 
-impl HasMetrics for tokio_rustls::server::TlsStream<Box<dyn AsyncReadWriteInstrumented>> {
-    fn metrics(&self) -> &StreamMetrics {
-        self.get_ref().0.metrics()
-    }
-
-    fn shared_metrics(&self) -> Arc<StreamMetrics> {
-        self.get_ref().0.shared_metrics()
-    }
-}
-
 impl<R> HasMetrics for RewindableHeadAsyncStream<R>
 where
-    R: AsyncReadWriteInstrumented + HasMetrics + ?Sized,
+    R: HasMetrics + AsyncRead + AsyncWrite + Unpin + ?Sized,
 {
     fn metrics(&self) -> &StreamMetrics {
         self.get_ref().metrics()

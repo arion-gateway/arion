@@ -15,7 +15,7 @@
 //
 //
 
-use super::AsyncReadWriteInstrumented;
+use super::AsyncInstrumentedStream;
 use crate::utils::rewindable_stream::RewindableHeadAsyncStream;
 
 use rustls::server::Acceptor;
@@ -32,10 +32,8 @@ pub enum InspectorResult {
     TlsError(io::Error),
 }
 
-pub async fn inspect_client_hello(
-    stream: Box<dyn AsyncReadWriteInstrumented>,
-) -> (InspectorResult, Box<dyn AsyncReadWriteInstrumented>) {
-    let mut inspector = RewindableHeadAsyncStream::new(stream);
+pub async fn inspect_client_hello(stream: AsyncInstrumentedStream) -> (InspectorResult, AsyncInstrumentedStream) {
+    let mut inspector = RewindableHeadAsyncStream::new(Box::new(stream));
     let acceptor = tokio_rustls::LazyConfigAcceptor::new(Acceptor::default(), &mut inspector);
     let result = match acceptor.await {
         Ok(handshake) => match handshake.client_hello().server_name() {
@@ -44,8 +42,7 @@ pub async fn inspect_client_hello(
         },
         Err(e) => InspectorResult::TlsError(e),
     };
-    let rewound_stream = inspector.into_rewound_stream();
-    (result, Box::new(rewound_stream))
+    (result, AsyncInstrumentedStream::rewound(inspector.into_rewound_stream()))
 }
 
 #[cfg(test)]
@@ -69,11 +66,17 @@ mod tests {
         tls_data
     }
 
+    async fn stream_from_bytes(data: &[u8]) -> crate::transport::AsyncInstrumentedStream {
+        let (mut write_stream, read_stream) = tokio::io::duplex(data.len().max(1024));
+        write_stream.write_all(data).await.unwrap();
+        write_stream.shutdown().await.unwrap();
+        InstrumentedStream::new(read_stream).into()
+    }
+
     #[tokio::test]
     async fn test_sni_detection() {
         let tls_data = create_client_hello_with_sni("example.com");
-        let cursor = std::io::Cursor::new(tls_data.clone());
-        let inbound = Box::new(InstrumentedStream::new(cursor)) as Box<dyn AsyncReadWriteInstrumented>;
+        let inbound = stream_from_bytes(&tls_data).await;
         let (result, rewound) = inspect_client_hello(inbound).await;
         assert!(matches!(result, InspectorResult::Success(ref sni) if sni == "example.com"));
 
@@ -88,8 +91,7 @@ mod tests {
     #[tokio::test]
     async fn test_no_sni() {
         let tls_data = create_client_hello_with_sni("127.0.0.1");
-        let cursor = std::io::Cursor::new(tls_data);
-        let inbound = Box::new(InstrumentedStream::new(cursor)) as Box<dyn AsyncReadWriteInstrumented>;
+        let inbound = stream_from_bytes(&tls_data).await;
         let (result, _) = inspect_client_hello(inbound).await;
         assert!(matches!(result, InspectorResult::SuccessNoSni));
     }
@@ -97,12 +99,7 @@ mod tests {
     #[tokio::test]
     async fn test_non_tls_data() {
         let http_data = b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n";
-
-        let (mut write_stream, read_stream) = tokio::io::duplex(1024);
-        write_stream.write_all(http_data).await.unwrap();
-        write_stream.shutdown().await.unwrap();
-
-        let inbound = Box::new(InstrumentedStream::new(read_stream)) as Box<dyn AsyncReadWriteInstrumented>;
+        let inbound = stream_from_bytes(http_data).await;
         let (result, mut rewound) = inspect_client_hello(inbound).await;
         assert!(matches!(result, InspectorResult::TlsError(_)));
 

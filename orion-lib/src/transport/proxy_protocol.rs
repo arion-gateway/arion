@@ -18,7 +18,7 @@
 use crate::{
     listeners::metadata::DownstreamConnectionMetadata,
     secrets::{TlsConfigurator, WantsToBuildClient},
-    transport::AsyncReadWriteInstrumented,
+    transport::AsyncInstrumentedStream,
     utils::rewindable_stream::RewindableHeadAsyncStream,
     Error, Result, SecretManager,
 };
@@ -70,11 +70,11 @@ impl ProxyProtocolReader {
 
     pub async fn try_read_proxy_header(
         &self,
-        stream: Box<dyn AsyncReadWriteInstrumented>,
+        stream: AsyncInstrumentedStream,
         local_address: SocketAddr,
         peer_address: SocketAddr,
-    ) -> Result<(DownstreamConnectionMetadata, Box<dyn AsyncReadWriteInstrumented>)> {
-        let mut stream = RewindableHeadAsyncStream::new(stream);
+    ) -> Result<(DownstreamConnectionMetadata, AsyncInstrumentedStream)> {
+        let mut stream = RewindableHeadAsyncStream::new(Box::new(stream));
         let mut buffer = [0; READ_BUFFER_LEN];
 
         let maybe_header = Self::read_header_bytes(&mut stream, &mut buffer, peer_address).await?;
@@ -85,7 +85,7 @@ impl ProxyProtocolReader {
             PolicyAction::TransparentPassthrough => {
                 return Ok((
                     DownstreamConnectionMetadata::FromSocket { peer_address, local_address },
-                    Box::new(stream.into_rewound_stream()),
+                    AsyncInstrumentedStream::rewound(stream.into_rewound_stream()),
                 ));
             },
             PolicyAction::Proceed => match &maybe_header {
@@ -96,7 +96,7 @@ impl ProxyProtocolReader {
 
         let parsed_header = HeaderResult::parse(buffered_data);
         let metadata = self.extract_metadata(parsed_header, peer_address, local_address)?;
-        Ok((metadata, stream.into_stream()))
+        Ok((metadata, *stream.into_stream()))
     }
 
     fn should_reject_v1(&self) -> bool {
@@ -459,7 +459,7 @@ mod tests {
         write_side.write_all(test_data).await.unwrap();
 
         let result =
-            reader.try_read_proxy_header(Box::new(InstrumentedStream::new(read_side)), local_addr, peer_addr).await;
+            reader.try_read_proxy_header(InstrumentedStream::new(read_side).into(), local_addr, peer_addr).await;
         assert!(result.is_ok());
 
         let (metadata, _stream) = result.unwrap();
@@ -511,7 +511,7 @@ mod tests {
         write_side.write_all(test_data).await.unwrap();
 
         let result =
-            reader.try_read_proxy_header(Box::new(InstrumentedStream::new(read_side)), local_addr, peer_addr).await;
+            reader.try_read_proxy_header(InstrumentedStream::new(read_side).into(), local_addr, peer_addr).await;
         assert!(result.is_ok());
 
         let (metadata, _stream) = result.unwrap();
@@ -593,7 +593,7 @@ mod tests {
         write_side.write_all(&header_bytes).await.unwrap();
 
         let (parsed_metadata, _) = reader
-            .try_read_proxy_header(Box::new(InstrumentedStream::new(read_side)), proxy_local, proxy_peer)
+            .try_read_proxy_header(InstrumentedStream::new(read_side).into(), proxy_local, proxy_peer)
             .await
             .unwrap();
 

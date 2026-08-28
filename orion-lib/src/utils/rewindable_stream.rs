@@ -23,11 +23,9 @@ use std::{
 };
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
-use crate::transport::AsyncReadWriteInstrumented;
-
 pub enum RewindableHeadAsyncStream<R>
 where
-    R: AsyncReadWriteInstrumented + ?Sized,
+    R: AsyncRead + AsyncWrite + Unpin + ?Sized,
 {
     HeadBufferingReadOnlyMode { inner: Box<R>, buffer: Vec<u8> },
     FullReplayMode { inner: Box<R>, replay_buffer: Bytes, read_pos: usize },
@@ -35,7 +33,7 @@ where
 
 impl<R> RewindableHeadAsyncStream<R>
 where
-    R: AsyncReadWriteInstrumented + ?Sized,
+    R: AsyncRead + AsyncWrite + Unpin + ?Sized,
 {
     pub fn new(inner: Box<R>) -> Self {
         Self::HeadBufferingReadOnlyMode { inner, buffer: Vec::new() }
@@ -76,7 +74,7 @@ where
 
 impl<R> AsyncRead for RewindableHeadAsyncStream<R>
 where
-    R: AsyncReadWriteInstrumented + ?Sized,
+    R: AsyncRead + AsyncWrite + Unpin + ?Sized,
 {
     fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<std::io::Result<()>> {
         match &mut *self {
@@ -119,7 +117,7 @@ where
 
 impl<R> AsyncWrite for RewindableHeadAsyncStream<R>
 where
-    R: AsyncReadWriteInstrumented + ?Sized,
+    R: AsyncRead + AsyncWrite + Unpin + ?Sized,
 {
     fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<std::io::Result<usize>> {
         match &mut *self {
