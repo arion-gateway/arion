@@ -10,8 +10,9 @@ use tokio::net::TcpStream;
 use tokio_rustls::client::TlsStream as ClientTlsStream;
 use tokio_rustls::server::TlsStream as ServerTlsStream;
 
-use crate::utils::instrumented_stream::{HasMetrics, InstrumentedStream, StreamMetrics};
+use crate::utils::instrumented_stream::{HasMetrics, InstrumentedStream};
 use crate::utils::rewindable_stream::RewindableHeadAsyncStream;
+use crate::utils::StreamMetrics;
 
 pub enum AsyncInstrumentedStream {
     Tcp(InstrumentedStream<TcpStream>),

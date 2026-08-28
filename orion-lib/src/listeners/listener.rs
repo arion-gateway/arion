@@ -24,7 +24,7 @@ use super::{
 use crate::instrumentation;
 
 #[cfg(any(feature = "access-log", feature = "metrics"))]
-use crate::utils::instrumented_stream::StreamMetrics;
+use crate::utils::StreamMetrics;
 
 #[cfg(feature = "access-log")]
 use {

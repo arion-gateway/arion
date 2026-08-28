@@ -2,7 +2,7 @@ use std::{
     io,
     pin::Pin,
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicU64, Ordering},
         Arc, LazyLock,
     },
     task::{Context, Poll},
@@ -19,11 +19,13 @@ use parking_lot::Mutex;
 use pin_project::pin_project;
 use quanta::Clock;
 use smallvec::SmallVec;
+use std::sync::atomic::AtomicBool;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 #[cfg(feature = "metrics")]
 use crate::{get_shard_id, metrics, with_metric};
 
+use super::StreamMetrics as ConnMetrics;
 use crate::utils::rewindable_stream::RewindableHeadAsyncStream;
 
 // Tracks the exact operation that caused the error
@@ -33,25 +35,31 @@ pub enum ErrorSource {
     Write(io::Error),
 }
 
-type Callback = Box<dyn FnOnce() + Send>;
-
-pub struct CallbackQueue {
-    has_pending: AtomicBool,
-    queue: Mutex<SmallVec<[Callback; 4]>>,
+pub trait OnFlush: Send + Sized + 'static {
+    fn run(self, metrics: &StreamMetrics<Self>);
 }
 
-impl CallbackQueue {
+impl OnFlush for () {
+    fn run(self, _metrics: &StreamMetrics<Self>) {}
+}
+
+pub struct CallbackQueue<T> {
+    has_pending: AtomicBool,
+    queue: Mutex<SmallVec<[T; 4]>>,
+}
+
+impl<T> CallbackQueue<T> {
     pub fn new() -> Self {
         Self { has_pending: AtomicBool::new(false), queue: Mutex::new(SmallVec::new()) }
     }
 
-    pub fn push(&self, cb: Callback) {
+    pub fn push(&self, cb: T) {
         let mut queue = self.queue.lock();
         queue.push(cb);
         self.has_pending.store(true, Ordering::Release);
     }
 
-    pub fn drain(&self) -> Option<SmallVec<[Callback; 4]>> {
+    pub fn drain(&self) -> Option<SmallVec<[T; 4]>> {
         if !self.has_pending.load(Ordering::Acquire) {
             return None;
         }
@@ -68,7 +76,7 @@ impl CallbackQueue {
 
 static WALL_CLOCK: LazyLock<Clock> = LazyLock::new(Clock::new);
 
-pub struct StreamMetrics {
+pub struct StreamMetrics<C: OnFlush = ()> {
     total_bytes_read: AtomicU64,
     total_bytes_written: AtomicU64,
     txn_bytes_read_start: AtomicU64,
@@ -77,19 +85,18 @@ pub struct StreamMetrics {
     requests_counter: AtomicU64,
     error: AtomicOption<ErrorSource>,
     #[allow(clippy::type_complexity)]
-    drop_fn: AtomicOption<Box<dyn FnOnce(&StreamMetrics, Duration) + Send>>,
-    #[allow(clippy::type_complexity)]
-    flush_callbacks: CallbackQueue,
+    drop_fn: AtomicOption<Box<dyn FnOnce(&StreamMetrics<C>, Duration) + Send>>,
+    flush_callbacks: CallbackQueue<C>,
     user_partition_key: AtomicOption<&'static str>,
 }
 
-impl Default for StreamMetrics {
+impl<C: OnFlush> Default for StreamMetrics<C> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl std::fmt::Debug for StreamMetrics {
+impl<C: OnFlush> std::fmt::Debug for StreamMetrics<C> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let error = match self.error.as_ref(Ordering::Relaxed) {
             None => None,
@@ -105,13 +112,12 @@ impl std::fmt::Debug for StreamMetrics {
             .field("requests_counter", &self.requests_counter)
             .field("error", &error)
             .field("drop_fn", &self.drop_fn.is_some(Ordering::Relaxed))
-            .field("flush_callbacks", &"...")
             .field("user_partition_key", &user_partition_key)
             .finish()
     }
 }
 
-impl Drop for StreamMetrics {
+impl<C: OnFlush> Drop for StreamMetrics<C> {
     fn drop(&mut self) {
         self.on_flush();
         if let Some(drop_fn) = self.drop_fn.take(Ordering::Acquire) {
@@ -131,8 +137,8 @@ impl Drop for StreamMetrics {
     }
 }
 
-impl StreamMetrics {
-    pub fn new() -> StreamMetrics {
+impl<C: OnFlush> StreamMetrics<C> {
+    pub fn new() -> StreamMetrics<C> {
         Self {
             total_bytes_read: AtomicU64::new(0),
             total_bytes_written: AtomicU64::new(0),
@@ -148,7 +154,7 @@ impl StreamMetrics {
     }
 
     #[inline]
-    pub fn add_flush_callback(&self, cb: Box<dyn FnOnce() + Send>) {
+    pub fn add_flush_callback(&self, cb: C) {
         self.flush_callbacks.push(cb);
     }
 
@@ -156,14 +162,14 @@ impl StreamMetrics {
     pub fn on_flush(&self) {
         if let Some(callbacks) = self.flush_callbacks.drain() {
             for cb in callbacks {
-                cb();
+                cb.run(self);
             }
         }
     }
 
     #[inline]
     #[allow(clippy::type_complexity)]
-    pub fn with_drop_fn(&self, drop_fn: Box<dyn FnOnce(&StreamMetrics, Duration) + Send>) {
+    pub fn with_drop_fn(&self, drop_fn: Box<dyn FnOnce(&StreamMetrics<C>, Duration) + Send>) {
         self.drop_fn.store(Ordering::Release, drop_fn);
     }
 
@@ -196,6 +202,7 @@ impl StreamMetrics {
     }
 
     #[inline]
+    #[allow(dead_code)]
     pub fn requests_counter(&self) -> u64 {
         self.requests_counter.load(Ordering::Relaxed)
     }
@@ -270,12 +277,12 @@ impl StreamMetrics {
 pub struct InstrumentedStream<S> {
     #[pin]
     inner: S,
-    metrics: Arc<StreamMetrics>,
+    metrics: Arc<ConnMetrics>,
 }
 
 impl<S> InstrumentedStream<S> {
     pub fn new(inner: S) -> InstrumentedStream<S> {
-        Self { inner, metrics: Arc::new(StreamMetrics::new()) }
+        Self { inner, metrics: Arc::new(ConnMetrics::new()) }
     }
 
     #[inline]
@@ -291,7 +298,7 @@ impl<S> InstrumentedStream<S> {
     }
 
     #[inline]
-    pub fn metrics(&self) -> &StreamMetrics {
+    pub(crate) fn metrics(&self) -> &ConnMetrics {
         self.metrics.as_ref()
     }
 }
@@ -386,17 +393,17 @@ impl<S: AsyncWrite> AsyncWrite for InstrumentedStream<S> {
     }
 }
 
-pub trait HasMetrics {
-    fn metrics(&self) -> &StreamMetrics;
-    fn shared_metrics(&self) -> Arc<StreamMetrics>;
+pub(crate) trait HasMetrics {
+    fn metrics(&self) -> &ConnMetrics;
+    fn shared_metrics(&self) -> Arc<ConnMetrics>;
 }
 
 impl<S> HasMetrics for InstrumentedStream<S> {
-    fn metrics(&self) -> &StreamMetrics {
+    fn metrics(&self) -> &ConnMetrics {
         self.metrics.as_ref()
     }
 
-    fn shared_metrics(&self) -> Arc<StreamMetrics> {
+    fn shared_metrics(&self) -> Arc<ConnMetrics> {
         Arc::clone(&self.metrics)
     }
 }
@@ -405,11 +412,11 @@ impl<R> HasMetrics for RewindableHeadAsyncStream<R>
 where
     R: HasMetrics + AsyncRead + AsyncWrite + Unpin + ?Sized,
 {
-    fn metrics(&self) -> &StreamMetrics {
+    fn metrics(&self) -> &ConnMetrics {
         self.get_ref().metrics()
     }
 
-    fn shared_metrics(&self) -> Arc<StreamMetrics> {
+    fn shared_metrics(&self) -> Arc<ConnMetrics> {
         self.get_ref().shared_metrics()
     }
 }

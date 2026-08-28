@@ -20,7 +20,7 @@ use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 use orion_configuration::config::common::TlvType;
 use smol_str::SmolStr;
 
-use crate::utils::instrumented_stream::StreamMetrics;
+use crate::utils::StreamMetrics;
 
 #[derive(Debug, Clone)]
 pub enum DownstreamConnectionMetadata {
@@ -74,12 +74,12 @@ impl DownstreamMetadata {
 #[derive(Debug, Clone)]
 pub struct ConnMeta {
     pub downstream: Arc<DownstreamMetadata>,
-    pub stream_metrics: Arc<StreamMetrics>,
+    pub(crate) stream_metrics: Arc<StreamMetrics>,
 }
 
 impl ConnMeta {
     #[inline]
-    pub fn new(downstream: Arc<DownstreamMetadata>, stream_metrics: Arc<StreamMetrics>) -> Self {
+    pub(crate) fn new(downstream: Arc<DownstreamMetadata>, stream_metrics: Arc<StreamMetrics>) -> Self {
         Self { downstream, stream_metrics }
     }
 

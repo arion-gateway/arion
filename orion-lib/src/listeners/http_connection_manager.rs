@@ -121,7 +121,9 @@ use crate::{
     Result, RouteConfiguration,
 };
 
-use crate::utils::instrumented_stream::StreamMetrics;
+#[cfg(any(feature = "access-log", feature = "metrics"))]
+use crate::utils::instrumented_stream::OnFlush;
+use crate::utils::StreamMetrics;
 
 use orion_configuration::config::network_filters::{
     http_connection_manager::{Route, VirtualHost, XffSettings},
@@ -890,8 +892,6 @@ impl HttpPipelineSvc {
             #[cfg(any(feature = "access-log", feature = "tracing", feature = "metrics"))]
             let trans_ctx = ctx.tx;
             let stream_metrics = ctx.conn.stream_metrics;
-            #[cfg(any(feature = "access-log", feature = "metrics"))]
-            let stream_metrics_for_flush = Arc::clone(&stream_metrics);
 
             response.map(move |body| {
                 InstrumentedBody::new(
@@ -944,42 +944,18 @@ impl HttpPipelineSvc {
                             );
 
                             if trans_ctx.trans_phase.is_complete() {
-                                let trans_ctx_cb = Arc::clone(&trans_ctx);
-                                #[cfg(feature = "access-log")]
-                                let initial_event_cb = initial_event.clone();
-                                let body_error_cb = body_error.clone();
                                 drop(trans_state);
-
-                                stream_metrics.add_flush_callback(Box::new(move || {
-                                    #[allow(unused_mut)]
-                                    let mut trans_state = trans_ctx_cb.trans_state.lock();
-                                    #[allow(unused_variables)]
-                                    let ctx_bytes = trans_state.bytes;
-                                    #[allow(unused_variables)]
-                                    let ctx_flags = trans_state.flags;
-                                    #[allow(unused_variables)]
-                                    let ctx_event = trans_state.event.clone();
-                                    eval_http_finish_context(FinishContextParams {
-                                        stream_metrics: &stream_metrics_for_flush,
-                                        listener_name,
-                                        user_partition_key: trans_ctx_cb.user_partition_key,
-                                        filterchain_id,
-                                        bytes_received: ctx_bytes,
-                                        bytes_sent: body_bytes,
-                                        trans_start_time: trans_ctx_cb.start_instant,
-                                        #[cfg(feature = "metrics")]
-                                        m_ctx: MetricsFinishContext { shard_id: trans_ctx_cb.shard_id() },
-                                        #[cfg(feature = "access-log")]
-                                        al_ctx: AccessLogFinishContext {
-                                            event: EventInfo {
-                                                body_kind: BodyKind::Response,
-                                                event_kind: ctx_event.or(initial_event_cb).or(body_error_cb),
-                                                response_flags: ctx_flags | initial_flags | body_flags,
-                                            },
-                                            access_loggers: trans_state.loggers.as_mut(),
-                                        },
-                                    });
-                                }));
+                                stream_metrics.add_flush_callback(HttpTxnFlush {
+                                    trans_ctx: Arc::clone(&trans_ctx),
+                                    listener_name,
+                                    filterchain_id,
+                                    body_bytes,
+                                    body_is_response: true,
+                                    #[cfg(feature = "access-log")]
+                                    extra_event: initial_event.clone().or(body_error),
+                                    #[cfg(feature = "access-log")]
+                                    extra_flags: initial_flags | body_flags,
+                                });
                             } else {
                                 trans_state.bytes = body_bytes;
                                 #[cfg(feature = "access-log")]
@@ -1540,8 +1516,6 @@ impl TransactionSvc<HttpPipelineSvc> {
         }
 
         let stream_metrics = Arc::clone(&ctx.conn.stream_metrics);
-        #[cfg(any(feature = "access-log", feature = "metrics"))]
-        let stream_metrics_for_flush = Arc::clone(&stream_metrics);
         #[cfg(any(feature = "access-log", feature = "tracing", feature = "metrics"))]
         let trans_ctx = Arc::clone(&ctx.tx);
         let http = HttpRequest { request, ctx }.map_body(|body| {
@@ -1565,41 +1539,18 @@ impl TransactionSvc<HttpPipelineSvc> {
                         );
 
                         if trans_ctx.trans_phase.is_complete() {
-                            let trans_ctx_cb = Arc::clone(&trans_ctx);
-                            let body_error_cb = body_error.clone();
                             drop(trans_state);
-
-                            stream_metrics.add_flush_callback(Box::new(move || {
-                                #[allow(unused_mut)]
-                                let mut trans_state = trans_ctx_cb.trans_state.lock();
-                                #[allow(unused_variables)]
-                                let ctx_bytes = trans_state.bytes;
-                                #[allow(unused_variables)]
-                                let ctx_flags = trans_state.flags;
-                                #[allow(unused_variables)]
-                                let ctx_event = trans_state.event.clone();
-
-                                eval_http_finish_context(FinishContextParams {
-                                    stream_metrics: &stream_metrics_for_flush,
-                                    listener_name,
-                                    user_partition_key: trans_ctx_cb.user_partition_key,
-                                    filterchain_id,
-                                    bytes_received: body_bytes,
-                                    bytes_sent: ctx_bytes,
-                                    trans_start_time: trans_ctx_cb.start_instant,
-                                    #[cfg(feature = "metrics")]
-                                    m_ctx: MetricsFinishContext { shard_id: trans_ctx_cb.shard_id() },
-                                    #[cfg(feature = "access-log")]
-                                    al_ctx: AccessLogFinishContext {
-                                        event: EventInfo {
-                                            body_kind: BodyKind::Request,
-                                            event_kind: ctx_event.or(body_error_cb),
-                                            response_flags: ctx_flags | body_flags,
-                                        },
-                                        access_loggers: trans_state.loggers.as_mut(),
-                                    },
-                                });
-                            }));
+                            stream_metrics.add_flush_callback(HttpTxnFlush {
+                                trans_ctx: Arc::clone(&trans_ctx),
+                                listener_name,
+                                filterchain_id,
+                                body_bytes,
+                                body_is_response: false,
+                                #[cfg(feature = "access-log")]
+                                extra_event: body_error,
+                                #[cfg(feature = "access-log")]
+                                extra_flags: body_flags,
+                            });
                         } else {
                             trans_state.bytes = body_bytes;
                             #[cfg(feature = "access-log")]
@@ -1705,6 +1656,55 @@ struct AccessLogFinishContext<'a> {
 #[cfg(feature = "metrics")]
 struct MetricsFinishContext {
     shard_id: ShardId,
+}
+
+#[cfg(any(feature = "access-log", feature = "metrics"))]
+pub(crate) struct HttpTxnFlush {
+    trans_ctx: Arc<TransactionContext>,
+    listener_name: &'static str,
+    filterchain_id: u64,
+    body_bytes: u64,
+    body_is_response: bool,
+    #[cfg(feature = "access-log")]
+    extra_event: Option<EventKind>,
+    #[cfg(feature = "access-log")]
+    extra_flags: ResponseFlags,
+}
+
+#[cfg(any(feature = "access-log", feature = "metrics"))]
+impl OnFlush for HttpTxnFlush {
+    fn run(self, stream_metrics: &StreamMetrics) {
+        let mut trans_state = self.trans_ctx.trans_state.lock();
+        let ctx_bytes = trans_state.bytes;
+        #[cfg(feature = "access-log")]
+        let ctx_flags = trans_state.flags;
+        #[cfg(feature = "access-log")]
+        let ctx_event = trans_state.event.clone();
+
+        let (bytes_received, bytes_sent) =
+            if self.body_is_response { (ctx_bytes, self.body_bytes) } else { (self.body_bytes, ctx_bytes) };
+
+        eval_http_finish_context(FinishContextParams {
+            stream_metrics,
+            listener_name: self.listener_name,
+            user_partition_key: self.trans_ctx.user_partition_key,
+            filterchain_id: self.filterchain_id,
+            bytes_received,
+            bytes_sent,
+            trans_start_time: self.trans_ctx.start_instant,
+            #[cfg(feature = "metrics")]
+            m_ctx: MetricsFinishContext { shard_id: self.trans_ctx.shard_id() },
+            #[cfg(feature = "access-log")]
+            al_ctx: AccessLogFinishContext {
+                event: EventInfo {
+                    body_kind: if self.body_is_response { BodyKind::Response } else { BodyKind::Request },
+                    event_kind: ctx_event.or(self.extra_event),
+                    response_flags: ctx_flags | self.extra_flags,
+                },
+                access_loggers: trans_state.loggers.as_mut(),
+            },
+        });
+    }
 }
 
 #[cfg(any(feature = "access-log", feature = "metrics"))]
@@ -1882,8 +1882,6 @@ fn instrument_early_failure_response(
     let trans_ctx = Arc::clone(trans_ctx);
 
     let stream_metrics = stream_metrics.cloned();
-    #[cfg(any(feature = "access-log", feature = "metrics"))]
-    let stream_metrics_for_flush = stream_metrics.clone();
     response.map(|body| {
         InstrumentedBody::new(
             BodyKind::Response,
@@ -1911,43 +1909,18 @@ fn instrument_early_failure_response(
                     };
 
                     if trans_ctx.trans_phase.is_complete() {
-                        let trans_ctx_cb = Arc::clone(&trans_ctx);
-                        #[cfg(feature = "access-log")]
-                        let initial_event_cb = initial_event.clone();
-                        let body_error_cb = body_error.clone();
                         drop(trans_state);
-
-                        stream_metrics.add_flush_callback(Box::new(move || {
-                            #[allow(unused_mut)]
-                            let mut trans_state = trans_ctx_cb.trans_state.lock();
-                            #[allow(unused_variables)]
-                            let ctx_bytes = trans_state.bytes;
-                            #[allow(unused_variables)]
-                            let ctx_flags = trans_state.flags;
-                            #[allow(unused_variables)]
-                            let ctx_event = trans_state.event.clone();
-
-                            eval_http_finish_context(FinishContextParams {
-                                stream_metrics: stream_metrics_for_flush.as_ref().unwrap(),
-                                listener_name,
-                                user_partition_key: trans_ctx_cb.user_partition_key,
-                                filterchain_id,
-                                bytes_received: ctx_bytes,
-                                bytes_sent: body_bytes,
-                                trans_start_time: trans_ctx_cb.start_instant,
-                                #[cfg(feature = "metrics")]
-                                m_ctx: MetricsFinishContext { shard_id: trans_ctx_cb.shard_id() },
-                                #[cfg(feature = "access-log")]
-                                al_ctx: AccessLogFinishContext {
-                                    event: EventInfo {
-                                        body_kind: BodyKind::Response,
-                                        event_kind: ctx_event.or(initial_event_cb).or(body_error_cb),
-                                        response_flags: ctx_flags | initial_flags | body_flags,
-                                    },
-                                    access_loggers: trans_state.loggers.as_mut(),
-                                },
-                            });
-                        }));
+                        stream_metrics.add_flush_callback(HttpTxnFlush {
+                            trans_ctx: Arc::clone(&trans_ctx),
+                            listener_name,
+                            filterchain_id,
+                            body_bytes,
+                            body_is_response: true,
+                            #[cfg(feature = "access-log")]
+                            extra_event: initial_event.clone().or(body_error),
+                            #[cfg(feature = "access-log")]
+                            extra_flags: initial_flags | body_flags,
+                        });
                     } else {
                         trans_state.bytes = body_bytes;
                         #[cfg(feature = "access-log")]

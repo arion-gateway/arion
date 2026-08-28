@@ -29,7 +29,7 @@ mod metrics_enabled {
     use super::*;
     use crate::{
         event_error::{DownstreamError, EventKind, TryInferFrom, UpstreamError},
-        utils::instrumented_stream::StreamMetrics,
+        utils::StreamMetrics,
     };
     use bytes::Buf;
     use pin_project::{pin_project, pinned_drop};
@@ -44,8 +44,8 @@ mod metrics_enabled {
         pub inner: B,
         pub body_kind: BodyKind,
         pub body_bytes: u64,
-        pub stream_metrics: Option<Arc<StreamMetrics>>,
-        pub on_complete: Option<Arc<MetricsClosure>>,
+        pub(crate) stream_metrics: Option<Arc<StreamMetrics>>,
+        pub(crate) on_complete: Option<Arc<MetricsClosure>>,
     }
 
     #[pinned_drop]
@@ -72,7 +72,12 @@ mod metrics_enabled {
     }
 
     impl<B: Default> InstrumentedBody<B> {
-        pub fn new<F>(body_kind: BodyKind, inner: B, stream_metrics: Option<Arc<StreamMetrics>>, on_complete: F) -> Self
+        pub(crate) fn new<F>(
+            body_kind: BodyKind,
+            inner: B,
+            stream_metrics: Option<Arc<StreamMetrics>>,
+            on_complete: F,
+        ) -> Self
         where
             F: FnOnce(u64, &StreamMetrics, Option<EventKind>, ResponseFlags) + Send + Sync + 'static,
         {
@@ -186,7 +191,7 @@ mod metrics_enabled {
 mod metrics_disabled {
     use std::{marker::PhantomData, sync::Arc};
 
-    use crate::{event_error::EventKind, utils::instrumented_stream::StreamMetrics};
+    use crate::{event_error::EventKind, utils::StreamMetrics};
 
     #[allow(clippy::wildcard_imports)]
     use super::*;
