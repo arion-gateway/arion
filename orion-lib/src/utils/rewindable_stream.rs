@@ -17,6 +17,7 @@
 
 use bytes::Bytes;
 use std::{
+    io::IoSlice,
     pin::Pin,
     task::{Context, Poll},
 };
@@ -128,6 +129,36 @@ where
             Self::FullReplayMode { inner, replay_buffer, read_pos } => {
                 if *read_pos >= replay_buffer.len() {
                     Pin::new(inner).poll_write(cx, buf)
+                } else {
+                    Poll::Ready(Err(std::io::Error::other(
+                        "RewindableHeadAsyncStream: write operations are not supported while replaying buffered data",
+                    )))
+                }
+            },
+        }
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        match self {
+            Self::HeadBufferingReadOnlyMode { .. } => false,
+            Self::FullReplayMode { inner, replay_buffer, read_pos } => {
+                *read_pos >= replay_buffer.len() && inner.is_write_vectored()
+            },
+        }
+    }
+
+    fn poll_write_vectored(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[IoSlice<'_>],
+    ) -> Poll<std::io::Result<usize>> {
+        match &mut *self {
+            Self::HeadBufferingReadOnlyMode { .. } => Poll::Ready(Err(std::io::Error::other(
+                "RewindableHeadAsyncStream: write operations are not supported in HeadBufferingReadOnlyMode",
+            ))),
+            Self::FullReplayMode { inner, replay_buffer, read_pos } => {
+                if *read_pos >= replay_buffer.len() {
+                    Pin::new(inner).poll_write_vectored(cx, bufs)
                 } else {
                     Poll::Ready(Err(std::io::Error::other(
                         "RewindableHeadAsyncStream: write operations are not supported while replaying buffered data",

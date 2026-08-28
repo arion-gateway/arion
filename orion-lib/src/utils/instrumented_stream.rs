@@ -322,6 +322,30 @@ impl<S: AsyncWrite> AsyncWrite for InstrumentedStream<S> {
         }
     }
 
+    fn is_write_vectored(&self) -> bool {
+        self.inner.is_write_vectored()
+    }
+
+    fn poll_write_vectored(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[io::IoSlice<'_>],
+    ) -> Poll<std::io::Result<usize>> {
+        let this = self.project();
+        match this.inner.poll_write_vectored(cx, bufs) {
+            Poll::Ready(Ok(bytes)) => {
+                this.metrics.on_write(bytes as u64);
+                this.metrics.update_raw_clock();
+                Poll::Ready(Ok(bytes))
+            },
+            Poll::Ready(Err(e)) => {
+                this.metrics.on_write_error(&e);
+                Poll::Ready(Err(e))
+            },
+            res => res,
+        }
+    }
+
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         let this = self.project();
         match this.inner.poll_flush(cx) {
