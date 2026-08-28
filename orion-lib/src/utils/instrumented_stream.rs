@@ -52,13 +52,17 @@ impl CallbackQueue {
     }
 
     pub fn drain(&self) -> Option<SmallVec<[Callback; 4]>> {
-        if self.has_pending.load(Ordering::Acquire) {
-            let mut queue = self.queue.lock();
-            let rc = queue.drain(..).collect();
-            self.has_pending.store(false, Ordering::Release);
-            return Some(rc);
+        if !self.has_pending.load(Ordering::Acquire) {
+            return None;
         }
-        None
+        let mut queue = self.queue.lock();
+        if queue.is_empty() {
+            self.has_pending.store(false, Ordering::Release);
+            return None;
+        }
+        let taken = std::mem::take(&mut *queue);
+        self.has_pending.store(false, Ordering::Release);
+        Some(taken)
     }
 }
 
