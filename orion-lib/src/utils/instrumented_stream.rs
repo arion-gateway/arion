@@ -138,7 +138,7 @@ impl StreamMetrics {
             total_bytes_written: AtomicU64::new(0),
             txn_bytes_read_start: AtomicU64::new(0),
             txn_bytes_written_start: AtomicU64::new(0),
-            raw_clock: AtomicU64::new(0),
+            raw_clock: AtomicU64::new(WALL_CLOCK.raw()),
             requests_counter: AtomicU64::new(0),
             error: AtomicOption::none(),
             drop_fn: AtomicOption::none(),
@@ -231,12 +231,20 @@ impl StreamMetrics {
 
     #[inline]
     fn on_read(&self, bytes: u64) {
+        if bytes == 0 {
+            return;
+        }
         self.total_bytes_read.fetch_add(bytes, Ordering::Relaxed);
+        self.update_raw_clock();
     }
 
     #[inline]
     fn on_write(&self, bytes: u64) {
+        if bytes == 0 {
+            return;
+        }
         self.total_bytes_written.fetch_add(bytes, Ordering::Relaxed);
+        self.update_raw_clock();
     }
 
     #[inline]
@@ -297,7 +305,6 @@ impl<S: AsyncRead> AsyncRead for InstrumentedStream<S> {
             res @ Poll::Ready(Ok(())) => {
                 let bytes = buf.filled().len() - before;
                 this.metrics.on_read(bytes as u64);
-                this.metrics.update_raw_clock();
                 res
             },
             Poll::Ready(Err(e)) => {
@@ -315,7 +322,6 @@ impl<S: AsyncWrite> AsyncWrite for InstrumentedStream<S> {
         match this.inner.poll_write(cx, buf) {
             Poll::Ready(Ok(bytes)) => {
                 this.metrics.on_write(bytes as u64);
-                this.metrics.update_raw_clock();
                 Poll::Ready(Ok(bytes))
             },
             Poll::Ready(Err(e)) => {
@@ -339,7 +345,6 @@ impl<S: AsyncWrite> AsyncWrite for InstrumentedStream<S> {
         match this.inner.poll_write_vectored(cx, bufs) {
             Poll::Ready(Ok(bytes)) => {
                 this.metrics.on_write(bytes as u64);
-                this.metrics.update_raw_clock();
                 Poll::Ready(Ok(bytes))
             },
             Poll::Ready(Err(e)) => {
