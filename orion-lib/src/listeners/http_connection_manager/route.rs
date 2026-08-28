@@ -95,7 +95,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
             ctx.tx.clock,
             |nanos| {
                 #[allow(clippy::cast_possible_truncation)]
-                crate::instrumentation::metrics::LOAD_BALANCING_SRV.observe(nanos as usize);
+                crate::instrumentation::metrics::ACQUIRE_HTTP_STREAM.observe(nanos as usize);
             },
             {
                 acquire_http_upstream(

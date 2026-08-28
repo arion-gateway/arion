@@ -10,7 +10,7 @@ pub mod metrics {
     use super::*;
     pub static CONNECTIONS: Monotone = Monotone::new();
     pub static CONNECTION_SETUP_TIME: Average = Average::new();
-    pub static LOAD_BALANCING_SRV: Average = Average::new();
+    pub static ACQUIRE_HTTP_STREAM: Average = Average::new();
     pub static TOTAL_ROUTE_ACTION: Average = Average::new();
     pub static REQUEST_TO_RESPONSE_TIME: Average = Average::new();
     pub static SEND_REQUEST_WAIT_RESPONSE: Average = Average::new();
@@ -57,11 +57,11 @@ pub fn dump_instrumentation_counters() {
     info!("connections:");
     info!("   total connections: {}", metrics::CONNECTIONS.value());
     info!("   setup time (ns): {}", metrics::CONNECTION_SETUP_TIME.value());
-    info!("routing:");
-    info!("   load balancing service time (ns): {}", metrics::LOAD_BALANCING_SRV.value());
+    info!("routing/upstream:");
+    info!("   acquire http stream time (ns): {}", metrics::ACQUIRE_HTTP_STREAM.value());
     info!("   total route action (ns): {}", metrics::TOTAL_ROUTE_ACTION.value());
     info!("   total request-to-response time (ns): {}", metrics::REQUEST_TO_RESPONSE_TIME.value());
-    info!("upstream:");
+    info!("upstream (only):");
     info!("   send-request-wait-response time (ns): {}", metrics::SEND_REQUEST_WAIT_RESPONSE.value());
     info!("   send-request time (ns): {}", metrics::SEND_REQUEST.value());
     info!("   send-request with retry time (ns): {}", metrics::SEND_REQUEST_WITH_RETRY.value());
