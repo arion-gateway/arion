@@ -3,24 +3,13 @@ use axum::{
     http::{HeaderMap, StatusCode},
 };
 use orion_configuration::config::listener::ListenerType;
-use orion_lib::{ConfigDump, ConfigurationSenders, ListenerConfigurationChange};
 use std::fmt::Write;
-use tokio::sync::mpsc;
 
-use crate::{admin::AdminState, xds_configurator::send_change_to_runtimes};
+use crate::admin::{query_listener_configuration, AdminState};
 
 async fn build_listeners_output(admin_state: AdminState) -> String {
-    let mut listeners_senders = Vec::with_capacity(admin_state.configuration_senders.len());
-    for ConfigurationSenders { listener_configuration_sender, .. } in admin_state.configuration_senders {
-        listeners_senders.push(listener_configuration_sender);
-    }
-
-    let (config_dump_sender, mut config_dump_receiver) = mpsc::channel::<ConfigDump>(100);
-    let change = ListenerConfigurationChange::GetConfiguration(config_dump_sender);
-    let _ = send_change_to_runtimes(&listeners_senders, change).await.ok();
-
     let mut out = String::new();
-    if let Some(config_dump) = config_dump_receiver.recv().await {
+    if let Some(config_dump) = query_listener_configuration(&admin_state.configuration_senders).await {
         if let Some(listeners) = config_dump.listeners {
             for listener in &listeners {
                 let address = match &listener.listener_type {

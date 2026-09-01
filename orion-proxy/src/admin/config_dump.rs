@@ -24,13 +24,10 @@ use orion_configuration::config::{
     network_filters::http_connection_manager::RouteSpecifier,
     secret::{Secret, Type},
 };
-use orion_lib::{
-    clusters::clusters_manager::get_all_clusters, ConfigDump, ConfigurationSenders, ListenerConfigurationChange,
-};
+use orion_lib::{clusters::clusters_manager::get_all_clusters, ConfigDump};
 use serde_json::{json, Value};
-use tokio::sync::mpsc;
 
-use crate::xds_configurator::send_change_to_runtimes;
+use crate::admin::query_listener_configuration;
 
 pub fn redact_secrets(secrets: Vec<Secret>) -> Vec<Secret> {
     secrets
@@ -48,22 +45,12 @@ pub fn redact_secrets(secrets: Vec<Secret>) -> Vec<Secret> {
 }
 
 pub async fn config_dump_handler(State(admin_state): State<AdminState>) -> Json<Value> {
-    // Unwrap listeners and routes configuration channels
-    let mut listeners_senders = Vec::with_capacity(admin_state.configuration_senders.len());
-    for ConfigurationSenders { listener_configuration_sender, .. } in admin_state.configuration_senders {
-        listeners_senders.push(listener_configuration_sender);
-    }
-
-    // Create config_dump channels to send to components so they can send back their config
-    let (config_dump_sender, mut config_dump_receiver) = mpsc::channel::<ConfigDump>(100);
     let mut bootstrap = admin_state.bootstrap.clone();
     bootstrap.static_resources.secrets = redact_secrets(bootstrap.static_resources.secrets);
     let mut config = ConfigDump { bootstrap: Some(bootstrap), ..Default::default() };
 
-    // Retrieve active listers configuration
-    let change = ListenerConfigurationChange::GetConfiguration(config_dump_sender.clone());
-    let _ = send_change_to_runtimes(&listeners_senders, change).await.ok();
-    if let Some(listeners_config) = config_dump_receiver.recv().await {
+    // Retrieve active listeners configuration
+    if let Some(listeners_config) = query_listener_configuration(&admin_state.configuration_senders).await {
         config.listeners = listeners_config.listeners;
         // Extract and flatten routes from listeners
         let routes_flattened: Vec<RouteSpecifier> = config.listeners.as_ref().map_or_else(Vec::new, |listeners| {
@@ -110,6 +97,9 @@ mod config_dump_tests {
 
     use super::*;
     use axum_test::TestServer;
+    use orion_lib::{ConfigurationSenders, ListenerConfigurationChange};
+    use tokio::sync::mpsc;
+
     use orion_configuration::config::{
         listener::ListenerType,
         network_filters::http_connection_manager::{HeaderModifiersAdd, HeaderModifiersRemove},

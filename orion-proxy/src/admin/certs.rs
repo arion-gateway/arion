@@ -5,15 +5,11 @@ use orion_configuration::config::{
     listener::TlsConfig as ListenerTlsConfig,
     transport::{CommonTlsValidationContext, Secrets, UpstreamTransportSocketConfig},
 };
-use orion_lib::{
-    clusters::clusters_manager::get_all_clusters, ConfigDump, ConfigurationSenders, ListenerConfigurationChange,
-};
+use orion_lib::{clusters::clusters_manager::get_all_clusters, ConfigurationSenders};
 use serde_json::{json, Value};
 use smol_str::SmolStr;
-use tokio::sync::mpsc;
 
-use crate::admin::AdminState;
-use crate::xds_configurator::send_change_to_runtimes;
+use crate::admin::{query_listener_configuration, AdminState};
 
 pub async fn certs_handler(State(admin_state): State<AdminState>) -> Json<Value> {
     let mut cert_names: HashSet<SmolStr> = HashSet::default();
@@ -34,18 +30,10 @@ async fn collect_listener_sds_names(
     cert_names: &mut HashSet<SmolStr>,
     ca_names: &mut HashSet<SmolStr>,
 ) {
-    let listeners_senders: Vec<_> = configuration_senders
-        .iter()
-        .map(|ConfigurationSenders { listener_configuration_sender, .. }| listener_configuration_sender.clone())
-        .collect();
-    let (dump_tx, mut dump_rx) = mpsc::channel::<ConfigDump>(1);
-    let _ =
-        send_change_to_runtimes(&listeners_senders, ListenerConfigurationChange::GetConfiguration(dump_tx)).await.ok();
-    if let Some(dump) = dump_rx.recv().await {
-        for listener in dump.listeners.iter().flatten() {
-            for filter_chain in listener.filter_chains.values() {
-                collect_filter_chain_tls_sds_names(filter_chain.tls_config.as_ref(), cert_names, ca_names);
-            }
+    let Some(dump) = query_listener_configuration(configuration_senders).await else { return };
+    for listener in dump.listeners.iter().flatten() {
+        for filter_chain in listener.filter_chains.values() {
+            collect_filter_chain_tls_sds_names(filter_chain.tls_config.as_ref(), cert_names, ca_names);
         }
     }
 }
