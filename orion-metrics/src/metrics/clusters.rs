@@ -37,6 +37,8 @@ pub static UPSTREAM_RQ_RETRY: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock:
 
 pub static UPSTREAM_CX_TOTAL: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 pub static UPSTREAM_CX_ACTIVE: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
+/// Hyper-util client executor `execute()` calls: connection dispatcher spawn plus HTTP/1 `on_idle` waiters.
+pub static UPSTREAM_CLIENT_EXEC_TOTAL: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 pub static UPSTREAM_CX_DESTROY: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 pub static UPSTREAM_CX_IDLE_TIMEOUT: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
 pub static UPSTREAM_CX_CONNECT_FAIL: OnceLock<Metric<ShardedU64<ThreadId>>> = OnceLock::new();
@@ -90,6 +92,12 @@ pub(crate) fn init_metrics(rename: &std::collections::HashMap<String, String>) {
         crate::metrics::PREFIX_CLUSTER,
         crate::metrics::resolve_metric_name(rename, "upstream_cx_total"),
         "Total upstream connections"
+    );
+    init_observable_counter!(
+        UPSTREAM_CLIENT_EXEC_TOTAL,
+        crate::metrics::PREFIX_CLUSTER,
+        crate::metrics::resolve_metric_name(rename, "upstream_client_exec_total"),
+        "Hyper client executor spawns (connection dispatcher and HTTP/1 on_idle waiters)"
     );
     init_observable_counter!(
         UPSTREAM_CX_CONNECT_FAIL,
@@ -163,6 +171,7 @@ pub fn reset_metrics() {
         &UPSTREAM_RQ_PER_TRY_TIMEOUT,
         &UPSTREAM_RQ_RETRY,
         &UPSTREAM_CX_TOTAL,
+        &UPSTREAM_CLIENT_EXEC_TOTAL,
         &UPSTREAM_CX_ACTIVE,
         &UPSTREAM_CX_DESTROY,
         &UPSTREAM_CX_IDLE_TIMEOUT,

@@ -40,12 +40,9 @@ use http::{
     HeaderValue, Response, Version,
 };
 use http_body_util::BodyExt;
-use hyper::{body::Incoming, Request, Uri};
+use hyper::{body::Incoming, rt::Executor, Request, Uri};
 use hyper_rustls::{FixedServerNameResolver, HttpsConnector};
-use hyper_util::{
-    client::legacy::{connect::Connect, Builder, Client},
-    rt::tokio::TokioExecutor,
-};
+use hyper_util::client::legacy::{connect::Connect, Builder, Client};
 use orion_configuration::config::{
     cluster::http_protocol_options::{Codec, HttpProtocolOptions},
     network_filters::http_connection_manager::RetryPolicy,
@@ -66,13 +63,41 @@ use rustls::ClientConfig;
 #[cfg(feature = "metrics")]
 use smallvec::SmallVec;
 use smol_str::ToSmolStr;
-use std::{io, mem, sync::Arc, time::Duration};
+use std::{future::Future, io, mem, sync::Arc, time::Duration};
 use tracing::debug;
 use webpki::types::ServerName;
 
 #[cfg(feature = "metrics")]
 use scopeguard::defer;
 pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Counts every `hyper_util` client `Executor::execute` (connection dispatcher and HTTP/1 `on_idle`).
+#[derive(Clone, Copy, Debug)]
+struct CountingExecutor {
+    #[cfg_attr(not(feature = "metrics"), allow(dead_code))]
+    cluster_name: &'static str,
+}
+
+impl<Fut> Executor<Fut> for CountingExecutor
+where
+    Fut: Future + Send + 'static,
+    Fut::Output: Send + 'static,
+{
+    fn execute(&self, fut: Fut) {
+        #[cfg(feature = "metrics")]
+        {
+            let shard_id = get_shard_id!();
+            with_metric!(
+                clusters::UPSTREAM_CLIENT_EXEC_TOTAL,
+                add,
+                1,
+                shard_id,
+                &[KeyValue::new("cluster", self.cluster_name)]
+            );
+        }
+        tokio::spawn(fut);
+    }
+}
 
 #[must_use = "dropping the permit releases the retry circuit-breaker slot"]
 struct RetryCircuitBreakerPermit {
@@ -216,7 +241,9 @@ impl HttpChannelBuilder {
     }
 
     fn configure_hyper_client(&self) -> Builder {
-        let mut client_builder = Client::builder(TokioExecutor::new());
+        let mut client_builder = Client::builder(CountingExecutor {
+            cluster_name: self.cluster_name.unwrap_or_default(),
+        });
         client_builder
             .timer(PingoraTimer)
             .pool_idle_timeout(self.http_protocol_options.common.idle_timeout.unwrap_or(DEFAULT_IDLE_TIMEOUT))

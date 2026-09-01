@@ -185,6 +185,7 @@ You can combine both configurations to export metrics to OpenTelemetry and scrap
 | Name | Type | Status | Description | Attributes |
 | :--- | :--- | :--- | :--- | :--- |
 | `upstream_cx_total` | Counter | ✅ |  Total connections | `cluster` |
+| `upstream_client_exec_total` | Counter | ✅ | Hyper client executor spawns (connection dispatcher + HTTP/1 `on_idle` waiters). Compare with `upstream_cx_total` and `upstream_rq_total`. | `cluster` |
 | `upstream_cx_active` | Gauge | ✅ | Total active connections | `cluster` |
 | `upstream_cx_http1_total` | Counter | | Total HTTP/1.1 connections |  |
 | `upstream_cx_http2_total` | Counter | | Total HTTP/2 connections |  |
