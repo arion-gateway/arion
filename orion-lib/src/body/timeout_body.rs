@@ -26,7 +26,7 @@
 /// 1. Unpin: The original `TimeoutBody` is !Unpin, while this version is Unpin to enable use in certain asynchronous contexts.
 /// 2. Optional Timeout: The timeout is wrapped in `Option`, allowing for cases where a timeout may not be necessary.
 ///
-use super::h1_permit::Http1Permit;
+use crate::transport::http1_pool::Http1Permit;
 use http_body::{Body, SizeHint};
 use pin_project::pin_project;
 use pingora_timeout::{

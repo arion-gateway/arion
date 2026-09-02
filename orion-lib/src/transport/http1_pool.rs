@@ -14,25 +14,88 @@
 
 use super::connector::UnifiedConnector;
 use crate::{
-    body::{
-        h1_permit::{Http1Idle, Http1Permit},
-        poly_body::PolyBody,
-        timeout_body::TimeoutBody,
-    },
+    body::{poly_body::PolyBody, timeout_body::TimeoutBody},
     thread_local::{LocalBuilder, ThreadLocalObject},
     Error, OrionRequestBody, OrionResponseBody, Result,
 };
 use http::{uri::Authority, Request, Response, StatusCode, Uri};
 use hyper::{
     body::Incoming,
-    client::conn::http1::Builder as Http1Builder,
-    client::conn::http1::SendRequest,
+    client::conn::http1::{Builder as Http1Builder, SendRequest},
     rt::{Read, Write},
 };
 use hyper_rustls::HttpsConnector;
-use std::{sync::Arc, time::Duration};
+use parking_lot::Mutex;
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use tower::Service;
 use tracing::debug;
+
+struct IdleConn {
+    tx: SendRequest<OrionRequestBody>,
+    idle_at: Instant,
+}
+
+pub struct Http1Idle {
+    idle: Mutex<Vec<IdleConn>>,
+    idle_timeout: Duration,
+}
+
+impl Http1Idle {
+    #[inline]
+    pub fn new(idle_timeout: Duration) -> Arc<Self> {
+        Arc::new(Self { idle: Mutex::new(Vec::new()), idle_timeout })
+    }
+
+    pub fn pop(&self) -> Option<SendRequest<OrionRequestBody>> {
+        let now = Instant::now();
+        let mut idle = self.idle.lock();
+        while let Some(conn) = idle.last() {
+            if now.saturating_duration_since(conn.idle_at) > self.idle_timeout {
+                idle.pop();
+            } else {
+                break;
+            }
+        }
+        idle.pop().map(|conn| conn.tx)
+    }
+
+    #[inline]
+    pub fn release(&self, tx: SendRequest<OrionRequestBody>) {
+        if tx.is_closed() {
+            return;
+        }
+        self.idle.lock().push(IdleConn { tx, idle_at: Instant::now() });
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.idle.lock().len()
+    }
+}
+
+/// Concrete handle that returns an HTTP/1 sender to its pool when the body ends.
+pub struct Http1Permit {
+    idle: Arc<Http1Idle>,
+    tx: SendRequest<OrionRequestBody>,
+}
+
+impl Http1Permit {
+    pub fn new(idle: Arc<Http1Idle>, tx: SendRequest<OrionRequestBody>) -> Self {
+        Self { idle, tx }
+    }
+
+    pub fn on_body_end(self, completed: bool) {
+        if self.tx.is_closed() {
+            return;
+        }
+        if completed || self.tx.is_ready() {
+            self.idle.release(self.tx);
+        }
+    }
+}
 
 #[derive(Clone)]
 enum Http1Connect {
@@ -110,14 +173,17 @@ impl Http1ClientExt {
         })
     }
 
+    #[inline]
     pub fn is_tls(&self) -> bool {
         self.is_tls
     }
 
+    #[inline]
     pub fn local_pool(&self) -> Arc<Http1Pool> {
         Arc::clone(self.pools.get_local())
     }
 
+    #[inline]
     pub fn strong_count(&self) -> usize {
         Arc::strong_count(&self.pools)
     }
@@ -167,10 +233,12 @@ impl Http1Pool {
         }
     }
 
+    #[inline]
     fn pop_idle(&self) -> Option<SendRequest<OrionRequestBody>> {
         self.idle.pop()
     }
 
+    #[inline]
     fn release(&self, tx: SendRequest<OrionRequestBody>) {
         self.idle.release(tx);
     }
@@ -227,6 +295,7 @@ where
     Ok(sender)
 }
 
+#[inline]
 fn dst_uri(authority: &Authority, tls: bool) -> Result<Uri> {
     Uri::builder()
         .scheme(if tls { http::uri::Scheme::HTTPS } else { http::uri::Scheme::HTTP })
