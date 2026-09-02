@@ -33,20 +33,43 @@ use std::{
 use tower::Service;
 use tracing::debug;
 
+const IDLE_CLEANUP_INTERVAL: Duration = Duration::from_secs(1);
+
 struct IdleConn {
     tx: SendRequest<OrionRequestBody>,
     idle_at: Instant,
 }
 
-pub struct Http1Idle {
+pub struct Http1PoolInner {
     idle: Mutex<Vec<IdleConn>>,
     idle_timeout: Duration,
 }
 
-impl Http1Idle {
-    #[inline]
+impl Http1PoolInner {
     pub fn new(idle_timeout: Duration) -> Arc<Self> {
-        Arc::new(Self { idle: Mutex::new(Vec::new()), idle_timeout })
+        let this = Arc::new(Self { idle: Mutex::new(Vec::new()), idle_timeout });
+        let weak = Arc::downgrade(&this);
+        tokio::spawn(async move {
+            loop {
+                pingora_timeout::sleep(IDLE_CLEANUP_INTERVAL).await;
+                let Some(inner) = weak.upgrade() else {
+                    break;
+                };
+                inner.cleanup_expired();
+            }
+        });
+        this
+    }
+
+    pub fn cleanup_expired(&self) {
+        let now = Instant::now();
+        let mut idle = self.idle.lock();
+        idle.retain(|conn| {
+            if conn.tx.is_closed() {
+                return false;
+            }
+            now.saturating_duration_since(conn.idle_at) <= self.idle_timeout
+        });
     }
 
     pub fn pop(&self) -> Option<SendRequest<OrionRequestBody>> {
@@ -78,13 +101,13 @@ impl Http1Idle {
 
 /// Concrete handle that returns an HTTP/1 sender to its pool when the body ends.
 pub struct Http1Permit {
-    idle: Arc<Http1Idle>,
+    inner: Arc<Http1PoolInner>,
     tx: SendRequest<OrionRequestBody>,
 }
 
 impl Http1Permit {
-    pub fn new(idle: Arc<Http1Idle>, tx: SendRequest<OrionRequestBody>) -> Self {
-        Self { idle, tx }
+    pub fn new(inner: Arc<Http1PoolInner>, tx: SendRequest<OrionRequestBody>) -> Self {
+        Self { inner, tx }
     }
 
     pub fn on_body_end(self, completed: bool) {
@@ -92,7 +115,7 @@ impl Http1Permit {
             return;
         }
         if completed || self.tx.is_ready() {
-            self.idle.release(self.tx);
+            self.inner.release(self.tx);
         }
     }
 }
@@ -117,7 +140,7 @@ struct Http1PoolBuilder;
 impl LocalBuilder<Http1PoolArg, Arc<Http1Pool>> for Http1PoolBuilder {
     fn build(&self, arg: Http1PoolArg) -> Arc<Http1Pool> {
         Arc::new(Http1Pool {
-            idle: Http1Idle::new(arg.idle_timeout),
+            inner: Http1PoolInner::new(arg.idle_timeout),
             connect: arg.connect,
             dst: arg.dst,
             is_tls: arg.is_tls,
@@ -194,7 +217,7 @@ impl Http1ClientExt {
 /// A sender is checked out for a request and returned only after the response
 /// body is fully streamed (or dropped at end-of-stream).
 pub struct Http1Pool {
-    idle: Arc<Http1Idle>,
+    inner: Arc<Http1PoolInner>,
     connect: Http1Connect,
     dst: Uri,
     is_tls: bool,
@@ -203,7 +226,7 @@ pub struct Http1Pool {
 impl std::fmt::Debug for Http1Pool {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Http1Pool")
-            .field("idle", &self.idle.len())
+            .field("idle", &self.inner.len())
             .field("is_tls", &self.is_tls)
             .finish_non_exhaustive()
     }
@@ -235,12 +258,12 @@ impl Http1Pool {
 
     #[inline]
     fn pop_idle(&self) -> Option<SendRequest<OrionRequestBody>> {
-        self.idle.pop()
+        self.inner.pop()
     }
 
     #[inline]
     fn release(&self, tx: SendRequest<OrionRequestBody>) {
-        self.idle.release(tx);
+        self.inner.release(tx);
     }
 
     async fn connect_one(&self) -> Result<SendRequest<OrionRequestBody>> {
@@ -277,7 +300,7 @@ fn attach_permit(
     }
     Response::from_parts(
         parts,
-        TimeoutBody::new(None, PolyBody::from(body)).with_on_end(Http1Permit::new(Arc::clone(&pool.idle), tx)),
+        TimeoutBody::new(None, PolyBody::from(body)).with_on_end(Http1Permit::new(Arc::clone(&pool.inner), tx)),
     )
 }
 
