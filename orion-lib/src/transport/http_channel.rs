@@ -17,10 +17,7 @@
 
 use super::connector::{ConnectUsing, UnifiedConnector};
 use crate::{
-    body::{
-        instrumented_body::InstrumentedBody, poly_body::PolyBody, response_flags::ResponseFlags,
-        timeout_body::TimeoutBody,
-    },
+    body::{instrumented_body::InstrumentedBody, response_flags::ResponseFlags, timeout_body::TimeoutBody},
     clusters::{
         decrement_retries, retry_policy::RetryCondition, try_increment_retries, CircuitBreakerDenial, RoutingPriority,
     },
@@ -31,9 +28,8 @@ use crate::{
         synthetic_http_response::SyntheticHttpResponse,
     },
     secrets::{TlsConfigurator, WantsToBuildClient},
-    thread_local::{LocalBuilder, ThreadLocalObject},
     transport::http1_pool::Http1ClientExt,
-    transport::timer::PingoraTimer,
+    transport::http2_pool::Http2ClientExt,
     Error, OrionRequestBody, OrionResponseBody, Result, UpstreamCallOpts,
 };
 use http::{
@@ -41,9 +37,8 @@ use http::{
     HeaderValue, Response, Version,
 };
 use http_body_util::BodyExt;
-use hyper::{rt::Executor, Request, Uri};
-use hyper_rustls::{FixedServerNameResolver, HttpsConnector};
-use hyper_util::client::legacy::{Builder, Client};
+use hyper::{Request, Uri};
+use hyper_rustls::FixedServerNameResolver;
 use orion_configuration::config::{
     cluster::http_protocol_options::{Codec, HttpProtocolOptions},
     network_filters::http_connection_manager::RetryPolicy,
@@ -53,7 +48,6 @@ use orion_format::types::{ResponseFlagsLong, ResponseFlagsShort};
 use orion_metrics::metrics::custom::CUSTOM_METRICS;
 
 use crate::with_metric;
-use hyperlocal::UnixConnector;
 
 #[cfg(feature = "metrics")]
 use {crate::get_shard_id, opentelemetry::KeyValue, orion_metrics::metrics::clusters};
@@ -71,34 +65,6 @@ use webpki::types::ServerName;
 #[cfg(feature = "metrics")]
 use scopeguard::defer;
 pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Counts every `hyper_util` client `Executor::execute` (connection dispatcher and HTTP/1 `on_idle`).
-#[derive(Clone, Copy, Debug)]
-struct CountingExecutor {
-    #[cfg_attr(not(feature = "metrics"), allow(dead_code))]
-    cluster_name: &'static str,
-}
-
-impl<Fut> Executor<Fut> for CountingExecutor
-where
-    Fut: Future + Send + 'static,
-    Fut::Output: Send + 'static,
-{
-    fn execute(&self, fut: Fut) {
-        #[cfg(feature = "metrics")]
-        {
-            let shard_id = get_shard_id!();
-            with_metric!(
-                clusters::UPSTREAM_CLIENT_EXEC_TOTAL,
-                add,
-                1,
-                shard_id,
-                &[KeyValue::new("cluster", self.cluster_name)]
-            );
-        }
-        tokio::spawn(fut);
-    }
-}
 
 #[must_use = "dropping the permit releases the retry circuit-breaker slot"]
 struct RetryCircuitBreakerPermit {
@@ -119,26 +85,6 @@ impl RetryCircuitBreakerPermit {
 impl Drop for RetryCircuitBreakerPermit {
     fn drop(&mut self) {
         decrement_retries(self.cluster_name, self.priority);
-    }
-}
-
-type HttpClient = Client<UnifiedConnector, OrionRequestBody>;
-type HttpsClient = Client<HttpsConnector<UnifiedConnector>, OrionRequestBody>;
-
-// Rationale: The outer Arc is necessary to avoid building a new Client when cloning the HttpChannel.
-// The inner Arc, instead, is used to pass the client to async code, so it's already wrapped by the Arc.
-
-#[derive(Clone, Debug)]
-pub struct HttpsClientExt {
-    configured_upstream_http_version: Codec,
-    client: Arc<ThreadLocalObject<Arc<HttpsClient>, Builder, HttpsConnector<UnifiedConnector>>>,
-}
-impl HttpsClientExt {
-    fn new(
-        configured_upstream_http_version: Codec,
-        client: Arc<ThreadLocalObject<Arc<HttpsClient>, Builder, HttpsConnector<UnifiedConnector>>>,
-    ) -> Self {
-        Self { configured_upstream_http_version, client }
     }
 }
 
@@ -181,19 +127,18 @@ pub struct HttpChannel {
 pub enum HttpChannelClient {
     Plain(PlainChannelClient),
     Tls(TlsChannelClient),
-    Unix(hyper::Uri, Arc<Client<UnixConnector, InstrumentedBody<TimeoutBody<PolyBody>>>>),
 }
 
 #[derive(Clone, Debug)]
 pub enum PlainChannelClient {
     Http1(Http1ClientExt),
-    Http2(Arc<ThreadLocalObject<Arc<HttpClient>, Builder, UnifiedConnector>>),
+    Http2(Http2ClientExt),
 }
 
 #[derive(Clone, Debug)]
 pub enum TlsChannelClient {
     Http1(Http1ClientExt),
-    Http2(HttpsClientExt),
+    Http2(Http2ClientExt),
 }
 
 impl HttpChannelClient {
@@ -209,18 +154,6 @@ pub struct HttpChannelBuilder {
     server_name: Option<ServerName<'static>>,
     http_protocol_options: HttpProtocolOptions,
     cluster_name: Option<&'static str>,
-}
-
-impl LocalBuilder<UnifiedConnector, Arc<HttpClient>> for Builder {
-    fn build(&self, arg: UnifiedConnector) -> Arc<HttpClient> {
-        Arc::new(self.build(arg))
-    }
-}
-
-impl LocalBuilder<HttpsConnector<UnifiedConnector>, Arc<HttpsClient>> for Builder {
-    fn build(&self, arg: HttpsConnector<UnifiedConnector>) -> Arc<HttpsClient> {
-        Arc::new(self.build(arg))
-    }
 }
 
 impl HttpChannelBuilder {
@@ -254,52 +187,6 @@ impl HttpChannelBuilder {
         self.build_channel()
     }
 
-    fn configure_hyper_client(&self) -> Builder {
-        let mut client_builder =
-            Client::builder(CountingExecutor { cluster_name: self.cluster_name.unwrap_or_default() });
-        client_builder
-            .timer(PingoraTimer)
-            .pool_idle_timeout(self.http_protocol_options.common.idle_timeout.unwrap_or(DEFAULT_IDLE_TIMEOUT))
-            .pool_timer(PingoraTimer)
-            .pool_max_idle_per_host(usize::MAX)
-            .set_host(false);
-
-        client_builder.http1_writev(false);
-        self.configure_http2_if_needed(&mut client_builder, self.http_protocol_options.codec);
-
-        client_builder
-    }
-
-    fn configure_http2_if_needed(&self, client_builder: &mut Builder, version: Codec) {
-        if matches!(version, Codec::Http2) {
-            client_builder.http2_only(true);
-            let http2_options = &self.http_protocol_options.http2_options;
-
-            if let Some(settings) = &http2_options.keep_alive_settings {
-                client_builder.http2_keep_alive_interval(settings.keep_alive_interval);
-                if let Some(timeout) = settings.keep_alive_timeout {
-                    client_builder.http2_keep_alive_timeout(timeout);
-                }
-                client_builder.http2_keep_alive_while_idle(true);
-            }
-
-            let stream_window = http2_options.initial_stream_window_size();
-            let conn_window = http2_options.initial_connection_window_size();
-            if stream_window.is_none() && conn_window.is_none() {
-                // Hyper defaults to 64KiB; adaptive windowing avoids stalling large bodies.
-                client_builder.http2_adaptive_window(true);
-            } else {
-                client_builder.http2_initial_stream_window_size(stream_window);
-                client_builder.http2_initial_connection_window_size(conn_window);
-            }
-
-            if let Some(max) = http2_options.max_concurrent_streams() {
-                client_builder.http2_initial_max_send_streams(max);
-                client_builder.http2_max_concurrent_reset_streams(max);
-            }
-        }
-    }
-
     fn build_channel(self) -> crate::Result<HttpChannel> {
         let authority = self.connect_using.authority().clone();
         let is_http2 = matches!(self.http_protocol_options.codec, Codec::Http2);
@@ -310,7 +197,7 @@ impl HttpChannelBuilder {
         };
         let idle_timeout = self.http_protocol_options.common.idle_timeout.unwrap_or(DEFAULT_IDLE_TIMEOUT);
         let cluster_name = self.cluster_name.unwrap_or_default();
-        let client_builder = if is_http2 { Some(self.configure_hyper_client()) } else { None };
+        let http2_options = self.http_protocol_options.http2_options.clone();
 
         let channel_client = if let Some(tls_context) = self.tls {
             let mut builder =
@@ -327,12 +214,9 @@ impl HttpChannelBuilder {
             let connector = UnifiedConnector::from((&self.connect_using, cluster_name, is_http2));
 
             if is_http2 {
-                let client_builder = client_builder.expect("client_builder is initialized for http2");
                 let http_connector = builder.enable_http2().wrap_connector(connector);
-                HttpChannelClient::Tls(TlsChannelClient::Http2(HttpsClientExt::new(
-                    self.http_protocol_options.codec,
-                    Arc::new(ThreadLocalObject::new(client_builder, http_connector)),
-                )))
+                let ext = Http2ClientExt::tls(http_connector, &authority, idle_timeout, http2_options)?;
+                HttpChannelClient::Tls(TlsChannelClient::Http2(ext))
             } else {
                 let http_connector = builder.enable_http1().wrap_connector(connector);
                 let ext = Http1ClientExt::tls(http_connector, &authority, idle_timeout)?;
@@ -342,11 +226,8 @@ impl HttpChannelBuilder {
             let connector = UnifiedConnector::from((&self.connect_using, cluster_name, is_http2));
 
             if is_http2 {
-                let client_builder = client_builder.expect("client_builder is initialized for http2");
-                HttpChannelClient::Plain(PlainChannelClient::Http2(Arc::new(ThreadLocalObject::new(
-                    client_builder,
-                    connector,
-                ))))
+                let ext = Http2ClientExt::plain(connector, &authority, idle_timeout, http2_options)?;
+                HttpChannelClient::Plain(PlainChannelClient::Http2(ext))
             } else {
                 let ext = Http1ClientExt::plain(connector, &authority, idle_timeout)?;
                 HttpChannelClient::Plain(PlainChannelClient::Http1(ext))
@@ -589,22 +470,16 @@ impl HttpChannel {
                         )
                         .await
                     },
-                    PlainChannelClient::Http2(sender) => {
-                        let client = Arc::clone(sender.get_local());
+                    PlainChannelClient::Http2(ext) => {
+                        let pool = ext.local_pool();
                         self.send_with_policy(
                             request,
                             timeout,
                             retry_policy,
                             priority,
                             move |req| {
-                                let client = Arc::clone(&client);
-                                async move {
-                                    client
-                                        .request(req)
-                                        .await
-                                        .map(|res| res.map(|body| TimeoutBody::new(None, PolyBody::from(body))))
-                                        .map_err(Error::from)
-                                }
+                                let pool = Arc::clone(&pool);
+                                async move { pool.send(req).await }
                             },
                             output,
                             #[cfg(feature = "instrumentation")]
@@ -634,27 +509,17 @@ impl HttpChannel {
                         )
                         .await
                     },
-                    TlsChannelClient::Http2(context) => {
-                        let HttpsClientExt { configured_upstream_http_version, client: sender } = context;
-                        let configured_version = *configured_upstream_http_version;
-                        let client = Arc::clone(sender.get_local());
-                        //FIXME(hayley): apply http protocol translation for plaintext too
-                        maybe_change_http_protocol_version(&mut request, configured_version)?;
-
+                    TlsChannelClient::Http2(ext) => {
+                        maybe_change_http_protocol_version(&mut request, Codec::Http2)?;
+                        let pool = ext.local_pool();
                         self.send_with_policy(
                             request,
                             timeout,
                             retry_policy,
                             priority,
                             move |req| {
-                                let client = Arc::clone(&client);
-                                async move {
-                                    client
-                                        .request(req)
-                                        .await
-                                        .map(|res| res.map(|body| TimeoutBody::new(None, PolyBody::from(body))))
-                                        .map_err(Error::from)
-                                }
+                                let pool = Arc::clone(&pool);
+                                async move { pool.send(req).await }
                             },
                             output,
                             #[cfg(feature = "instrumentation")]
@@ -663,30 +528,6 @@ impl HttpChannel {
                         .await
                     },
                 }
-            },
-            HttpChannelClient::Unix(uri, sender) => {
-                let client = Arc::clone(sender);
-                *request.uri_mut() = uri.clone();
-                self.send_with_policy(
-                    request,
-                    timeout,
-                    retry_policy,
-                    priority,
-                    move |req| {
-                        let client = Arc::clone(&client);
-                        async move {
-                            client
-                                .request(req)
-                                .await
-                                .map(|res| res.map(|body| TimeoutBody::new(None, PolyBody::from(body))))
-                                .map_err(Error::from)
-                        }
-                    },
-                    output,
-                    #[cfg(feature = "instrumentation")]
-                    clock,
-                )
-                .await
             },
         }
     }
@@ -958,13 +799,12 @@ impl HttpChannel {
         let load = match &self.channel_client {
             HttpChannelClient::Plain(plain) => match plain {
                 PlainChannelClient::Http1(ext) => ext.strong_count(),
-                PlainChannelClient::Http2(sender) => Arc::strong_count(sender),
+                PlainChannelClient::Http2(ext) => ext.strong_count(),
             },
             HttpChannelClient::Tls(tls) => match tls {
                 TlsChannelClient::Http1(ext) => ext.strong_count(),
-                TlsChannelClient::Http2(sender) => Arc::strong_count(&sender.client),
+                TlsChannelClient::Http2(ext) => ext.strong_count(),
             },
-            HttpChannelClient::Unix(_, sender) => Arc::strong_count(sender),
         };
         u32::try_from(load).unwrap_or(u32::MAX)
     }

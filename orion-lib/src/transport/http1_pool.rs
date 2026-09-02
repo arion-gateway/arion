@@ -14,7 +14,10 @@
 
 use super::connector::UnifiedConnector;
 use crate::{
-    body::{poly_body::PolyBody, timeout_body::TimeoutBody},
+    body::{
+        poly_body::PolyBody,
+        timeout_body::{BodyEndPermit, TimeoutBody},
+    },
     thread_local::{LocalBuilder, ThreadLocalObject},
     Error, OrionRequestBody, OrionResponseBody, Result,
 };
@@ -300,7 +303,8 @@ fn attach_permit(
     }
     Response::from_parts(
         parts,
-        TimeoutBody::new(None, PolyBody::from(body)).with_on_end(Http1Permit::new(Arc::clone(&pool.inner), tx)),
+        TimeoutBody::new(None, PolyBody::from(body))
+            .with_on_end(BodyEndPermit::Http1(Http1Permit::new(Arc::clone(&pool.inner), tx))),
     )
 }
 

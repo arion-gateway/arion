@@ -27,6 +27,7 @@
 /// 2. Optional Timeout: The timeout is wrapped in `Option`, allowing for cases where a timeout may not be necessary.
 ///
 use crate::transport::http1_pool::Http1Permit;
+use crate::transport::http2_pool::Http2StreamPermit;
 use http_body::{Body, SizeHint};
 use pin_project::pin_project;
 use pingora_timeout::{
@@ -43,9 +44,24 @@ use std::{
 
 pub type Timeout = PingoraTimeout<Pending<()>, FastTimeout>;
 
+/// Recycles an HTTP/1 connection or releases an HTTP/2 stream slot when the body ends.
+pub enum BodyEndPermit {
+    Http1(Http1Permit),
+    Http2(Http2StreamPermit),
+}
+
+impl BodyEndPermit {
+    fn on_body_end(self, completed: bool) {
+        match self {
+            Self::Http1(permit) => permit.on_body_end(completed),
+            Self::Http2(permit) => permit.on_body_end(completed),
+        }
+    }
+}
+
 /// Dropping the hook without `notify_complete` treats the body as aborted.
 struct BodyEndHook {
-    inner: Option<Http1Permit>,
+    inner: Option<BodyEndPermit>,
 }
 
 impl BodyEndHook {
@@ -53,7 +69,7 @@ impl BodyEndHook {
         Self { inner: None }
     }
 
-    fn set(&mut self, hook: Http1Permit) {
+    fn set(&mut self, hook: BodyEndPermit) {
         self.inner = Some(hook);
     }
 
@@ -114,7 +130,7 @@ impl<B> TimeoutBody<B> {
     }
 
     #[must_use]
-    pub fn with_on_end(mut self, hook: Http1Permit) -> Self {
+    pub fn with_on_end(mut self, hook: BodyEndPermit) -> Self {
         self.on_end.set(hook);
         self
     }
