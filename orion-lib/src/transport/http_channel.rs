@@ -179,19 +179,27 @@ pub struct HttpChannel {
 
 #[derive(Clone, Debug)]
 pub enum HttpChannelClient {
-    Http1(Http1ClientExt),
-    Plain(Arc<ThreadLocalObject<Arc<HttpClient>, Builder, UnifiedConnector>>),
-    Tls(HttpsClientExt),
+    Plain(PlainChannelClient),
+    Tls(TlsChannelClient),
     Unix(hyper::Uri, Arc<Client<UnixConnector, InstrumentedBody<TimeoutBody<PolyBody>>>>),
 }
 
+#[derive(Clone, Debug)]
+pub enum PlainChannelClient {
+    Http1(Http1ClientExt),
+    Http2(Arc<ThreadLocalObject<Arc<HttpClient>, Builder, UnifiedConnector>>),
+}
+
+#[derive(Clone, Debug)]
+pub enum TlsChannelClient {
+    Http1(Http1ClientExt),
+    Http2(HttpsClientExt),
+}
+
 impl HttpChannelClient {
+    #[inline]
     pub fn is_tls(&self) -> bool {
-        match self {
-            HttpChannelClient::Http1(ext) => ext.is_tls(),
-            HttpChannelClient::Tls(_) => true,
-            HttpChannelClient::Plain(_) | HttpChannelClient::Unix(_, _) => false,
-        }
+        matches!(self, HttpChannelClient::Tls(_))
     }
 }
 
@@ -300,14 +308,11 @@ impl HttpChannelBuilder {
             Codec::Http1 => self.http_protocol_options.http1_options.enable_trailers,
             Codec::Http2 => false,
         };
+        let idle_timeout = self.http_protocol_options.common.idle_timeout.unwrap_or(DEFAULT_IDLE_TIMEOUT);
+        let cluster_name = self.cluster_name.unwrap_or_default();
+        let client_builder = if is_http2 { Some(self.configure_hyper_client()) } else { None };
 
-        if !is_http2 {
-            return self.build_http1_channel(authority, enable_trailers);
-        }
-
-        let client_builder = self.configure_hyper_client();
-
-        if let Some(tls_context) = self.tls {
+        let channel_client = if let Some(tls_context) = self.tls {
             let mut builder =
                 hyper_rustls::HttpsConnectorBuilder::new().with_tls_config(tls_context.into_inner()).https_only();
 
@@ -319,62 +324,38 @@ impl HttpChannelBuilder {
                 builder.with_server_name_resolver(FixedServerNameResolver::new(server_name))
             };
 
-            let connector =
-                UnifiedConnector::from((&self.connect_using, self.cluster_name.unwrap_or_default(), is_http2));
+            let connector = UnifiedConnector::from((&self.connect_using, cluster_name, is_http2));
 
-            let http_connector = match self.http_protocol_options.codec {
-                Codec::Http2 => builder.enable_http2().wrap_connector(connector),
-                Codec::Http1 => builder.enable_http1().wrap_connector(connector),
-            };
-
-            Ok(HttpChannel {
-                channel_client: HttpChannelClient::Tls(HttpsClientExt::new(
+            if is_http2 {
+                let client_builder = client_builder.expect("client_builder is initialized for http2");
+                let http_connector = builder.enable_http2().wrap_connector(connector);
+                HttpChannelClient::Tls(TlsChannelClient::Http2(HttpsClientExt::new(
                     self.http_protocol_options.codec,
                     Arc::new(ThreadLocalObject::new(client_builder, http_connector)),
-                )),
-                http_version: self.http_protocol_options.codec,
-                enable_trailers,
-                upstream_authority: authority,
-                cluster_name: self.cluster_name.unwrap_or_default(),
-            })
-        } else {
-            let connector =
-                UnifiedConnector::from((&self.connect_using, self.cluster_name.unwrap_or_default(), is_http2));
-
-            Ok(HttpChannel {
-                channel_client: HttpChannelClient::Plain(Arc::new(ThreadLocalObject::new(client_builder, connector))),
-                http_version: self.http_protocol_options.codec,
-                enable_trailers,
-                upstream_authority: authority,
-                cluster_name: self.cluster_name.unwrap_or_default(),
-            })
-        }
-    }
-
-    fn build_http1_channel(self, authority: Authority, enable_trailers: bool) -> crate::Result<HttpChannel> {
-        let idle_timeout = self.http_protocol_options.common.idle_timeout.unwrap_or(DEFAULT_IDLE_TIMEOUT);
-        let cluster_name = self.cluster_name.unwrap_or_default();
-        let connector = UnifiedConnector::from((&self.connect_using, cluster_name, false));
-
-        let ext = if let Some(tls_context) = self.tls {
-            let mut builder =
-                hyper_rustls::HttpsConnectorBuilder::new().with_tls_config(tls_context.into_inner()).https_only();
-            builder = if let Some(server_name) = self.server_name {
-                builder.with_server_name_resolver(FixedServerNameResolver::new(server_name))
+                )))
             } else {
-                let server_name = ServerName::try_from(authority.host().to_owned())?;
-                debug!("Server name is not configured in bootstrap.. using endpoint authority {server_name:?}");
-                builder.with_server_name_resolver(FixedServerNameResolver::new(server_name))
-            };
-            let http_connector = builder.enable_http1().wrap_connector(connector);
-            Http1ClientExt::tls(http_connector, &authority, idle_timeout)?
+                let http_connector = builder.enable_http1().wrap_connector(connector);
+                let ext = Http1ClientExt::tls(http_connector, &authority, idle_timeout)?;
+                HttpChannelClient::Tls(TlsChannelClient::Http1(ext))
+            }
         } else {
-            Http1ClientExt::plain(connector, &authority, idle_timeout)?
+            let connector = UnifiedConnector::from((&self.connect_using, cluster_name, is_http2));
+
+            if is_http2 {
+                let client_builder = client_builder.expect("client_builder is initialized for http2");
+                HttpChannelClient::Plain(PlainChannelClient::Http2(Arc::new(ThreadLocalObject::new(
+                    client_builder,
+                    connector,
+                ))))
+            } else {
+                let ext = Http1ClientExt::plain(connector, &authority, idle_timeout)?;
+                HttpChannelClient::Plain(PlainChannelClient::Http1(ext))
+            }
         };
 
         Ok(HttpChannel {
-            channel_client: HttpChannelClient::Http1(ext),
-            http_version: Codec::Http1,
+            channel_client,
+            http_version: self.http_protocol_options.codec,
             enable_trailers,
             upstream_authority: authority,
             cluster_name,
@@ -588,76 +569,100 @@ impl HttpChannel {
         #[cfg(feature = "instrumentation")] clock: &quanta::Clock,
     ) -> Result<Response<OrionResponseBody>> {
         match &self.channel_client {
-            HttpChannelClient::Http1(ext) => {
-                maybe_normalize_uri(&mut request, ext.is_tls())?;
-                let pool = ext.local_pool();
-                self.send_with_policy(
-                    request,
-                    timeout,
-                    retry_policy,
-                    priority,
-                    move |req| {
-                        let pool = Arc::clone(&pool);
-                        async move { pool.send(req).await }
-                    },
-                    output,
-                    #[cfg(feature = "instrumentation")]
-                    clock,
-                )
-                .await
-            },
-            HttpChannelClient::Plain(sender) => {
-                let client = Arc::clone(sender.get_local());
+            HttpChannelClient::Plain(plain) => {
                 maybe_normalize_uri(&mut request, false)?;
-                self.send_with_policy(
-                    request,
-                    timeout,
-                    retry_policy,
-                    priority,
-                    move |req| {
-                        let client = Arc::clone(&client);
-                        async move {
-                            client
-                                .request(req)
-                                .await
-                                .map(|res| res.map(|body| TimeoutBody::new(None, PolyBody::from(body))))
-                                .map_err(Error::from)
-                        }
+                match plain {
+                    PlainChannelClient::Http1(ext) => {
+                        let pool = ext.local_pool();
+                        self.send_with_policy(
+                            request,
+                            timeout,
+                            retry_policy,
+                            priority,
+                            move |req| {
+                                let pool = Arc::clone(&pool);
+                                async move { pool.send(req).await }
+                            },
+                            output,
+                            #[cfg(feature = "instrumentation")]
+                            clock,
+                        )
+                        .await
                     },
-                    output,
-                    #[cfg(feature = "instrumentation")]
-                    clock,
-                )
-                .await
+                    PlainChannelClient::Http2(sender) => {
+                        let client = Arc::clone(sender.get_local());
+                        self.send_with_policy(
+                            request,
+                            timeout,
+                            retry_policy,
+                            priority,
+                            move |req| {
+                                let client = Arc::clone(&client);
+                                async move {
+                                    client
+                                        .request(req)
+                                        .await
+                                        .map(|res| res.map(|body| TimeoutBody::new(None, PolyBody::from(body))))
+                                        .map_err(Error::from)
+                                }
+                            },
+                            output,
+                            #[cfg(feature = "instrumentation")]
+                            clock,
+                        )
+                        .await
+                    },
+                }
             },
-            HttpChannelClient::Tls(context) => {
-                let HttpsClientExt { configured_upstream_http_version, client: sender } = context;
-                let configured_version = *configured_upstream_http_version;
-                let client = Arc::clone(sender.get_local());
+            HttpChannelClient::Tls(tls) => {
                 maybe_normalize_uri(&mut request, true)?;
-                //FIXME(hayley): apply http protocol translation for plaintext too
-                maybe_change_http_protocol_version(&mut request, configured_version)?;
-
-                self.send_with_policy(
-                    request,
-                    timeout,
-                    retry_policy,
-                    priority,
-                    move |req| {
-                        let client = Arc::clone(&client);
-                        async move {
-                            client
-                                .request(req)
-                                .await
-                                .map(|res| res.map(|body| TimeoutBody::new(None, PolyBody::from(body))))
-                                .map_err(Error::from)
-                        }
+                match tls {
+                    TlsChannelClient::Http1(ext) => {
+                        let pool = ext.local_pool();
+                        self.send_with_policy(
+                            request,
+                            timeout,
+                            retry_policy,
+                            priority,
+                            move |req| {
+                                let pool = Arc::clone(&pool);
+                                async move { pool.send(req).await }
+                            },
+                            output,
+                            #[cfg(feature = "instrumentation")]
+                            clock,
+                        )
+                        .await
                     },
-                    output,
-                    #[cfg(feature = "instrumentation")]
-                    clock,
-                )
-                .await
+                    TlsChannelClient::Http2(context) => {
+                        let HttpsClientExt { configured_upstream_http_version, client: sender } = context;
+                        let configured_version = *configured_upstream_http_version;
+                        let client = Arc::clone(sender.get_local());
+                        //FIXME(hayley): apply http protocol translation for plaintext too
+                        maybe_change_http_protocol_version(&mut request, configured_version)?;
+
+                        self.send_with_policy(
+                            request,
+                            timeout,
+                            retry_policy,
+                            priority,
+                            move |req| {
+                                let client = Arc::clone(&client);
+                                async move {
+                                    client
+                                        .request(req)
+                                        .await
+                                        .map(|res| res.map(|body| TimeoutBody::new(None, PolyBody::from(body))))
+                                        .map_err(Error::from)
+                                }
+                            },
+                            output,
+                            #[cfg(feature = "instrumentation")]
+                            clock,
+                        )
+                        .await
+                    },
+                }
             },
             HttpChannelClient::Unix(uri, sender) => {
                 let client = Arc::clone(sender);
@@ -951,9 +956,14 @@ impl HttpChannel {
 
     pub fn load(&self) -> u32 {
         let load = match &self.channel_client {
-            HttpChannelClient::Http1(ext) => ext.strong_count(),
-            HttpChannelClient::Plain(sender) => Arc::strong_count(sender),
-            HttpChannelClient::Tls(sender) => Arc::strong_count(&sender.client),
+            HttpChannelClient::Plain(plain) => match plain {
+                PlainChannelClient::Http1(ext) => ext.strong_count(),
+                PlainChannelClient::Http2(sender) => Arc::strong_count(sender),
+            },
+            HttpChannelClient::Tls(tls) => match tls {
+                TlsChannelClient::Http1(ext) => ext.strong_count(),
+                TlsChannelClient::Http2(sender) => Arc::strong_count(&sender.client),
+            },
             HttpChannelClient::Unix(_, sender) => Arc::strong_count(sender),
         };
         u32::try_from(load).unwrap_or(u32::MAX)
