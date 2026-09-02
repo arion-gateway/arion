@@ -55,5 +55,5 @@ pub enum JwkError {
     Timeout(#[from] pingora_timeout::Elapsed),
 
     #[error("HTTP body timeout: {0}")]
-    HttpTimeoutError(#[from] TimeoutBodyError<hyper::Error>),
+    HttpTimeoutError(#[from] TimeoutBodyError<crate::body::poly_body::PolyBodyError>),
 }

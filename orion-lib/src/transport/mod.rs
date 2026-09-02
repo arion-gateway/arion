@@ -24,6 +24,7 @@ use std::task::{Context, Poll};
 pub mod bind_device;
 pub mod connector;
 mod grpc_channel;
+pub(crate) mod http1_pool;
 pub(crate) mod http_channel;
 mod resolver;
 pub mod tcp_channel;

@@ -33,6 +33,7 @@
 
 pub mod channel_body;
 pub mod context_body;
+pub(crate) mod h1_permit;
 pub mod instrumented_body;
 pub mod poly_body;
 pub(crate) mod response_flags;

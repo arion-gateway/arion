@@ -26,6 +26,7 @@
 /// 1. Unpin: The original `TimeoutBody` is !Unpin, while this version is Unpin to enable use in certain asynchronous contexts.
 /// 2. Optional Timeout: The timeout is wrapped in `Option`, allowing for cases where a timeout may not be necessary.
 ///
+use super::h1_permit::Http1Permit;
 use http_body::{Body, SizeHint};
 use pin_project::pin_project;
 use pingora_timeout::{
@@ -42,13 +43,47 @@ use std::{
 
 pub type Timeout = PingoraTimeout<Pending<()>, FastTimeout>;
 
+/// Dropping the hook without `notify_complete` treats the body as aborted.
+struct BodyEndHook {
+    inner: Option<Http1Permit>,
+}
+
+impl BodyEndHook {
+    fn none() -> Self {
+        Self { inner: None }
+    }
+
+    fn set(&mut self, hook: Http1Permit) {
+        self.inner = Some(hook);
+    }
+
+    fn notify_complete(&mut self) {
+        if let Some(hook) = self.inner.take() {
+            hook.on_body_end(true);
+        }
+    }
+
+    fn notify_abort(&mut self) {
+        if let Some(hook) = self.inner.take() {
+            hook.on_body_end(false);
+        }
+    }
+}
+
+impl Drop for BodyEndHook {
+    fn drop(&mut self) {
+        self.notify_abort();
+    }
+}
+
 #[pin_project]
 pub struct TimeoutBody<B> {
+    #[pin]
+    pub inner: B,
     pub timeout: Option<Duration>,
     #[pin]
     pub sleep: Option<Pin<Box<Timeout>>>,
-    #[pin]
-    pub inner: B,
+    on_end: BodyEndHook,
 }
 
 impl<B> std::fmt::Debug for TimeoutBody<B>
@@ -68,28 +103,34 @@ where
     B: Default,
 {
     fn default() -> Self {
-        Self { timeout: None, sleep: None, inner: Default::default() }
+        Self { inner: Default::default(), timeout: None, sleep: None, on_end: BodyEndHook::none() }
     }
 }
 
 impl<B> TimeoutBody<B> {
     /// Creates a new [`TimeoutBody`].
     pub fn new(timeout: Option<Duration>, body: B) -> Self {
-        TimeoutBody { timeout, sleep: None, inner: body }
+        TimeoutBody { inner: body, timeout, sleep: None, on_end: BodyEndHook::none() }
+    }
+
+    #[must_use]
+    pub fn with_on_end(mut self, hook: Http1Permit) -> Self {
+        self.on_end.set(hook);
+        self
     }
 
     pub fn map_into<B2>(self) -> TimeoutBody<B2>
     where
         B: Into<B2>,
     {
-        TimeoutBody { inner: self.inner.into(), timeout: self.timeout, sleep: self.sleep }
+        self.map_inner(Into::into)
     }
 
     pub fn map_inner<B2, F>(self, f: F) -> TimeoutBody<B2>
     where
         F: FnOnce(B) -> B2,
     {
-        TimeoutBody { inner: f(self.inner), timeout: self.timeout, sleep: self.sleep }
+        TimeoutBody { inner: f(self.inner), timeout: self.timeout, sleep: self.sleep, on_end: self.on_end }
     }
 }
 
@@ -116,6 +157,7 @@ where
 
             // Error if the timeout has expired.
             if sleep_pinned.poll(cx).is_ready() {
+                this.on_end.notify_abort();
                 return Poll::Ready(Some(Err(TimeoutBodyError::TimedOut)));
             }
 
@@ -125,9 +167,30 @@ where
             // A frame is ready. Reset the `Sleep`...
             this.sleep.set(None);
 
-            Poll::Ready(frame.transpose().map_err(TimeoutBodyError::BodyError).transpose())
+            match frame {
+                None => {
+                    this.on_end.notify_complete();
+                    Poll::Ready(None)
+                },
+                Some(Ok(frame)) => Poll::Ready(Some(Ok(frame))),
+                Some(Err(err)) => {
+                    this.on_end.notify_abort();
+                    Poll::Ready(Some(Err(TimeoutBodyError::BodyError(err))))
+                },
+            }
         } else {
-            this.inner.poll_frame(cx).map_err(TimeoutBodyError::BodyError)
+            match this.inner.poll_frame(cx) {
+                Poll::Ready(None) => {
+                    this.on_end.notify_complete();
+                    Poll::Ready(None)
+                },
+                Poll::Ready(Some(Ok(frame))) => Poll::Ready(Some(Ok(frame))),
+                Poll::Ready(Some(Err(err))) => {
+                    this.on_end.notify_abort();
+                    Poll::Ready(Some(Err(TimeoutBodyError::BodyError(err))))
+                },
+                Poll::Pending => Poll::Pending,
+            }
         }
     }
 
