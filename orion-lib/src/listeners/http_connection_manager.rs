@@ -92,7 +92,6 @@ use arc_swap::ArcSwap;
 use core::time::Duration;
 use futures::future::BoxFuture;
 use hyper::{body::Incoming, header::HOST, service::Service, Request, Response, StatusCode};
-use orion_configuration::config::network_filters::http_connection_manager::route::RouteMatch;
 use orion_configuration::config::network_filters::http_connection_manager::{
     route::{Action, RouteMatchResult},
     CodecType, ConfigSource, ConfigSourceSpecifier, HttpConnectionManager as HttpConnectionManagerConfig, RdsSpecifier,
@@ -214,16 +213,20 @@ impl HttpConnectionManagerBuilder {
         let listener_name = self.listener_name.ok_or("listener name is not set")?;
         let filterchain_id = self.filterchain_id.unwrap_or(0);
         let partial = self.connection_manager;
-        let initial_route = partial.router.map(Arc::new);
+        let initial_routing_state = partial.router.map(|router| {
+            Arc::new(RoutingState {
+                route_configuration: router,
+                http_filters_per_route: partial.http_filters_per_route,
+            })
+        });
 
         Ok(HttpConnectionManager {
             listener_name,
             filterchain_id,
-            route_configuration: ArcSwap::new(Arc::new(initial_route)),
+            routing_state: ArcSwap::new(Arc::new(initial_routing_state)),
             codec_type: partial.codec_type,
             dynamic_route_name: partial.dynamic_route_name,
             http_filters_hcm: partial.http_filters_hcm,
-            http_filters_per_route: ArcSwap::new(Arc::new(partial.http_filters_per_route)),
             enabled_upgrades: partial.enabled_upgrades,
             request_timeout: partial.request_timeout,
             xff_settings: partial.xff_settings,
@@ -258,7 +261,7 @@ pub struct PartialHttpConnectionManager {
     codec_type: CodecType,
     dynamic_route_name: Option<SmolStr>,
     http_filters_hcm: Vec<Arc<HttpFilter>>,
-    http_filters_per_route: HashMap<RouteMatch, Vec<Arc<HttpFilter>>>,
+    http_filters_per_route: HashMap<RouteIndex, Vec<Arc<HttpFilter>>>,
     enabled_upgrades: Vec<UpgradeType>,
     request_timeout: Option<Duration>,
     xff_settings: XffSettings,
@@ -345,15 +348,26 @@ impl AlpnCodecs {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RouteIndex {
+    pub vh_idx: usize,
+    pub route_idx: usize,
+}
+
+#[derive(Debug)]
+pub struct RoutingState {
+    pub route_configuration: RouteConfiguration,
+    pub http_filters_per_route: HashMap<RouteIndex, Vec<Arc<HttpFilter>>>,
+}
+
 #[derive(Debug)]
 pub struct HttpConnectionManager {
     pub listener_name: &'static str,
     pub filterchain_id: u64,
-    route_configuration: ArcSwap<Option<Arc<RouteConfiguration>>>,
+    routing_state: ArcSwap<Option<Arc<RoutingState>>>,
     pub codec_type: CodecType,
     dynamic_route_name: Option<SmolStr>,
     http_filters_hcm: Vec<Arc<HttpFilter>>,
-    http_filters_per_route: ArcSwap<HashMap<RouteMatch, Vec<Arc<HttpFilter>>>>,
     enabled_upgrades: Vec<UpgradeType>,
     request_timeout: Option<Duration>,
     xff_settings: XffSettings,
@@ -381,13 +395,16 @@ impl HttpConnectionManager {
     }
 
     pub fn update_route(&self, route: RouteConfiguration) {
-        self.http_filters_per_route.swap(Arc::new(per_route_http_filters(&route, &self.http_filters_hcm)));
-        let new_route = Arc::new(route);
-        self.route_configuration.store(Arc::new(Some(Arc::clone(&new_route))));
+        let http_filters_per_route = per_route_http_filters(&route, &self.http_filters_hcm);
+        let new_state = Arc::new(RoutingState {
+            route_configuration: route,
+            http_filters_per_route,
+        });
+        self.routing_state.store(Arc::new(Some(new_state)));
     }
 
     pub fn remove_route(&self) {
-        self.route_configuration.store(Arc::new(None));
+        self.routing_state.store(Arc::new(None));
     }
 
     #[allow(clippy::type_complexity)]
@@ -405,9 +422,11 @@ impl HttpConnectionManager {
 
 #[derive(Debug)]
 pub struct CachedRoute<'a> {
-    route: &'a Route,
-    route_match: RouteMatchResult,
-    vh: &'a VirtualHost,
+    pub route: &'a Route,
+    pub route_match: RouteMatchResult,
+    pub vh: &'a VirtualHost,
+    pub vh_index: usize,
+    pub route_index: usize,
 }
 
 #[cfg(any(feature = "access-log", feature = "metrics"))]
@@ -822,7 +841,7 @@ impl HttpPipelineSvc {
         &self,
         req: RoutedHttpRequest<OrionRequestBody>,
     ) -> StdResult<Response<OrionRequestBody>, crate::Error> {
-        let RoutedHttpRequest { http: HttpRequest { mut request, ctx }, route_conf } = req;
+        let RoutedHttpRequest { http: HttpRequest { mut request, ctx }, routing_state } = req;
         let manager = self.manager.as_ref();
 
         #[allow(unused_variables)]
@@ -859,7 +878,7 @@ impl HttpPipelineSvc {
         http_modifiers::apply_prerouting_functions(&mut request, downstream_addr, &manager.xff_settings);
 
         // process request, get the response..
-        let result = route_conf.to_response(&ctx, request, manager).await;
+        let result = routing_state.clone().to_response(&ctx, request, manager).await;
 
         // calculate the time to first byte..
         #[cfg(any(feature = "access-log", feature = "metrics"))]
@@ -980,14 +999,14 @@ impl HttpPipelineSvc {
     }
 }
 
-fn select_virtual_host<'a, T>(request: &Request<T>, virtual_hosts: &'a [VirtualHost]) -> Option<&'a VirtualHost> {
-    let mapped_vhs = virtual_hosts.iter().filter_map(|vh| {
+fn select_virtual_host<'a, T>(request: &Request<T>, virtual_hosts: &'a [VirtualHost]) -> Option<(usize, &'a VirtualHost)> {
+    let mapped_vhs = virtual_hosts.iter().enumerate().filter_map(|(idx, vh)| {
         let maybe_score = vh.domains.iter().map(|domain| domain.eval_lpm_request(request)).max().flatten();
-        maybe_score.map(|score| (vh, score))
+        maybe_score.map(|score| (idx, vh, score))
     });
 
-    let virtual_host_with_max_score = mapped_vhs.max_by_key(|(_, score)| score.clone());
-    virtual_host_with_max_score.map(|(vh, _)| vh)
+    let virtual_host_with_max_score = mapped_vhs.max_by_key(|(_, _, score)| score.clone());
+    virtual_host_with_max_score.map(|(idx, vh, _)| (idx, vh))
 }
 
 // has to be a trait due to foreign impl rules.
@@ -1002,16 +1021,17 @@ pub trait RequestHandler<R, A>: Sized {
 
 #[inline]
 fn match_request_route<'a, B>(request: &Request<B>, route_config: &'a RouteConfiguration) -> Option<CachedRoute<'a>> {
-    let chosen_vh = select_virtual_host(request, &route_config.virtual_hosts)?;
-    let (chosen_route, route_match_result) = chosen_vh
+    let (vh_index, chosen_vh) = select_virtual_host(request, &route_config.virtual_hosts)?;
+    let (route_index, (chosen_route, route_match_result)) = chosen_vh
         .routes
         .iter()
         .map(|route| (route, route.route_match.match_request(request)))
-        .find(|(_, match_result)| match_result.matched())?;
-    Some(CachedRoute { route: chosen_route, route_match: route_match_result, vh: chosen_vh })
+        .enumerate()
+        .find(|(_, (_, match_result))| match_result.matched())?;
+    Some(CachedRoute { route: chosen_route, route_match: route_match_result, vh: chosen_vh, vh_index, route_index })
 }
 
-impl RequestHandler<Request<OrionRequestBody>, &HttpConnectionManager> for Arc<RouteConfiguration> {
+impl RequestHandler<Request<OrionRequestBody>, &HttpConnectionManager> for Arc<RoutingState> {
     #[allow(clippy::too_many_lines)]
     async fn to_response(
         self,
@@ -1019,7 +1039,7 @@ impl RequestHandler<Request<OrionRequestBody>, &HttpConnectionManager> for Arc<R
         mut request: Request<OrionRequestBody>,
         connection_manager: &HttpConnectionManager,
     ) -> Result<Response<OrionResponseBody>> {
-        let route_conf = &self;
+        let route_conf = &self.route_configuration;
         let mut cached_route = match_request_route(&request, route_conf);
         let mut active_filters: SmallVec<[HttpFilterValue; 4]> = SmallVec::new();
 
@@ -1035,8 +1055,10 @@ impl RequestHandler<Request<OrionRequestBody>, &HttpConnectionManager> for Arc<R
                 ));
             };
 
-            let guard = connection_manager.http_filters_per_route.load();
-            let route_filters = guard.get(&chosen_route.route.route_match);
+            let route_filters = self.http_filters_per_route.get(&RouteIndex {
+                vh_idx: chosen_route.vh_index,
+                route_idx: chosen_route.route_index,
+            });
 
             let Some(route_filters) = route_filters else {
                 break 'filter_loop FilterDecision::Continue;
@@ -1292,7 +1314,7 @@ impl<B> HttpRequest<B> {
 /// `HttpRequest` after route configuration has been resolved.
 pub struct RoutedHttpRequest<B> {
     pub http: HttpRequest<B>,
-    pub route_conf: Arc<RouteConfiguration>,
+    pub routing_state: Arc<RoutingState>,
 }
 
 #[derive(Clone)]
@@ -1446,7 +1468,7 @@ impl TransactionSvc<HttpPipelineSvc> {
     async fn call(&self, req: HttpRequest<Incoming>) -> StdResult<Response<OrionRequestBody>, crate::Error> {
         let HttpRequest { request, ctx } = req;
         let listener_name = self.manager.listener_name;
-        let route_conf = (**self.manager.route_configuration.load()).clone();
+        let routing_state = (**self.manager.routing_state.load()).clone();
 
         with_metric!(http::DOWNSTREAM_RQ_TOTAL, add, 1, ctx.tx.shard_id(), &[KeyValue::new("listener", listener_name)]);
         with_metric!(
@@ -1492,7 +1514,7 @@ impl TransactionSvc<HttpPipelineSvc> {
 
         eval_http_init_context(&request, &ctx.tx, Some(ctx.conn.downstream.as_ref()));
 
-        let Some(route_conf) = route_conf else {
+        let Some(routing_state) = routing_state else {
             return Ok(handle_route_conf_not_found(
                 request.version(),
                 &ctx.tx,
@@ -1572,7 +1594,7 @@ impl TransactionSvc<HttpPipelineSvc> {
 
         #[cfg(feature = "access-log")]
         let trans_ctx_clone = Arc::clone(&http.ctx.tx);
-        let response = self.inner.call(RoutedHttpRequest { http, route_conf }).await;
+        let response = self.inner.call(RoutedHttpRequest { http, routing_state: routing_state.clone() }).await;
 
         #[cfg(feature = "metrics")]
         if let Ok(response) = &response {
@@ -2063,16 +2085,16 @@ mod tests {
         assert_eq!(select_virtual_host(&request, &[vh1.clone(), vh2.clone(), vh3.clone()]), None);
 
         let request = Request::builder().header("host", "domain1.com:8000").body(()).unwrap();
-        assert_eq!(select_virtual_host(&request, &[vh1.clone(), vh2.clone(), vh3.clone()]), Some(&vh1));
+        assert_eq!(select_virtual_host(&request, &[vh1.clone(), vh2.clone(), vh3.clone()]), Some((0, &vh1)));
 
         let request = Request::builder().header("host", "domain1.com").body(()).unwrap();
-        assert_eq!(select_virtual_host(&request, &[vh1.clone(), vh2.clone(), vh3.clone()]), Some(&vh1));
+        assert_eq!(select_virtual_host(&request, &[vh1.clone(), vh2.clone(), vh3.clone()]), Some((0, &vh1)));
 
         let request = Request::builder().header("host", "domain3.com").body(()).unwrap();
-        assert_eq!(select_virtual_host(&request, &[vh1.clone(), vh2.clone(), vh3.clone()]), Some(&vh3));
+        assert_eq!(select_virtual_host(&request, &[vh1.clone(), vh2.clone(), vh3.clone()]), Some((2, &vh3)));
 
         let request = Request::builder().header("host", "blah.domain3.com").body(()).unwrap();
-        assert_eq!(select_virtual_host(&request, &[vh1.clone(), vh2.clone(), vh3.clone()]), Some(&vh3));
+        assert_eq!(select_virtual_host(&request, &[vh1.clone(), vh2.clone(), vh3.clone()]), Some((2, &vh3)));
 
         let request = Request::builder().header("host", "blah.domain3.com:8000").body(()).unwrap();
         assert_eq!(select_virtual_host(&request, &[vh1.clone(), vh2.clone(), vh3.clone()]), None);

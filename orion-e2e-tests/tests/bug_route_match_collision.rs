@@ -6,7 +6,7 @@ use orion_e2e_tests::config_builder::{
 use orion_e2e_tests::{OrionInstance, PreConfiguredResponse, RequestBuilder, SpawnOptions, TestBackend, TestClient};
 
 #[tokio::test]
-#[ignore]
+
 async fn test_route_match_collision_bug() {
     let mut backend = TestBackend::start().await.expect("backend start");
     backend.set_default_response(PreConfiguredResponse::with_body("backend response")).await;

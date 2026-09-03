@@ -1,3 +1,4 @@
+use crate::listeners::http_connection_manager::RouteIndex;
 #[cfg(feature = "wasm")]
 use crate::listeners::http_connection_manager::wasm::WasmFilter;
 use std::{collections::HashMap, sync::Arc};
@@ -28,7 +29,6 @@ use tracing::debug;
 
 use orion_configuration::config::network_filters::http_connection_manager::{
     http_filters::{FilterConfigOverride, FilterOverride, HttpFilter as HttpFilterConfig, HttpFilterType},
-    route::RouteMatch,
     RouteConfiguration,
 };
 
@@ -299,10 +299,11 @@ fn apply_authorization_rules<B>(rbac: &HttpRbac, req: &Request<B>) -> FilterDeci
 pub(crate) fn per_route_http_filters(
     route_config: &RouteConfiguration,
     hcm_filters: &[Arc<HttpFilter>],
-) -> HashMap<RouteMatch, Vec<Arc<HttpFilter>>> {
-    let mut per_route_filters: HashMap<RouteMatch, Vec<Arc<HttpFilter>>> = HashMap::new();
-    for vh in &route_config.virtual_hosts {
-        for route in &vh.routes {
+) -> HashMap<RouteIndex, Vec<Arc<HttpFilter>>> {
+    let mut per_route_filters: HashMap<RouteIndex, Vec<Arc<HttpFilter>>> = HashMap::new();
+    for (vh_idx, vh) in route_config.virtual_hosts.iter().enumerate() {
+        for (route_idx, route) in vh.routes.iter().enumerate() {
+            let key = RouteIndex { vh_idx, route_idx };
             for hcm_filter in hcm_filters {
                 let effective_filter = match route.typed_per_filter_config.get(&hcm_filter.name) {
                     Some(override_config) => Arc::new(HttpFilter {
@@ -316,7 +317,7 @@ pub(crate) fn per_route_http_filters(
                     }),
                     None => Arc::clone(hcm_filter),
                 };
-                per_route_filters.entry(route.route_match.clone()).or_default().push(effective_filter);
+                per_route_filters.entry(key).or_default().push(effective_filter);
             }
         }
     }
