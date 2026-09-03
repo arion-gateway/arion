@@ -249,6 +249,9 @@ impl Http1Pool {
                 if tx.is_closed() {
                     continue;
                 }
+                if tx.is_ready() {
+                    return Ok(tx);
+                }
                 match tx.ready().await {
                     Ok(()) => return Ok(tx),
                     Err(_) => continue,
