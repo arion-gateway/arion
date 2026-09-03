@@ -29,10 +29,7 @@ use hyper::{
 };
 use hyper_rustls::HttpsConnector;
 use parking_lot::Mutex;
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{sync::Arc, time::Duration};
 use tower::Service;
 use tracing::debug;
 
@@ -40,17 +37,22 @@ const IDLE_CLEANUP_INTERVAL: Duration = Duration::from_secs(1);
 
 struct IdleConn {
     tx: SendRequest<OrionRequestBody>,
-    idle_at: Instant,
+    idle_at: u64,
 }
 
 pub struct Http1PoolInner {
     idle: Mutex<Vec<IdleConn>>,
     idle_timeout: Duration,
+    clock: quanta::Clock,
 }
 
 impl Http1PoolInner {
     pub fn new(idle_timeout: Duration) -> Arc<Self> {
-        let this = Arc::new(Self { idle: Mutex::new(Vec::new()), idle_timeout });
+        let this = Arc::new(Self {
+            idle: Mutex::new(Vec::new()),
+            idle_timeout,
+            clock: quanta::Clock::new(),
+        });
         let weak = Arc::downgrade(&this);
         tokio::spawn(async move {
             loop {
@@ -65,27 +67,22 @@ impl Http1PoolInner {
     }
 
     pub fn cleanup_expired(&self) {
-        let now = Instant::now();
         let mut idle = self.idle.lock();
+        if idle.is_empty() {
+            return;
+        }
+        let now = self.clock.raw();
         idle.retain(|conn| {
             if conn.tx.is_closed() {
                 return false;
             }
-            now.saturating_duration_since(conn.idle_at) <= self.idle_timeout
+            self.clock.delta(conn.idle_at, now) <= self.idle_timeout
         });
     }
 
+    #[inline]
     pub fn pop(&self) -> Option<SendRequest<OrionRequestBody>> {
-        let now = Instant::now();
-        let mut idle = self.idle.lock();
-        while let Some(conn) = idle.last() {
-            if now.saturating_duration_since(conn.idle_at) > self.idle_timeout {
-                idle.pop();
-            } else {
-                break;
-            }
-        }
-        idle.pop().map(|conn| conn.tx)
+        self.idle.lock().pop().map(|conn| conn.tx)
     }
 
     #[inline]
@@ -93,7 +90,7 @@ impl Http1PoolInner {
         if tx.is_closed() {
             return;
         }
-        self.idle.lock().push(IdleConn { tx, idle_at: Instant::now() });
+        self.idle.lock().push(IdleConn { tx, idle_at: self.clock.raw() });
     }
 
     #[inline]
@@ -249,9 +246,6 @@ impl Http1Pool {
                 if tx.is_closed() {
                     continue;
                 }
-                if tx.is_ready() {
-                    return Ok(tx);
-                }
                 match tx.ready().await {
                     Ok(()) => return Ok(tx),
                     Err(_) => continue,
@@ -265,8 +259,6 @@ impl Http1Pool {
     fn pop_idle(&self) -> Option<SendRequest<OrionRequestBody>> {
         self.inner.pop()
     }
-
-
 
     async fn connect_one(&self) -> Result<SendRequest<OrionRequestBody>> {
         match &self.connect {
@@ -330,5 +322,3 @@ fn dst_uri(authority: &Authority, tls: bool) -> Result<Uri> {
         .build()
         .map_err(Error::from)
 }
-
-

@@ -34,10 +34,10 @@ use orion_configuration::config::cluster::http_protocol_options::Http2ProtocolOp
 use parking_lot::Mutex;
 use std::{
     sync::{
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicU32, AtomicU64, Ordering},
         Arc,
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
 use tower::Service;
 use tracing::debug;
@@ -47,18 +47,24 @@ const IDLE_CLEANUP_INTERVAL: Duration = Duration::from_secs(1);
 struct H2Conn {
     tx: SendRequest<OrionRequestBody>,
     in_flight: Arc<AtomicU32>,
-    last_used: Mutex<Instant>,
+    last_used: AtomicU64,
 }
 
 pub struct Http2PoolInner {
     conns: Mutex<Vec<Arc<H2Conn>>>,
     idle_timeout: Duration,
     max_concurrent_streams: Option<u32>,
+    clock: quanta::Clock,
 }
 
 impl Http2PoolInner {
     pub fn new(idle_timeout: Duration, max_concurrent_streams: Option<u32>) -> Arc<Self> {
-        let this = Arc::new(Self { conns: Mutex::new(Vec::new()), idle_timeout, max_concurrent_streams });
+        let this = Arc::new(Self {
+            conns: Mutex::new(Vec::new()),
+            idle_timeout,
+            max_concurrent_streams,
+            clock: quanta::Clock::new(),
+        });
         let weak = Arc::downgrade(&this);
         tokio::spawn(async move {
             loop {
@@ -73,8 +79,11 @@ impl Http2PoolInner {
     }
 
     fn cleanup_expired(&self) {
-        let now = Instant::now();
         let mut conns = self.conns.lock();
+        if conns.is_empty() {
+            return;
+        }
+        let now = self.clock.raw();
         conns.retain(|conn| {
             if conn.tx.is_closed() {
                 return false;
@@ -82,7 +91,7 @@ impl Http2PoolInner {
             if conn.in_flight.load(Ordering::Relaxed) > 0 {
                 return true;
             }
-            now.saturating_duration_since(*conn.last_used.lock()) <= self.idle_timeout
+            self.clock.delta(conn.last_used.load(Ordering::Relaxed), now) <= self.idle_timeout
         });
     }
 
@@ -94,7 +103,7 @@ impl Http2PoolInner {
             let has_capacity = self.max_concurrent_streams.map(|max| in_flight < max).unwrap_or(true);
             if has_capacity {
                 conn.in_flight.fetch_add(1, Ordering::Relaxed);
-                *conn.last_used.lock() = Instant::now();
+                conn.last_used.store(self.clock.raw(), Ordering::Relaxed);
                 return Some((conn.tx.clone(), Arc::clone(&conn.in_flight)));
             }
         }
@@ -102,7 +111,7 @@ impl Http2PoolInner {
     }
 
     fn insert(&self, tx: SendRequest<OrionRequestBody>, in_flight: Arc<AtomicU32>) {
-        self.conns.lock().push(Arc::new(H2Conn { tx, in_flight, last_used: Mutex::new(Instant::now()) }));
+        self.conns.lock().push(Arc::new(H2Conn { tx, in_flight, last_used: AtomicU64::new(self.clock.raw()) }));
     }
 
     fn len(&self) -> usize {
