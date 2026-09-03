@@ -224,7 +224,7 @@ impl std::fmt::Debug for Http2Pool {
 }
 
 impl Http2Pool {
-    pub async fn send(self: &Arc<Self>, req: Request<OrionRequestBody>) -> Result<Response<OrionResponseBody>> {
+    pub async fn send(&self, req: Request<OrionRequestBody>) -> Result<Response<OrionResponseBody>> {
         let (mut tx, in_flight) = self.checkout().await?;
         match tx.send_request(req).await {
             Ok(response) => Ok(attach_stream_permit(in_flight, response)),
@@ -263,6 +263,10 @@ impl Http2Pool {
 
 fn attach_stream_permit(in_flight: Arc<AtomicU32>, response: Response<Incoming>) -> Response<OrionResponseBody> {
     let (parts, body) = response.into_parts();
+    if http_body::Body::is_end_stream(&body) {
+        in_flight.fetch_sub(1, Ordering::Relaxed);
+        return Response::from_parts(parts, TimeoutBody::new(None, PolyBody::from(body)));
+    }
     Response::from_parts(
         parts,
         TimeoutBody::new(None, PolyBody::from(body)).with_on_end(BodyEndPermit::Http2(Http2StreamPermit { in_flight })),

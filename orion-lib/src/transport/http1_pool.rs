@@ -236,10 +236,10 @@ impl std::fmt::Debug for Http1Pool {
 }
 
 impl Http1Pool {
-    pub async fn send(self: &Arc<Self>, req: Request<OrionRequestBody>) -> Result<Response<OrionResponseBody>> {
+    pub async fn send(&self, req: Request<OrionRequestBody>) -> Result<Response<OrionResponseBody>> {
         let mut tx = self.checkout().await?;
         let response = tx.send_request(req).await.map_err(Error::from)?;
-        Ok(attach_permit(Arc::clone(self), tx, response))
+        Ok(attach_permit(&self.inner, tx, response))
     }
 
     async fn checkout(&self) -> Result<SendRequest<OrionRequestBody>> {
@@ -263,10 +263,7 @@ impl Http1Pool {
         self.inner.pop()
     }
 
-    #[inline]
-    fn release(&self, tx: SendRequest<OrionRequestBody>) {
-        self.inner.release(tx);
-    }
+
 
     async fn connect_one(&self) -> Result<SendRequest<OrionRequestBody>> {
         match &self.connect {
@@ -285,7 +282,7 @@ impl Http1Pool {
 }
 
 fn attach_permit(
-    pool: Arc<Http1Pool>,
+    inner: &Arc<Http1PoolInner>,
     tx: SendRequest<OrionRequestBody>,
     response: Response<Incoming>,
 ) -> Response<OrionResponseBody> {
@@ -296,14 +293,14 @@ fn attach_permit(
     // Empty bodies are often never polled (`is_end_stream` already true). Recycle now.
     if http_body::Body::is_end_stream(&body) {
         if !tx.is_closed() {
-            pool.release(tx);
+            inner.release(tx);
         }
         return Response::from_parts(parts, TimeoutBody::new(None, PolyBody::from(body)));
     }
     Response::from_parts(
         parts,
         TimeoutBody::new(None, PolyBody::from(body))
-            .with_on_end(BodyEndPermit::Http1(Http1Permit::new(Arc::clone(&pool.inner), tx))),
+            .with_on_end(BodyEndPermit::Http1(Http1Permit::new(Arc::clone(inner), tx))),
     )
 }
 
