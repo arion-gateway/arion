@@ -450,84 +450,81 @@ impl HttpChannel {
         #[cfg(feature = "instrumentation")] clock: &quanta::Clock,
     ) -> Result<Response<OrionResponseBody>> {
         match &self.channel_client {
-            HttpChannelClient::Plain(plain) => {
-                maybe_normalize_uri(&mut request, false)?;
-                match plain {
-                    PlainChannelClient::Http1(ext) => {
-                        let pool = ext.local_pool();
-                        self.send_with_policy(
-                            request,
-                            timeout,
-                            retry_policy,
-                            priority,
-                            move |req| {
-                                let pool = Arc::clone(&pool);
-                                async move { pool.send(req).await }
-                            },
-                            output,
-                            #[cfg(feature = "instrumentation")]
-                            clock,
-                        )
-                        .await
-                    },
-                    PlainChannelClient::Http2(ext) => {
-                        let pool = ext.local_pool();
-                        self.send_with_policy(
-                            request,
-                            timeout,
-                            retry_policy,
-                            priority,
-                            move |req| {
-                                let pool = Arc::clone(&pool);
-                                async move { pool.send(req).await }
-                            },
-                            output,
-                            #[cfg(feature = "instrumentation")]
-                            clock,
-                        )
-                        .await
-                    },
-                }
+            HttpChannelClient::Plain(plain) => match plain {
+                PlainChannelClient::Http1(ext) => {
+                    prepare_http1_request(&mut request)?;
+                    let pool = ext.local_pool();
+                    self.send_with_policy(
+                        request,
+                        timeout,
+                        retry_policy,
+                        priority,
+                        move |req| {
+                            let pool = Arc::clone(&pool);
+                            async move { pool.send(req).await }
+                        },
+                        output,
+                        #[cfg(feature = "instrumentation")]
+                        clock,
+                    )
+                    .await
+                },
+                PlainChannelClient::Http2(ext) => {
+                    prepare_http2_request(&mut request, false)?;
+                    let pool = ext.local_pool();
+                    self.send_with_policy(
+                        request,
+                        timeout,
+                        retry_policy,
+                        priority,
+                        move |req| {
+                            let pool = Arc::clone(&pool);
+                            async move { pool.send(req).await }
+                        },
+                        output,
+                        #[cfg(feature = "instrumentation")]
+                        clock,
+                    )
+                    .await
+                },
             },
-            HttpChannelClient::Tls(tls) => {
-                maybe_normalize_uri(&mut request, true)?;
-                match tls {
-                    TlsChannelClient::Http1(ext) => {
-                        let pool = ext.local_pool();
-                        self.send_with_policy(
-                            request,
-                            timeout,
-                            retry_policy,
-                            priority,
-                            move |req| {
-                                let pool = Arc::clone(&pool);
-                                async move { pool.send(req).await }
-                            },
-                            output,
-                            #[cfg(feature = "instrumentation")]
-                            clock,
-                        )
-                        .await
-                    },
-                    TlsChannelClient::Http2(ext) => {
-                        maybe_change_http_protocol_version(&mut request, Codec::Http2)?;
-                        let pool = ext.local_pool();
-                        self.send_with_policy(
-                            request,
-                            timeout,
-                            retry_policy,
-                            priority,
-                            move |req| {
-                                let pool = Arc::clone(&pool);
-                                async move { pool.send(req).await }
-                            },
-                            output,
-                            #[cfg(feature = "instrumentation")]
-                            clock,
-                        )
-                        .await
-                    },
-                }
+            HttpChannelClient::Tls(tls) => match tls {
+                TlsChannelClient::Http1(ext) => {
+                    prepare_http1_request(&mut request)?;
+                    let pool = ext.local_pool();
+                    self.send_with_policy(
+                        request,
+                        timeout,
+                        retry_policy,
+                        priority,
+                        move |req| {
+                            let pool = Arc::clone(&pool);
+                            async move { pool.send(req).await }
+                        },
+                        output,
+                        #[cfg(feature = "instrumentation")]
+                        clock,
+                    )
+                    .await
+                },
+                TlsChannelClient::Http2(ext) => {
+                    prepare_http2_request(&mut request, true)?;
+                    let pool = ext.local_pool();
+                    self.send_with_policy(
+                        request,
+                        timeout,
+                        retry_policy,
+                        priority,
+                        move |req| {
+                            let pool = Arc::clone(&pool);
+                            async move { pool.send(req).await }
+                        },
+                        output,
+                        #[cfg(feature = "instrumentation")]
+                        clock,
+                    )
+                    .await
+                },
             },
         }
     }
@@ -811,60 +808,94 @@ impl HttpChannel {
 }
 
 #[inline]
-fn is_absolute(uri: &Uri) -> bool {
-    uri.authority().is_some() && uri.scheme().is_some()
-}
-
-#[inline]
-fn maybe_change_http_protocol_version(request: &mut Request<OrionRequestBody>, version: Codec) -> Result<()> {
-    maybe_update_host(request, version)?;
-    maybe_rewrite_version(request, version);
-    Ok(())
-}
-
-#[inline]
-fn maybe_rewrite_version(request: &mut Request<OrionRequestBody>, version: Codec) {
-    *request.version_mut() = version.into();
-}
-
-fn maybe_update_host(request: &mut Request<OrionRequestBody>, version: Codec) -> Result<()> {
-    let request_version = request.version();
-    match (request_version, version) {
-        (Version::HTTP_11, Codec::Http2) => {
-            let headers = request.headers_mut();
-            headers.remove(http::header::HOST);
-        },
-        (Version::HTTP_2, Codec::Http1) => {
-            let authority_val = request.uri().authority().and_then(|a| HeaderValue::try_from(a.as_str()).ok());
-            if let Some(val) = authority_val {
-                debug!("Swapping authority/host (http2 -> http1)");
-                request.headers_mut().append(http::header::HOST, val);
+fn prepare_http1_request(request: &mut Request<OrionRequestBody>) -> Result<()> {
+    // Fast-path for H1 -> H1 origin-form requests (the dominant hot path):
+    if request.version() == Version::HTTP_11 {
+        let uri = request.uri();
+        if uri.scheme().is_none() && uri.authority().is_none() {
+            if let Some(host) = request.headers().get(http::header::HOST) {
+                if host.as_bytes().is_empty() {
+                    return Err(format!("Empty Host header").into());
+                }
             }
-        },
-        (Version::HTTP_11, Codec::Http1) | (Version::HTTP_2, Codec::Http2) => {},
-        (v, _) => {
-            return Err(format!("Unsupported http version {v:?}").into());
-        },
-    }
-    Ok(())
-}
-
-fn maybe_normalize_uri(request: &mut Request<OrionRequestBody>, is_tls: bool) -> Result<()> {
-    let uri = request.uri();
-    if !is_absolute(uri) {
-        if let Some(host_header) = request.headers().get("host") {
-            let authority = host_header.to_str().map_err(|e| format!("Can't parse Host header {e:?}"))?;
-            let authority = authority.parse::<Authority>().map_err(|e| format!("Can't parse uri {e:?}"))?;
-
-            let uri = request.uri_mut();
-            let mut parts = Parts::from(mem::take(uri));
-            if parts.scheme.is_none() {
-                parts.scheme = if is_tls { Some(http::uri::Scheme::HTTPS) } else { Some(http::uri::Scheme::HTTP) };
-            }
-            parts.authority = Some(authority);
-            let new = Uri::from_parts(parts).map_err(|_e| format!("Can't normalize uri: {uri}"))?;
-            *uri = new;
+            return Ok(());
         }
     }
+
+    // Cross-protocol or non-origin-form:
+    if !request.headers().contains_key(http::header::HOST) {
+        if let Some(authority) = request.uri().authority() {
+            let val = HeaderValue::try_from(authority.as_str())
+                .map_err(|e| format!("Invalid authority for Host header: {e}"))?;
+            request.headers_mut().insert(http::header::HOST, val);
+        }
+    } else if let Some(host) = request.headers().get(http::header::HOST) {
+        if host.as_bytes().is_empty() {
+            return Err(format!("Empty Host header").into());
+        }
+    }
+
+    if request.version() == Version::HTTP_2 {
+        *request.version_mut() = Version::HTTP_11;
+    }
+
+    // Ensure origin-form URI:
+    let uri = request.uri_mut();
+    if uri.scheme().is_none() && uri.authority().is_none() {
+        if uri.path_and_query().is_none() {
+            *uri = Uri::from_static("/");
+        }
+        return Ok(());
+    }
+
+    let mut parts = Parts::from(mem::take(uri));
+    parts.scheme = None;
+    parts.authority = None;
+    if parts.path_and_query.is_none() {
+        parts.path_and_query = Some(http::uri::PathAndQuery::from_static("/"));
+    }
+    *uri = Uri::from_parts(parts).map_err(|e| format!("Invalid uri: {e}"))?;
+    Ok(())
+}
+
+#[inline]
+fn prepare_http2_request(request: &mut Request<OrionRequestBody>, is_tls: bool) -> Result<()> {
+    // 1. Version rewrite
+    *request.version_mut() = Version::HTTP_2;
+
+    // 2. Ensure absolute URI with scheme and authority
+    let uri = request.uri();
+    let has_scheme = uri.scheme().is_some();
+    let has_authority = uri.authority().is_some();
+
+    if !has_scheme || !has_authority {
+        let authority_from_host = if !has_authority {
+            if let Some(host_header) = request.headers().get(http::header::HOST) {
+                let authority_str = host_header.to_str().map_err(|e| format!("Can't parse Host header: {e}"))?;
+                Some(authority_str.parse::<Authority>().map_err(|e| format!("Can't parse authority: {e}"))?)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let uri = request.uri_mut();
+        let mut parts = Parts::from(mem::take(uri));
+
+        if parts.scheme.is_none() {
+            parts.scheme = if is_tls { Some(http::uri::Scheme::HTTPS) } else { Some(http::uri::Scheme::HTTP) };
+        }
+
+        if parts.authority.is_none() {
+            parts.authority = authority_from_host;
+        }
+
+        *uri = Uri::from_parts(parts).map_err(|e| format!("Can't normalize uri: {e}"))?;
+    }
+
+    // 3. Remove Host header as HTTP/2 uses :authority
+    request.headers_mut().remove(http::header::HOST);
+
     Ok(())
 }

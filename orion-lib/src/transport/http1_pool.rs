@@ -236,8 +236,7 @@ impl std::fmt::Debug for Http1Pool {
 }
 
 impl Http1Pool {
-    pub async fn send(self: &Arc<Self>, mut req: Request<OrionRequestBody>) -> Result<Response<OrionResponseBody>> {
-        origin_form(req.uri_mut());
+    pub async fn send(self: &Arc<Self>, req: Request<OrionRequestBody>) -> Result<Response<OrionResponseBody>> {
         let mut tx = self.checkout().await?;
         let response = tx.send_request(req).await.map_err(Error::from)?;
         Ok(attach_permit(Arc::clone(self), tx, response))
@@ -332,14 +331,4 @@ fn dst_uri(authority: &Authority, tls: bool) -> Result<Uri> {
         .map_err(Error::from)
 }
 
-fn origin_form(uri: &mut Uri) {
-    let path = match uri.path_and_query() {
-        Some(path) if path.as_str() != "/" => {
-            let mut parts = http::uri::Parts::default();
-            parts.path_and_query = Some(path.clone());
-            Uri::from_parts(parts).expect("path is valid uri")
-        },
-        _ => Uri::default(),
-    };
-    *uri = path;
-}
+
