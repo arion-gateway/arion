@@ -406,21 +406,25 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, UpstreamCallOpts<'a>> for &Ht
             with_metric!(clusters::UPSTREAM_RQ_TOTAL, add, 1, shard_id, &[KeyValue::new("cluster", self.cluster_name)]);
         }
 
-        with_metric!(
-            clusters::UPSTREAM_RQ_RETRY,
-            add,
-            u64::from(retries.requests),
-            shard_id,
-            &[KeyValue::new("cluster", self.cluster_name)]
-        );
+        if retries.requests > 0 {
+            with_metric!(
+                clusters::UPSTREAM_RQ_RETRY,
+                add,
+                u64::from(retries.requests),
+                shard_id,
+                &[KeyValue::new("cluster", self.cluster_name)]
+            );
+        }
 
-        with_metric!(
-            clusters::UPSTREAM_RQ_PER_TRY_TIMEOUT,
-            add,
-            u64::from(retries.timeouts),
-            shard_id,
-            &[KeyValue::new("cluster", self.cluster_name)]
-        );
+        if retries.timeouts > 0 {
+            with_metric!(
+                clusters::UPSTREAM_RQ_PER_TRY_TIMEOUT,
+                add,
+                u64::from(retries.timeouts),
+                shard_id,
+                &[KeyValue::new("cluster", self.cluster_name)]
+            );
+        }
 
         if let Err(ref err) = result {
             if let Some(UpstreamError::RouteTimeout) = UpstreamError::try_infer_from(err.as_ref()) {

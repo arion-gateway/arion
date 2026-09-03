@@ -111,12 +111,13 @@ impl Http1Permit {
     }
 
     pub fn on_body_end(self, completed: bool) {
+        if !completed {
+            return;
+        }
         if self.tx.is_closed() {
             return;
         }
-        if completed || self.tx.is_ready() {
-            self.inner.release(self.tx);
-        }
+        self.inner.release(self.tx);
     }
 }
 

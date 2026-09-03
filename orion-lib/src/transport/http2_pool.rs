@@ -51,7 +51,7 @@ struct H2Conn {
 }
 
 pub struct Http2PoolInner {
-    conns: Mutex<Vec<Arc<H2Conn>>>,
+    conns: Mutex<Vec<H2Conn>>,
     idle_timeout: Duration,
     max_concurrent_streams: Option<u32>,
     clock: quanta::Clock,
@@ -96,9 +96,11 @@ impl Http2PoolInner {
     }
 
     fn checkout(&self) -> Option<(SendRequest<OrionRequestBody>, Arc<AtomicU32>)> {
-        let mut conns = self.conns.lock();
-        conns.retain(|conn| !conn.tx.is_closed());
+        let conns = self.conns.lock();
         for conn in conns.iter() {
+            if conn.tx.is_closed() {
+                continue;
+            }
             let in_flight = conn.in_flight.load(Ordering::Relaxed);
             let has_capacity = self.max_concurrent_streams.map(|max| in_flight < max).unwrap_or(true);
             if has_capacity {
@@ -111,7 +113,7 @@ impl Http2PoolInner {
     }
 
     fn insert(&self, tx: SendRequest<OrionRequestBody>, in_flight: Arc<AtomicU32>) {
-        self.conns.lock().push(Arc::new(H2Conn { tx, in_flight, last_used: AtomicU64::new(self.clock.raw()) }));
+        self.conns.lock().push(H2Conn { tx, in_flight, last_used: AtomicU64::new(self.clock.raw()) });
     }
 
     fn len(&self) -> usize {
