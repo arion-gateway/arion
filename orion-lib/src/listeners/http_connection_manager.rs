@@ -134,7 +134,7 @@ use route::RouteContext;
 use smol_str::SmolStr;
 use std::collections::HashMap;
 use std::{fmt, future::Future, result::Result as StdResult, sync::Arc};
-use tokio::sync::watch;
+
 use tracing::{debug, error};
 use upgrades as upgrade_utils;
 
@@ -214,12 +214,12 @@ impl HttpConnectionManagerBuilder {
         let listener_name = self.listener_name.ok_or("listener name is not set")?;
         let filterchain_id = self.filterchain_id.unwrap_or(0);
         let partial = self.connection_manager;
-        let router_sender = watch::Sender::new(partial.router.map(Arc::new));
+        let initial_route = partial.router.map(Arc::new);
 
         Ok(HttpConnectionManager {
             listener_name,
             filterchain_id,
-            router_sender,
+            route_configuration: ArcSwap::new(Arc::new(initial_route)),
             codec_type: partial.codec_type,
             dynamic_route_name: partial.dynamic_route_name,
             http_filters_hcm: partial.http_filters_hcm,
@@ -349,7 +349,7 @@ impl AlpnCodecs {
 pub struct HttpConnectionManager {
     pub listener_name: &'static str,
     pub filterchain_id: u64,
-    router_sender: watch::Sender<Option<Arc<RouteConfiguration>>>,
+    route_configuration: ArcSwap<Option<Arc<RouteConfiguration>>>,
     pub codec_type: CodecType,
     dynamic_route_name: Option<SmolStr>,
     http_filters_hcm: Vec<Arc<HttpFilter>>,
@@ -382,11 +382,12 @@ impl HttpConnectionManager {
 
     pub fn update_route(&self, route: RouteConfiguration) {
         self.http_filters_per_route.swap(Arc::new(per_route_http_filters(&route, &self.http_filters_hcm)));
-        let _ = self.router_sender.send_replace(Some(Arc::new(route)));
+        let new_route = Arc::new(route);
+        self.route_configuration.store(Arc::new(Some(Arc::clone(&new_route))));
     }
 
     pub fn remove_route(&self) {
-        let _ = self.router_sender.send_replace(None);
+        self.route_configuration.store(Arc::new(None));
     }
 
     #[allow(clippy::type_complexity)]
@@ -397,7 +398,7 @@ impl HttpConnectionManager {
     ) -> TransactionLifecycleSvc<TransactionSvc<HttpPipelineSvc>> {
         let pipeline_service = HttpPipelineSvc::new(Arc::clone(self));
         let transaction_service =
-            TransactionSvc::new(Arc::clone(self), self.router_sender.subscribe(), pipeline_service);
+            TransactionSvc::new(Arc::clone(self), pipeline_service);
         TransactionLifecycleSvc::new(Arc::clone(self), downstream, stream_metrics, transaction_service)
     }
 }
@@ -1428,17 +1429,15 @@ impl Service<Request<Incoming>> for TransactionLifecycleSvc<TransactionSvc<HttpP
 #[derive(Clone)]
 pub struct TransactionSvc<S> {
     manager: Arc<HttpConnectionManager>,
-    router: tokio::sync::watch::Receiver<Option<Arc<RouteConfiguration>>>,
     inner: S,
 }
 
 impl<S> TransactionSvc<S> {
     pub fn new(
         manager: Arc<HttpConnectionManager>,
-        router: tokio::sync::watch::Receiver<Option<Arc<RouteConfiguration>>>,
         inner: S,
     ) -> Self {
-        Self { manager, router, inner }
+        Self { manager, inner }
     }
 }
 
@@ -1447,7 +1446,7 @@ impl TransactionSvc<HttpPipelineSvc> {
     async fn call(&self, req: HttpRequest<Incoming>) -> StdResult<Response<OrionRequestBody>, crate::Error> {
         let HttpRequest { request, ctx } = req;
         let listener_name = self.manager.listener_name;
-        let route_conf = self.router.borrow().clone();
+        let route_conf = (**self.manager.route_configuration.load()).clone();
 
         with_metric!(http::DOWNSTREAM_RQ_TOTAL, add, 1, ctx.tx.shard_id(), &[KeyValue::new("listener", listener_name)]);
         with_metric!(
