@@ -38,7 +38,7 @@ pub enum PolyBody {
     Incoming(#[pin] Incoming),
     Grpc(#[pin] GrpcBody),
     Stream(#[pin] StreamBody<ReceiverStream<Result<Frame<Bytes>, Error>>>),
-    ChannelBody(#[pin] ChannelBody),
+    ChannelBody(#[pin] Box<ChannelBody>),
     Collected(#[pin] Box<Collected<Bytes>>),
     FullWithTrailers(#[pin] Box<WithTrailers<Full<Bytes>, Ready<TrailersType>>>),
     EmptyWithTrailers(#[pin] Box<WithTrailers<Empty<Bytes>, Ready<TrailersType>>>),
@@ -232,7 +232,7 @@ impl From<StreamBody<ReceiverStream<Result<Frame<Bytes>, Error>>>> for PolyBody 
 impl From<ChannelBody> for PolyBody {
     #[inline]
     fn from(body: ChannelBody) -> Self {
-        PolyBody::ChannelBody(body)
+        PolyBody::ChannelBody(Box::new(body))
     }
 }
 
@@ -321,7 +321,7 @@ impl TryFrom<PolyBody> for ChannelBody {
     type Error = PolyBodyError;
     fn try_from(value: PolyBody) -> Result<Self, Self::Error> {
         match value {
-            PolyBody::ChannelBody(s) => Ok(s),
+            PolyBody::ChannelBody(s) => Ok(*s),
             _ => Err(PolyBodyError::BadVariant),
         }
     }
