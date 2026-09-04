@@ -88,7 +88,7 @@ use {
 use {parking_lot::Mutex, std::time::Instant};
 
 use ::http::HeaderValue;
-use arc_swap::ArcSwap;
+use arc_swap::ArcSwapOption;
 use core::time::Duration;
 use futures::future::BoxFuture;
 use hyper::{body::Incoming, header::HOST, service::Service, Request, Response, StatusCode};
@@ -224,7 +224,7 @@ impl HttpConnectionManagerBuilder {
         Ok(HttpConnectionManager {
             listener_name,
             filterchain_id,
-            routing_state: ArcSwap::new(Arc::new(initial_routing_state)),
+            routing_state: ArcSwapOption::new(initial_routing_state),
             codec_type: partial.codec_type,
             dynamic_route_name: partial.dynamic_route_name,
             http_filters_hcm: partial.http_filters_hcm,
@@ -365,7 +365,7 @@ pub struct RoutingState {
 pub struct HttpConnectionManager {
     pub listener_name: &'static str,
     pub filterchain_id: u64,
-    routing_state: ArcSwap<Option<Arc<RoutingState>>>,
+    routing_state: ArcSwapOption<RoutingState>,
     pub codec_type: CodecType,
     dynamic_route_name: Option<SmolStr>,
     http_filters_hcm: Vec<Arc<HttpFilter>>,
@@ -401,11 +401,11 @@ impl HttpConnectionManager {
             route_configuration: route,
             http_filters_per_route,
         });
-        self.routing_state.store(Arc::new(Some(new_state)));
+        self.routing_state.store(Some(new_state));
     }
 
     pub fn remove_route(&self) {
-        self.routing_state.store(Arc::new(None));
+        self.routing_state.store(None);
     }
 
     #[allow(clippy::type_complexity)]
@@ -1469,7 +1469,7 @@ impl TransactionSvc<HttpPipelineSvc> {
     async fn call(&self, req: HttpRequest<Incoming>) -> StdResult<Response<OrionClientBody>, crate::Error> {
         let HttpRequest { request, ctx } = req;
         let listener_name = self.manager.listener_name;
-        let routing_state = (**self.manager.routing_state.load()).clone();
+        let routing_state = (*self.manager.routing_state.load()).clone();
 
         with_metric!(http::DOWNSTREAM_RQ_TOTAL, add, 1, ctx.tx.shard_id(), &[KeyValue::new("listener", listener_name)]);
         with_metric!(
