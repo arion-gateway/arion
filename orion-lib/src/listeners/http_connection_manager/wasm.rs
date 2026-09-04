@@ -607,6 +607,7 @@ impl WasmFilter {
 
             Ok(FilterAction::PauseAndBufferBody) => {
                 // PauseAndBufferBody for response
+                use crate::body::timeout_body::TimeoutBody;
 
                 // 1. Buffer response body once.
                 let Ok(collected) = response.body_mut().collect().await else {
@@ -650,20 +651,20 @@ impl WasmFilter {
                                 maybe_update_content_length(response.headers_mut(), original_len, final_body.len());
                                 let poly = poly_body_from_buffered(final_body, final_trailers);
                                 let old_body = std::mem::take(response.body_mut());
-                                *response.body_mut() = old_body.map_inner(|_old| poly);
+                                *response.body_mut() = old_body.map_inner(|tb| TimeoutBody::new(tb.timeout, poly));
                             }
 
                             action
                         } else {
                             let poly = poly_body_from_buffered(full_body_bytes, trailers);
                             let old_body = std::mem::take(response.body_mut());
-                            *response.body_mut() = old_body.map_inner(|_old| poly);
+                            *response.body_mut() = old_body.map_inner(|tb| TimeoutBody::new(tb.timeout, poly));
                             Ok(FilterAction::Continue)
                         }
                     } else {
                         let poly = poly_body_from_buffered(full_body_bytes, trailers);
                         let old_body = std::mem::take(response.body_mut());
-                        *response.body_mut() = old_body.map_inner(|_old| poly);
+                        *response.body_mut() = old_body.map_inner(|tb| TimeoutBody::new(tb.timeout, poly));
                         Ok(FilterAction::Continue)
                     };
 

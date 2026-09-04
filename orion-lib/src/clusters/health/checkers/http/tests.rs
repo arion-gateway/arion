@@ -92,7 +92,7 @@ impl HttpTestFixture {
         let response = hyper::Response::builder()
             .version(self.inner.protocol_config.http_version.into())
             .status(code)
-            .body(TimeoutBody::new(None, PolyBody::default()))
+            .body(TimeoutBody::new(None, PolyBody::default()).into())
             .unwrap();
         self.inner.enqueue_response(response);
     }

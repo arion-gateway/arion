@@ -16,8 +16,9 @@ use super::connector::UnifiedConnector;
 use super::timer::PingoraTimer;
 use crate::{
     body::{
+        on_end_body::{BodyEndPermit, OnEndBody},
         poly_body::PolyBody,
-        timeout_body::{BodyEndPermit, TimeoutBody},
+        timeout_body::TimeoutBody,
     },
     thread_local::{LocalBuilder, ThreadLocalObject},
     Error, OrionRequestBody, OrionResponseBody, Result,
@@ -276,11 +277,12 @@ fn attach_stream_permit(in_flight: Arc<AtomicU32>, response: Response<Incoming>)
     let (parts, body) = response.into_parts();
     if http_body::Body::is_end_stream(&body) {
         in_flight.fetch_sub(1, Ordering::Relaxed);
-        return Response::from_parts(parts, TimeoutBody::new(None, PolyBody::from(body)));
+        return Response::from_parts(parts, TimeoutBody::new(None, PolyBody::from(body)).into());
     }
     Response::from_parts(
         parts,
-        TimeoutBody::new(None, PolyBody::from(body)).with_on_end(BodyEndPermit::Http2(Http2StreamPermit { in_flight })),
+        OnEndBody::new(TimeoutBody::new(None, PolyBody::from(body)))
+            .with_on_end(BodyEndPermit::Http2(Http2StreamPermit { in_flight })),
     )
 }
 

@@ -221,7 +221,7 @@ impl Cors {
         headers.append(VARY, HeaderValue::from_static("Access-Control-Request-Headers"));
 
         // Construct empty body for Orion
-        let Ok(response) = builder.version(ver).body(TimeoutBody::new(None, PolyBody::from(Empty::new()))) else {
+        let Ok(response) = builder.version(ver).body(TimeoutBody::new(None, PolyBody::from(Empty::new())).into()) else {
             return FilterDecision::internal_server_error("failed to build CORS response", ver);
         };
 

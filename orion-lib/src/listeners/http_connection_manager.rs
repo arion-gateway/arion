@@ -116,7 +116,8 @@ use crate::{
         metadata::{ConnMeta, DownstreamMetadata},
         synthetic_http_response::SyntheticHttpResponse,
     },
-    with_client_span, with_metric, with_server_span, ConversionContext, OrionRequestBody, OrionResponseBody, PolyBody,
+    with_client_span, with_metric, with_server_span, ConversionContext, OrionClientBody, OrionRequestBody,
+    OrionResponseBody, PolyBody,
     Result, RouteConfiguration,
 };
 
@@ -189,7 +190,7 @@ impl Write for LengthCounter {
 // | 3. HttpPipelineSvc  (async fn, unboxed)                                                       |
 // |   Input:  RoutedHttpRequest<OrionRequestBody>                                                 |
 // |   Action: Filter chain + routing via RequestHandler (ctx passed explicitly).                  |
-// |   Output: Response<OrionRequestBody>                                                          |
+// |   Output: Response<OrionClientBody>                                                           |
 // +-----------------------------------------------------------------------------------------------+
 //
 // =================================================================================================
@@ -601,7 +602,7 @@ impl TransactionContext {
     #[allow(clippy::too_many_lines)]
     #[allow(clippy::let_unit_value)]
     #[allow(clippy::unused_self)]
-    fn trace_status_code(self: Arc<Self>, res: &Result<Response<OrionRequestBody>>, listener_name: &'static str) {
+    fn trace_status_code(self: Arc<Self>, res: &Result<Response<OrionClientBody>>, listener_name: &'static str) {
         if let Ok(response) = &res {
             let status_code = response.status().as_u16();
 
@@ -840,7 +841,7 @@ impl HttpPipelineSvc {
     async fn call(
         &self,
         req: RoutedHttpRequest<OrionRequestBody>,
-    ) -> StdResult<Response<OrionRequestBody>, crate::Error> {
+    ) -> StdResult<Response<OrionClientBody>, crate::Error> {
         let RoutedHttpRequest { http: HttpRequest { mut request, ctx }, routing_state } = req;
         let manager = self.manager.as_ref();
 
@@ -1336,7 +1337,7 @@ impl<S> TransactionLifecycleSvc<S> {
 }
 
 impl Service<Request<Incoming>> for TransactionLifecycleSvc<TransactionSvc<HttpPipelineSvc>> {
-    type Response = Response<OrionRequestBody>;
+    type Response = Response<OrionClientBody>;
     type Error = Box<dyn std::error::Error + Send + Sync>;
     type Future = BoxFuture<'static, StdResult<Self::Response, Self::Error>>;
 
@@ -1465,7 +1466,7 @@ impl<S> TransactionSvc<S> {
 
 impl TransactionSvc<HttpPipelineSvc> {
     #[allow(clippy::too_many_lines)]
-    async fn call(&self, req: HttpRequest<Incoming>) -> StdResult<Response<OrionRequestBody>, crate::Error> {
+    async fn call(&self, req: HttpRequest<Incoming>) -> StdResult<Response<OrionClientBody>, crate::Error> {
         let HttpRequest { request, ctx } = req;
         let listener_name = self.manager.listener_name;
         let routing_state = (**self.manager.routing_state.load()).clone();
@@ -1874,7 +1875,7 @@ fn instrument_early_failure_response(
     listener_name: &'static str,
     user_partition_key: Option<&'static str>,
     filterchain_id: u64,
-) -> Response<OrionRequestBody> {
+) -> Response<OrionClientBody> {
     #[cfg(feature = "access-log")]
     let first_byte_instant = Instant::now();
 
@@ -1977,7 +1978,7 @@ fn reject_request_if_invalid(
     listener_name: &'static str,
     user_partition_key: Option<&'static str>,
     filterchain_id: u64,
-) -> Option<Response<crate::OrionRequestBody>> {
+) -> Option<Response<crate::OrionClientBody>> {
     // check if request has no host header, or if it has multiple ones (invalid for http1.1)
     //
     let response = if matches!(request.version(), ::http::Version::HTTP_11) {
@@ -2048,7 +2049,7 @@ fn handle_route_conf_not_found(
     listener_name: &'static str,
     user_partition_key: Option<&'static str>,
     filterchain_id: u64,
-) -> Response<crate::OrionRequestBody> {
+) -> Response<crate::OrionClientBody> {
     // immediately return a SyntheticHttpResponse, and calculate the first byte instant
     let response = SyntheticHttpResponse::not_found(
         EventFailure::RouteNotFound.into(),

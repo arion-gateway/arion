@@ -43,7 +43,7 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, &'a str> for &DirectResponseA
         );
 
         let body = Full::new(self.body.as_ref().map(|b| bytes::Bytes::copy_from_slice(b.data())).unwrap_or_default());
-        let mut resp = Response::new(TimeoutBody::new(None, body.into()));
+        let mut resp = Response::new(TimeoutBody::new(None, body.into()).into());
         *resp.status_mut() = self.status;
         *resp.version_mut() = request.version();
         Ok(resp)

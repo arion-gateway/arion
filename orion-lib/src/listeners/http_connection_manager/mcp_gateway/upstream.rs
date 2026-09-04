@@ -469,7 +469,7 @@ mod tests {
         let body = StreamBody::new(ReceiverStream::new(receiver));
         let response = Response::builder()
             .status(StatusCode::OK)
-            .body(TimeoutBody::new(Some(std::time::Duration::from_millis(1)), PolyBody::from(body)))
+            .body(TimeoutBody::new(Some(std::time::Duration::from_millis(1)), PolyBody::from(body)).into())
             .unwrap();
 
         let failure = collect_response_body(response, 1024).await.unwrap_err();

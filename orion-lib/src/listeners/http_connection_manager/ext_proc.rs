@@ -1849,7 +1849,7 @@ impl<S: kind::Mode + Default> ExternalProcessingWorker<S> {
             .unwrap_or(http::StatusCode::OK);
         let body_bytes = Bytes::from(std::mem::take(&mut response_attempt.body));
         let body = Full::new(body_bytes);
-        let mut response = Response::new(TimeoutBody::new(None, PolyBody::from(body)));
+        let mut response = Response::new(TimeoutBody::new(None, PolyBody::from(body)).into());
         *response.status_mut() = status;
         if let Some(header_mutation) = response_attempt.headers.take() {
             let _ = apply_response_header_mutations(

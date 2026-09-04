@@ -440,7 +440,7 @@ async fn build_response_from_mock(mock_response: &MockMessage<ResponseMsg>) -> R
     )
     .await;
 
-    resp.body(TimeoutBody::new(None, body)).unwrap()
+    resp.body(TimeoutBody::new(None, body).into()).unwrap()
 }
 
 fn create_default_config_for_ext_proc_filter(

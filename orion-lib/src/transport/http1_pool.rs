@@ -15,8 +15,9 @@
 use super::connector::UnifiedConnector;
 use crate::{
     body::{
+        on_end_body::{BodyEndPermit, OnEndBody},
         poly_body::PolyBody,
-        timeout_body::{BodyEndPermit, TimeoutBody},
+        timeout_body::TimeoutBody,
     },
     thread_local::{LocalBuilder, ThreadLocalObject},
     Error, OrionRequestBody, OrionResponseBody, Result,
@@ -247,6 +248,9 @@ impl Http1Pool {
                 if tx.is_closed() {
                     continue;
                 }
+                if tx.is_ready() {
+                    return Ok(tx);
+                }
                 match tx.ready().await {
                     Ok(()) => return Ok(tx),
                     Err(_) => continue,
@@ -284,18 +288,18 @@ fn attach_permit(
 ) -> Response<OrionResponseBody> {
     let (parts, body) = response.into_parts();
     if parts.status == StatusCode::SWITCHING_PROTOCOLS {
-        return Response::from_parts(parts, TimeoutBody::new(None, PolyBody::from(body)));
+        return Response::from_parts(parts, TimeoutBody::new(None, PolyBody::from(body)).into());
     }
     // Empty bodies are often never polled (`is_end_stream` already true). Recycle now.
     if http_body::Body::is_end_stream(&body) {
         if !tx.is_closed() {
             inner.release(tx);
         }
-        return Response::from_parts(parts, TimeoutBody::new(None, PolyBody::from(body)));
+        return Response::from_parts(parts, TimeoutBody::new(None, PolyBody::from(body)).into());
     }
     Response::from_parts(
         parts,
-        TimeoutBody::new(None, PolyBody::from(body))
+        OnEndBody::new(TimeoutBody::new(None, PolyBody::from(body)))
             .with_on_end(BodyEndPermit::Http1(Http1Permit::new(Arc::clone(inner), tx))),
     )
 }

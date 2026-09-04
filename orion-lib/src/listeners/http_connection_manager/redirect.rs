@@ -123,6 +123,6 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (&'a RouteMatchResult, &'a st
         let redirect_target =
             HeaderValue::from_str(&new_uri.to_string()).with_context_msg("couldn't convert uri to header value")?;
         rsp.headers_mut().and_then(|hm| hm.insert(LOCATION, redirect_target));
-        rsp.body(TimeoutBody::new(None, PolyBody::default())).map_err(Error::from)
+        rsp.body(TimeoutBody::new(None, PolyBody::default()).into()).map_err(Error::from)
     }
 }

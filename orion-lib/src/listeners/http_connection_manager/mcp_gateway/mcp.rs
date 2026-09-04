@@ -326,7 +326,7 @@ impl McpGateway {
             .version(self.version)
             .status(StatusCode::ACCEPTED);
 
-        let Ok(response) = builder.body(TimeoutBody::new(None, PolyBody::from(Empty::new()))) else {
+        let Ok(response) = builder.body(TimeoutBody::new(None, PolyBody::from(Empty::new())).into()) else {
             unreachable!("handle_mcp_delete_endpoint: Failed to build response body");
         };
 
@@ -840,7 +840,7 @@ impl McpGateway {
             builder = builder.header(name, *value);
         }
 
-        let Ok(resp) = builder.body(body) else {
+        let Ok(resp) = builder.body(body.into()) else {
             debug!(target: "mcp_gateway", "build_mcp_response: failed to build response body for session {}",
                 self.current_session.as_deref().map(|s| s.session_id.clone()).unwrap_or_default());
             return Err(FilterDecision::internal_server_error(

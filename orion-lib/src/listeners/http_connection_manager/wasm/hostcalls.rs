@@ -335,7 +335,7 @@ fn orion_send_direct_response(mut caller: Caller<'_, WasmState>, resp_ptr: u32, 
     };
 
     let (parts, body) = direct_resp.response.into_parts();
-    let response = Response::from_parts(parts, TimeoutBody::new(None, PolyBody::from(Full::from(body))));
+    let response = Response::from_parts(parts, TimeoutBody::new(None, PolyBody::from(Full::from(body))).into());
 
     caller.data_mut().direct_response = Some(response);
 
