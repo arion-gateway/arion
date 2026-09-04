@@ -112,13 +112,14 @@ impl Http1Permit {
     }
 
     pub fn on_body_end(self, completed: bool) {
-        if !completed {
-            return;
-        }
         if self.tx.is_closed() {
             return;
         }
-        self.inner.release(self.tx);
+        // Drop without a final `poll` (`None`) is common once `is_end_stream` is true.
+        // Recycle if the sender can still take another request.
+        if completed || self.tx.is_ready() {
+            self.inner.release(self.tx);
+        }
     }
 }
 

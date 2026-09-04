@@ -157,16 +157,23 @@ where
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
-        let this = self.project();
+        let mut this = self.project();
         if this.on_end.inner.is_none() {
             return this.body.poll_frame(cx);
         }
-        match this.body.poll_frame(cx) {
+        match this.body.as_mut().poll_frame(cx) {
             Poll::Ready(None) => {
                 this.on_end.notify_complete();
                 Poll::Ready(None)
             },
-            Poll::Ready(Some(Ok(frame))) => Poll::Ready(Some(Ok(frame))),
+            Poll::Ready(Some(Ok(frame))) => {
+                // Consumers often stop after the last data frame when `is_end_stream` is true
+                // and never poll `None`. Recycle now or Drop would treat the body as aborted.
+                if this.body.as_ref().is_end_stream() {
+                    this.on_end.notify_complete();
+                }
+                Poll::Ready(Some(Ok(frame)))
+            },
             Poll::Ready(Some(Err(err))) => {
                 this.on_end.notify_abort();
                 Poll::Ready(Some(Err(err)))
