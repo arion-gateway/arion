@@ -232,9 +232,9 @@ impl<E: EndpointWithAuthority> Default for MaglevBalancer<E> {
 }
 
 impl<T> Balancer<T> for MaglevBalancer<T> {
-    fn next_item(&mut self, hash: Option<u64>) -> Option<Arc<T>> {
+    fn next_item(&mut self, hash: Option<u64>) -> Option<&T> {
         if self.items.len() <= 1 {
-            return self.items.first().map(|lb_item| &lb_item.item).cloned();
+            return self.items.first().map(|lb_item| lb_item.item.as_ref());
         }
 
         // If no hash is provided, a random one is generated
@@ -243,7 +243,7 @@ impl<T> Balancer<T> for MaglevBalancer<T> {
         let table_index = usize::try_from(hash).unwrap_or(usize::MAX) % self.table.len();
 
         let index = self.table.get(table_index);
-        index.and_then(|index| self.items.get(*index)).map(|lb_item| &lb_item.item).cloned()
+        index.and_then(|index| self.items.get(*index)).map(|lb_item| lb_item.item.as_ref())
     }
 }
 

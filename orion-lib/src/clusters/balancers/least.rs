@@ -87,9 +87,9 @@ impl<E: EndpointWithLoad> WeightedLeastRequestBalancer<E> {
         WeightedLeastRequestBalancer { items, active_request_bias, p2c_choice_count, all_weights_equal, rng }
     }
 
-    fn next_item_wrr(&mut self) -> Option<Arc<E>> {
+    fn next_item_wrr(&mut self) -> Option<&E> {
         if self.items.len() <= 1 {
-            self.items.first().map(|item| &item.item).cloned()
+            self.items.first().map(|item| item.item.as_ref())
         } else {
             // Increase the current weight of all the endpoints and calculate the total
             let total: f64 = self
@@ -103,22 +103,24 @@ impl<E: EndpointWithLoad> WeightedLeastRequestBalancer<E> {
                 .sum();
             // Find the item with the highest weight
             // Note: not using `max_by` here because it returns the last element for equal weights
-            let best_item =
-                self.items
-                    .iter_mut()
-                    .reduce(|best, item| if item.current_weight > best.current_weight { item } else { best });
-            // Adjust its weight and return it
-            best_item.map(|item| {
-                item.adjust_current_weight(-total);
-                Arc::clone(&item.item)
-            })
+            let mut best_index = 0;
+            let mut best_weight = f64::NEG_INFINITY;
+            for (idx, item) in self.items.iter().enumerate() {
+                if item.current_weight > best_weight {
+                    best_weight = item.current_weight;
+                    best_index = idx;
+                }
+            }
+            let item = self.items.get_mut(best_index)?;
+            item.adjust_current_weight(-total);
+            Some(item.item.as_ref())
         }
     }
 
     /// Choose one item using the Power Of Two Choice (P2C) algorithm
-    fn next_item_p2c(&mut self) -> Option<Arc<E>> {
+    fn next_item_p2c(&mut self) -> Option<&E> {
         if self.items.len() <= 1 {
-            self.items.first().map(|item| &item.item).cloned()
+            self.items.first().map(|item| item.item.as_ref())
         } else {
             // In Rust there is no safe conversion from u32 to usize
             let choice_count = usize::try_from(self.p2c_choice_count).unwrap_or(usize::from(DEFAULT_P2C_CHOICE_COUNT));
@@ -143,7 +145,7 @@ impl<E: EndpointWithLoad> WeightedLeastRequestBalancer<E> {
                     }
                 })
                 .0;
-            Some(Arc::clone(&best_item.item))
+            Some(best_item.item.as_ref())
         }
     }
 }
@@ -161,7 +163,7 @@ impl<E: WeightedEndpoint + EndpointWithLoad> FromIterator<Arc<E>> for WeightedLe
 }
 
 impl<E: EndpointWithLoad> Balancer<E> for WeightedLeastRequestBalancer<E> {
-    fn next_item(&mut self, _hash: Option<u64>) -> Option<Arc<E>> {
+    fn next_item(&mut self, _hash: Option<u64>) -> Option<&E> {
         if self.all_weights_equal {
             // If all weights are equal, Least Load balancer falls back to P2C
             self.next_item_p2c()
@@ -255,8 +257,8 @@ mod test {
 
         for busy_item in &items {
             let _load = busy_item.load_reference();
-            let selected: Vec<_> = (0..10).filter_map(|_| balancer.next_item(None)).collect();
-            assert!(selected.iter().all(|item| item.as_ref() != busy_item), "Found {busy_item:?} in {selected:?}");
+            let selected: Vec<_> = (0..10).filter_map(|_| balancer.next_item(None).map(TestEndpoint::value)).collect();
+            assert!(selected.iter().all(|&value| value != busy_item.value()), "Found {busy_item:?} in {selected:?}");
         }
     }
 

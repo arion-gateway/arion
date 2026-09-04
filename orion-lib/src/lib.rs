@@ -47,7 +47,9 @@ use orion_configuration::config::Runtime;
 use serde::Serialize;
 use tokio::sync::mpsc;
 
-use crate::body::{instrumented_body::InstrumentedBody, on_end_body::OnEndBody, response_flags::BodyKind, timeout_body::TimeoutBody};
+use crate::body::{
+    instrumented_body::InstrumentedBody, on_end_body::OnEndBody, response_flags::BodyKind, timeout_body::TimeoutBody,
+};
 pub use crate::configuration::{build_listener_factories, get_listeners_and_clusters, get_secrets_and_clusters};
 
 pub use clusters::{

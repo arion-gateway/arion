@@ -102,38 +102,36 @@ impl<E: WeightedEndpoint> Default for WeightedRoundRobinBalancer<E> {
 }
 
 impl<T> Balancer<T> for WeightedRoundRobinBalancer<T> {
-    fn next_item(&mut self, _hash: Option<u64>) -> Option<Arc<T>> {
+    fn next_item(&mut self, _hash: Option<u64>) -> Option<&T> {
         if self.equal_weight {
             // Simple round robin if all weights are equal
             if self.items.len() <= 1 {
-                return self.items.first().map(|item| &item.item).cloned();
+                return self.items.first().map(|item| item.item.as_ref());
             }
-            let item = self.items.get(self.current_index).map(|item| Arc::clone(&item.item));
+            let index = self.current_index;
             self.current_index = (self.current_index + 1) % self.items.len();
-            return item;
+            return self.items.get(index).map(|item| item.item.as_ref());
         }
 
         if self.items.len() <= 1 {
-            self.items.first().map(|item| &item.item).cloned()
-        } else {
-            // Find the item with the highest weight
-            // Note: not using `max_by` her// Increase the current weight of all the endpoints
-            self.items.iter_mut().next().map(LbItem::increase_current_weight);
-
-            let best_item = self.items.iter_mut().reduce(|best, item| {
-                item.increase_current_weight();
-                if item.current_weight > best.current_weight {
-                    item
-                } else {
-                    best
-                }
-            });
-            // Adjust its weight and return it
-            best_item.map(|item| {
-                item.adjust_current_weight(-self.total_weight);
-                Arc::clone(&item.item)
-            })
+            return self.items.first().map(|item| item.item.as_ref());
         }
+
+        // Increase the current weight of all the endpoints and pick the first max.
+        // Note: not using `max_by` here because it returns the last element for equal weights.
+        //
+        let mut best_index = 0;
+        let mut best_weight = i32::MIN;
+        for (idx, item) in self.items.iter_mut().enumerate() {
+            item.increase_current_weight();
+            if item.current_weight > best_weight {
+                best_weight = item.current_weight;
+                best_index = idx;
+            }
+        }
+        let item = self.items.get_mut(best_index)?;
+        item.adjust_current_weight(-self.total_weight);
+        Some(item.item.as_ref())
     }
 }
 
@@ -179,10 +177,10 @@ mod test {
         let mut wrr = WeightedRoundRobinBalancer::new(lb_items);
         let mut selected_items = vec![];
         for _n in 0..7 {
-            selected_items.push(wrr.next_item(None));
+            selected_items.push(wrr.next_item(None).cloned());
         }
 
-        compare_rotated(selected_items, items.into_iter().map(Some));
+        compare_rotated(selected_items, items.into_iter().map(|item| Some((*item).clone())));
     }
 
     #[test]
@@ -206,12 +204,12 @@ mod test {
         let mut wrr = WeightedRoundRobinBalancer::new(lb_items);
         let mut selected_items = vec![];
         for _n in 0..10 {
-            selected_items.push(wrr.next_item(None));
+            selected_items.push(wrr.next_item(None).cloned());
         }
 
         println!("Selected: {selected_items:?}");
 
-        compare_rotated(selected_items, items.into_iter().map(Some));
+        compare_rotated(selected_items, items.into_iter().map(|item| Some((*item).clone())));
     }
 
     #[test]
@@ -229,13 +227,13 @@ mod test {
         let mut wrr = WeightedRoundRobinBalancer::new(items);
         let mut selected_items = vec![];
         for _n in 0..20 {
-            selected_items.push(wrr.next_item(None));
+            selected_items.push(wrr.next_item(None).copied());
         }
         let mut selected_items: Vec<_> = selected_items.into_iter().flatten().collect();
         selected_items.sort_unstable();
 
         for i in selected_items {
-            counts[*i] += 1;
+            counts[i] += 1;
         }
         assert_eq!(counts, vec![5, 5, 10]);
     }
@@ -257,11 +255,11 @@ mod test {
         let mut wrr = WeightedRoundRobinBalancer::new(items);
         let mut selected_items = vec![];
         for _n in 0..20 {
-            selected_items.push(wrr.next_item(None));
+            selected_items.push(wrr.next_item(None).copied());
         }
 
         for i in selected_items.into_iter().flatten() {
-            counts[*i] += 1;
+            counts[i] += 1;
         }
 
         assert_eq!(counts, vec![3, 6, 11]);

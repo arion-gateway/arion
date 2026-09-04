@@ -321,7 +321,7 @@ impl BalancerType {
             BalancerType::OverrideHost(balancer) => balancer.update_health(endpoint, health),
         }
     }
-    pub(crate) fn next_item(&mut self, hash: Option<u64>) -> Option<Arc<LbEndpoint>> {
+    pub(crate) fn next_item(&mut self, hash: Option<u64>) -> Option<&LbEndpoint> {
         match self {
             BalancerType::RoundRobin(balancer) => balancer.next_item(hash),
             BalancerType::Random(balancer) => balancer.next_item(hash),

@@ -128,9 +128,9 @@ impl<E: EndpointWithAuthority> Default for RingHashBalancer<E> {
 }
 
 impl<T> Balancer<T> for RingHashBalancer<T> {
-    fn next_item(&mut self, hash: Option<u64>) -> Option<Arc<T>> {
+    fn next_item(&mut self, hash: Option<u64>) -> Option<&T> {
         if self.items.len() <= 1 {
-            return self.items.first().map(|lb_item| &lb_item.item).cloned();
+            return self.items.first().map(|lb_item| lb_item.item.as_ref());
         }
 
         // If no hash is provided, a random one is generated
@@ -144,7 +144,7 @@ impl<T> Balancer<T> for RingHashBalancer<T> {
 
         let (_, index) = self.ring.get(ring_index)?;
 
-        self.items.get(*index).map(|lb_item| &lb_item.item).cloned()
+        self.items.get(*index).map(|lb_item| lb_item.item.as_ref())
     }
 }
 

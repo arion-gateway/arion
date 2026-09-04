@@ -113,7 +113,7 @@ impl OverrideHostLoadBalancer {
 }
 
 impl Balancer<LbEndpoint> for OverrideHostLoadBalancer {
-    fn next_item(&mut self, hash: Option<u64>) -> Option<Arc<LbEndpoint>> {
+    fn next_item(&mut self, hash: Option<u64>) -> Option<&LbEndpoint> {
         self.fallback.next_item(hash)
     }
 }

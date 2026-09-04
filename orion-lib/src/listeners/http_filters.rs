@@ -1,6 +1,6 @@
-use crate::listeners::http_connection_manager::RouteIndex;
 #[cfg(feature = "wasm")]
 use crate::listeners::http_connection_manager::wasm::WasmFilter;
+use crate::listeners::http_connection_manager::RouteIndex;
 use std::{collections::HashMap, sync::Arc};
 
 use crate::{

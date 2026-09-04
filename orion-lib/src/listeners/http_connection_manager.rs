@@ -117,8 +117,7 @@ use crate::{
         synthetic_http_response::SyntheticHttpResponse,
     },
     with_client_span, with_metric, with_server_span, ConversionContext, OrionClientBody, OrionRequestBody,
-    OrionResponseBody, PolyBody,
-    Result, RouteConfiguration,
+    OrionResponseBody, PolyBody, Result, RouteConfiguration,
 };
 
 #[cfg(any(feature = "access-log", feature = "metrics"))]
@@ -397,10 +396,7 @@ impl HttpConnectionManager {
 
     pub fn update_route(&self, route: RouteConfiguration) {
         let http_filters_per_route = per_route_http_filters(&route, &self.http_filters_hcm);
-        let new_state = Arc::new(RoutingState {
-            route_configuration: route,
-            http_filters_per_route,
-        });
+        let new_state = Arc::new(RoutingState { route_configuration: route, http_filters_per_route });
         self.routing_state.store(Some(new_state));
     }
 
@@ -415,8 +411,7 @@ impl HttpConnectionManager {
         stream_metrics: Arc<StreamMetrics>,
     ) -> TransactionLifecycleSvc<TransactionSvc<HttpPipelineSvc>> {
         let pipeline_service = HttpPipelineSvc::new(Arc::clone(self));
-        let transaction_service =
-            TransactionSvc::new(Arc::clone(self), pipeline_service);
+        let transaction_service = TransactionSvc::new(Arc::clone(self), pipeline_service);
         TransactionLifecycleSvc::new(Arc::clone(self), downstream, stream_metrics, transaction_service)
     }
 }
@@ -1000,7 +995,10 @@ impl HttpPipelineSvc {
     }
 }
 
-fn select_virtual_host<'a, T>(request: &Request<T>, virtual_hosts: &'a [VirtualHost]) -> Option<(usize, &'a VirtualHost)> {
+fn select_virtual_host<'a, T>(
+    request: &Request<T>,
+    virtual_hosts: &'a [VirtualHost],
+) -> Option<(usize, &'a VirtualHost)> {
     let mapped_vhs = virtual_hosts.iter().enumerate().filter_map(|(idx, vh)| {
         let maybe_score = vh.domains.iter().map(|domain| domain.eval_lpm_request(request)).max().flatten();
         maybe_score.map(|score| (idx, vh, score))
@@ -1056,10 +1054,9 @@ impl RequestHandler<Request<OrionRequestBody>, &HttpConnectionManager> for Arc<R
                 ));
             };
 
-            let route_filters = self.http_filters_per_route.get(&RouteIndex {
-                vh_idx: chosen_route.vh_index,
-                route_idx: chosen_route.route_index,
-            });
+            let route_filters = self
+                .http_filters_per_route
+                .get(&RouteIndex { vh_idx: chosen_route.vh_index, route_idx: chosen_route.route_index });
 
             let Some(route_filters) = route_filters else {
                 break 'filter_loop FilterDecision::Continue;
@@ -1456,10 +1453,7 @@ pub struct TransactionSvc<S> {
 }
 
 impl<S> TransactionSvc<S> {
-    pub fn new(
-        manager: Arc<HttpConnectionManager>,
-        inner: S,
-    ) -> Self {
+    pub fn new(manager: Arc<HttpConnectionManager>, inner: S) -> Self {
         Self { manager, inner }
     }
 }

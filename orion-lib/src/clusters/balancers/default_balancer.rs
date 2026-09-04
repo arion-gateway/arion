@@ -111,14 +111,13 @@ where
     B: Debug + Balancer<E> + FromIterator<Arc<E>>,
     E: Debug + WeightedEndpoint,
 {
-    fn next_item(&mut self, hash: Option<u64>) -> Option<Arc<E>> {
-        let priority = self.priority_level_lb.next_item(None)?;
+    fn next_item(&mut self, hash: Option<u64>) -> Option<&E> {
+        let priority = *self.priority_level_lb.next_item(None)?;
         debug!("Selecting priority {priority:?} based on {:?}", self.priority_level_lb);
         let priority_info = self.priorities.get_mut(&priority)?;
         let endpoint = priority_info.balancer.next_item(hash);
-        debug!("Selecting endpoint {endpoint:?} based on {priority_info:?}");
-        let endpoint = endpoint?;
-        Some(endpoint)
+        debug!("Selecting endpoint {endpoint:?}");
+        endpoint
     }
 }
 
@@ -227,10 +226,10 @@ mod test {
         for _ in 0..10 {
             let next = default_balancer.next_item(None);
             println!("{next:?}");
-            results.push(next);
+            results.push(next.map(|f| f.authority().to_string()));
         }
 
-        let results: Vec<_> = results.into_iter().filter_map(|r| r.map(|f| f.authority().to_string())).collect();
+        let results: Vec<_> = results.into_iter().flatten().collect();
         let expected = [
             "endpoint11:8000",
             "endpoint12:8000",
@@ -282,10 +281,10 @@ mod test {
         for _ in 0..10 {
             let next = default_balancer.next_item(None);
             println!("{next:?}");
-            results.push(next);
+            results.push(next.map(|f| f.authority().to_string()));
         }
 
-        let results: Vec<_> = results.into_iter().filter_map(|r| r.map(|f| f.authority().to_string())).collect();
+        let results: Vec<_> = results.into_iter().flatten().collect();
         let expected = [
             "endpoint11:8000",
             "endpoint12:8000",
@@ -337,10 +336,10 @@ mod test {
         for _ in 0..10 {
             let next = default_balancer.next_item(None);
             println!("{next:?}");
-            results.push(next);
+            results.push(next.map(|f| f.authority().to_string()));
         }
 
-        let results: Vec<_> = results.into_iter().filter_map(|r| r.map(|f| f.authority().to_string())).collect();
+        let results: Vec<_> = results.into_iter().flatten().collect();
         let expected = [
             "endpoint11:8000",
             "endpoint12:8000",
@@ -392,10 +391,10 @@ mod test {
         for _ in 0..10 {
             let next = default_balancer.next_item(None);
             println!("{next:?}");
-            results.push(next);
+            results.push(next.map(|f| f.authority().to_string()));
         }
 
-        let results: Vec<_> = results.into_iter().filter_map(|r| r.map(|f| f.authority().to_string())).collect();
+        let results: Vec<_> = results.into_iter().flatten().collect();
         let expected = [
             "endpoint21:8000",
             "endpoint22:8000",
@@ -447,10 +446,10 @@ mod test {
         for _ in 0..10 {
             let next = default_balancer.next_item(None);
             println!("{next:?}");
-            results.push(next);
+            results.push(next.map(|f| f.authority().to_string()));
         }
 
-        let results: Vec<_> = results.into_iter().filter_map(|r| r.map(|f| f.authority().to_string())).collect();
+        let results: Vec<_> = results.into_iter().flatten().collect();
         let expected = [
             "endpoint21:8000",
             "endpoint22:8000",
@@ -502,10 +501,10 @@ mod test {
         for _ in 0..10 {
             let next = default_balancer.next_item(None);
             println!("{next:?}");
-            results.push(next);
+            results.push(next.map(|f| f.authority().to_string()));
         }
 
-        let results: Vec<_> = results.into_iter().filter_map(|r| r.map(|f| f.authority().to_string())).collect();
+        let results: Vec<_> = results.into_iter().flatten().collect();
         let expected = [
             "endpoint21:8000",
             "endpoint22:8000",
@@ -557,10 +556,10 @@ mod test {
         for _ in 0..10 {
             let next = default_balancer.next_item(None);
             println!("{next:?}");
-            results.push(next);
+            results.push(next.map(|f| f.authority().to_string()));
         }
 
-        let results: Vec<_> = results.into_iter().filter_map(|r| r.map(|f| f.authority().to_string())).collect();
+        let results: Vec<_> = results.into_iter().flatten().collect();
         let expected = [
             "endpoint21:8000",
             "endpoint31:8000",

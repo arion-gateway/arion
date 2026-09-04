@@ -49,11 +49,7 @@ pub struct Http1PoolInner {
 
 impl Http1PoolInner {
     pub fn new(idle_timeout: Duration) -> Arc<Self> {
-        let this = Arc::new(Self {
-            idle: Mutex::new(Vec::new()),
-            idle_timeout,
-            clock: quanta::Clock::new(),
-        });
+        let this = Arc::new(Self { idle: Mutex::new(Vec::new()), idle_timeout, clock: quanta::Clock::new() });
         let weak = Arc::downgrade(&this);
         tokio::spawn(async move {
             loop {
