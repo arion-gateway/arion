@@ -17,6 +17,7 @@
 
 use std::{
     any::Any,
+    borrow::Borrow,
     cell::RefCell,
     cmp::Ordering as CmpOrdering,
     collections::{BTreeMap, HashMap},
@@ -38,6 +39,36 @@ pub trait Clearable {
 
 struct CacheKey(SmallVec<[KeyValue; 4]>);
 
+#[repr(transparent)]
+struct KvSlice([KeyValue]);
+
+impl KvSlice {
+    fn from_slice(slice: &[KeyValue]) -> &Self {
+        // SAFETY: `KvSlice` is `repr(transparent)` over `[KeyValue]`.
+        unsafe { &*(ptr::from_ref(slice) as *const KvSlice) }
+    }
+}
+
+impl PartialEq for KvSlice {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl Eq for KvSlice {}
+
+impl PartialOrd for KvSlice {
+    fn partial_cmp(&self, other: &Self) -> Option<CmpOrdering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for KvSlice {
+    fn cmp(&self, other: &Self) -> CmpOrdering {
+        cmp_labels(&self.0, &other.0)
+    }
+}
+
 impl PartialEq for CacheKey {
     fn eq(&self, other: &Self) -> bool {
         self.0.as_slice() == other.0.as_slice()
@@ -54,7 +85,13 @@ impl PartialOrd for CacheKey {
 
 impl Ord for CacheKey {
     fn cmp(&self, other: &Self) -> CmpOrdering {
-        cmp_labels(self.0.as_slice(), other.0.as_slice())
+        Borrow::<KvSlice>::borrow(self).cmp(other.borrow())
+    }
+}
+
+impl Borrow<KvSlice> for CacheKey {
+    fn borrow(&self) -> &KvSlice {
+        KvSlice::from_slice(self.0.as_slice())
     }
 }
 
@@ -105,7 +142,7 @@ fn cache_lookup(
     owner: usize,
     epoch: u64,
     shard_id: ThreadId,
-    cache_key: &CacheKey,
+    key: &[KeyValue],
 ) -> Option<*const AtomicU64> {
     let cached = tls.get_mut(&owner)?;
     if cached.epoch != epoch {
@@ -113,7 +150,7 @@ fn cache_lookup(
         cached.cells.clear();
         return None;
     }
-    let hit = cached.cells.get(cache_key)?;
+    let hit = cached.cells.get(KvSlice::from_slice(key))?;
     (hit.shard_id == shard_id).then_some(hit.cell)
 }
 
@@ -189,8 +226,7 @@ impl<S: Eq + Hash + Copy + 'static> ShardedU64<S> {
         LAST.with(|tls| {
             let mut tls = tls.borrow_mut();
             if let Some(tid) = as_thread_id(&shard_id) {
-                let cache_key = CacheKey(SmallVec::from(key));
-                if let Some(cell) = cache_lookup(&mut tls, owner, epoch, tid, &cache_key) {
+                if let Some(cell) = cache_lookup(&mut tls, owner, epoch, tid, key) {
                     // SAFETY: `epoch` matches, so this entry has not been cleared/removed.
                     // The `AtomicU64` address is stable in papaya until then.
                     unsafe { (*cell).fetch_add(value, Ordering::Relaxed) };
@@ -199,7 +235,7 @@ impl<S: Eq + Hash + Copy + 'static> ShardedU64<S> {
                 let cell = self.lookup_or_insert_ptr(shard_id, key);
                 // SAFETY: `cell` was obtained from the live map in `lookup_or_insert_ptr`.
                 unsafe { (*cell).fetch_add(value, Ordering::Relaxed) };
-                cache_store(&mut tls, owner, epoch, tid, cache_key, cell);
+                cache_store(&mut tls, owner, epoch, tid, CacheKey(SmallVec::from(key)), cell);
                 return;
             }
             let cell = self.lookup_or_insert_ptr(shard_id, key);
@@ -214,8 +250,7 @@ impl<S: Eq + Hash + Copy + 'static> ShardedU64<S> {
         LAST.with(|tls| {
             let mut tls = tls.borrow_mut();
             if let Some(tid) = as_thread_id(&shard_id) {
-                let cache_key = CacheKey(SmallVec::from(key));
-                if let Some(cell) = cache_lookup(&mut tls, owner, epoch, tid, &cache_key) {
+                if let Some(cell) = cache_lookup(&mut tls, owner, epoch, tid, key) {
                     // SAFETY: same as `add`: epoch still matches, cell has not been reclaimed.
                     unsafe { saturating_sub(&*cell, value) };
                     return;
@@ -225,7 +260,7 @@ impl<S: Eq + Hash + Copy + 'static> ShardedU64<S> {
                 };
                 // SAFETY: `cell` was obtained from the live map in `lookup_ptr`.
                 unsafe { saturating_sub(&*cell, value) };
-                cache_store(&mut tls, owner, epoch, tid, cache_key, cell);
+                cache_store(&mut tls, owner, epoch, tid, CacheKey(SmallVec::from(key)), cell);
                 return;
             }
             if let Some(cell) = self.lookup_ptr(shard_id, key) {
