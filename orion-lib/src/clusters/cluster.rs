@@ -61,7 +61,8 @@ impl TryFrom<(Box<ClusterConfig>, &SecretManager)> for PartialClusterType {
         let circuit_breaker = cluster.circuit_breakers.as_ref().map(|cb| Arc::new(ClusterCircuitBreaker::from(cb)));
 
         let health_check = cluster.health_check;
-        debug!("Cluster {} type {:?} ", cluster.name, cluster.discovery_settings);
+        let static_cluster_name = cluster.name.to_static_str();
+        debug!("Cluster {static_cluster_name} type {:?} ", cluster.discovery_settings);
         match cluster.discovery_settings {
             ClusterDiscoveryType::Static(cla) => {
                 let server_name = transport_socket
@@ -75,7 +76,7 @@ impl TryFrom<(Box<ClusterConfig>, &SecretManager)> for PartialClusterType {
 
                 let cla = ClusterLoadAssignmentBuilder::builder()
                     .with_cla(pcla)
-                    .with_cluster_name(cluster.name.to_static_str())
+                    .with_cluster_name(static_cluster_name)
                     .with_bind_device(bind_device)
                     .with_lb_policy(load_balancing_policy)
                     .with_connection_timeout(cluster.connect_timeout)
@@ -86,7 +87,7 @@ impl TryFrom<(Box<ClusterConfig>, &SecretManager)> for PartialClusterType {
                     .prepare();
 
                 Ok(PartialClusterType::Static(Box::new(StaticClusterBuilder {
-                    name: cluster.name.to_static_str(),
+                    name: static_cluster_name,
                     load_assignment: cla,
                     transport_socket,
                     health_check,
@@ -104,7 +105,7 @@ impl TryFrom<(Box<ClusterConfig>, &SecretManager)> for PartialClusterType {
 
                 let cla = ClusterLoadAssignmentBuilder::builder()
                     .with_cla(PartialClusterLoadAssignment::try_from(cla)?)
-                    .with_cluster_name(cluster.name.to_static_str())
+                    .with_cluster_name(static_cluster_name)
                     .with_bind_device(bind_device)
                     .with_lb_policy(load_balancing_policy)
                     .with_connection_timeout(cluster.connect_timeout)
@@ -115,7 +116,7 @@ impl TryFrom<(Box<ClusterConfig>, &SecretManager)> for PartialClusterType {
                     .prepare();
 
                 Ok(PartialClusterType::Static(Box::new(StaticClusterBuilder {
-                    name: cluster.name.to_static_str(),
+                    name: static_cluster_name,
                     load_assignment: cla,
                     transport_socket,
                     health_check,
@@ -125,7 +126,7 @@ impl TryFrom<(Box<ClusterConfig>, &SecretManager)> for PartialClusterType {
             },
 
             ClusterDiscoveryType::Eds(None) => Ok(PartialClusterType::Dynamic(Box::new(DynamicClusterBuilder {
-                name: cluster.name.to_static_str(),
+                name: static_cluster_name,
                 bind_device,
                 transport_socket,
                 health_check,
@@ -144,7 +145,7 @@ impl TryFrom<(Box<ClusterConfig>, &SecretManager)> for PartialClusterType {
                     .transpose()?;
 
                 Ok(PartialClusterType::OnDemand(Box::new(OriginalDstClusterBuilder {
-                    name: cluster.name.to_static_str(),
+                    name: static_cluster_name,
                     bind_device,
                     transport_socket,
                     connect_timeout: cluster.connect_timeout,

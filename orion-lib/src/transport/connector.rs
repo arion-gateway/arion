@@ -122,9 +122,9 @@ impl ConnectUsing {
                 Ok(ConnectUsing::Socket { authority, bind_device, connect_timeout, idle_timeout })
             },
             Address::Internal(internal) => {
-                let listener_name = internal.server_listener_name.to_static_str();
-                let synthetic_authority = Authority::try_from(format!("{listener_name}.listener.internal:80"))?;
-                Ok(ConnectUsing::InternalListener { listener_name, synthetic_authority })
+                let static_listener_name = internal.server_listener_name.to_static_str();
+                let synthetic_authority = Authority::try_from(format!("{static_listener_name}.listener.internal:80"))?;
+                Ok(ConnectUsing::InternalListener { listener_name: static_listener_name, synthetic_authority })
             },
             Address::Pipe(path, _) => {
                 Err(format!("Pipe addresses are not supported for upstream connections: {path}").into())

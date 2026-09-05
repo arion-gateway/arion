@@ -128,12 +128,12 @@ impl TryFrom<ConversionContext<'_, ListenerConfig>> for PartialListener {
     type Error = Error;
     fn try_from(ctx: ConversionContext<'_, ListenerConfig>) -> std::result::Result<Self, Self::Error> {
         let ConversionContext { envoy_object: listener, secret_manager } = ctx;
-        let name = listener.name.to_static_str();
+        let static_listener_name = listener.name.to_static_str();
         let with_tls_inspector = listener.with_tls_inspector;
         let proxy_protocol_config = listener.proxy_protocol_config;
         let listener_local_rate_limit_config = listener.listener_local_rate_limit_config;
         let access_log = listener.access_log;
-        debug!("Listener {name} :TLS Inspector is {with_tls_inspector}");
+        debug!("Listener {static_listener_name} :TLS Inspector is {with_tls_inspector}");
 
         let binding = match listener.listener_type {
             ListenerType::Socket { address, bind_device } => {
@@ -152,13 +152,13 @@ impl TryFrom<ConversionContext<'_, ListenerConfig>> for PartialListener {
             let has_server_names = filter_chains.keys().any(|m| !m.server_names.is_empty());
             if has_server_names {
                 return Err((format!(
-                    "Listener '{name}' has server_names in filter_chain_match, but no TLS inspector so matches would always fail"
+                    "Listener '{static_listener_name}' has server_names in filter_chain_match, but no TLS inspector so matches would always fail"
                 )).into());
             }
         }
 
         Ok(PartialListener {
-            name,
+            name: static_listener_name,
             binding,
             filter_chains,
             with_tls_inspector,
