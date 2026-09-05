@@ -16,13 +16,18 @@
 //
 
 use std::{
-    collections::HashMap,
+    any::Any,
+    cell::RefCell,
+    cmp::Ordering as CmpOrdering,
+    collections::{BTreeMap, HashMap},
     hash::Hash,
+    ptr,
     sync::atomic::{AtomicU64, Ordering},
+    thread::ThreadId,
 };
 
 use ahash::RandomState;
-use opentelemetry::KeyValue;
+use opentelemetry::{KeyValue, Value};
 use papaya::HashMap as ConcurrentHashMap;
 use smallvec::SmallVec;
 use std::{collections::hash_map, fmt};
@@ -31,44 +36,207 @@ pub trait Clearable {
     fn clear(&self);
 }
 
+struct CacheKey(SmallVec<[KeyValue; 4]>);
+
+impl PartialEq for CacheKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.as_slice() == other.0.as_slice()
+    }
+}
+
+impl Eq for CacheKey {}
+
+impl PartialOrd for CacheKey {
+    fn partial_cmp(&self, other: &Self) -> Option<CmpOrdering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for CacheKey {
+    fn cmp(&self, other: &Self) -> CmpOrdering {
+        cmp_labels(self.0.as_slice(), other.0.as_slice())
+    }
+}
+
+struct CachedCell {
+    shard_id: ThreadId,
+    cell: *const AtomicU64,
+}
+
+fn cmp_labels(left: &[KeyValue], right: &[KeyValue]) -> CmpOrdering {
+    match left.len().cmp(&right.len()) {
+        CmpOrdering::Equal => {
+            for (a, b) in left.iter().zip(right.iter()) {
+                match cmp_key_value(a, b) {
+                    CmpOrdering::Equal => {},
+                    ordering => return ordering,
+                }
+            }
+            CmpOrdering::Equal
+        },
+        ordering => ordering,
+    }
+}
+
+fn cmp_key_value(left: &KeyValue, right: &KeyValue) -> CmpOrdering {
+    match left.key.as_str().cmp(right.key.as_str()) {
+        CmpOrdering::Equal => match (&left.value, &right.value) {
+            (Value::String(a), Value::String(b)) => a.as_str().cmp(b.as_str()),
+            (Value::Bool(a), Value::Bool(b)) => a.cmp(b),
+            (Value::I64(a), Value::I64(b)) => a.cmp(b),
+            _ => left.value.as_str().cmp(&right.value.as_str()),
+        },
+        ordering => ordering,
+    }
+}
+
+struct PerMetric {
+    epoch: u64,
+    cells: BTreeMap<CacheKey, CachedCell>,
+}
+
+thread_local! {
+    static LAST: RefCell<HashMap<usize, PerMetric, RandomState>> =
+        RefCell::new(HashMap::with_hasher(RandomState::new()));
+}
+
+fn cache_lookup(
+    tls: &mut HashMap<usize, PerMetric, RandomState>,
+    owner: usize,
+    epoch: u64,
+    shard_id: ThreadId,
+    cache_key: &CacheKey,
+) -> Option<*const AtomicU64> {
+    let cached = tls.get_mut(&owner)?;
+    if cached.epoch != epoch {
+        cached.epoch = epoch;
+        cached.cells.clear();
+        return None;
+    }
+    let hit = cached.cells.get(cache_key)?;
+    (hit.shard_id == shard_id).then_some(hit.cell)
+}
+
+fn cache_store(
+    tls: &mut HashMap<usize, PerMetric, RandomState>,
+    owner: usize,
+    epoch: u64,
+    shard_id: ThreadId,
+    cache_key: CacheKey,
+    cell: *const AtomicU64,
+) {
+    let cached = tls.entry(owner).or_insert_with(|| PerMetric { epoch, cells: BTreeMap::new() });
+    if cached.epoch != epoch {
+        cached.epoch = epoch;
+        cached.cells.clear();
+    }
+    cached.cells.insert(cache_key, CachedCell { shard_id, cell });
+}
+
+fn as_thread_id<S: Copy + 'static>(shard_id: &S) -> Option<ThreadId> {
+    (shard_id as &dyn Any).downcast_ref::<ThreadId>().copied()
+}
+
+fn saturating_sub(counter: &AtomicU64, value: u64) {
+    let mut current = counter.load(Ordering::Relaxed);
+    loop {
+        let new = current.saturating_sub(value);
+        match counter.compare_exchange_weak(current, new, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => break,
+            Err(x) => current = x,
+        }
+    }
+}
+
 pub struct ShardedU64<S> {
     data: ConcurrentHashMap<S, ConcurrentHashMap<SmallVec<[KeyValue; 4]>, AtomicU64, RandomState>, RandomState>,
+    epoch: AtomicU64,
 }
 
 impl<S: Eq + Hash> ShardedU64<S> {
     pub fn new() -> Self {
-        ShardedU64 { data: ConcurrentHashMap::with_hasher(RandomState::new()) }
+        ShardedU64 { data: ConcurrentHashMap::with_hasher(RandomState::new()), epoch: AtomicU64::new(0) }
     }
 
-    pub fn add(&self, value: u64, shard_id: S, key: &[KeyValue]) {
+    fn owner_key(&self) -> usize {
+        ptr::from_ref(self) as usize
+    }
+
+    fn lookup_or_insert_ptr(&self, shard_id: S, key: &[KeyValue]) -> *const AtomicU64 {
         let map = self.data.pin();
         let shard = map.get_or_insert_with(shard_id, || ConcurrentHashMap::with_hasher(RandomState::new()));
         let shard_pin = shard.pin();
-        if let Some(counter) = shard_pin.get(key) {
-            counter.fetch_add(value, Ordering::Relaxed);
+        let counter = if let Some(counter) = shard_pin.get(key) {
+            counter
         } else {
-            let counter = shard_pin.get_or_insert_with(SmallVec::from(key), || AtomicU64::new(0));
-            counter.fetch_add(value, Ordering::Relaxed);
-        }
+            shard_pin.get_or_insert_with(SmallVec::from(key), || AtomicU64::new(0))
+        };
+        ptr::from_ref(counter)
+    }
+
+    fn lookup_ptr(&self, shard_id: S, key: &[KeyValue]) -> Option<*const AtomicU64> {
+        let map = self.data.pin();
+        let shard = map.get(&shard_id)?;
+        let shard_pin = shard.pin();
+        shard_pin.get(key).map(ptr::from_ref)
+    }
+}
+
+impl<S: Eq + Hash + Copy + 'static> ShardedU64<S> {
+    pub fn add(&self, value: u64, shard_id: S, key: &[KeyValue]) {
+        let owner = self.owner_key();
+        let epoch = self.epoch.load(Ordering::Relaxed);
+        LAST.with(|tls| {
+            let mut tls = tls.borrow_mut();
+            if let Some(tid) = as_thread_id(&shard_id) {
+                let cache_key = CacheKey(SmallVec::from(key));
+                if let Some(cell) = cache_lookup(&mut tls, owner, epoch, tid, &cache_key) {
+                    // SAFETY: `epoch` matches, so this entry has not been cleared/removed.
+                    // The `AtomicU64` address is stable in papaya until then.
+                    unsafe { (*cell).fetch_add(value, Ordering::Relaxed) };
+                    return;
+                }
+                let cell = self.lookup_or_insert_ptr(shard_id, key);
+                // SAFETY: `cell` was obtained from the live map in `lookup_or_insert_ptr`.
+                unsafe { (*cell).fetch_add(value, Ordering::Relaxed) };
+                cache_store(&mut tls, owner, epoch, tid, cache_key, cell);
+                return;
+            }
+            let cell = self.lookup_or_insert_ptr(shard_id, key);
+            // SAFETY: `cell` was obtained from the live map in `lookup_or_insert_ptr`.
+            unsafe { (*cell).fetch_add(value, Ordering::Relaxed) };
+        });
     }
 
     pub fn sub(&self, value: u64, shard_id: S, key: &[KeyValue]) {
-        let map = self.data.pin();
-        if let Some(shard) = map.get(&shard_id) {
-            let shard_pin = shard.pin();
-            if let Some(counter) = shard_pin.get(key) {
-                let mut current = counter.load(Ordering::Relaxed);
-                loop {
-                    let new = current.saturating_sub(value);
-                    match counter.compare_exchange_weak(current, new, Ordering::Relaxed, Ordering::Relaxed) {
-                        Ok(_) => break,
-                        Err(x) => current = x,
-                    }
+        let owner = self.owner_key();
+        let epoch = self.epoch.load(Ordering::Relaxed);
+        LAST.with(|tls| {
+            let mut tls = tls.borrow_mut();
+            if let Some(tid) = as_thread_id(&shard_id) {
+                let cache_key = CacheKey(SmallVec::from(key));
+                if let Some(cell) = cache_lookup(&mut tls, owner, epoch, tid, &cache_key) {
+                    // SAFETY: same as `add`: epoch still matches, cell has not been reclaimed.
+                    unsafe { saturating_sub(&*cell, value) };
+                    return;
                 }
+                let Some(cell) = self.lookup_ptr(shard_id, key) else {
+                    return;
+                };
+                // SAFETY: `cell` was obtained from the live map in `lookup_ptr`.
+                unsafe { saturating_sub(&*cell, value) };
+                cache_store(&mut tls, owner, epoch, tid, cache_key, cell);
+                return;
             }
-        }
+            if let Some(cell) = self.lookup_ptr(shard_id, key) {
+                // SAFETY: `cell` was obtained from the live map in `lookup_ptr`.
+                unsafe { saturating_sub(&*cell, value) };
+            }
+        });
     }
+}
 
+impl<S: Eq + Hash> ShardedU64<S> {
     pub fn load_all(&self) -> HashMap<SmallVec<[KeyValue; 4]>, u64, RandomState> {
         let map = self.data.pin();
         let mut result = HashMap::with_capacity_and_hasher(map.len(), RandomState::new());
@@ -103,13 +271,18 @@ impl<S: Eq + Hash> ShardedU64<S> {
         let map = self.data.pin();
         let shard = map.get(&shard_id)?;
         let shard_pin = shard.pin();
-        shard_pin.remove(key).map(|counter| counter.load(Ordering::Relaxed))
+        let removed = shard_pin.remove(key).map(|counter| counter.load(Ordering::Relaxed));
+        if removed.is_some() {
+            self.epoch.fetch_add(1, Ordering::Relaxed);
+        }
+        removed
     }
 }
 
-impl<S: Eq + std::hash::Hash> Clearable for ShardedU64<S> {
+impl<S: Eq + Hash> Clearable for ShardedU64<S> {
     fn clear(&self) {
         self.data.pin().clear();
+        self.epoch.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -221,7 +394,25 @@ pub struct ShardedHistogram<S> {
     otel_histogram: Option<opentelemetry::metrics::Histogram<u64>>,
 }
 
-impl<S: Eq + Hash + Clone + Copy> ShardedHistogram<S> {
+impl<S> ShardedHistogram<S> {
+    pub fn buckets(&self) -> &[u64] {
+        &self.buckets
+    }
+
+    pub fn counts(&self) -> &[ShardedU64<S>] {
+        &self.counts
+    }
+
+    pub fn sum(&self) -> &ShardedU64<S> {
+        &self.sum
+    }
+
+    pub fn count(&self) -> &ShardedU64<S> {
+        &self.count
+    }
+}
+
+impl<S: Eq + Hash + Clone + Copy + 'static> ShardedHistogram<S> {
     pub fn new(mut buckets: Vec<u64>, otel_histogram: Option<opentelemetry::metrics::Histogram<u64>>) -> Self {
         buckets.sort_unstable();
         let mut counts = Vec::with_capacity(buckets.len());
@@ -245,25 +436,9 @@ impl<S: Eq + Hash + Clone + Copy> ShardedHistogram<S> {
             }
         }
     }
-
-    pub fn buckets(&self) -> &[u64] {
-        &self.buckets
-    }
-
-    pub fn counts(&self) -> &[ShardedU64<S>] {
-        &self.counts
-    }
-
-    pub fn sum(&self) -> &ShardedU64<S> {
-        &self.sum
-    }
-
-    pub fn count(&self) -> &ShardedU64<S> {
-        &self.count
-    }
 }
 
-impl<S: Eq + Hash + Clone + Copy> Clearable for ShardedHistogram<S> {
+impl<S: Eq + Hash> Clearable for ShardedHistogram<S> {
     fn clear(&self) {
         for count in &self.counts {
             count.clear();
