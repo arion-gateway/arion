@@ -120,14 +120,16 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
             Ok(acquired) => {
                 let svc_channel = acquired.channels();
                 #[cfg(feature = "access-log")]
-                with_access_log!(
-                    &mut ctx.tx.trans_state.lock().loggers,
-                    UpstreamContext {
-                        authority: Some(svc_channel.upstream_authority()),
-                        cluster_name: Some(svc_channel.cluster_name()),
-                        route_name,
-                    }
-                );
+                ctx.tx.with_loggers(|loggers| {
+                    with_access_log!(
+                        loggers,
+                        UpstreamContext {
+                            authority: Some(svc_channel.upstream_authority()),
+                            cluster_name: Some(svc_channel.cluster_name()),
+                            route_name,
+                        }
+                    );
+                });
 
                 let ver = request.version();
 
@@ -181,7 +183,9 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (RouteContext<'a>, &HttpConne
                 }
 
                 #[cfg(feature = "access-log")]
-                with_access_log!(&mut ctx.tx.trans_state.lock().loggers, UpstreamRequestContext(&upstream_request));
+                ctx.tx.with_loggers(|loggers| {
+                    with_access_log!(loggers, UpstreamRequestContext(&upstream_request));
+                });
 
                 let websocket_enabled = if let Some(upgrade_config) = self.upgrade_config {
                     upgrade_config.is_websocket_enabled(websocket_enabled_by_default)

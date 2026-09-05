@@ -430,8 +430,10 @@ impl Listener {
                                                        upstream_local_addr: None,
                                                        upstream_peer_addr: None });
 
-                                                   let messages = conn_formatters.into_iter().map(LogFormatter::into_message).collect::<Vec<_>>();
-                                                   log_access_blocking(Target::Listener(listener_name.into()), messages)
+                                                   if !conn_formatters.is_empty() {
+                                                       let messages = conn_formatters.into_iter().map(LogFormatter::into_message).collect::<Vec<_>>();
+                                                       log_access_blocking(Target::Listener(listener_name.into()), messages)
+                                                   }
                                                }
                                             })
                                         };

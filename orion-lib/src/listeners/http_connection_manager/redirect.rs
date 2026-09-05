@@ -45,10 +45,9 @@ impl<'a> RequestHandler<Request<OrionRequestBody>, (&'a RouteMatchResult, &'a st
         #[allow(unused_variables)] (route_match_result, route_name): (&'a RouteMatchResult, &'a str),
     ) -> Result<Response<OrionResponseBody>> {
         #[cfg(feature = "access-log")]
-        with_access_log!(
-            &mut ctx.tx.trans_state.lock().loggers,
-            UpstreamContext { authority: None, cluster_name: None, route_name }
-        );
+        ctx.tx.with_loggers(|loggers| {
+            with_access_log!(loggers, UpstreamContext { authority: None, cluster_name: None, route_name });
+        });
 
         let (parts, _) = request.into_parts();
         let mut rsp = Response::builder().status(StatusCode::from(self.response_code)).version(parts.version);

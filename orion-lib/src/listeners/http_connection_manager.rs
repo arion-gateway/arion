@@ -434,7 +434,7 @@ pub struct TransactionState {
     pub upstream_start_instant: Option<std::time::Instant>,
     pub upstream_cluster_name: Option<&'static str>,
     #[cfg(feature = "access-log")]
-    loggers: Vec<LogFormatter>,
+    pub(crate) loggers: Option<Box<[orion_format::LogFormatter]>>,
 }
 
 #[cfg(any(feature = "access-log", feature = "metrics"))]
@@ -447,7 +447,11 @@ impl TransactionState {
             upstream_start_instant: None,
             upstream_cluster_name: None,
             #[cfg(feature = "access-log")]
-            loggers: access_log.iter().map(|al| al.get_logger().clone()).collect::<Vec<_>>(),
+            loggers: if access_log.is_empty() {
+                None
+            } else {
+                Some(access_log.iter().map(|al| al.get_logger().clone()).collect::<Vec<_>>().into_boxed_slice())
+            },
         }
     }
 }
@@ -460,6 +464,8 @@ pub type ShardId = ();
 
 #[derive(Debug)]
 pub struct TransactionContext {
+    #[cfg(feature = "access-log")]
+    pub has_access_log: bool,
     #[allow(dead_code)]
     start_instant: std::time::Instant,
     request_id: Option<RequestId>,
@@ -498,6 +504,8 @@ impl TransactionPhase {
 impl Default for TransactionContext {
     fn default() -> Self {
         TransactionContext {
+            #[cfg(feature = "access-log")]
+            has_access_log: false,
             start_instant: std::time::Instant::now(),
             request_id: None,
             user_partition_key: None,
@@ -538,6 +546,8 @@ impl TransactionContext {
         #[cfg(feature = "tracing")] server_span: Option<BoxedSpan>,
     ) -> Self {
         TransactionContext {
+            #[cfg(feature = "access-log")]
+            has_access_log: !access_log.is_empty(),
             start_instant: std::time::Instant::now(),
             request_id,
             user_partition_key,
@@ -585,12 +595,16 @@ impl TransactionContext {
     }
 
     #[cfg(feature = "access-log")]
-    pub fn with_loggers<F>(&self, f: F)
+    pub fn with_loggers<F>(&self, mut f: F)
     where
-        F: FnOnce(&mut [orion_format::LogFormatter]),
+        F: FnMut(&mut [orion_format::LogFormatter]),
     {
-        let mut state = self.trans_state.lock();
-        f(&mut state.loggers);
+        if self.has_access_log {
+            let mut state = self.trans_state.lock();
+            if let Some(loggers) = state.loggers.as_mut() {
+                f(loggers);
+            }
+        }
     }
 
     #[allow(unused_variables)]
@@ -781,13 +795,15 @@ impl HttpPipelineSvc {
             {
                 use crate::with_access_log;
 
-                with_access_log!(
-                    &mut ctx.tx.trans_state.lock().loggers,
-                    DownstreamResponseContext {
-                        response: &response,
-                        response_head_size: response_head_size(&response)
-                    }
-                )
+                ctx.tx.with_loggers(|loggers| {
+                    with_access_log!(
+                        loggers,
+                        DownstreamResponseContext {
+                            response: &response,
+                            response_head_size: response_head_size(&response)
+                        }
+                    )
+                });
             }
 
             #[cfg(any(feature = "access-log", feature = "tracing", feature = "metrics"))]
@@ -838,10 +854,12 @@ impl HttpPipelineSvc {
                             }
 
                             #[cfg(feature = "access-log")]
-                            with_access_log!(
-                                &mut trans_state.loggers,
-                                HttpResponseDurationContext { duration, tx_duration }
-                            );
+                            if let Some(loggers) = trans_state.loggers.as_mut() {
+                                with_access_log!(
+                                    loggers.as_mut(),
+                                    HttpResponseDurationContext { duration, tx_duration }
+                                );
+                            }
 
                             if trans_ctx.trans_phase.is_complete() {
                                 drop(trans_state);
@@ -1063,13 +1081,15 @@ impl RequestHandler<Request<OrionRequestBody>, &HttpConnectionManager> for Arc<R
                     }
 
                     #[cfg(feature = "access-log")]
-                    if let Err(err) = crate::access_log::evaluate_base64_access_log_hook(
-                        crate::access_log::AccessLogHook::IncomingResponse,
-                        response.headers(),
-                        &mut ctx.tx.trans_state.lock().loggers,
-                    ) {
-                        tracing::warn!("Failed to process access log header for IncomingResponse: {err}");
-                    }
+                    ctx.tx.with_loggers(|loggers| {
+                        if let Err(err) = crate::access_log::evaluate_base64_access_log_hook(
+                            crate::access_log::AccessLogHook::IncomingResponse,
+                            response.headers(),
+                            loggers,
+                        ) {
+                            tracing::warn!("Failed to process access log header for IncomingResponse: {err}");
+                        }
+                    });
 
                     apply_mutations_on_response(
                         &mut response,
@@ -1374,13 +1394,15 @@ impl TransactionSvc<HttpPipelineSvc> {
         }
 
         #[cfg(feature = "access-log")]
-        if let Err(err) = crate::access_log::evaluate_base64_access_log_hook(
-            crate::access_log::AccessLogHook::IncomingRequest,
-            request.headers(),
-            &mut ctx.tx.trans_state.lock().loggers,
-        ) {
-            tracing::warn!("Failed to process access log header for IncomingRequest: {err}");
-        }
+        ctx.tx.with_loggers(|loggers| {
+            if let Err(err) = crate::access_log::evaluate_base64_access_log_hook(
+                crate::access_log::AccessLogHook::IncomingRequest,
+                request.headers(),
+                loggers,
+            ) {
+                tracing::warn!("Failed to process access log header for IncomingRequest: {err}");
+            }
+        });
 
         #[allow(unused_variables)]
         let shard_id = ctx.tx.shard_id();
@@ -1433,10 +1455,12 @@ impl TransactionSvc<HttpPipelineSvc> {
                         let duration = trans_ctx.start_instant.elapsed();
 
                         #[cfg(feature = "access-log")]
-                        with_access_log!(
-                            &mut trans_state.loggers,
-                            HttpRequestDurationContext { duration, tx_duration: duration }
-                        );
+                        if let Some(loggers) = trans_state.loggers.as_mut() {
+                            with_access_log!(
+                                loggers.as_mut(),
+                                HttpRequestDurationContext { duration, tx_duration: duration }
+                            );
+                        }
 
                         if trans_ctx.trans_phase.is_complete() {
                             drop(trans_state);
@@ -1494,13 +1518,15 @@ impl TransactionSvc<HttpPipelineSvc> {
 
         #[cfg(feature = "access-log")]
         if let Ok(response) = &response {
-            if let Err(err) = crate::access_log::evaluate_base64_access_log_hook(
-                crate::access_log::AccessLogHook::DownstreamResponse,
-                response.headers(),
-                &mut trans_ctx_clone.trans_state.lock().loggers,
-            ) {
-                tracing::warn!("Failed to process access log header for DownstreamResponse: {err}");
-            }
+            trans_ctx_clone.with_loggers(|loggers| {
+                if let Err(err) = crate::access_log::evaluate_base64_access_log_hook(
+                    crate::access_log::AccessLogHook::DownstreamResponse,
+                    response.headers(),
+                    loggers,
+                ) {
+                    tracing::warn!("Failed to process access log header for DownstreamResponse: {err}");
+                }
+            });
         }
         response
     }
@@ -1528,29 +1554,31 @@ fn eval_http_init_context<R>(
         let server_name = metadata.and_then(|md| md.sni.as_ref().map(SmolStr::as_str));
 
         #[cfg(feature = "access-log")]
-        with_access_log!(
-            &mut trans_ctx.trans_state.lock().loggers,
-            InitHttpContext {
-                start_time: std::time::SystemTime::now(),
-                downstream_request: request,
-                request_head_size: request_head_size(request),
-                trace_id,
-                server_name,
-                socket_address: SocketAddrContext {
-                    downstream_local_addr: metadata.map(|md| md.connection.local_address()),
-                    downstream_peer_addr: metadata.map(|md| md.connection.peer_address()),
-                    upstream_local_addr: None,
-                    upstream_peer_addr: None,
+        trans_ctx.with_loggers(|loggers| {
+            with_access_log!(
+                loggers,
+                InitHttpContext {
+                    start_time: std::time::SystemTime::now(),
+                    downstream_request: request,
+                    request_head_size: request_head_size(request),
+                    trace_id,
+                    server_name,
+                    socket_address: SocketAddrContext {
+                        downstream_local_addr: metadata.map(|md| md.connection.local_address()),
+                        downstream_peer_addr: metadata.map(|md| md.connection.peer_address()),
+                        upstream_local_addr: None,
+                        upstream_peer_addr: None,
+                    }
                 }
-            }
-        );
+            );
+        });
     }
 }
 
 #[cfg(feature = "access-log")]
 struct AccessLogFinishContext<'a> {
     event: EventInfo,
-    access_loggers: &'a mut Vec<LogFormatter>,
+    access_loggers: Option<&'a mut [LogFormatter]>,
 }
 
 #[cfg(feature = "metrics")]
@@ -1601,7 +1629,7 @@ impl OnFlush for HttpTxnFlush {
                     event_kind: ctx_event.or(self.extra_event),
                     response_flags: ctx_flags | self.extra_flags,
                 },
-                access_loggers: trans_state.loggers.as_mut(),
+                access_loggers: trans_state.loggers.as_mut().map(|b| &mut **b),
             },
         });
     }
@@ -1655,7 +1683,7 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
 
     #[cfg(feature = "access-log")]
     with_access_log!(
-        &mut *params.al_ctx.access_loggers,
+        params.al_ctx.access_loggers.as_mut().map(|x| &mut **x).unwrap_or(&mut []),
         FinishContext {
             duration,
             bytes_received: params.bytes_received,
@@ -1685,7 +1713,7 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
     );
 
     #[cfg(feature = "access-log")]
-    let mut loggers: Vec<LogFormatter> = std::mem::take(params.al_ctx.access_loggers);
+    let mut loggers: Option<&mut [LogFormatter]> = params.al_ctx.access_loggers;
 
     #[cfg(feature = "metrics")]
     let user_partition_key = params.user_partition_key;
@@ -1732,10 +1760,15 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
     }
 
     #[cfg(feature = "access-log")]
-    {
-        with_access_log!(&mut loggers, WireContext { wire_bytes_received, wire_bytes_sent });
-        let messages = loggers.into_iter().map(LogFormatter::into_message).collect::<Vec<_>>();
-        log_access_blocking(Target::ListenerFilterChain(params.listener_name.into(), params.filterchain_id), messages);
+    if let Some(loggers) = loggers {
+        if !loggers.is_empty() {
+            with_access_log!(&mut *loggers, WireContext { wire_bytes_received, wire_bytes_sent });
+            let messages = loggers.iter_mut().map(|l| l.clone().into_message()).collect::<Vec<_>>();
+            log_access_blocking(
+                Target::ListenerFilterChain(params.listener_name.into(), params.filterchain_id),
+                messages,
+            );
+        }
     }
 }
 
@@ -1763,10 +1796,12 @@ fn instrument_early_failure_response(
     }
 
     #[cfg(feature = "access-log")]
-    with_access_log!(
-        &mut trans_ctx.trans_state.lock().loggers,
-        DownstreamResponseContext { response: &response, response_head_size: response_head_size(&response) }
-    );
+    trans_ctx.with_loggers(|loggers| {
+        with_access_log!(
+            loggers,
+            DownstreamResponseContext { response: &response, response_head_size: response_head_size(&response) }
+        );
+    });
 
     #[cfg(feature = "access-log")]
     let (initial_flags, initial_event) = {
@@ -1798,10 +1833,9 @@ fn instrument_early_failure_response(
                         #[allow(unused_variables)]
                         let tx_duration = Instant::now().saturating_duration_since(first_byte_instant);
 
-                        with_access_log!(
-                            &mut trans_state.loggers,
-                            HttpResponseDurationContext { duration, tx_duration }
-                        )
+                        if let Some(loggers) = trans_state.loggers.as_mut() {
+                            with_access_log!(loggers.as_mut(), HttpResponseDurationContext { duration, tx_duration })
+                        }
                     };
 
                     if trans_ctx.trans_phase.is_complete() {
