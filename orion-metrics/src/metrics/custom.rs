@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::sync::{Arc, OnceLock};
 use std::thread::ThreadId;
 
-use crate::key_value::KeyValueMap;
+use crate::str_pair::StrMap;
 use http::{HeaderMap, HeaderName};
 use opentelemetry::{global, KeyValue};
 use orion_configuration::config::metrics::CustomMetric;
@@ -222,7 +222,7 @@ impl CustomMetrics {
     }
 
     #[inline]
-    pub fn with_key_value<'a>(&self, hook: MetricsHook, kv: &KeyValueMap<'a>, extra_attributes: &[KeyValue]) {
+    pub fn with_key_value<'a>(&self, hook: MetricsHook, kv: &StrMap<'a>, extra_attributes: &[KeyValue]) {
         self.process_metrics(hook, extra_attributes, |name| kv.get(name.as_str()).copied());
     }
 

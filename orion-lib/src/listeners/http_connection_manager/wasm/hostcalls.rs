@@ -365,7 +365,7 @@ fn orion_set_custom_metrics(mut caller: Caller<'_, WasmState>, buffer_ptr: u32, 
             };
 
         if let Some(custom_metrics) = orion_metrics::metrics::custom::CUSTOM_METRICS.get() {
-            let mut kv = orion_metrics::key_value::KeyValueMap::default();
+            let mut kv = orion_metrics::str_pair::StrMap::default();
             for (k, v) in &pairs {
                 kv.insert(k, v);
             }

@@ -118,7 +118,7 @@ pub fn evaluate_base64_access_log_hook(
 #[cfg(feature = "metrics")]
 pub fn evaluate_plain_access_log_hook(
     _hook: AccessLogHook,
-    headers: &orion_metrics::key_value::KeyValueMap<'_>,
+    headers: &orion_metrics::str_pair::StrMap<'_>,
     loggers: &mut [orion_format::LogFormatter],
 ) -> Result<(), AccessLogHeaderError> {
     if headers.is_empty() {

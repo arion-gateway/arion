@@ -537,7 +537,7 @@ impl WasmFilter {
             if !ops.is_empty() {
                 #[cfg(all(feature = "access-log", feature = "metrics"))]
                 {
-                    let mut kv = orion_metrics::key_value::KeyValueMap::default();
+                    let mut kv = orion_metrics::str_pair::StrMap::default();
                     for (k, v) in &ops {
                         kv.insert(k.as_str(), v.as_str());
                     }

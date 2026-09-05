@@ -17,7 +17,7 @@
 
 #[macro_use]
 pub mod macros;
-pub mod key_value;
+pub mod str_pair;
 pub mod metrics;
 pub mod sharded;
 
