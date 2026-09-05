@@ -157,12 +157,12 @@ fn format_histogram<S: Eq + Hash + Clone + Copy>(
     writeln!(out, "# HELP {full_name} {desc}")?;
     writeln!(out, "# TYPE {full_name} histogram")?;
 
-    for (&bound, count) in metric_source.buckets().iter().zip(metric_source.counts().iter()) {
+    let cumulative = metric_source.load_cumulative_counts();
+    for (&bound, bucket_data) in metric_source.buckets().iter().zip(cumulative.iter()) {
         let bound_str = if bound == u64::MAX { "+Inf".to_owned() } else { bound.to_string() };
-        let bucket_data = count.load_all();
         for (labels, value) in bucket_data {
             write!(out, "{full_name}_bucket")?;
-            write_metric_labels_with_extra(out, &labels, "le", &bound_str)?;
+            write_metric_labels_with_extra(out, labels, "le", &bound_str)?;
             writeln!(out, " {value}")?;
         }
     }

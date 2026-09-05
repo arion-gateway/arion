@@ -16,7 +16,6 @@
 //
 
 use std::{
-    any::Any,
     borrow::Borrow,
     cell::RefCell,
     cmp::Ordering as CmpOrdering,
@@ -170,8 +169,23 @@ fn cache_store(
     cached.cells.insert(cache_key, CachedCell { shard_id, cell });
 }
 
-fn as_thread_id<S: Copy + 'static>(shard_id: &S) -> Option<ThreadId> {
-    (shard_id as &dyn Any).downcast_ref::<ThreadId>().copied()
+/// Trait for shard keys that enables compile-time monomorphization of the
+/// thread-local caching path, eliminating the `Any` downcast that was
+/// previously performed on every `add()`/`sub()` call.
+pub trait ShardKey: Eq + Hash + Copy + 'static {
+    /// Return the `ThreadId` if this key *is* a thread id, enabling the
+    /// per-metric TLS cache.  The default returns `None` (no caching).
+    #[inline(always)]
+    fn as_thread_id(&self) -> Option<ThreadId> {
+        None
+    }
+}
+
+impl ShardKey for ThreadId {
+    #[inline(always)]
+    fn as_thread_id(&self) -> Option<ThreadId> {
+        Some(*self)
+    }
 }
 
 fn saturating_sub(counter: &AtomicU64, value: u64) {
@@ -219,13 +233,13 @@ impl<S: Eq + Hash> ShardedU64<S> {
     }
 }
 
-impl<S: Eq + Hash + Copy + 'static> ShardedU64<S> {
+impl<S: ShardKey> ShardedU64<S> {
     pub fn add(&self, value: u64, shard_id: S, key: &[KeyValue]) {
         let owner = self.owner_key();
         let epoch = self.epoch.load(Ordering::Relaxed);
         LAST.with(|tls| {
             let mut tls = tls.borrow_mut();
-            if let Some(tid) = as_thread_id(&shard_id) {
+            if let Some(tid) = shard_id.as_thread_id() {
                 if let Some(cell) = cache_lookup(&mut tls, owner, epoch, tid, key) {
                     // SAFETY: `epoch` matches, so this entry has not been cleared/removed.
                     // The `AtomicU64` address is stable in papaya until then.
@@ -249,7 +263,7 @@ impl<S: Eq + Hash + Copy + 'static> ShardedU64<S> {
         let epoch = self.epoch.load(Ordering::Relaxed);
         LAST.with(|tls| {
             let mut tls = tls.borrow_mut();
-            if let Some(tid) = as_thread_id(&shard_id) {
+            if let Some(tid) = shard_id.as_thread_id() {
                 if let Some(cell) = cache_lookup(&mut tls, owner, epoch, tid, key) {
                     // SAFETY: same as `add`: epoch still matches, cell has not been reclaimed.
                     unsafe { saturating_sub(&*cell, value) };
@@ -447,7 +461,29 @@ impl<S> ShardedHistogram<S> {
     }
 }
 
-impl<S: Eq + Hash + Clone + Copy + 'static> ShardedHistogram<S> {
+impl<S: Eq + Hash> ShardedHistogram<S> {
+    /// Load cumulative bucket counts, reconstructing them from the
+    /// per-bucket (differential) counters stored at record time.
+    ///
+    /// Each returned `HashMap` at position `i` contains the cumulative count
+    /// for `bucket[0..=i]`, i.e. the number of observations ≤ `buckets[i]`.
+    /// This is the format expected by Prometheus histogram exposition.
+    pub fn load_cumulative_counts(&self) -> Vec<HashMap<SmallVec<[KeyValue; 4]>, u64, RandomState>> {
+        let mut cumulative = Vec::with_capacity(self.counts.len());
+        let mut running: HashMap<SmallVec<[KeyValue; 4]>, u64, RandomState> = HashMap::with_hasher(RandomState::new());
+
+        for bucket_count in &self.counts {
+            let snapshot = bucket_count.load_all();
+            for (labels, value) in snapshot {
+                *running.entry(labels).or_insert(0) += value;
+            }
+            cumulative.push(running.clone());
+        }
+        cumulative
+    }
+}
+
+impl<S: ShardKey> ShardedHistogram<S> {
     pub fn new(mut buckets: Vec<u64>, otel_histogram: Option<opentelemetry::metrics::Histogram<u64>>) -> Self {
         buckets.sort_unstable();
         let mut counts = Vec::with_capacity(buckets.len());
@@ -465,10 +501,13 @@ impl<S: Eq + Hash + Clone + Copy + 'static> ShardedHistogram<S> {
         self.sum.add(value, shard_id, key);
         self.count.add(1, shard_id, key);
 
-        for (i, &bound) in self.buckets.iter().enumerate() {
-            if value <= bound {
-                self.counts[i].add(1, shard_id, key);
-            }
+        // Binary search to find the single bucket this value falls into,
+        // instead of the previous linear scan that incremented *all*
+        // cumulative buckets (up to 9 `ShardedU64::add()` calls).
+        // Cumulative counts are reconstructed at read time.
+        let idx = self.buckets.partition_point(|&bound| bound < value);
+        if idx < self.counts.len() {
+            self.counts[idx].add(1, shard_id, key);
         }
     }
 }
@@ -633,5 +672,170 @@ mod tests {
         g.record(50, &key);
         let all2 = g.load_all();
         assert_eq!(all2.get(key.as_slice()), Some(&50));
+    }
+
+    // ---- ShardedHistogram tests ----
+
+    /// Helper: collect cumulative counts for a single label set from the histogram.
+    fn cumulative_for_key(hist: &ShardedHistogram<ThreadId>, key: &[KeyValue]) -> Vec<u64> {
+        hist.load_cumulative_counts().iter().map(|bucket_map| bucket_map.get(key).copied().unwrap_or(0)).collect()
+    }
+
+    #[test]
+    fn test_histogram_basic_record_and_cumulative() {
+        // Buckets: [10, 50, 100, +Inf]
+        let h = ShardedHistogram::new(vec![10, 50, 100, u64::MAX], None);
+        let tid = build_thread_id(1);
+        let key = vec![KeyValue::new("op", "get")];
+
+        // Record value=5 → falls into bucket ≤10 (index 0)
+        h.record(5, tid, &key);
+        // Record value=30 → falls into bucket ≤50 (index 1)
+        h.record(30, tid, &key);
+        // Record value=30 again
+        h.record(30, tid, &key);
+        // Record value=80 → falls into bucket ≤100 (index 2)
+        h.record(80, tid, &key);
+
+        // Cumulative expectations:
+        //   ≤10:   1  (only the 5)
+        //   ≤50:   3  (5 + 30 + 30)
+        //   ≤100:  4  (5 + 30 + 30 + 80)
+        //   +Inf:  4  (all)
+        let cum = cumulative_for_key(&h, &key);
+        assert_eq!(cum, vec![1, 3, 4, 4], "cumulative counts mismatch");
+
+        // sum = 5 + 30 + 30 + 80 = 145
+        assert_eq!(h.sum().load(&key), Some(145));
+        // count = 4
+        assert_eq!(h.count().load(&key), Some(4));
+    }
+
+    #[test]
+    fn test_histogram_exact_boundary_values() {
+        // Buckets: [10, 50, 100]
+        let h = ShardedHistogram::new(vec![10, 50, 100], None);
+        let tid = build_thread_id(1);
+        let key = vec![KeyValue::new("op", "boundary")];
+
+        // Values exactly on bucket boundaries
+        h.record(10, tid, &key); // ≤10 → index 0
+        h.record(50, tid, &key); // ≤50 → index 1
+        h.record(100, tid, &key); // ≤100 → index 2
+
+        let cum = cumulative_for_key(&h, &key);
+        assert_eq!(cum, vec![1, 2, 3], "boundary values cumulative mismatch");
+
+        assert_eq!(h.sum().load(&key), Some(160));
+        assert_eq!(h.count().load(&key), Some(3));
+    }
+
+    #[test]
+    fn test_histogram_value_exceeds_all_buckets() {
+        // Buckets: [10, 50] — no +Inf bucket
+        let h = ShardedHistogram::new(vec![10, 50], None);
+        let tid = build_thread_id(1);
+        let key = vec![KeyValue::new("op", "big")];
+
+        // Value 999 exceeds all bucket boundaries
+        h.record(999, tid, &key);
+
+        // sum and count are updated, but no bucket gets the observation
+        assert_eq!(h.sum().load(&key), Some(999));
+        assert_eq!(h.count().load(&key), Some(1));
+
+        let cum = cumulative_for_key(&h, &key);
+        assert_eq!(cum, vec![0, 0], "no bucket should contain the observation");
+    }
+
+    #[test]
+    fn test_histogram_multiple_labels() {
+        let h = ShardedHistogram::new(vec![10, 100, u64::MAX], None);
+        let tid = build_thread_id(1);
+
+        let key_a = vec![KeyValue::new("route", "a")];
+        let key_b = vec![KeyValue::new("route", "b")];
+
+        h.record(5, tid, &key_a); // a: bucket 0
+        h.record(50, tid, &key_a); // a: bucket 1
+        h.record(50, tid, &key_b); // b: bucket 1
+        h.record(200, tid, &key_b); // b: bucket 2 (+Inf)
+
+        let cum_a = cumulative_for_key(&h, &key_a);
+        assert_eq!(cum_a, vec![1, 2, 2], "label 'a' cumulative mismatch");
+
+        let cum_b = cumulative_for_key(&h, &key_b);
+        assert_eq!(cum_b, vec![0, 1, 2], "label 'b' cumulative mismatch");
+
+        assert_eq!(h.sum().load(&key_a), Some(55));
+        assert_eq!(h.sum().load(&key_b), Some(250));
+    }
+
+    #[test]
+    fn test_histogram_multi_shard() {
+        let h = ShardedHistogram::new(vec![10, 100, u64::MAX], None);
+        let tid1 = build_thread_id(1);
+        let tid2 = build_thread_id(2);
+        let key = vec![KeyValue::new("op", "multi")];
+
+        h.record(5, tid1, &key); // bucket 0
+        h.record(50, tid2, &key); // bucket 1
+        h.record(7, tid1, &key); // bucket 0
+        h.record(200, tid2, &key); // bucket 2
+
+        let cum = cumulative_for_key(&h, &key);
+        // bucket 0: 2, bucket 1: 1, bucket 2: 1
+        // cumulative: [2, 3, 4]
+        assert_eq!(cum, vec![2, 3, 4], "multi-shard cumulative mismatch");
+
+        assert_eq!(h.sum().load(&key), Some(5 + 50 + 7 + 200));
+        assert_eq!(h.count().load(&key), Some(4));
+    }
+
+    #[test]
+    fn test_histogram_clear() {
+        let h = ShardedHistogram::new(vec![10, 100, u64::MAX], None);
+        let tid = build_thread_id(1);
+        let key = vec![KeyValue::new("op", "clear")];
+
+        h.record(5, tid, &key);
+        h.record(50, tid, &key);
+        assert_eq!(h.count().load(&key), Some(2));
+
+        h.clear();
+        assert_eq!(h.count().load(&key), None);
+        assert_eq!(h.sum().load(&key), None);
+        let cum = cumulative_for_key(&h, &key);
+        assert_eq!(cum, vec![0, 0, 0], "all buckets should be zero after clear");
+    }
+
+    #[test]
+    fn test_histogram_zero_value() {
+        let h = ShardedHistogram::new(vec![0, 10, 100], None);
+        let tid = build_thread_id(1);
+        let key = vec![KeyValue::new("op", "zero")];
+
+        // value=0 should land in bucket ≤0 (index 0)
+        h.record(0, tid, &key);
+        let cum = cumulative_for_key(&h, &key);
+        assert_eq!(cum, vec![1, 1, 1]);
+        assert_eq!(h.sum().load(&key), Some(0));
+        assert_eq!(h.count().load(&key), Some(1));
+    }
+
+    #[test]
+    fn test_histogram_all_in_lowest_bucket() {
+        let h = ShardedHistogram::new(vec![100, 200, u64::MAX], None);
+        let tid = build_thread_id(1);
+        let key = vec![KeyValue::new("op", "low")];
+
+        for v in [1, 2, 3, 50, 99, 100] {
+            h.record(v, tid, &key);
+        }
+        let cum = cumulative_for_key(&h, &key);
+        // All 6 values ≤ 100, so cumulative = [6, 6, 6]
+        assert_eq!(cum, vec![6, 6, 6]);
+        assert_eq!(h.count().load(&key), Some(6));
+        assert_eq!(h.sum().load(&key), Some(1 + 2 + 3 + 50 + 99 + 100));
     }
 }

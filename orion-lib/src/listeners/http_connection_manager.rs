@@ -605,199 +605,85 @@ impl TransactionContext {
                 .set_attribute(KeyValue::new(HTTP_RESPONSE_STATUS_CODE, i64::from(status_code))));
 
             #[cfg(feature = "metrics")]
-            if let Some(user_partition_key) = self.user_partition_key {
-                with_metric!(
-                    user::INVOCATIONS,
-                    add,
-                    1,
-                    self.shard_id(),
-                    &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
-                );
+            let listener_attr = [KeyValue::new("listener", listener_name)];
+
+            #[cfg(feature = "metrics")]
+            let user_attrs = self
+                .user_partition_key
+                .map(|key| [KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), key)]);
+
+            #[cfg(feature = "metrics")]
+            if let Some(ref attrs) = user_attrs {
+                with_metric!(user::INVOCATIONS, add, 1, self.shard_id(), attrs);
             }
 
             #[allow(clippy::match_same_arms)]
             match status_code {
                 100..200 => {
-                    with_metric!(
-                        http::DOWNSTREAM_RQ_1XX,
-                        add,
-                        1,
-                        self.shard_id(),
-                        &[KeyValue::new("listener", listener_name)]
-                    );
+                    with_metric!(http::DOWNSTREAM_RQ_1XX, add, 1, self.shard_id(), &listener_attr);
                     #[cfg(feature = "metrics")]
-                    if let Some(user_partition_key) = self.user_partition_key {
-                        with_metric!(
-                            user::HTTP_1XX_RESPONSES,
-                            add,
-                            1,
-                            self.shard_id(),
-                            &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
-                        );
-                    }
-                },
-                200..300 => {
-                    with_metric!(
-                        http::DOWNSTREAM_RQ_2XX,
-                        add,
-                        1,
-                        self.shard_id(),
-                        &[KeyValue::new("listener", listener_name)]
-                    );
-                    #[cfg(feature = "metrics")]
-                    if let Some(user_partition_key) = self.user_partition_key {
-                        with_metric!(
-                            user::HTTP_2XX_RESPONSES,
-                            add,
-                            1,
-                            self.shard_id(),
-                            &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
-                        );
-                    }
-                },
-                300..400 => {
-                    with_metric!(
-                        http::DOWNSTREAM_RQ_3XX,
-                        add,
-                        1,
-                        self.shard_id(),
-                        &[KeyValue::new("listener", listener_name)]
-                    );
-                    #[cfg(feature = "metrics")]
-                    if let Some(user_partition_key) = self.user_partition_key {
-                        with_metric!(
-                            user::HTTP_3XX_RESPONSES,
-                            add,
-                            1,
-                            self.shard_id(),
-                            &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
-                        );
-                    }
-                },
-                400..500 => {
-                    with_metric!(
-                        http::DOWNSTREAM_RQ_4XX,
-                        add,
-                        1,
-                        self.shard_id(),
-                        &[KeyValue::new("listener", listener_name)]
-                    );
-
-                    #[cfg(feature = "metrics")]
-                    if let Some(user_partition_key) = self.user_partition_key {
-                        with_metric!(
-                            user::USER_ERRORS,
-                            add,
-                            1,
-                            self.shard_id(),
-                            &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
-                        );
-                        with_metric!(
-                            user::TOTAL_ERRORS,
-                            add,
-                            1,
-                            self.shard_id(),
-                            &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
-                        );
-                        with_metric!(
-                            user::HTTP_4XX_RESPONSES,
-                            add,
-                            1,
-                            self.shard_id(),
-                            &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
-                        );
-
-                        match status_code {
-                            404 => {
-                                with_metric!(
-                                    user::HTTP_404_RESPONSES,
-                                    add,
-                                    1,
-                                    self.shard_id(),
-                                    &[KeyValue::new(
-                                        metrics::USER_KEY.attribute_name().unwrap_or("user"),
-                                        user_partition_key
-                                    )]
-                                );
-                            },
-                            429 => {
-                                with_metric!(
-                                    user::THROTTLES,
-                                    add,
-                                    1,
-                                    self.shard_id(),
-                                    &[KeyValue::new(
-                                        metrics::USER_KEY.attribute_name().unwrap_or("user"),
-                                        user_partition_key
-                                    )]
-                                );
-                            },
-                            _ => (),
+                    if let Some(ref a) = user_attrs {
+                        {
+                            with_metric!(user::HTTP_1XX_RESPONSES, add, 1, self.shard_id(), a);
                         }
                     }
                 },
-                500..600 => {
-                    with_metric!(
-                        http::DOWNSTREAM_RQ_5XX,
-                        add,
-                        1,
-                        self.shard_id(),
-                        &[KeyValue::new("listener", listener_name)]
-                    );
-
+                200..300 => {
+                    with_metric!(http::DOWNSTREAM_RQ_2XX, add, 1, self.shard_id(), &listener_attr);
                     #[cfg(feature = "metrics")]
-                    if let Some(user_partition_key) = self.user_partition_key {
-                        with_metric!(
-                            user::SYSTEM_ERRORS,
-                            add,
-                            1,
-                            self.shard_id(),
-                            &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
-                        );
-                        with_metric!(
-                            user::TOTAL_ERRORS,
-                            add,
-                            1,
-                            self.shard_id(),
-                            &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
-                        );
-                        with_metric!(
-                            user::HTTP_5XX_RESPONSES,
-                            add,
-                            1,
-                            self.shard_id(),
-                            &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
-                        );
+                    if let Some(ref a) = user_attrs {
+                        {
+                            with_metric!(user::HTTP_2XX_RESPONSES, add, 1, self.shard_id(), a);
+                        }
+                    }
+                },
+                300..400 => {
+                    with_metric!(http::DOWNSTREAM_RQ_3XX, add, 1, self.shard_id(), &listener_attr);
+                    #[cfg(feature = "metrics")]
+                    if let Some(ref a) = user_attrs {
+                        {
+                            with_metric!(user::HTTP_3XX_RESPONSES, add, 1, self.shard_id(), a);
+                        }
+                    }
+                },
+                400..500 => {
+                    with_metric!(http::DOWNSTREAM_RQ_4XX, add, 1, self.shard_id(), &listener_attr);
+                    #[cfg(feature = "metrics")]
+                    if let Some(ref a) = user_attrs {
+                        with_metric!(user::USER_ERRORS, add, 1, self.shard_id(), a);
+                        with_metric!(user::TOTAL_ERRORS, add, 1, self.shard_id(), a);
+                        with_metric!(user::HTTP_4XX_RESPONSES, add, 1, self.shard_id(), a);
+                        match status_code {
+                            404 => {
+                                with_metric!(user::HTTP_404_RESPONSES, add, 1, self.shard_id(), a);
+                            },
+                            429 => {
+                                with_metric!(user::THROTTLES, add, 1, self.shard_id(), a);
+                            },
+                            _ => {},
+                        }
+                    }
+                },
+                _ => {
+                    with_metric!(http::DOWNSTREAM_RQ_5XX, add, 1, self.shard_id(), &listener_attr);
+                    #[cfg(feature = "metrics")]
+                    if let Some(ref a) = user_attrs {
+                        with_metric!(user::SYSTEM_ERRORS, add, 1, self.shard_id(), a);
+                        with_metric!(user::TOTAL_ERRORS, add, 1, self.shard_id(), a);
+                        with_metric!(user::HTTP_5XX_RESPONSES, add, 1, self.shard_id(), a);
                         match status_code {
                             502 => {
-                                with_metric!(
-                                    user::HTTP_502_RESPONSES,
-                                    add,
-                                    1,
-                                    self.shard_id(),
-                                    &[KeyValue::new(
-                                        metrics::USER_KEY.attribute_name().unwrap_or("user"),
-                                        user_partition_key
-                                    )]
-                                );
+                                with_metric!(user::HTTP_502_RESPONSES, add, 1, self.shard_id(), a);
                             },
                             504 => {
-                                with_metric!(
-                                    user::HTTP_504_RESPONSES,
-                                    add,
-                                    1,
-                                    self.shard_id(),
-                                    &[KeyValue::new(
-                                        metrics::USER_KEY.attribute_name().unwrap_or("user"),
-                                        user_partition_key
-                                    )]
-                                );
+                                with_metric!(user::HTTP_504_RESPONSES, add, 1, self.shard_id(), a);
                             },
                             _ => (),
                         }
                     }
 
                     with_server_span!(self.span_state, |srv_span: &mut BoxedSpan| {
+                        srv_span.set_attribute(KeyValue::new(HTTP_RESPONSE_STATUS_CODE, 500));
                         srv_span.set_status(Status::error("5xx"));
                     });
 
@@ -805,7 +691,6 @@ impl TransactionContext {
                         clt_span.set_status(Status::error("5xx"));
                     });
                 },
-                _ => {},
             }
         } else {
             with_metric!(http::DOWNSTREAM_RQ_5XX, add, 1, self.shard_id(), &[KeyValue::new("listener", listener_name)]);
@@ -846,23 +731,23 @@ impl HttpPipelineSvc {
         let filterchain_id = manager.filterchain_id;
         let downstream_addr = ctx.conn.downstream_peer_address();
 
-        // check if this is the first request on the stream, and if so, record it in the metrics.
         if ctx.conn.stream_metrics.inc_requests() == 0 {
             #[cfg(feature = "metrics")]
             if let Some(user_partition_key) = ctx.tx.user_partition_key {
+                let user_attr_name = metrics::USER_KEY.attribute_name().unwrap_or("user");
                 with_metric!(
                     user::CONNECTIONS,
                     add,
                     1,
                     ctx.tx.shard_id,
-                    &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
+                    &[KeyValue::new(user_attr_name, user_partition_key)]
                 );
                 with_metric!(
                     user::CONNECTIONS_ACTIVE,
                     add,
                     1,
                     ctx.tx.shard_id,
-                    &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
+                    &[KeyValue::new(user_attr_name, user_partition_key)]
                 );
 
                 // store the user_partition_key to decrement CONNECTIONS_ACTIVE later, when the stream is closed.
@@ -939,15 +824,14 @@ impl HttpPipelineSvc {
                                         &[opentelemetry::KeyValue::new("cluster", cluster)]
                                     );
                                     if let Some(user_key) = trans_ctx.user_partition_key {
+                                        let user_attr_name =
+                                            crate::metrics::USER_KEY.attribute_name().unwrap_or("user");
                                         crate::with_histogram!(
                                             user::UPSTREAM_RQ_TIME,
                                             record,
                                             elapsed_ms,
                                             shard_id,
-                                            &[opentelemetry::KeyValue::new(
-                                                crate::metrics::USER_KEY.attribute_name().unwrap_or("user"),
-                                                user_key
-                                            )]
+                                            &[opentelemetry::KeyValue::new(user_attr_name, user_key)]
                                         );
                                     }
                                 }
@@ -1753,6 +1637,7 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
 
     #[cfg(feature = "metrics")]
     if let Some(user_partition_key) = params.user_partition_key {
+        let user_attr_name = metrics::USER_KEY.attribute_name().unwrap_or("user");
         with_histogram!(
             user::LATENCY,
             record,
@@ -1761,7 +1646,7 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
                 latency.as_millis() as u64
             },
             params.m_ctx.shard_id,
-            &[KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key)]
+            &[KeyValue::new(user_attr_name, user_partition_key)]
         );
     }
 
@@ -1829,25 +1714,20 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
 
     #[cfg(feature = "metrics")]
     if let Some(user_partition_key) = user_partition_key {
+        let user_attr_name = metrics::USER_KEY.attribute_name().unwrap_or("user");
         with_metric!(
             user::BYTES_TX,
             add,
             wire_bytes_received,
             shard_id,
-            &[
-                KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key),
-                KeyValue::new("listener", params.listener_name)
-            ]
+            &[KeyValue::new(user_attr_name, user_partition_key), KeyValue::new("listener", params.listener_name)]
         );
         with_metric!(
             user::BYTES_RX,
             add,
             wire_bytes_sent,
             shard_id,
-            &[
-                KeyValue::new(metrics::USER_KEY.attribute_name().unwrap_or("user"), user_partition_key),
-                KeyValue::new("listener", params.listener_name)
-            ]
+            &[KeyValue::new(user_attr_name, user_partition_key), KeyValue::new("listener", params.listener_name)]
         );
     }
 
