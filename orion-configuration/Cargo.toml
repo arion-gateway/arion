@@ -47,6 +47,7 @@ tracing-appender = { workspace = true, features = ["parking_lot"] }
 tracing-subscriber = { workspace = true, features = ["env-filter", "std"] }
 jsonschema.workspace = true
 time.workspace = true
+triomphe.workspace = true
 
 [dev-dependencies]
 tracing-test.workspace = true

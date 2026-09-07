@@ -3,8 +3,8 @@ use orion_configuration::config::network_filters::http_connection_manager::http_
     CedarPolicy as CedarPolicyConfig, EnforcementMode, FailureMode,
 };
 use smol_str::SmolStr;
-use std::sync::Arc;
 use tracing::{debug, info};
+use triomphe::Arc;
 
 use cedar_policy::{EntityTypeName, EntityUid};
 

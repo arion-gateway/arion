@@ -1,4 +1,4 @@
-use std::{collections::HashMap, str::FromStr, sync::Arc, time::Instant};
+use std::{collections::HashMap, str::FromStr, time::Instant};
 
 use ahash::RandomState;
 use http::{request, Method, StatusCode};
@@ -9,6 +9,7 @@ use orion_configuration::config::{
     network_filters::http_connection_manager::http_filters::jwt::{JwtProvider, RemoteJwks},
 };
 use tracing::error;
+use triomphe::Arc;
 
 use crate::{
     clusters::{clusters_manager, RoutingContext, RoutingPriority},

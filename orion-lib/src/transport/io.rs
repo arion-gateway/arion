@@ -1,9 +1,9 @@
 use std::{
     io::{self, IoSlice},
     pin::Pin,
-    sync::Arc,
     task::{Context, Poll},
 };
+use triomphe::Arc;
 
 use tokio::io::{AsyncRead, AsyncWrite, DuplexStream, ReadBuf};
 use tokio::net::TcpStream;

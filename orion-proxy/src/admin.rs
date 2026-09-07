@@ -15,7 +15,8 @@
 //
 //
 
-use std::{sync::Arc, time::Instant};
+use std::time::Instant;
+use triomphe::Arc;
 
 use axum::{routing::get, Router};
 use orion_configuration::config::Bootstrap;

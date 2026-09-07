@@ -1,4 +1,5 @@
-use std::sync::{Arc, LazyLock, Once};
+use std::sync::{LazyLock, Once};
+use triomphe::Arc;
 use std::time::{Duration, Instant};
 
 use dashmap::DashMap;

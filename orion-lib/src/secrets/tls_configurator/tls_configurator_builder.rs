@@ -15,7 +15,7 @@
 //
 //
 
-use std::sync::Arc;
+use std::sync::Arc as StdArc;
 
 use orion_configuration::config::secret::TrustChainVerification;
 use rustls::{
@@ -37,14 +37,14 @@ pub struct WantsCertStore {
 pub struct WantsServerCert {
     supported_versions: Vec<&'static SupportedProtocolVersion>,
     validation_context_secret_id: Option<String>,
-    certificate_store: Option<Arc<RootCertStore>>,
+    certificate_store: Option<StdArc<RootCertStore>>,
 }
 
 #[derive(Debug, Clone)]
 pub struct WantsClientCert {
     supported_versions: Vec<&'static SupportedProtocolVersion>,
     validation_context_secret_id: Option<String>,
-    certificate_store: Arc<RootCertStore>,
+    certificate_store: StdArc<RootCertStore>,
 }
 
 #[derive(Debug, Clone)]
@@ -82,7 +82,7 @@ impl SecretHolder {
 pub struct WantsToBuildServer {
     pub supported_versions: Vec<&'static SupportedProtocolVersion>,
     pub validation_context_secret_id: Option<String>,
-    pub certificate_store: Option<Arc<RootCertStore>>,
+    pub certificate_store: Option<StdArc<RootCertStore>>,
     pub server_ids_and_certificates: Vec<SecretHolder>,
     pub require_client_cert: bool,
 }
@@ -91,7 +91,7 @@ pub struct WantsToBuildServer {
 pub struct WantsToVerifyClientCert {
     supported_versions: Vec<&'static SupportedProtocolVersion>,
     validation_context_secret_id: Option<String>,
-    certificate_store: Option<Arc<RootCertStore>>,
+    certificate_store: Option<StdArc<RootCertStore>>,
     server_ids_and_certificates: Vec<SecretHolder>,
 }
 
@@ -99,19 +99,19 @@ pub struct WantsToVerifyClientCert {
 pub struct WantsSni {
     supported_versions: Vec<&'static SupportedProtocolVersion>,
     validation_context_secret_id: Option<String>,
-    certificate_store: Arc<RootCertStore>,
+    certificate_store: StdArc<RootCertStore>,
     certificate_secret_id: Option<String>,
-    client_certificate: Option<Arc<ClientCert>>,
+    client_certificate: Option<StdArc<ClientCert>>,
 }
 
 #[derive(Debug, Clone)]
 pub struct WantsToBuildClient {
     pub supported_versions: Vec<&'static SupportedProtocolVersion>,
     pub validation_context_secret_id: Option<String>,
-    pub certificate_store: Arc<RootCertStore>,
+    pub certificate_store: StdArc<RootCertStore>,
     pub certificate_secret_id: Option<String>,
     pub trust_chain_verification: TrustChainVerification,
-    pub client_certificate: Option<Arc<ClientCert>>,
+    pub client_certificate: Option<StdArc<ClientCert>>,
     pub sni: String,
 }
 
@@ -134,7 +134,7 @@ impl TlsContextBuilder<WantsCertStore> {
     pub fn with_server_certificate_store(
         self,
         secret_id: Option<String>,
-        certificate_store: Arc<RootCertStore>,
+        certificate_store: StdArc<RootCertStore>,
     ) -> TlsContextBuilder<WantsServerCert> {
         let state = WantsServerCert {
             supported_versions: self.state.supported_versions,
@@ -156,7 +156,7 @@ impl TlsContextBuilder<WantsCertStore> {
     pub fn with_client_certificate_store(
         self,
         secret_id: Option<String>,
-        certificate_store: Arc<RootCertStore>,
+        certificate_store: StdArc<RootCertStore>,
     ) -> TlsContextBuilder<WantsClientCert> {
         let state = WantsClientCert {
             supported_versions: self.state.supported_versions,
@@ -201,7 +201,7 @@ impl TlsContextBuilder<WantsClientCert> {
     pub fn with_client_certificate(
         self,
         secret_id: Option<String>,
-        client_certificate: Arc<ClientCert>,
+        client_certificate: StdArc<ClientCert>,
     ) -> TlsContextBuilder<WantsSni> {
         TlsContextBuilder {
             state: WantsSni {
@@ -251,10 +251,10 @@ impl TlsContextBuilder<WantsToBuildServer> {
                 return Err("requireClientCertificate is true but no validation_context is configured".into());
             },
             (true, Some(certificate_store)) => {
-                Some(WebPkiClientVerifier::builder(Arc::clone(certificate_store)).build()?)
+                Some(WebPkiClientVerifier::builder(StdArc::clone(certificate_store)).build()?)
             },
             (false, Some(certificate_store)) => {
-                Some(WebPkiClientVerifier::builder(Arc::clone(certificate_store)).allow_unauthenticated().build()?)
+                Some(WebPkiClientVerifier::builder(StdArc::clone(certificate_store)).allow_unauthenticated().build()?)
             },
             (false, None) => None,
         };
@@ -302,15 +302,15 @@ impl TlsContextBuilder<WantsToBuildServer> {
                 names_to_register.sort_unstable();
                 names_to_register.dedup();
 
-                // Wrap the CertifiedKey in an Arc once, so it can be shared across multiple keys
-                let ck_arc = Arc::new(ck);
+                // Wrap the CertifiedKey in an StdArc once, so it can be shared across multiple keys
+                let ck_arc = StdArc::new(ck);
                 let mut has_errors = false;
 
                 // Register the certificate for every extracted name
                 for name in names_to_register {
-                    // Note: you will need to update resolver.add to accept Arc<CertifiedKey>
+                    // Note: you will need to update resolver.add to accept StdArc<CertifiedKey>
                     // or create a new method resolver.add_arc(name, ck_arc)
-                    if let Err(e) = resolver.add(&name, Arc::clone(&ck_arc)) {
+                    if let Err(e) = resolver.add(&name, StdArc::clone(&ck_arc)) {
                         warn!("UpstreamContext: Can't add certificate for secret '{secret_name}' {name} - {e}");
                         has_errors = true;
                     }
@@ -327,7 +327,7 @@ impl TlsContextBuilder<WantsToBuildServer> {
         if errors > 0 {
             Err(format!("Found {errors} errors in Tls context").into())
         } else {
-            Ok(builder.with_cert_resolver(Arc::new(resolver)))
+            Ok(builder.with_cert_resolver(StdArc::new(resolver)))
         }
     }
 
@@ -357,11 +357,11 @@ impl TlsContextBuilder<WantsToBuildClient> {
 
         let builder = match self.state.trust_chain_verification {
             TrustChainVerification::VerifyTrustChain => {
-                let verifier = WebPkiServerVerifier::builder(Arc::clone(&self.state.certificate_store)).build()?;
+                let verifier = WebPkiServerVerifier::builder(StdArc::clone(&self.state.certificate_store)).build()?;
                 builder.with_webpki_verifier(verifier)
             },
             TrustChainVerification::AcceptUntrusted => {
-                let verifier = Arc::new(NoCertificateVerification {});
+                let verifier = StdArc::new(NoCertificateVerification {});
                 warn!("TrustChainVerification::AcceptUntrusted : dangerous not verifying upstream certificate for cluster with sni: {}", self.state.sni);
                 builder.dangerous().with_custom_certificate_verifier(verifier)
             },

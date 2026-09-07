@@ -36,7 +36,7 @@ use parking_lot::Mutex;
 use std::{
     sync::{
         atomic::{AtomicU32, AtomicU64, Ordering},
-        Arc,
+        Arc as StdArc,
     },
     time::Duration,
 };
@@ -47,7 +47,7 @@ const IDLE_CLEANUP_INTERVAL: Duration = Duration::from_secs(1);
 
 struct H2Conn {
     tx: SendRequest<OrionRequestBody>,
-    in_flight: Arc<AtomicU32>,
+    in_flight: StdArc<AtomicU32>,
     last_used: AtomicU64,
 }
 
@@ -59,14 +59,14 @@ pub struct Http2PoolInner {
 }
 
 impl Http2PoolInner {
-    pub fn new(idle_timeout: Duration, max_concurrent_streams: Option<u32>) -> Arc<Self> {
-        let this = Arc::new(Self {
+    pub fn new(idle_timeout: Duration, max_concurrent_streams: Option<u32>) -> StdArc<Self> {
+        let this = StdArc::new(Self {
             conns: Mutex::new(Vec::new()),
             idle_timeout,
             max_concurrent_streams,
             clock: quanta::Clock::new(),
         });
-        let weak = Arc::downgrade(&this);
+        let weak = StdArc::downgrade(&this);
         tokio::spawn(async move {
             loop {
                 pingora_timeout::sleep(IDLE_CLEANUP_INTERVAL).await;
@@ -96,7 +96,7 @@ impl Http2PoolInner {
         });
     }
 
-    fn checkout(&self) -> Option<(SendRequest<OrionRequestBody>, Arc<AtomicU32>)> {
+    fn checkout(&self) -> Option<(SendRequest<OrionRequestBody>, StdArc<AtomicU32>)> {
         let conns = self.conns.lock();
         for conn in conns.iter() {
             if conn.tx.is_closed() {
@@ -107,13 +107,13 @@ impl Http2PoolInner {
             if has_capacity {
                 conn.in_flight.fetch_add(1, Ordering::Relaxed);
                 conn.last_used.store(self.clock.raw(), Ordering::Relaxed);
-                return Some((conn.tx.clone(), Arc::clone(&conn.in_flight)));
+                return Some((conn.tx.clone(), StdArc::clone(&conn.in_flight)));
             }
         }
         None
     }
 
-    fn insert(&self, tx: SendRequest<OrionRequestBody>, in_flight: Arc<AtomicU32>) {
+    fn insert(&self, tx: SendRequest<OrionRequestBody>, in_flight: StdArc<AtomicU32>) {
         self.conns.lock().push(H2Conn { tx, in_flight, last_used: AtomicU64::new(self.clock.raw()) });
     }
 
@@ -123,7 +123,7 @@ impl Http2PoolInner {
 }
 
 pub struct Http2StreamPermit {
-    in_flight: Arc<AtomicU32>,
+    in_flight: StdArc<AtomicU32>,
 }
 
 impl Http2StreamPermit {
@@ -149,10 +149,10 @@ struct Http2PoolArg {
 #[derive(Clone, Debug, Default)]
 struct Http2PoolBuilder;
 
-impl LocalBuilder<Http2PoolArg, Arc<Http2Pool>> for Http2PoolBuilder {
-    fn build(&self, arg: Http2PoolArg) -> Arc<Http2Pool> {
+impl LocalBuilder<Http2PoolArg, StdArc<Http2Pool>> for Http2PoolBuilder {
+    fn build(&self, arg: Http2PoolArg) -> StdArc<Http2Pool> {
         let max_concurrent_streams = arg.http2_options.max_concurrent_streams().and_then(|max| u32::try_from(max).ok());
-        Arc::new(Http2Pool {
+        StdArc::new(Http2Pool {
             inner: Http2PoolInner::new(arg.idle_timeout, max_concurrent_streams),
             connect: arg.connect,
             dst: arg.dst,
@@ -163,7 +163,7 @@ impl LocalBuilder<Http2PoolArg, Arc<Http2Pool>> for Http2PoolBuilder {
 
 #[derive(Clone)]
 pub struct Http2ClientExt {
-    pools: Arc<ThreadLocalObject<Arc<Http2Pool>, Http2PoolBuilder, Http2PoolArg>>,
+    pools: StdArc<ThreadLocalObject<StdArc<Http2Pool>, Http2PoolBuilder, Http2PoolArg>>,
 }
 
 impl std::fmt::Debug for Http2ClientExt {
@@ -180,7 +180,7 @@ impl Http2ClientExt {
         http2_options: Http2ProtocolOptions,
     ) -> Result<Self> {
         Ok(Self {
-            pools: Arc::new(ThreadLocalObject::new(
+            pools: StdArc::new(ThreadLocalObject::new(
                 Http2PoolBuilder,
                 Http2PoolArg {
                     connect: Http2Connect::Plain(connector),
@@ -199,7 +199,7 @@ impl Http2ClientExt {
         http2_options: Http2ProtocolOptions,
     ) -> Result<Self> {
         Ok(Self {
-            pools: Arc::new(ThreadLocalObject::new(
+            pools: StdArc::new(ThreadLocalObject::new(
                 Http2PoolBuilder,
                 Http2PoolArg {
                     connect: Http2Connect::Tls(connector),
@@ -212,18 +212,18 @@ impl Http2ClientExt {
     }
 
     #[inline]
-    pub fn local_pool(&self) -> Arc<Http2Pool> {
-        Arc::clone(self.pools.get_local())
+    pub fn local_pool(&self) -> StdArc<Http2Pool> {
+        StdArc::clone(self.pools.get_local())
     }
 
     #[inline]
     pub fn strong_count(&self) -> usize {
-        Arc::strong_count(&self.pools)
+        StdArc::strong_count(&self.pools)
     }
 }
 
 pub struct Http2Pool {
-    inner: Arc<Http2PoolInner>,
+    inner: StdArc<Http2PoolInner>,
     connect: Http2Connect,
     dst: Uri,
     http2_options: Http2ProtocolOptions,
@@ -247,13 +247,13 @@ impl Http2Pool {
         }
     }
 
-    async fn checkout(&self) -> Result<(SendRequest<OrionRequestBody>, Arc<AtomicU32>)> {
+    async fn checkout(&self) -> Result<(SendRequest<OrionRequestBody>, StdArc<AtomicU32>)> {
         if let Some(ready) = self.inner.checkout() {
             return Ok(ready);
         }
         let tx = self.connect_one().await?;
-        let in_flight = Arc::new(AtomicU32::new(1));
-        self.inner.insert(tx.clone(), Arc::clone(&in_flight));
+        let in_flight = StdArc::new(AtomicU32::new(1));
+        self.inner.insert(tx.clone(), StdArc::clone(&in_flight));
         Ok((tx, in_flight))
     }
 
@@ -273,7 +273,7 @@ impl Http2Pool {
     }
 }
 
-fn attach_stream_permit(in_flight: Arc<AtomicU32>, response: Response<Incoming>) -> Response<OrionResponseBody> {
+fn attach_stream_permit(in_flight: StdArc<AtomicU32>, response: Response<Incoming>) -> Response<OrionResponseBody> {
     let (parts, body) = response.into_parts();
     if http_body::Body::is_end_stream(&body) {
         in_flight.fetch_sub(1, Ordering::Relaxed);

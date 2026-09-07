@@ -58,7 +58,7 @@ use rustls::ClientConfig;
 #[cfg(feature = "metrics")]
 use smallvec::SmallVec;
 use smol_str::ToSmolStr;
-use std::{future::Future, io, mem, sync::Arc, time::Duration};
+use std::{future::Future, io, mem, sync::Arc as StdArc, time::Duration};
 use tracing::debug;
 use webpki::types::ServerName;
 
@@ -464,7 +464,7 @@ impl HttpChannel {
                         retry_policy,
                         priority,
                         move |req| {
-                            let pool = Arc::clone(&pool);
+                            let pool = StdArc::clone(&pool);
                             async move { pool.send(req).await }
                         },
                         output,
@@ -482,7 +482,7 @@ impl HttpChannel {
                         retry_policy,
                         priority,
                         move |req| {
-                            let pool = Arc::clone(&pool);
+                            let pool = StdArc::clone(&pool);
                             async move { pool.send(req).await }
                         },
                         output,
@@ -502,7 +502,7 @@ impl HttpChannel {
                         retry_policy,
                         priority,
                         move |req| {
-                            let pool = Arc::clone(&pool);
+                            let pool = StdArc::clone(&pool);
                             async move { pool.send(req).await }
                         },
                         output,
@@ -520,7 +520,7 @@ impl HttpChannel {
                         retry_policy,
                         priority,
                         move |req| {
-                            let pool = Arc::clone(&pool);
+                            let pool = StdArc::clone(&pool);
                             async move { pool.send(req).await }
                         },
                         output,

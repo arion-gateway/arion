@@ -49,9 +49,10 @@ use orion_metrics::{metrics::init_global_metrics, wait_for_metrics_setup, OtelEx
 
 use parking_lot::RwLock;
 use std::{
-    sync::Arc,
+    sync::Arc as StdArc,
     thread::{self, JoinHandle},
 };
+use triomphe::Arc;
 
 use tracing::{debug, info, warn};
 
@@ -370,7 +371,7 @@ async fn spawn_services(info: ServiceInfo) -> Result<()> {
         let xds_connect = XdsConfigurationHandler::connect(&node, ads_cluster_names).await?;
         let mcp_handler = xds_connect
             .as_ref()
-            .map(|(_, sub_mgr, _)| orion_lib::mcp_xds_handler::init_mcp_xds_handler(Arc::clone(sub_mgr)));
+            .map(|(_, sub_mgr, _)| orion_lib::mcp_xds_handler::init_mcp_xds_handler(StdArc::clone(sub_mgr)));
 
         push_initial_listeners(bootstrap_clone, listener_factories, configuration_senders_clone.clone()).await?;
 

@@ -4146,6 +4146,7 @@ dependencies = [
  "tracing-rolling-file",
  "tracing-subscriber",
  "tracing-test",
+ "triomphe",
  "url",
 ]
 
@@ -4367,6 +4368,7 @@ dependencies = [
  "tracing-appender",
  "tracing-rolling-file",
  "tracing-test",
+ "triomphe",
  "twox-hash",
  "typed-builder",
  "upon",
@@ -4454,6 +4456,7 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "triomphe",
 ]
 
 [[package]]
@@ -7406,6 +7409,16 @@ checksum = "ad06847b7afb65c7866a36664b75c40b895e318cea4f71299f013fb22965329d"
 dependencies = [
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "triomphe"
+version = "0.1.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b40688ea6389c8171614b25491f71d4a27946e0c7ce2da1c6de27e25abf1a0ae"
+dependencies = [
+ "serde",
+ "stable_deref_trait",
 ]
 
 [[package]]

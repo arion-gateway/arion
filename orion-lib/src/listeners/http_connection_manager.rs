@@ -132,7 +132,8 @@ use orion_format::types::ResponseFlags as FmtResponseFlags;
 use route::RouteContext;
 use smol_str::SmolStr;
 use std::collections::HashMap;
-use std::{fmt, future::Future, result::Result as StdResult, sync::Arc};
+use std::{fmt, future::Future, result::Result as StdResult, sync::Arc as StdArc};
+use triomphe::Arc;
 
 use tracing::{debug, error};
 use upgrades as upgrade_utils;
@@ -214,7 +215,7 @@ impl HttpConnectionManagerBuilder {
         let filterchain_id = self.filterchain_id.unwrap_or(0);
         let partial = self.connection_manager;
         let initial_routing_state = partial.router.map(|router| {
-            Arc::new(RoutingState {
+            StdArc::new(RoutingState {
                 route_configuration: router,
                 http_filters_per_route: partial.http_filters_per_route,
             })
@@ -396,7 +397,7 @@ impl HttpConnectionManager {
 
     pub fn update_route(&self, route: RouteConfiguration) {
         let http_filters_per_route = per_route_http_filters(&route, &self.http_filters_hcm);
-        let new_state = Arc::new(RoutingState { route_configuration: route, http_filters_per_route });
+        let new_state = StdArc::new(RoutingState { route_configuration: route, http_filters_per_route });
         self.routing_state.store(Some(new_state));
     }
 
@@ -406,13 +407,13 @@ impl HttpConnectionManager {
 
     #[allow(clippy::type_complexity)]
     pub(crate) fn transaction_context_svc(
-        self: &Arc<Self>,
+        this: &Arc<Self>,
         downstream: Arc<DownstreamMetadata>,
         stream_metrics: Arc<StreamMetrics>,
     ) -> TransactionLifecycleSvc<TransactionSvc<HttpPipelineSvc>> {
-        let pipeline_service = HttpPipelineSvc::new(Arc::clone(self));
-        let transaction_service = TransactionSvc::new(Arc::clone(self), pipeline_service);
-        TransactionLifecycleSvc::new(Arc::clone(self), downstream, stream_metrics, transaction_service)
+        let pipeline_service = HttpPipelineSvc::new(Arc::clone(this));
+        let transaction_service = TransactionSvc::new(Arc::clone(this), pipeline_service);
+        TransactionLifecycleSvc::new(Arc::clone(this), downstream, stream_metrics, transaction_service)
     }
 }
 
@@ -610,8 +611,7 @@ impl TransactionContext {
     #[allow(unused_variables)]
     #[allow(clippy::too_many_lines)]
     #[allow(clippy::let_unit_value)]
-    #[allow(clippy::unused_self)]
-    fn trace_status_code(self: Arc<Self>, res: &Result<Response<OrionClientBody>>, listener_name: &'static str) {
+    fn trace_status_code(&self, res: &Result<Response<OrionClientBody>>, listener_name: &'static str) {
         if let Ok(response) = &res {
             let status_code = response.status().as_u16();
 
@@ -932,7 +932,7 @@ fn match_request_route<'a, B>(request: &Request<B>, route_config: &'a RouteConfi
     Some(CachedRoute { route: chosen_route, route_match: route_match_result, vh: chosen_vh, vh_index, route_index })
 }
 
-impl RequestHandler<Request<OrionRequestBody>, &HttpConnectionManager> for Arc<RoutingState> {
+impl RequestHandler<Request<OrionRequestBody>, &HttpConnectionManager> for StdArc<RoutingState> {
     #[allow(clippy::too_many_lines)]
     async fn to_response(
         self,
@@ -1216,7 +1216,7 @@ impl<B> HttpRequest<B> {
 /// `HttpRequest` after route configuration has been resolved.
 pub struct RoutedHttpRequest<B> {
     pub http: HttpRequest<B>,
-    pub routing_state: Arc<RoutingState>,
+    pub routing_state: StdArc<RoutingState>,
 }
 
 #[derive(Clone)]

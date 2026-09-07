@@ -15,11 +15,12 @@
 //
 //
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::collections::BTreeMap;
 
 use smol_str::SmolStr;
 use tokio::sync::{broadcast, mpsc, Notify};
 use tracing::{info, warn};
+use triomphe::Arc;
 
 use orion_configuration::config::{
     network_filters::http_connection_manager::RouteConfiguration, Listener as ListenerConfig,

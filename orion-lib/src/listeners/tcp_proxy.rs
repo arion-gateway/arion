@@ -40,7 +40,7 @@ use orion_configuration::config::{
     access_log::AccessLog, cluster::ClusterSpecifier as ClusterSpecifierConfig,
     network_filters::tcp_proxy::TcpProxy as TcpProxyConfig,
 };
-use std::sync::Arc;
+use triomphe::Arc;
 
 #[cfg(feature = "metrics")]
 use {

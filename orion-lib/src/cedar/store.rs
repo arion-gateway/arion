@@ -2,8 +2,8 @@ use cedar_policy::{
     Authorizer, Context, Decision, Entities, EntityUid, PolicySet, Request, Schema, ValidationMode, Validator,
 };
 use smol_str::{SmolStr, ToSmolStr};
-use std::sync::Arc;
 use tracing::{debug, warn};
+use triomphe::Arc;
 
 use super::error::{Error, ValidationError};
 

@@ -21,7 +21,7 @@ pub(crate) mod r#static;
 
 use enum_dispatch::enum_dispatch;
 use http::uri::Authority;
-use std::sync::Arc;
+use triomphe::Arc;
 
 use crate::clusters::{
     circuit_breaker::{CircuitBreakerCounters, ClusterCircuitBreaker},

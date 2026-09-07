@@ -51,11 +51,11 @@ mod tests {
 
     use super::*;
     use rustls::{pki_types::ServerName, ClientConfig, ClientConnection};
-    use std::{io::Cursor, sync::Arc};
+    use std::{io::Cursor, sync::Arc as StdArc};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     fn create_client_hello_with_sni(sni: &str) -> Vec<u8> {
-        let config = Arc::new(
+        let config = StdArc::new(
             ClientConfig::builder().with_root_certificates(rustls::RootCertStore::empty()).with_no_client_auth(),
         );
         let server_name = ServerName::try_from(sni.to_owned()).unwrap();

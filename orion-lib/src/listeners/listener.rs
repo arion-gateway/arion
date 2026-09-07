@@ -81,10 +81,11 @@ use std::{
     net::SocketAddr,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, OnceLock,
+        Arc as StdArc, OnceLock,
     },
     time::Instant,
 };
+use triomphe::Arc;
 use tokio::{
     net::{TcpListener, TcpSocket},
     sync::broadcast::{self},
@@ -219,7 +220,7 @@ pub struct ListenerContext {
     pub mcp: McpGatewayListenerContext,
 }
 
-static LISTENERS_CONTEXT: OnceLock<DashMap<&'static str, Arc<ListenerContext>>> = OnceLock::new();
+static LISTENERS_CONTEXT: OnceLock<DashMap<&'static str, StdArc<ListenerContext>>> = OnceLock::new();
 
 pub trait FilterListenerContext {
     fn get_filter_context(listener_name: &'static str) -> ArcRef<ListenerContext, Self>;
@@ -234,9 +235,9 @@ impl FilterListenerContext for McpGatewayListenerContext {
 }
 
 #[inline]
-fn get_listener_context(listener_name: &'static str) -> Arc<ListenerContext> {
+fn get_listener_context(listener_name: &'static str) -> StdArc<ListenerContext> {
     let dmap = LISTENERS_CONTEXT.get_or_init(DashMap::new);
-    Arc::clone(dmap.entry(listener_name).or_insert_with(|| Arc::new(ListenerContext::default())).value())
+    StdArc::clone(dmap.entry(listener_name).or_insert_with(|| StdArc::new(ListenerContext::default())).value())
 }
 
 #[derive(Debug)]

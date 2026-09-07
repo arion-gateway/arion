@@ -33,7 +33,7 @@ mod metrics_enabled {
     };
     use bytes::Buf;
     use pin_project::{pin_project, pinned_drop};
-    use std::sync::Arc;
+    use triomphe::Arc;
 
     type MetricsClosure =
         Box<dyn FnOnce(u64, &StreamMetrics, Option<EventKind>, ResponseFlags) + Send + Sync + 'static>;
@@ -189,7 +189,8 @@ mod metrics_enabled {
 
 #[cfg(not(any(feature = "access-log", feature = "metrics")))]
 mod metrics_disabled {
-    use std::{marker::PhantomData, sync::Arc};
+    use std::marker::PhantomData;
+    use triomphe::Arc;
 
     use crate::{event_error::EventKind, utils::StreamMetrics};
 

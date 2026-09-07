@@ -21,8 +21,8 @@ use crate::runtime_context::get_runtime_id;
 use crate::transport::AsyncInstrumentedStream;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::sync::Arc;
 use std::time::Instant;
+use triomphe::Arc;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 

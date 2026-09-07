@@ -33,8 +33,8 @@ use rustls::ClientConfig;
 use std::{
     collections::HashMap,
     net::{IpAddr, SocketAddr},
-    sync::Arc,
 };
+use triomphe::Arc;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 const V1_PREFIX_LEN: usize = 5;

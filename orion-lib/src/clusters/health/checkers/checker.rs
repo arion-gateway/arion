@@ -15,7 +15,8 @@
 //
 //
 
-use std::{future::Future, sync::Arc, time::Duration};
+use triomphe::Arc;
+use std::{future::Future, time::Duration};
 
 use orion_configuration::config::cluster::{health_check::ClusterHealthCheck, HealthStatus};
 use pingora_timeout::fast_timeout::fast_timeout;

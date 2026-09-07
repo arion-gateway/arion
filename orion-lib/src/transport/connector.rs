@@ -20,10 +20,10 @@ use std::{
     io,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     pin::Pin,
-    sync::Arc,
     task::{self, Poll},
     time::{Duration, Instant},
 };
+use triomphe::Arc;
 
 use http::uri::Authority;
 use hyper::Uri;

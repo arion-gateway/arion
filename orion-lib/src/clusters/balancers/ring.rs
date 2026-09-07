@@ -15,11 +15,11 @@
 //
 //
 
+use triomphe::Arc;
 use std::{
     fmt::Debug,
     hash::{Hash, Hasher},
-    sync::Arc,
-};
+    };
 
 use rand::Rng;
 
@@ -156,7 +156,8 @@ impl<E: WeightedEndpoint + EndpointWithAuthority> FromIterator<Arc<E>> for RingH
 
 #[cfg(test)]
 mod test {
-    use std::{ops::ControlFlow, sync::Arc};
+    use std::ops::ControlFlow;
+    use triomphe::Arc;
 
     use http::uri::Authority;
     use rand::{rngs::SmallRng, Rng, SeedableRng};

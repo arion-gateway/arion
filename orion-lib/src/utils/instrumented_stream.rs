@@ -3,11 +3,13 @@ use std::{
     pin::Pin,
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc, LazyLock,
+        LazyLock,
     },
     task::{Context, Poll},
     time::Duration,
 };
+
+use triomphe::Arc;
 
 use atomicoption::AtomicOption;
 

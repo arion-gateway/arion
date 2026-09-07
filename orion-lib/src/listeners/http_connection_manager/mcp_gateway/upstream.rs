@@ -1,4 +1,4 @@
-use std::{io, time::Instant};
+use std::{io, sync::Arc as StdArc, time::Instant};
 
 use bytes::Bytes;
 use http::{header::HOST, HeaderValue, Request, Response, StatusCode};
@@ -116,7 +116,7 @@ pub enum ToolInvocationOutcome {
 }
 
 pub async fn invoke_rest_tool(
-    tool: &std::sync::Arc<ToolEntry>,
+    tool: &StdArc<ToolEntry>,
     request: Request<OrionRequestBody>,
     upstream_limits: &UpstreamLimits,
     req_ctx: &RequestCtx,
@@ -143,7 +143,7 @@ pub async fn invoke_rest_tool(
 }
 
 async fn dispatch_rest_tool(
-    tool: &std::sync::Arc<ToolEntry>,
+    tool: &StdArc<ToolEntry>,
     mut request: Request<OrionRequestBody>,
     upstream_limits: &UpstreamLimits,
     req_ctx: &RequestCtx,

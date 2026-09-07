@@ -30,7 +30,7 @@ use hyper::{
 };
 use hyper_rustls::HttpsConnector;
 use parking_lot::Mutex;
-use std::{sync::Arc, time::Duration};
+use std::{sync::Arc as StdArc, time::Duration};
 use tower::Service;
 use tracing::debug;
 
@@ -48,9 +48,9 @@ pub struct Http1PoolInner {
 }
 
 impl Http1PoolInner {
-    pub fn new(idle_timeout: Duration) -> Arc<Self> {
-        let this = Arc::new(Self { idle: Mutex::new(Vec::new()), idle_timeout, clock: quanta::Clock::new() });
-        let weak = Arc::downgrade(&this);
+    pub fn new(idle_timeout: Duration) -> StdArc<Self> {
+        let this = StdArc::new(Self { idle: Mutex::new(Vec::new()), idle_timeout, clock: quanta::Clock::new() });
+        let weak = StdArc::downgrade(&this);
         tokio::spawn(async move {
             loop {
                 pingora_timeout::sleep(IDLE_CLEANUP_INTERVAL).await;
@@ -98,12 +98,12 @@ impl Http1PoolInner {
 
 /// Concrete handle that returns an HTTP/1 sender to its pool when the body ends.
 pub struct Http1Permit {
-    inner: Arc<Http1PoolInner>,
+    inner: StdArc<Http1PoolInner>,
     tx: SendRequest<OrionRequestBody>,
 }
 
 impl Http1Permit {
-    pub fn new(inner: Arc<Http1PoolInner>, tx: SendRequest<OrionRequestBody>) -> Self {
+    pub fn new(inner: StdArc<Http1PoolInner>, tx: SendRequest<OrionRequestBody>) -> Self {
         Self { inner, tx }
     }
 
@@ -136,9 +136,9 @@ struct Http1PoolArg {
 #[derive(Clone, Debug, Default)]
 struct Http1PoolBuilder;
 
-impl LocalBuilder<Http1PoolArg, Arc<Http1Pool>> for Http1PoolBuilder {
-    fn build(&self, arg: Http1PoolArg) -> Arc<Http1Pool> {
-        Arc::new(Http1Pool {
+impl LocalBuilder<Http1PoolArg, StdArc<Http1Pool>> for Http1PoolBuilder {
+    fn build(&self, arg: Http1PoolArg) -> StdArc<Http1Pool> {
+        StdArc::new(Http1Pool {
             inner: Http1PoolInner::new(arg.idle_timeout),
             connect: arg.connect,
             dst: arg.dst,
@@ -151,7 +151,7 @@ impl LocalBuilder<Http1PoolArg, Arc<Http1Pool>> for Http1PoolBuilder {
 #[derive(Clone)]
 pub struct Http1ClientExt {
     is_tls: bool,
-    pools: Arc<ThreadLocalObject<Arc<Http1Pool>, Http1PoolBuilder, Http1PoolArg>>,
+    pools: StdArc<ThreadLocalObject<StdArc<Http1Pool>, Http1PoolBuilder, Http1PoolArg>>,
 }
 
 impl std::fmt::Debug for Http1ClientExt {
@@ -164,7 +164,7 @@ impl Http1ClientExt {
     pub fn plain(connector: UnifiedConnector, authority: &Authority, idle_timeout: Duration) -> Result<Self> {
         Ok(Self {
             is_tls: false,
-            pools: Arc::new(ThreadLocalObject::new(
+            pools: StdArc::new(ThreadLocalObject::new(
                 Http1PoolBuilder,
                 Http1PoolArg {
                     connect: Http1Connect::Plain(connector),
@@ -183,7 +183,7 @@ impl Http1ClientExt {
     ) -> Result<Self> {
         Ok(Self {
             is_tls: true,
-            pools: Arc::new(ThreadLocalObject::new(
+            pools: StdArc::new(ThreadLocalObject::new(
                 Http1PoolBuilder,
                 Http1PoolArg {
                     connect: Http1Connect::Tls(connector),
@@ -201,13 +201,13 @@ impl Http1ClientExt {
     }
 
     #[inline]
-    pub fn local_pool(&self) -> Arc<Http1Pool> {
-        Arc::clone(self.pools.get_local())
+    pub fn local_pool(&self) -> StdArc<Http1Pool> {
+        StdArc::clone(self.pools.get_local())
     }
 
     #[inline]
     pub fn strong_count(&self) -> usize {
-        Arc::strong_count(&self.pools)
+        StdArc::strong_count(&self.pools)
     }
 }
 
@@ -216,7 +216,7 @@ impl Http1ClientExt {
 /// A sender is checked out for a request and returned only after the response
 /// body is fully streamed (or dropped at end-of-stream).
 pub struct Http1Pool {
-    inner: Arc<Http1PoolInner>,
+    inner: StdArc<Http1PoolInner>,
     connect: Http1Connect,
     dst: Uri,
     is_tls: bool,
@@ -279,7 +279,7 @@ impl Http1Pool {
 }
 
 fn attach_permit(
-    inner: &Arc<Http1PoolInner>,
+    inner: &StdArc<Http1PoolInner>,
     tx: SendRequest<OrionRequestBody>,
     response: Response<Incoming>,
 ) -> Response<OrionResponseBody> {
@@ -297,7 +297,7 @@ fn attach_permit(
     Response::from_parts(
         parts,
         OnEndBody::new(TimeoutBody::new(None, PolyBody::from(body)))
-            .with_on_end(BodyEndPermit::Http1(Http1Permit::new(Arc::clone(inner), tx))),
+            .with_on_end(BodyEndPermit::Http1(Http1Permit::new(StdArc::clone(inner), tx))),
     )
 }
 

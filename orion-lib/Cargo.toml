@@ -110,6 +110,7 @@ http-serde-ext = { workspace = true, optional = true }
 bincode-next = { version = "3.1.1", features = ["serde"], optional = true }
 itoa.workspace = true
 flume = { workspace = true }
+triomphe = { workspace = true }
 [dev-dependencies]
 orion-data-plane-api.workspace = true
 serde_yaml.workspace           = true

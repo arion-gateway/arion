@@ -29,7 +29,7 @@ use crate::{
 };
 use http::uri::Authority;
 use orion_configuration::config::cluster::{HealthCheck, HealthStatus};
-use std::sync::Arc;
+use triomphe::Arc;
 use tracing::debug;
 
 #[derive(Debug, Clone)]

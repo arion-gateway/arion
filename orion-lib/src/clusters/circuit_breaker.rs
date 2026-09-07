@@ -15,9 +15,9 @@
 //
 //
 
+use triomphe::Arc;
 use std::sync::{
     atomic::{AtomicU32, Ordering},
-    Arc,
 };
 
 pub use orion_configuration::config::cluster::RoutingPriority;

@@ -15,7 +15,8 @@
 //
 //
 
-use std::{fmt::Debug, marker::PhantomData, sync::Arc};
+use triomphe::Arc;
+use std::{fmt::Debug, marker::PhantomData};
 
 use http::uri::Authority;
 use rustc_hash::FxHashMap as HashMap;
@@ -148,7 +149,7 @@ where
 #[cfg(test)]
 mod test {
     use orion_configuration::config::cluster::HttpProtocolOptions;
-    use std::sync::Arc;
+    use triomphe::Arc;
 
     use super::DefaultBalancer;
     use crate::{

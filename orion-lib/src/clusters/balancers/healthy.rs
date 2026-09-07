@@ -15,7 +15,8 @@
 //
 //
 
-use std::{fmt::Debug, sync::Arc};
+use triomphe::Arc;
+use std::{fmt::Debug};
 
 use super::{Balancer, WeightedEndpoint};
 use crate::{
@@ -114,7 +115,7 @@ where
 
 #[cfg(test)]
 mod test {
-    use std::sync::Arc;
+    use triomphe::Arc;
 
     use crate::clusters::{
         balancers::{healthy::HealthyBalancer, wrr::WeightedRoundRobinBalancer, WeightedEndpoint},

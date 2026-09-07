@@ -54,8 +54,9 @@ use rustls::{server::Acceptor, ServerConfig};
 use scopeguard::defer;
 use smallvec::SmallVec;
 use smol_str::SmolStr;
-use std::sync::Arc;
+use std::sync::Arc as StdArc;
 use tracing::{debug, warn};
+use triomphe::Arc;
 
 #[derive(Debug, Clone)]
 pub struct FilterchainType {
@@ -311,7 +312,7 @@ impl FilterchainType {
                     CodecType::Http2 => hyper_server.http2_only(),
                     CodecType::Auto => hyper_server,
                 };
-                let trans_svc = http_connection_manager.transaction_context_svc(metadata, Arc::clone(&stream_metrics));
+                let trans_svc = HttpConnectionManager::transaction_context_svc(http_connection_manager, metadata, Arc::clone(&stream_metrics));
                 hyper_server
                     .serve_connection_with_upgrades(stream, trans_svc)
                     .await
@@ -372,7 +373,7 @@ fn negotiate_codec_type<'a>(codec_type: CodecType, client_alpns: impl Iterator<I
 async fn start_tls(
     listener_name: &'static str,
     stream: AsyncInstrumentedStream,
-    config: Arc<ServerConfig>,
+    config: StdArc<ServerConfig>,
     codec_type: Option<CodecType>,
 ) -> Result<(AsyncInstrumentedStream, Option<AlpnCodecs>)> {
     let acceptor = tokio_rustls::LazyConfigAcceptor::new(Acceptor::default(), Box::new(stream));
@@ -400,7 +401,7 @@ async fn start_tls(
                         //  but maybe we should set this at the listener level and let rustls handle it the handshake.
                         //  since the spec says that rustls has to send a specific error if the client offers only unsupported alpn
                         config.alpn_protocols = vec![negotiated_codec_type.as_ref().to_owned()];
-                        (Arc::new(config), Some(negotiated_codec_type))
+                        (StdArc::new(config), Some(negotiated_codec_type))
                     } else {
                         // this error message could be better but is a bit of a refactor to get the names
                         warn!("Couldn't agree on a common codec");
@@ -409,7 +410,7 @@ async fn start_tls(
                             .iter()
                             .map(|alpn| alpn.as_ref().to_owned())
                             .collect::<Vec<_>>();
-                        (Arc::new(config), None)
+                        (StdArc::new(config), None)
                     }
                 },
                 (Some(desired), None) => {

@@ -33,18 +33,18 @@ use rustls::{
 use rustls_pemfile::{certs, pkcs8_private_keys};
 use serde::Serialize;
 use smol_str::{format_smolstr, SmolStr, ToSmolStr};
-use std::sync::Arc;
+use std::sync::Arc as StdArc;
 use tracing::{debug, warn};
 use webpki::types::ServerName;
 use x509_parser::extensions::GeneralName;
 
 #[derive(Clone, Debug)]
 pub struct CertStore {
-    pub store: Arc<RootCertStore>,
+    pub store: StdArc<RootCertStore>,
     pub config: ValidationContext,
 }
 
-impl From<CertStore> for Arc<RootCertStore> {
+impl From<CertStore> for StdArc<RootCertStore> {
     fn from(value: CertStore) -> Self {
         value.store
     }
@@ -69,29 +69,29 @@ impl TryFrom<&ValidationContext> for CertStore {
         if bad > 0 {
             Err("Some certs in the trust store were invalid".into())
         } else {
-            Ok(CertStore { store: Arc::new(root_store), config: validation_context.clone() })
+            Ok(CertStore { store: StdArc::new(root_store), config: validation_context.clone() })
         }
     }
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct SecretManager {
-    certificate_secrets: HashMap<SmolStr, Arc<CertificateSecret>>,
-    validation_contexts: HashMap<SmolStr, Arc<CertStore>>,
+    certificate_secrets: HashMap<SmolStr, StdArc<CertificateSecret>>,
+    validation_contexts: HashMap<SmolStr, StdArc<CertStore>>,
 }
 
 #[derive(Debug, Clone)]
 pub struct CertificateSecret {
     pub name: Option<SmolStr>,
-    pub key: Arc<PrivateKeyDer<'static>>,
-    pub certs: Arc<Vec<CertificateDer<'static>>>,
+    pub key: StdArc<PrivateKeyDer<'static>>,
+    pub certs: StdArc<Vec<CertificateDer<'static>>>,
     pub config: TlsCertificate,
 }
 
 #[derive(Debug, Clone)]
 pub enum TransportSecret {
-    Certificate(Arc<CertificateSecret>),
-    ValidationContext(Arc<CertStore>),
+    Certificate(StdArc<CertificateSecret>),
+    ValidationContext(StdArc<CertStore>),
 }
 
 impl TryFrom<&TlsCertificate> for CertificateSecret {
@@ -132,8 +132,8 @@ impl TryFrom<&TlsCertificate> for CertificateSecret {
 
         debug!("Certificate Subject's common name {common_name:?}");
 
-        let key = Arc::new(PrivateKeyDer::Pkcs8(key));
-        Ok(CertificateSecret { name: server_name, key, certs: Arc::new(certificates), config: certificate.clone() })
+        let key = StdArc::new(PrivateKeyDer::Pkcs8(key));
+        Ok(CertificateSecret { name: server_name, key, certs: StdArc::new(certificates), config: certificate.clone() })
     }
 }
 
@@ -242,13 +242,13 @@ impl SecretManager {
         let secret_id = secret.name();
         let secret = match secret.kind() {
             Type::TlsCertificate(certificate) => {
-                let secret = Arc::new(CertificateSecret::try_from(certificate)?);
-                let _ = self.certificate_secrets.insert(secret_id.to_smolstr(), Arc::clone(&secret));
+                let secret = StdArc::new(CertificateSecret::try_from(certificate)?);
+                let _ = self.certificate_secrets.insert(secret_id.to_smolstr(), StdArc::clone(&secret));
                 TransportSecret::Certificate(secret)
             },
             Type::ValidationContext(validation_context) => {
-                let store = Arc::new(CertStore::try_from(validation_context)?);
-                let _ = self.validation_contexts.insert(secret_id.to_smolstr(), Arc::clone(&store));
+                let store = StdArc::new(CertStore::try_from(validation_context)?);
+                let _ = self.validation_contexts.insert(secret_id.to_smolstr(), StdArc::clone(&store));
                 TransportSecret::ValidationContext(store)
             },
         };
@@ -271,12 +271,12 @@ impl SecretManager {
         if value.is_none() {
             warn!("SDS secret '{secret_id}' is missing");
         }
-        Ok(value.map(|s| TransportSecret::Certificate(Arc::clone(s))))
+        Ok(value.map(|s| TransportSecret::Certificate(StdArc::clone(s))))
     }
 
     pub fn get_validation_context(&self, secret_id: &str) -> Result<Option<TransportSecret>> {
         let value = self.validation_contexts.get(secret_id);
-        Ok(value.map(|s| TransportSecret::ValidationContext(Arc::clone(s))))
+        Ok(value.map(|s| TransportSecret::ValidationContext(StdArc::clone(s))))
     }
     pub fn get_all_secrets(&self) -> Vec<Secret> {
         let mut secrets = Vec::new();

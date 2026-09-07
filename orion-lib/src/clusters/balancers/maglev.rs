@@ -15,7 +15,8 @@
 //
 //
 
-use std::{fmt::Debug, sync::Arc};
+use triomphe::Arc;
+use std::{fmt::Debug};
 
 use http::uri::Authority;
 use rand::Rng;
@@ -297,7 +298,7 @@ const fn is_prime(n: usize) -> bool {
 
 #[cfg(test)]
 mod test {
-    use std::sync::Arc;
+    use triomphe::Arc;
 
     use http::uri::Authority;
     use rand::{rngs::SmallRng, Rng, SeedableRng};

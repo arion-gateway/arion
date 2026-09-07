@@ -10,9 +10,10 @@ use std::{
     borrow::{Borrow, Cow},
     collections::HashMap,
     str::FromStr,
-    sync::Arc,
+    sync::Arc as StdArc,
     time::Instant,
 };
+use triomphe::Arc;
 
 use crate::listeners::http_connection_manager::jwt_authn::{
     error::JwkError,
@@ -92,7 +93,7 @@ impl ProviderContext {
                         if let JwksSourceSpecifier::RemoteJwks(remote) = &provider_config.jwks_source_specifier {
                             if let Ok(new_keys) = fetch_remote_jwks(remote, provider_name, provider_config).await {
                                 let deadline = Instant::now() + remote.cache_duration;
-                                self.key_map.store(Arc::new(Asset::Expiring((new_keys, deadline))));
+                                self.key_map.store(StdArc::new(Asset::Expiring((new_keys, deadline))));
                             }
                         }
                     }
@@ -109,7 +110,7 @@ impl ProviderContext {
                         if let Ok(new_keys) = fetch_remote_jwks(remote, provider_name, provider_config).await {
                             let deadline = Instant::now() + remote.cache_duration;
                             let res = new_keys.get(kid).cloned().map(|x| Asset::Expiring((x, deadline)));
-                            self.key_map.store(Arc::new(Asset::Expiring((new_keys, deadline))));
+                            self.key_map.store(StdArc::new(Asset::Expiring((new_keys, deadline))));
                             return res;
                         }
                     }
@@ -183,7 +184,7 @@ impl JwtAuthenticationBuilder {
                     }
                     providers.insert(
                         provider.to_owned(),
-                        Arc::new(ProviderContext { key_map: ArcSwap::new(Arc::new(keys)) }),
+                        Arc::new(ProviderContext { key_map: ArcSwap::new(StdArc::new(keys)) }),
                     );
                 },
                 Err(e) => {
@@ -448,7 +449,7 @@ impl JwtAuthentication {
                                         // store the new keys...
 
                                         let deadline = Instant::now() + remote.cache_duration;
-                                        context.key_map.store(Arc::new(Asset::Expiring((new_keys, deadline))));
+                                        context.key_map.store(StdArc::new(Asset::Expiring((new_keys, deadline))));
 
                                         // sleep until next tick
                                         interval.tick().await;

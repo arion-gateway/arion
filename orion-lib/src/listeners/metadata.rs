@@ -15,7 +15,8 @@
 //
 //
 
-use std::{collections::HashMap, net::SocketAddr, sync::Arc};
+use std::{collections::HashMap, net::SocketAddr};
+use triomphe::Arc;
 
 use orion_configuration::config::common::TlvType;
 use smol_str::SmolStr;

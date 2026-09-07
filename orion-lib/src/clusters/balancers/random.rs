@@ -15,7 +15,8 @@
 //
 //
 
-use std::{fmt::Debug, sync::Arc};
+use triomphe::Arc;
+use std::{fmt::Debug};
 
 use rand::{
     distributions::{Distribution, WeightedIndex},
@@ -83,7 +84,7 @@ impl<E: WeightedEndpoint> FromIterator<Arc<E>> for RandomBalancer<E> {
 
 #[cfg(test)]
 mod test {
-    use std::sync::Arc;
+    use triomphe::Arc;
 
     use rand::{rngs::SmallRng, SeedableRng};
 

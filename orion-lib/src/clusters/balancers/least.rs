@@ -15,7 +15,8 @@
 //
 //
 
-use std::{fmt::Debug, sync::Arc};
+use triomphe::Arc;
+use std::{fmt::Debug};
 
 use rand::{rngs::SmallRng, seq::IteratorRandom, Rng, SeedableRng};
 
@@ -185,7 +186,7 @@ fn all_equal<E>(items: &[LbItem<E>]) -> bool {
 
 #[cfg(test)]
 mod test {
-    use std::sync::Arc;
+    use triomphe::Arc;
 
     use rand::{rngs::SmallRng, SeedableRng};
 

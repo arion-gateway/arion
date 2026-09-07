@@ -15,6 +15,7 @@
 //
 //
 
+use triomphe::Arc;
 use super::{
     balancers::hash_policy::HashState,
     cached_watch::{CachedWatch, CachedWatcher},
@@ -37,8 +38,7 @@ use std::{
     borrow::Cow,
     cell::RefCell,
     collections::{btree_map::Entry as BTreeEntry, BTreeMap},
-    sync::Arc,
-};
+    };
 use tracing::{debug, warn};
 
 type ClusterID = &'static str;

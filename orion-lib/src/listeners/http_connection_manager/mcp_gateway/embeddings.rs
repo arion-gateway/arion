@@ -13,7 +13,7 @@
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
-    sync::Arc,
+    sync::Arc as StdArc,
 };
 
 use ahash::RandomState;
@@ -24,7 +24,7 @@ mod remote;
 
 pub(crate) use remote::EmbeddingsClient;
 
-pub type Embedding = Arc<Vec<f32>>;
+pub type Embedding = StdArc<Vec<f32>>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum EmbeddingError {

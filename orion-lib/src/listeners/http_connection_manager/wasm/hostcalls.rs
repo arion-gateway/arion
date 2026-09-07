@@ -6,7 +6,7 @@
 #![allow(clippy::manual_let_else)]
 #![allow(clippy::too_many_lines)]
 
-use std::sync::Arc;
+use triomphe::Arc;
 use std::sync::LazyLock;
 
 use crate::body::timeout_body::TimeoutBody;
