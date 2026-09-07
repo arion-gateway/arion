@@ -773,7 +773,7 @@ impl HttpPipelineSvc {
         http_modifiers::apply_prerouting_functions(&mut request, downstream_addr, &manager.xff_settings);
 
         // process request, get the response..
-        let result = routing_state.clone().to_response(&ctx, request, manager).await;
+        let result = routing_state.as_ref().to_response(&ctx, request, manager).await;
 
         // calculate the time to first byte..
         #[cfg(any(feature = "access-log", feature = "metrics"))]
@@ -808,7 +808,7 @@ impl HttpPipelineSvc {
 
             #[cfg(any(feature = "access-log", feature = "tracing", feature = "metrics"))]
             let trans_ctx = ctx.tx;
-            let stream_metrics = ctx.conn.stream_metrics;
+            let stream_metrics = Arc::clone(&ctx.conn.stream_metrics);
 
             response.map(move |body| {
                 InstrumentedBody::new(
@@ -932,7 +932,7 @@ fn match_request_route<'a, B>(request: &Request<B>, route_config: &'a RouteConfi
     Some(CachedRoute { route: chosen_route, route_match: route_match_result, vh: chosen_vh, vh_index, route_index })
 }
 
-impl RequestHandler<Request<OrionRequestBody>, &HttpConnectionManager> for StdArc<RoutingState> {
+impl RequestHandler<Request<OrionRequestBody>, &HttpConnectionManager> for &RoutingState {
     #[allow(clippy::too_many_lines)]
     async fn to_response(
         self,
@@ -1114,6 +1114,18 @@ impl RequestHandler<Request<OrionRequestBody>, &HttpConnectionManager> for StdAr
     }
 }
 
+impl RequestHandler<Request<OrionRequestBody>, &HttpConnectionManager> for StdArc<RoutingState> {
+    #[inline]
+    async fn to_response(
+        self,
+        ctx: &RequestCtx,
+        request: Request<OrionRequestBody>,
+        connection_manager: &HttpConnectionManager,
+    ) -> Result<Response<OrionResponseBody>> {
+        self.as_ref().to_response(ctx, request, connection_manager).await
+    }
+}
+
 fn apply_mutations_on_request<B>(
     target: &mut Request<B>,
     route_config: &RouteConfiguration,
@@ -1173,13 +1185,13 @@ fn apply_mutations_on_response<B>(
 /// Per-request context always present after `TransactionLifecycleSvc`.
 #[derive(Clone, Debug)]
 pub struct RequestCtx {
-    pub conn: ConnMeta,
+    pub conn: Arc<ConnMeta>,
     pub tx: Arc<TransactionContext>,
 }
 
 impl RequestCtx {
     #[inline]
-    pub fn new(conn: ConnMeta, tx: Arc<TransactionContext>) -> Self {
+    pub fn new(conn: Arc<ConnMeta>, tx: Arc<TransactionContext>) -> Self {
         Self { conn, tx }
     }
 
@@ -1196,7 +1208,7 @@ impl RequestCtx {
 
 impl Default for RequestCtx {
     fn default() -> Self {
-        Self { conn: ConnMeta::default(), tx: Arc::new(TransactionContext::default()) }
+        Self { conn: Arc::new(ConnMeta::default()), tx: Arc::new(TransactionContext::default()) }
     }
 }
 
@@ -1221,9 +1233,9 @@ pub struct RoutedHttpRequest<B> {
 
 #[derive(Clone)]
 pub struct TransactionLifecycleSvc<S> {
-    conn: ConnMeta,
+    conn: Arc<ConnMeta>,
     manager: Arc<HttpConnectionManager>,
-    inner: S,
+    inner: Arc<S>,
 }
 
 impl<S> TransactionLifecycleSvc<S> {
@@ -1233,7 +1245,7 @@ impl<S> TransactionLifecycleSvc<S> {
         stream_metrics: Arc<StreamMetrics>,
         inner: S,
     ) -> Self {
-        Self { conn: ConnMeta::new(downstream, stream_metrics), manager, inner }
+        Self { conn: Arc::new(ConnMeta::new(downstream, stream_metrics)), manager, inner: Arc::new(inner) }
     }
 }
 
@@ -1243,7 +1255,7 @@ impl Service<Request<Incoming>> for TransactionLifecycleSvc<TransactionSvc<HttpP
     type Future = BoxFuture<'static, StdResult<Self::Response, Self::Error>>;
 
     fn call(&self, incoming_request: Request<Incoming>) -> Self::Future {
-        let conn = self.conn.clone();
+        let conn = Arc::clone(&self.conn);
         let incoming_request_id = RequestId::from_request(&incoming_request);
         let incoming_version = incoming_request.version();
         let listener_name = self.manager.listener_name;
@@ -1327,7 +1339,7 @@ impl Service<Request<Incoming>> for TransactionLifecycleSvc<TransactionSvc<HttpP
         let ctx = RequestCtx::new(conn, Arc::clone(&trans_ctx));
         let http_req = HttpRequest { request, ctx };
 
-        let inner = self.inner.clone();
+        let inner = Arc::clone(&self.inner);
         Box::pin(async move {
             let response = inner.call(http_req).await;
 
@@ -1497,7 +1509,7 @@ impl TransactionSvc<HttpPipelineSvc> {
 
         #[cfg(feature = "access-log")]
         let trans_ctx_clone = Arc::clone(&http.ctx.tx);
-        let response = self.inner.call(RoutedHttpRequest { http, routing_state: routing_state.clone() }).await;
+        let response = self.inner.call(RoutedHttpRequest { http, routing_state }).await;
 
         #[cfg(feature = "metrics")]
         if let Ok(response) = &response {

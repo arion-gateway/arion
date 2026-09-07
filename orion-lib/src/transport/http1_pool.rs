@@ -206,6 +206,11 @@ impl Http1ClientExt {
     }
 
     #[inline]
+    pub fn local_pool_ref(&self) -> &Http1Pool {
+        self.pools.get_local()
+    }
+
+    #[inline]
     pub fn strong_count(&self) -> usize {
         StdArc::strong_count(&self.pools)
     }

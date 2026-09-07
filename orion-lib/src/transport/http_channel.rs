@@ -58,7 +58,7 @@ use rustls::ClientConfig;
 #[cfg(feature = "metrics")]
 use smallvec::SmallVec;
 use smol_str::ToSmolStr;
-use std::{future::Future, io, mem, sync::Arc as StdArc, time::Duration};
+use std::{future::Future, io, mem, time::Duration};
 use tracing::debug;
 use webpki::types::ServerName;
 
@@ -457,16 +457,13 @@ impl HttpChannel {
             HttpChannelClient::Plain(plain) => match plain {
                 PlainChannelClient::Http1(ext) => {
                     prepare_http1_request(&mut request)?;
-                    let pool = ext.local_pool();
+                    let pool_ref = ext.local_pool_ref();
                     self.send_with_policy(
                         request,
                         timeout,
                         retry_policy,
                         priority,
-                        move |req| {
-                            let pool = StdArc::clone(&pool);
-                            async move { pool.send(req).await }
-                        },
+                        |req| async move { pool_ref.send(req).await },
                         output,
                         #[cfg(feature = "instrumentation")]
                         clock,
@@ -475,16 +472,13 @@ impl HttpChannel {
                 },
                 PlainChannelClient::Http2(ext) => {
                     prepare_http2_request(&mut request, false)?;
-                    let pool = ext.local_pool();
+                    let pool_ref = ext.local_pool_ref();
                     self.send_with_policy(
                         request,
                         timeout,
                         retry_policy,
                         priority,
-                        move |req| {
-                            let pool = StdArc::clone(&pool);
-                            async move { pool.send(req).await }
-                        },
+                        |req| async move { pool_ref.send(req).await },
                         output,
                         #[cfg(feature = "instrumentation")]
                         clock,
@@ -495,16 +489,13 @@ impl HttpChannel {
             HttpChannelClient::Tls(tls) => match tls {
                 TlsChannelClient::Http1(ext) => {
                     prepare_http1_request(&mut request)?;
-                    let pool = ext.local_pool();
+                    let pool_ref = ext.local_pool_ref();
                     self.send_with_policy(
                         request,
                         timeout,
                         retry_policy,
                         priority,
-                        move |req| {
-                            let pool = StdArc::clone(&pool);
-                            async move { pool.send(req).await }
-                        },
+                        |req| async move { pool_ref.send(req).await },
                         output,
                         #[cfg(feature = "instrumentation")]
                         clock,
@@ -513,16 +504,13 @@ impl HttpChannel {
                 },
                 TlsChannelClient::Http2(ext) => {
                     prepare_http2_request(&mut request, true)?;
-                    let pool = ext.local_pool();
+                    let pool_ref = ext.local_pool_ref();
                     self.send_with_policy(
                         request,
                         timeout,
                         retry_policy,
                         priority,
-                        move |req| {
-                            let pool = StdArc::clone(&pool);
-                            async move { pool.send(req).await }
-                        },
+                        |req| async move { pool_ref.send(req).await },
                         output,
                         #[cfg(feature = "instrumentation")]
                         clock,
