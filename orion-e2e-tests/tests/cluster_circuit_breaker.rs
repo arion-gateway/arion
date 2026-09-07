@@ -116,6 +116,9 @@ async fn test_circuit_breaker_recovery_after_drain() {
     let client_a = Arc::clone(&client);
     let handle_a = tokio::spawn(async move { client_a.get("/test").await });
 
+    // Wait a bit to ensure request A hits the server before request B
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
     // Request B should be denied (A still in-flight)
     let response_b = client.get("/test").await.unwrap();
     response_b.assert_status(StatusCode::SERVICE_UNAVAILABLE);
