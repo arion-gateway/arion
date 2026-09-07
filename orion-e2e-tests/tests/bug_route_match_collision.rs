@@ -8,7 +8,7 @@ use orion_e2e_tests::{OrionInstance, PreConfiguredResponse, RequestBuilder, Spaw
 #[tokio::test]
 
 async fn test_route_match_collision_bug() {
-    let mut backend = TestBackend::start().await.expect("backend start");
+    let backend = TestBackend::start().await.expect("backend start");
     backend.set_default_response(PreConfiguredResponse::with_body("backend response")).await;
 
     // Base HCM local rate limit (does not actually limit anything here, we rely on overrides)

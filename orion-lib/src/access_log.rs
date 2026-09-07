@@ -23,6 +23,7 @@ pub mod logger;
 mod pool;
 
 use base64::{prelude::BASE64_STANDARD, Engine};
+use flume::{SendError, TrySendError};
 use http::HeaderName;
 use logger::AccessLogger;
 use orion_configuration::config::access_log::{AccessLogSink, AccessLogTarget};
@@ -30,7 +31,6 @@ use orion_format::FormattedMessage;
 use pool::LoggerPool;
 use smol_str::SmolStr;
 use std::sync::OnceLock;
-use tokio::sync::mpsc::error::TrySendError;
 use tracing_rolling_file::RollingFrequency;
 
 #[derive(Debug, Clone, Default)]
@@ -135,8 +135,9 @@ pub fn evaluate_plain_access_log_hook(
     Ok(())
 }
 
+use flume::Sender;
 use std::{fmt::Display, hash::Hash};
-use tokio::{sync::mpsc::Sender, task::JoinSet};
+use tokio::task::JoinSet;
 use tracing::{error, info};
 
 #[macro_export]
@@ -229,7 +230,7 @@ pub async fn log_access(target: Target, vec: Vec<FormattedMessage>) {
     }
     if let Some(sender) = get_sender() {
         if is_blocking() {
-            if let Err(e) = sender.send(AccessLogMessage::Message(target, vec)).await {
+            if let Err(e) = sender.send_async(AccessLogMessage::Message(target, vec)).await {
                 error!("Failed to send access log message: {e}");
             }
         } else if let Err(e) = sender.try_send(AccessLogMessage::Message(target, vec)) {
@@ -256,11 +257,11 @@ pub fn try_log_access(target: Target, vec: Vec<FormattedMessage>) -> Result<(), 
     if let Some(sender) = get_sender() {
         sender.try_send(AccessLogMessage::Message(target, vec)).map_err(|e| match e {
             TrySendError::Full(AccessLogMessage::Message(_, msg)) => TrySendError::Full(msg),
-            TrySendError::Closed(AccessLogMessage::Message(_, msg)) => TrySendError::Closed(msg),
+            TrySendError::Disconnected(AccessLogMessage::Message(_, msg)) => TrySendError::Disconnected(msg),
             _ => unreachable!(),
         })
     } else {
-        Err(TrySendError::Closed(vec))
+        Err(TrySendError::Disconnected(vec))
     }
 }
 
@@ -268,32 +269,29 @@ pub fn try_log_access(target: Target, vec: Vec<FormattedMessage>) -> Result<(), 
 ///
 /// First attempts to consume the permit from `permit` via an atomic take
 /// (zero-cost if it was already reserved). If the permit has already been
-/// taken (or was never set), falls back to [`try_log_access`]. When the
-/// `blocking` flag is set and the channel is full, [`tokio::task::block_in_place`]
-/// is used to drive a synchronous send without spawning a new task.
+/// taken (or was never set), falls back to [`try_log_access`]. If the
+/// `blocking` flag is set, a blocking send is performed using Flume to avoid
+/// panicking in async contexts.
 ///
 /// This function is sync and safe to call from non-async contexts (e.g. body
 /// completion callbacks registered on [`InstrumentedBody`]).
 #[allow(clippy::needless_pass_by_value)]
 #[inline]
-pub fn log_access_blocking(target: Target, vec: Vec<FormattedMessage>) {
-    let target_clone = target.clone();
-    if let Err(err) = try_log_access(target, vec) {
-        match err {
-            TrySendError::Full(vec) => {
-                if is_blocking() {
-                    tokio::task::block_in_place(move || {
-                        if let Some(sender) = get_sender() {
-                            let _ = sender.blocking_send(AccessLogMessage::Message(target_clone, vec)).ok();
-                        }
-                    });
-                }
-            },
-            TrySendError::Closed(_) => {
-                error!("Failed to send access log message: no available sender (channel closed)");
-            },
+pub fn blocking_log_access(target: Target, vec: Vec<FormattedMessage>) -> Result<(), SendError<AccessLogMessage>> {
+    if vec.is_empty() {
+        return Ok(());
+    }
+    if let Some(sender) = get_sender() {
+        if is_blocking() {
+            return sender.send(AccessLogMessage::Message(target, vec));
+        } else {
+            let _ = sender.try_send(AccessLogMessage::Message(target, vec));
+            return Ok(());
         }
     }
+
+    error!("Failed to send access log message: no available sender (channel closed)");
+    Ok(())
 }
 
 /// Initializes the global sender pool and spawns background logger tasks.
@@ -335,7 +333,7 @@ pub fn start_access_loggers(
 ) -> JoinSet<()> {
     let (mut senders, mut receivers) = (Vec::with_capacity(num_instances), Vec::with_capacity(num_instances));
     for _ in 0..num_instances {
-        let (sender, receiver) = tokio::sync::mpsc::channel(buffer);
+        let (sender, receiver) = flume::bounded(buffer);
         senders.push(sender);
         receivers.push(receiver);
     }
@@ -399,7 +397,7 @@ pub async fn update_configuration(target: Target, init: Vec<AccessLogSink>) -> R
     let pool =
         SENDER_POOL.get().ok_or_else(|| LoggerError::InitializationError("Logger pool not initialized".into()))?;
     for (i, senders) in pool.senders.iter().enumerate() {
-        if let Err(e) = senders.send(AccessLogMessage::Configure(target.clone(), init.clone())).await {
+        if let Err(e) = senders.send_async(AccessLogMessage::Configure(target.clone(), init.clone())).await {
             error!("Failed to send logger configuration to sender {i}: {e}");
             return Err(LoggerError::SenderError);
         }
@@ -481,7 +479,7 @@ mod tests {
         log_access(Target::Listener("test".into()), vec![message.clone(), message.clone()]).await;
 
         // test blocking access as well
-        log_access_blocking(Target::Listener("test".into()), vec![message.clone(), message.clone()]);
+        _ = blocking_log_access(Target::Listener("test".into()), vec![message.clone(), message.clone()]);
 
         _ = timeout(Duration::from_secs(2), handles.join_all()).await;
         std::fs::remove_file("test-access.log").unwrap();

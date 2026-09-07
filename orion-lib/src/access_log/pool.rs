@@ -18,7 +18,7 @@
 use std::hash::{Hash, Hasher};
 
 use ahash::AHasher;
-use tokio::sync::mpsc::Sender;
+use flume::Sender;
 
 pub(crate) struct LoggerPool<T> {
     pub blocking: bool,

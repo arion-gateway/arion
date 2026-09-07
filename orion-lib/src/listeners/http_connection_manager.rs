@@ -74,7 +74,7 @@ use orion_metrics::metrics::{custom::CUSTOM_METRICS, http, user};
 
 #[cfg(feature = "access-log")]
 use {
-    crate::access_log::{is_access_log_enabled, log_access_blocking, Target},
+    crate::access_log::{blocking_log_access, is_access_log_enabled, Target},
     crate::event_error::UpstreamTransportEventError,
     orion_configuration::config::access_log::AccessLog,
     orion_format::context::{
@@ -1764,7 +1764,7 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
         if !loggers.is_empty() {
             with_access_log!(&mut *loggers, WireContext { wire_bytes_received, wire_bytes_sent });
             let messages = loggers.iter_mut().map(|l| l.clone().into_message()).collect::<Vec<_>>();
-            log_access_blocking(
+            let _ = blocking_log_access(
                 Target::ListenerFilterChain(params.listener_name.into(), params.filterchain_id),
                 messages,
             );

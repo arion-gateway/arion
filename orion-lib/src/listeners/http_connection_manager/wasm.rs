@@ -174,7 +174,7 @@ impl InstanceHooks {
 
 // Request-local Wasm execution state
 struct WasmFilterState {
-    store: Store<hostcalls::WasmState>,
+    store: std::mem::ManuallyDrop<Store<hostcalls::WasmState>>,
     hooks: InstanceHooks,
 }
 
@@ -186,12 +186,14 @@ impl std::fmt::Debug for WasmFilterState {
 
 impl Drop for WasmFilterState {
     fn drop(&mut self) {
+        // SAFETY: We are in Drop, this is the last time `self.store` is accessed.
+        // We use ManuallyDrop::take to safely move the Store out of `self` into the spawned task
+        // or drop it immediately on the current thread if we can't spawn.
+        let mut store = unsafe { std::mem::ManuallyDrop::take(&mut self.store) };
         if let Some(on_destroy) = self.hooks.on_plugin_destroy.clone() {
             if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                tokio::task::block_in_place(|| {
-                    handle.block_on(async {
-                        _ = on_destroy.call_async(&mut self.store, ()).await;
-                    });
+                handle.spawn(async move {
+                    _ = on_destroy.call_async(&mut store, ()).await;
                 });
             }
         }
@@ -329,7 +331,7 @@ impl WasmFilter {
                     _ = on_start.call_async(&mut store, ()).await;
                 }
 
-                Box::new(WasmFilterState { store, hooks })
+                Box::new(WasmFilterState { store: std::mem::ManuallyDrop::new(store), hooks })
             };
             *state_opt = Some(state);
         }
@@ -355,8 +357,8 @@ impl WasmFilter {
                 Ok(s) => s,
                 Err(e) => return FilterDecision::internal_server_error(&e.to_string(), req.version()),
             };
-            if let Some(on_tx_start) = &state.hooks.on_transaction_start {
-                _ = on_tx_start.call_async(&mut state.store, ()).await;
+            if let Some(on_tx_start) = state.hooks.on_transaction_start.clone() {
+                _ = on_tx_start.call_async(&mut *state.store, ()).await;
             }
         }
 
@@ -389,8 +391,8 @@ impl WasmFilter {
                 Err(e) => return FilterDecision::internal_server_error(&e.to_string(), req.version()),
             };
 
-            if let Some(on_headers) = &state.hooks.on_request_headers {
-                let response = on_headers.call_async(&mut state.store, ()).await;
+            if let Some(on_headers) = state.hooks.on_request_headers.clone() {
+                let response = on_headers.call_async(&mut *state.store, ()).await;
                 response.map_err(WasmError::Wasmtime).and_then(|v| {
                     #[allow(clippy::map_err_ignore)]
                     FilterAction::try_from(v)
@@ -427,11 +429,11 @@ impl WasmFilter {
                             Err(e) => return FilterDecision::internal_server_error(&e.to_string(), req.version()),
                         };
 
-                        if let Some(on_body) = &state.hooks.on_request_body {
+                        if let Some(on_body) = state.hooks.on_request_body.clone() {
                             state.store.data_mut().buffered_request_body = Some(full_body_bytes);
                             state.store.data_mut().request_trailers = trailers;
 
-                            let raw = on_body.call_async(&mut state.store, body_len).await;
+                            let raw = on_body.call_async(&mut *state.store, body_len).await;
 
                             let final_body = state.store.data_mut().buffered_request_body.take().unwrap_or_default();
                             let final_trailers = state.store.data_mut().request_trailers.take();
@@ -590,8 +592,8 @@ impl WasmFilter {
                 Err(e) => return FilterDecision::internal_server_error(&e.to_string(), response.version()),
             };
 
-            if let Some(on_response_headers) = &state.hooks.on_response_headers {
-                let res_val = on_response_headers.call_async(&mut state.store, ()).await;
+            if let Some(on_response_headers) = state.hooks.on_response_headers.clone() {
+                let res_val = on_response_headers.call_async(&mut *state.store, ()).await;
                 res_val.map_err(WasmError::Wasmtime).and_then(|v| {
                     #[allow(clippy::map_err_ignore)]
                     FilterAction::try_from(v)
@@ -633,11 +635,11 @@ impl WasmFilter {
                             },
                         };
 
-                        if let Some(on_body) = &state.hooks.on_response_body {
+                        if let Some(on_body) = state.hooks.on_response_body.clone() {
                             state.store.data_mut().buffered_response_body = Some(full_body_bytes);
                             state.store.data_mut().response_trailers = trailers;
 
-                            let raw = on_body.call_async(&mut state.store, body_len).await;
+                            let raw = on_body.call_async(&mut *state.store, body_len).await;
 
                             let final_body = state.store.data_mut().buffered_response_body.take().unwrap_or_default();
                             let final_trailers = state.store.data_mut().response_trailers.take();
@@ -740,11 +742,13 @@ impl Drop for WasmFilter {
         if let Some(mut state) = self.state.get_mut().take() {
             if let Some(on_tx_comp) = state.hooks.on_transaction_complete.clone() {
                 if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                    tokio::task::block_in_place(|| {
-                        handle.block_on(async {
-                            _ = on_tx_comp.call_async(&mut state.store, ()).await;
-                        });
+                    let pool = Arc::clone(&self.inner.instance_pool);
+                    handle.spawn(async move {
+                        _ = on_tx_comp.call_async(&mut *state.store, ()).await;
+                        state.store.data_mut().reset_ephemeral();
+                        _ = pool.push(state);
                     });
+                    return;
                 }
             }
             state.store.data_mut().reset_ephemeral();

@@ -28,7 +28,7 @@ use crate::utils::StreamMetrics;
 
 #[cfg(feature = "access-log")]
 use {
-    crate::access_log::{log_access_blocking, Target},
+    crate::access_log::{blocking_log_access, Target},
     orion_format::context::SocketAddrContext,
     orion_format::{context::ConnectionContext, LogFormatter},
 };
@@ -432,7 +432,7 @@ impl Listener {
 
                                                    if !conn_formatters.is_empty() {
                                                        let messages = conn_formatters.into_iter().map(LogFormatter::into_message).collect::<Vec<_>>();
-                                                       log_access_blocking(Target::Listener(listener_name.into()), messages)
+                                                       let _ = blocking_log_access(Target::Listener(listener_name.into()), messages);
                                                    }
                                                }
                                             })
