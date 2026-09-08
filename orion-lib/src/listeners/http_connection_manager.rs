@@ -1185,13 +1185,13 @@ fn apply_mutations_on_response<B>(
 /// Per-request context always present after `TransactionLifecycleSvc`.
 #[derive(Clone, Debug)]
 pub struct RequestCtx {
-    pub conn: Arc<ConnMeta>,
+    pub conn: ConnMeta,
     pub tx: Arc<TransactionContext>,
 }
 
 impl RequestCtx {
     #[inline]
-    pub fn new(conn: Arc<ConnMeta>, tx: Arc<TransactionContext>) -> Self {
+    pub fn new(conn: ConnMeta, tx: Arc<TransactionContext>) -> Self {
         Self { conn, tx }
     }
 
@@ -1208,7 +1208,7 @@ impl RequestCtx {
 
 impl Default for RequestCtx {
     fn default() -> Self {
-        Self { conn: Arc::new(ConnMeta::default()), tx: Arc::new(TransactionContext::default()) }
+        Self { conn: ConnMeta::default(), tx: Arc::new(TransactionContext::default()) }
     }
 }
 
@@ -1233,7 +1233,7 @@ pub struct RoutedHttpRequest<B> {
 
 #[derive(Clone)]
 pub struct TransactionLifecycleSvc<S> {
-    conn: Arc<ConnMeta>,
+    conn: ConnMeta,
     manager: Arc<HttpConnectionManager>,
     inner: Arc<S>,
 }
@@ -1245,7 +1245,7 @@ impl<S> TransactionLifecycleSvc<S> {
         stream_metrics: Arc<StreamMetrics>,
         inner: S,
     ) -> Self {
-        Self { conn: Arc::new(ConnMeta::new(downstream, stream_metrics)), manager, inner: Arc::new(inner) }
+        Self { conn: ConnMeta::new(downstream, stream_metrics), manager, inner: Arc::new(inner) }
     }
 }
 
@@ -1255,7 +1255,7 @@ impl Service<Request<Incoming>> for TransactionLifecycleSvc<TransactionSvc<HttpP
     type Future = BoxFuture<'static, StdResult<Self::Response, Self::Error>>;
 
     fn call(&self, incoming_request: Request<Incoming>) -> Self::Future {
-        let conn = Arc::clone(&self.conn);
+        let conn = self.conn.clone();
         let incoming_request_id = RequestId::from_request(&incoming_request);
         let incoming_version = incoming_request.version();
         let listener_name = self.manager.listener_name;
