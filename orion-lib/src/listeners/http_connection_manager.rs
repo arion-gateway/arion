@@ -131,9 +131,10 @@ use orion_configuration::config::network_filters::{
 use orion_format::types::ResponseFlags as FmtResponseFlags;
 use route::RouteContext;
 use smol_str::SmolStr;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::{fmt, future::Future, result::Result as StdResult, sync::Arc as StdArc};
-use triomphe::Arc;
+use triomphe::{Arc, UniqueArc};
 
 use tracing::{debug, error};
 use upgrades as upgrade_utils;
@@ -463,6 +464,97 @@ pub type ShardId = std::thread::ThreadId;
 #[cfg(not(feature = "metrics"))]
 pub type ShardId = ();
 
+thread_local! {
+    static TX_CONTEXT_POOL: RefCell<Vec<UniqueArc<TransactionContext>>> = RefCell::new(Vec::with_capacity(128));
+}
+
+#[derive(Debug)]
+pub struct PooledTxCtx(Option<Arc<TransactionContext>>);
+
+impl PooledTxCtx {
+    #[allow(clippy::too_many_arguments)]
+    pub fn acquire(
+        request_id: Option<RequestId>,
+        user_partition_key: Option<&'static str>,
+        thread_id: ShardId,
+        #[cfg(feature = "access-log")] access_log: &[AccessLog],
+        #[cfg(feature = "tracing")] trace_ctx: Option<TraceContext>,
+        #[cfg(feature = "tracing")] upstream_tracing_key: Option<TracingKey>,
+        #[cfg(feature = "tracing")] server_span: Option<BoxedSpan>,
+    ) -> Self {
+        let unique = TX_CONTEXT_POOL.with(|pool| pool.borrow_mut().pop());
+        let arc = if let Some(mut ctx) = unique {
+            ctx.reset(
+                request_id,
+                user_partition_key,
+                thread_id,
+                #[cfg(feature = "access-log")]
+                access_log,
+                #[cfg(feature = "tracing")]
+                trace_ctx,
+                #[cfg(feature = "tracing")]
+                upstream_tracing_key,
+                #[cfg(feature = "tracing")]
+                server_span,
+            );
+            UniqueArc::shareable(ctx)
+        } else {
+            Arc::new(TransactionContext::new(
+                request_id,
+                user_partition_key,
+                thread_id,
+                #[cfg(feature = "access-log")]
+                access_log,
+                #[cfg(feature = "tracing")]
+                trace_ctx,
+                #[cfg(feature = "tracing")]
+                upstream_tracing_key,
+                #[cfg(feature = "tracing")]
+                server_span,
+            ))
+        };
+        Self(Some(arc))
+    }
+}
+
+impl Clone for PooledTxCtx {
+    #[inline]
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl Default for PooledTxCtx {
+    fn default() -> Self {
+        Self(Some(Arc::new(TransactionContext::default())))
+    }
+}
+
+impl std::ops::Deref for PooledTxCtx {
+    type Target = TransactionContext;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref().unwrap()
+    }
+}
+
+impl Drop for PooledTxCtx {
+    #[inline]
+    fn drop(&mut self) {
+        if let Some(arc) = self.0.take() {
+            if let Ok(unique) = Arc::try_unique(arc) {
+                TX_CONTEXT_POOL.with(|pool| {
+                    let mut pool = pool.borrow_mut();
+                    if pool.len() < 1024 {
+                        pool.push(unique);
+                    }
+                });
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct TransactionContext {
     #[cfg(feature = "access-log")]
@@ -536,6 +628,52 @@ struct EventInfo {
 }
 
 impl TransactionContext {
+    #[allow(clippy::too_many_arguments)]
+    pub fn reset(
+        &mut self,
+        request_id: Option<RequestId>,
+        user_partition_key: Option<&'static str>,
+        thread_id: ShardId,
+        #[cfg(feature = "access-log")] access_log: &[AccessLog],
+        #[cfg(feature = "tracing")] trace_ctx: Option<TraceContext>,
+        #[cfg(feature = "tracing")] upstream_tracing_key: Option<TracingKey>,
+        #[cfg(feature = "tracing")] server_span: Option<BoxedSpan>,
+    ) {
+        #[cfg(feature = "access-log")]
+        {
+            self.has_access_log = !access_log.is_empty();
+        }
+        self.start_instant = std::time::Instant::now();
+        self.request_id = request_id;
+        self.user_partition_key = user_partition_key;
+
+        #[cfg(any(feature = "access-log", feature = "metrics"))]
+        {
+            *self.trans_state.get_mut() = TransactionState::new(
+                #[cfg(feature = "access-log")]
+                access_log,
+            );
+        }
+
+        #[cfg(feature = "tracing")]
+        {
+            self.trace_ctx = trace_ctx;
+            self.upstream_tracing_key = upstream_tracing_key;
+            self.span_state = server_span.map(|span| Arc::new(SpanState::new(Some(span))));
+        }
+
+        self.shard_id = thread_id;
+
+        #[cfg(any(feature = "access-log", feature = "metrics", feature = "tracing"))]
+        {
+            self.trans_phase = TransactionPhase::new();
+        }
+
+        #[cfg(feature = "instrumentation")]
+        {
+            self.clock = quanta::Clock::new();
+        }
+    }
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         request_id: Option<RequestId>,
@@ -864,7 +1002,7 @@ impl HttpPipelineSvc {
                             if trans_ctx.trans_phase.is_complete() {
                                 drop(trans_state);
                                 stream_metrics.add_flush_callback(HttpTxnFlush {
-                                    trans_ctx: Arc::clone(&trans_ctx),
+                                    trans_ctx: trans_ctx.clone(),
                                     listener_name,
                                     filterchain_id,
                                     body_bytes,
@@ -1186,12 +1324,12 @@ fn apply_mutations_on_response<B>(
 #[derive(Clone, Debug)]
 pub struct RequestCtx {
     pub conn: ConnMeta,
-    pub tx: Arc<TransactionContext>,
+    pub tx: PooledTxCtx,
 }
 
 impl RequestCtx {
     #[inline]
-    pub fn new(conn: ConnMeta, tx: Arc<TransactionContext>) -> Self {
+    pub fn new(conn: ConnMeta, tx: PooledTxCtx) -> Self {
         Self { conn, tx }
     }
 
@@ -1208,7 +1346,7 @@ impl RequestCtx {
 
 impl Default for RequestCtx {
     fn default() -> Self {
-        Self { conn: ConnMeta::default(), tx: Arc::new(TransactionContext::default()) }
+        Self { conn: ConnMeta::default(), tx: PooledTxCtx::default() }
     }
 }
 
@@ -1317,7 +1455,7 @@ impl Service<Request<Incoming>> for TransactionLifecycleSvc<TransactionSvc<HttpP
         #[allow(clippy::let_unit_value)]
         let shard_id = get_shard_id!();
 
-        let trans_ctx = Arc::new(TransactionContext::new(
+        let trans_ctx = PooledTxCtx::acquire(
             request_id,
             user_partition_key,
             shard_id,
@@ -1329,14 +1467,14 @@ impl Service<Request<Incoming>> for TransactionLifecycleSvc<TransactionSvc<HttpP
             upstream_tracing_key,
             #[cfg(feature = "tracing")]
             server_span,
-        ));
+        );
 
         #[cfg(feature = "tracing")]
         if let Some(trace_ctx) = trans_ctx.trace_ctx.as_ref() {
             self.manager.http_tracer.update_tracing_headers(trace_ctx, &mut request);
         }
 
-        let ctx = RequestCtx::new(conn, Arc::clone(&trans_ctx));
+        let ctx = RequestCtx::new(conn, trans_ctx.clone());
         let http_req = HttpRequest { request, ctx };
 
         let inner = Arc::clone(&self.inner);
@@ -1451,7 +1589,7 @@ impl TransactionSvc<HttpPipelineSvc> {
 
         let stream_metrics = Arc::clone(&ctx.conn.stream_metrics);
         #[cfg(any(feature = "access-log", feature = "tracing", feature = "metrics"))]
-        let trans_ctx = Arc::clone(&ctx.tx);
+        let trans_ctx = ctx.tx.clone();
         let http = HttpRequest { request, ctx }.map_body(|body| {
             let body = TimeoutBody::new(req_timeout, PolyBody::from(body));
             InstrumentedBody::new(
@@ -1477,7 +1615,7 @@ impl TransactionSvc<HttpPipelineSvc> {
                         if trans_ctx.trans_phase.is_complete() {
                             drop(trans_state);
                             stream_metrics.add_flush_callback(HttpTxnFlush {
-                                trans_ctx: Arc::clone(&trans_ctx),
+                                trans_ctx: trans_ctx.clone(),
                                 listener_name,
                                 filterchain_id,
                                 body_bytes,
@@ -1508,7 +1646,7 @@ impl TransactionSvc<HttpPipelineSvc> {
         });
 
         #[cfg(feature = "access-log")]
-        let trans_ctx_clone = Arc::clone(&http.ctx.tx);
+        let trans_ctx_clone = http.ctx.tx.clone();
         let response = self.inner.call(RoutedHttpRequest { http, routing_state }).await;
 
         #[cfg(feature = "metrics")]
@@ -1600,7 +1738,7 @@ struct MetricsFinishContext {
 
 #[cfg(any(feature = "access-log", feature = "metrics"))]
 pub(crate) struct HttpTxnFlush {
-    trans_ctx: Arc<TransactionContext>,
+    trans_ctx: PooledTxCtx,
     listener_name: &'static str,
     filterchain_id: u64,
     body_bytes: u64,
@@ -1789,7 +1927,7 @@ fn eval_http_finish_context(mut params: FinishContextParams<'_>) {
 #[allow(unused_variables)]
 fn instrument_early_failure_response(
     response: Response<crate::OrionResponseBody>,
-    trans_ctx: &Arc<TransactionContext>,
+    trans_ctx: &PooledTxCtx,
     stream_metrics: Option<&Arc<StreamMetrics>>,
     listener_name: &'static str,
     user_partition_key: Option<&'static str>,
@@ -1822,7 +1960,7 @@ fn instrument_early_failure_response(
     };
 
     #[cfg(any(feature = "access-log", feature = "tracing", feature = "metrics"))]
-    let trans_ctx = Arc::clone(trans_ctx);
+    let trans_ctx = trans_ctx.clone();
 
     let stream_metrics = stream_metrics.cloned();
     response.map(|body| {
@@ -1853,7 +1991,7 @@ fn instrument_early_failure_response(
                     if trans_ctx.trans_phase.is_complete() {
                         drop(trans_state);
                         stream_metrics.add_flush_callback(HttpTxnFlush {
-                            trans_ctx: Arc::clone(&trans_ctx),
+                            trans_ctx: trans_ctx.clone(),
                             listener_name,
                             filterchain_id,
                             body_bytes,
@@ -1893,7 +2031,7 @@ const MAX_URI_LENGTH: usize = 2048;
 #[allow(clippy::too_many_arguments)]
 fn reject_request_if_invalid(
     request: &Request<Incoming>,
-    trans_ctx: &Arc<TransactionContext>,
+    trans_ctx: &PooledTxCtx,
     stream_metrics: Option<&Arc<StreamMetrics>>,
     listener_name: &'static str,
     user_partition_key: Option<&'static str>,
@@ -1964,7 +2102,7 @@ fn reject_request_if_invalid(
 #[allow(clippy::too_many_arguments)]
 fn handle_route_conf_not_found(
     version: ::http::Version,
-    trans_ctx: &Arc<TransactionContext>,
+    trans_ctx: &PooledTxCtx,
     stream_metrics: Option<&Arc<StreamMetrics>>,
     listener_name: &'static str,
     user_partition_key: Option<&'static str>,

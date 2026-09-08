@@ -15,11 +15,11 @@
 //
 //
 
-use triomphe::Arc;
 use std::{
     fmt::Debug,
     hash::{Hash, Hasher},
-    };
+};
+use triomphe::Arc;
 
 use rand::Rng;
 

@@ -70,10 +70,10 @@ use std::future::ready;
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
-use triomphe::Arc;
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
+use triomphe::Arc;
 
 /// The total number of frames to prefetch before sending the request to the upstream service.
 const CHANNEL_BODY_PREFETCH_FRAMES: NonZeroUsize = {

@@ -21,8 +21,8 @@ use http::{
     Request, Uri,
 };
 use std::{iter::Cycle, vec::IntoIter};
-use triomphe::Arc;
 use tracing::debug;
+use triomphe::Arc;
 
 use orion_xds::grpc_deps::GrpcBody;
 use tower::Service;

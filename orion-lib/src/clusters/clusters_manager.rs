@@ -15,7 +15,6 @@
 //
 //
 
-use triomphe::Arc;
 use super::{
     balancers::hash_policy::HashState,
     cached_watch::{CachedWatch, CachedWatcher},
@@ -38,8 +37,9 @@ use std::{
     borrow::Cow,
     cell::RefCell,
     collections::{btree_map::Entry as BTreeEntry, BTreeMap},
-    };
+};
 use tracing::{debug, warn};
+use triomphe::Arc;
 
 type ClusterID = &'static str;
 type ClustersMap = BTreeMap<ClusterID, ClusterType>;

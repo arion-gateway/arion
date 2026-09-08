@@ -15,8 +15,8 @@
 //
 //
 
+use std::fmt::Debug;
 use triomphe::Arc;
-use std::{fmt::Debug};
 
 use rand::{rngs::SmallRng, seq::IteratorRandom, Rng, SeedableRng};
 

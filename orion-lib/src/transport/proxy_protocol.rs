@@ -34,8 +34,8 @@ use std::{
     collections::HashMap,
     net::{IpAddr, SocketAddr},
 };
-use triomphe::Arc;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use triomphe::Arc;
 
 const V1_PREFIX_LEN: usize = 5;
 const V1_MAX_LENGTH: usize = 107;

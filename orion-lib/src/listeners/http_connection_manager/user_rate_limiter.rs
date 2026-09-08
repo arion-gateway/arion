@@ -1,6 +1,6 @@
 use std::sync::{LazyLock, Once};
-use triomphe::Arc;
 use std::time::{Duration, Instant};
+use triomphe::Arc;
 
 use dashmap::DashMap;
 use orion_configuration::config::{

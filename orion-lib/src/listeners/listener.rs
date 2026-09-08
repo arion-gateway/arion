@@ -85,12 +85,12 @@ use std::{
     },
     time::Instant,
 };
-use triomphe::Arc;
 use tokio::{
     net::{TcpListener, TcpSocket},
     sync::broadcast::{self},
 };
 use tracing::{debug, info, warn};
+use triomphe::Arc;
 
 #[derive(Debug, Clone)]
 enum ListenerBinding {

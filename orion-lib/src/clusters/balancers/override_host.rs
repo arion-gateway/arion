@@ -1,5 +1,5 @@
+use std::str::FromStr;
 use triomphe::Arc;
-use std::{str::FromStr};
 
 use http::{uri::Authority, HeaderName, HeaderValue};
 use rustc_hash::FxHashMap as HashMap;

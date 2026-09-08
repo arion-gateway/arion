@@ -6,8 +6,8 @@
 #![allow(clippy::manual_let_else)]
 #![allow(clippy::too_many_lines)]
 
-use triomphe::Arc;
 use std::sync::LazyLock;
+use triomphe::Arc;
 
 use crate::body::timeout_body::TimeoutBody;
 use crate::listeners::http_connection_manager::RequestCtx;

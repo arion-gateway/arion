@@ -312,7 +312,11 @@ impl FilterchainType {
                     CodecType::Http2 => hyper_server.http2_only(),
                     CodecType::Auto => hyper_server,
                 };
-                let trans_svc = HttpConnectionManager::transaction_context_svc(http_connection_manager, metadata, Arc::clone(&stream_metrics));
+                let trans_svc = HttpConnectionManager::transaction_context_svc(
+                    http_connection_manager,
+                    metadata,
+                    Arc::clone(&stream_metrics),
+                );
                 hyper_server
                     .serve_connection_with_upgrades(stream, trans_svc)
                     .await

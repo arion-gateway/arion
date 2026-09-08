@@ -19,9 +19,9 @@ use orion_wasm_types::FilterAction;
 use parking_lot::Mutex;
 use std::convert::Infallible;
 use std::sync::LazyLock;
-use triomphe::Arc;
 use thiserror::Error;
 use tracing::{debug, warn};
+use triomphe::Arc;
 use wasmtime::{Engine, Instance, Linker, Module, PoolingAllocationConfig, Store, TypedFunc};
 
 mod hostcalls;

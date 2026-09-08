@@ -15,8 +15,8 @@
 //
 //
 
+use std::fmt::Debug;
 use triomphe::Arc;
-use std::{fmt::Debug};
 
 use super::{Balancer, WeightedEndpoint};
 use crate::{

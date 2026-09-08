@@ -11,8 +11,8 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
 use std::sync::Arc;
+use std::time::Duration;
 
 use bytes::Bytes;
 use http::{header, Method, Request};

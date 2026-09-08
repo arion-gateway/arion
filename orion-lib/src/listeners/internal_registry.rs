@@ -22,9 +22,9 @@ use crate::transport::AsyncInstrumentedStream;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::time::Instant;
-use triomphe::Arc;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
+use triomphe::Arc;
 
 pub struct InternalConnection {
     pub stream: AsyncInstrumentedStream,

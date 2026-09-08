@@ -41,7 +41,6 @@ use smol_str::SmolStr;
 #[cfg(feature = "tracing")]
 use smol_str::ToSmolStr;
 use std::{sync::Arc as StdArc, time::Duration};
-use triomphe::Arc;
 use tokio::{
     select,
     sync::{
@@ -50,6 +49,7 @@ use tokio::{
     },
 };
 use tracing::{debug, info, warn};
+use triomphe::Arc;
 
 const RETRY_INTERVAL: Duration = Duration::from_secs(10);
 const ROUTE_UPDATE_TIMEOUT: Duration = Duration::from_secs(5);

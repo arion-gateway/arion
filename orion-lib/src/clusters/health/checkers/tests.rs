@@ -15,8 +15,8 @@
 //
 //
 
+use std::time::Duration;
 use triomphe::Arc;
-use std::{time::Duration};
 
 use http::uri::Authority;
 use orion_configuration::config::cluster::{health_check::ClusterHealthCheck, HealthStatus};

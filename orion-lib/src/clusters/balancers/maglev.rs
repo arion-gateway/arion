@@ -15,8 +15,8 @@
 //
 //
 
+use std::fmt::Debug;
 use triomphe::Arc;
-use std::{fmt::Debug};
 
 use http::uri::Authority;
 use rand::Rng;

@@ -15,8 +15,8 @@
 //
 //
 
-use triomphe::Arc;
 use std::{fmt::Debug, marker::PhantomData};
+use triomphe::Arc;
 
 use http::uri::Authority;
 use rustc_hash::FxHashMap as HashMap;
