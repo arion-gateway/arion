@@ -33,8 +33,8 @@ mod metrics_enabled {
     };
     use bytes::Buf;
     use pin_project::{pin_project, pinned_drop};
+    use std::sync::Arc as StdArc;
     use triomphe::Arc;
-
 
     /// Trait that enables call-once semantics through `Arc` without an extra `Box` layer.
     ///
@@ -68,15 +68,15 @@ mod metrics_enabled {
         pub body_kind: BodyKind,
         pub body_bytes: u64,
         pub(crate) stream_metrics: Option<Arc<StreamMetrics>>,
-        pub(crate) on_complete: Option<Arc<dyn MetricsCallbackFn>>,
+        pub(crate) on_complete: Option<StdArc<dyn MetricsCallbackFn>>,
     }
 
     #[pinned_drop]
     impl<B> PinnedDrop for InstrumentedBody<B> {
         fn drop(self: std::pin::Pin<&mut Self>) {
             let this = self.project();
-            if let Some(arc_closure) = this.on_complete.take() {
-                if let Ok(mut closure) = Arc::try_unwrap(arc_closure) {
+            if let Some(mut arc_closure) = this.on_complete.take() {
+                if let Some(closure) = StdArc::get_mut(&mut arc_closure) {
                     if let Some(metrics) = this.stream_metrics.as_ref() {
                         closure.call(*this.body_bytes, metrics.as_ref(), None, ResponseFlags::default());
                     }
@@ -104,7 +104,13 @@ mod metrics_enabled {
         where
             F: FnOnce(u64, &StreamMetrics, Option<EventKind>, ResponseFlags) + Send + Sync + 'static,
         {
-            Self { inner, body_kind, body_bytes: 0, stream_metrics, on_complete: Some(Arc::new(MetricsCallback(Some(on_complete)))) }
+            Self {
+                inner,
+                body_kind,
+                body_bytes: 0,
+                stream_metrics,
+                on_complete: Some(StdArc::new(MetricsCallback(Some(on_complete))) as StdArc<dyn MetricsCallbackFn>),
+            }
         }
 
         #[inline]
@@ -169,23 +175,20 @@ mod metrics_enabled {
                     }
                 },
                 Poll::Ready(Some(Err(err))) => {
-                    if let Some(arc_closure) = this.on_complete.take() {
-                        match Arc::try_unwrap(arc_closure) {
-                            Ok(mut closure) => {
-                                if let Some(metrics) = this.stream_metrics.as_ref() {
-                                    let event_error: Option<EventKind> = match *this.body_kind {
-                                        BodyKind::Request => DownstreamError::try_infer_from(err).map(Into::into),
-                                        BodyKind::Response => UpstreamError::try_infer_from(err).map(Into::into),
-                                    };
+                    if let Some(mut arc_closure) = this.on_complete.take() {
+                        if let Some(closure) = StdArc::get_mut(&mut arc_closure) {
+                            if let Some(metrics) = this.stream_metrics.as_ref() {
+                                let event_error: Option<EventKind> = match *this.body_kind {
+                                    BodyKind::Request => DownstreamError::try_infer_from(err).map(Into::into),
+                                    BodyKind::Response => UpstreamError::try_infer_from(err).map(Into::into),
+                                };
 
-                                    let flags = ResponseFlags::from((err, *this.body_kind));
-                                    closure.call(*this.body_bytes, metrics.as_ref(), event_error, flags);
-                                }
-                            },
-                            Err(arc) => {
-                                // Not the last clone, put it back!
-                                *this.on_complete = Some(arc);
-                            },
+                                let flags = ResponseFlags::from((err, *this.body_kind));
+                                closure.call(*this.body_bytes, metrics.as_ref(), event_error, flags);
+                            }
+                        } else {
+                            // Not the last clone, put it back!
+                            *this.on_complete = Some(arc_closure);
                         }
                     }
                 },

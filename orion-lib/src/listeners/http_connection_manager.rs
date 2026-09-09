@@ -2038,65 +2038,69 @@ fn reject_request_if_invalid(
 ) -> Option<Response<crate::OrionClientBody>> {
     // check if request has no host header, or if it has multiple ones (invalid for http1.1)
     //
-    let response = if matches!(request.version(), ::http::Version::HTTP_11) {
-        match request.headers().get_all(HOST).iter().count() {
-            1 => None,
-            n => {
-                debug!("Invalid number of host headers: {}", n);
-                Some(
-                    SyntheticHttpResponse::bad_request(EventFailure::DirectResponse.into())
-                        .with_close_connection(true)
-                        .into_response(request.version()),
-                )
-            },
+    if matches!(request.version(), ::http::Version::HTTP_11) {
+        let count = request.headers().get_all(HOST).iter().count();
+        if count != 1 {
+            debug!("Invalid number of host headers: {}", count);
+            let r = SyntheticHttpResponse::bad_request(EventFailure::DirectResponse.into())
+                .with_close_connection(true)
+                .into_response(request.version());
+            return Some(instrument_early_failure_response(
+                r,
+                trans_ctx,
+                stream_metrics,
+                listener_name,
+                user_partition_key,
+                filterchain_id,
+            ));
         }
-    } else {
-        None
-    };
+    }
 
     // check if method is too long...
     //
-    let response = response.or_else(|| {
-        (request.method().as_str().len() > MAX_METHOD_LENGTH).then(|| {
-            debug!("Too long method: {} bytes", request.method().as_str());
-            SyntheticHttpResponse::custom_error(
-                StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
-                None,
-                EventFailure::DirectResponse.into(),
-                ResponseFlags::default(),
-            )
-            .into_response(request.version())
-        })
-    });
-
-    //check if uri/line is too long...
-    //
-    let response = response.or_else(|| {
-        let mut counter = LengthCounter(0);
-        _ = write!(&mut counter, "{}", request.uri());
-        (counter.0 > MAX_URI_LENGTH).then(|| {
-            debug!("Too long uri: {} bytes", counter.0);
-            SyntheticHttpResponse::custom_error(
-                StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
-                None,
-                EventFailure::DirectResponse.into(),
-                ResponseFlags::default(),
-            )
-            .into_response(request.version())
-        })
-    });
-
-    response.map(|r| {
-        instrument_early_failure_response(
+    if request.method().as_str().len() > MAX_METHOD_LENGTH {
+        debug!("Too long method: {} bytes", request.method().as_str());
+        let r = SyntheticHttpResponse::custom_error(
+            StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
+            None,
+            EventFailure::DirectResponse.into(),
+            ResponseFlags::default(),
+        )
+        .into_response(request.version());
+        return Some(instrument_early_failure_response(
             r,
             trans_ctx,
             stream_metrics,
             listener_name,
             user_partition_key,
             filterchain_id,
-    })
+        ));
+    }
 
+    // check if uri/line is too long...
+    //
+    let mut counter = LengthCounter(0);
+    let _ = write!(&mut counter, "{}", request.uri());
+    if counter.0 > MAX_URI_LENGTH {
+        debug!("Too long uri: {} bytes", counter.0);
+        let r = SyntheticHttpResponse::custom_error(
+            StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
+            None,
+            EventFailure::DirectResponse.into(),
+            ResponseFlags::default(),
+        )
+        .into_response(request.version());
+        return Some(instrument_early_failure_response(
+            r,
+            trans_ctx,
+            stream_metrics,
+            listener_name,
+            user_partition_key,
+            filterchain_id,
+        ));
+    }
 
+    None
 }
 
 #[allow(clippy::too_many_arguments)]

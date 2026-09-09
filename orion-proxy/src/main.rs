@@ -23,7 +23,8 @@ use tikv_jemallocator::Jemalloc;
 static GLOBAL: Jemalloc = Jemalloc;
 
 #[no_mangle]
-pub static _rjem_malloc_conf: &[u8] = b"thp:always,metadata_thp:always,narenas:32,tcache_gc_incr_bytes:8388608,lg_tcache_nslots_mul:3\0";
+pub static _rjem_malloc_conf: &[u8] =
+    b"thp:always,metadata_thp:always,narenas:32,tcache_gc_incr_bytes:8388608,lg_tcache_nslots_mul:3\0";
 
 #[cfg(all(feature = "dhat-heap", not(feature = "jemalloc")))]
 #[global_allocator]
