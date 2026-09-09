@@ -1044,7 +1044,7 @@ fn select_virtual_host<'a, T>(
         maybe_score.map(|score| (idx, vh, score))
     });
 
-    let virtual_host_with_max_score = mapped_vhs.max_by_key(|(_, _, score)| score.clone());
+    let virtual_host_with_max_score = mapped_vhs.max_by(|a, b| a.2.cmp(&b.2));
     virtual_host_with_max_score.map(|(idx, vh, _)| (idx, vh))
 }
 
@@ -1443,11 +1443,10 @@ impl Service<Request<Incoming>> for TransactionLifecycleSvc<TransactionSvc<HttpP
         }
 
         #[cfg(feature = "metrics")]
-        let sni = conn.downstream.sni.clone();
-
-        #[cfg(feature = "metrics")]
-        let user_partition_key =
-            metrics::extract_user_partition_key((request.headers(), sni.as_ref()), metrics::USER_KEY.source());
+        let user_partition_key = metrics::extract_user_partition_key(
+            (request.headers(), conn.downstream.sni.as_ref()),
+            metrics::USER_KEY.source(),
+        );
 
         #[cfg(not(feature = "metrics"))]
         let user_partition_key = None;
@@ -2095,8 +2094,9 @@ fn reject_request_if_invalid(
             listener_name,
             user_partition_key,
             filterchain_id,
-        )
     })
+
+
 }
 
 #[allow(clippy::too_many_arguments)]
