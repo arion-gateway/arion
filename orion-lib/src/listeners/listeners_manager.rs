@@ -110,7 +110,10 @@ impl ListenersManager {
                                 .values()
                                 .map(|info| info.listener_conf.clone())
                                 .collect();
-                            config_dump_tx.send(ConfigDump { listeners: Some(listeners), ..Default::default() }).await?;
+                            let dump = ConfigDump { listeners: Some(listeners), ..Default::default() };
+                            if let Err(e) = config_dump_tx.send(dump).await {
+                                warn!("Could not deliver the configuration dump, the requester is gone: {e}");
+                            }
                         },
                     }
                 },
@@ -265,5 +268,32 @@ mod tests {
         //        Err(format!("Expecting 1 log line for listener shutdown (got {})", logs.len()))
         //    }
         //});
+    }
+
+    /// A `GetConfiguration` reply that cannot be delivered - because the requesting admin
+    /// endpoint has already returned, or timed out - must not stop the manager. This used to
+    /// propagate the `SendError` with `?`, which took down the whole proxy runtime: the admin
+    /// endpoints fan a *clone* of the reply sender out to every runtime but only read one reply,
+    /// so with more than one runtime every request left an undeliverable reply behind.
+    #[tokio::test]
+    async fn get_configuration_survives_a_closed_reply_channel() {
+        let (conf_tx, conf_rx) = mpsc::channel(10);
+        let (_route_tx, route_rx) = mpsc::channel::<RouteConfigurationChange>(10);
+        let manager = tokio::spawn(ListenersManager::new(conf_rx, route_rx).start());
+
+        // a reply channel whose receiver is gone before the manager gets to answer
+        let (dump_tx, dump_rx) = mpsc::channel::<ConfigDump>(1);
+        drop(dump_rx);
+        conf_tx.send(ListenerConfigurationChange::GetConfiguration(dump_tx)).await.unwrap();
+
+        // the manager must still be serving: prove it by asking again on a live channel
+        let (dump_tx, mut dump_rx) = mpsc::channel::<ConfigDump>(1);
+        conf_tx.send(ListenerConfigurationChange::GetConfiguration(dump_tx)).await.unwrap();
+        // a manager that exited would have dropped this sender, closing the channel
+        let dump = dump_rx.recv().await;
+
+        assert!(dump.is_some(), "listeners manager stopped answering after an undeliverable reply");
+        assert!(!manager.is_finished(), "listeners manager exited over a closed reply channel");
+        manager.abort();
     }
 }
