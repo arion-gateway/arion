@@ -263,6 +263,7 @@ impl TlsConfigurator<ServerConfig, WantsToBuildServer> {
             certificate_store,
             mut server_ids_and_certificates,
             require_client_cert,
+            ticketer,
         } = state;
         let new_builder = match secret {
             TransportSecret::Certificate(certificate) => {
@@ -278,7 +279,8 @@ impl TlsConfigurator<ServerConfig, WantsToBuildServer> {
                         builder.with_no_client_auth()
                     }
                     .with_certificates(server_ids_and_certificates)
-                    .with_client_authentication(require_client_cert)
+                    .with_client_authentication(require_client_cert)?
+                    .with_ticketer(ticketer)
                 } else {
                     let msg = format!("Can't find secret {secret_id}");
                     debug!("{msg}");
@@ -291,7 +293,8 @@ impl TlsConfigurator<ServerConfig, WantsToBuildServer> {
                     TlsContextBuilder::with_supported_versions(supported_versions)
                         .with_server_certificate_store(validation_context_secret_id, cert_store)
                         .with_certificates(server_ids_and_certificates)
-                        .with_client_authentication(require_client_cert)
+                        .with_client_authentication(require_client_cert)?
+                        .with_ticketer(ticketer)
                 } else {
                     let msg = format!("Can't find secret {secret_id} {validation_context_secret_id:?}");
                     debug!("{msg}");
@@ -359,7 +362,7 @@ impl TryFrom<(TlsServerConfig, &SecretManager)> for TlsConfigurator<ServerConfig
             ctx_builder.with_no_client_auth()
         }
         .with_certificates(certs_and_secret_ids)
-        .with_client_authentication(require_client_cert);
+        .with_client_authentication(require_client_cert)?;
 
         let config = ctx_builder.build()?;
 
